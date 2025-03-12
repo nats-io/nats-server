@@ -7105,7 +7105,7 @@ func TestMQTTSubRetainedRace(t *testing.T) {
 
 	useCases := []struct {
 		name string
-		f    func(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte)
+		f    func(t *testing.T, s *Server, o *Options, subTopic, pubTopic string, QOS byte)
 	}{
 		{"new top level", testMQTTNewSubRetainedRace},
 		{"existing top level", testMQTTNewSubWithExistingTopLevelRetainedRace},
@@ -7122,7 +7122,7 @@ func TestMQTTSubRetainedRace(t *testing.T) {
 							s := testMQTTRunServer(t, o)
 							defer testMQTTShutdownServer(s)
 
-							tc.f(t, o, subTopic, pubTopic, qos)
+							tc.f(t, s, o, subTopic, pubTopic, qos)
 						})
 					}
 				})
@@ -7131,7 +7131,7 @@ func TestMQTTSubRetainedRace(t *testing.T) {
 	}
 }
 
-func testMQTTNewSubRetainedRace(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte) {
+func testMQTTNewSubRetainedRace(t *testing.T, s *Server, o *Options, subTopic, pubTopic string, QOS byte) {
 	expectedFlags := (QOS << 1) | mqttPubFlagRetain
 	payload := []byte("testmsg")
 
@@ -7141,6 +7141,22 @@ func testMQTTNewSubRetainedRace(t *testing.T, o *Options, subTopic, pubTopic str
 	defer testMQTTDisconnectEx(t, pubc, nil, true)
 	defer pubc.Close()
 	testMQTTPublish(t, pubc, pubr, QOS, false, true, pubTopic, 1, payload)
+
+	// Wait for retained messages stream to be populated.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		acc, err := s.lookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		mset, err := acc.lookupStream(mqttRetainedMsgsStreamName)
+		if err != nil {
+			return err
+		}
+		if mset.state().Msgs != 1 {
+			return errors.New("retained message not populated yet")
+		}
+		return nil
+	})
 
 	subID := nuid.Next()
 	subc, subr := testMQTTConnect(t, &mqttConnInfo{clientID: subID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -7157,7 +7173,7 @@ func testMQTTNewSubRetainedRace(t *testing.T, o *Options, subTopic, pubTopic str
 	subc.Close()
 }
 
-func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte) {
+func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, s *Server, o *Options, subTopic, pubTopic string, QOS byte) {
 	expectedFlags := (QOS << 1) | mqttPubFlagRetain
 	payload := []byte("testmsg")
 
@@ -7176,7 +7192,7 @@ func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, o *Options, su
 	testMQTTPublish(t, pubc, pubr, 0, false, true, pubTopic, 1, nil)
 	time.Sleep(1 * time.Millisecond)
 
-	// Subscribe to `#` first, make sure we can get get the retained message
+	// Subscribe to `#` first, make sure we can get the retained message
 	// there. It's a QOS0 sub, so expect a QOS0 message.
 	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: `#`, qos: 0}}, []byte{0})
 	testMQTTExpectNothing(t, subr)
@@ -7185,6 +7201,22 @@ func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, o *Options, su
 	testMQTTPublish(t, pubc, pubr, 2, false, true, pubTopic, 1, payload)
 	testMQTTCheckPubMsg(t, subc, subr, pubTopic, 0, payload)
 	testMQTTExpectNothing(t, subr)
+
+	// Wait for retained messages stream to be populated.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		acc, err := s.lookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		mset, err := acc.lookupStream(mqttRetainedMsgsStreamName)
+		if err != nil {
+			return err
+		}
+		if mset.state().Msgs != 1 {
+			return errors.New("retained message not populated yet")
+		}
+		return nil
+	})
 
 	// Now subscribe to the topic we want to test. We should get the retained
 	// message there.
