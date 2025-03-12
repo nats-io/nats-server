@@ -5562,8 +5562,8 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 	rn.RLock()
 	wal := rn.wal
 	rn.RUnlock()
-	require_True(t, wal.Type() == MemoryStorage)
-	require_True(t, st == MemoryStorage)
+	require_Equal(t, wal.Type(), MemoryStorage)
+	require_Equal(t, st, MemoryStorage)
 
 	// Now make sure we account properly for the consumers.
 	// Add in normal here first.
@@ -5572,7 +5572,7 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
-	require_True(t, si.State.Consumers == 3)
+	require_Equal(t, si.State.Consumers, 3)
 
 	err = js.DeleteConsumer("TEST", "d")
 	require_NoError(t, err)
@@ -5583,23 +5583,33 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 	mset, err = s.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
-	state := mset.Store().State()
-	require_True(t, state.Consumers == 2)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		state := mset.Store().State()
+		if state.Consumers != 2 {
+			return fmt.Errorf("expected 2 consumers, got %d", state.Consumers)
+		}
+		return nil
+	})
 
 	// Fast state version as well.
 	fstate := mset.stateWithDetail(false)
-	require_True(t, fstate.Consumers == 2)
+	require_Equal(t, fstate.Consumers, 2)
 
 	// Make sure delete accounting works too.
 	err = js.DeleteConsumer("TEST", "m")
 	require_NoError(t, err)
 
-	state = mset.Store().State()
-	require_True(t, state.Consumers == 1)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		state := mset.Store().State()
+		if state.Consumers != 1 {
+			return fmt.Errorf("expected 1 consumer, got %d", state.Consumers)
+		}
+		return nil
+	})
 
 	// Fast state version as well.
 	fstate = mset.stateWithDetail(false)
-	require_True(t, fstate.Consumers == 1)
+	require_Equal(t, fstate.Consumers, 1)
 }
 
 func TestJetStreamClusterStreamRepublish(t *testing.T) {
