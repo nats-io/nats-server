@@ -359,6 +359,8 @@ func TestNRGSimpleElection(t *testing.T) {
 
 	// Everyone in the group should have voted for our candidate
 	// and arrived at the term from the vote request.
+	rg.lockAll()
+	defer rg.unlockAll()
 	for _, n := range rg {
 		rn := n.node().(*raft)
 		require_Equal(t, rn.term, vr.term)
