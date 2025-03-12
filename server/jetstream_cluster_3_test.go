@@ -243,8 +243,26 @@ func TestJetStreamClusterMetaRecoveryLogic(t *testing.T) {
 	})
 	require_NoError(t, err)
 
+	// Stream delete is answered by stream leader, stream add is answered by meta leader.
+	// If meta leader is slower to delete, a quick add-after-delete would error with stream already exists.
+	waitForDeleteStream := func() {
+		t.Helper()
+		checkFor(t, time.Second, 100*time.Millisecond, func() error {
+			ml := c.leader()
+			if ml == nil {
+				return errors.New("no meta leader")
+			}
+			sjs := ml.getJetStream()
+			if sjs.streamAssignment("$G", "TEST") != nil {
+				return errors.New("stream exists still")
+			}
+			return nil
+		})
+	}
+
 	err = js.DeleteStream("TEST")
 	require_NoError(t, err)
+	waitForDeleteStream()
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
@@ -255,6 +273,7 @@ func TestJetStreamClusterMetaRecoveryLogic(t *testing.T) {
 
 	err = js.DeleteStream("TEST")
 	require_NoError(t, err)
+	waitForDeleteStream()
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
