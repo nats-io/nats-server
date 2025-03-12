@@ -19,12 +19,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"net/url"
+	"os"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -339,4 +343,185 @@ func generateInfoJSON(info *Info) []byte {
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	return bytes.Join(pcs, []byte(" "))
+}
+
+// hasLock tests if a lock is held on the supplied RWMutex, so that functions
+// which require a lock to be held by their caller can check if that lock is
+// indeed held or not.
+//
+// hasLock is non-blocking and so if a lock is already held it will immediately
+// return true or false depending on if the lock is held or not
+//
+// hasLock does not log anything even when MUTEX_CHECK_DEBUG_FILE is set as it
+// is intended to assist with logic in the rest of the code.  To capture
+// debugging for where a lock is expected, please use preEmptLock
+func hasLock(lock *sync.RWMutex) bool {
+	// May want to switch this to being part of the main configuration instead
+	// of an ENV VAR if this is something that sticks around
+	logfile, ok := os.LookupEnv("MUTEX_CHECK_DEBUG_FILE")
+	if ok {
+		return hasLockthing(lock, false, &logfile)
+	}
+	return hasLockthing(lock, false, nil)
+}
+
+// preEmptLock is the same as hasLock, except that if it receives a lock it does
+// not unlock it, allowing the calling function to effectively obtain a mutex
+// lock if it was incorrectly called without one being held.  The calling
+// function will need to unlock the mutex when complete
+//
+// preEmptLock is non-blocking and so if a lock is already held it will immediately
+// return true or false depending on if the lock is held or not
+//
+// Setting the environment variable MUTEX_CHECK_DEBUG_FILE causes hasLock to
+// append a line to the filename set in the variable which contains a JSON'ified
+// stacktrace of what called it, so that it is simple to debug where errant
+// locks may lie
+func preEmptLock(lock *sync.RWMutex) bool {
+	// May want to switch this to being part of the main configuration instead
+	// of an ENV VAR if this is something that sticks around
+	logfile, ok := os.LookupEnv("MUTEX_CHECK_DEBUG_FILE")
+	if ok {
+		return hasLockthing(lock, true, &logfile)
+	}
+	return hasLockthing(lock, true, nil)
+}
+
+// hasLockthing is the function which unlies hasLock and preEmptLock, which
+// should be called in preference to calling this directly.
+func hasLockthing(lock *sync.RWMutex, keepLock bool, logfile *string) bool {
+	// TryLock is non-blocking and so this can be used to test if a lock is held
+	// by something already. If we can get a lock, then none was already held,
+	// if we can't then something already has one
+	if !lock.TryLock() {
+		// We didn't get a lock, therefore something else has it.  Therefore we
+		// don't need to release it and can immediately return true
+		return true
+	}
+
+	// We obtained a lock, which means nothing else had a lock.  Therefore we
+	// can (and should) safely unlock it again (as we are now the one with the
+	// lock).  We can do this immediately as we were only locking to test, not
+	// to actually use it
+	if !keepLock {
+		lock.Unlock()
+	}
+
+	// Probably only want to use this for debugging, as using `runtime` for
+	// normal logging is probably not a great idea.  However this allows us to
+	// trace back calls to `hasLock` to determine why a function expecting a
+	// lock to be held has been called without one being held
+	if logfile != nil {
+		var (
+			output trace
+		)
+		pc := make([]uintptr, 32)
+		callers := runtime.Callers(1, pc)
+		// Can't use range here as we risk a nil pointer deref if the slice isn't full
+		for i := 0; i < callers; i++ {
+			// Work our way back through the stack trace
+			runtimeFunc := runtime.FuncForPC(pc[i])
+			file, line := runtimeFunc.FileLine(pc[i])
+
+			// Will use this to create JSON output to make it easier to read/parse
+			output.Trace = append(output.Trace, traceEntry{
+				Depth:    i,
+				File:     file,
+				Line:     line,
+				Function: runtimeFunc.Name(),
+			})
+		}
+
+		outStr, err := json.Marshal(output)
+		if err != nil {
+			outStr = []byte(fmt.Sprintf("could not marshal output, err=[%s], output=[%+v]", err, output))
+		}
+		outStr = append(outStr, '\n')
+
+		logHandle, err := os.OpenFile(*logfile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+		if err != nil {
+			log.Printf("hasLock could not write to mutex log, err=[%s]", err)
+		}
+		defer logHandle.Close()
+		_, err = logHandle.WriteString(string(outStr))
+		if err != nil {
+			log.Printf("hasLock could not write to mutex log, err=[%s]", err)
+		}
+	}
+
+	// We can state that nothing had a lock, because we got one, and so can return false
+	return false
+}
+
+// logUnLock simply unlocks a held lock, but with additional logging to pair
+// with preEmptLock and hasLock.  e.g. you can check that the log contains both
+// locks and unlocks to ensure that all paths are covered
+func logUnLock(lock *sync.RWMutex) {
+	doubleUnlock := false
+
+	// Unlock the lock *if* it was held
+	if lock.TryLock() {
+		// Hmmmm, got a lock when we were trying to unlock
+		doubleUnlock = true
+	}
+
+	// Either the lock was held already and we want to unlock it, or it was not
+	// and TryLock obtained it, so either way we want to unlock :)
+	lock.Unlock()
+
+	logfile, ok := os.LookupEnv("MUTEX_CHECK_DEBUG_FILE")
+	if ok {
+		var (
+			output trace
+		)
+		if doubleUnlock {
+			output.Comments = "attempted to double unlock"
+		}
+		pc := make([]uintptr, 32)
+		callers := runtime.Callers(1, pc)
+		// Can't use range here as we risk a nil pointer deref if the slice isn't full
+		for i := 0; i < callers; i++ {
+			// Work our way back through the stack trace
+			runtimeFunc := runtime.FuncForPC(pc[i])
+			file, line := runtimeFunc.FileLine(pc[i])
+
+			// Will use this to create JSON output to make it easier to read/parse
+			output.Trace = append(output.Trace, traceEntry{
+				Depth:    i,
+				File:     file,
+				Line:     line,
+				Function: runtimeFunc.Name(),
+			})
+		}
+
+		outStr, err := json.Marshal(output)
+		if err != nil {
+			outStr = []byte(fmt.Sprintf("could not marshal output, err=[%s], output=[%+v]", err, output))
+		}
+		outStr = append(outStr, '\n')
+
+		logHandle, err := os.OpenFile(logfile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+		if err != nil {
+			log.Printf("logUnLock could not write to mutex log, err=[%s]", err)
+		}
+		defer logHandle.Close()
+		_, err = logHandle.WriteString(string(outStr))
+		if err != nil {
+			log.Printf("logUnLock could not write to mutex log, err=[%s]", err)
+		}
+	}
+
+}
+
+// trace and traceEntry are types used to construct the json'ified stack trace
+type trace struct {
+	Trace    []traceEntry `json:"trace"`
+	Comments string       `json:"comments,omitempty"`
+}
+
+type traceEntry struct {
+	Depth    int    `json:"depth"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Function string `json:"function"`
 }
