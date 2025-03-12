@@ -268,10 +268,30 @@ func TestJetStreamClusterMetaRecoveryLogic(t *testing.T) {
 
 	c.stopAll()
 	c.restartAll()
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		s := c.leader()
+		hs := s.healthz(&HealthzOptions{
+			JSMetaOnly: true,
+		})
+		if hs.Error != _EMPTY_ {
+			return errors.New(hs.Error)
+		}
+		return nil
+	})
 	c.waitOnLeader()
 	c.waitOnStreamLeader("$G", "TEST")
 
 	s = c.randomNonLeader()
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		hs := s.healthz(&HealthzOptions{
+			JSMetaOnly: true,
+		})
+		if hs.Error != _EMPTY_ {
+			return errors.New(hs.Error)
+		}
+		return nil
+	})
+
 	nc, js = jsClientConnect(t, s)
 	defer nc.Close()
 

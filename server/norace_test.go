@@ -6564,8 +6564,7 @@ func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
 			restarted := c.restartServer(server)
 			checkFor(t, time.Second, 200*time.Millisecond, func() error {
 				hs := restarted.healthz(&HealthzOptions{
-					JSEnabled:    true,
-					JSServerOnly: true,
+					JSMetaOnly: true,
 				})
 				if hs.Error != _EMPTY_ {
 					return errors.New(hs.Error)
@@ -6728,8 +6727,7 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 		restarted := c.restartServer(server)
 		checkFor(t, time.Second, 200*time.Millisecond, func() error {
 			hs := restarted.healthz(&HealthzOptions{
-				JSEnabled:    true,
-				JSServerOnly: true,
+				JSMetaOnly: true,
 			})
 			if hs.Error != _EMPTY_ {
 				return errors.New(hs.Error)
