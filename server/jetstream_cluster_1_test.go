@@ -7615,6 +7615,11 @@ func TestJetStreamClusterRespectConsumerStartSeq(t *testing.T) {
 	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 10})
 	require_NoError(t, err)
 
+	// Ensure all servers are up-to-date.
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
 	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
 		DeliverPolicy: nats.DeliverByStartSequencePolicy,
 		OptStartSeq:   20,
