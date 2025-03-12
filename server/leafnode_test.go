@@ -8515,12 +8515,15 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	}
 	nc.Flush()
 
+	// Drain can lose some messages since it only checks pending messages known to the client,
+	// and is not aware of other messages that are inflight on other servers.
+	numMin := num * 99 / 100
 	checkFor(t, time.Second, 200*time.Millisecond, func() error {
 		total := int(r1.Load() + r2.Load())
-		if total == num {
+		if total >= numMin {
 			return nil
 		}
-		return fmt.Errorf("Not all received: %d vs %d", total, num)
+		return fmt.Errorf("Not all received: %d vs %d (minimum %d)", total, num, numMin)
 	})
 	require_True(t, r2.Load() > r1.Load())
 
