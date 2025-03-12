@@ -191,6 +191,7 @@ type Server struct {
 	tmpAccounts         sync.Map // Temporarily stores accounts that are being built
 	activeAccounts      int32
 	accResolver         AccountResolver
+	accResolverType     string
 	clients             map[uint64]*client
 	routes              map[string][]*client
 	routesPoolSize      int                           // Configured pool size
@@ -1398,6 +1399,7 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 func (s *Server) configureResolver() error {
 	opts := s.getOpts()
 	s.accResolver = opts.AccountResolver
+	s.accResolverType = opts.AccountResolverType
 	if opts.AccountResolver != nil {
 		// For URL resolver, set the TLSConfig if specified.
 		if opts.AccountResolverTLSConfig != nil {
@@ -1505,6 +1507,10 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 	// If we are not running in trusted mode and there is no issuer, that is ok.
 	if s.trustedKeys == nil && issuer == _EMPTY_ {
 		return true
+	}
+	if s.accResolverType == "CUSTOM_LOOKUP_FULL" || s.accResolverType == "CUSTOM_LOOKUP_CACHE" || s.accResolverType == "CUSTOM_LOOKUP" {
+		// the trusted keys is the authorization.auth_callout.issuer
+		return issuer == s.opts.AuthCallout.Issuer
 	}
 	for _, tk := range s.trustedKeys {
 		if tk == issuer {
