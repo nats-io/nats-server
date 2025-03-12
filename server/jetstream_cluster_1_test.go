@@ -3862,12 +3862,17 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	sub, err := ncSys.SubscribeSync(fmt.Sprintf("$SYS.SERVER.%s.STATSZ", srv.ID()))
 	require_NoError(t, err)
 
+	// Ensure the subscription is known by the server we're connected to,
+	// but also by the other servers in the cluster.
+	require_NoError(t, ncSys.Flush())
+	time.Sleep(100 * time.Millisecond)
+
 	require_NoError(t, srv.Reload())
 	v, err = srv.Varz(nil)
 	require_NoError(t, err)
 	require_True(t, !v.Tags.Contains(jsExcludePlacement))
 
-	// it is possible that sub already received a stasz message prior to reload, retry once
+	// it is possible that sub already received a statsz message prior to reload, retry once
 	cmp := false
 	for i := 0; i < 2 && !cmp; i++ {
 		m, err := sub.NextMsg(time.Second)
