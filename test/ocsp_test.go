@@ -1437,6 +1437,10 @@ func TestOCSPLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	cB.Flush()
+
+	// Ensure the subscriptions are known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
+
 	_, err = cC.Request("foo", nil, 2*time.Second)
 	if err != nil {
 		t.Errorf("Expected success, got: %+v", err)
@@ -1710,6 +1714,10 @@ func TestOCSPLeafNoVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	cB.Flush()
+
+	// Ensure the subscriptions are known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
+
 	_, err = cC.Request("foo", nil, 2*time.Second)
 	if err != nil {
 		t.Errorf("Expected success, got: %+v", err)
