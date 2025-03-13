@@ -21,7 +21,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"log"
 	"math/rand"
@@ -193,6 +192,7 @@ type Server struct {
 	accResolver         AccountResolver
 	clients             map[uint64]*client
 	routes              map[string][]*client
+	remoteRoutePoolSize map[string]int                // Map for remote's configure route pool size
 	routesPoolSize      int                           // Configured pool size
 	routesReject        bool                          // During reload, we may want to reject adding routes until some conditions are met
 	routesNoPool        int                           // Number of routes that don't use pooling (connecting to older server for instance)
@@ -1968,25 +1968,11 @@ func (s *Server) setRouteInfo(acc *Account) {
 		// use modulo to assign to an index of the pool slice. For 1
 		// and below, all accounts will be bound to the single connection
 		// at index 0.
-		acc.routePoolIdx = s.computeRoutePoolIdx(acc)
+		acc.routePoolIdx = computeRoutePoolIdx(s.routesPoolSize, acc.Name)
 		if s.routesPoolSize > 1 {
 			s.accRouteByHash.Store(acc.Name, acc.routePoolIdx)
 		}
 	}
-}
-
-// Returns a route pool index for this account based on the given pool size.
-// Account lock is held on entry (account's name is accessed but immutable
-// so could be called without account's lock).
-// Server lock held on entry.
-func (s *Server) computeRoutePoolIdx(acc *Account) int {
-	if s.routesPoolSize <= 1 {
-		return 0
-	}
-	h := fnv.New32a()
-	h.Write([]byte(acc.Name))
-	sum32 := h.Sum32()
-	return int((sum32 % uint32(s.routesPoolSize)))
 }
 
 // lookupAccount is a function to return the account structure

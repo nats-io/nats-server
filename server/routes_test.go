@@ -1899,47 +1899,6 @@ func TestRoutePoolAndPerAccountErrors(t *testing.T) {
 		}
 		time.Sleep(DEFAULT_ROUTE_RECONNECT + 100*time.Millisecond)
 	}
-
-	s2.Shutdown()
-	s1.Shutdown()
-
-	conf1 = createConfFile(t, []byte(`
-		port: -1
-		cluster {
-			port: -1
-			name: "local"
-			pool_size: 5
-		}
-	`))
-	s1, o1 = RunServerWithConfig(conf1)
-	defer s1.Shutdown()
-
-	l = &captureErrorLogger{errCh: make(chan string, 10)}
-	s1.SetLogger(l, false, false)
-
-	conf2 = createConfFile(t, []byte(fmt.Sprintf(`
-		port: -1
-		cluster {
-			port: -1
-			name: "local"
-			routes: ["nats://127.0.0.1:%d"]
-			pool_size: 3
-		}
-	`, o1.Cluster.Port)))
-	s2, _ = RunServerWithConfig(conf2)
-	defer s2.Shutdown()
-
-	for i := 0; i < 2; i++ {
-		select {
-		case e := <-l.errCh:
-			if !strings.Contains(e, "Mismatch route pool size") {
-				t.Fatalf("Expected error about pool size mismatch, got %v", e)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("Did not get expected error regarding mismatch pool size")
-		}
-		time.Sleep(DEFAULT_ROUTE_RECONNECT + 100*time.Millisecond)
-	}
 }
 
 func TestRoutePool(t *testing.T) {
@@ -2227,6 +2186,204 @@ func TestRoutePoolRouteStoredSameIndexBothSides(t *testing.T) {
 			r.mu.Unlock()
 		})
 		s1.mu.RUnlock()
+	}
+}
+
+func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+			C { users: [{user: "C", password: "pwd"}] }
+			D { users: [{user: "D", password: "pwd"}] }
+		}
+		cluster {
+			port: -1
+			name: "local"
+			%s
+			pool_size: %d
+			accounts: [%s]
+		}
+		no_sys_acc: true
+	`
+	conf1 := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", _EMPTY_, 3, `"A"`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl, "S2",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), 2, `"A"`))
+	s2, o2 := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	conf3 := createConfFile(t, fmt.Appendf(nil, tmpl, "S3",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), 4, `"A"`))
+	s3, o3 := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	// Since each one has a different configured pool size, we are not going
+	// to use checkClusterFormed, but use a low level checFor here.
+	servers := []*Server{s1, s2, s3}
+
+	for _, s := range servers {
+		s.mu.RLock()
+		s.accounts.Range(func(_, v any) bool {
+			acc := v.(*Account)
+			acc.mu.RLock()
+			t.Logf("S=%s - acc=%s - poolIdx=%v", s.info.Name, acc.Name, acc.routePoolIdx)
+			acc.mu.RUnlock()
+			return true
+		})
+		s.mu.RUnlock()
+	}
+
+	// Both S2 and S3 solicit connections to S1, and with the order the servers
+	// are started, S2 will implicitly connect to S3. With that in mind, the
+	// expected number of routes for each server will be as such:
+	// S1: when S2 solicits 2+1 routes, it will detect that S1 is configured
+	// for 3+1, so S1<->S2 will have the max of the two, which is 4 routes,
+	// then when S3 solicits its 4+1 routes, the total will be 4+5=9 routes.
+	// S2: it solicits 2+1 but since S1 is configured for 3+1, it will have
+	// 3+1 routes to S1, and when being told to connect to S3, it will start
+	// with 2+1 but since S3 is configured for 4+1, it will have that many
+	// connections, so total is 4+5=9 too.
+	// S3: it solicits 4+1 routes to S1, so S1 although configured for 3+1
+	// will accept the 4+1, and when S2 implicitly connects to S3, it will
+	// force S2 to create 4+1 connections too. So here the total is 5+5=10.
+	expected := []int{9, 9, 10}
+	checkCluster := func() {
+		t.Helper()
+		for i, s := range servers {
+			if !s.isRunning() {
+				continue
+			}
+			checkFor(t, 10*time.Second, 25*time.Millisecond, func() error {
+				if numRoutes := s.NumRoutes(); numRoutes != expected[i] {
+					return fmt.Errorf("Expected %d routes for server %q, got %d", expected[i], s, numRoutes)
+				}
+				return nil
+			})
+		}
+	}
+	checkCluster()
+
+	// We will create a subscription per account per server.
+	accs := []string{"A", "B", "C", "D"}
+	var subs [][]*nats.Subscription
+	for _, acc := range accs {
+		var asubs []*nats.Subscription
+		for _, s := range servers {
+			nc := natsConnect(t, s.ClientURL(), nats.UserInfo(acc, "pwd"))
+			defer nc.Close()
+			sub := natsSubSync(t, nc, "foo")
+			asubs = append(asubs, sub)
+		}
+		subs = append(subs, asubs)
+	}
+
+	// Now we will check that a message produced on each account from
+	// each server reaches all subs.
+	checkRecv := func(payload string) {
+		t.Helper()
+		// We first to check the interest on all servers for each account
+		for _, s := range servers {
+			for _, acc := range accs {
+				checkSubInterest(t, s, acc, "foo", time.Second)
+			}
+		}
+
+		// Now from each server, and each account, send a message and check
+		// that all subs for this account receive the message.
+		for _, s := range servers {
+			for i, acc := range accs {
+				nc := natsConnect(t, s.ClientURL(), nats.UserInfo(acc, "pwd"))
+				defer nc.Close()
+
+				natsPub(t, nc, "foo", []byte(payload))
+				for j, sub := range subs[i] {
+					if _, err := sub.NextMsg(time.Second); err != nil {
+						t.Fatalf("Producer on %q - account=%q - sub on server %q - err=%v",
+							s, acc, servers[j], err)
+					}
+					// Wait a tiny bit and check that there is not a duplicate
+					time.Sleep(10 * time.Millisecond)
+					if msg, err := sub.NextMsg(10 * time.Millisecond); err == nil {
+						t.Fatalf("Producer on %q - account=%q - sub on server %q received a duplicate msg=%s",
+							s, acc, servers[j], msg.Data)
+					}
+				}
+			}
+		}
+	}
+	checkRecv("hello1")
+
+	// Now that the 3 servers are up and we know their route port, we will
+	// update the config of each server so that they have routes that point
+	// to each other (so each server will solicit) and for routes to be
+	// recreated, then test again.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "S1",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o2.Cluster.Port, o3.Cluster.Port), 3, `"A"`))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "S2",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o3.Cluster.Port), 2, `"A"`))
+	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 4, `"A"`))
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Collect all route TCP connections so we close them all as fast as possible
+	var rcs []net.Conn
+	for _, s := range servers {
+		s.mu.RLock()
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			rcs = append(rcs, r.nc)
+			r.mu.Unlock()
+		})
+		s.mu.RUnlock()
+	}
+	// Close all connections
+	for _, c := range rcs {
+		c.Close()
+	}
+	// Wait a bit to make sure the close was registered and test the cluster
+	// and pub/sub again.
+	time.Sleep(50 * time.Millisecond)
+
+	checkCluster()
+	checkRecv("hello2")
+
+	// Now we will make account "B" have a dedicated route, and remove the one for "A"
+	// Now upgrade one of the account to a dedicated route.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "S1",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o2.Cluster.Port, o3.Cluster.Port), 3, `"B"`))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "S2",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o3.Cluster.Port), 2, `"B"`))
+	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 4, `"B"`))
+
+	time.Sleep(50 * time.Millisecond)
+
+	checkCluster()
+	checkRecv("hello3")
+
+	// Get S3 server ID and shut it down.
+	s3ID := s3.ID()
+	s3.Shutdown()
+
+	// Wait for routes to be gone from S1 and S2.
+	expected[0], expected[1] = 4, 4
+	servers = servers[:2]
+	checkCluster()
+
+	// Check that both S1 and S2 have cleaned-up the remoteRoutePoolSize
+	for _, s := range servers {
+		s.mu.RLock()
+		rps, ok := s.remoteRoutePoolSize[s3ID]
+		s.mu.RUnlock()
+		if ok {
+			t.Fatalf("On server %q, found remote pool size of %v for S3", s, rps)
+		}
 	}
 }
 
