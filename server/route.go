@@ -572,6 +572,12 @@ func (c *client) processRouteInfo(info *Info) {
 					return
 				}
 				s.mu.Lock()
+				// If running without system account and adding a dedicated
+				// route for an account for the first time, it could be that
+				// the map is nil. If so, create it.
+				if s.accRoutes == nil {
+					s.accRoutes = make(map[string]map[string]*client)
+				}
 				if _, ok := s.accRoutes[an]; !ok {
 					s.accRoutes[an] = make(map[string]*client)
 				}
