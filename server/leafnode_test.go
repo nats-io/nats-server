@@ -1466,6 +1466,13 @@ func TestLeafNodePubAllowedPruning(t *testing.T) {
 	}
 
 	wg.Wait()
+	// The cache prune function does try for a bit to make sure the cache
+	// is below the maxPermCacheSize value, but depending on the machine
+	// this runs on, it may be that it is still a bit over. If so, run
+	// pubAllowed one more time and we must get below.
+	if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
+		c.pubAllowed(nats.NewInbox())
+	}
 	if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
 		t.Fatalf("Expected size to be less than %v, got %v", maxPermCacheSize, n)
 	}
