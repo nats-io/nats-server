@@ -324,9 +324,9 @@ func TestJetStreamAutoTuneFSConfig(t *testing.T) {
 
 	acc := s.GlobalAccount()
 
-	testBlkSize := func(subject string, maxMsgs, maxBytes int64, expectedBlkSize uint64) {
+	testBlkSize := func(name string, maxMsgs, maxBytes int64, expectedBlkSize uint64) {
 		t.Helper()
-		mset, err := acc.addStream(streamConfig(subject, maxMsgs, maxBytes))
+		mset, err := acc.addStream(streamConfig(name, maxMsgs, maxBytes))
 		if err != nil {
 			t.Fatalf("Unexpected error adding stream: %v", err)
 		}
@@ -339,6 +339,10 @@ func TestJetStreamAutoTuneFSConfig(t *testing.T) {
 			t.Fatalf("Expected auto tuned block size to be %d, got %d", expectedBlkSize, fsCfg.BlockSize)
 		}
 	}
+
+	// Create a dummy stream, to ensure removing stream/account directories don't race.
+	_, err := acc.addStream(streamConfig("dummy", 1, 0))
+	require_NoError(t, err)
 
 	testBlkSize("foo", 1, 0, FileStoreMinBlkSize)
 	testBlkSize("foo", 1, 512, FileStoreMinBlkSize)
