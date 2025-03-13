@@ -5427,6 +5427,41 @@ func TestConfigReloadRoutePoolAndPerAccount(t *testing.T) {
 	}
 }
 
+func TestConfigReloadRoutePoolAndPerAccountNoPanicIfFirstAdded(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: "user1", password: "pwd"}] }
+			B { users: [{user: "user2", password: "pwd"}] }
+		}
+		cluster {
+				name: "local"
+				listen: 127.0.0.1:-1
+				pool_size: 2
+				%s
+				%s
+		}
+		no_sys_acc: true
+	`
+	conf1 := createConfFile(t, fmt.Appendf(nil, tmpl, "A", _EMPTY_, _EMPTY_))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	route := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl, "B", _EMPTY_, route))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", "accounts:[\"A\"]", _EMPTY_))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "accounts:[\"A\"]", route))
+
+	time.Sleep(50 * time.Millisecond)
+	checkClusterFormed(t, s1, s2)
+}
+
 func TestConfigReloadRoutePoolCannotBeDisabledIfAccountsPresent(t *testing.T) {
 	tmpl := `
 		port: -1
