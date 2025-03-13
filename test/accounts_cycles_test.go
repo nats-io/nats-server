@@ -230,9 +230,19 @@ func TestServiceImportReplyMatchCycle(t *testing.T) {
 	defer nc1.Close()
 
 	msg := []byte("HELLO")
-	nc1.Subscribe("foo", func(m *nats.Msg) {
+	_, err := nc1.Subscribe("foo", func(m *nats.Msg) {
 		m.Respond(msg)
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure the subscription is known by the server we're connected to.
+	err = nc1.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
 
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
@@ -273,9 +283,19 @@ func TestServiceImportReplyMatchCycleMultiHops(t *testing.T) {
 	defer nc1.Close()
 
 	msg := []byte("HELLO")
-	nc1.Subscribe("foo", func(m *nats.Msg) {
+	_, err := nc1.Subscribe("foo", func(m *nats.Msg) {
 		m.Respond(msg)
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure the subscription is known by the server we're connected to.
+	err = nc1.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
 
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
