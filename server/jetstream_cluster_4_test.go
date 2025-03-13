@@ -4439,6 +4439,22 @@ func TestJetStreamClusterStreamAckMsgR3SignalsRemovedMsg(t *testing.T) {
 		return mset, o, nil
 	}
 
+	// Wait for all servers to know about the stream and consumer.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			_, _, err = getStreamAndConsumer(s)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	// Also wait for the published message to be replicated.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
 	sl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
 	sf := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 
