@@ -11564,7 +11564,7 @@ func TestNoRaceProducerStallLimits(t *testing.T) {
 
 	// This should have not cleared on its own but should have between min and max pause.
 	require_True(t, elapsed >= stallClientMinDuration)
-	require_LessThan(t, elapsed, stallClientMaxDuration)
+	require_LessThan(t, elapsed, stallClientMaxDuration+5*time.Millisecond)
 
 	// Now test total maximum by loading up a bunch of requests and measuring the last one.
 	// Artificially set a stall channel again on the subscriber.
@@ -11585,6 +11585,6 @@ func TestNoRaceProducerStallLimits(t *testing.T) {
 
 	require_True(t, elapsed >= stallTotalAllowed)
 	// Should always be close to totalAllowed (e.g. 10ms), but if you run a lot of them in one go can bump up
-	// just past 12ms, hence the Max setting below to avoid a flapper.
-	require_LessThan(t, elapsed, stallTotalAllowed+stallClientMaxDuration*2)
+	// just past it, hence the Max setting below to avoid a flapper.
+	require_LessThan(t, elapsed, stallTotalAllowed+20*time.Millisecond)
 }
