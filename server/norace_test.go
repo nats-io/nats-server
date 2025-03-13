@@ -2412,7 +2412,7 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 	}
 }
 
-func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
+func TestNoRaceJetStreamSlowFilteredInitialPendingAndFirstMsg(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -2518,9 +2518,12 @@ func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
 
 	// Now do some deletes and make sure these are handled correctly.
 	// Delete 3 foo messages.
-	mset.removeMsg(1)
-	mset.removeMsg(4)
-	mset.removeMsg(7)
+	_, err = mset.removeMsg(1)
+	require_NoError(t, err)
+	_, err = mset.removeMsg(4)
+	require_NoError(t, err)
+	_, err = mset.removeMsg(7)
+	require_NoError(t, err)
 	testConsumerCreate("foo", 1, 100_000-3)
 
 	// Make sure wider scoped subjects do the right thing from a pending perspective.
@@ -2533,10 +2536,15 @@ func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
 		t.Fatalf("Expected NumPending of %d, got %d", expected, ci.NumPending)
 	}
 	// Send another and make sure its captured by our wide scope consumer.
-	js.Publish("foo", []byte("HELLO AGAIN"))
-	if ci = o.info(); ci.NumPending != expected+1 {
-		t.Fatalf("Expected the consumer to recognize the wide scoped consumer, wanted pending of %d, got %d", expected+1, ci.NumPending)
-	}
+	_, err = js.Publish("foo", []byte("HELLO AGAIN"))
+	require_NoError(t, err)
+	// Due to consumer signaling it might not immediately be reflected.
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		if ci = o.info(); ci.NumPending != expected+1 {
+			return fmt.Errorf("Expected the consumer to recognize the wide scoped consumer, wanted pending of %d, got %d", expected+1, ci.NumPending)
+		}
+		return nil
+	})
 
 	// Stop current server and test restart..
 	sd := s.JetStreamConfig().StoreDir
