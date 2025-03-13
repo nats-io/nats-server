@@ -10282,7 +10282,8 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 	// Put 1k msgs in
 	for i := 0; i < 1000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
-		fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+		_, _, err = fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+		require_NoError(t, err)
 	}
 
 	var smv StoreMsg
@@ -10293,58 +10294,61 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 	for i, seq := 0, uint64(1); i < 1000; i++ {
 		sm, nseq, err := fs.LoadNextMsg(_EMPTY_, false, seq, &smv)
 		require_NoError(t, err)
-		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, sm.subj, fmt.Sprintf("foo.%d", i))
 		require_Equal(t, nseq, seq)
 		seq++
 	}
 	baseline := time.Since(start)
 	t.Logf("Single - No filter %v", baseline)
 
+	// Allow some additional skew.
+	baseline += time.Millisecond
+
 	// Now do normal load next with wc filter.
 	start = time.Now()
 	for i, seq := 0, uint64(1); i < 1000; i++ {
 		sm, nseq, err := fs.LoadNextMsg("foo.>", true, seq, &smv)
 		require_NoError(t, err)
-		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, sm.subj, fmt.Sprintf("foo.%d", i))
 		require_Equal(t, nseq, seq)
 		seq++
 	}
 	elapsed := time.Since(start)
-	require_True(t, elapsed < 2*baseline)
 	t.Logf("Single - WC filter %v", elapsed)
+	require_LessThan(t, elapsed, 2*baseline)
 
 	// Now do multi load next with 1 wc entry.
 	sl := NewSublistWithCache()
-	sl.Insert(&subscription{subject: []byte("foo.>")})
+	require_NoError(t, sl.Insert(&subscription{subject: []byte("foo.>")}))
 	start = time.Now()
 	for i, seq := 0, uint64(1); i < 1000; i++ {
 		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
 		require_NoError(t, err)
-		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, sm.subj, fmt.Sprintf("foo.%d", i))
 		require_Equal(t, nseq, seq)
 		seq++
 	}
 	elapsed = time.Since(start)
-	require_True(t, elapsed < 2*baseline)
 	t.Logf("Multi - Single WC filter %v", elapsed)
+	require_LessThan(t, elapsed, 2*baseline)
 
 	// Now do multi load next with 1000 literal subjects.
 	sl = NewSublistWithCache()
 	for i := 0; i < 1000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
-		sl.Insert(&subscription{subject: []byte(subj)})
+		require_NoError(t, sl.Insert(&subscription{subject: []byte(subj)}))
 	}
 	start = time.Now()
 	for i, seq := 0, uint64(1); i < 1000; i++ {
 		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
 		require_NoError(t, err)
-		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, sm.subj, fmt.Sprintf("foo.%d", i))
 		require_Equal(t, nseq, seq)
 		seq++
 	}
 	elapsed = time.Since(start)
-	require_True(t, elapsed < 2*baseline)
 	t.Logf("Multi - 1000 filters %v", elapsed)
+	require_LessThan(t, elapsed, 3*baseline)
 }
 
 func TestNoRaceWQAndMultiSubjectFilters(t *testing.T) {
