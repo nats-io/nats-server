@@ -20354,24 +20354,28 @@ func TestJetStreamConsumerMultipleSubjectsAck(t *testing.T) {
 	msg, err := consumer.Fetch(3)
 	require_NoError(t, err)
 
-	require_True(t, len(msg) == 3)
+	require_Len(t, len(msg), 3)
 
 	require_NoError(t, msg[0].AckSync())
 	require_NoError(t, msg[1].AckSync())
 
-	info, err := js.ConsumerInfo("deliver", "name")
-	require_NoError(t, err)
-
-	if info.AckFloor.Consumer != 2 {
-		t.Fatalf("bad consumer sequence. expected %v, got %v", 2, info.AckFloor.Consumer)
-	}
-	if info.AckFloor.Stream != 2 {
-		t.Fatalf("bad stream sequence. expected %v, got %v", 2, info.AckFloor.Stream)
-	}
-	if info.NumPending != 4 {
-		t.Fatalf("bad num pending. Expected %v, got %v", 2, info.NumPending)
-	}
-
+	// Due to consumer signaling it might not immediately be reflected.
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		info, err := js.ConsumerInfo("deliver", "name")
+		if err != nil {
+			return err
+		}
+		if info.AckFloor.Consumer != 2 {
+			return fmt.Errorf("bad consumer sequence. expected %v, got %v", 2, info.AckFloor.Consumer)
+		}
+		if info.AckFloor.Stream != 2 {
+			return fmt.Errorf("bad stream sequence. expected %v, got %v", 2, info.AckFloor.Stream)
+		}
+		if info.NumPending != 4 {
+			return fmt.Errorf("bad num pending. Expected %v, got %v", 4, info.NumPending)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamConsumerMultipleSubjectAndNewAPI(t *testing.T) {
