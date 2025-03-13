@@ -479,8 +479,13 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 		break
 	}
 	rg.waitOnLeader()
-	leader := rg.leader().node().(*raft)
+	rgLeader := rg.leader()
+	leader := rgLeader.node().(*raft)
 	follower := rg.nonLeader().node().(*raft)
+
+	// Send one message to ensure heartbeats are not sent during the remainder of this test.
+	rgLeader.(*stateAdder).proposeDelta(1)
+	rg.waitOnTotal(t, 1)
 
 	// Set up a new inbox for the vote responses to go to.
 	vsubj, vreply := leader.vsubj, nc.NewInbox()
