@@ -76,8 +76,12 @@ archives:
       - goos: windows
         formats: ["zip"]
     files:
-      - README.md
-      - LICENSE
+      - src: README.md
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
 
 checksum:
   name_template: "SHA256SUMS"
