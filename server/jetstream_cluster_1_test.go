@@ -1927,23 +1927,9 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 		}
 	}
 
-	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
 	// We may need to wait a bit for peers to catch up.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		for _, peer := range si.Cluster.Replicas {
-			if !peer.Current {
-				if si, err = js2.StreamInfo("TEST"); err != nil {
-					t.Fatalf("Could not retrieve stream info")
-				}
-				return fmt.Errorf("Expected replica to be current: %+v", peer)
-			}
-		}
-		return nil
+		return checkState(t, c, "$G", "TEST")
 	})
 
 	// Shutdown the leader.
@@ -2008,15 +1994,7 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 
 	// We may need to wait a bit for peers to catch up.
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		for _, peer := range si.Cluster.Replicas {
-			if !peer.Current {
-				if si, err = js2.StreamInfo("TEST"); err != nil {
-					t.Fatalf("Could not retrieve stream info")
-				}
-				return fmt.Errorf("Expected replica to be current: %+v", peer)
-			}
-		}
-		return nil
+		return checkState(t, c, "$G", "TEST")
 	})
 
 	nc, js = jsClientConnect(t, c.randomServer())
@@ -2043,12 +2021,7 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 		t.Fatalf("Expected %d replicas, got %d", 2, len(ci.Cluster.Replicas))
 	}
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		for _, peer := range si.Cluster.Replicas {
-			if !peer.Current {
-				return fmt.Errorf("Expected replica to be current: %+v", peer)
-			}
-		}
-		return nil
+		return checkState(t, c, "$G", "TEST")
 	})
 }
 
@@ -2715,12 +2688,12 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 	// Ack first 50.
 	for _, m := range fetchMsgs(t, jsub, 50, 5*time.Second) {
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 	}
 	// Now ack every third message for next 50.
 	for i, m := range fetchMsgs(t, jsub, 50, 5*time.Second) {
 		if i%3 == 0 {
-			m.AckSync()
+			require_NoError(t, m.AckSync())
 		}
 	}
 
@@ -2848,16 +2821,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 
 	// Make sure the replicas become current eventually. They will be doing catchup.
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		si, _ := js.StreamInfo("TEST")
-		if si == nil || si.Cluster == nil {
-			t.Fatalf("Did not get stream info")
-		}
-		for _, pi := range si.Cluster.Replicas {
-			if !pi.Current {
-				return fmt.Errorf("Peer not current: %+v", pi)
-			}
-		}
-		return nil
+		return checkState(t, c, "$G", "TEST")
 	})
 
 	// Wait on the system to elect a leader for the restored consumer.
@@ -2890,7 +2854,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		if meta.Sequence.Stream != uint64(wantSeq) {
 			t.Fatalf("Expected stream sequence of %d, but got %d", wantSeq, meta.Sequence.Stream)
 		}
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 		wantSeq++
 	}
 
