@@ -5029,7 +5029,7 @@ func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint1
 	// with the MQTT retain flag set to true
 	//
 	// $sparkplug/certificates messages are sent as NATS messages, so we
-	// need to add the retain flag when sending them to MQTT ciients.
+	// need to add the retain flag when sending them to MQTT clients.
 
 	retain := false
 	isBirth, isDeath, isCertificate := sparkbParseBirthDeathTopic(topic)
