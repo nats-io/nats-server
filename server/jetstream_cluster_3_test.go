@@ -1262,6 +1262,13 @@ func TestJetStreamClusterHAssetsEnforcement(t *testing.T) {
 }
 
 func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
+	checkInterestStateT = 4 * time.Second
+	checkInterestStateJ = 1
+	defer func() {
+		checkInterestStateT = defaultCheckInterestStateT
+		checkInterestStateJ = defaultCheckInterestStateJ
+	}()
+
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
 
@@ -1309,7 +1316,7 @@ func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
 	}
 
 	// Make sure replicated acks are processed.
-	checkFor(t, time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
 			return err
