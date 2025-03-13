@@ -1466,20 +1466,19 @@ func TestLeafNodePubAllowedPruning(t *testing.T) {
 	}
 
 	wg.Wait()
-	checkFor(t, 2*time.Second, time.Millisecond, func() (rerr error) {
-		defer func() {
-			if rerr != nil {
-				c.pubAllowed(nats.NewInbox())
-			}
-		}()
-		if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
-			return fmt.Errorf("Expected size to be less than %v, got %v", maxPermCacheSize, n)
-		}
-		if n := atomic.LoadInt32(&c.perms.prun); n != 0 {
-			t.Fatalf("c.perms.prun should be 0, was %v", n)
-		}
-		return nil
-	})
+	// The cache prune function does try for a bit to make sure the cache
+	// is below the maxPermCacheSize value, but depending on the machine
+	// this runs on, it may be that it is still a bit over. If so, run
+	// pubAllowed one more time and we must get below.
+	if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
+		c.pubAllowed(nats.NewInbox())
+	}
+	if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
+		t.Fatalf("Expected size to be less than %v, got %v", maxPermCacheSize, n)
+	}
+	if n := atomic.LoadInt32(&c.perms.prun); n != 0 {
+		t.Fatalf("c.perms.prun should be 0, was %v", n)
+	}
 }
 
 func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
