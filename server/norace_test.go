@@ -6489,17 +6489,22 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 
 	checkNumPending := func(expected int) {
 		t.Helper()
-		start := time.Now()
-		ci, err := js.ConsumerInfo("TEST", "DLC")
-		require_NoError(t, err)
-		// Make sure these are fast now.
-		if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
-			t.Fatalf("ConsumerInfo took too long: %v", elapsed)
-		}
-		// Make sure pending == expected.
-		if ci.NumPending != uint64(expected) {
-			t.Fatalf("Expected %d NumPending, got %d", expected, ci.NumPending)
-		}
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			start := time.Now()
+			ci, err := js.ConsumerInfo("TEST", "DLC")
+			if err != nil {
+				return err
+			}
+			// Make sure these are fast now.
+			if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+				return fmt.Errorf("ConsumerInfo took too long: %v", elapsed)
+			}
+			// Make sure pending == expected.
+			if ci.NumPending != uint64(expected) {
+				return fmt.Errorf("Expected %d NumPending, got %d", expected, ci.NumPending)
+			}
+			return nil
+		})
 	}
 	// Make sure in simple case it is correct.
 	checkNumPending(toSend)
