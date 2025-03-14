@@ -8583,7 +8583,7 @@ func TestFileStoreSubjectDeleteMarkers(t *testing.T) {
 	}
 
 	// The last message should be gone after MaxAge has passed.
-	time.Sleep(time.Second * 2)
+	time.Sleep(time.Second + time.Millisecond*500)
 	sm, err := fs.LoadMsg(seq, nil)
 	require_Error(t, err)
 	require_Equal(t, sm, nil)
