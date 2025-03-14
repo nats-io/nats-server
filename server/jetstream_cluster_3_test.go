@@ -253,7 +253,10 @@ func TestJetStreamClusterMetaRecoveryLogic(t *testing.T) {
 				return errors.New("no meta leader")
 			}
 			sjs := ml.getJetStream()
-			if sjs.streamAssignment("$G", "TEST") != nil {
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment("$G", "TEST")
+			sjs.mu.RUnlock()
+			if sa != nil {
 				return errors.New("stream exists still")
 			}
 			return nil
