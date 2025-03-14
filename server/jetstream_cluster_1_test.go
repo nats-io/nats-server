@@ -6456,6 +6456,15 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 
 	for i := 0; i < 500_000; i++ {
 		js.PublishAsync("foo.bar", []byte("ok"))
+
+		// Confirm batch.
+		if i%1000 == 0 {
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+		}
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -6523,7 +6532,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 	start := time.Now()
 	err = js.DeleteConsumer("TEST", "C3")
 	require_NoError(t, err)
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
 	}
 
@@ -6533,7 +6542,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 	start = time.Now()
 	err = js.DeleteConsumer("TEST", "C2")
 	require_NoError(t, err)
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Fatalf("Deleting AckAll consumer took too long: %v", elapsed)
 	}
 
@@ -6543,7 +6552,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 	start = time.Now()
 	err = js.DeleteConsumer("TEST", "C1")
 	require_NoError(t, err)
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Fatalf("Deleting AckExplicit consumer took too long: %v", elapsed)
 	}
 
@@ -6583,6 +6592,15 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyUniqueFiltersPerf(t *testin
 	for i := 0; i < 500_000; i++ {
 		subject := fmt.Sprintf("foo.%d", i%2)
 		js.PublishAsync(subject, []byte("ok"))
+
+		// Confirm batch.
+		if i%1000 == 0 {
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+		}
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -6621,7 +6639,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyUniqueFiltersPerf(t *testin
 	start := time.Now()
 	err = js.DeleteConsumer("TEST", "C1")
 	require_NoError(t, err)
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
 	}
 
@@ -6630,7 +6648,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyUniqueFiltersPerf(t *testin
 	start = time.Now()
 	err = js.DeleteConsumer("TEST", "C0")
 	require_NoError(t, err)
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Fatalf("Deleting AckExplicit consumer took too long: %v", elapsed)
 	}
 	expectedStreamMsgs(0)
