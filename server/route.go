@@ -2121,6 +2121,11 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 	// the first connection is established.
 	var noReconnectForOldServer bool
 
+	// To allow rolling updates, we now allow servers with different pool sizes
+	// so we will use as the effective pool size here, the max between our
+	// configured size and the size we receive in the info protocol.
+	effectivePoolSize := max(s.routesPoolSize, info.RoutePoolSize)
+
 	// If the remote is an old server, info.RoutePoolSize will be 0, or if
 	// this server's Cluster.PoolSize is negative, we will behave as an old
 	// server and need to handle things differently.
@@ -2145,7 +2150,7 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		if info.RoutePoolIdx != 0 {
 			invProtoErr = fmt.Sprintf("Route pool index should not be set but is set to %v", info.RoutePoolIdx)
 		}
-	} else if info.RoutePoolIdx < 0 {
+	} else if info.RoutePoolIdx < 0 || info.RoutePoolIdx >= effectivePoolSize {
 		// For non solicited routes, if the remote sends a RoutePoolIdx, make
 		// sure it is a valid one (in range of the pool size).
 		invProtoErr = fmt.Sprintf("Invalid route pool index: %v - pool size is %v", info.RoutePoolIdx, info.RoutePoolSize)
@@ -2205,10 +2210,6 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		s.mu.Unlock()
 		return !exists
 	}
-	// To allow rolling updates, we now allow servers with different pool sizes
-	// so we will use as the effective pool size here, the max between our
-	// configured size and the size we receive in the info protocol.
-	effectivePoolSize := max(s.routesPoolSize, info.RoutePoolSize)
 	var remote *client
 	// That will be the position of the connection in the slice, we initialize
 	// to -1 to indicate that no space was found.
@@ -2228,6 +2229,19 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		// will use whatever index the remote has chosen.
 		idx = info.RoutePoolIdx
 	} else if pool {
+		// The remote could have done a config reload and increased the pool size.
+		// It will close the connections before soliciting again, however, if
+		// on this side, one of the route is not yet fully removed, but the
+		// first one is, it would accept the new connection (with a greater pool
+		// size) and we would not go through the phase of `!exists` above creating
+		// the slice with the right size. So we need to check here and add new empty
+		// entries to complete the effective pool size.
+		if n := effectivePoolSize - len(conns); n > 0 {
+			for range n {
+				conns = append(conns, nil)
+			}
+			s.routes[id] = conns
+		}
 		// The remote was found. If this is a non solicited route, we will place
 		// the connection in the pool at the index given by info.RoutePoolIdx.
 		// But if there is already one, close this incoming connection as a

@@ -2226,18 +2226,6 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 	// to use checkClusterFormed, but use a low level checFor here.
 	servers := []*Server{s1, s2, s3}
 
-	for _, s := range servers {
-		s.mu.RLock()
-		s.accounts.Range(func(_, v any) bool {
-			acc := v.(*Account)
-			acc.mu.RLock()
-			t.Logf("S=%s - acc=%s - poolIdx=%v", s.info.Name, acc.Name, acc.routePoolIdx)
-			acc.mu.RUnlock()
-			return true
-		})
-		s.mu.RUnlock()
-	}
-
 	// Both S2 and S3 solicit connections to S1, and with the order the servers
 	// are started, S2 will implicitly connect to S3. With that in mind, the
 	// expected number of routes for each server will be as such:
@@ -2271,6 +2259,7 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 	// We will create a subscription per account per server.
 	accs := []string{"A", "B", "C", "D"}
 	var subs [][]*nats.Subscription
+	var ncSubS3 *nats.Conn
 	for _, acc := range accs {
 		var asubs []*nats.Subscription
 		for _, s := range servers {
@@ -2278,6 +2267,9 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 			defer nc.Close()
 			sub := natsSubSync(t, nc, "foo")
 			asubs = append(asubs, sub)
+			if s == s3 {
+				ncSubS3 = nc
+			}
 		}
 		subs = append(subs, asubs)
 	}
@@ -2353,6 +2345,38 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 	checkCluster()
 	checkRecv("hello2")
 
+	// Now try to increase the pool size and make sure it still works.
+	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 5, `"A"`))
+
+	time.Sleep(50 * time.Millisecond)
+	// S1 and S2 will have each 1 more route.
+	// S3 itself will have 2 more routes.
+	expected = []int{10, 10, 12}
+	checkCluster()
+	checkRecv("hello3")
+
+	// Now try to decrease the pool size and make sure it still works.
+	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 1, `"A"`))
+
+	time.Sleep(50 * time.Millisecond)
+	// S1 will have its 3+1 routes to S3 and 3+1 routes to S2, so 8.
+	// S2 will have 3+1 routes from S1 and 2+1 routes to S3, so 7.
+	// S3 will have 3+1 routes from S1 and 2+1 routes from S2, so 7
+	expected = []int{8, 7, 7}
+	checkCluster()
+	checkRecv("hello4")
+
+	// Put back the way it was.
+	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 4, `"A"`))
+
+	time.Sleep(50 * time.Millisecond)
+	expected = []int{9, 9, 10}
+	checkCluster()
+	checkRecv("hello5")
+
 	// Now we will make account "B" have a dedicated route, and remove the one for "A"
 	// Now upgrade one of the account to a dedicated route.
 	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "S1",
@@ -2363,16 +2387,26 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 4, `"B"`))
 
 	time.Sleep(50 * time.Millisecond)
-
 	checkCluster()
-	checkRecv("hello3")
+	checkRecv("hello6")
+
+	// Remove routes to S3 from S1 and S2.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "S1",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\"]", o2.Cluster.Port), 3, `"B"`))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "S2",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), 2, `"B"`))
+
+	time.Sleep(50 * time.Millisecond)
+	checkCluster()
+	checkRecv("hello7")
 
 	// Get S3 server ID and shut it down.
+	ncSubS3.Close()
 	s3ID := s3.ID()
 	s3.Shutdown()
 
 	// Wait for routes to be gone from S1 and S2.
-	expected[0], expected[1] = 4, 4
+	expected = []int{4, 4}
 	servers = servers[:2]
 	checkCluster()
 
