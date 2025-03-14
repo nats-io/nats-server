@@ -318,41 +318,6 @@ func TestMergeOverrides(t *testing.T) {
 	checkOptionsEqual(t, golden, merged)
 }
 
-func TestRemoveSelfReference(t *testing.T) {
-	url1, _ := url.Parse("nats-route://user:password@10.4.5.6:4223")
-	url2, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
-	url3, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
-
-	routes := []*url.URL{url1, url2, url3}
-
-	newroutes, err := RemoveSelfReference(4223, routes)
-	if err != nil {
-		t.Fatalf("Error during RemoveSelfReference: %v", err)
-	}
-
-	if len(newroutes) != 1 {
-		t.Fatalf("Wrong number of routes: %d", len(newroutes))
-	}
-
-	if newroutes[0] != routes[0] {
-		t.Fatalf("Self reference IP address %s in Routes", routes[0])
-	}
-}
-
-func TestAllowRouteWithDifferentPort(t *testing.T) {
-	url1, _ := url.Parse("nats-route://user:password@127.0.0.1:4224")
-	routes := []*url.URL{url1}
-
-	newroutes, err := RemoveSelfReference(4223, routes)
-	if err != nil {
-		t.Fatalf("Error during RemoveSelfReference: %v", err)
-	}
-
-	if len(newroutes) != 1 {
-		t.Fatalf("Wrong number of routes: %d", len(newroutes))
-	}
-}
-
 func TestRouteFlagOverride(t *testing.T) {
 	routeFlag := "nats-route://ruser:top_secret@127.0.0.1:8246"
 	rurl, _ := url.Parse(routeFlag)
