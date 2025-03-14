@@ -321,6 +321,9 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 	natsSub(t, nc, "foo", func(_ *nats.Msg) {})
 	natsFlush(t, nc)
 
+	// Ensure the subscription is known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
+
 	for _, test := range []struct {
 		name       string
 		deliverMsg bool
@@ -385,6 +388,9 @@ func TestMsgTraceIngressErrors(t *testing.T) {
 	traceSub := natsSubSync(t, nc, "my.trace.subj")
 	natsSub(t, nc, "foo", func(_ *nats.Msg) {})
 	natsFlush(t, nc)
+
+	// Ensure the subscription is known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
 
 	for _, test := range []struct {
 		name       string
@@ -460,6 +466,9 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 
 	traceSub := natsSubSync(t, nc, "my.trace.subj")
 	natsFlush(t, nc)
+
+	// Ensure the subscription is known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
 
 	for _, test := range []struct {
 		name       string
@@ -607,6 +616,9 @@ func TestMsgTraceWithQueueSub(t *testing.T) {
 	sub2 := natsQueueSubSync(t, nc3, "foo", "bar")
 	sub3 := natsQueueSubSync(t, nc3, "*", "baz")
 	natsFlush(t, nc3)
+
+	// Ensure the subscription is known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
 
 	for _, test := range []struct {
 		name       string
@@ -1497,6 +1509,10 @@ func TestMsgTraceWithGateways(t *testing.T) {
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, "my.trace.subj")
 
+	// Ensure the subscription is known by the server we're connected to.
+	require_NoError(t, nct.Flush())
+	time.Sleep(100 * time.Millisecond)
+
 	for _, test := range []struct {
 		name       string
 		deliverMsg bool
@@ -1628,6 +1644,10 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 	nct := natsConnect(t, s1.ClientURL(), nats.Name("tracer"))
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, "my.trace.subj")
+
+	// Ensure the subscription is known by the server we're connected to.
+	require_NoError(t, nct.Flush())
+	time.Sleep(100 * time.Millisecond)
 
 	for _, test := range []struct {
 		name       string
