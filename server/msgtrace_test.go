@@ -322,7 +322,8 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 	natsFlush(t, nc)
 
 	// Ensure the subscription is known by the server we're connected to.
-	time.Sleep(100 * time.Millisecond)
+	checkSubInterest(t, s, globalAccountName, "my.trace.subj", time.Second)
+	checkSubInterest(t, s, globalAccountName, "foo", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -390,7 +391,8 @@ func TestMsgTraceIngressErrors(t *testing.T) {
 	natsFlush(t, nc)
 
 	// Ensure the subscription is known by the server we're connected to.
-	time.Sleep(100 * time.Millisecond)
+	checkSubInterest(t, s, "A", "my.trace.subj", time.Second)
+	checkSubInterest(t, s, "A", "foo", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -468,7 +470,7 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 	natsFlush(t, nc)
 
 	// Ensure the subscription is known by the server we're connected to.
-	time.Sleep(100 * time.Millisecond)
+	checkSubInterest(t, s, "A", "my.trace.subj", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -618,7 +620,8 @@ func TestMsgTraceWithQueueSub(t *testing.T) {
 	natsFlush(t, nc3)
 
 	// Ensure the subscription is known by the server we're connected to.
-	time.Sleep(100 * time.Millisecond)
+	checkSubInterest(t, s, globalAccountName, "my.trace.subj", time.Second)
+	checkSubInterest(t, s, globalAccountName, "foo", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -920,6 +923,10 @@ func TestMsgTraceWithRouteToOldServer(t *testing.T) {
 	nct := natsConnect(t, s1.ClientURL(), nats.Name("tracer"))
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, "my.trace.subj")
+
+	// Ensure the subscription is known by the server we're connected to.
+	checkSubInterest(t, s1, globalAccountName, "my.trace.subj", time.Second)
+	checkSubInterest(t, s2, globalAccountName, "my.trace.subj", time.Second)
 
 	for _, test := range []struct {
 		name       string

@@ -242,7 +242,7 @@ func TestServiceImportReplyMatchCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	checkSubInterest(t, s, "B", "foo", time.Second)
 
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
@@ -295,7 +295,7 @@ func TestServiceImportReplyMatchCycleMultiHops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	checkSubInterest(t, s, "B", "foo", time.Second)
 
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
