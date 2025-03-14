@@ -2279,7 +2279,7 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 					}
 					// Otherwise get the route pool index it would have been before
 					// the move so we can send the protocol to those routes.
-					rpi = s.computeRoutePoolIdx(acc)
+					rpi = computeRoutePoolIdx(s.routesPoolSize, acc.Name)
 				}
 				acc.mu.Unlock()
 				// Generate the INFO protocol to send indicating that this account
@@ -2290,21 +2290,56 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 					RouteAccReqID: s.accAddedReqID,
 				}
 				proto := generateInfoJSON(&ri)
-				// Go over each remote's route at pool index `rpi` and remove
-				// remote subs for this account and send the protocol.
-				s.forEachRouteIdx(rpi, func(r *client) bool {
+				// Since v2.11.0, we support remotes with a different pool size
+				// (for rolling upgrades), so we need to use the remote route
+				// pool index (based on the remote configured pool size) since
+				// the remote subscriptions will be attached to the route at
+				// that index, not at our account's route pool index. However,
+				// we are going to send the protocol through the route that
+				// handles this account from our pool size perspective (that
+				// would be the route at index `rpi`).
+				removeSubsAndSendProto := func(r *client, doSubs, doProto bool) {
 					r.mu.Lock()
+					defer r.mu.Unlock()
 					// Exclude routes to servers that don't support pooling.
-					if !r.route.noPool {
+					if r.route.noPool {
+						return
+					}
+					if doSubs {
 						if subs := r.removeRemoteSubsForAcc(an); len(subs) > 0 {
 							sl.RemoveBatch(subs)
 						}
+					}
+					if doProto {
 						r.enqueueProto(proto)
 						protosSent++
 					}
-					r.mu.Unlock()
-					return true
-				})
+				}
+				for remote, conns := range s.routes {
+					r := conns[rpi]
+					// The route connection at this index is currently not up,
+					// so we won't be able to send the protocol, so move to the
+					// next remote.
+					if r == nil {
+						continue
+					}
+					doSubs := true
+					// Check the remote's route pool size and if different than
+					// ours, remove the subs on that other route.
+					remotePoolSize, ok := s.remoteRoutePoolSize[remote]
+					if ok && remotePoolSize != s.routesPoolSize {
+						// This is the remote's route pool index for this account
+						rrpi := computeRoutePoolIdx(remotePoolSize, an)
+						if rr := conns[rrpi]; rr != nil {
+							removeSubsAndSendProto(rr, true, false)
+							// Indicate that we have already remove the subs.
+							doSubs = false
+						}
+					}
+					// Now send the protocol from the route that handles the
+					// account from this server perspective.
+					removeSubsAndSendProto(r, doSubs, true)
+				}
 			}
 		}
 		if protosSent > 0 {
