@@ -7187,13 +7187,7 @@ func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, s *Server, o *
 	subc, subr := testMQTTConnect(t, &mqttConnInfo{clientID: subID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	testMQTTCheckConnAck(t, subr, mqttConnAckRCConnectionAccepted, false)
 
-	// Clear retained messages from the prior run, and sleep a little to
-	// ensure the change is propagated.
-	testMQTTPublish(t, pubc, pubr, 0, false, true, pubTopic, 1, nil)
-	time.Sleep(1 * time.Millisecond)
-
-	// Subscribe to `#` first, make sure we can get the retained message
-	// there. It's a QOS0 sub, so expect a QOS0 message.
+	// Subscribe to `#` first.
 	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: `#`, qos: 0}}, []byte{0})
 	testMQTTExpectNothing(t, subr)
 

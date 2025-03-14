@@ -18162,19 +18162,22 @@ func TestJetStreamConsumerPullConsumerFIFO(t *testing.T) {
 		require_NoError(t, err)
 	}
 
+	// Not all core publishes could have made it to the leader yet, wait for some time.
+	time.Sleep(100 * time.Millisecond)
+
 	// Now send 100 messages.
 	for i := 0; i < 100; i++ {
-		js.PublishAsync("T", []byte("FIFO FTW!"))
-	}
-	select {
-	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Did not receive completion signal")
+		_, err = js.Publish("T", []byte("FIFO FTW!"))
+		require_NoError(t, err)
 	}
 
 	// Wait for messages
-	for index, sub := range subs {
+	for _, sub := range subs {
 		checkSubsPending(t, sub, 10)
+	}
+
+	// Confirm FIFO
+	for index, sub := range subs {
 		for i := 0; i < 10; i++ {
 			m, err := sub.NextMsg(time.Second)
 			require_NoError(t, err)

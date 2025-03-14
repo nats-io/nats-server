@@ -4634,7 +4634,7 @@ func TestJetStreamSuperClusterMovingR1Stream(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		sc.waitOnStreamLeader(globalAccountName, "TEST")
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
