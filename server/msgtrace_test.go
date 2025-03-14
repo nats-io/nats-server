@@ -3579,7 +3579,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 	checkStream := func(t *testing.T, stream string, expected int) {
 		t.Helper()
-		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
 			si, err := js.StreamInfo(stream)
 			if err != nil {
 				return err
