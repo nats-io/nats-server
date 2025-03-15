@@ -69,6 +69,10 @@ func wipeSlice(buf []byte) {
 // will expand the trusted keys in options.
 func validateTrustedOperators(o *Options) error {
 	if len(o.TrustedOperators) == 0 {
+		// if we have no operator, default sentinel shouldn't be set
+		if o.DefaultSentinel != "" {
+			return fmt.Errorf("default sentinel requires operators and accounts")
+		}
 		return nil
 	}
 	if o.AccountResolver == nil {

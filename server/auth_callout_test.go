@@ -579,6 +579,26 @@ func createBasicAccountLeaf(t *testing.T, accKp nkeys.KeyPair) (creds string) {
 	return createBasicAccount(t, "auth-leaf", accKp, false)
 }
 
+func createBasicAccountBearer(t *testing.T, accKp nkeys.KeyPair) string {
+	t.Helper()
+	ukp, _ := nkeys.CreateUser()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Name = "default_sentinel"
+	uclaim.Subject = upub
+	uclaim.BearerToken = true
+
+	uclaim.Permissions.Pub.Deny.Add(">")
+	uclaim.Permissions.Sub.Deny.Add(">")
+
+	vr := jwt.ValidationResults{}
+	uclaim.Validate(&vr)
+	require_Len(t, len(vr.Errors()), 0)
+	ujwt, err := uclaim.Encode(accKp)
+	require_NoError(t, err)
+	return ujwt
+}
+
 func createBasicAccount(t *testing.T, name string, accKp nkeys.KeyPair, addDeny bool) (creds string) {
 	t.Helper()
 	ukp, _ := nkeys.CreateUser()
@@ -677,6 +697,8 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	authJwt, err := authClaim.Encode(oKp)
 	require_NoError(t, err)
 
+	defaultSentinel := createBasicAccountBearer(t, akp)
+
 	conf := fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -687,13 +709,16 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 			%s: %s
 			%s: %s
 		}
-    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
+        default_sentinel: %s
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt, defaultSentinel)
 
 	const secretToken = "--XX--"
 	const dummyToken = "--ZZ--"
 	const skKeyToken = "--SK--"
 	const scopedToken = "--Scoped--"
 	const badScopedToken = "--BADScoped--"
+	const defaultToken = "--Default--"
+
 	dkp, notAllowAccountPub := createKey(t)
 	handler := func(m *nats.Msg) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
@@ -713,6 +738,9 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 		} else if opts.Token == badScopedToken {
 			// limits are nil - here which result in a default user - this will fail scoped
 			ujwt := createAuthUser(t, user, "bad-scoped", tpub, tpub, scopedKp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Token == defaultToken {
+			ujwt := createAuthUser(t, user, "default", tpub, "", tkp, 0, nil)
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
 			m.Respond(nil)
@@ -813,6 +841,20 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	slices.Sort(userInfo.Permissions.Subscribe.Allow)
 	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
 	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
+
+	// this connects without a credential, so will be assigned the default sentinel
+	nc = ac.Connect(nats.Token(defaultToken))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	ui := response.Data.(*UserInfo)
+	require_Equal(t, "default", ui.UserID)
+	require_NoError(t, err)
+
 }
 
 func testAuthCalloutScopedUser(t *testing.T, allowAnyAccount bool) {
