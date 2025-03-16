@@ -2242,6 +2242,9 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 	expected := []int{9, 9, 10}
 	checkCluster := func() {
 		t.Helper()
+		// In most case, we will do a config reload and want to give time
+		// for connections to be closed before checking.
+		time.Sleep(50 * time.Millisecond)
 		for i, s := range servers {
 			if !s.isRunning() {
 				continue
@@ -2258,20 +2261,20 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 
 	// We will create a subscription per account per server.
 	accs := []string{"A", "B", "C", "D"}
-	var subs [][]*nats.Subscription
-	var ncSubS3 *nats.Conn
+	var aconns [][]*nats.Conn
+	var asubs [][]*nats.Subscription
 	for _, acc := range accs {
-		var asubs []*nats.Subscription
+		var subs []*nats.Subscription
+		var conns []*nats.Conn
 		for _, s := range servers {
 			nc := natsConnect(t, s.ClientURL(), nats.UserInfo(acc, "pwd"))
 			defer nc.Close()
+			conns = append(conns, nc)
 			sub := natsSubSync(t, nc, "foo")
-			asubs = append(asubs, sub)
-			if s == s3 {
-				ncSubS3 = nc
-			}
+			subs = append(subs, sub)
 		}
-		subs = append(subs, asubs)
+		asubs = append(asubs, subs)
+		aconns = append(aconns, conns)
 	}
 
 	// Now we will check that a message produced on each account from
@@ -2293,13 +2296,12 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 				defer nc.Close()
 
 				natsPub(t, nc, "foo", []byte(payload))
-				for j, sub := range subs[i] {
+				for j, sub := range asubs[i] {
 					if _, err := sub.NextMsg(time.Second); err != nil {
 						t.Fatalf("Producer on %q - account=%q - sub on server %q - err=%v",
 							s, acc, servers[j], err)
 					}
 					// Wait a tiny bit and check that there is not a duplicate
-					time.Sleep(10 * time.Millisecond)
 					if msg, err := sub.NextMsg(10 * time.Millisecond); err == nil {
 						t.Fatalf("Producer on %q - account=%q - sub on server %q received a duplicate msg=%s",
 							s, acc, servers[j], msg.Data)
@@ -2338,44 +2340,9 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 	for _, c := range rcs {
 		c.Close()
 	}
-	// Wait a bit to make sure the close was registered and test the cluster
-	// and pub/sub again.
-	time.Sleep(50 * time.Millisecond)
 
 	checkCluster()
 	checkRecv("hello2")
-
-	// Now try to increase the pool size and make sure it still works.
-	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
-		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 5, `"A"`))
-
-	time.Sleep(50 * time.Millisecond)
-	// S1 and S2 will have each 1 more route.
-	// S3 itself will have 2 more routes.
-	expected = []int{10, 10, 12}
-	checkCluster()
-	checkRecv("hello3")
-
-	// Now try to decrease the pool size and make sure it still works.
-	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
-		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 1, `"A"`))
-
-	time.Sleep(50 * time.Millisecond)
-	// S1 will have its 3+1 routes to S3 and 3+1 routes to S2, so 8.
-	// S2 will have 3+1 routes from S1 and 2+1 routes to S3, so 7.
-	// S3 will have 3+1 routes from S1 and 2+1 routes from S2, so 7
-	expected = []int{8, 7, 7}
-	checkCluster()
-	checkRecv("hello4")
-
-	// Put back the way it was.
-	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
-		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 4, `"A"`))
-
-	time.Sleep(50 * time.Millisecond)
-	expected = []int{9, 9, 10}
-	checkCluster()
-	checkRecv("hello5")
 
 	// Now we will make account "B" have a dedicated route, and remove the one for "A"
 	// Now upgrade one of the account to a dedicated route.
@@ -2386,22 +2353,15 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 	reloadUpdateConfig(t, s3, conf3, fmt.Sprintf(tmpl, "S3",
 		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\",\"nats://127.0.0.1:%d\"]", o1.Cluster.Port, o2.Cluster.Port), 4, `"B"`))
 
-	time.Sleep(50 * time.Millisecond)
 	checkCluster()
-	checkRecv("hello6")
+	checkRecv("hello3")
 
-	// Remove routes to S3 from S1 and S2.
-	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "S1",
-		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\"]", o2.Cluster.Port), 3, `"B"`))
-	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "S2",
-		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), 2, `"B"`))
-
-	time.Sleep(50 * time.Millisecond)
-	checkCluster()
-	checkRecv("hello7")
-
+	// Since we are going to shutdown and not restart S3,
+	// close client connections to this server.
+	for _, conns := range aconns {
+		conns[2].Close()
+	}
 	// Get S3 server ID and shut it down.
-	ncSubS3.Close()
 	s3ID := s3.ID()
 	s3.Shutdown()
 
@@ -2410,7 +2370,7 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 	servers = servers[:2]
 	checkCluster()
 
-	// Check that both S1 and S2 have cleaned-up the remoteRoutePoolSize
+	// Check that both S1 and S2 have cleaned-up the remoteRoutePoolSize for S3.
 	for _, s := range servers {
 		s.mu.RLock()
 		rps, ok := s.remoteRoutePoolSize[s3ID]
@@ -2419,6 +2379,82 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 			t.Fatalf("On server %q, found remote pool size of %v for S3", s, rps)
 		}
 	}
+
+	s1.Shutdown()
+	s2.Shutdown()
+
+	// Now start 2 servers with different pool size.
+	conf1 = createConfFile(t, fmt.Appendf(nil, tmpl, "S1", _EMPTY_, 3, `"A"`))
+	s1, o1 = RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 = createConfFile(t, fmt.Appendf(nil, tmpl, "S2",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), 2, `"A"`))
+	s2, _ = RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	servers = []*Server{s1, s2}
+	expected = []int{4, 4}
+	checkCluster()
+
+	// Now check that S1 and S2 have the proper remoteRoutePoolSize to each other.
+	expectedRPS := func(s *Server, otherID string, expected int) {
+		t.Helper()
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		rps, ok := s.remoteRoutePoolSize[otherID]
+		require_True(t, ok)
+		require_Equal(t, rps, expected)
+	}
+	s2ID := s2.ID()
+	expectedRPS(s1, s2ID, 2)
+	expectedRPS(s2, s1.ID(), 3)
+
+	// We will now config reload S2 with an increased pool size, but we want
+	// to have S1 in a condition where the update does not go through the
+	// process of re-creating the connections slice completely, which could
+	// happen when the config reload reconnect from S2 to S1 happens in a way
+	// that the earlier connections in the slice are replaced before the later
+	// are, which prevents the situation in removeRoute() where all slots are
+	// empty. To do so with certainty, we are going to replace the last
+	// connection in s1's routes with a "fake" one that is not going to close
+	// when s2 reloads.
+	s1.mu.Lock()
+	conns, ok := s1.routes[s2ID]
+	if ok {
+		rc := conns[2]
+		conns[2] = &client{kind: ROUTER, route: &route{}}
+		// Empty the slot in a bit and close the old connection.
+		time.AfterFunc(150*time.Millisecond, func() {
+			s1.mu.Lock()
+			conns, ok := s1.routes[s2ID]
+			if ok {
+				conns[2] = nil
+			}
+			s1.mu.Unlock()
+			rc.closeConnection(ReadError)
+		})
+	}
+	s1.mu.Unlock()
+	require_True(t, ok)
+
+	// Increase the pool size.
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "S2",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), 4, `"A"`))
+	expected = []int{5, 5}
+	checkCluster()
+
+	expectedRPS(s1, s2ID, 4)
+	expectedRPS(s2, s1.ID(), 3)
+
+	// Try to decrease now...
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "S2",
+		fmt.Sprintf("routes:[\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), 2, `"A"`))
+	expected = []int{4, 4}
+	checkCluster()
+
+	expectedRPS(s1, s2ID, 2)
+	expectedRPS(s2, s1.ID(), 3)
 }
 
 type captureRMsgTrace struct {

@@ -2303,6 +2303,19 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		}
 		c.mu.Unlock()
 
+		// With pooling, we keep track of the remote's configured route pool size.
+		// We do so when adding the connection in the first slot, not when `sz == 1`
+		// because there could be situations where we have old connections that have
+		// not yet been removed and so we would not have `sz == `. However, we will
+		// always have the condition where we are adding the new connection at `idx==0`
+		// so use that as the condition to store the remote pool size.
+		if pool && idx == 0 {
+			if s.remoteRoutePoolSize == nil {
+				s.remoteRoutePoolSize = make(map[string]int)
+			}
+			s.remoteRoutePoolSize[id] = info.RoutePoolSize
+		}
+
 		// Add to the slice and bump the count of connections for this remote
 		conns[idx] = c
 		sz++
@@ -2311,13 +2324,6 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		// connection for a given remote server.
 		doOnce := !pool || sz == 1
 		if doOnce {
-			// For pooling case, keep track of the remote's configured route pool size
-			if pool {
-				if s.remoteRoutePoolSize == nil {
-					s.remoteRoutePoolSize = make(map[string]int)
-				}
-				s.remoteRoutePoolSize[id] = info.RoutePoolSize
-			}
 			// check to be consistent and future proof. but will be same domain
 			if s.sameDomain(info.Domain) {
 				s.nodeToInfo.Store(rHash,
