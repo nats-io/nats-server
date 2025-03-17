@@ -289,6 +289,8 @@ const (
 	purgeDir = "__msgs__"
 	// used to scan blk file names.
 	blkScan = "%d.blk"
+	// suffix of a block file
+	blkSuffix = ".blk"
 	// used for compacted blocks that are staged.
 	newScan = "%d.new"
 	// used to scan index file names.
@@ -1818,6 +1820,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 	var index uint32
 	for _, fi := range dirs {
+		// Ensure it's actually a block file, otherwise fmt.Sscanf also matches %d.blk.tmp
+		if !strings.HasSuffix(fi.Name(), blkSuffix) {
+			continue
+		}
 		if n, err := fmt.Sscanf(fi.Name(), blkScan, &index); err == nil && n == 1 {
 			if index > blkIndex {
 				fs.warn("Stream state outdated, found extra blocks, will rebuild")
@@ -2006,6 +2012,10 @@ func (fs *fileStore) recoverMsgs() error {
 	indices := make(sort.IntSlice, 0, len(dirs))
 	var index int
 	for _, fi := range dirs {
+		// Ensure it's actually a block file, otherwise fmt.Sscanf also matches %d.blk.tmp
+		if !strings.HasSuffix(fi.Name(), blkSuffix) {
+			continue
+		}
 		if n, err := fmt.Sscanf(fi.Name(), blkScan, &index); err == nil && n == 1 {
 			indices = append(indices, index)
 		}
