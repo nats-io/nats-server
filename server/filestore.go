@@ -1136,12 +1136,22 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 		fs.state.Msgs += mb.msgs
 		fs.state.Bytes += mb.bytes
 		fseq := atomic.LoadUint64(&mb.first.seq)
-		if fs.state.FirstSeq == 0 || fseq < fs.state.FirstSeq {
+		if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
 			fs.state.FirstSeq = fseq
-			fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+			if mb.first.ts == 0 {
+				fs.state.FirstTime = time.Time{}
+			} else {
+				fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+			}
 		}
-		fs.state.LastSeq = atomic.LoadUint64(&mb.last.seq)
-		fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
+		if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq {
+			fs.state.LastSeq = lseq
+			if mb.last.ts == 0 {
+				fs.state.LastTime = time.Time{}
+			} else {
+				fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
+			}
+		}
 		mb.mu.RUnlock()
 	}
 }
@@ -1525,7 +1535,7 @@ func (fs *fileStore) debug(format string, args ...any) {
 func updateTrackingState(state *StreamState, mb *msgBlock) {
 	if state.FirstSeq == 0 {
 		state.FirstSeq = mb.first.seq
-	} else if mb.first.seq < state.FirstSeq {
+	} else if mb.first.seq < state.FirstSeq && mb.first.ts != 0 {
 		state.FirstSeq = mb.first.seq
 	}
 	if mb.last.seq > state.LastSeq {
@@ -1921,7 +1931,8 @@ func (fs *fileStore) recoverMsgs() error {
 				fs.removeMsgBlockFromList(mb)
 				continue
 			}
-			if fseq := atomic.LoadUint64(&mb.first.seq); fs.state.FirstSeq == 0 || fseq < fs.state.FirstSeq {
+			fseq := atomic.LoadUint64(&mb.first.seq)
+			if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
 				fs.state.FirstSeq = fseq
 				if mb.first.ts == 0 {
 					fs.state.FirstTime = time.Time{}
@@ -7395,13 +7406,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
 	}
-	fseq := fs.state.FirstSeq
 
 	// Write any tombstones as needed.
 	for _, tomb := range tombs {
-		if tomb.seq > fseq {
-			fs.writeTombstone(tomb.seq, tomb.ts)
-		}
+		fs.writeTombstone(tomb.seq, tomb.ts)
 	}
 
 	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
@@ -7564,6 +7572,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 	var smv StoreMsg
 	var err error
+	var tombs []msgId
 
 	smb.mu.Lock()
 	if atomic.LoadUint64(&smb.first.seq) == seq {
@@ -7599,6 +7608,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			// Update fss
 			smb.removeSeqPerSubject(sm.subj, mseq)
 			fs.removePerSubject(sm.subj)
+			tombs = append(tombs, msgId{sm.seq, sm.ts})
 		}
 	}
 
@@ -7670,6 +7680,11 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 SKIP:
 	smb.mu.Unlock()
+
+	// Write any tombstones as needed.
+	for _, tomb := range tombs {
+		fs.writeTombstone(tomb.seq, tomb.ts)
+	}
 
 	if deleted > 0 {
 		// Update block map.
