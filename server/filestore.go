@@ -8494,6 +8494,19 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 	ss.Msgs--
 
+	// Only one left.
+	if ss.Msgs == 1 {
+		if !ss.firstNeedsUpdate && seq == ss.First {
+			ss.First = ss.Last
+		}
+
+		if !ss.lastNeedsUpdate && seq == ss.Last {
+			ss.Last = ss.First
+		}
+
+		return
+	}
+
 	// We can lazily calculate the first/last sequence when needed.
 	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 	ss.lastNeedsUpdate = seq == ss.Last || ss.lastNeedsUpdate
