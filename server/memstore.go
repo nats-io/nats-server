@@ -1631,9 +1631,24 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64, marker bool) bo
 	}
 	ss.Msgs--
 
+	// Only one left
+	if ss.Msgs == 1 {
+		if !ss.lastNeedsUpdate && seq != ss.Last {
+			ss.First = ss.Last
+			ss.firstNeedsUpdate = false
+			return false
+		}
+		if !ss.firstNeedsUpdate && seq != ss.First {
+			ss.Last = ss.First
+			ss.lastNeedsUpdate = false
+			return false
+		}
+	}
+
 	// We can lazily calculate the first/last sequence when needed.
 	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 	ss.lastNeedsUpdate = seq == ss.Last || ss.lastNeedsUpdate
+
 	return false
 }
 
