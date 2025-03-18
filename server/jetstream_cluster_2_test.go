@@ -8053,6 +8053,47 @@ func TestJetStreamClusterSubjectDeleteMarkersTTLRollupWithoutMaxAge(t *testing.T
 	require_Equal(t, si.State.FirstSeq, 5)
 }
 
+func TestJetStreamClusterSubjectDeleteMarkersTimingWithMaxAge(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Storage:                storageType,
+				Replicas:               3,
+				Subjects:               []string{"test"},
+				AllowMsgTTL:            true,
+				AllowRollup:            true,
+				MaxAge:                 time.Minute,
+				SubjectDeleteMarkerTTL: 1 * time.Second,
+			})
+
+			msg := &nats.Msg{
+				Subject: "test",
+				Header:  nats.Header{},
+			}
+			msg.Header.Set(JSMessageTTL, "1s")
+
+			// We expect each of these messages to age out properly and not for
+			// the timer to stay stuck at the MaxAge interval.
+			for i := 0; i < 3; i++ {
+				_, err := js.PublishMsg(msg)
+				require_NoError(t, err)
+
+				time.Sleep(time.Second + 500*time.Millisecond)
+
+				_, err = js.GetLastMsg("TEST", "test")
+				require_Error(t, err, nats.ErrMsgNotFound)
+			}
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
