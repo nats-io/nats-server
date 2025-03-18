@@ -228,11 +228,12 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 
 	// Check if we have and need the age expiration timer running.
 	switch {
+	case ms.ttls != nil && ttl > 0:
+		ms.resetAgeChk(0)
 	case ms.ageChk == nil && (ms.cfg.MaxAge > 0 || ms.ttls != nil):
 		ms.startAgeChk()
-	case ms.ageChk != nil && ms.ttls != nil && ttl > 0:
-		ms.resetAgeChk(0)
 	}
+
 	return nil
 }
 

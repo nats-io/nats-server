@@ -4045,10 +4045,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 
 	// Check if we have and need the age expiration timer running.
 	switch {
+	case fs.ttls != nil && ttl > 0:
+		fs.resetAgeChk(0)
 	case fs.ageChk == nil && (fs.cfg.MaxAge > 0 || fs.ttls != nil):
 		fs.startAgeChk()
-	case fs.ageChk != nil && fs.ttls != nil && ttl > 0:
-		fs.resetAgeChk(0)
 	}
 
 	return nil
