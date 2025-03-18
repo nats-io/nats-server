@@ -7921,6 +7921,138 @@ func TestJetStreamClusterSubjectDeleteMarkerClusteredProposal(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterSubjectDeleteMarkersTTLRollupWithMaxAge(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:                   "TEST",
+		Storage:                FileStorage,
+		Replicas:               3,
+		Subjects:               []string{"test"},
+		MaxAge:                 time.Second,
+		AllowMsgTTL:            true,
+		AllowRollup:            true,
+		SubjectDeleteMarkerTTL: time.Second,
+	})
+
+	sub, err := js.SubscribeSync("test")
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err = js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	for i := 0; i < 3; i++ {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_NoError(t, msg.AckSync())
+	}
+
+	rh := nats.Header{}
+	rh.Set(JSMessageTTL, "2s") // MaxAge will get here first.
+	rh.Set(JSMsgRollup, JSMsgRollupSubject)
+	_, err = js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  rh,
+	})
+	require_NoError(t, err)
+
+	// Expect to only have the rollup message here.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+	require_Equal(t, si.State.FirstSeq, 4)
+
+	msg, err := sub.NextMsg(time.Second * 10)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get(JSMsgRollup), JSMsgRollupSubject)
+	require_Equal(t, msg.Header.Get(JSMessageTTL), "2s")
+	require_NoError(t, msg.AckSync())
+
+	// Wait for the rollup message to hit MaxAge.
+	time.Sleep(time.Second * 2)
+
+	// Now it should be gone and have been replaced with a subject
+	// delete marker with reason MaxAge.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+	require_Equal(t, si.State.FirstSeq, 5)
+
+	msg, err = sub.NextMsg(time.Second * 10)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get(JSMarkerReason), "MaxAge")
+	require_Equal(t, msg.Header.Get(JSMessageTTL), "1s")
+}
+
+func TestJetStreamClusterSubjectDeleteMarkersTTLRollupWithoutMaxAge(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:                   "TEST",
+		Storage:                FileStorage,
+		Replicas:               3,
+		Subjects:               []string{"test"},
+		AllowMsgTTL:            true,
+		AllowRollup:            true,
+		SubjectDeleteMarkerTTL: time.Second,
+	})
+
+	sub, err := js.SubscribeSync("test")
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err = js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	for i := 0; i < 3; i++ {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_NoError(t, msg.AckSync())
+	}
+
+	rh := nats.Header{}
+	rh.Set(JSMessageTTL, "1s")
+	rh.Set(JSMsgRollup, JSMsgRollupSubject)
+	_, err = js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  rh,
+	})
+	require_NoError(t, err)
+
+	// Expect to only have the rollup message here.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+	require_Equal(t, si.State.FirstSeq, 4)
+
+	msg, err := sub.NextMsg(time.Second * 10)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get(JSMsgRollup), JSMsgRollupSubject)
+	require_Equal(t, msg.Header.Get(JSMessageTTL), "1s")
+	require_NoError(t, msg.AckSync())
+
+	// Wait for the rollup message to hit the TTL.
+	time.Sleep(time.Second * 2)
+
+	// Now it should be gone and it will NOT have been replaced with a
+	// subject delete marker as it reached TTL and not MaxAge.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 0)
+	require_Equal(t, si.State.FirstSeq, 5)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
