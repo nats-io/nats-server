@@ -25436,7 +25436,7 @@ func TestJetStreamSubjectDeleteMarkersAfterRestart(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	jsStreamCreate(t, nc, &StreamConfig{
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:                   "TEST",
 		Storage:                FileStorage,
 		Subjects:               []string{"test"},
@@ -25444,11 +25444,13 @@ func TestJetStreamSubjectDeleteMarkersAfterRestart(t *testing.T) {
 		AllowMsgTTL:            true,
 		SubjectDeleteMarkerTTL: time.Second,
 	})
+	require_NoError(t, err)
 
-	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
 		Name:      "test_consumer",
 		AckPolicy: nats.AckExplicitPolicy,
 	})
+	require_NoError(t, err)
 
 	for i := 0; i < 3; i++ {
 		_, err = js.Publish("test", nil)

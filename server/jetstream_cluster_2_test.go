@@ -7850,7 +7850,7 @@ func TestJetStreamClusterSubjectDeleteMarkers(t *testing.T) {
 			nc, js := jsClientConnect(t, c.randomServer())
 			defer nc.Close()
 
-			jsStreamCreate(t, nc, &StreamConfig{
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
 				Name:                   "TEST",
 				Storage:                storage,
 				Subjects:               []string{"test"},
@@ -7859,6 +7859,7 @@ func TestJetStreamClusterSubjectDeleteMarkers(t *testing.T) {
 				AllowMsgTTL:            true,
 				SubjectDeleteMarkerTTL: time.Second,
 			})
+			require_NoError(t, err)
 
 			sub, err := js.SubscribeSync("test")
 			require_NoError(t, err)
@@ -7878,6 +7879,44 @@ func TestJetStreamClusterSubjectDeleteMarkers(t *testing.T) {
 			require_NoError(t, err)
 			require_Equal(t, msg.Header.Get(JSMarkerReason), "MaxAge")
 			require_Equal(t, msg.Header.Get(JSMessageTTL), "1s")
+		})
+	}
+}
+
+func TestJetStreamClusterSubjectDeleteMarkerClusteredProposal(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Storage:                storageType,
+				Subjects:               []string{"test"},
+				Replicas:               3,
+				MaxAge:                 3 * time.Second,
+				AllowMsgTTL:            true,
+				SubjectDeleteMarkerTTL: time.Second,
+			})
+			require_NoError(t, err)
+
+			// First message is applied by all replicas.
+			_, err = js.Publish("test", nil)
+			require_NoError(t, err)
+
+			// Wait so MaxAge is applied and a subject delete marker is placed.
+			time.Sleep(4 * time.Second)
+
+			// Second message should be successful and not be influenced by the prior subject delete marker.
+			_, err = js.Publish("test", nil)
+			require_NoError(t, err)
+
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
 		})
 	}
 }
