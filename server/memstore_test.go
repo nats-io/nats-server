@@ -1199,6 +1199,12 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 	require_NoError(t, err)
 	defer fs.Stop()
 
+	// Capture subject delete marker proposals.
+	ch := make(chan *inMsg, 1)
+	fs.sdmcb = func(im *inMsg) {
+		ch <- im
+	}
+
 	// Store three messages that will expire because of MaxAge.
 	var seq uint64
 	for i := 0; i < 3; i++ {
@@ -1213,21 +1219,9 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 	require_Equal(t, sm, nil)
 
 	// We should have replaced it with a tombstone.
-	sm, err = fs.LoadMsg(seq+1, nil)
-	require_NoError(t, err)
-	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonMaxAge)
-	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-
-	time.Sleep(time.Second * 2)
-
-	// The tombstone itself only has a TTL of 1 second so that should
-	// also be gone by now too. No more tombstones should have been
-	// published.
-	var ss StreamState
-	fs.FastState(&ss)
-	require_Equal(t, ss.FirstSeq, sm.seq+1)
-	require_Equal(t, ss.LastSeq, sm.seq)
-	require_Equal(t, ss.Msgs, 0)
+	im := require_ChanRead(t, ch, time.Second*5)
+	require_Equal(t, bytesToString(getHeader(JSMarkerReason, im.hdr)), JSMarkerReasonMaxAge)
+	require_Equal(t, bytesToString(getHeader(JSMessageTTL, im.hdr)), "1s")
 }
 
 func TestMemStoreSubjectDeleteMarkersOnPurge(t *testing.T) {

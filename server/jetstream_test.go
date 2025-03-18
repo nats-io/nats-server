@@ -25429,6 +25429,58 @@ func TestJetStreamSubjectDeleteMarkers(t *testing.T) {
 	}
 }
 
+func TestJetStreamSubjectDeleteMarkersAfterRestart(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:                   "TEST",
+		Storage:                FileStorage,
+		Subjects:               []string{"test"},
+		MaxAge:                 time.Second,
+		AllowMsgTTL:            true,
+		SubjectDeleteMarkerTTL: time.Second,
+	})
+
+	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "test_consumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+
+	for i := 0; i < 3; i++ {
+		_, err = js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	sub, err := js.PullSubscribe("test", _EMPTY_, nats.Bind("TEST", "test_consumer"))
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		msgs, err := sub.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_NoError(t, msgs[0].AckSync())
+	}
+
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_Equal(t, msgs[0].Header.Get(JSMarkerReason), "MaxAge")
+	require_Equal(t, msgs[0].Header.Get(JSMessageTTL), "1s")
+}
+
 func TestJetStreamSubjectDeleteMarkersWithMirror(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

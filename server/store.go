@@ -85,7 +85,7 @@ type StoreMsg struct {
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 
 // Used to call back into the upper layers to report on newly created subject delete markers.
-type SubjectDeleteMarkerUpdateHandler func(seq uint64, subj string)
+type SubjectDeleteMarkerUpdateHandler func(*inMsg)
 
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)

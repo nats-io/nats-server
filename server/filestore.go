@@ -5514,20 +5514,22 @@ func (fs *fileStore) subjectDeleteMarkerIfNeeded(subj string, reason string) fun
 		return nil
 	}
 	var _hdr [128]byte
-	hdr := fmt.Appendf(_hdr[:0], "NATS/1.0\r\n%s: %s\r\n%s: %s\r\n\r\n", JSMarkerReason, reason, JSMessageTTL, time.Duration(ttl)*time.Second)
-	seq, ts := fs.state.LastSeq+1, time.Now().UnixNano()
-	// Store it in the stream and then prepare the callbacks
-	// to return to the caller.
-	if err := fs.storeRawMsg(subj, hdr, nil, seq, ts, ttl); err != nil {
-		return nil
+	hdr := fmt.Appendf(
+		_hdr[:0],
+		"NATS/1.0\r\n%s: %s\r\n%s: %s\r\n%s: %d\r\n%s: %s\r\n\r\n\r\n",
+		JSMarkerReason, reason,
+		JSMessageTTL, time.Duration(ttl)*time.Second,
+		JSExpectedLastSubjSeq, 0,
+		JSExpectedLastSubjSeqSubj, subj,
+	)
+	msg := &inMsg{
+		subj: subj,
+		hdr:  hdr,
 	}
-	cb, tcb := fs.scb, fs.sdmcb
+	sdmcb := fs.sdmcb
 	return func() {
-		if cb != nil {
-			cb(1, int64(fileStoreMsgSize(subj, hdr, nil)), seq, subj)
-		}
-		if tcb != nil {
-			tcb(seq, subj)
+		if sdmcb != nil {
+			sdmcb(msg)
 		}
 	}
 }
@@ -5591,7 +5593,7 @@ func (fs *fileStore) expireMsgs() {
 	nextTTL := int64(math.MaxInt64)
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
-			fs.removeMsgViaLimits(seq)
+			fs.removeMsg(seq, false, false, false)
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit

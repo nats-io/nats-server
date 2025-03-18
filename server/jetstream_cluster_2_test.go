@@ -7841,6 +7841,47 @@ func TestJetStreamClusterConsumerResetStartingSequenceToAgreedState(t *testing.T
 	}
 }
 
+func TestJetStreamClusterSubjectDeleteMarkers(t *testing.T) {
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Storage:                storage,
+				Subjects:               []string{"test"},
+				Replicas:               3,
+				MaxAge:                 time.Second,
+				AllowMsgTTL:            true,
+				SubjectDeleteMarkerTTL: time.Second,
+			})
+
+			sub, err := js.SubscribeSync("test")
+			require_NoError(t, err)
+
+			for i := 0; i < 3; i++ {
+				_, err = js.Publish("test", nil)
+				require_NoError(t, err)
+			}
+
+			for i := 0; i < 3; i++ {
+				msg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				require_NoError(t, msg.AckSync())
+			}
+
+			msg, err := sub.NextMsg(time.Second * 10)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get(JSMarkerReason), "MaxAge")
+			require_Equal(t, msg.Header.Get(JSMessageTTL), "1s")
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
