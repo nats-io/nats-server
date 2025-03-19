@@ -1172,9 +1172,12 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errNoSnapAvailable
 	}
 
-	term := n.pterm
+	var term uint64
 	if ae, _ := n.loadEntry(n.applied); ae != nil {
 		term = ae.term
+	} else {
+		n.debug("Not snapshotting as entry %d is not available", n.applied)
+		return errNoSnapAvailable
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))

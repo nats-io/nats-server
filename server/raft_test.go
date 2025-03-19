@@ -1602,6 +1602,57 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	require_Equal(t, n.applied, 2)
 }
 
+func TestNRGIgnoreDoubleSnapshot(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: entries})
+
+	// Simply receive first message.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+
+	// Heartbeat moves commit up.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.commit, 1)
+
+	// Manually call back down to applied.
+	n.Applied(1)
+
+	// Second message just for upping the pterm.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.pterm, 2)
+	require_Equal(t, n.term, 2)
+
+	// Snapshot, and confirm state.
+	err := n.InstallSnapshot(nil)
+	require_NoError(t, err)
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_Equal(t, snap.lastTerm, 1)
+	require_Equal(t, snap.lastIndex, 1)
+
+	// Snapshot again, should not overwrite previous snapshot.
+	err = n.InstallSnapshot(nil)
+	require_Error(t, err, errNoSnapAvailable)
+	snap, err = n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_Equal(t, snap.lastTerm, 1)
+	require_Equal(t, snap.lastIndex, 1)
+}
+
 func TestNRGDontSwitchToCandidateWithInflightSnapshot(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
