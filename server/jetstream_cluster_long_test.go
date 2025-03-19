@@ -926,8 +926,17 @@ func TestLongClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}
 
 		// Restarts
+		wg.Add(1)
 		time.AfterFunc(10*time.Second, func() {
+			defer wg.Done()
 			for i := 0; i < params.restarts; i++ {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					// Keep going
+				}
+
 				switch {
 				case params.restartLeader:
 					// Find server leader of the stream and restart it.
