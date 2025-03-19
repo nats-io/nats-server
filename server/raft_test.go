@@ -1834,7 +1834,7 @@ func TestNRGTruncateDownToCommitted(t *testing.T) {
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
 
 	// Timeline, after leader change
-	aeMsg3 := encode(t, &appendEntry{leader: nats1, term: 2, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats1, term: 2, commit: 1, pterm: 1, pindex: 1, entries: entries})
 	aeHeartbeat := encode(t, &appendEntry{leader: nats1, term: 2, commit: 2, pterm: 2, pindex: 2, entries: nil})
 
 	// Simply receive first message.
@@ -1895,7 +1895,7 @@ func TestNRGTruncateDownToCommittedWhenTruncateFails(t *testing.T) {
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
 
 	// Timeline, after leader change
-	aeMsg3 := encode(t, &appendEntry{leader: nats1, term: 2, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats1, term: 2, commit: 1, pterm: 1, pindex: 1, entries: entries})
 
 	// Simply receive first message.
 	n.processAppendEntry(aeMsg1, n.aesub)
