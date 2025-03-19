@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"math/rand"
 	"net"
 	"net/url"
@@ -509,6 +510,21 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) error {
 	return nil
 }
 
+// Returns a route pool index for this account based on the given pool size.
+// If `poolSize` is smaller or equal to 1, the returned value will always
+// be 0, regardless of the account name. If not, the returned value will
+// be in the range [0..poolSize-1]. The value for a given account name
+// is constant and same on all servers (given the same `poolSize` value).
+func computeRoutePoolIdx(poolSize int, an string) int {
+	if poolSize <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(an))
+	sum32 := h.Sum32()
+	return int((sum32 % uint32(poolSize)))
+}
+
 // Process the info message if we are a route.
 func (c *client) processRouteInfo(info *Info) {
 
@@ -592,13 +608,18 @@ func (c *client) processRouteInfo(info *Info) {
 					// to suppress possible remote subscription interest coming
 					// in while the transition is happening.
 					acc.routePoolIdx = accTransitioningToDedicatedRoute
-				} else if info.RoutePoolSize == s.routesPoolSize {
-					// Otherwise, and if the other side's pool size matches
-					// ours, get the route pool index that was handling this
-					// account.
-					rpi = s.computeRoutePoolIdx(acc)
 				}
 				acc.mu.Unlock()
+				// Since v2.11.0, we support remotes with a different pool size
+				// (for rolling upgrades), so we need to use the remote route
+				// pool index (based on the remote configured pool size) since
+				// the remote subscriptions will be attached to the route at
+				// that index, not at our account's route pool index. But we
+				// need to compute only if rpi is negative or the pool sizes
+				// are different.
+				if rpi <= 0 || info.RoutePoolSize != s.routesPoolSize {
+					rpi = computeRoutePoolIdx(info.RoutePoolSize, an)
+				}
 				// Go over each remote's route at pool index `rpi` and remove
 				// remote subs for this account.
 				s.forEachRouteIdx(rpi, func(r *client) bool {
@@ -2100,6 +2121,11 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 	// the first connection is established.
 	var noReconnectForOldServer bool
 
+	// To allow rolling updates, we now allow servers with different pool sizes
+	// so we will use as the effective pool size here, the max between our
+	// configured size and the size we receive in the info protocol.
+	effectivePoolSize := max(s.routesPoolSize, info.RoutePoolSize)
+
 	// If the remote is an old server, info.RoutePoolSize will be 0, or if
 	// this server's Cluster.PoolSize is negative, we will behave as an old
 	// server and need to handle things differently.
@@ -2119,15 +2145,12 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 			// sending subscriptions over routes.
 			s.routesNoPool++
 		}
-	} else if s.routesPoolSize != info.RoutePoolSize {
-		// The cluster's PoolSize configuration must be an exact match with the remote server.
-		invProtoErr = fmt.Sprintf("Mismatch route pool size: %v vs %v", s.routesPoolSize, info.RoutePoolSize)
 	} else if didSolicit {
 		// For solicited route, the incoming's RoutePoolIdx should not be set.
 		if info.RoutePoolIdx != 0 {
 			invProtoErr = fmt.Sprintf("Route pool index should not be set but is set to %v", info.RoutePoolIdx)
 		}
-	} else if info.RoutePoolIdx < 0 || info.RoutePoolIdx >= s.routesPoolSize {
+	} else if info.RoutePoolIdx < 0 || info.RoutePoolIdx >= effectivePoolSize {
 		// For non solicited routes, if the remote sends a RoutePoolIdx, make
 		// sure it is a valid one (in range of the pool size).
 		invProtoErr = fmt.Sprintf("Invalid route pool index: %v - pool size is %v", info.RoutePoolIdx, info.RoutePoolSize)
@@ -2196,9 +2219,9 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 	// Check if we know about the remote server
 	conns, exists := s.routes[id]
 	if !exists {
-		// No, create a slice for route connections of the size of the pool
+		// Now, create a slice for route connections of the size of the pool
 		// or 1 when not in pool mode.
-		conns = make([]*client, s.routesPoolSize)
+		conns = make([]*client, effectivePoolSize)
 		// Track this slice for this remote server.
 		s.routes[id] = conns
 		// Set the index to info.RoutePoolIdx because if this is a solicited
@@ -2206,6 +2229,19 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		// will use whatever index the remote has chosen.
 		idx = info.RoutePoolIdx
 	} else if pool {
+		// The remote could have done a config reload and increased the pool size.
+		// It will close the connections before soliciting again, however, if
+		// on this side, one of the route is not yet fully removed, but the
+		// first one is, it would accept the new connection (with a greater pool
+		// size) and we would not go through the phase of `!exists` above creating
+		// the slice with the right size. So we need to check here and add new empty
+		// entries to complete the effective pool size.
+		if n := effectivePoolSize - len(conns); n > 0 {
+			for range n {
+				conns = append(conns, nil)
+			}
+			s.routes[id] = conns
+		}
 		// The remote was found. If this is a non solicited route, we will place
 		// the connection in the pool at the index given by info.RoutePoolIdx.
 		// But if there is already one, close this incoming connection as a
@@ -2267,6 +2303,19 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		}
 		c.mu.Unlock()
 
+		// With pooling, we keep track of the remote's configured route pool size.
+		// We do so when adding the connection in the first slot, not when `sz == 1`
+		// because there could be situations where we have old connections that have
+		// not yet been removed and so we would not have `sz == `. However, we will
+		// always have the condition where we are adding the new connection at `idx==0`
+		// so use that as the condition to store the remote pool size.
+		if pool && idx == 0 {
+			if s.remoteRoutePoolSize == nil {
+				s.remoteRoutePoolSize = make(map[string]int)
+			}
+			s.remoteRoutePoolSize[id] = info.RoutePoolSize
+		}
+
 		// Add to the slice and bump the count of connections for this remote
 		conns[idx] = c
 		sz++
@@ -2323,7 +2372,7 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		s.sendSubsToRoute(c, idx, _EMPTY_)
 
 		// In pool mode, if we did not yet reach the cap, try to connect a new connection
-		if pool && didSolicit && sz != s.routesPoolSize {
+		if pool && didSolicit && sz != effectivePoolSize {
 			s.startGoRoutine(func() {
 				select {
 				case <-time.After(time.Duration(rand.Intn(100)) * time.Millisecond):
@@ -3117,6 +3166,8 @@ func (s *Server) removeRoute(c *client) {
 			if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
 				s.sendAsyncLeafNodeInfo()
 			}
+			// We can remove the configured route pool size of this remote.
+			delete(s.remoteRoutePoolSize, rID)
 			// If this server has pooling/pinned accounts and the route for
 			// this remote was a "no pool" route, attempt to reconnect.
 			if noPool {
