@@ -1,18 +1,18 @@
 name: NATS Server Tests
 
 on:
-  # push:
-  # pull_request:
+  push:
+  pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 jobs:
   lint:
     name: Lint
-    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,13 +26,12 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           skip-cache: true
-          skip-pkg-cache: true
-          skip-build-cache: true
+          skip-save-cache: true
           args: --timeout=5m --config=.golangci.yml
 
   build-latest:
     name: Build (Latest Go)
-    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,7 +46,7 @@ jobs:
 
   build-supported:
     name: Build (Minimum Go)
-    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,9 +82,9 @@ jobs:
         run: go build
 
   store:
-    name: Store tests
+    name: Test Stores
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -96,14 +95,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: |
-          go test -race -v -run=TestMemStore ./server/... -count=1 -vet=off -timeout=30m -failfast
-          go test -race -v -run=TestFileStore ./server/... -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh store_tests
 
   js-no-cluster:
-    name: JetStream tests
+    name: Test JetStream
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,12 +111,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStream ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh js_tests
 
   js-cluster-1:
-    name: JetStream Cluster tests (1)
+    name: Test JetStream Cluster (1)
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -130,12 +127,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_1
 
   js-cluster-2:
-    name: JetStream Cluster tests (2)
+    name: Test JetStream Cluster (2)
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -146,12 +143,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_2
 
   js-cluster-3:
-    name: JetStream Cluster tests (3)
+    name: Test JetStream Cluster (3)
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -162,12 +159,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_3
 
   js-cluster-4:
-    name: JetStream Cluster tests (4)
+    name: Test JetStream Cluster (4)
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -178,12 +175,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_4
 
   js-supercluster:
-    name: JetStream Supercluster tests
+    name: Test JetStream Supercluster
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -194,12 +191,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamSuperCluster ./server/... -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh js_super_cluster_tests
 
   no-race:
-    name: No-race tests
+    name: Test No-Race
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -210,12 +207,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh no_race_tests
 
   mqtt:
-    name: MQTT tests
+    name: Test MQTT
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -226,12 +223,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestMQTT ./server/... -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh mqtt_tests
 
   msgtrace:
-    name: MsgTrace tests
+    name: Test Message Tracing
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -242,12 +239,12 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestMsgTrace ./server/... -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh msgtrace_tests
 
   server-pkg-non-js:
-    name: Non-JetStream/MQTT/MsgTrace tests
+    name: Test Non-JetStream/MQTT/Message Tracing
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -258,13 +255,13 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_store_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh srv_pkg_non_js_tests
         timeout-minutes: 15
 
   non-server-pkg:
-    name: Tests from all other packages
+    name: Test Other Packages
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -275,4 +272,4 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -p=1 ./conf/... ./internal/... ./logger/... ./test/... -count=1 -vet=off -timeout=30m -failfast
+        run: ./scripts/runTestsOnTravis.sh non_srv_pkg_tests
