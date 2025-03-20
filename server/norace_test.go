@@ -7290,6 +7290,7 @@ func TestNoRaceJetStreamInterestStreamCheckInterestRaceBug(t *testing.T) {
 		Subjects:  []string{"foo"},
 		Replicas:  3,
 		Retention: nats.InterestPolicy,
+		Storage:   nats.MemoryStorage,
 	})
 	require_NoError(t, err)
 
@@ -7315,43 +7316,44 @@ func TestNoRaceJetStreamInterestStreamCheckInterestRaceBug(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	// Wait til ackfloor is correct for all consumers.
-	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
-		for _, s := range c.servers {
-			mset, err := s.GlobalAccount().lookupStream("TEST")
+	// Put this into a function so that the defer lets go of that server's stream lock
+	// when we have finished checking, otherwise the loop in checkFor() ends up holding
+	// all of the stream locks across all servers, wedging things.
+	checkForServer := func(s *Server) error {
+		mset, err := s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_Equal(t, mset.numConsumers(), numConsumers)
+
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+
+		if mset.lseq < uint64(numToSend) {
+			return fmt.Errorf("waiting for %d messages in stream (%d so far)", numToSend, mset.lseq)
+		}
+
+		for _, o := range mset.consumers {
+			state, err := o.store.State()
 			require_NoError(t, err)
-
-			mset.mu.RLock()
-			defer mset.mu.RUnlock()
-
-			require_True(t, len(mset.consumers) == numConsumers)
-
-			for _, o := range mset.consumers {
-				state, err := o.store.State()
-				require_NoError(t, err)
-				if state.AckFloor.Stream != uint64(numToSend) {
-					return fmt.Errorf("Ackfloor not correct yet")
-				}
+			if state.AckFloor.Stream != uint64(numToSend) {
+				return fmt.Errorf("Ackfloor not correct yet (%d != %d)", state.AckFloor.Stream, numToSend)
 			}
 		}
+
+		state := mset.state()
+		if state.Msgs != 0 {
+			return fmt.Errorf("too many messages: %d", state.Msgs)
+		} else if state.FirstSeq != uint64(numToSend+1) {
+			return fmt.Errorf("wrong FirstSeq: %d, expected: %d", state.FirstSeq, numToSend+1)
+		}
+
 		return nil
-	})
+	}
 
-	checkFor(t, 5*time.Second, time.Second, func() error {
+	// Wait til ackfloor is correct for all consumers.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
 		for _, s := range c.servers {
-			mset, err := s.GlobalAccount().lookupStream("TEST")
-			if err != nil {
+			if err := checkForServer(s); err != nil {
 				return err
-			}
-
-			mset.mu.RLock()
-			defer mset.mu.RUnlock()
-
-			state := mset.state()
-			if state.Msgs != 0 {
-				return fmt.Errorf("too many messages: %d", state.Msgs)
-			} else if state.FirstSeq != uint64(numToSend+1) {
-				return fmt.Errorf("wrong FirstSeq: %d, expected: %d", state.FirstSeq, numToSend+1)
 			}
 		}
 		return nil
