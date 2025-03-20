@@ -1842,13 +1842,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 			js.applyMetaSnapshot(e.Data, ru, isRecovering)
 			didSnap = true
 		} else if e.Type == EntryRemovePeer {
-			if !isRecovering {
-				js.processRemovePeer(string(e.Data))
-			}
+			js.processRemovePeer(string(e.Data))
 		} else if e.Type == EntryAddPeer {
-			if !isRecovering {
-				js.processAddPeer(string(e.Data))
-			}
+			js.processAddPeer(string(e.Data))
 		} else {
 			buf := e.Data
 			switch entryOp(buf[0]) {
