@@ -2108,7 +2108,7 @@ retry:
 	rg.node = n
 	// See if we are preferred and should start campaign immediately.
 	if n.ID() == rg.Preferred && n.Term() == 0 {
-		n.Campaign()
+		n.CampaignImmediately()
 	}
 	js.mu.Unlock()
 	return nil

@@ -5032,3 +5032,26 @@ func TestJetStreamClusterMessageTTLDisabled(t *testing.T) {
 		require_Equal(t, stream.getCLFS(), 0)
 	}
 }
+
+func TestJetStreamClusterCreateStreamPerf(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for i := 0; i < 10; i++ {
+		// Check that creating a replicated asset doesn't take too long.
+		start := time.Now()
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      fmt.Sprintf("TEST-%d", i),
+			Retention: nats.LimitsPolicy,
+			Subjects:  []string{fmt.Sprintf("foo.%d", i)},
+			Replicas:  3,
+		})
+		require_NoError(t, err)
+		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+			t.Fatalf("Took too long to create a R3 stream: %v", elapsed)
+		}
+	}
+}
