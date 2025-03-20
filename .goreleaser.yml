@@ -75,12 +75,22 @@ archives:
     format_overrides:
       - goos: windows
         formats: ["zip"]
+    builds_info:
+      owner: root
+      group: root
+      mode: 0755
     files:
       - src: README.md
         info:
+          owner: root
+          group: root
+          mode: 0644
           mtime: "{{ .CommitDate }}"
       - src: LICENSE
         info:
+          owner: root
+          group: root
+          mode: 0644
           mtime: "{{ .CommitDate }}"
 
 checksum:
