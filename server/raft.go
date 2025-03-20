@@ -59,6 +59,7 @@ type RaftNode interface {
 	SetObserver(isObserver bool)
 	IsObserver() bool
 	Campaign() error
+	CampaignImmediately() error
 	ID() string
 	Group() string
 	Peers() []*Peer
@@ -1528,7 +1529,14 @@ func (n *raft) StepDown(preferred ...string) error {
 func (n *raft) Campaign() error {
 	n.Lock()
 	defer n.Unlock()
-	return n.campaign()
+	return n.campaign(randCampaignTimeout())
+}
+
+// CampaignImmediately will have our node start a leadership vote after minimal delay.
+func (n *raft) CampaignImmediately() error {
+	n.Lock()
+	defer n.Unlock()
+	return n.campaign(minCampaignTimeout / 2)
 }
 
 func randCampaignTimeout() time.Duration {
@@ -1538,12 +1546,12 @@ func randCampaignTimeout() time.Duration {
 
 // Campaign will have our node start a leadership vote.
 // Lock should be held.
-func (n *raft) campaign() error {
+func (n *raft) campaign(et time.Duration) error {
 	n.debug("Starting campaign")
 	if n.State() == Leader {
 		return errAlreadyLeader
 	}
-	n.resetElect(randCampaignTimeout())
+	n.resetElect(et)
 	return nil
 }
 
