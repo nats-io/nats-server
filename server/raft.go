@@ -1172,9 +1172,12 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errNoSnapAvailable
 	}
 
-	term := n.pterm
+	var term uint64
 	if ae, _ := n.loadEntry(n.applied); ae != nil {
 		term = ae.term
+	} else {
+		n.debug("Not snapshotting as entry %d is not available", n.applied)
+		return errNoSnapAvailable
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
@@ -3453,6 +3456,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					// Check if only our terms do not match here.
 					// Make sure pterms match and we take on the leader's.
 					// This prevents constant spinning.
+					n.truncateWAL(ae.pterm, ae.pindex)
+				} else if ae.pindex == n.applied {
+					// Entry can't be found, this is normal because we have a snapshot at this index.
+					// Truncate back to where we've created the snapshot.
 					n.truncateWAL(ae.pterm, ae.pindex)
 				} else {
 					n.resetWAL()
