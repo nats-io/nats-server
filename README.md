@@ -4,8 +4,8 @@
 
 [NATS](https://nats.io) is a simple, secure and performant communications system for digital systems, services and devices. NATS is part of the Cloud Native Computing Foundation ([CNCF](https://cncf.io)). NATS has over [40 client language implementations](https://nats.io/download/), and its server can run on-premise, in the cloud, at the edge, and even on a Raspberry Pi. NATS can secure and simplify design and operation of modern distributed systems.
 
-[![License][License-Image]][License-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Slack][Slack-Image]][Slack-Url] [![Coverage][Coverage-Image]][Coverage-Url] [![Docker Downloads][Docker-Image]][Docker-Url] [![GitHub Downloads][GitHub-Image]][Somsubhra-URL] [![CII Best Practices][CIIBestPractices-Image]][CIIBestPractices-Url] [![Artifact Hub][ArtifactHub-Image]][ArtifactHub-Url]
-
+[![License][License-Image]][License-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Slack][Slack-Image]][Slack-Url] [![Coverage][Coverage-Image]][Coverage-Url]  [![CII Best Practices][CIIBestPractices-Image]][CIIBestPractices-Url][![OpenSSF Scorecard][OpenSSF-Scorecard-Image]][OpenSSF-Scorecard-Url] [![Artifact Hub][ArtifactHub-Image]][ArtifactHub-Url] [![Docker Downloads][Docker-Image]][Docker-Url] [![GitHub Downloads][GitHub-Image]][Somsubhra-URL]
+ 
 ## Documentation
 
 - [Official Website](https://nats.io)
@@ -45,6 +45,8 @@ If you are interested in contributing to NATS, read about our...
 [ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-server
 [CIIBestPractices-Url]: https://bestpractices.coreinfrastructure.org/projects/1895
 [CIIBestPractices-Image]: https://bestpractices.coreinfrastructure.org/projects/1895/badge
+[OpenSSF-Scorecard-Image]: https://api.securityscorecards.dev/projects/github.com/nats-io/nats-server/badge
+[OpenSSF-Scorecard-Url]: https://securityscorecards.dev/viewer/?uri=github.com/nats-io/nats-server
 [ArtifactHub-Url]: https://artifacthub.io/packages/helm/nats/nats
 [ArtifactHub-Image]: https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/nats
 [GitHub-Release]: https://github.com/nats-io/nats-server/releases/
