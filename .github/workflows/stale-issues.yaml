@@ -1,4 +1,4 @@
-name: stale-issues
+name: Stale Issues
 on:
   schedule:
     - cron: "30 1 * * *"
