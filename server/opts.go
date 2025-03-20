@@ -3280,8 +3280,9 @@ func parseAccountImports(v any, acc *Account, errors *[]error) ([]*importStream,
 
 	var services []*importService
 	var streams []*importStream
-	svcSubjects := map[string]*importService{}
+	svcSubjects := map[string][]*importService{}
 
+IMS_LOOP:
 	for _, v := range ims {
 		// Should have stream or service
 		stream, service, err := parseImportStreamOrService(v, errors)
@@ -3290,16 +3291,20 @@ func parseAccountImports(v any, acc *Account, errors *[]error) ([]*importStream,
 			continue
 		}
 		if service != nil {
-			if dup := svcSubjects[service.to]; dup != nil {
-				tk, _ := unwrapValue(v, &lt)
-				err := &configErr{tk,
-					fmt.Sprintf("Duplicate service import subject %q, previously used in import for account %q, subject %q",
-						service.to, dup.an, dup.sub)}
-				*errors = append(*errors, err)
-				continue
+			sisPerSubj := svcSubjects[service.to]
+			for _, dup := range sisPerSubj {
+				if dup.an == service.an {
+					tk, _ := unwrapValue(v, &lt)
+					err := &configErr{tk,
+						fmt.Sprintf("Duplicate service import subject %q, previously used in import for account %q, subject %q",
+							service.to, dup.an, dup.sub)}
+					*errors = append(*errors, err)
+					continue IMS_LOOP
+				}
 			}
-			svcSubjects[service.to] = service
 			service.acc = acc
+			sisPerSubj = append(sisPerSubj, service)
+			svcSubjects[service.to] = sisPerSubj
 			services = append(services, service)
 		}
 		if stream != nil {
