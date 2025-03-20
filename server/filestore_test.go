@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -9184,6 +9185,117 @@ func TestFileStoreRecoverAfterRemoveOperation(t *testing.T) {
 				// Confirm state as baseline.
 				before := fs.State()
 				test.validate(before)
+
+				// Restart should equal state.
+				require_NoError(t, fs.Stop())
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state of:\n%+v, got:\n%+v", before, state)
+				}
+
+				// Stop and remove stream state file.
+				require_NoError(t, fs.Stop())
+				require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+				// Recovering based on blocks should result in the same state.
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state of:\n%+v, got:\n%+v", before, state)
+				}
+
+				// Rebuilding state must also result in the same state.
+				fs.rebuildState(nil)
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state of:\n%+v, got:\n%+v", before, state)
+				}
+			})
+		})
+	}
+}
+
+func TestFileStoreRecoverAfterCompact(t *testing.T) {
+	/*
+		fs.Compact may rewrite the .blk file if it's large enough. In which case we don't
+		need to write tombstones. But if the rewrite isn't done, tombstones must be placed
+		to ensure we can properly recover without the index.db file.
+	*/
+	for _, test := range []struct {
+		payloadSize    int
+		usesTombstones bool
+	}{
+		{payloadSize: 1024, usesTombstones: true},
+		{payloadSize: 1024 * 1024, usesTombstones: false},
+	} {
+		t.Run(strconv.Itoa(test.payloadSize), func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				subject := "foo"
+				payload := make([]byte, test.payloadSize)
+				for i := 0; i < 4; i++ {
+					_, _, err = fs.StoreMsg(subject, nil, payload, 0)
+					require_NoError(t, err)
+				}
+
+				// Confirm state before compacting.
+				before := fs.State()
+				require_Equal(t, before.Msgs, 4)
+				require_Equal(t, before.FirstSeq, 1)
+				require_Equal(t, before.LastSeq, 4)
+				require_Equal(t, before.Bytes, uint64(emptyRecordLen+len(subject)+test.payloadSize)*4)
+
+				fs.mu.RLock()
+				lmb := fs.lmb
+				fs.mu.RUnlock()
+
+				// Underlying message block should report the same.
+				if fcfg.Cipher == NoCipher && fcfg.Compression == NoCompression {
+					lmb.mu.RLock()
+					bytes, rbytes := lmb.bytes, lmb.rbytes
+					lmb.mu.RUnlock()
+					size := uint64(emptyRecordLen+len(subject)+test.payloadSize) * 4
+					require_Equal(t, bytes, size)
+					require_Equal(t, rbytes, size)
+				}
+
+				// Now compact.
+				purged, err := fs.Compact(4)
+				require_NoError(t, err)
+				require_Equal(t, purged, 3)
+
+				// Confirm state after compacting.
+				// Bytes should reflect only having a single message left.
+				before = fs.State()
+				require_Equal(t, before.Msgs, 1)
+				require_Equal(t, before.FirstSeq, 4)
+				require_Equal(t, before.LastSeq, 4)
+				require_Equal(t, before.Bytes, uint64(emptyRecordLen+len(subject)+test.payloadSize))
+
+				// Underlying message block should report the same.
+				// Unless the compact didn't rewrite the block but used tombstones,
+				// in which case we expect the raw bytes to include them.
+				if fcfg.Cipher == NoCipher && fcfg.Compression == NoCompression {
+					lmb.mu.RLock()
+					bytes, rbytes := lmb.bytes, lmb.rbytes
+					lmb.mu.RUnlock()
+					size := uint64(emptyRecordLen + len(subject) + test.payloadSize)
+					require_Equal(t, bytes, size)
+					if test.usesTombstones {
+						// 4 messages, 3 tombstones
+						size = uint64(emptyRecordLen+len(subject)+test.payloadSize)*4 + uint64(emptyRecordLen)*3
+					}
+					require_Equal(t, rbytes, size)
+				}
 
 				// Restart should equal state.
 				require_NoError(t, fs.Stop())
