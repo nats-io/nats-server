@@ -8116,6 +8116,8 @@ func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error)
 			smb.fss = nil
 			smb.clearCacheAndOffset()
 			smb.rbytes = uint64(len(nbuf))
+			// Make sure we don't write any additional tombstones.
+			tombs = nil
 		}
 	}
 
