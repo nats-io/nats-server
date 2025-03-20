@@ -281,15 +281,17 @@ type AuthCallout struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type Options struct {
-	ConfigFile                 string        `json:"-"`
-	ServerName                 string        `json:"server_name"`
-	Host                       string        `json:"addr"`
-	Port                       int           `json:"port"`
-	DontListen                 bool          `json:"dont_listen"`
-	ClientAdvertise            string        `json:"-"`
-	Trace                      bool          `json:"-"`
-	Debug                      bool          `json:"-"`
-	TraceVerbose               bool          `json:"-"`
+	ConfigFile      string `json:"-"`
+	ServerName      string `json:"server_name"`
+	Host            string `json:"addr"`
+	Port            int    `json:"port"`
+	DontListen      bool   `json:"dont_listen"`
+	ClientAdvertise string `json:"-"`
+	Trace           bool   `json:"-"`
+	Debug           bool   `json:"-"`
+	TraceVerbose    bool   `json:"-"`
+	// TraceHeaders if true will only trace message headers, not the payload
+	TraceHeaders               bool          `json:"-"`
 	NoLog                      bool          `json:"-"`
 	NoSigs                     bool          `json:"-"`
 	NoSublistCache             bool          `json:"-"`
@@ -1001,6 +1003,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.TraceVerbose = v.(bool)
 		o.Trace = v.(bool)
 		trackExplicitVal(&o.inConfig, "TraceVerbose", o.TraceVerbose)
+		trackExplicitVal(&o.inConfig, "Trace", o.Trace)
+	case "trace_headers":
+		o.TraceHeaders = v.(bool)
+		o.Trace = v.(bool)
+		trackExplicitVal(&o.inConfig, "TraceHeaders", o.TraceHeaders)
 		trackExplicitVal(&o.inConfig, "Trace", o.Trace)
 	case "logtime":
 		o.Logtime = v.(bool)

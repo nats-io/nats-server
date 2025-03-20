@@ -139,7 +139,7 @@ func (t *traceOption) Apply(server *Server) {
 	server.Noticef("Reloaded: trace = %v", t.newValue)
 }
 
-// traceOption implements the option interface for the `trace` setting.
+// traceVersboseOption implements the option interface for the `trace_verbose` setting.
 type traceVerboseOption struct {
 	traceLevelOption
 	newValue bool
@@ -148,6 +148,17 @@ type traceVerboseOption struct {
 // Apply is a no-op because logging will be reloaded after options are applied.
 func (t *traceVerboseOption) Apply(server *Server) {
 	server.Noticef("Reloaded: trace_verbose = %v", t.newValue)
+}
+
+// traceHeadersOption implements the option interface for the `trace_headers` setting.
+type traceHeadersOption struct {
+	traceLevelOption
+	newValue bool
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (t *traceHeadersOption) Apply(server *Server) {
+	server.Noticef("Reloaded: trace_headers = %v", t.newValue)
 }
 
 // debugOption implements the option interface for the `debug` setting.
@@ -1231,6 +1242,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		switch optName {
 		case "traceverbose":
 			diffOpts = append(diffOpts, &traceVerboseOption{newValue: newValue.(bool)})
+		case "traceheaders":
+			diffOpts = append(diffOpts, &traceHeadersOption{newValue: newValue.(bool)})
 		case "trace":
 			diffOpts = append(diffOpts, &traceOption{newValue: newValue.(bool)})
 		case "debug":

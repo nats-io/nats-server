@@ -1735,6 +1735,74 @@ func TestTraceMsg(t *testing.T) {
 	}
 }
 
+func TestTraceMsgHeadersOnly(t *testing.T) {
+	c := &client{}
+	// Enable message trace
+	c.trace = true
+
+	hdr := fmt.Sprintf(`NATS/1.0%sFoo: 1%s%s`, CR_LF, CR_LF, CR_LF)
+	hdr2 := fmt.Sprintf(`NATS/1.0%sFoo: 1%sBar: 2%s%s`, CR_LF, CR_LF, CR_LF, CR_LF)
+
+	cases := []struct {
+		Desc            string
+		Msg             []byte
+		Hdr             int
+		Wanted          string
+		MaxTracedMsgLen int
+	}{
+		{
+			Desc:            "payload only",
+			Msg:             []byte(`test\r\n`),
+			Hdr:             0,
+			Wanted:          _EMPTY_,
+			MaxTracedMsgLen: 0,
+		},
+		{
+			Desc:            "header only",
+			Msg:             []byte(hdr),
+			Hdr:             len(hdr),
+			Wanted:          ` - <<- MSG_PAYLOAD: ["NATS/1.0\r\nFoo: 1"]`,
+			MaxTracedMsgLen: 0,
+		},
+		{
+			Desc:            "with header and payload",
+			Msg:             []byte(fmt.Sprintf("%stest%s", hdr, CR_LF)),
+			Hdr:             len(hdr),
+			Wanted:          ` - <<- MSG_PAYLOAD: ["NATS/1.0\r\nFoo: 1"]`,
+			MaxTracedMsgLen: 0,
+		},
+		{
+			Desc:            "max length",
+			Msg:             []byte(hdr),
+			Hdr:             len(hdr),
+			Wanted:          ` - <<- MSG_PAYLOAD: ["NATS/1..."]`,
+			MaxTracedMsgLen: 6,
+		},
+		{
+			Desc:            "two headers max length",
+			Msg:             []byte(hdr2),
+			Hdr:             len(hdr2),
+			Wanted:          ` - <<- MSG_PAYLOAD: ["NATS/1.0\r\nFoo: 1\r\nBar..."]`,
+			MaxTracedMsgLen: 21,
+		},
+	}
+
+	for _, ut := range cases {
+		t.Run(ut.Desc, func(t *testing.T) {
+			c.srv = &Server{
+				opts: &Options{MaxTracedMsgLen: ut.MaxTracedMsgLen, TraceHeaders: true},
+			}
+			c.srv.SetLogger(&DummyLogger{}, true, true)
+			c.pa.hdr = ut.Hdr
+
+			c.traceMsg(ut.Msg)
+
+			got := c.srv.logging.logger.(*DummyLogger).Msg
+			require_Equal(t, string(ut.Wanted), got)
+		})
+	}
+}
+
 func TestClientMaxPending(t *testing.T) {
 	opts := DefaultOptions()
 	opts.MaxPending = math.MaxInt32 + 1
