@@ -5,7 +5,7 @@
 [NATS](https://nats.io) is a simple, secure and performant communications system for digital systems, services and devices. NATS is part of the Cloud Native Computing Foundation ([CNCF](https://cncf.io)). NATS has over [40 client language implementations](https://nats.io/download/), and its server can run on-premise, in the cloud, at the edge, and even on a Raspberry Pi. NATS can secure and simplify design and operation of modern distributed systems.
 
 [![License][License-Image]][License-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Slack][Slack-Image]][Slack-Url] [![Coverage][Coverage-Image]][Coverage-Url] [![CII Best Practices][CIIBestPractices-Image]][CIIBestPractices-Url] [![OpenSSF Scorecard][OpenSSF-Scorecard-Image]][OpenSSF-Scorecard-Url] [![Artifact Hub][ArtifactHub-Image]][ArtifactHub-Url] [![Docker Downloads][Docker-Image]][Docker-Url] [![GitHub Downloads][GitHub-Image]][Somsubhra-URL]
- 
+
 ## Documentation
 
 - [Official Website](https://nats.io)
