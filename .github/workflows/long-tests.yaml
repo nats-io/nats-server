@@ -16,7 +16,7 @@ concurrency:
 jobs:
   js-long:
     name: Long JetStream tests
-    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
