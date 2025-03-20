@@ -2727,8 +2727,10 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		}
 		imports = append(imports, imp)
 	}
-	for _, v := range a.imports.services {
-		imports = append(imports, newExtImport(v))
+	for _, sis := range a.imports.services {
+		for _, v := range sis {
+			imports = append(imports, newExtImport(v))
+		}
 	}
 	responses := map[string]ExtImport{}
 	for k, v := range a.exports.responses {

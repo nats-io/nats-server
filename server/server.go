@@ -1180,9 +1180,11 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 				// Collect the sids for the service imports since we are going to
 				// replace with new ones.
 				var sids [][]byte
-				for _, si := range a.imports.services {
-					if si.sid != nil {
-						sids = append(sids, si.sid)
+				for _, sis := range a.imports.services {
+					for _, si := range sis {
+						if si.sid != nil {
+							sids = append(sids, si.sid)
+						}
 					}
 				}
 				// Setup to process later if needed.
@@ -1297,19 +1299,21 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 				si.acc = v.(*Account)
 			}
 		}
-		for _, si := range acc.imports.services {
-			if v, ok := s.accounts.Load(si.acc.Name); ok {
-				si.acc = v.(*Account)
+		for _, sis := range acc.imports.services {
+			for _, si := range sis {
+				if v, ok := s.accounts.Load(si.acc.Name); ok {
+					si.acc = v.(*Account)
 
-				// It is possible to allow for latency tracking inside your
-				// own account, so lock only when not the same account.
-				if si.acc == acc {
+					// It is possible to allow for latency tracking inside your
+					// own account, so lock only when not the same account.
+					if si.acc == acc {
+						si.se = si.acc.getServiceExport(si.to)
+						continue
+					}
+					si.acc.mu.RLock()
 					si.se = si.acc.getServiceExport(si.to)
-					continue
+					si.acc.mu.RUnlock()
 				}
-				si.acc.mu.RLock()
-				si.se = si.acc.getServiceExport(si.to)
-				si.acc.mu.RUnlock()
 			}
 		}
 		// Make sure the subs are running, but only if not reloading.
@@ -1756,7 +1760,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	// locks on fast path for inbound messages and checking service imports.
 	acc.mu.Lock()
 	if acc.imports.services == nil {
-		acc.imports.services = make(map[string]*serviceImport)
+		acc.imports.services = make(map[string][]*serviceImport)
 	}
 	acc.mu.Unlock()
 
