@@ -3492,16 +3492,16 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 		return info
 	}
 
-	// Wait to accumulate.
-	time.Sleep(500 * time.Millisecond)
-
-	ai := getAccountInfo()
-	if ai.Streams != 3 || ai.Consumers != 3 {
-		t.Fatalf("AccountInfo not correct: %+v", ai)
-	}
-	if ai.API.Total < 7 {
-		t.Fatalf("Expected at least 7 total API calls, got %d", ai.API.Total)
-	}
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		ai := getAccountInfo()
+		if ai.Streams != 3 || ai.Consumers != 3 {
+			return fmt.Errorf("AccountInfo not correct: %+v", ai)
+		}
+		if ai.API.Total < 7 {
+			return fmt.Errorf("Expected at least 7 total API calls, got %d", ai.API.Total)
+		}
+		return nil
+	})
 
 	// Now do a failure to make sure we track API errors.
 	js.StreamInfo("NO-STREAM")
@@ -3509,10 +3509,13 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	js.ConsumerInfo("TEST-2", "NO-CONSUMER")
 	js.ConsumerInfo("TEST-3", "NO-CONSUMER")
 
-	ai = getAccountInfo()
-	if ai.API.Errors != 4 {
-		t.Fatalf("Expected 4 API calls to be errors, got %d", ai.API.Errors)
-	}
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		ai := getAccountInfo()
+		if ai.API.Errors != 4 {
+			return fmt.Errorf("Expected 4 API calls to be errors, got %d", ai.API.Errors)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
