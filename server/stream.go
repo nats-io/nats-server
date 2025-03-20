@@ -6414,7 +6414,6 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	if !fcfg.Created.IsZero() {
 		mset.setCreatedTime(fcfg.Created)
 	}
-	lseq := mset.lastSeq()
 
 	// Make sure we do an update if the configs have changed.
 	if !reflect.DeepEqual(fcfg.StreamConfig, cfg) {
@@ -6465,7 +6464,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			obs.setCreatedTime(cfg.Created)
 		}
 		obs.mu.Lock()
-		err = obs.readStoredState(lseq)
+		err = obs.readStoredState()
 		obs.mu.Unlock()
 		if err != nil {
 			mset.stop(true, false)

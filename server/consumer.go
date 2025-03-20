@@ -1105,7 +1105,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if o.store != nil && o.store.HasState() {
 		// Restore our saved state.
 		o.mu.Lock()
-		o.readStoredState(0)
+		o.readStoredState()
 		o.mu.Unlock()
 	} else {
 		// Select starting sequence number
@@ -1366,7 +1366,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		}
 
 		mset.mu.RLock()
-		s, jsa, stream, lseq := mset.srv, mset.jsa, mset.getCfgName(), mset.lseq
+		s, jsa, stream := mset.srv, mset.jsa, mset.getCfgName()
 		mset.mu.RUnlock()
 
 		o.mu.Lock()
@@ -1377,7 +1377,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		// During non-leader status we just update our underlying store when not clustered.
 		// If clustered we need to propose our initial (possibly skipped ahead) o.sseq to the group.
 		if o.node == nil || o.dseq > 1 || (o.store != nil && o.store.HasState()) {
-			o.readStoredState(lseq)
+			o.readStoredState()
 		} else if o.node != nil && o.sseq >= 1 {
 			o.updateSkipped(o.sseq)
 		}
@@ -2773,14 +2773,10 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 
 // Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
 // Lock should be held.
-func (o *consumer) checkRedelivered(slseq uint64) {
-	var lseq uint64
-	if mset := o.mset; mset != nil {
-		lseq = slseq
-	}
+func (o *consumer) checkRedelivered() {
 	var shouldUpdateState bool
 	for sseq := range o.rdc {
-		if sseq <= o.asflr || (lseq > 0 && sseq > lseq) {
+		if sseq <= o.asflr {
 			delete(o.rdc, sseq)
 			o.removeFromRedeliverQueue(sseq)
 			shouldUpdateState = true
@@ -2796,7 +2792,7 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 
 // This will restore the state from disk.
 // Lock should be held.
-func (o *consumer) readStoredState(slseq uint64) error {
+func (o *consumer) readStoredState() error {
 	if o.store == nil {
 		return nil
 	}
@@ -2804,7 +2800,7 @@ func (o *consumer) readStoredState(slseq uint64) error {
 	if err == nil {
 		o.applyState(state)
 		if len(o.rdc) > 0 {
-			o.checkRedelivered(slseq)
+			o.checkRedelivered()
 		}
 	}
 	return err
@@ -5765,7 +5761,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) {
 	o.mu.Lock()
 	if !o.isLeader() {
-		o.readStoredState(0)
+		o.readStoredState()
 	}
 	start := o.asflr
 	o.mu.Unlock()
