@@ -2033,7 +2033,18 @@ retry:
 			samePeers = slices.Equal(groupPeerIDs, nodePeerIDs)
 		}
 		if !samePeers {
+			// At this point we have no way of knowing:
+			// 1. Whether the group has lost enough nodes to cause a quorum
+			//    loss, in which case a proposal may fail, therefore we will
+			//    force a peerstate write;
+			// 2. Whether nodes in the group have other applies queued up
+			//    that could change the peerstate again, therefore the leader
+			//    should send out a new proposal anyway too just to make sure
+			//    that this change gets captured in the log.
 			node.UpdateKnownPeers(groupPeerIDs)
+			if node.Leader() {
+				node.ProposeKnownPeers(groupPeerIDs)
+			}
 		}
 		rg.node = node
 		js.mu.Unlock()
