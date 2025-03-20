@@ -8193,6 +8193,94 @@ func TestJetStreamClusterInterestPolicyAckAll(t *testing.T) {
 	expectedStreamMsgs(50)
 }
 
+func TestJetStreamClusterPreserveRedeliveredWithLaggingStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "CONSUMER", nats.AckWait(500*time.Millisecond))
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_NoError(t, msgs[0].AckSync())
+
+	rsf := c.randomNonStreamLeader(globalAccountName, "TEST")
+	acc, err := rsf.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	require_NoError(t, mset.raftNode().PauseApply())
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Move consumer leader to equal stream leader.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	req := JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: sl.Name()}}
+	data, err := json.Marshal(req)
+	require_NoError(t, err)
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "CONSUMER"), data, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_Equal(t, c.consumerLeader(globalAccountName, "TEST", "CONSUMER").Name(), sl.Name())
+
+	// Get the message to be stored in redelivered state.
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	meta, err := msgs[0].Metadata()
+	require_NoError(t, err)
+	require_Equal(t, meta.NumDelivered, 1)
+
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	meta, err = msgs[0].Metadata()
+	require_NoError(t, err)
+	require_Equal(t, meta.NumDelivered, 2)
+
+	// Move consumer leader to a different server.
+	req = JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: rsf.Name()}}
+	data, err = json.Marshal(req)
+	require_NoError(t, err)
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "CONSUMER"), data, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_Equal(t, c.consumerLeader(globalAccountName, "TEST", "CONSUMER").Name(), rsf.Name())
+
+	// Confirming the stream contents of the consumer leader don't contain the message yet.
+	msgs, err = sub.Fetch(1, nats.MaxWait(time.Second))
+	require_Error(t, err, nats.ErrTimeout)
+	require_Len(t, len(msgs), 0)
+
+	// Now let it apply the missing message.
+	mset.raftNode().ResumeApply()
+
+	// Should preserve delivered state properly, otherwise the client would observe NumDelivered rolled back.
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	meta, err = msgs[0].Metadata()
+	require_NoError(t, err)
+	require_Equal(t, meta.NumDelivered, 3)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
