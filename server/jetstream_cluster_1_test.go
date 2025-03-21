@@ -3854,29 +3854,33 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	newContent := strings.ReplaceAll(string(content), fmt.Sprintf(", %s]", jsExcludePlacement), "]")
 	changeCurrentConfigContentWithNewContent(t, srv.configFile, []byte(newContent))
 
-	ncSys := natsConnect(t, c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
-	defer ncSys.Close()
-	sub, err := ncSys.SubscribeSync(fmt.Sprintf("$SYS.SERVER.%s.STATSZ", srv.ID()))
-	require_NoError(t, err)
-
-	// Ensure the subscription is known by the server we're connected to,
-	// but also by the other servers in the cluster.
-	require_NoError(t, ncSys.Flush())
-	time.Sleep(100 * time.Millisecond)
-
 	require_NoError(t, srv.Reload())
+	srv.sendStatszUpdate()
+
 	v, err = srv.Varz(nil)
 	require_NoError(t, err)
 	require_True(t, !v.Tags.Contains(jsExcludePlacement))
 
-	// it is possible that sub already received a statsz message prior to reload, retry once
-	cmp := false
-	for i := 0; i < 2 && !cmp; i++ {
-		m, err := sub.NextMsg(time.Second)
-		require_NoError(t, err)
-		cmp = strings.Contains(string(m.Data), `"tags":["server:s-1","intersect"]`)
-	}
-	require_True(t, cmp)
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			var err error
+			s.nodeToInfo.Range(func(sn any, value any) bool {
+				ni := value.(nodeInfo)
+				if ni.name != "S-1" {
+					return true
+				}
+				if ni.tags.Contains("!jetstream") {
+					err = fmt.Errorf("%s still has jetstream exclude tag", sn)
+					return false
+				}
+				return true
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
