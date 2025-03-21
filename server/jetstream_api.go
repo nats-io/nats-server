@@ -883,18 +883,37 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// If we are here we have received this request over a non-client connection.
 	// We need to make sure not to block. We will send the request to a long-lived
 	// pool of go routines.
-
-	// Increment inflight. Do this before queueing.
-	atomic.AddInt64(&js.apiInflight, 1)
-
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
 	// Check pending and warn if getting backed up.
-	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
 	limit := atomic.LoadInt64(&js.queueLimit)
+retry:
+	atomic.AddInt64(&js.apiInflight, 1)
+	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
 	if pending >= int(limit) {
-		s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", pending)
+		if _, ok := s.jsAPIRoutedReqs.popOne(); ok {
+			// If we were able to take one of the oldest items off the queue, then
+			// retry the insert.
+			s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping oldest request")
+			atomic.AddInt64(&js.apiInflight, -1)
+			s.publishAdvisory(nil, JSAdvisoryAPILimitReached, JSAPILimitReachedAdvisory{
+				TypedEvent: TypedEvent{
+					Type: JSAPILimitReachedAdvisoryType,
+					ID:   nuid.Next(),
+					Time: time.Now().UTC(),
+				},
+				Server:  s.Name(),
+				Domain:  js.config.Domain,
+				Dropped: 1,
+			})
+			goto retry
+		}
+
+		// It's likely not possible to get to this point, but if for some reason we have got here,
+		// then something is wrong for us to be both over the limit but unable to pull entries, so
+		// throw everything away and hope we recover from it.
 		drained := int64(s.jsAPIRoutedReqs.drain())
+		s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", drained)
 		atomic.AddInt64(&js.apiInflight, -drained)
 
 		s.publishAdvisory(nil, JSAdvisoryAPILimitReached, JSAPILimitReachedAdvisory{
@@ -926,7 +945,7 @@ func (s *Server) processJSAPIRoutedRequests() {
 			// Only pop one item at a time here, otherwise if the system is recovering
 			// from queue buildup, then one worker will pull off all the tasks and the
 			// others will be starved of work.
-			for r, ok := queue.popOne(); ok && r != nil; r, ok = queue.popOne() {
+			for r, ok := queue.popOneLast(); ok && r != nil; r, ok = queue.popOneLast() {
 				client.pa = r.pa
 				start := time.Now()
 				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
