@@ -1109,3 +1109,31 @@ func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesExclude(b *testing.B) {
 		}
 	}
 }
+
+func Benchmark_MemStoreSubjectStateConsistencyOptimizationPerf(b *testing.B) {
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: MemoryStorage, MaxMsgsPer: 1}
+	ms, err := newMemStore(cfg)
+	require_NoError(b, err)
+	defer ms.Stop()
+
+	// Do R rounds of storing N messages.
+	// MaxMsgsPer=1, so every unique subject that's placed only exists in the stream once.
+	// If R=2, N=3 that means we'd place foo.0, foo.1, foo.2 in the first round, and the second
+	// round we'd place foo.2, foo.1, foo.0, etc. This is intentional so that without any
+	// optimizations we'd need to scan either 1 in the optimal case or N in the worst case.
+	// Which is way more expensive than always knowing what the sequences are and it being O(1).
+	r := max(2, b.N)
+	n := 40_000
+	b.ResetTimer()
+	for i := 0; i < r; i++ {
+		for j := 0; j < n; j++ {
+			d := j
+			if i%2 == 0 {
+				d = n - j - 1
+			}
+			subject := fmt.Sprintf("foo.%d", d)
+			_, _, err = ms.StoreMsg(subject, nil, nil)
+			require_NoError(b, err)
+		}
+	}
+}
