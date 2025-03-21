@@ -1546,7 +1546,7 @@ func TestServiceImportWithWildcards(t *testing.T) {
 	checkPayload(crBar, []byte("22\r\n"), t)
 
 	// Remove the service import with the wildcard and make sure hasWC is cleared.
-	barAcc.removeServiceImport("test.*")
+	barAcc.removeServiceImport(fooAcc.Name, "test.*")
 
 	barAcc.mu.Lock()
 	defer barAcc.mu.Unlock()
@@ -2423,6 +2423,167 @@ func TestAccountDuplicateServiceImportSubject(t *testing.T) {
 	if err := barAcc.AddServiceImport(fooAcc, "foo", "remote2"); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("Expected an error about duplicate service import subject, got %q", err)
 	}
+
+	// However, it is allowed to add more than one service import
+	// on the same subject for different exporting accounts
+	bazAcc, _ := s.RegisterAccount("baz")
+	bazAcc.AddServiceExport("remote1", nil)
+	if err := barAcc.AddServiceImport(bazAcc, "foo", "remote1"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	batAcc, _ := s.RegisterAccount("bat")
+	batAcc.AddServiceExport("remote1", nil)
+	if err := barAcc.AddServiceImport(batAcc, "foo", "remote1"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// But again, can't add for one that has been already added, say bazAcc.
+	if err := barAcc.AddServiceImport(bazAcc, "foo", "remote1"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("Expected an error about duplicate service import subject, got %q", err)
+	}
+}
+
+func TestAccountRemoveServiceImport(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	fooAcc, _ := s.RegisterAccount("foo")
+	fooAcc.AddServiceExport("remote1", nil)
+
+	barAcc, _ := s.RegisterAccount("bar")
+	err := barAcc.AddServiceImport(fooAcc, "foo", "remote1")
+	require_NoError(t, err)
+
+	bazAcc, _ := s.RegisterAccount("baz")
+	bazAcc.AddServiceExport("remote1", nil)
+	err = barAcc.AddServiceImport(bazAcc, "foo", "remote1")
+	require_NoError(t, err)
+
+	batAcc, _ := s.RegisterAccount("bat")
+	batAcc.AddServiceExport("remote1", nil)
+	err = barAcc.AddServiceImport(batAcc, "foo", "remote1")
+	require_NoError(t, err)
+
+	// Check that we can get the service import we expect
+	checkGetSI := func(acc, subj string) bool {
+		barAcc.mu.RLock()
+		defer barAcc.mu.RUnlock()
+		si := barAcc.getServiceImportForAccountLocked(acc, subj)
+		if si == nil {
+			return false
+		}
+		return si.acc.Name == acc
+	}
+	require_False(t, checkGetSI("nonsense", "foo"))
+	require_False(t, checkGetSI("foo", "nonsense"))
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+
+	// Remove service imports one by one and check expected map content.
+
+	// Try first to remove one that does not exists, because of subject
+	// or because of account.
+	barAcc.removeServiceImport("nonsense", "foo")
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+	barAcc.removeServiceImport("baz", "nonsense")
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+
+	// Remove the 2nd account that was added
+	barAcc.removeServiceImport("baz", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+
+	// Remove the last account that was added
+	barAcc.removeServiceImport("bat", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+
+	// There is only one left, make sure that we still properly check
+	// for appropriate subject and account name.
+	barAcc.removeServiceImport("nonsense", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+	barAcc.removeServiceImport("foo", "nonsense")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+
+	// Remove the first account that was added
+	barAcc.removeServiceImport("foo", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_False(t, checkGetSI("foo", "foo"))
+
+	// Make sure that the service import map is cleared
+	barAcc.mu.RLock()
+	sis, ok := barAcc.imports.services["foo"]
+	barAcc.mu.RUnlock()
+	require_False(t, ok)
+	require_Len(t, len(sis), 0)
+}
+
+func TestAccountMultipleServiceImportsWithSameSubjectFromDifferentAccounts(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		accounts: {
+			SVC-E: {
+				users: [ { user:svc-e, password:svc-e } ]
+				exports: [ { accounts: [CLIENTS], service: "SvcReq.>", response_type: singleton } ]
+			}
+
+			SVC-W: {
+				users: [ { user:svc-w, password:svc-w } ]
+				exports: [ { accounts: [CLIENTS], service: "SvcReq.>", response_type: singleton } ]
+			}
+
+			CLIENTS: {
+				users: [ { user:cl, password:cl } ]
+				imports: [
+					{ service: { account: SVC-E, subject: "SvcReq.>" } }
+					{ service: { account: SVC-W, subject: "SvcReq.>" } }
+				]
+			}
+		}
+		listen: "127.0.0.1:-1"
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncE := natsConnect(t, s.ClientURL(), nats.UserInfo("svc-e", "svc-e"))
+	defer ncE.Close()
+	natsSub(t, ncE, "SvcReq.>", func(m *nats.Msg) {
+		m.Respond([]byte("From SVC-E"))
+	})
+	natsFlush(t, ncE)
+
+	ncW := natsConnect(t, s.ClientURL(), nats.UserInfo("svc-w", "svc-w"))
+	defer ncW.Close()
+	natsSub(t, ncW, "SvcReq.>", func(m *nats.Msg) {
+		m.Respond([]byte("From SVC-W"))
+	})
+	natsFlush(t, ncW)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("cl", "cl"))
+	defer nc.Close()
+	sub := natsSubSync(t, nc, nats.NewInbox())
+	natsPubReq(t, nc, "SvcReq.Test", sub.Subject, []byte("test"))
+	msg1 := natsNexMsg(t, sub, time.Second)
+	msg2 := natsNexMsg(t, sub, time.Second)
+	m1 := string(msg1.Data)
+	m2 := string(msg2.Data)
+	if (m1 == "From SVC-E" && m2 == "From SVC-W") || (m1 == "From SVC-W" && m2 == "From SVC-E") {
+		// Ok
+		return
+	}
+	t.Fatalf("Unexpected responses: m1=%s m2=%s", m1, m2)
 }
 
 func TestMultipleStreamImportsWithSameSubjectDifferentPrefix(t *testing.T) {

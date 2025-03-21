@@ -5809,8 +5809,14 @@ func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
 		CLOUD {
 			exports [ { service: "downlink.>" } ]
 		}
+		CLOUD2 {
+			exports [ { service: "downlink.>" } ]
+		}
 		APP {
-			imports [ { service: { account: CLOUD, subject: "downlink.>"}, to: "event.>"} ]
+			imports [
+				{ service: { account: CLOUD, subject: "downlink.>"}, to: "event.>"}
+				{ service: { account: CLOUD2, subject: "downlink.>"}, to: "event.>"}
+			]
 		}
 	}`))
 
@@ -5823,14 +5829,18 @@ func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
 	require_True(t, len(az.Account.Imports) > 0)
 
 	var found bool
+	m := map[string]struct{}{}
 	for _, si := range az.Account.Imports {
 		if si.Import.Subject == "downlink.>" {
 			found = true
 			require_True(t, si.Import.LocalSubject == "event.>")
-			break
+			m[si.Import.Account] = struct{}{}
 		}
 	}
 	require_True(t, found)
+	if len(m) != 2 {
+		t.Fatalf("Expected imports from CLOUD and CLOUD2, got %v", m)
+	}
 }
 
 // createCallbackURL adds a callback query parameter for JSONP requests.

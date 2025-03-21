@@ -2284,10 +2284,11 @@ func (s *Server) registerSystemImports(a *Account) {
 	if sacc == nil || sacc == a {
 		return
 	}
+	dstAccName := sacc.Name
 	// FIXME(dlc) - make a shared list between sys exports etc.
 
 	importSrvc := func(subj, mappedSubj string) {
-		if !a.serviceImportExists(subj) {
+		if !a.serviceImportExists(dstAccName, subj) {
 			if err := a.addServiceImportWithClaim(sacc, subj, mappedSubj, nil, true); err != nil {
 				s.Errorf("Error setting up system service import %s -> %s for account: %v",
 					subj, mappedSubj, err)
@@ -2824,8 +2825,6 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 	si.rc = nil
 	acc.mu.Unlock()
 
-	// Make sure we remove the entry here.
-	acc.removeServiceImport(si.from)
 	// Send the metrics
 	s.sendInternalAccountMsg(acc, lsub, m1)
 }
