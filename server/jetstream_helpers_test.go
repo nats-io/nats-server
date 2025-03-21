@@ -1599,8 +1599,13 @@ func (c *cluster) waitOnAccount(account string) {
 	for time.Now().Before(expires) {
 		found := true
 		for _, s := range c.servers {
+			s.optsMu.RLock()
+			wantJS := s.opts.JetStream
+			s.optsMu.RUnlock()
 			acc, err := s.fetchAccount(account)
-			found = found && err == nil && acc != nil
+			if found = found && err == nil && acc != nil; wantJS {
+				found = found && acc.JetStreamEnabled()
+			}
 		}
 		if found {
 			return
