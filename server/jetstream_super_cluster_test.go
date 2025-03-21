@@ -2404,9 +2404,12 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			})
 			require_NoError(t, err)
 
-			if si.Cluster.Name != "C1" {
-				t.Fatalf("Expected cluster of %q but got %q", "C1", si.Cluster.Name)
-			}
+			checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+				if si.Cluster.Name != "C1" {
+					return fmt.Errorf("Expected cluster of %q but got %q", "C1", si.Cluster.Name)
+				}
+				return nil
+			})
 
 			// Make sure we can not move an inflight stream and consumers, should error.
 			_, err = js.UpdateStream(&nats.StreamConfig{

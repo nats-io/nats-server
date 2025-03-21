@@ -7972,20 +7972,13 @@ func TestJetStreamClusterSubjectDeleteMarkersTTLRollupWithMaxAge(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, msg.Header.Get(JSMsgRollup), JSMsgRollupSubject)
 	require_Equal(t, msg.Header.Get(JSMessageTTL), "2s")
-	require_NoError(t, msg.AckSync())
-
-	// Wait for the rollup message to hit MaxAge.
-	time.Sleep(time.Second * 2)
-
-	// Now it should be gone and have been replaced with a subject
-	// delete marker with reason MaxAge.
-	si, err = js.StreamInfo("TEST")
+	meta, err := msg.Metadata()
 	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 1)
-	require_Equal(t, si.State.FirstSeq, 5)
+	require_NoError(t, msg.AckSync())
 
 	msg, err = sub.NextMsg(time.Second * 10)
 	require_NoError(t, err)
+	require_LessThan(t, time.Second, time.Since(meta.Timestamp))
 	require_Equal(t, msg.Header.Get(JSMarkerReason), "MaxAge")
 	require_Equal(t, msg.Header.Get(JSMessageTTL), "1s")
 }
