@@ -7355,7 +7355,11 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 		t.Helper()
 		checkFor(t, 5*time.Second, time.Second, func() error {
 			for _, s := range c.servers {
-				if s.getJetStream().streamAssignment(globalAccountName, "TEST") == nil {
+				js := s.getJetStream()
+				js.mu.RLock()
+				sa := js.streamAssignment(globalAccountName, "TEST")
+				js.mu.RUnlock()
+				if sa == nil {
 					return fmt.Errorf("stream assignment not found on %s", s.Name())
 				}
 			}
@@ -7366,7 +7370,11 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 		t.Helper()
 		checkFor(t, 5*time.Second, time.Second, func() error {
 			for _, s := range c.servers {
-				if s.getJetStream().streamAssignment(globalAccountName, "TEST") != nil {
+				js := s.getJetStream()
+				js.mu.RLock()
+				sa := js.streamAssignment(globalAccountName, "TEST")
+				js.mu.RUnlock()
+				if sa != nil {
 					return fmt.Errorf("stream assignment still available on %s", s.Name())
 				}
 			}
