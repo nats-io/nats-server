@@ -513,3 +513,26 @@ func TestStoreTruncateCleansUpDmap(t *testing.T) {
 		})
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/6709
+func TestStorePurgeExZero(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "TEST", Subjects: []string{"foo"}},
+		func(t *testing.T, fs StreamStore) {
+			// Simple purge all.
+			_, err := fs.Purge()
+			require_NoError(t, err)
+			ss := fs.State()
+			require_Equal(t, ss.FirstSeq, 1)
+			require_Equal(t, ss.LastSeq, 0)
+
+			// PurgeEx(seq=0) must be equal.
+			_, err = fs.PurgeEx(_EMPTY_, 0, 0)
+			require_NoError(t, err)
+			ss = fs.State()
+			require_Equal(t, ss.FirstSeq, 1)
+			require_Equal(t, ss.LastSeq, 0)
+		},
+	)
+}
