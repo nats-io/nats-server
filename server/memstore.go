@@ -1150,10 +1150,7 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarker
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
 func (ms *memStore) Purge() (uint64, error) {
-	ms.mu.RLock()
-	first := ms.state.LastSeq + 1
-	ms.mu.RUnlock()
-	return ms.purge(first, false)
+	return ms.purge(0, false)
 }
 
 func (ms *memStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
@@ -1165,7 +1162,9 @@ func (ms *memStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
 	purged := uint64(len(ms.msgs))
 	cb := ms.scb
 	bytes := int64(ms.state.Bytes)
-	if fseq < ms.state.LastSeq {
+	if fseq == 0 {
+		fseq = ms.state.LastSeq + 1
+	} else if fseq < ms.state.LastSeq {
 		ms.mu.Unlock()
 		return 0, fmt.Errorf("partial purges not supported on memory store")
 	}
