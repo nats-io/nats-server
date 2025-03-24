@@ -577,8 +577,15 @@ func TestJetStreamSuperClusterConsumerStepDown(t *testing.T) {
 		require_Equal(t, sdr.Error, nil)
 
 		c.waitOnConsumerLeader(globalAccountName, "foo", "consumer")
-		cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer")
-		require_Equal(t, cl.Name(), preferredServer)
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			if cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer"); cl == nil {
+				return fmt.Errorf("consumer leader is nil")
+			}
+			if cl.Name() != preferredServer {
+				return fmt.Errorf("consumer leader %q is not preferred %q", cl.Name(), preferredServer)
+			}
+			return nil
+		})
 	})
 
 	// Influence the placement by using the cluster name. For consumers this doesn't really
@@ -595,9 +602,15 @@ func TestJetStreamSuperClusterConsumerStepDown(t *testing.T) {
 		require_Equal(t, sdr.Error, nil)
 
 		c.waitOnConsumerLeader(globalAccountName, "foo", "consumer")
-		cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer")
-		require_NotNil(t, cl)
-		require_Equal(t, cl.ClusterName(), "C1")
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			if cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer"); cl == nil {
+				return fmt.Errorf("consumer leader is nil")
+			}
+			if cl.ClusterName() != "C1" {
+				return fmt.Errorf("consumer leader %q is not in cluster C1", cl.Name())
+			}
+			return nil
+		})
 	})
 
 	// Influence the placement by using tag names.
@@ -628,9 +641,15 @@ func TestJetStreamSuperClusterConsumerStepDown(t *testing.T) {
 		require_Equal(t, sdr.Error, nil)
 
 		c.waitOnConsumerLeader(globalAccountName, "foo", "consumer")
-		cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer")
-		require_NotNil(t, cl)
-		require_True(t, cl.getOpts().Tags.Contains(chosenTag))
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			if cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer"); cl == nil {
+				return fmt.Errorf("consumer leader is nil")
+			}
+			if !cl.getOpts().Tags.Contains(chosenTag) {
+				return fmt.Errorf("consumer leader %q doesn't contain tag %q", cl.Name(), chosenTag)
+			}
+			return nil
+		})
 	})
 
 	// Influence the placement by using tag names, we need to match all of them.
@@ -661,10 +680,18 @@ func TestJetStreamSuperClusterConsumerStepDown(t *testing.T) {
 		require_Equal(t, sdr.Error, nil)
 
 		c.waitOnConsumerLeader(globalAccountName, "foo", "consumer")
-		cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer")
-		require_NotNil(t, cl)
-		require_True(t, cl.getOpts().Tags.Contains(chosenTag))
-		require_True(t, cl.getOpts().Tags.Contains("cloud:aws"))
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			if cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer"); cl == nil {
+				return fmt.Errorf("consumer leader is nil")
+			}
+			if !cl.getOpts().Tags.Contains(chosenTag) {
+				return fmt.Errorf("consumer leader %q doesn't contain tag %q", cl.Name(), chosenTag)
+			}
+			if !cl.getOpts().Tags.Contains("cloud:aws") {
+				return fmt.Errorf("consumer leader %q isn't in cloud:aws", cl.Name())
+			}
+			return nil
+		})
 	})
 
 	// Influence the placement by using the cluster name and a tag. Like with
@@ -698,10 +725,22 @@ func TestJetStreamSuperClusterConsumerStepDown(t *testing.T) {
 
 		c.waitOnConsumerLeader(globalAccountName, "foo", "consumer")
 		cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer")
-		require_NotNil(t, cl)
-		require_True(t, cl.getOpts().Tags.Contains(chosenTag))
-		require_True(t, cl.getOpts().Tags.Contains("cloud:aws"))
-		require_Equal(t, cl.ClusterName(), "C1")
+
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			if cl = sc.clusterForName("C1").consumerLeader(globalAccountName, "foo", "consumer"); cl == nil {
+				return fmt.Errorf("consumer leader is nil")
+			}
+			if cl.ClusterName() != "C1" {
+				return fmt.Errorf("consumer leader %q is not in cluster C1", cl.Name())
+			}
+			if !cl.getOpts().Tags.Contains(chosenTag) {
+				return fmt.Errorf("consumer leader %q doesn't contain tag %q", cl.Name(), chosenTag)
+			}
+			if !cl.getOpts().Tags.Contains("cloud:aws") {
+				return fmt.Errorf("consumer leader %q isn't in cloud:aws", cl.Name())
+			}
+			return nil
+		})
 	})
 }
 
