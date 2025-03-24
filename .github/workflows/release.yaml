@@ -4,6 +4,9 @@ on:
     tags:
       - v*
 
+permissions:
+  contents: write
+
 jobs:
   run:
     name: GitHub Release
