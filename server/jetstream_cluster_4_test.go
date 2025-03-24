@@ -5055,3 +5055,36 @@ func TestJetStreamClusterCreateStreamPerf(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterTTLAndDedupe(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:      "TEST",
+		Retention: LimitsPolicy,
+		Storage:   FileStorage,
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo")
+	m.Header.Add(JSMsgId, "msgId")
+	m.Header.Add(JSMessageTTL, "10s")
+	_, err = js.PublishMsg(m)
+	require_Error(t, err, NewJSMessageTTLDisabledError())
+
+	// Retrying should get TTL disabled still, not any other error.
+	_, err = js.PublishMsg(m)
+	require_Error(t, err, NewJSMessageTTLDisabledError())
+
+	// Send without TTL should succeed.
+	m.Header.Del(JSMessageTTL)
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+}
