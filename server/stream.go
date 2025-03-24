@@ -489,10 +489,11 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Sensible defaults.
-	cfg, apiErr := s.checkStreamCfg(config, a, pedantic)
+	ccfg, apiErr := s.checkStreamCfg(config, a, pedantic)
 	if apiErr != nil {
 		return nil, apiErr
 	}
+	cfg := &ccfg
 
 	singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
 	if singleServerMode && cfg.Replicas > 1 {
@@ -533,7 +534,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			s.setIndexName()
 		}
 
-		if reflect.DeepEqual(ocfg, cfg) {
+		copyStreamMetadata(cfg, &ocfg)
+		if reflect.DeepEqual(cfg, &ocfg) {
 			if sa != nil {
 				mset.setStreamAssignment(sa)
 			}
@@ -547,7 +549,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	jsa.usageMu.RUnlock()
 	reserved := int64(0)
 	if !isClustered {
-		reserved = jsa.tieredReservation(tier, &cfg)
+		reserved = jsa.tieredReservation(tier, cfg)
 	}
 	jsa.mu.Unlock()
 
@@ -556,9 +558,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 	js.mu.RLock()
 	if isClustered {
-		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, &cfg)
+		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, cfg)
 	}
-	if err := js.checkAllLimits(&selected, &cfg, reserved, 0); err != nil {
+	if err := js.checkAllLimits(&selected, cfg, reserved, 0); err != nil {
 		js.mu.RUnlock()
 		return nil, err
 	}
@@ -651,7 +653,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	mset := &stream{
 		acc:       a,
 		jsa:       jsa,
-		cfg:       cfg,
+		cfg:       *cfg,
 		js:        js,
 		srv:       s,
 		client:    c,

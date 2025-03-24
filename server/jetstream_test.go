@@ -25989,3 +25989,137 @@ func TestJetStreamRecoversStreamFirstSeqWhenEmpty(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, 1001)
 	require_Equal(t, si.State.LastSeq, 1000)
 }
+
+func TestJetStreamUpgradeStreamVersioning(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+
+	// Create stream config.
+	cfg, apiErr := s.checkStreamCfg(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}}, acc, false)
+	require_True(t, apiErr == nil)
+
+	// Create stream.
+	mset, err := acc.addStream(&cfg)
+	require_NoError(t, err)
+	require_True(t, mset.cfg.Metadata == nil)
+
+	for _, create := range []bool{true, false} {
+		title := "create"
+		if !create {
+			title = "update"
+		}
+		t.Run(title, func(t *testing.T) {
+			if create {
+				// Create on 2.11+ should be idempotent with previous create on 2.10-.
+				mcfg := &StreamConfig{}
+				setStaticStreamMetadata(mcfg)
+				si, err := js.AddStream(&nats.StreamConfig{
+					Name:     "TEST",
+					Subjects: []string{"foo"},
+					Metadata: setDynamicStreamMetadata(mcfg).Metadata,
+				})
+				require_NoError(t, err)
+				deleteDynamicMetadata(si.Config.Metadata)
+				require_Len(t, len(si.Config.Metadata), 0)
+			} else {
+				// Update populates the versioning metadata.
+				si, err := js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+				require_NoError(t, err)
+				require_Len(t, len(si.Config.Metadata), 3)
+			}
+		})
+	}
+}
+
+func TestJetStreamUpgradeConsumerVersioning(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Create consumer config.
+	cfg := &ConsumerConfig{Durable: "CONSUMER"}
+	selectedLimits, _, _, apiErr := acc.selectLimits(cfg.replicas(&mset.cfg))
+	if apiErr != nil {
+		require_NoError(t, apiErr)
+	}
+	srvLim := &s.getOpts().JetStreamLimits
+	apiErr = setConsumerConfigDefaults(cfg, &mset.cfg, srvLim, selectedLimits, false)
+	if apiErr != nil {
+		require_NoError(t, apiErr)
+	}
+
+	// Create consumer.
+	_, err = mset.addConsumer(cfg)
+	require_NoError(t, err)
+
+	for _, create := range []bool{true, false} {
+		title := "create"
+		if !create {
+			title = "update"
+		}
+		t.Run(title, func(t *testing.T) {
+			createConsumerRequest := func(obsReq CreateConsumerRequest) (*JSApiConsumerInfoResponse, error) {
+				req, err := json.Marshal(obsReq)
+				if err != nil {
+					return nil, err
+				}
+				msg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "CONSUMER"), req, time.Second)
+				if err != nil {
+					return nil, err
+				}
+				var resp JSApiConsumerInfoResponse
+				require_NoError(t, json.Unmarshal(msg.Data, &resp))
+				if resp.Error != nil {
+					return nil, resp.Error
+				}
+				return &resp, nil
+			}
+
+			if create {
+				// Create on 2.11+ should be idempotent with previous create on 2.10-.
+				ncfg := &ConsumerConfig{Durable: "CONSUMER"}
+				setStaticConsumerMetadata(ncfg)
+				obsReq := CreateConsumerRequest{
+					Stream: "TEST",
+					Config: *setDynamicConsumerMetadata(ncfg),
+					Action: ActionCreate,
+				}
+				resp, err := createConsumerRequest(obsReq)
+				require_NoError(t, err)
+				deleteDynamicMetadata(resp.Config.Metadata)
+				require_Len(t, len(resp.Config.Metadata), 0)
+			} else {
+				// Update populates the versioning metadata.
+				obsReq := CreateConsumerRequest{
+					Stream: "TEST",
+					Config: ConsumerConfig{Durable: "CONSUMER"},
+					Action: ActionUpdate,
+				}
+				resp, err := createConsumerRequest(obsReq)
+				require_NoError(t, err)
+				require_Len(t, len(resp.Config.Metadata), 3)
+			}
+		})
+	}
+}
