@@ -945,7 +945,9 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 		t.Fatalf("Got a bad response %+v", dResp.Error)
 	}
 	// Delete the consumer on S1 but add another.
-	resp, _ = nc.Request(fmt.Sprintf(JSApiConsumerDeleteT, "S1", "S1C1"), nil, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(JSApiConsumerDeleteT, "S1", "S1C1"), nil, time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, resp)
 	var cdResp JSApiConsumerDeleteResponse
 	if err = json.Unmarshal(resp.Data, &cdResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
