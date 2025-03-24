@@ -4,7 +4,7 @@ version: 2
 release:
   github:
     owner: '{{ envOrDefault "GITHUB_REPOSITORY_OWNER" "nats-io" }}'
-    name: nats-server
+    name: '{{ envOrDefault "GITHUB_REPOSITORY_NAME" "nats-server" }}'
   name_template: "Release {{.Tag}}"
   draft: true
 
