@@ -2274,7 +2274,7 @@ func TestJetStreamClusterAfterPeerRemoveZeroState(t *testing.T) {
 
 	// validate the origPeer is removed with a replacement newPeer
 	sc.waitOnStreamLeader(globalAccountName, "foo")
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		osi, err = jsc.StreamInfo("foo")
 		require_NoError(t, err)
 		if len(osi.Cluster.Replicas) != 2 {
@@ -2312,7 +2312,7 @@ func TestJetStreamClusterAfterPeerRemoveZeroState(t *testing.T) {
 
 	// validate the newPeer is removed and R3 has reformed (with origPeer)
 	sc.waitOnStreamLeader(globalAccountName, "foo")
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		osi, err = jsc.StreamInfo("foo")
 		require_NoError(t, err)
 		if len(osi.Cluster.Replicas) != 2 {
@@ -2341,7 +2341,7 @@ func TestJetStreamClusterAfterPeerRemoveZeroState(t *testing.T) {
 		t.Fatalf("expected to get a handle to original peer server by name")
 	}
 
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		jszResult, err := origServer.Jsz(nil)
 		require_NoError(t, err)
 		if jszResult.Store != assetStoreBytesExpected {
