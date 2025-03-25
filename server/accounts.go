@@ -3426,15 +3426,16 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		clients := map[*client]struct{}{}
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
+
+		// We must only allow one goroutine to go through here, otherwise we could deadlock
+		// due to locking two accounts in succession.
+		s.mu.Lock()
 		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			// Move to the next if this account is actually account "a".
 			if acc.Name == a.Name {
 				return true
 			}
-			// TODO: checkStreamImportAuthorized() stack should not be trying
-			// to lock "acc". If we find that to be needed, we will need to
-			// rework this to ensure we don't lock acc.
 			acc.mu.Lock()
 			for _, im := range acc.imports.streams {
 				if im != nil && im.acc.Name == a.Name {
@@ -3449,6 +3450,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			acc.mu.Unlock()
 			return true
 		})
+		s.mu.Unlock()
 		// Now walk clients.
 		for c := range clients {
 			c.processSubsOnConfigReload(awcsti)
@@ -3456,15 +3458,15 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 	// Now check if service exports have changed.
 	if !a.checkServiceExportsEqual(old) || signersChanged || serviceTokenExpirationChanged {
+		// We must only allow one goroutine to go through here, otherwise we could deadlock
+		// due to locking two accounts in succession.
+		s.mu.Lock()
 		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			// Move to the next if this account is actually account "a".
 			if acc.Name == a.Name {
 				return true
 			}
-			// TODO: checkServiceImportAuthorized() stack should not be trying
-			// to lock "acc". If we find that to be needed, we will need to
-			// rework this to ensure we don't lock acc.
 			acc.mu.Lock()
 			for _, si := range acc.imports.services {
 				if si != nil && si.acc.Name == a.Name {
@@ -3481,6 +3483,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			acc.mu.Unlock()
 			return true
 		})
+		s.mu.Unlock()
 	}
 
 	// Now make sure we shutdown the old service import subscriptions.
