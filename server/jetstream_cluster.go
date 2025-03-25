@@ -2037,7 +2037,24 @@ retry:
 			samePeers = slices.Equal(groupPeerIDs, nodePeerIDs)
 		}
 		if !samePeers {
+			// At this point we have no way of knowing:
+			// 1. Whether the group has lost enough nodes to cause a quorum
+			//    loss, in which case a proposal may fail, therefore we will
+			//    force a peerstate write;
+			// 2. Whether nodes in the group have other applies queued up
+			//    that could change the peerstate again, therefore the leader
+			//    should send out a new proposal anyway too just to make sure
+			//    that this change gets captured in the log.
 			node.UpdateKnownPeers(groupPeerIDs)
+
+			// If the peers changed as a result of an update by the meta layer, we must reflect that in the log of
+			// this group. Otherwise, a new peer would come up and instantly reset the peer state back to whatever is
+			// in the log at that time, overwriting what the meta layer told it.
+			// Will need to address this properly later on, by for example having the meta layer decide the new
+			// placement, but have the leader of this group propose it through its own log instead.
+			if node.Leader() {
+				node.ProposeKnownPeers(groupPeerIDs)
+			}
 		}
 		rg.node = node
 		js.mu.Unlock()
