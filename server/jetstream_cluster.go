@@ -7973,15 +7973,25 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			}
 			return errStreamMismatch
 		}
-		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
-		if ttl, _ := getMessageTTL(hdr); !sourced && ttl != 0 && !allowTTL {
-			if canRespond {
-				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-				resp.Error = NewJSMessageTTLDisabledError()
-				b, _ := json.Marshal(resp)
-				outq.sendMsg(reply, b)
+		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream, or if the TTL is invalid.
+		if ttl, err := getMessageTTL(hdr); !sourced && (ttl != 0 || err != nil) {
+			if !allowTTL {
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.Error = NewJSMessageTTLDisabledError()
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return errMsgTTLDisabled
+			} else if err != nil {
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.Error = NewJSMessageTTLInvalidError()
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return err
 			}
-			return errMsgTTLDisabled
 		}
 		// Check for MsgIds here at the cluster level to avoid excessive CLFS accounting.
 		// Will help during restarts.
