@@ -3604,19 +3604,21 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			if acc.Name == a.Name {
 				return true
 			}
-			// TODO: checkStreamImportAuthorized() stack should not be trying
-			// to lock "acc". If we find that to be needed, we will need to
-			// rework this to ensure we don't lock acc.
-			acc.mu.Lock()
+			imvs := map[*streamImport]bool{}
+			acc.mu.RLock()
 			for _, im := range acc.imports.streams {
 				if im != nil && im.acc.Name == a.Name {
-					// Check for if we are still authorized for an import.
-					im.invalid = !a.checkStreamImportAuthorized(acc, im.from, im.claim)
+					imvs[im] = !a.checkStreamImportAuthorized(acc, im.from, im.claim)
 					awcsti[acc.Name] = struct{}{}
 					for c := range acc.clients {
 						clients[c] = struct{}{}
 					}
 				}
+			}
+			acc.mu.RUnlock()
+			acc.mu.Lock()
+			for im, invalid := range imvs {
+				im.invalid = invalid
 			}
 			acc.mu.Unlock()
 			return true
@@ -3634,27 +3636,46 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			if acc.Name == a.Name {
 				return true
 			}
-			// TODO: checkServiceImportAuthorized() stack should not be trying
-			// to lock "acc". If we find that to be needed, we will need to
-			// rework this to ensure we don't lock acc.
-			acc.mu.Lock()
+			type siState struct {
+				invalid  bool
+				response bool
+				latency  *serviceLatency
+				atrc     bool
+			}
+			sivs := map[*serviceImport]siState{}
+			acc.mu.RLock()
 			for _, sis := range acc.imports.services {
 				for _, si := range sis {
 					if si != nil && si.acc.Name == a.Name {
-						// Check for if we are still authorized for an import.
-						si.invalid = !a.checkServiceImportAuthorized(acc, si.to, si.claim)
+						state := siState{
+							invalid:  !a.checkServiceImportAuthorized(acc, si.to, si.claim),
+							response: si.response,
+						}
 						// Make sure we should still be tracking latency and if we
 						// are allowed to trace.
-						if !si.response {
-							if se := a.getServiceExport(si.to); se != nil {
+						if !state.response {
+							a.mu.RLock()
+							se := a.getServiceExport(si.to)
+							if se != nil {
 								if si.latency != nil {
-									si.latency = se.latency
+									state.latency = se.latency
 								}
 								// Update allow trace.
-								si.atrc = se.atrc
+								state.atrc = se.atrc
 							}
+							a.mu.RUnlock()
 						}
+						sivs[si] = state
 					}
+				}
+			}
+			acc.mu.RUnlock()
+			acc.mu.Lock()
+			for si, state := range sivs {
+				si.invalid = state.invalid
+				if !state.response {
+					si.latency = state.latency
+					si.atrc = state.atrc
 				}
 			}
 			acc.mu.Unlock()
