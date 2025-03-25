@@ -3538,11 +3538,13 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 						// Make sure we should still be tracking latency and if we
 						// are allowed to trace.
 						if !si.response {
+							a.mu.RLock()
 							if se := a.getServiceExport(si.to); se != nil {
 								if si.latency != nil {
 									si.latency = se.latency
 								}
 							}
+							a.mu.RUnlock()
 						}
 					}
 				}
