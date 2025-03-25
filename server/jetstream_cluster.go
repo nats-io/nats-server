@@ -374,7 +374,7 @@ func (s *Server) JetStreamClusterPeers() []string {
 	defer js.mu.RUnlock()
 
 	cc := js.cluster
-	if !cc.isLeader() || cc.meta == nil {
+	if cc.meta == nil {
 		return nil
 	}
 	peers := cc.meta.Peers()

@@ -759,17 +759,6 @@ func TestJetStreamClusterFirstSeqMismatch(t *testing.T) {
 }
 
 func TestJetStreamClusterConsumerInactiveThreshold(t *testing.T) {
-	// Create a standalone, a cluster, and a super cluster
-
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
-
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	sc := createJetStreamSuperCluster(t, 3, 2)
-	defer sc.shutdown()
-
 	test := func(t *testing.T, c *cluster, s *Server, replicas int) {
 		if c != nil {
 			s = c.randomServer()
@@ -884,11 +873,31 @@ func TestJetStreamClusterConsumerInactiveThreshold(t *testing.T) {
 		waitOnCleanup(ci)
 	}
 
-	t.Run("standalone", func(t *testing.T) { test(t, nil, s, 1) })
-	t.Run("cluster-r1", func(t *testing.T) { test(t, c, nil, 1) })
-	t.Run("cluster-r3", func(t *testing.T) { test(t, c, nil, 3) })
-	t.Run("super-cluster-r1", func(t *testing.T) { test(t, sc.randomCluster(), nil, 1) })
-	t.Run("super-cluster-r3", func(t *testing.T) { test(t, sc.randomCluster(), nil, 3) })
+	t.Run("standalone", func(t *testing.T) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+		test(t, nil, s, 1)
+	})
+	t.Run("cluster-r1", func(t *testing.T) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+		test(t, c, nil, 1)
+	})
+	t.Run("cluster-r3", func(t *testing.T) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+		test(t, c, nil, 3)
+	})
+	t.Run("super-cluster-r1", func(t *testing.T) {
+		sc := createJetStreamSuperCluster(t, 3, 2)
+		defer sc.shutdown()
+		test(t, sc.randomCluster(), nil, 1)
+	})
+	t.Run("super-cluster-r3", func(t *testing.T) {
+		sc := createJetStreamSuperCluster(t, 3, 2)
+		defer sc.shutdown()
+		test(t, sc.randomCluster(), nil, 3)
+	})
 }
 
 // To capture our false warnings for clustered stream lag.

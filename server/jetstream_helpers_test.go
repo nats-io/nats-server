@@ -559,15 +559,14 @@ func (sc *supercluster) waitOnLeader() {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
-			if leader := c.leader(); leader != nil {
-				time.Sleep(250 * time.Millisecond)
+			if c.leader() != nil {
 				return
 			}
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster.waitOnStreamLeader", nil)
-	sc.t.Fatalf("Expected a cluster leader, got none")
+	sc.t.Fatalf("Expected a supercluster leader, got none")
 }
 
 func (sc *supercluster) waitOnAccount(account string) {
@@ -577,15 +576,21 @@ func (sc *supercluster) waitOnAccount(account string) {
 		found := true
 		for _, c := range sc.clusters {
 			for _, s := range c.servers {
+				s.optsMu.RLock()
+				wantJS := s.opts.JetStream
+				s.optsMu.RUnlock()
 				acc, err := s.fetchAccount(account)
-				found = found && err == nil && acc != nil
+				if found = found && err == nil && acc != nil; wantJS {
+					if found = found && acc.JetStreamEnabled(); !found {
+						break
+					}
+				}
 			}
 		}
 		if found {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
-		continue
 	}
 
 	sc.t.Fatalf("Expected account %q to exist but didn't", account)
@@ -615,22 +620,38 @@ func (sc *supercluster) randomCluster() *cluster {
 
 func (sc *supercluster) waitOnPeerCount(n int) {
 	sc.t.Helper()
-	sc.waitOnLeader()
-	leader := sc.leader()
 	expires := time.Now().Add(30 * time.Second)
 	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if leader = sc.leader(); leader == nil {
-			time.Sleep(50 * time.Millisecond)
+		leader := sc.leader()
+		if leader == nil {
+			sc.waitOnLeader()
 			continue
 		}
-		if len(leader.JetStreamClusterPeers()) == n {
+		// Work out which peers the metaleader thinks should be present.
+		peers := map[string]struct{}{}
+		for _, peer := range leader.JetStreamClusterPeers() {
+			peers[peer] = struct{}{}
+		}
+		// Now only query the ones that the metaleader is expecting.
+		found := true
+		for _, c := range sc.clusters {
+			for _, s := range c.servers {
+				if _, ok := peers[s.Name()]; !ok {
+					continue
+				}
+				if found = found && len(s.JetStreamClusterPeers()) == n; !found {
+					break
+				}
+			}
+		}
+		if found {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster.waitOnPeerCount", nil)
-	sc.t.Fatalf("Expected a super cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
+	sc.t.Fatalf("Expected a super cluster peer count of %d", n)
 }
 
 var jsClusterMirrorSourceImportsTempl = `
@@ -1378,16 +1399,30 @@ func (c *cluster) checkClusterFormed() {
 
 func (c *cluster) waitOnPeerCount(n int) {
 	c.t.Helper()
-	c.waitOnLeader()
-	leader := c.leader()
 	expires := time.Now().Add(30 * time.Second)
 	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if leader = c.leader(); leader == nil {
-			time.Sleep(50 * time.Millisecond)
+		leader := c.leader()
+		if leader == nil {
+			c.waitOnLeader()
 			continue
 		}
-		if len(leader.JetStreamClusterPeers()) == n {
+		// Work out which peers the metaleader thinks should be present.
+		peers := map[string]struct{}{}
+		for _, peer := range leader.JetStreamClusterPeers() {
+			peers[peer] = struct{}{}
+		}
+		// Now only query the ones that the metaleader is expecting.
+		found := true
+		for _, s := range c.servers {
+			if _, ok := peers[s.Name()]; !ok {
+				continue
+			}
+			if found = found && len(s.JetStreamClusterPeers()) == n; !found {
+				break
+			}
+		}
+		if found {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1395,7 +1430,7 @@ func (c *cluster) waitOnPeerCount(n int) {
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnPeerCount", map[string]any{
 		"cluster": c.name,
 	})
-	c.t.Fatalf("Expected a cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
+	c.t.Fatalf("Expected a cluster peer count of %d", n)
 }
 
 func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
@@ -1403,7 +1438,6 @@ func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(200 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1442,7 +1476,6 @@ func (c *cluster) waitOnStreamLeader(account, stream string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(200 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1480,7 +1513,6 @@ func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
-			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1514,10 +1546,10 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 	c.t.Helper()
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
-		time.Sleep(100 * time.Millisecond)
 		if !s.JetStreamEnabled() || s.JetStreamIsCurrent() {
 			return
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnServerCurrent", map[string]any{
 		"cluster": c.name,
@@ -1581,10 +1613,9 @@ func (c *cluster) waitOnLeader() {
 	expires := time.Now().Add(40 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.leader(); leader != nil {
-			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnLeader", map[string]any{
@@ -1611,7 +1642,6 @@ func (c *cluster) waitOnAccount(account string) {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
-		continue
 	}
 
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnAccount", map[string]any{
@@ -1634,14 +1664,13 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
 		if leader = c.leader(); leader == nil {
-			time.Sleep(50 * time.Millisecond)
+			c.waitOnLeader()
 			continue
 		}
 		if len(leader.JetStreamClusterPeers()) == numPeersExpected {
-			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if leader == nil {
