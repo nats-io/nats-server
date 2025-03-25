@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  RACE: ${{ (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && github.event_name != 'pull_request') && '-race' || '' }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
