@@ -3474,9 +3474,11 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 					si.invalid = !a.checkServiceImportAuthorized(acc, si.to, si.claim)
 					if si.latency != nil && !si.response {
 						// Make sure we should still be tracking latency.
+						a.mu.RLock()
 						if se := a.getServiceExport(si.to); se != nil {
 							si.latency = se.latency
 						}
+						a.mu.RUnlock()
 					}
 				}
 			}
