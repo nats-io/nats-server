@@ -5089,6 +5089,41 @@ func TestJetStreamClusterTTLAndDedupe(t *testing.T) {
 	require_NoError(t, err)
 }
 
+func TestJetStreamClusterInvalidTTLAndDedupe(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:        "TEST",
+		Retention:   LimitsPolicy,
+		Storage:     FileStorage,
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowMsgTTL: true,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo")
+	m.Header.Add(JSMsgId, "msgId")
+	m.Header.Add(JSMessageTTL, "invalid!")
+	_, err = js.PublishMsg(m)
+	require_Error(t, err, NewJSMessageTTLInvalidError())
+
+	// Retry with a negative TTL.
+	m.Header.Set(JSMessageTTL, "-10s")
+	_, err = js.PublishMsg(m)
+	require_Error(t, err, NewJSMessageTTLInvalidError())
+
+	// Retrying with valid TTL should be successful, and not be marked as duplicate.
+	m.Header.Set(JSMessageTTL, "10s")
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+}
+
 func TestJetStreamClusterServerPeerRemovePeersDrift(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R4S", 4)
 	defer c.shutdown()
