@@ -45,10 +45,10 @@ import (
 
 func init() {
 	// Speed up raft for tests.
-	hbInterval = 50 * time.Millisecond
+	hbInterval = 250 * time.Millisecond
 	minElectionTimeout = 1500 * time.Millisecond
 	maxElectionTimeout = 3500 * time.Millisecond
-	lostQuorumInterval = 2 * time.Second
+	lostQuorumInterval = 3 * time.Second
 	lostQuorumCheck = 4 * hbInterval
 
 	// For statz and jetstream placement speedups as well.
