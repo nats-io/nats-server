@@ -7117,3 +7117,107 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 		receive(t)
 	}
 }
+
+func TestJWTUpdateAccountClaimsStreamAndServiceImportDeadlock(t *testing.T) {
+	for _, exportType := range []jwt.ExportType{jwt.Stream, jwt.Service} {
+		t.Run(exportType.String(), func(t *testing.T) {
+			s := opTrustBasicSetup()
+			defer s.Shutdown()
+			buildMemAccResolver(s)
+
+			// Get operator.
+			okp, err := nkeys.FromSeed(oSeed)
+			require_NoError(t, err)
+
+			type Acc struct {
+				pub string
+				ac  *jwt.AccountClaims
+				a   *Account
+				c   *client
+			}
+
+			// Create accounts.
+			var accs []*Acc
+			numAccounts := 10
+			for i := 0; i < numAccounts; i++ {
+				aKp, err := nkeys.CreateAccount()
+				require_NoError(t, err)
+				aPub, err := aKp.PublicKey()
+				require_NoError(t, err)
+				aAC := jwt.NewAccountClaims(aPub)
+				aJWT, err := aAC.Encode(okp)
+				require_NoError(t, err)
+				addAccountToMemResolver(s, aPub, aJWT)
+
+				aAcc, err := s.LookupAccount(aPub)
+				require_NoError(t, err)
+
+				aAcc.mu.Lock()
+				c := aAcc.internalClient()
+				aAcc.mu.Unlock()
+				aAcc.addClient(c)
+
+				accs = append(accs, &Acc{aPub, aAC, aAcc, c})
+			}
+
+			addImportExport := func(i int, acc *Acc) {
+				localSubject := fmt.Sprintf("%s.%d", acc.pub, i)
+				acc.ac.Exports.Add(&jwt.Export{Subject: jwt.Subject(localSubject), Type: exportType})
+				for _, oAcc := range accs {
+					if acc.pub == oAcc.pub {
+						continue
+					}
+					externalSubject := fmt.Sprintf("%s.%d", oAcc.pub, i)
+					acc.ac.Imports.Add(&jwt.Import{Account: oAcc.pub, Subject: jwt.Subject(externalSubject), Type: exportType})
+				}
+			}
+			test := func(i int) {
+				var start sync.WaitGroup
+				var release sync.WaitGroup
+				var finish sync.WaitGroup
+				start.Add(numAccounts)
+				release.Add(1)
+				finish.Add(numAccounts)
+
+				// Add imports/exports to both accounts and update in parallel, should not deadlock.
+				for _, acc := range accs {
+					acc := acc
+					go func() {
+						defer finish.Done()
+						addImportExport(i, acc)
+						jwt, err := acc.ac.Encode(okp)
+						addAccountToMemResolver(s, acc.pub, jwt)
+						start.Done()
+						require_NoError(t, err)
+
+						release.Wait()
+						s.UpdateAccountClaims(acc.a, acc.ac)
+					}()
+				}
+
+				start.Wait()
+
+				// Lock all clients, once we release below we'll get all claim updates
+				// in the same place after initial checks.
+				for _, acc := range accs {
+					acc.c.mu.Lock()
+				}
+				release.Done()
+
+				// Wait some time for them to reach that point and be blocked on the client lock.
+				time.Sleep(time.Second)
+				for _, acc := range accs {
+					acc.c.mu.Unlock()
+				}
+
+				// Eventually all goroutines should finish.
+				finish.Wait()
+			}
+
+			// Repeat test multiple times, increasing the amount of imports/exports along the way.
+			for i := 0; i < 30; i++ {
+				test(i)
+			}
+		})
+	}
+}
