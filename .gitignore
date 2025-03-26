@@ -9,7 +9,6 @@ _test
 dist
 
 # Configuration Files
-*.conf
 *.cfg
 
 # Architecture specific extensions/prefixes
