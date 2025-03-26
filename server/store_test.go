@@ -285,7 +285,7 @@ func TestStoreSubjectStateConsistencyOptimization(t *testing.T) {
 			fillMsgs := func(c int) {
 				t.Helper()
 				for i := 0; i < c; i++ {
-					_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+					_, _, err := fs.StoreMsg("foo", nil, nil)
 					require_NoError(t, err)
 				}
 			}
