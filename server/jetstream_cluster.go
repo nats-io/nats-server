@@ -4383,28 +4383,18 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	// Check if we already have this consumer running.
 	o := mset.lookupConsumer(consumer)
 
-	if !alreadyRunning {
-		// Process the raft group and make sure its running if needed.
-		storage := mset.config().Storage
-		if ca.Config.MemoryStorage {
-			storage = MemoryStorage
-		}
-		// No-op if R1.
-		js.createRaftGroup(accName, rg, storage, pprofLabels{
-			"type":     "consumer",
-			"account":  mset.accName(),
-			"stream":   ca.Stream,
-			"consumer": ca.Name,
-		})
-	} else {
-		// If we are clustered update the known peers.
-		js.mu.RLock()
-		node := rg.node
-		js.mu.RUnlock()
-		if node != nil {
-			node.UpdateKnownPeers(ca.Group.Peers)
-		}
+	// Process the raft group and make sure it's running if needed.
+	storage := mset.config().Storage
+	if ca.Config.MemoryStorage {
+		storage = MemoryStorage
 	}
+	// No-op if R1.
+	js.createRaftGroup(accName, rg, storage, pprofLabels{
+		"type":     "consumer",
+		"account":  mset.accName(),
+		"stream":   ca.Stream,
+		"consumer": ca.Name,
+	})
 
 	// Check if we already have this consumer running.
 	var didCreate, isConfigUpdate, needsLocalResponse bool
