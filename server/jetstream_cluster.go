@@ -5606,6 +5606,13 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 	defer js.mu.Unlock()
 
 	if isLeader {
+		if meta := js.cluster.meta; meta != nil && meta.IsObserver() {
+			meta.StepDown()
+			return
+		}
+	}
+
+	if isLeader {
 		js.startUpdatesSub()
 	} else {
 		js.stopUpdatesSub()
