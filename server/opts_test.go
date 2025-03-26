@@ -3475,3 +3475,69 @@ func TestProcessConfigString(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorizationTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name          string
+		config        string
+		expectParsed  float64
+		expectRunning float64
+	}
+
+	for _, tc := range []testCase{{
+		name:          "defaults",
+		config:        "authorization {}",
+		expectParsed:  0,
+		expectRunning: 2,
+	}, {
+		name: "explicit zero",
+		config: `
+			authorization {
+				timeout: 0
+			}`,
+		expectParsed:  0,
+		expectRunning: 2,
+	}, {
+		name: "explicit one",
+		config: `
+			authorization {
+				timeout: 1
+			}`,
+		expectParsed:  1,
+		expectRunning: 1,
+	}, {
+		name: "garbage",
+		config: `
+			authorization {
+				timeout: random_garbage
+			}`,
+		expectParsed:  1,
+		expectRunning: 1,
+	}, {
+		name: "human readable",
+		config: `
+			authorization {
+				timeout: 10s
+			}`,
+		expectParsed:  1,
+		expectRunning: 1,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &Options{}
+			if err := opts.ProcessConfigString(tc.config); err != nil {
+				t.Errorf("Error processing config: %v", err)
+			}
+			if opts.AuthTimeout != tc.expectParsed {
+				t.Errorf("Expected Parsed AuthTimeout to be %v, got %v", tc.expectParsed, opts.AuthTimeout)
+			}
+
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			sopts := s.getOpts()
+			if sopts.AuthTimeout != tc.expectRunning {
+				t.Errorf("Expected Running AuthTimeout to be %v, got %v", tc.expectRunning, sopts.AuthTimeout)
+			}
+		})
+	}
+}
