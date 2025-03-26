@@ -16,8 +16,14 @@ builds:
     binary: nats-server
     flags:
       - -trimpath
-    ldflags:
-      - -w -X 'github.com/nats-io/nats-server/v2/server.gitCommit={{.ShortCommit}}' -X 'github.com/nats-io/nats-server/v2/server.serverVersion={{.Tag}}'
+    gcflags: >-
+      {{- if eq (index .Env "GORELEASER_DEBUG_BINARY") "1" -}}
+      -N -l
+      {{- end -}}
+    ldflags: >-
+      {{ if ne (index .Env "GORELEASER_DEBUG_BINARY") "1" }} -w {{ end }}
+      -X 'github.com/nats-io/nats-server/v2/server.gitCommit={{.ShortCommit}}'
+      -X 'github.com/nats-io/nats-server/v2/server.serverVersion={{.Tag}}'
     env:
       # This is the toolchain version we use for releases. To override, set the env var, e.g.:
       # GORELEASER_TOOLCHAIN="go1.22.8" TARGET='linux_amd64' goreleaser build --snapshot --clean --single-target
