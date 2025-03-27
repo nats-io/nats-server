@@ -4131,12 +4131,20 @@ func parseAuthorization(v any, errors *[]error) (*authorization, error) {
 		case "token":
 			auth.token = mv.(string)
 		case "timeout":
-			at := float64(1)
+			at := float64(0)
 			switch mv := mv.(type) {
 			case int64:
 				at = float64(mv)
 			case float64:
 				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing authorization config, 'timeout' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing authorization config, 'timeout' wrong type"}
 			}
 			auth.timeout = at
 		case "users":
