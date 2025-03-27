@@ -9639,6 +9639,7 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 	wg.Wait()
 
 	// Make sure all are reported.
+	c.waitOnAllCurrent()
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range c.servers {
 			jsz, _ := s.Jsz(nil)
@@ -9666,6 +9667,7 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 	wg.Wait()
 
 	// Make sure all are reported.
+	c.waitOnAllCurrent()
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range c.servers {
 			jsz, _ := s.Jsz(nil)
@@ -9682,6 +9684,7 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 		require_NoError(t, err)
 	}
 	// Make sure reporting goes to zero.
+	c.waitOnAllCurrent()
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range c.servers {
 			jsz, _ := s.Jsz(nil)
@@ -9701,6 +9704,7 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 	require_NoError(t, err)
 
 	// Make sure reporting goes to zero.
+	c.waitOnAllCurrent()
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range c.servers {
 			jsz, _ := s.Jsz(nil)
