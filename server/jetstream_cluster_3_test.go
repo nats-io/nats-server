@@ -1588,9 +1588,12 @@ func TestJetStreamClusterParallelStreamCreationDupeRaftGroups(t *testing.T) {
 	c.waitOnLeader()
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 	// Check that this server has only two active raft nodes after restart.
-	if nrn := s.numRaftNodes(); nrn != 2 {
-		t.Fatalf("Expected only two active raft nodes, got %d", nrn)
-	}
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		if nrn := s.numRaftNodes(); nrn != 2 {
+			return fmt.Errorf("Expected only two active raft nodes, got %d", nrn)
+		}
+		return nil
+	})
 
 	// Make sure we only have 2 unique raft groups for all servers.
 	// One for meta, one for stream.
