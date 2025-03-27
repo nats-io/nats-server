@@ -7304,7 +7304,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	checkNodeIsClosed(ca)
 
 	// We create a new RAFT group, the health check should detect this skew and restart.
-	err = sjs.createRaftGroup(globalAccountName, ca.Group, MemoryStorage, pprofLabels{})
+	_, err = sjs.createRaftGroup(globalAccountName, ca.Group, MemoryStorage, pprofLabels{})
 	require_NoError(t, err)
 	sjs.mu.Lock()
 	// We set creating to now, since previously it would delete all data but NOT restart if created within <10s.
