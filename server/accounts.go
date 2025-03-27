@@ -3598,15 +3598,16 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		clients := map[*client]struct{}{}
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
+
+		// We must only allow one goroutine to go through here, otherwise we could deadlock
+		// due to locking two accounts in succession.
+		s.mu.Lock()
 		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			// Move to the next if this account is actually account "a".
 			if acc.Name == a.Name {
 				return true
 			}
-			// TODO: checkStreamImportAuthorized() stack should not be trying
-			// to lock "acc". If we find that to be needed, we will need to
-			// rework this to ensure we don't lock acc.
 			acc.mu.Lock()
 			for _, im := range acc.imports.streams {
 				if im != nil && im.acc.Name == a.Name {
@@ -3621,6 +3622,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			acc.mu.Unlock()
 			return true
 		})
+		s.mu.Unlock()
 		// Now walk clients.
 		for c := range clients {
 			c.processSubsOnConfigReload(awcsti)
@@ -3628,15 +3630,15 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 	// Now check if service exports have changed.
 	if !a.checkServiceExportsEqual(old) || signersChanged || serviceTokenExpirationChanged {
+		// We must only allow one goroutine to go through here, otherwise we could deadlock
+		// due to locking two accounts in succession.
+		s.mu.Lock()
 		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			// Move to the next if this account is actually account "a".
 			if acc.Name == a.Name {
 				return true
 			}
-			// TODO: checkServiceImportAuthorized() stack should not be trying
-			// to lock "acc". If we find that to be needed, we will need to
-			// rework this to ensure we don't lock acc.
 			acc.mu.Lock()
 			for _, sis := range acc.imports.services {
 				for _, si := range sis {
@@ -3646,6 +3648,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 						// Make sure we should still be tracking latency and if we
 						// are allowed to trace.
 						if !si.response {
+							a.mu.RLock()
 							if se := a.getServiceExport(si.to); se != nil {
 								if si.latency != nil {
 									si.latency = se.latency
@@ -3653,6 +3656,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 								// Update allow trace.
 								si.atrc = se.atrc
 							}
+							a.mu.RUnlock()
 						}
 					}
 				}
@@ -3660,6 +3664,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			acc.mu.Unlock()
 			return true
 		})
+		s.mu.Unlock()
 	}
 
 	// Now make sure we shutdown the old service import subscriptions.
