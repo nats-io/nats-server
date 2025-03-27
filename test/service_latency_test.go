@@ -674,8 +674,14 @@ func TestServiceLatencyWithNameMultiServer(t *testing.T) {
 	nc2.Request("ngs.usage", []byte("1h"), time.Second)
 
 	var sl server.ServiceLatency
-	rmsg, _ := rsub.NextMsg(time.Second)
-	json.Unmarshal(rmsg.Data, &sl)
+	checkFor(t, 3*time.Second, time.Second, func() error {
+		rmsg, err := rsub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			return err
+		}
+		json.Unmarshal(rmsg.Data, &sl)
+		return nil
+	})
 
 	// Make sure we have AppName set.
 	rs := sc.clusters[0].servers[1]
