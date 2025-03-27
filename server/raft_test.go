@@ -48,11 +48,12 @@ func TestNRGSnapshotAndRestart(t *testing.T) {
 	defer c.shutdown()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
-	rg.waitOnLeader()
+	lsm := rg.waitOnLeader()
+	require_NotNil(t, lsm)
+	leader := lsm.(*stateAdder)
 
 	var expectedTotal int64
 
-	leader := rg.leader().(*stateAdder)
 	sm := rg.nonLeader().(*stateAdder)
 
 	for i := 0; i < 1000; i++ {
