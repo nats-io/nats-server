@@ -5321,3 +5321,71 @@ func TestJetStreamClusterObserverNotElectedMetaLeader(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterParallelCreateRaftGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	ml := c.leader()
+	sjs := ml.getJetStream()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	acc, err := ml.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	rg, storage := sa.Group, sa.Group.Storage
+	rn := mset.raftNode().(*raft)
+	// Do first half of Stop.
+	require_NotEqual(t, rn.state.Swap(int32(Closed)), int32(Closed))
+
+	var wg sync.WaitGroup
+	var finish sync.WaitGroup
+	wg.Add(2)
+	finish.Add(2)
+
+	var mu sync.Mutex
+	var nodes []RaftNode
+
+	// Call createRaftGroup in parallel.
+	for i := 0; i < 2; i++ {
+		go func() {
+			wg.Done()
+			defer finish.Done()
+			if n, rerr := sjs.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{}); rerr == nil {
+				mu.Lock()
+				nodes = append(nodes, n)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	// Wait for both goroutines, and allow some time for both to have entered createRaftGroup.
+	wg.Wait()
+	time.Sleep(100 * time.Millisecond)
+
+	// Do second half of Stop while goroutines are in createRaftGroup.
+	rn.leaderState.Store(false)
+	close(rn.quit)
+
+	// Wait for node and goroutines to stop.
+	rn.WaitForStop()
+	finish.Wait()
+
+	// Should only create one new node instance.
+	require_Len(t, len(nodes), 2)
+	require_Equal(t, nodes[0], nodes[1])
+}

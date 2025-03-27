@@ -1997,19 +1997,22 @@ func (rg *raftGroup) setPreferred() {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage StorageType, labels pprofLabels) error {
+func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage StorageType, labels pprofLabels) (RaftNode, error) {
+	// Must hold JS lock throughout, otherwise two parallel calls for the same raft group could result
+	// in duplicate instances for the same identifier, if the current Raft node is shutting down.
+	// We can release the lock temporarily while waiting for the Raft node to shut down.
 	js.mu.Lock()
+	defer js.mu.Unlock()
+
 	s, cc := js.srv, js.cluster
 	if cc == nil || cc.meta == nil {
-		js.mu.Unlock()
-		return NewJSClusterNotActiveError()
+		return nil, NewJSClusterNotActiveError()
 	}
 
 	// If this is a single peer raft group or we are not a member return.
 	if len(rg.Peers) <= 1 || !rg.isMember(cc.meta.ID()) {
-		js.mu.Unlock()
 		// Nothing to do here.
-		return nil
+		return nil, nil
 	}
 
 	// Check if we already have this assigned.
@@ -2057,17 +2060,15 @@ retry:
 			}
 		}
 		rg.node = node
-		js.mu.Unlock()
-		return nil
+		return node, nil
 	}
 
 	s.Debugf("JetStream cluster creating raft group:%+v", rg)
-	js.mu.Unlock()
 
 	sysAcc := s.SystemAccount()
 	if sysAcc == nil {
 		s.Debugf("JetStream cluster detected shutdown processing raft group: %+v", rg)
-		return errors.New("shutting down")
+		return nil, errors.New("shutting down")
 	}
 
 	// Check here to see if we have a max HA Assets limit set.
@@ -2076,7 +2077,7 @@ retry:
 			s.Warnf("Maximum HA Assets limit reached: %d", maxHaAssets)
 			// Since the meta leader assigned this, send a statsz update to them to get them up to date.
 			go s.sendStatszUpdate()
-			return errors.New("system limit reached")
+			return nil, errors.New("system limit reached")
 		}
 	}
 
@@ -2097,14 +2098,14 @@ retry:
 		)
 		if err != nil {
 			s.Errorf("Error creating filestore WAL: %v", err)
-			return err
+			return nil, err
 		}
 		store = fs
 	} else {
 		ms, err := newMemStore(&StreamConfig{Name: rg.Name, Storage: MemoryStorage})
 		if err != nil {
 			s.Errorf("Error creating memstore WAL: %v", err)
-			return err
+			return nil, err
 		}
 		store = ms
 	}
@@ -2118,17 +2119,15 @@ retry:
 	n, err := s.startRaftNode(accName, cfg, labels)
 	if err != nil || n == nil {
 		s.Debugf("Error creating raft group: %v", err)
-		return err
+		return nil, err
 	}
-	// Need locking here for the assignment to avoid data-race reports
-	js.mu.Lock()
+	// Need JS lock to be held for the assignment to avoid data-race reports
 	rg.node = n
 	// See if we are preferred and should start campaign immediately.
 	if n.ID() == rg.Preferred && n.Term() == 0 {
 		n.CampaignImmediately()
 	}
-	js.mu.Unlock()
-	return nil
+	return n, nil
 }
 
 func (mset *stream) raftGroup() *raftGroup {
@@ -3752,7 +3751,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	err := js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
+	_, err := js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
 		"type":    "stream",
 		"account": acc.Name,
 		"stream":  sa.Config.Name,
