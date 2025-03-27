@@ -1032,7 +1032,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			return
 		}
 	case "authorization":
-		auth, err := parseAuthorization(tk, errors)
+		auth, err := parseAuthorization(tk, errors, warnings)
 		if err != nil {
 			*errors = append(*errors, err)
 			return
@@ -1809,7 +1809,7 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 		case "host", "net":
 			opts.Cluster.Host = mv.(string)
 		case "authorization":
-			auth, err := parseAuthorization(tk, errors)
+			auth, err := parseAuthorization(tk, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -2045,7 +2045,7 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 		case "host", "net":
 			o.Gateway.Host = mv.(string)
 		case "authorization":
-			auth, err := parseAuthorization(tk, errors)
+			auth, err := parseAuthorization(tk, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -2507,7 +2507,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 		case "host", "net":
 			opts.LeafNode.Host = mv.(string)
 		case "authorization":
-			auth, err := parseLeafAuthorization(tk, errors)
+			auth, err := parseLeafAuthorization(tk, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -2586,7 +2586,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 
 // This is the authorization parser adapter for the leafnode's
 // authorization config.
-func parseLeafAuthorization(v any, errors *[]error) (*authorization, error) {
+func parseLeafAuthorization(v any, errors, warnings *[]error) (*authorization, error) {
 	var (
 		am   map[string]any
 		tk   token
@@ -2611,12 +2611,24 @@ func parseLeafAuthorization(v any, errors *[]error) (*authorization, error) {
 			}
 			auth.nkey = nk
 		case "timeout":
-			at := float64(1)
+			at := float64(0)
 			switch mv := mv.(type) {
 			case int64:
 				at = float64(mv)
 			case float64:
 				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing leafnode authorization config, 'timeout' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing leafnode authorization config, 'timeout' wrong type"}
+			}
+			if at > (60 * time.Second).Seconds() {
+				reason := fmt.Sprintf("timeout of %v (%f seconds) is high, consider keeping it under 60 seconds. possibly caused by unquoted duration; use '1m' instead of 1m, for example", mv, at)
+				*warnings = append(*warnings, &configWarningErr{field: mk, configErr: configErr{token: tk, reason: reason}})
 			}
 			auth.timeout = at
 		case "users":
@@ -4110,7 +4122,7 @@ func applyDefaultPermissions(users []*User, nkeys []*NkeyUser, defaultP *Permiss
 }
 
 // Helper function to parse Authorization configs.
-func parseAuthorization(v any, errors *[]error) (*authorization, error) {
+func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error) {
 	var (
 		am   map[string]any
 		tk   token
@@ -4131,12 +4143,24 @@ func parseAuthorization(v any, errors *[]error) (*authorization, error) {
 		case "token":
 			auth.token = mv.(string)
 		case "timeout":
-			at := float64(1)
+			at := float64(0)
 			switch mv := mv.(type) {
 			case int64:
 				at = float64(mv)
 			case float64:
 				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing authorization config, 'timeout' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing authorization config, 'timeout' wrong type"}
+			}
+			if at > (60 * time.Second).Seconds() {
+				reason := fmt.Sprintf("timeout of %v (%f seconds) is high, consider keeping it under 60 seconds. possibly caused by unquoted duration; use '1m' instead of 1m, for example", mv, at)
+				*warnings = append(*warnings, &configWarningErr{field: mk, configErr: configErr{token: tk, reason: reason}})
 			}
 			auth.timeout = at
 		case "users":
