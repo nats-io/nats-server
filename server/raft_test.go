@@ -594,10 +594,10 @@ func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
 	c.waitOnLeader()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
-	rg.waitOnLeader()
+	leader := rg.waitOnLeader()
+	require_NotNil(t, leader)
 
 	// Mangle the TAV file to a short length (less than uint64).
-	leader := rg.leader()
 	tav := filepath.Join(leader.node().(*raft).sd, termVoteFile)
 	require_NoError(t, os.WriteFile(tav, []byte{1, 2, 3, 4}, 0644))
 
