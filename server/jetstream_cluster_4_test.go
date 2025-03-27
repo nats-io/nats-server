@@ -2123,6 +2123,34 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterAccountNRGConfigNoPanic(t *testing.T) {
+	clusterConf := `
+		listen: 127.0.0.1:-1
+
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts {
+			ONE { jetstream: { cluster_traffic: system } }
+		}
+	`
+
+	cl := createJetStreamClusterWithTemplate(t, clusterConf, "test", 3)
+	defer cl.shutdown()
+
+	for _, s := range cl.servers {
+		acc, err := s.lookupAccount("ONE")
+		require_NoError(t, err)
+		require_Equal(t, acc.nrgAccount, _EMPTY_) // Empty for the system account
+	}
+}
+
 func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
