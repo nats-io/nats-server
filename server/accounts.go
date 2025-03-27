@@ -83,6 +83,7 @@ type Account struct {
 	exports      exportMap
 	js           *jsAccount
 	jsLimits     map[string]JetStreamAccountLimits
+	nrgAccount   string
 	limits
 	expired      atomic.Bool
 	incomplete   bool
@@ -3784,16 +3785,16 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		// Check whether the account NRG status changed. If it has then we need to notify the
 		// Raft groups running on the system so that they can move their subs if needed.
 		a.mu.Lock()
-		previous := ajs.nrgAccount
+		previous := a.nrgAccount
 		switch ac.ClusterTraffic {
 		case "system", _EMPTY_:
-			ajs.nrgAccount = _EMPTY_
+			a.nrgAccount = _EMPTY_
 		case "owner":
-			ajs.nrgAccount = a.Name
+			a.nrgAccount = a.Name
 		default:
 			s.Errorf("Account claim for %q has invalid value %q for cluster traffic account", a.Name, ac.ClusterTraffic)
 		}
-		changed := ajs.nrgAccount != previous
+		changed := a.nrgAccount != previous
 		a.mu.Unlock()
 		if changed {
 			s.updateNRGAccountStatus()

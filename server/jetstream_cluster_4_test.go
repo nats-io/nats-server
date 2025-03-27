@@ -2011,7 +2011,7 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond * 100)
 		for _, s := range c.servers {
-			s.GlobalAccount().js.nrgAccount = ""
+			s.GlobalAccount().nrgAccount = ""
 			s.updateNRGAccountStatus()
 		}
 
@@ -2051,9 +2051,9 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		time.Sleep(time.Millisecond * 100)
 		for i, s := range c.servers {
 			if i == 0 {
-				s.GlobalAccount().js.nrgAccount = globalAccountName
+				s.GlobalAccount().nrgAccount = globalAccountName
 			} else {
-				s.GlobalAccount().js.nrgAccount = ""
+				s.GlobalAccount().nrgAccount = ""
 			}
 			s.updateNRGAccountStatus()
 		}
@@ -2092,7 +2092,7 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond * 100)
 		for _, s := range c.servers {
-			s.GlobalAccount().js.nrgAccount = globalAccountName
+			s.GlobalAccount().nrgAccount = globalAccountName
 			s.updateNRGAccountStatus()
 		}
 
