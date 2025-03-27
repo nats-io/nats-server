@@ -1643,11 +1643,11 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 			require_True(t, acc.js != nil)
 			switch state {
 			case "system":
-				require_Equal(t, acc.js.nrgAccount, _EMPTY_)
+				require_Equal(t, acc.nrgAccount, _EMPTY_)
 			case "owner":
-				require_Equal(t, acc.js.nrgAccount, aExpPub)
+				require_Equal(t, acc.nrgAccount, aExpPub)
 			case thirdAcc:
-				require_Equal(t, acc.js.nrgAccount, aExpPub2)
+				require_Equal(t, acc.nrgAccount, aExpPub2)
 			}
 
 			// Now get a list of all of the Raft nodes that should

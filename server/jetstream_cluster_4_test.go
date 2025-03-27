@@ -2011,7 +2011,7 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond * 100)
 		for _, s := range c.servers {
-			s.GlobalAccount().js.nrgAccount = ""
+			s.GlobalAccount().nrgAccount = ""
 			s.updateNRGAccountStatus()
 		}
 
@@ -2051,9 +2051,9 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		time.Sleep(time.Millisecond * 100)
 		for i, s := range c.servers {
 			if i == 0 {
-				s.GlobalAccount().js.nrgAccount = globalAccountName
+				s.GlobalAccount().nrgAccount = globalAccountName
 			} else {
-				s.GlobalAccount().js.nrgAccount = ""
+				s.GlobalAccount().nrgAccount = ""
 			}
 			s.updateNRGAccountStatus()
 		}
@@ -2092,7 +2092,7 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond * 100)
 		for _, s := range c.servers {
-			s.GlobalAccount().js.nrgAccount = globalAccountName
+			s.GlobalAccount().nrgAccount = globalAccountName
 			s.updateNRGAccountStatus()
 		}
 
@@ -2121,6 +2121,34 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 			require_True(t, msg != nil)
 		}
 	})
+}
+
+func TestJetStreamClusterAccountNRGConfigNoPanic(t *testing.T) {
+	clusterConf := `
+		listen: 127.0.0.1:-1
+
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts {
+			ONE { jetstream: { cluster_traffic: system } }
+		}
+	`
+
+	cl := createJetStreamClusterWithTemplate(t, clusterConf, "test", 3)
+	defer cl.shutdown()
+
+	for _, s := range cl.servers {
+		acc, err := s.lookupAccount("ONE")
+		require_NoError(t, err)
+		require_Equal(t, acc.nrgAccount, _EMPTY_) // Empty for the system account
+	}
 }
 
 func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {
