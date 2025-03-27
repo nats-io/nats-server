@@ -371,6 +371,9 @@ type Server struct {
 	// Controls whether or not the account NRG capability is set in statsz.
 	// Currently used by unit tests to simulate nodes not supporting account NRG.
 	accountNRGAllowed atomic.Bool
+
+	// Gated semaphore for disk I/O operations.
+	dios chan struct{}
 }
 
 // For tracking JS nodes.
@@ -733,6 +736,12 @@ func NewServer(opts *Options) (*Server, error) {
 		rateLimitLoggingCh: make(chan time.Duration, 1),
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
+	}
+
+	// Set up the gated semaphore for disk I/O.
+	s.dios = make(chan struct{}, numIOs())
+	for i := 0; i < cap(s.dios); i++ {
+		s.dios <- struct{}{}
 	}
 
 	// Delayed API response queue. Create regardless if JetStream is configured

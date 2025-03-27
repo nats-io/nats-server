@@ -169,6 +169,7 @@ type psi struct {
 
 type fileStore struct {
 	srv         *Server
+	dios        chan struct{}
 	mu          sync.RWMutex
 	state       StreamState
 	tombs       []uint64
@@ -403,12 +404,25 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		return nil, fmt.Errorf("storage directory is not writable")
 	}
 
+	var dios chan struct{}
+	if fcfg.srv != nil {
+		dios = fcfg.srv.dios
+	}
+	if dios == nil {
+		// When running in unit tests as an isolated store.
+		dios = make(chan struct{}, numIOs())
+		for i := 0; i < cap(dios); i++ {
+			dios <- struct{}{}
+		}
+	}
+
 	tmpfile.Close()
 	<-dios
 	os.Remove(tmpfile.Name())
 	dios <- struct{}{}
 
 	fs := &fileStore{
+		dios:   dios,
 		fcfg:   fcfg,
 		psim:   stree.NewSubjectTree[psi](),
 		bim:    make(map[uint32]*msgBlock),
@@ -1241,9 +1255,9 @@ func (mb *msgBlock) convertCipher() error {
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
-		<-dios
+		<-mb.fs.dios
 		err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
-		dios <- struct{}{}
+		mb.fs.dios <- struct{}{}
 		if err != nil {
 			return err
 		}
@@ -1269,9 +1283,9 @@ func (mb *msgBlock) convertToEncrypted() error {
 	// Undo cache from above for later.
 	mb.cache = nil
 	mb.bek.XORKeyStream(buf, buf)
-	<-dios
+	<-mb.fs.dios
 	err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 	if err != nil {
 		return err
 	}
@@ -1361,9 +1375,9 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if mb.mfd != nil {
 			fd = mb.mfd
 		} else {
-			<-dios
+			<-mb.fs.dios
 			fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-			dios <- struct{}{}
+			mb.fs.dios <- struct{}{}
 			if err == nil {
 				defer fd.Close()
 			}
@@ -1583,7 +1597,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	defer fs.mu.Unlock()
 
 	// Check for any left over purged messages.
-	<-dios
+	<-fs.dios
 	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
 	if _, err := os.Stat(pdir); err == nil {
 		os.RemoveAll(pdir)
@@ -1591,7 +1605,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	// Grab our stream state file and load it in.
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 	buf, err := os.ReadFile(fn)
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -1811,12 +1825,12 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	var dirs []os.DirEntry
 
-	<-dios
+	<-fs.dios
 	if f, err := os.Open(mdir); err == nil {
 		dirs, _ = f.ReadDir(-1)
 		f.Close()
 	}
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	var index uint32
 	for _, fi := range dirs {
@@ -1845,10 +1859,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 func (fs *fileStore) recoverTTLState() error {
 	// See if we have a timed hash wheel for TTLs.
-	<-dios
+	<-fs.dios
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
 	buf, err := os.ReadFile(fn)
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -1963,9 +1977,9 @@ func (fs *fileStore) cleanupOldMeta() {
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	fs.mu.RUnlock()
 
-	<-dios
+	<-fs.dios
 	f, err := os.Open(mdir)
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 	if err != nil {
 		return
 	}
@@ -1990,7 +2004,7 @@ func (fs *fileStore) recoverMsgs() error {
 	defer fs.mu.Unlock()
 
 	// Check for any left over purged messages.
-	<-dios
+	<-fs.dios
 	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
 	if _, err := os.Stat(pdir); err == nil {
 		os.RemoveAll(pdir)
@@ -1998,12 +2012,12 @@ func (fs *fileStore) recoverMsgs() error {
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	f, err := os.Open(mdir)
 	if err != nil {
-		dios <- struct{}{}
+		fs.dios <- struct{}{}
 		return errNotReadable
 	}
 	dirs, err := f.ReadDir(-1)
 	f.Close()
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	if err != nil {
 		return errNotReadable
@@ -3856,9 +3870,9 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 	mb.hh = hh
 
-	<-dios
+	<-fs.dios
 	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	if err != nil {
 		if isPermissionError(err) {
@@ -4858,9 +4872,9 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(mb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, mb.index))
-	<-dios
+	<-mb.fs.dios
 	err := os.WriteFile(mfn, nbuf, defaultFilePerms)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 	if err != nil {
 		os.Remove(mfn)
 		return
@@ -5077,9 +5091,9 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 
 	// Disk
 	if mb.cache.off+mb.cache.wp > ri {
-		<-dios
+		<-mb.fs.dios
 		mfd, err := os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-		dios <- struct{}{}
+		mb.fs.dios <- struct{}{}
 		if err != nil {
 			return err
 		}
@@ -5663,9 +5677,9 @@ func (mb *msgBlock) enableForWriting(fip bool) error {
 	if mb.mfd != nil {
 		return nil
 	}
-	<-dios
+	<-mb.fs.dios
 	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 	if err != nil {
 		return fmt.Errorf("error opening msg block file [%q]: %v", mb.mfn, err)
 	}
@@ -5973,9 +5987,9 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	//    header, in which case we do nothing.
 	// 2. The block will be uncompressed, in which case we will compress it
 	//    and then write it back out to disk, re-encrypting if necessary.
-	<-dios
+	<-mb.fs.dios
 	origBuf, err := os.ReadFile(origFN)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 
 	if err != nil {
 		return fmt.Errorf("failed to read original block from disk: %w", err)
@@ -6021,9 +6035,9 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	// operation if something goes wrong), create a new temporary file. We will
 	// write out the new block here and then swap the files around afterwards
 	// once everything else has succeeded correctly.
-	<-dios
+	<-mb.fs.dios
 	tmpFD, err := os.OpenFile(tmpFN, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, defaultFilePerms)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
@@ -6211,9 +6225,9 @@ func (fs *fileStore) syncBlocks() {
 			if mb.mfd != nil {
 				fd = mb.mfd
 			} else {
-				<-dios
+				<-fs.dios
 				fd, _ = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-				dios <- struct{}{}
+				fs.dios <- struct{}{}
 				didOpen = true
 			}
 			// If we have an fd.
@@ -6245,9 +6259,9 @@ func (fs *fileStore) syncBlocks() {
 	// Sync state file if we are not running with sync always.
 	if !fs.fcfg.SyncAlways {
 		fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
-		<-dios
+		<-fs.dios
 		fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms)
-		dios <- struct{}{}
+		fs.dios <- struct{}{}
 		if fd != nil {
 			fd.Sync()
 			fd.Close()
@@ -6510,9 +6524,9 @@ func (mb *msgBlock) writeAt(buf []byte, woff int64) (int, error) {
 		mb.mockWriteErr = false
 		return 0, errors.New("mock write error")
 	}
-	<-dios
+	<-mb.fs.dios
 	n, err := mb.mfd.WriteAt(buf, woff)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 	return n, err
 }
 
@@ -6663,9 +6677,9 @@ func (mb *msgBlock) fssNotLoaded() bool {
 // Lock should be held
 func (mb *msgBlock) openBlock() (*os.File, error) {
 	// Gate with concurrent IO semaphore.
-	<-dios
+	<-mb.fs.dios
 	f, err := os.Open(mb.mfn)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 	return f, err
 }
 
@@ -6718,9 +6732,9 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 		buf = buf[:sz]
 	}
 
-	<-dios
+	<-mb.fs.dios
 	n, err := io.ReadFull(f, buf)
-	dios <- struct{}{}
+	mb.fs.dios <- struct{}{}
 	// On success capture raw bytes size.
 	if err == nil {
 		mb.rbytes = uint64(n)
@@ -7884,25 +7898,25 @@ func (fs *fileStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) 
 	// If purge directory still exists then we need to wait
 	// in place and remove since rename would fail.
 	if _, err := os.Stat(pdir); err == nil {
-		<-dios
+		<-fs.dios
 		os.RemoveAll(pdir)
-		dios <- struct{}{}
+		fs.dios <- struct{}{}
 	}
 
-	<-dios
+	<-fs.dios
 	os.Rename(mdir, pdir)
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	go func() {
-		<-dios
+		<-fs.dios
 		os.RemoveAll(pdir)
-		dios <- struct{}{}
+		fs.dios <- struct{}{}
 	}()
 
 	// Create new one.
-	<-dios
+	<-fs.dios
 	os.MkdirAll(mdir, defaultDirPerms)
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	// Make sure we have a lmb to write to.
 	if _, err := fs.newMsgBlockForWrite(); err != nil {
@@ -8096,9 +8110,9 @@ func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error)
 			if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
 				goto SKIP
 			}
-			<-dios
+			<-fs.dios
 			err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms)
-			dios <- struct{}{}
+			fs.dios <- struct{}{}
 			if err != nil {
 				goto SKIP
 			}
@@ -8849,18 +8863,18 @@ func (fs *fileStore) Delete() error {
 	// Do this in separate Go routine in case lots of blocks.
 	// Purge above protects us as does the removal of meta artifacts above.
 	go func() {
-		<-dios
+		<-fs.dios
 		err := os.RemoveAll(ndir)
-		dios <- struct{}{}
+		fs.dios <- struct{}{}
 		if err == nil {
 			return
 		}
 		ttl := time.Now().Add(time.Second)
 		for time.Now().Before(ttl) {
 			time.Sleep(10 * time.Millisecond)
-			<-dios
+			<-fs.dios
 			err = os.RemoveAll(ndir)
-			dios <- struct{}{}
+			fs.dios <- struct{}{}
 			if err == nil {
 				return
 			}
@@ -9130,10 +9144,10 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 	// Write our update index.db
 	// Protect with dios.
-	<-dios
+	<-fs.dios
 	err := os.WriteFile(fn, buf, defaultFilePerms)
 	// if file system is not writable isPermissionError is set to true
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 	if isPermissionError(err) {
 		return err
 	}
@@ -9158,9 +9172,9 @@ func (fs *fileStore) writeTTLState() error {
 	buf := fs.ttls.Encode(fs.state.LastSeq)
 	fs.mu.RUnlock()
 
-	<-dios
+	<-fs.dios
 	err := os.WriteFile(fn, buf, defaultFilePerms)
-	dios <- struct{}{}
+	fs.dios <- struct{}{}
 
 	return err
 }
@@ -10181,13 +10195,7 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 	return o.aek.Seal(nonce, nonce, buf, nil), nil
 }
 
-// Used to limit number of disk IO calls in flight since they could all be blocking an OS thread.
-// https://github.com/nats-io/nats-server/issues/2742
-var dios chan struct{}
-
-// Used to setup our simplistic counting semaphore using buffered channels.
-// golang.org's semaphore seemed a bit heavy.
-func init() {
+func numIOs() int {
 	// Limit ourselves to a sensible number of blocking I/O calls. Range between
 	// 4-16 concurrent disk I/Os based on CPU cores, or 50% of cores if greater
 	// than 32 cores.
@@ -10197,11 +10205,7 @@ func init() {
 		// If the system has more than 32 cores then limit dios to 50% of cores.
 		nIO = max(16, min(mp, mp/2))
 	}
-	dios = make(chan struct{}, nIO)
-	// Fill it up to start.
-	for i := 0; i < nIO; i++ {
-		dios <- struct{}{}
-	}
+	return nIO
 }
 
 func (o *consumerFileStore) writeState(buf []byte) error {
@@ -10382,9 +10386,9 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 	}
 
 	// Read the state in here from disk..
-	<-dios
+	<-o.fs.dios
 	buf, err := os.ReadFile(o.ifn)
-	dios <- struct{}{}
+	o.fs.dios <- struct{}{}
 
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -10638,9 +10642,9 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 
 	// If our stream was not deleted this will remove the directories.
 	if odir != _EMPTY_ && !streamDeleted {
-		<-dios
+		<-o.fs.dios
 		err = os.RemoveAll(odir)
-		dios <- struct{}{}
+		o.fs.dios <- struct{}{}
 	}
 
 	if !streamDeleted {
@@ -10830,16 +10834,16 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
 	if fs.fcfg.SyncAlways {
-		return writeFileWithSync(name, data, perm)
+		return writeFileWithSync(name, data, perm, fs.dios)
 	}
-	<-dios
+	<-fs.dios
 	defer func() {
-		dios <- struct{}{}
+		fs.dios <- struct{}{}
 	}()
 	return os.WriteFile(name, data, perm)
 }
 
-func writeFileWithSync(name string, data []byte, perm fs.FileMode) error {
+func writeFileWithSync(name string, data []byte, perm fs.FileMode, dios chan struct{}) error {
 	<-dios
 	defer func() {
 		dios <- struct{}{}
