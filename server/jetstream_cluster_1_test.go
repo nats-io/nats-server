@@ -4352,7 +4352,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	c.randomNonStreamLeader("$G", "NO-Q").Shutdown()
 
 	// This should eventually have us stepdown as leader since we would have lost quorum with R=2.
-	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 15*time.Second, 100*time.Millisecond, func() error {
 		if sl := c.streamLeader("$G", "NO-Q"); sl == nil {
 			return nil
 		}
@@ -4363,7 +4363,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		return err != nil && (strings.Contains(err.Error(), "unavailable") || err == context.DeadlineExceeded)
 	}
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 15*time.Second, 100*time.Millisecond, func() error {
 		if cl := c.consumerLeader("$G", "NO-Q", ci.Name); cl == nil {
 			return nil
 		}

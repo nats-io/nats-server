@@ -102,11 +102,11 @@ func (sc *supercluster) waitOnStreamLeader(account, stream string) {
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
 			if leader := c.streamLeader(account, stream); leader != nil {
-				time.Sleep(200 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 				return
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster.waitOnStreamLeader", map[string]any{
 		"account": account,
@@ -560,11 +560,11 @@ func (sc *supercluster) waitOnLeader() {
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
 			if leader := c.leader(); leader != nil {
-				time.Sleep(250 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 				return
 			}
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster.waitOnStreamLeader", nil)
 	sc.t.Fatalf("Expected a cluster leader, got none")
@@ -572,19 +572,22 @@ func (sc *supercluster) waitOnLeader() {
 
 func (sc *supercluster) waitOnAccount(account string) {
 	sc.t.Helper()
-	expires := time.Now().Add(40 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		found := true
 		for _, c := range sc.clusters {
 			for _, s := range c.servers {
 				acc, err := s.fetchAccount(account)
-				found = found && err == nil && acc != nil
+				if found = found && err == nil && acc != nil; s.JetStreamEnabled() {
+					found = found && acc.JetStreamEnabled() == acc.jetStreamConfigured()
+				}
 			}
 		}
 		if found {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		continue
 	}
 
@@ -620,14 +623,11 @@ func (sc *supercluster) waitOnPeerCount(n int) {
 	expires := time.Now().Add(30 * time.Second)
 	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if leader = sc.leader(); leader == nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		if len(leader.JetStreamClusterPeers()) == n {
+		if leader = sc.leader(); leader != nil && len(leader.JetStreamClusterPeers()) == n {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster.waitOnPeerCount", nil)
 	sc.t.Fatalf("Expected a super cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
@@ -1383,14 +1383,11 @@ func (c *cluster) waitOnPeerCount(n int) {
 	expires := time.Now().Add(30 * time.Second)
 	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if leader = c.leader(); leader == nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		if len(leader.JetStreamClusterPeers()) == n {
+		if leader = c.leader(); leader != nil && len(leader.JetStreamClusterPeers()) == n {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnPeerCount", map[string]any{
 		"cluster": c.name,
@@ -1403,10 +1400,10 @@ func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnConsumerLeader", map[string]any{
 		"cluster":  c.name,
@@ -1442,10 +1439,10 @@ func (c *cluster) waitOnStreamLeader(account, stream string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnStreamLeader", map[string]any{
 		"cluster": c.name,
@@ -1480,10 +1477,10 @@ func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnStreamCurrent", map[string]any{
 		"cluster": c.name,
@@ -1499,9 +1496,10 @@ func (c *cluster) waitOnServerHealthz(s *Server) {
 	for time.Now().Before(expires) {
 		hs := s.healthz(nil)
 		if hs.Status == "ok" && hs.Error == _EMPTY_ {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnServerHealthz", map[string]any{
 		"cluster": c.name,
@@ -1512,12 +1510,16 @@ func (c *cluster) waitOnServerHealthz(s *Server) {
 
 func (c *cluster) waitOnServerCurrent(s *Server) {
 	c.t.Helper()
+	s.optsMu.RLock()
+	shouldJS := s.opts.JetStream
+	s.optsMu.RUnlock()
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
-		time.Sleep(100 * time.Millisecond)
-		if !s.JetStreamEnabled() || s.JetStreamIsCurrent() {
+		if (!shouldJS && !s.JetStreamEnabled()) || s.JetStreamIsCurrent() {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnServerCurrent", map[string]any{
 		"cluster": c.name,
@@ -1563,12 +1565,13 @@ func (c *cluster) leader() *Server {
 
 func (c *cluster) expectNoLeader() {
 	c.t.Helper()
-	expires := time.Now().Add(maxElectionTimeout)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if c.leader() == nil {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.expectNoLeader", map[string]any{
 		"cluster": c.name,
@@ -1578,13 +1581,13 @@ func (c *cluster) expectNoLeader() {
 
 func (c *cluster) waitOnLeader() {
 	c.t.Helper()
-	expires := time.Now().Add(40 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.leader(); leader != nil {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnLeader", map[string]any{
@@ -1595,22 +1598,20 @@ func (c *cluster) waitOnLeader() {
 
 func (c *cluster) waitOnAccount(account string) {
 	c.t.Helper()
-	expires := time.Now().Add(40 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		found := true
 		for _, s := range c.servers {
-			s.optsMu.RLock()
-			wantJS := s.opts.JetStream
-			s.optsMu.RUnlock()
 			acc, err := s.fetchAccount(account)
-			if found = found && err == nil && acc != nil; wantJS {
-				found = found && acc.JetStreamEnabled()
+			if found = found && err == nil && acc != nil; s.JetStreamEnabled() {
+				found = found && acc.JetStreamEnabled() == acc.jetStreamConfigured()
 			}
 		}
 		if found {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		continue
 	}
 
@@ -1623,25 +1624,21 @@ func (c *cluster) waitOnAccount(account string) {
 // Helper function to check that a cluster is formed
 func (c *cluster) waitOnClusterReady() {
 	c.t.Helper()
-	c.waitOnClusterReadyWithNumPeers(len(c.servers))
 	c.waitOnLeader()
+	c.waitOnClusterReadyWithNumPeers(len(c.servers))
 }
 
 func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	c.t.Helper()
 	var leader *Server
-	expires := time.Now().Add(40 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if leader = c.leader(); leader == nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		if len(leader.JetStreamClusterPeers()) == numPeersExpected {
-			time.Sleep(100 * time.Millisecond)
+		if leader = c.leader(); leader != nil && len(leader.JetStreamClusterPeers()) == numPeersExpected {
+			time.Sleep(10 * time.Millisecond)
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if leader == nil {
@@ -1725,8 +1722,10 @@ func (c *cluster) lameDuckRestartAll() {
 	for _, s := range c.servers {
 		s.lameDuckMode()
 	}
-	for i, s := range c.servers {
+	for _, s := range c.servers {
 		s.WaitForShutdown()
+	}
+	for i, s := range c.servers {
 		if !s.Running() {
 			opts := c.opts[i]
 			s, o := RunServerWithConfig(opts.ConfigFile)

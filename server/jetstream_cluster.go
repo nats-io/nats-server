@@ -959,11 +959,18 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	if rg == nil {
 		return false
 	}
+	// R1 is always leader, but need to make sure the group is consistent with
+	// the peer count first.
+	if rp := len(rg.Peers); rp == 1 {
+		if rg.node != nil && rg.node.ClusterSize() == rp {
+			return true
+		}
+	}
 	// Check if we are the leader of this raftGroup assigned to the stream.
 	ourID := cc.meta.ID()
 	for _, peer := range rg.Peers {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
+			if rg.node != nil && rg.node.Leader() {
 				return true
 			}
 		}
@@ -994,10 +1001,21 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 		return false
 	}
 	rg := ca.Group
+	if rg == nil {
+		return false
+	}
+	// R1 is always leader, but need to make sure the group is consistent with
+	// the peer count first.
+	if rp := len(rg.Peers); rp == 1 {
+		if rg.node != nil && rg.node.ClusterSize() == rp {
+			return true
+		}
+	}
+	// Check if we are the leader of this raftGroup assigned to the stream.
 	ourID := cc.meta.ID()
 	for _, peer := range rg.Peers {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
+			if rg.node != nil && rg.node.Leader() {
 				return true
 			}
 		}

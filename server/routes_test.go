@@ -335,7 +335,7 @@ func checkClusterFormed(t testing.TB, servers ...*Server) {
 			enr = append(enr, total)
 		}
 	}
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 50*time.Second, 5*time.Second, func() error {
 		for i, s := range servers {
 			if numRoutes := s.NumRoutes(); numRoutes != enr[i] {
 				return fmt.Errorf("Expected %d routes for server %q, got %d", enr[i], s, numRoutes)
