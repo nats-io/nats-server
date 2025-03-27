@@ -2611,12 +2611,20 @@ func parseLeafAuthorization(v any, errors *[]error) (*authorization, error) {
 			}
 			auth.nkey = nk
 		case "timeout":
-			at := float64(1)
+			at := float64(0)
 			switch mv := mv.(type) {
 			case int64:
 				at = float64(mv)
 			case float64:
 				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing leafnode authorization config, 'timeout' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing leafnode authorization config, 'timeout' wrong type"}
 			}
 			auth.timeout = at
 		case "users":
