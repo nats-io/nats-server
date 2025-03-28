@@ -1067,7 +1067,7 @@ func (ms *memStore) expireMsgs() {
 	nextTTL := int64(math.MaxInt64)
 	if ms.ttls != nil {
 		ms.ttls.ExpireTasks(func(seq uint64, ts int64) {
-			ms.removeMsg(seq, false, _EMPTY_)
+			ms.removeMsg(seq, false, JSMarkerReasonMaxAge)
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit

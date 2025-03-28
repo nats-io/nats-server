@@ -5593,7 +5593,7 @@ func (fs *fileStore) expireMsgs() {
 	nextTTL := int64(math.MaxInt64)
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
-			fs.removeMsg(seq, false, false, false)
+			fs.removeMsgViaLimits(seq)
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
