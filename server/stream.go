@@ -5166,6 +5166,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return err
 	}
 
+	// If subject delete markers are used, ensure message TTL is that at minimum.
+	// Otherwise, subject delete markers could be missed if one already exists for this subject.
+	if ttl > 0 && mset.cfg.SubjectDeleteMarkerTTL > 0 {
+		if minTtl := int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds()); ttl < minTtl {
+			ttl = minTtl
+		}
+	}
+
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg, ttl)
