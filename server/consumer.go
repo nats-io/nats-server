@@ -3596,7 +3596,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		priorityGroup = o.cfg.PriorityGroups[0]
 	}
 
-	lastRequest := o.waiting.tail
+	numCycled := 0
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
 		if wr == nil {
 			break
@@ -3650,7 +3650,8 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 					// If we have a match, we do nothing here and will deliver the message later down the code path.
 				} else if wr.priorityGroup.Id == _EMPTY_ {
 					o.waiting.cycle()
-					if wr == lastRequest {
+					numCycled++
+					if numCycled >= o.waiting.len() {
 						return nil
 					}
 					continue
@@ -3672,8 +3673,9 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 					(wr.priorityGroup.MinPending > 0 && wr.priorityGroup.MinPending > o.npc+1 ||
 						wr.priorityGroup.MinAckPending > 0 && wr.priorityGroup.MinAckPending > int64(len(o.pending))) {
 					o.waiting.cycle()
+					numCycled++
 					// We're done cycling through the requests.
-					if wr == lastRequest {
+					if numCycled >= o.waiting.len() {
 						return nil
 					}
 					continue
