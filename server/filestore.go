@@ -5603,8 +5603,9 @@ func (fs *fileStore) expireMsgs() {
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
 	if fs.ttls != nil {
-		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
+		fs.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
 			fs.removeMsgViaLimits(seq)
+			return true
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
