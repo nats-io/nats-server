@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  RACE: ${{ (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && github.event_name != 'pull_request') && '-race' || '' }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
@@ -25,6 +28,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
+          version: v1.64.8
           skip-cache: true
           skip-save-cache: true
           args: --timeout=5m --config=.golangci.yml
@@ -114,7 +118,7 @@ jobs:
         run: ./scripts/runTestsOnTravis.sh js_tests
 
   js-cluster-1:
-    name: Test JetStream Cluster (1)
+    name: Test JetStream Cluster 1
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
@@ -130,7 +134,7 @@ jobs:
         run: ./scripts/runTestsOnTravis.sh js_cluster_tests_1
 
   js-cluster-2:
-    name: Test JetStream Cluster (2)
+    name: Test JetStream Cluster 2
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
@@ -146,7 +150,7 @@ jobs:
         run: ./scripts/runTestsOnTravis.sh js_cluster_tests_2
 
   js-cluster-3:
-    name: Test JetStream Cluster (3)
+    name: Test JetStream Cluster 3
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
@@ -162,7 +166,7 @@ jobs:
         run: ./scripts/runTestsOnTravis.sh js_cluster_tests_3
 
   js-cluster-4:
-    name: Test JetStream Cluster (4)
+    name: Test JetStream Cluster 4
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     steps:
@@ -242,7 +246,7 @@ jobs:
         run: ./scripts/runTestsOnTravis.sh msgtrace_tests
 
   server-pkg-non-js:
-    name: Test Non-JetStream/MQTT/Message Tracing
+    name: Test Remaining Server Tests
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
     steps:
