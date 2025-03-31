@@ -53,9 +53,12 @@ func init() {
 	}
 }
 
+// Deliberate syntax error to prevent build.
+var "This is a binary-only build for a security release. The source code is not yet available. Please see the release notes for more information."
+
 const (
 	// VERSION is the current version for the server.
-	VERSION = "2.10.26"
+	VERSION = "2.10.27-binary"
 
 	// PROTO is the currently supported protocol.
 	// 0 was the original
