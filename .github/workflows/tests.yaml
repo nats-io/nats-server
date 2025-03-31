@@ -1,0 +1,280 @@
+name: NATS Server Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  RACE: ${{ (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && github.event_name != 'pull_request') && '-race' || '' }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          skip-cache: true
+          skip-save-cache: true
+          args: --timeout=5m --config=.golangci.yml
+
+  build-latest:
+    name: Build (Latest Go)
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build NATS Server
+        run: go build
+
+  build-supported:
+    name: Build (Minimum Go)
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Build NATS Server
+        run: go build
+
+  # Using GitHub-supplied workers for Windows for now.
+  # Note that the below testing steps depend on the Linux build
+  # only, as the Windows builds take a fair bit longer to set up.
+  build-windows:
+    name: Build (Minimum Go, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2019, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Build NATS Server
+        run: go build
+
+  store:
+    name: Test Stores
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh store_tests
+
+  js-no-cluster:
+    name: Test JetStream
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_tests
+
+  js-cluster-1:
+    name: Test JetStream Cluster 1
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_1
+
+  js-cluster-2:
+    name: Test JetStream Cluster 2
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_2
+
+  js-cluster-3:
+    name: Test JetStream Cluster 3
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_3
+
+  js-cluster-4:
+    name: Test JetStream Cluster 4
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_4
+
+  js-supercluster:
+    name: Test JetStream Supercluster
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_super_cluster_tests
+
+  no-race:
+    name: Test No-Race
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh no_race_tests
+
+  mqtt:
+    name: Test MQTT
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh mqtt_tests
+
+  msgtrace:
+    name: Test Message Tracing
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh msgtrace_tests
+
+  server-pkg-non-js:
+    name: Test Remaining Server Tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh srv_pkg_non_js_tests
+        timeout-minutes: 15
+
+  non-server-pkg:
+    name: Test Other Packages
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh non_srv_pkg_tests

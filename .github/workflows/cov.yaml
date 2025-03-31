@@ -22,7 +22,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21.x"
+          go-version: stable
+          cache-dependency-path: src/github.com/nats-io/nats-server/go.sum
 
       - name: Run code coverage
         shell: bash --noprofile --norc -x -eo pipefail {0}
@@ -34,8 +35,8 @@ jobs:
 
       - name: Convert coverage.out to coverage.lcov
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 69ef3d59a24cc6e062516a73d8be123e85b15cc0 = tag v1.1.0
-        uses: jandelgado/gcov2lcov-action@69ef3d59a24cc6e062516a73d8be123e85b15cc0
+        # Commit 4e1989767862652e6ca8d3e2e61aabe6d43be28b = tag v1.1.1
+        uses: jandelgado/gcov2lcov-action@4e1989767862652e6ca8d3e2e61aabe6d43be28b
         with:
           infile: acc.out
           working-directory: src/github.com/nats-io/nats-server

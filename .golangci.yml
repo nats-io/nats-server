@@ -1,20 +1,14 @@
 # Config file for golangci-lint
 run:
   concurrency: 4
-  deadline: 1m
   issues-exit-code: 1
   tests: true
-  skip-dirs:
-    - .github
-    - doc
-    - docker
-    - logos
-    - scripts
-    - util
   modules-download-mode: readonly
 
 output:
-  format: colored-line-number
+  formats:
+    - format: colored-line-number
+      path: stdout
   print-issued-lines: true
   print-linter-name: true
 
@@ -23,13 +17,11 @@ linters:
   enable:
     # - errcheck
     - forbidigo
-    - gofmt
-    # - goimports
+    - goimports
     - gosimple
     - govet
     - ineffassign
     # - maligned
-    - megacheck
     - misspell
     # - prealloc
     - staticcheck
@@ -44,7 +36,6 @@ linters-settings:
     forbid:
       - ^fmt\.Print(f|ln)?$
   govet:
-    check-shadowing: false
     settings:
       printf:
         funcs:
@@ -52,8 +43,6 @@ linters-settings:
           - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
           - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
           - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
-  gofmt:
-    simple: true
   misspell:
     locale: US
   unparam:
@@ -64,6 +53,13 @@ linters-settings:
     for-loops: true
 
 issues:
+  exclude-dirs:
+    - .github
+    - doc
+    - docker
+    - logos
+    - scripts
+    - util
   exclude-rules:
     - path: "main.go" # Excludes main usage
       linters: [forbidigo]
