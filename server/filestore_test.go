@@ -3302,7 +3302,7 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 			t.Fatalf("Expected to find 2 `A` msgs, got %d", fss.Msgs)
 		}
 
-		n, err := fs.PurgeEx("A", 0, 1, false)
+		n, err := fs.PurgeEx("A", 0, 1)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -3667,7 +3667,7 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		require_NoError(t, err)
 
 		// This should purge all "foo.1"
-		p, err := fs.PurgeEx("foo.1", 1, 0, false)
+		p, err := fs.PurgeEx("foo.1", 1, 0)
 		require_NoError(t, err)
 		require_Equal(t, p, uint64(total))
 
@@ -5041,12 +5041,12 @@ func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {
 		fs.StoreMsg("B", nil, msg, 0)
 	}
 
-	n, err := fs.PurgeEx("A", 0, 0, false)
+	n, err := fs.PurgeEx("A", 0, 0)
 	require_NoError(t, err)
 	require_True(t, n == 5)
 
 	// Purge with keep.
-	n, err = fs.PurgeEx(_EMPTY_, 0, 2, false)
+	n, err = fs.PurgeEx(_EMPTY_, 0, 2)
 	require_NoError(t, err)
 	require_True(t, n == 3)
 }
@@ -5465,7 +5465,7 @@ func testFileStoreFullStatePurge(t *testing.T, checkFullRecovery bool) {
 			require_NoError(t, err)
 		}
 
-		n, err = fs.PurgeEx("B", 0, 0, false)
+		n, err = fs.PurgeEx("B", 0, 0)
 		require_NoError(t, err)
 		require_Equal(t, n, 5)
 
@@ -5493,7 +5493,7 @@ func testFileStoreFullStatePurge(t *testing.T, checkFullRecovery bool) {
 		}
 
 		// Purge with keep.
-		n, err = fs.PurgeEx(_EMPTY_, 0, 2, false)
+		n, err = fs.PurgeEx(_EMPTY_, 0, 2)
 		require_NoError(t, err)
 		require_Equal(t, n, 3)
 
@@ -6420,7 +6420,7 @@ func TestFileStorePurgeExBufPool(t *testing.T) {
 		fs.StoreMsg("foo.bar", nil, msg, 0)
 	}
 
-	p, err := fs.PurgeEx("foo.bar", 1, 0, false)
+	p, err := fs.PurgeEx("foo.bar", 1, 0)
 	require_NoError(t, err)
 	require_Equal(t, p, 1000)
 
@@ -6459,7 +6459,7 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	// Let cache's expire before PurgeEx which will load them back in.
 	time.Sleep(250 * time.Millisecond)
 
-	p, err := fs.PurgeEx("A", 1, 0, false)
+	p, err := fs.PurgeEx("A", 1, 0)
 	require_NoError(t, err)
 	require_Equal(t, p, 2)
 
@@ -6877,7 +6877,7 @@ func TestFileStoreWriteFullStateAfterPurgeEx(t *testing.T) {
 	fs.RemoveMsg(9)
 	fs.RemoveMsg(10)
 
-	n, err := fs.PurgeEx(">", 8, 0, false)
+	n, err := fs.PurgeEx(">", 8, 0)
 	require_NoError(t, err)
 	require_Equal(t, n, 7)
 
@@ -7817,7 +7817,7 @@ func TestFileStoreRestoreDeleteTombstonesExceedingMaxBlkSize(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		n, err := fs.PurgeEx(_EMPTY_, 1_000_000_000, 0, false)
+		n, err := fs.PurgeEx(_EMPTY_, 1_000_000_000, 0)
 		require_NoError(t, err)
 		require_Equal(t, n, 0)
 
@@ -8696,172 +8696,6 @@ func TestFileStoreSubjectDeleteMarkers(t *testing.T) {
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, im.hdr)), "1s")
 }
 
-func TestFileStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
-	t.SkipNow()
-
-	storeDir := t.TempDir()
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = fs.Purge()
-	require_NoError(t, err)
-
-	for i := uint64(0); i < 10; i++ {
-		sm, err := fs.LoadMsg(11+i, nil)
-		require_NoError(t, err)
-		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
-		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
-		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-	}
-}
-
-func TestFileStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
-	t.SkipNow()
-
-	storeDir := t.TempDir()
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = fs.PurgeEx("test.*", 1, 0, false)
-	require_NoError(t, err)
-
-	for i := uint64(0); i < 10; i++ {
-		sm, err := fs.LoadMsg(11+i, nil)
-		require_NoError(t, err)
-		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
-		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
-		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-	}
-}
-
-func TestFileStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
-	t.SkipNow()
-
-	storeDir := t.TempDir()
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = fs.PurgeEx("test.*", 1, 0, true)
-	require_NoError(t, err)
-
-	for i := uint64(0); i < 10; i++ {
-		_, err := fs.LoadMsg(11+i, nil)
-		require_Error(t, err)
-	}
-}
-
-func TestFileStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
-	t.SkipNow()
-
-	storeDir := t.TempDir()
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = fs.Compact(6)
-	require_NoError(t, err)
-
-	for i := uint64(6); i <= 15; i++ {
-		sm, err := fs.LoadMsg(i, nil)
-		require_NoError(t, err)
-		if i <= 10 {
-			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i-1))
-			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), _EMPTY_)
-			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), _EMPTY_)
-		} else {
-			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i-11))
-			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
-			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-		}
-	}
-}
-
-func TestFileStoreSubjectDeleteMarkersOnRemoveMsg(t *testing.T) {
-	t.SkipNow()
-
-	storeDir := t.TempDir()
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{
-			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	_, _, err = fs.StoreMsg("test", nil, nil, 0)
-	require_NoError(t, err)
-
-	_, err = fs.RemoveMsg(1)
-	require_NoError(t, err)
-
-	sm, err := fs.LoadMsg(2, nil)
-	require_NoError(t, err)
-	require_Equal(t, sm.subj, "test")
-	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonRemove)
-	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-
-	_, err = fs.RemoveMsg(2)
-	require_NoError(t, err)
-
-	// The deleted subject marker at seq 2 should not have been replaced.
-	_, err = fs.LoadMsg(3, nil)
-	require_Error(t, err)
-}
-
 func TestFileStoreStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
 	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 500 * time.Millisecond}
 	fs, err := newFileStore(
@@ -9115,7 +8949,7 @@ func TestFileStoreRecoverAfterRemoveOperation(t *testing.T) {
 		{
 			title: "PurgeEx-0",
 			action: func(fs *fileStore) {
-				purged, err := fs.PurgeEx("foo.0", 0, 0, false)
+				purged, err := fs.PurgeEx("foo.0", 0, 0)
 				require_NoError(t, err)
 				require_Equal(t, purged, 2)
 			},
@@ -9129,7 +8963,7 @@ func TestFileStoreRecoverAfterRemoveOperation(t *testing.T) {
 		{
 			title: "PurgeEx-1",
 			action: func(fs *fileStore) {
-				purged, err := fs.PurgeEx("foo.1", 0, 0, false)
+				purged, err := fs.PurgeEx("foo.1", 0, 0)
 				require_NoError(t, err)
 				require_Equal(t, purged, 2)
 			},
