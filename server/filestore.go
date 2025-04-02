@@ -545,7 +545,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// recovered first sequence number is before our configured first
 	// sequence. Need to do this locked as by now the age check timer
 	// has started.
-	if cfg.FirstSeq > 0 && firstSeq <= cfg.FirstSeq {
+	if cfg.FirstSeq > 0 && firstSeq < cfg.FirstSeq {
 		if _, err := fs.purge(cfg.FirstSeq, true); err != nil {
 			return nil, err
 		}
