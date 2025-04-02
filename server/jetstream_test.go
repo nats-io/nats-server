@@ -23446,3 +23446,53 @@ func TestJetStreamRecoversStreamFirstSeqWhenEmpty(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, 1001)
 	require_Equal(t, si.State.LastSeq, 1000)
 }
+
+func TestJetStreamFileStoreFirstSeqAfterRestart(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create a stream with a first sequence.
+	fseq := uint64(10_000)
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   nats.FileStorage,
+		Retention: nats.LimitsPolicy,
+		FirstSeq:  fseq,
+	})
+	require_NoError(t, err)
+	require_Equal(t, si.State.FirstSeq, fseq)
+	require_Equal(t, si.State.LastSeq, fseq-1)
+
+	// Publish one message to have some data in the stream.
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, fseq)
+
+	// Confirm initial stream state.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+	require_Equal(t, si.State.FirstSeq, fseq)
+	require_Equal(t, si.State.LastSeq, fseq)
+
+	// Restart the server.
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	nc.Close()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Stream should come back up with the same state prior to restart.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+	require_Equal(t, si.State.FirstSeq, fseq)
+	require_Equal(t, si.State.LastSeq, fseq)
+}
