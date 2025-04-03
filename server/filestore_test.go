@@ -8421,7 +8421,12 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 
 		ttl := int64(1) // 1 second
 
-		for i := 1; i <= 10; i++ {
+		// Make the first message with no ttl.
+		// This exposes a bug we had in recovery.
+		_, _, err = fs.StoreMsg("test", nil, nil, 0)
+		require_NoError(t, err)
+
+		for i := 0; i < 9; i++ {
 			// When the timed hash wheel state is deleted, the only way we can recover
 			// the TTL is to look at the original message header, therefore the TTL
 			// must be in the headers for this test to work.
@@ -8449,6 +8454,16 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
+		require_Equal(t, fs.numMsgBlocks(), 1)
+		fs.mu.RLock()
+		mb := fs.blks[0]
+		fs.mu.RUnlock()
+		mb.mu.RLock()
+		ttls := mb.ttls
+		mb.mu.RUnlock()
+
+		require_Equal(t, ttls, 9)
+
 		var ss StreamState
 		fs.FastState(&ss)
 		require_Equal(t, ss.FirstSeq, 1)
@@ -8458,9 +8473,9 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 		time.Sleep(time.Second * 2)
 
 		fs.FastState(&ss)
-		require_Equal(t, ss.FirstSeq, 11)
+		require_Equal(t, ss.FirstSeq, 1)
 		require_Equal(t, ss.LastSeq, 10)
-		require_Equal(t, ss.Msgs, 0)
+		require_Equal(t, ss.Msgs, 1)
 	})
 }
 
