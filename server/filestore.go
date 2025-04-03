@@ -6453,7 +6453,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			// Count how many TTLs we think are in this message block.
 			// TODO(nat): Not terribly optimal...
 			if hasHeaders {
-				if fsm, err := mb.msgFromBuf(buf, &sm, nil); err == nil && fsm != nil {
+				if fsm, err := mb.msgFromBuf(buf[index:], &sm, nil); err == nil && fsm != nil {
 					if _, err = getMessageTTL(fsm.hdr); err == nil && len(fsm.hdr) > 0 {
 						ttls++
 					}
