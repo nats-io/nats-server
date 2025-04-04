@@ -2836,7 +2836,14 @@ func (mset *stream) setupMirrorConsumer() error {
 		}
 		mirror.sfs = sfs
 		mirror.trs = trs
-		req.Config.FilterSubjects = sfs
+		// If there was no explicit FilterSubject defined and we have a single
+		// subject transform, use Config.FilterSubject instead of FilterSubjects
+		// so that we can use the extended consumer create API down below.
+		if req.Config.FilterSubject == _EMPTY_ && len(sfs) == 1 {
+			req.Config.FilterSubject = sfs[0]
+		} else {
+			req.Config.FilterSubjects = sfs
+		}
 	}
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
@@ -2862,8 +2869,6 @@ func (mset *stream) setupMirrorConsumer() error {
 		return nil
 	}
 
-	b, _ := json.Marshal(req)
-
 	var subject string
 	if req.Config.FilterSubject != _EMPTY_ {
 		req.Config.Name = fmt.Sprintf("mirror-%s", createConsumerName())
@@ -2875,6 +2880,9 @@ func (mset *stream) setupMirrorConsumer() error {
 		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
+
+	// Marshal now that we are done with `req`.
+	b, _ := json.Marshal(req)
 
 	// Reset
 	mirror.msgs = nil
