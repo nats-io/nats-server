@@ -1690,6 +1690,86 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	require_NoError(t, err)
 }
 
+func TestJetStreamConsumerPinnedUnsubscribeOnPinned(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.>", "bar", "baz"},
+		Retention: LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo.>",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPinnedClient,
+		AckPolicy:      AckExplicit,
+		PinnedTTL:      time.Second,
+	})
+	require_NoError(t, err)
+	_, err = js.Publish("foo.1", []byte("hello"))
+	require_NoError(t, err)
+
+	req := JSApiConsumerGetNextRequest{Batch: 3, Expires: 5 * time.Second, Heartbeat: 250 * time.Millisecond, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+	reqb, _ := json.Marshal(req)
+	reply := "ONE"
+	replies, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+	require_NoError(t, err)
+
+	reply2 := "TWO"
+	replies2, err := nc.SubscribeSync(reply2)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
+	require_NoError(t, err)
+	defer replies2.Unsubscribe()
+
+	// This is the first Pull Request, so it should become the pinned one.
+	msg, err := replies.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+	// Check if we are really pinned.
+	pinned := msg.Header.Get("Nats-Pin-Id")
+	if pinned == "" {
+		t.Fatalf("Expected pinned message, got none")
+	}
+
+	err = replies.Unsubscribe()
+	require_NoError(t, err)
+	_, err = js.Publish("foo.1", []byte("hello"))
+	require_NoError(t, err)
+
+	// Here, we should receive a heartbeat message.
+	msg, err = replies2.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+	require_Equal(t, msg.Header.Get("Status"), "100")
+
+	// receive heartbeats until pinned ttl expires
+	// and we should get a new message with new pin id
+	for {
+		msg, err = replies2.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+		if msg.Header.Get("Status") == "100" {
+			continue
+		}
+		if msg.Header.Get("Nats-Pin-Id") == "" {
+			t.Fatalf("Expected pinned message, got none")
+		}
+		break
+	}
+}
+
 // This tests if Unpin works correctly when there are no pending messages.
 // It checks if the next pinned client will be different than the first one
 // after new messages is published.
