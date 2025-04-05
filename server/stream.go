@@ -264,8 +264,8 @@ type ExternalStream struct {
 
 // For managing stream ingest.
 const (
-	streamDefaultMaxQueueMsgs  = 10_000
-	streamDefaultMaxQueueBytes = 1024 * 1024 * 128
+	streamDefaultMaxQueueMsgs  = -1
+	streamDefaultMaxQueueBytes = 256 * 1024 * 1024
 )
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined
