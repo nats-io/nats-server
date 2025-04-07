@@ -255,6 +255,24 @@ jobs:
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh msgtrace_tests
 
+  server-pkg-non-js-2:
+    name: Test NRG & JWT Server Tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh srv_pkg_non_js_tests_2
+        timeout-minutes: 15
+
   server-pkg-non-js:
     name: Test Remaining Server Tests
     needs: [build-latest, build-supported, lint]
