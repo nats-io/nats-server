@@ -97,9 +97,16 @@ elif [ "$1" = "srv_pkg_non_js_tests" ]; then
     # store tests by using the `skip_store_tests` build tag, the JS tests
     # by using `skip_js_tests`, MQTT tests by using `skip_mqtt_tests` and
     # message tracing tests by using `skip_msgtrace_tests`.
+    # Ignore JWT and NRG tests here as they are slow.
 
     # Also including the ldflag with the version since this includes the `TestVersionMatchesTag`.
-    go test $RACE -v -p=1 ./server/... -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests,skip_no_race_tests -count=1 -vet=off -timeout=30m -failfast
+    go test $RACE -v -p=1 ./server/... -run="^Test(N[^R]|NR[^G]|J[^W]|JW[^T]|[^JN])" -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests,skip_no_race_tests -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "srv_pkg_non_js_tests_2" ]; then
+
+    # Run the JWT and NRG tests that were ignored above in srv_pkg_non_js_tests.
+
+    go test $RACE -v -p=1 ./server/... -run="^Test(NRG|JWT)" -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests,skip_no_race_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "non_srv_pkg_tests" ]; then
 
