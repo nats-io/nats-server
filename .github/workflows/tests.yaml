@@ -89,6 +89,7 @@ jobs:
     name: Test Stores
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,6 +106,7 @@ jobs:
     name: Test JetStream
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -121,6 +123,7 @@ jobs:
     name: Test JetStream Cluster 1
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -137,6 +140,7 @@ jobs:
     name: Test JetStream Cluster 2
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -153,6 +157,7 @@ jobs:
     name: Test JetStream Cluster 3
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -169,6 +174,7 @@ jobs:
     name: Test JetStream Cluster 4
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -185,6 +191,7 @@ jobs:
     name: Test JetStream Supercluster
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -201,6 +208,7 @@ jobs:
     name: Test No-Race
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -217,6 +225,7 @@ jobs:
     name: Test MQTT
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -233,6 +242,7 @@ jobs:
     name: Test Message Tracing
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -248,7 +258,8 @@ jobs:
   server-pkg-non-js:
     name: Test Remaining Server Tests
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -266,6 +277,7 @@ jobs:
     name: Test Other Packages
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
