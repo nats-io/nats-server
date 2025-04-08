@@ -4132,6 +4132,18 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	}
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
+	mset.store.RegisterStorageRemoveMsg(func(seq uint64) {
+		if mset.IsClustered() {
+			if mset.IsLeader() {
+				mset.mu.RLock()
+				md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
+				mset.node.Propose(encodeMsgDelete(&md))
+				mset.mu.RUnlock()
+			}
+		} else {
+			mset.removeMsg(seq)
+		}
+	})
 	mset.store.RegisterSubjectDeleteMarkerUpdates(func(im *inMsg) {
 		if mset.IsClustered() {
 			if mset.IsLeader() {

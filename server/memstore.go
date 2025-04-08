@@ -38,11 +38,13 @@ type memStore struct {
 	dmap        avl.SequenceSet
 	maxp        int64
 	scb         StorageUpdateHandler
+	rmcb        StorageRemoveMsgHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
 	ageChk      *time.Timer
 	consumers   int
 	receivedAny bool
 	ttls        *thw.HashWheel
+	sdm         *SDMMeta
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -328,6 +330,14 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 func (ms *memStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	ms.mu.Lock()
 	ms.scb = cb
+	ms.mu.Unlock()
+}
+
+// RegisterStorageRemoveMsg registers a callback to remove messages.
+// Replicated streams should propose removals, R1 can remove inline.
+func (ms *memStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
+	ms.mu.Lock()
+	ms.rmcb = cb
 	ms.mu.Unlock()
 }
 
@@ -679,7 +689,11 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+	return ms.subjectsTotalsLocked(filterSubject)
+}
 
+// Lock should be held.
+func (ms *memStore) subjectsTotalsLocked(filterSubject string) map[string]uint64 {
 	if ms.fss.Size() == 0 {
 		return nil
 	}
@@ -933,6 +947,15 @@ func (ms *memStore) resetAgeChk(delta int64) {
 
 	// Check to see if we should be firing sooner than MaxAge for an expiring TTL.
 	fireIn := ms.cfg.MaxAge
+
+	// If delta for next-to-expire message is unset, but we still have messages to remove.
+	// Assume messages are removed through proposals, and we need to speed up subsequent age check.
+	if delta == 0 && ms.state.Msgs > 0 {
+		if until := 2 * time.Second; until < fireIn {
+			fireIn = until
+		}
+	}
+
 	if next < math.MaxInt64 {
 		// Looks like there's a next expiration, use it either if there's no
 		// MaxAge set or if it looks to be sooner than MaxAge is.
@@ -976,7 +999,14 @@ func (ms *memStore) expireMsgs() {
 	ms.mu.RLock()
 	maxAge := int64(ms.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
+	rmcb := ms.rmcb
+	sdmcb := ms.sdmcb
+	sdmTTL := int64(ms.cfg.SubjectDeleteMarkerTTL.Seconds())
+	sdmEnabled := sdmTTL > 0
 	ms.mu.RUnlock()
+	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+		return
+	}
 
 	if maxAge > 0 {
 		var seq uint64
@@ -988,9 +1018,16 @@ func (ms *memStore) expireMsgs() {
 					continue
 				}
 			}
-			ms.mu.Lock()
-			ms.removeMsg(seq, false)
-			ms.mu.Unlock()
+			if sdmEnabled {
+				if last, ok := ms.shouldProcessSdm(seq, sm.subj); ok {
+					sdm := last && len(getHeader(JSMarkerReason, sm.hdr)) == 0
+					ms.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
+				}
+			} else {
+				ms.mu.Lock()
+				ms.removeMsg(seq, false)
+				ms.mu.Unlock()
+			}
 			// Recalculate in case we are expiring a bunch.
 			minAge = time.Now().UnixNano() - maxAge
 		}
@@ -1001,9 +1038,23 @@ func (ms *memStore) expireMsgs() {
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
+	var ttlSdm map[string][]SDMBySubj
 	if ms.ttls != nil {
 		ms.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
-			ms.removeMsg(seq, false)
+			if sdmEnabled {
+				// Need to grab subject for the specified sequence, and check
+				// if the message hasn't been removed in the meantime.
+				sm, _ = ms.loadMsgLocked(seq, &smv, false)
+				if sm != nil {
+					if ttlSdm == nil {
+						ttlSdm = make(map[string][]SDMBySubj, 1)
+					}
+					ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
+					return false
+				}
+			} else {
+				ms.removeMsg(seq, false)
+			}
 			return true
 		})
 		if maxAge > 0 {
@@ -1015,6 +1066,29 @@ func (ms *memStore) expireMsgs() {
 		}
 	}
 
+	// THW is unordered, so must sort by sequence and must not be holding the lock.
+	if len(ttlSdm) > 0 {
+		ms.mu.Unlock()
+		for subj, es := range ttlSdm {
+			slices.SortFunc(es, func(a, b SDMBySubj) int {
+				if a.seq == b.seq {
+					return 0
+				} else if a.seq < b.seq {
+					return -1
+				} else {
+					return 1
+				}
+			})
+			for _, e := range es {
+				if last, ok := ms.shouldProcessSdm(e.seq, subj); ok {
+					sdm := last && !e.sdm
+					ms.handleRemovalOrSdm(e.seq, subj, sdm, sdmTTL)
+				}
+			}
+		}
+		ms.mu.Lock()
+	}
+
 	// Only cancel if no message left, not on potential lookup error that would result in sm == nil.
 	if ms.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		ms.cancelAgeChk()
@@ -1024,6 +1098,63 @@ func (ms *memStore) expireMsgs() {
 		} else {
 			ms.resetAgeChk(sm.ts - minAge)
 		}
+	}
+}
+
+func (ms *memStore) shouldProcessSdm(seq uint64, subj string) (bool, bool) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if ms.sdm == nil {
+		ms.sdm = newSDMMeta()
+	}
+
+	if p, ok := ms.sdm.pending[seq]; ok {
+		// If we're about to use the cached value, and we knew it was last before,
+		// quickly check that we don't have more remaining messages for the subject now.
+		// Which means we are not the last anymore and must reset to not remove later data.
+		if p.last {
+			msgs := ms.subjectsTotalsLocked(subj)[subj]
+			numPending := ms.sdm.totals[subj]
+			if remaining := msgs - numPending; remaining > 0 {
+				p.last = false
+			}
+		}
+
+		// Don't allow more proposals for the same sequence if we already did recently.
+		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
+			return p.last, false
+		}
+		ms.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
+		return p.last, true
+	}
+
+	msgs := ms.subjectsTotalsLocked(subj)[subj]
+	if msgs == 0 {
+		return false, true
+	}
+	numPending := ms.sdm.totals[subj]
+	remaining := msgs - numPending
+	return ms.sdm.trackPending(seq, subj, remaining == 1), true
+}
+
+func (ms *memStore) handleRemovalOrSdm(seq uint64, subj string, sdm bool, sdmTTL int64) {
+	if sdm {
+		var _hdr [128]byte
+		hdr := fmt.Appendf(
+			_hdr[:0],
+			"NATS/1.0\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n\r\n\r\n",
+			JSMarkerReason, JSMarkerReasonMaxAge,
+			JSMessageTTL, time.Duration(sdmTTL)*time.Second,
+			JSMsgRollup, JSMsgRollupSubject,
+		)
+		msg := &inMsg{
+			subj: subj,
+			hdr:  hdr,
+		}
+		ms.sdmcb(msg)
+	} else {
+		ms.rmcb(seq)
 	}
 }
 
@@ -1101,6 +1232,7 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.msgs = make(map[uint64]*StoreMsg)
 	ms.fss = stree.NewSubjectTree[SimpleState]()
 	ms.dmap.Empty()
+	ms.sdm.empty()
 	ms.mu.Unlock()
 
 	if cb != nil {
@@ -1169,6 +1301,7 @@ func (ms *memStore) compact(seq uint64) (uint64, error) {
 		ms.msgs = make(map[uint64]*StoreMsg)
 		ms.fss = stree.NewSubjectTree[SimpleState]()
 		ms.dmap.Empty()
+		ms.sdm.empty()
 	}
 	ms.mu.Unlock()
 
@@ -1181,7 +1314,6 @@ func (ms *memStore) compact(seq uint64) (uint64, error) {
 
 // Will completely reset our store.
 func (ms *memStore) reset() error {
-
 	ms.mu.Lock()
 	var purged, bytes uint64
 	cb := ms.scb
@@ -1204,6 +1336,7 @@ func (ms *memStore) reset() error {
 	ms.msgs = make(map[uint64]*StoreMsg)
 	ms.fss = stree.NewSubjectTree[SimpleState]()
 	ms.dmap.Empty()
+	ms.sdm.empty()
 
 	ms.mu.Unlock()
 
@@ -1276,10 +1409,19 @@ func (ms *memStore) deleteFirstMsg() bool {
 
 // LoadMsg will lookup the message by sequence number and return it if found.
 func (ms *memStore) LoadMsg(seq uint64, smp *StoreMsg) (*StoreMsg, error) {
-	ms.mu.RLock()
+	return ms.loadMsgLocked(seq, smp, true)
+}
+
+// loadMsgLocked will lookup the message by sequence number and return it if found.
+func (ms *memStore) loadMsgLocked(seq uint64, smp *StoreMsg, needMSLock bool) (*StoreMsg, error) {
+	if needMSLock {
+		ms.mu.RLock()
+	}
 	sm, ok := ms.msgs[seq]
 	last := ms.state.LastSeq
-	ms.mu.RUnlock()
+	if needMSLock {
+		ms.mu.RUnlock()
+	}
 
 	if !ok || sm == nil {
 		var err = ErrStoreEOF
@@ -1520,6 +1662,7 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 	if !ok {
 		return
 	}
+	ms.sdm.removeSeqAndSubject(seq, subj)
 	if ss.Msgs == 1 {
 		ms.fss.Delete(stringToBytes(subj))
 		return

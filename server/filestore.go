@@ -174,6 +174,7 @@ type fileStore struct {
 	tombs       []uint64
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
+	rmcb        StorageRemoveMsgHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
 	ageChk      *time.Timer
 	syncTmr     *time.Timer
@@ -202,6 +203,7 @@ type fileStore struct {
 	firstMoved  bool
 	ttls        *thw.HashWheel
 	ttlseq      uint64 // How up-to-date is the `ttls` THW?
+	sdm         *SDMMeta
 }
 
 // Represents a message store block and its data.
@@ -3760,7 +3762,11 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.subjectsTotalsLocked(filter)
+}
 
+// Lock should be held.
+func (fs *fileStore) subjectsTotalsLocked(filter string) map[string]uint64 {
 	if fs.psim.Size() == 0 {
 		return nil
 	}
@@ -3786,6 +3792,14 @@ func (fs *fileStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	if cb != nil && bsz > 0 {
 		cb(0, int64(bsz), 0, _EMPTY_)
 	}
+}
+
+// RegisterStorageRemoveMsg registers a callback to remove messages.
+// Replicated streams should propose removals, R1 can remove inline.
+func (fs *fileStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
+	fs.mu.Lock()
+	fs.rmcb = cb
+	fs.mu.Unlock()
 }
 
 // RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new tombstones.
@@ -5448,6 +5462,15 @@ func (fs *fileStore) resetAgeChk(delta int64) {
 
 	// Check to see if we should be firing sooner than MaxAge for an expiring TTL.
 	fireIn := fs.cfg.MaxAge
+
+	// If delta for next-to-expire message is unset, but we still have messages to remove.
+	// Assume messages are removed through proposals, and we need to speed up subsequent age check.
+	if delta == 0 && fs.state.Msgs > 0 {
+		if until := 2 * time.Second; until < fireIn {
+			fireIn = until
+		}
+	}
+
 	if next < math.MaxInt64 {
 		// Looks like there's a next expiration, use it either if there's no
 		// MaxAge set or if it looks to be sooner than MaxAge is.
@@ -5493,7 +5516,14 @@ func (fs *fileStore) expireMsgs() {
 	fs.mu.RLock()
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
+	rmcb := fs.rmcb
+	sdmcb := fs.sdmcb
+	sdmTTL := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
+	sdmEnabled := sdmTTL > 0
 	fs.mu.RUnlock()
+	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+		return
+	}
 
 	if maxAge > 0 {
 		var seq uint64
@@ -5507,9 +5537,16 @@ func (fs *fileStore) expireMsgs() {
 			}
 			// Remove the message and then, if LimitsTTL is enabled, try and work out
 			// if it was the last message of that particular subject that we just deleted.
-			fs.mu.Lock()
-			fs.removeMsgViaLimits(sm.seq)
-			fs.mu.Unlock()
+			if sdmEnabled {
+				if last, ok := fs.shouldProcessSdm(seq, sm.subj); ok {
+					sdm := last && len(getHeader(JSMarkerReason, sm.hdr)) == 0
+					fs.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
+				}
+			} else {
+				fs.mu.Lock()
+				fs.removeMsgViaLimits(sm.seq)
+				fs.mu.Unlock()
+			}
 			// Recalculate in case we are expiring a bunch.
 			minAge = time.Now().UnixNano() - maxAge
 		}
@@ -5520,9 +5557,23 @@ func (fs *fileStore) expireMsgs() {
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
+	var ttlSdm map[string][]SDMBySubj
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
-			fs.removeMsgViaLimits(seq)
+			if sdmEnabled {
+				// Need to grab subject for the specified sequence, and check
+				// if the message hasn't been removed in the meantime.
+				sm, _ = fs.msgForSeqLocked(seq, &smv, false)
+				if sm != nil {
+					if ttlSdm == nil {
+						ttlSdm = make(map[string][]SDMBySubj, 1)
+					}
+					ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
+					return false
+				}
+			} else {
+				fs.removeMsgViaLimits(seq)
+			}
 			return true
 		})
 		if maxAge > 0 {
@@ -5534,6 +5585,29 @@ func (fs *fileStore) expireMsgs() {
 		}
 	}
 
+	// THW is unordered, so must sort by sequence and must not be holding the lock.
+	if len(ttlSdm) > 0 {
+		fs.mu.Unlock()
+		for subj, es := range ttlSdm {
+			slices.SortFunc(es, func(a, b SDMBySubj) int {
+				if a.seq == b.seq {
+					return 0
+				} else if a.seq < b.seq {
+					return -1
+				} else {
+					return 1
+				}
+			})
+			for _, e := range es {
+				if last, ok := fs.shouldProcessSdm(e.seq, subj); ok {
+					sdm := last && !e.sdm
+					fs.handleRemovalOrSdm(e.seq, subj, sdm, sdmTTL)
+				}
+			}
+		}
+		fs.mu.Lock()
+	}
+
 	// Only cancel if no message left, not on potential lookup error that would result in sm == nil.
 	if fs.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		fs.cancelAgeChk()
@@ -5543,6 +5617,63 @@ func (fs *fileStore) expireMsgs() {
 		} else {
 			fs.resetAgeChk(sm.ts - minAge)
 		}
+	}
+}
+
+func (fs *fileStore) shouldProcessSdm(seq uint64, subj string) (bool, bool) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	if fs.sdm == nil {
+		fs.sdm = newSDMMeta()
+	}
+
+	if p, ok := fs.sdm.pending[seq]; ok {
+		// If we're about to use the cached value, and we knew it was last before,
+		// quickly check that we don't have more remaining messages for the subject now.
+		// Which means we are not the last anymore and must reset to not remove later data.
+		if p.last {
+			msgs := fs.subjectsTotalsLocked(subj)[subj]
+			numPending := fs.sdm.totals[subj]
+			if remaining := msgs - numPending; remaining > 0 {
+				p.last = false
+			}
+		}
+
+		// Don't allow more proposals for the same sequence if we already did recently.
+		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
+			return p.last, false
+		}
+		fs.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
+		return p.last, true
+	}
+
+	msgs := fs.subjectsTotalsLocked(subj)[subj]
+	if msgs == 0 {
+		return false, true
+	}
+	numPending := fs.sdm.totals[subj]
+	remaining := msgs - numPending
+	return fs.sdm.trackPending(seq, subj, remaining == 1), true
+}
+
+func (fs *fileStore) handleRemovalOrSdm(seq uint64, subj string, sdm bool, sdmTTL int64) {
+	if sdm {
+		var _hdr [128]byte
+		hdr := fmt.Appendf(
+			_hdr[:0],
+			"NATS/1.0\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n\r\n\r\n",
+			JSMarkerReason, JSMarkerReasonMaxAge,
+			JSMessageTTL, time.Duration(sdmTTL)*time.Second,
+			JSMsgRollup, JSMsgRollupSubject,
+		)
+		msg := &inMsg{
+			subj: subj,
+			hdr:  hdr,
+		}
+		fs.sdmcb(msg)
+	} else {
+		fs.rmcb(seq)
 	}
 }
 
@@ -6935,11 +7066,20 @@ func (fs *fileStore) sizeForSeq(seq uint64) int {
 
 // Will return message for the given sequence number.
 func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
+	return fs.msgForSeqLocked(seq, sm, true)
+}
+
+// Will return message for the given sequence number.
+func (fs *fileStore) msgForSeqLocked(seq uint64, sm *StoreMsg, needFSLock bool) (*StoreMsg, error) {
 	// TODO(dlc) - Since Store, Remove, Skip all hold the write lock on fs this will
 	// be stalled. Need another lock if want to happen in parallel.
-	fs.mu.RLock()
+	if needFSLock {
+		fs.mu.RLock()
+	}
 	if fs.closed {
-		fs.mu.RUnlock()
+		if needFSLock {
+			fs.mu.RUnlock()
+		}
 		return nil, ErrStoreClosed
 	}
 	// Indicates we want first msg.
@@ -6948,7 +7088,9 @@ func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	}
 	// Make sure to snapshot here.
 	mb, lseq := fs.selectMsgBlock(seq), fs.state.LastSeq
-	fs.mu.RUnlock()
+	if needFSLock {
+		fs.mu.RUnlock()
+	}
 
 	if mb == nil {
 		var err = ErrStoreEOF
@@ -7782,6 +7924,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.bim = make(map[uint32]*msgBlock)
 	// Clear any per subject tracking.
 	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	fs.sdm.empty()
 	// Mark dirty.
 	fs.dirty++
 
@@ -8106,6 +8249,7 @@ func (fs *fileStore) reset() error {
 
 	// Reset subject mappings.
 	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	fs.sdm.empty()
 	fs.bim = make(map[uint32]*msgBlock)
 
 	// If we purged anything, make sure we kick flush state loop.
@@ -8391,6 +8535,7 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 		return
 	}
 
+	mb.fs.sdm.removeSeqAndSubject(seq, subj)
 	if ss.Msgs == 1 {
 		mb.fss.Delete(bsubj)
 		return
