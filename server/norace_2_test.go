@@ -5210,3 +5210,241 @@ func TestNoRaceProducerStallLimits(t *testing.T) {
 	// just past it, hence the Max setting below to avoid a flapper.
 	require_LessThan(t, elapsed, stallTotalAllowed+20*time.Millisecond)
 }
+
+func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Retention: nats.InterestPolicy,
+		Subjects:  []string{"foo.*"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// Make the first sequence high. We already protect against it but for extra sanity.
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100_000_000})
+	require_NoError(t, err)
+
+	// Create 3 consumers. 1 Ack explicit, 1 AckAll and 1 AckNone
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C1",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C2",
+		AckPolicy: nats.AckAllPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C3",
+		AckPolicy: nats.AckNonePolicy,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 500_000; i++ {
+		js.PublishAsync("foo.bar", []byte("ok"))
+
+		// Confirm batch.
+		if i%1000 == 0 {
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	expectedStreamMsgs := func(msgs uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != msgs {
+				return fmt.Errorf("require uint64 equal, but got: %d != %d", si.State.Msgs, msgs)
+			}
+			return nil
+		})
+	}
+	expectedStreamMsgs(500_000)
+
+	// For C1 grab 100 and ack evens.
+	sub, err := js.PullSubscribe("foo.bar", "C1")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(100)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 100)
+	for _, m := range msgs {
+		meta, _ := m.Metadata()
+		if meta.Sequence.Stream%2 == 0 {
+			require_NoError(t, m.AckSync())
+		}
+	}
+
+	// For C2 grab 500 and ack 100.
+	sub, err = js.PullSubscribe("foo.bar", "C2")
+	require_NoError(t, err)
+	msgs, err = sub.Fetch(500)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 500)
+	require_NoError(t, msgs[99].AckSync())
+
+	// Simulate stream viewer, get first 10 from C3
+	sub, err = js.PullSubscribe("foo.bar", "C3")
+	require_NoError(t, err)
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	expectedStreamMsgs(499_995)
+
+	// This test would flake depending on if mset.checkInterestState already ran or not.
+	// Manually call it here, because consumers don't retry removing messages below their ack floor.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		mset.checkInterestState()
+	}
+
+	// Before fix this was in the seconds. All the while the stream is locked.
+	// This should be short now, but messages might not be cleaned up.
+	start := time.Now()
+	err = js.DeleteConsumer("TEST", "C3")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
+	}
+
+	expectedStreamMsgs(499_995)
+
+	// Now do AckAll
+	start = time.Now()
+	err = js.DeleteConsumer("TEST", "C2")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("Deleting AckAll consumer took too long: %v", elapsed)
+	}
+
+	expectedStreamMsgs(499_995)
+
+	// Now do AckExplicit
+	start = time.Now()
+	err = js.DeleteConsumer("TEST", "C1")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("Deleting AckExplicit consumer took too long: %v", elapsed)
+	}
+
+	expectedStreamMsgs(0)
+}
+
+func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyUniqueFiltersPerf(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Retention: nats.InterestPolicy,
+		Subjects:  []string{"foo.*"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// Create 2 consumers. 1 Ack explicit, 1 AckNone
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "C0",
+		AckPolicy:      nats.AckExplicitPolicy,
+		FilterSubjects: []string{"foo.0"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "C1",
+		AckPolicy:      nats.AckNonePolicy,
+		FilterSubjects: []string{"foo.1"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 500_000; i++ {
+		subject := fmt.Sprintf("foo.%d", i%2)
+		js.PublishAsync(subject, []byte("ok"))
+
+		// Confirm batch.
+		if i%1000 == 0 {
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	expectedStreamMsgs := func(msgs uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != msgs {
+				return fmt.Errorf("require uint64 equal, but got: %d != %d", si.State.Msgs, msgs)
+			}
+			return nil
+		})
+	}
+
+	expectedStreamMsgs(500_000)
+
+	// For C0 grab 100 and ack them.
+	sub, err := js.PullSubscribe("foo.0", "C0")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(100)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 100)
+	for _, msg := range msgs {
+		require_NoError(t, msg.AckSync())
+	}
+
+	expectedStreamMsgs(499_900)
+
+	start := time.Now()
+	err = js.DeleteConsumer("TEST", "C1")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
+	}
+
+	expectedStreamMsgs(499_900)
+
+	start = time.Now()
+	err = js.DeleteConsumer("TEST", "C0")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("Deleting AckExplicit consumer took too long: %v", elapsed)
+	}
+	expectedStreamMsgs(0)
+}
