@@ -119,6 +119,23 @@ jobs:
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh js_tests
 
+  js-consumers:
+    name: Test JetStream Consumers
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_consumer_tests
+
   js-cluster-1:
     name: Test JetStream Cluster 1
     needs: [build-latest, build-supported, lint]
@@ -204,8 +221,8 @@ jobs:
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh js_super_cluster_tests
 
-  no-race:
-    name: Test No-Race
+  no-race-1:
+    name: Test No-Race 1
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
     timeout-minutes: 30
@@ -219,7 +236,24 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh no_race_tests
+        run: ./scripts/runTestsOnTravis.sh no_race_1_tests
+
+  no-race-2:
+    name: Test No-Race 2
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh no_race_2_tests
 
   mqtt:
     name: Test MQTT

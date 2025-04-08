@@ -16,12 +16,21 @@ if [ "$1" = "compile" ]; then
 elif [ "$1" = "build_only" ]; then
     go build -v;
 
-elif [ "$1" = "no_race_tests" ]; then
+elif [ "$1" = "no_race_1_tests" ]; then
 
     # Run tests without the `-race` flag. By convention, those tests start
-    # with `TestNoRace`.
+    # with `TestNoRace`. This will include all test files that have the
+    # "&& !skip_no_race_1_tests" in the go build directive.
 
-    go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
+    go test -v -p=1 -run=TestNoRace ./... -tags=skip_no_race_2_tests -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "no_race_2_tests" ]; then
+
+    # Run tests without the `-race` flag. By convention, those tests start
+    # with `TestNoRace`. This will include all test files that have the
+    # "&& !skip_no_race_2_tests" in the go build directive.
+
+    go test -v -p=1 -run=TestNoRace ./... -tags=skip_no_race_1_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "store_tests" ]; then
 
@@ -33,10 +42,17 @@ elif [ "$1" = "store_tests" ]; then
 elif [ "$1" = "js_tests" ]; then
 
     # Run JetStream non-clustered tests. By convention, all JS tests start
-    # with `TestJetStream`. We exclude the clustered and super-clustered
-    # tests by using the appropriate tags.
+    # with `TestJetStream`. We exclude the clustered, super-clustered and
+    # consumer tests by using the appropriate tags.
 
-    go test $RACE -v -p=1 -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
+    go test $RACE -v -p=1 -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4,skip_js_super_cluster_tests,skip_js_consumer_tests -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "js_consumer_tests" ]; then
+
+    # Run JetStream consumer tests. All tests will start with TestJetStreamConsumer prefix.
+
+    go test $RACE -v -p=1 -run=TestJetStreamConsumer ./server -count=1 -vet=off -timeout=30m -failfast
+    #go test $RACE -v -p=1 -run=TestJetStreamConsumer ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_cluster_tests_1" ]; then
 
