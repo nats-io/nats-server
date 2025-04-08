@@ -1387,14 +1387,23 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	}
 
 	if cfg.SubjectDeleteMarkerTTL > 0 {
-		if !cfg.AllowMsgTTL {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete cannot be set if message TTLs are disabled"))
-		}
 		if cfg.SubjectDeleteMarkerTTL < time.Second {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker TTL must be at least 1 second"))
+		}
+		if !cfg.AllowMsgTTL {
+			if pedantic {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker cannot be set if message TTLs are disabled"))
+			}
+			cfg.AllowMsgTTL = true
+		}
+		if !cfg.AllowRollup {
+			if pedantic {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker cannot be set if roll-ups are disabled"))
+			}
+			cfg.AllowRollup, cfg.DenyPurge = true, false
 		}
 	} else if cfg.SubjectDeleteMarkerTTL < 0 {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must not be negative"))
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker TTL must not be negative"))
 	}
 
 	getStream := func(streamName string) (bool, StreamConfig) {

@@ -19550,3 +19550,60 @@ func TestJetStreamFileStoreFirstSeqAfterRestart(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, fseq)
 	require_Equal(t, si.State.LastSeq, fseq)
 }
+
+func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := StreamConfig{
+		Name:                   "PEDANTIC",
+		Storage:                FileStorage,
+		Subjects:               []string{"pedantic"},
+		SubjectDeleteMarkerTTL: -time.Millisecond,
+	}
+
+	_, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker TTL must not be negative"))
+
+	cfg.SubjectDeleteMarkerTTL = time.Millisecond
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker TTL must be at least 1 second"))
+
+	cfg.SubjectDeleteMarkerTTL = time.Second
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker cannot be set if message TTLs are disabled"))
+
+	cfg.AllowMsgTTL = true
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker cannot be set if roll-ups are disabled"))
+
+	cfg.AllowRollup = true
+	cfg.DenyPurge = true
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("roll-ups require the purge permission"))
+
+	cfg.DenyPurge = false
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cfg = StreamConfig{
+		Name:                   "AUTO",
+		Storage:                FileStorage,
+		Subjects:               []string{"auto"},
+		SubjectDeleteMarkerTTL: time.Second,
+	}
+
+	si, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require_Equal(t, si.Config.SubjectDeleteMarkerTTL, time.Second)
+	require_True(t, si.Config.AllowMsgTTL)
+	require_True(t, si.Config.AllowRollup)
+	require_False(t, si.Config.DenyPurge)
+}
