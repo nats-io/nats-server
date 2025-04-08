@@ -1182,6 +1182,7 @@ func (ms *memStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
 		})
 	}
 	ms.fss = stree.NewSubjectTree[SimpleState]()
+	ms.dmap.Empty()
 	sdmcb := ms.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
 	ms.mu.Unlock()
 
