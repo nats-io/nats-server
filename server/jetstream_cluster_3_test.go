@@ -34,6 +34,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestJetStreamClusterRemovePeerByID(t *testing.T) {
@@ -1613,10 +1614,12 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	ctx := context.Background()
+
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"common.*.*"},
 		Replicas: 3,
@@ -1629,7 +1632,7 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 	startCh := make(chan bool)
 	errCh := make(chan error, np)
 
-	cfg := &nats.ConsumerConfig{
+	cfg := jetstream.ConsumerConfig{
 		Durable:  "dlc",
 		Replicas: 3,
 	}
@@ -1644,7 +1647,7 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 			defer wg.Done()
 
 			// Individual connection
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnectNewAPI(t, c.randomServer())
 			defer nc.Close()
 
 			swg.Done()
@@ -1652,7 +1655,7 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 			// Make them all fire at once.
 			<-startCh
 
-			if _, err := js.AddConsumer("TEST", cfg); err != nil {
+			if _, err := js.CreateConsumer(ctx, "TEST", cfg); err != nil {
 				errCh <- err
 			}
 		}()
