@@ -16,12 +16,21 @@ if [ "$1" = "compile" ]; then
 elif [ "$1" = "build_only" ]; then
     go build -v;
 
-elif [ "$1" = "no_race_tests" ]; then
+elif [ "$1" = "no_race_1_tests" ]; then
 
     # Run tests without the `-race` flag. By convention, those tests start
-    # with `TestNoRace`.
+    # with `TestNoRace`. This will include all test files that have the
+    # "&& !skip_no_race_1_tests" in the go build directive.
 
-    go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
+    go test -v -p=1 -run=TestNoRace ./... -tags=skip_no_race_2_tests -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "no_race_2_tests" ]; then
+
+    # Run tests without the `-race` flag. By convention, those tests start
+    # with `TestNoRace`. This will include all test files that have the
+    # "&& !skip_no_race_2_tests" in the go build directive.
+
+    go test -v -p=1 -run=TestNoRace ./... -tags=skip_no_race_1_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "store_tests" ]; then
 
@@ -33,10 +42,22 @@ elif [ "$1" = "store_tests" ]; then
 elif [ "$1" = "js_tests" ]; then
 
     # Run JetStream non-clustered tests. By convention, all JS tests start
-    # with `TestJetStream`. We exclude the clustered and super-clustered
-    # tests by using the appropriate tags.
+    # with `TestJetStream`. We exclude the clustered, super-clustered and
+    # consumer tests by using the appropriate tags.
 
-    go test $RACE -v -p=1 -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
+    go test $RACE -v -p=1 -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4,skip_js_super_cluster_tests,skip_js_consumer_tests -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "js_consumer_tests" ]; then
+
+    # Run JetStream consumer tests. All tests start with TestJetStreamConsumer prefix.
+
+    go test $RACE -v -p=1 -run=TestJetStreamConsumer ./server -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "raft_tests" ]; then
+
+    # Run the RAFT tests. All tests start with TestNRG prefix.
+
+    go test $RACE -v -p=1 ./server/... -run="^TestNRG" -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_cluster_tests_1" ]; then
 
@@ -97,16 +118,16 @@ elif [ "$1" = "srv_pkg_non_js_tests" ]; then
     # store tests by using the `skip_store_tests` build tag, the JS tests
     # by using `skip_js_tests`, MQTT tests by using `skip_mqtt_tests` and
     # message tracing tests by using `skip_msgtrace_tests`.
-    # Ignore JWT and NRG tests here as they are slow.
+    # Ignore JWT and NRG tests here as they have their own matrix run.
 
     # Also including the ldflag with the version since this includes the `TestVersionMatchesTag`.
     go test $RACE -v -p=1 ./server/... -run="^Test(N[^R]|NR[^G]|J[^W]|JW[^T]|[^JN])" -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests,skip_no_race_tests -count=1 -vet=off -timeout=30m -failfast
 
-elif [ "$1" = "srv_pkg_non_js_tests_2" ]; then
+elif [ "$1" = "jwt_tests" ]; then
 
-    # Run the JWT and NRG tests that were ignored above in srv_pkg_non_js_tests.
+    # Run the JWT tests. All tests start with TestJWT.
 
-    go test $RACE -v -p=1 ./server/... -run="^Test(NRG|JWT)" -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests,skip_no_race_tests -count=1 -vet=off -timeout=30m -failfast
+    go test $RACE -v -p=1 ./server/... -run="^TestJWT" -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "non_srv_pkg_tests" ]; then
 

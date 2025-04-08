@@ -4312,7 +4312,7 @@ func TestJWTLimits(t *testing.T) {
 	})
 }
 
-func TestJwtTemplates(t *testing.T) {
+func TestJWTTemplates(t *testing.T) {
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
 	ukp, _ := nkeys.CreateUser()
@@ -4363,7 +4363,7 @@ func TestJwtTemplates(t *testing.T) {
 	require_Contains(t, err.Error(), "generated invalid subject")
 }
 
-func TestJwtInLineTemplates(t *testing.T) {
+func TestJWTInLineTemplates(t *testing.T) {
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
 	ukp, _ := nkeys.CreateUser()
@@ -4393,7 +4393,7 @@ func TestJwtInLineTemplates(t *testing.T) {
 	test(resLim.Pub.Allow, []string{"$JS.API.STREAM.INFO.KV_a"})
 }
 
-func TestJwtTemplateGoodTagAfterBadTag(t *testing.T) {
+func TestJWTTemplateGoodTagAfterBadTag(t *testing.T) {
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
 	ukp, _ := nkeys.CreateUser()
@@ -5792,7 +5792,7 @@ func TestJWTQueuePermissions(t *testing.T) {
 	}
 }
 
-func TestJWScopedSigningKeys(t *testing.T) {
+func TestJWTScopedSigningKeys(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
@@ -6515,7 +6515,7 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	doRequest()
 }
 
-func TestAccountWeightedMappingInSuperCluster(t *testing.T) {
+func TestJWTAccountWeightedMappingInSuperCluster(t *testing.T) {
 	skp, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "SYS"
@@ -6645,7 +6645,7 @@ func TestAccountWeightedMappingInSuperCluster(t *testing.T) {
 	}
 }
 
-func TestServerOperatorModeNoAuthRequired(t *testing.T) {
+func TestJWTServerOperatorModeNoAuthRequired(t *testing.T) {
 	_, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "$SYS"
@@ -6694,7 +6694,7 @@ func TestServerOperatorModeNoAuthRequired(t *testing.T) {
 	require_True(t, nc.AuthRequired())
 }
 
-func TestServerOperatorModeUserInfoExpiration(t *testing.T) {
+func TestJWTServerOperatorModeUserInfoExpiration(t *testing.T) {
 	_, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "$SYS"
