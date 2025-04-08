@@ -974,6 +974,7 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*StoreMsg)
 	ms.fss = stree.NewSubjectTree[SimpleState]()
+	ms.dmap.Empty()
 	ms.mu.Unlock()
 
 	if cb != nil {

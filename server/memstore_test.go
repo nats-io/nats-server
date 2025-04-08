@@ -1052,6 +1052,40 @@ func TestMemStoreNumPendingBug(t *testing.T) {
 	require_Equal(t, total, checkTotal)
 }
 
+func TestMemStorePurgeLeaksDmap(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err = ms.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+	}
+
+	for i := uint64(2); i <= 9; i++ {
+		_, err = ms.RemoveMsg(i)
+		require_NoError(t, err)
+	}
+	ms.mu.Lock()
+	dmaps := ms.dmap.Size()
+	ms.mu.Unlock()
+	require_Equal(t, dmaps, 8)
+
+	purged, err := ms.Purge()
+	require_NoError(t, err)
+	require_Equal(t, purged, 2)
+
+	ms.mu.Lock()
+	dmaps = ms.dmap.Size()
+	ms.mu.Unlock()
+	require_Equal(t, dmaps, 0)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
