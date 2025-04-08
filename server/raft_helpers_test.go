@@ -57,16 +57,17 @@ func (sg smGroup) leader() stateMachine {
 }
 
 // Wait on a leader to be elected.
-func (sg smGroup) waitOnLeader() {
+func (sg smGroup) waitOnLeader() stateMachine {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		for _, sm := range sg {
 			if sm.node().Leader() {
-				return
+				return sm
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	return nil
 }
 
 // Pick a random member.

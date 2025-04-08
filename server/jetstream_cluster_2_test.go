@@ -7990,7 +7990,7 @@ func TestJetStreamClusterSubjectDeleteMarkersTTLRollupWithoutMaxAge(t *testing.T
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	jsStreamCreate(t, nc, &StreamConfig{
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:                   "TEST",
 		Storage:                FileStorage,
 		Replicas:               3,
@@ -7999,6 +7999,7 @@ func TestJetStreamClusterSubjectDeleteMarkersTTLRollupWithoutMaxAge(t *testing.T
 		AllowRollup:            true,
 		SubjectDeleteMarkerTTL: time.Second,
 	})
+	require_NoError(t, err)
 
 	sub, err := js.SubscribeSync("test")
 	require_NoError(t, err)
@@ -8036,14 +8037,14 @@ func TestJetStreamClusterSubjectDeleteMarkersTTLRollupWithoutMaxAge(t *testing.T
 	require_NoError(t, msg.AckSync())
 
 	// Wait for the rollup message to hit the TTL.
-	time.Sleep(time.Second * 2)
+	time.Sleep(2500 * time.Millisecond)
 
-	// Now it should be gone and it will NOT have been replaced with a
-	// subject delete marker as it reached TTL and not MaxAge.
+	// Now it should be gone, and it will have been replaced with a
+	// subject delete marker (which is also gone by now).
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
 	require_Equal(t, si.State.Msgs, 0)
-	require_Equal(t, si.State.FirstSeq, 5)
+	require_Equal(t, si.State.FirstSeq, 6)
 }
 
 func TestJetStreamClusterSubjectDeleteMarkersTimingWithMaxAge(t *testing.T) {
@@ -8078,8 +8079,13 @@ func TestJetStreamClusterSubjectDeleteMarkersTimingWithMaxAge(t *testing.T) {
 				_, err := js.PublishMsg(msg)
 				require_NoError(t, err)
 
+				// After TTL a subject delete marker will be placed.
 				time.Sleep(time.Second + 500*time.Millisecond)
+				_, err = js.GetLastMsg("TEST", "test")
+				require_NoError(t, err)
 
+				// It will be expired soon.
+				time.Sleep(time.Second)
 				_, err = js.GetLastMsg("TEST", "test")
 				require_Error(t, err, nats.ErrMsgNotFound)
 			}

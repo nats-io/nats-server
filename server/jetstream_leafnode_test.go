@@ -29,7 +29,7 @@ import (
 
 func TestJetStreamLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 	name := "NOT-UNIQUE"
-	test := func(s *Server, sIdExpected string, srvs ...*Server) {
+	test := func(t *testing.T, s *Server, sIdExpected string, srvs ...*Server) {
 		ids := map[string]string{}
 		for _, srv := range srvs {
 			checkLeafNodeConnectedCount(t, srv, 2)
@@ -59,7 +59,7 @@ func TestJetStreamLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 			require_Equal(t, value.(nodeInfo).id, sIdExpected)
 			return true
 		})
-		require_True(t, cnt == 1)
+		require_Equal(t, cnt, 1)
 	}
 	tmplA := `
 		listen: -1
@@ -109,7 +109,7 @@ func TestJetStreamLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 		sL, _ := RunServerWithConfig(confL)
 		defer sL.Shutdown()
 		// as server name uniqueness is violates, sL.ID() is the expected value
-		test(sA, sL.ID(), sA, sL)
+		test(t, sA, sL.ID(), sA, sL)
 	})
 	t.Run("different-domain", func(t *testing.T) {
 		confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, name, t.TempDir())))
@@ -124,7 +124,7 @@ func TestJetStreamLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 		checkLeafNodeConnectedCount(t, sL, 2)
 		checkLeafNodeConnectedCount(t, sA, 2)
 		// ensure sA contains only sA.ID
-		test(sA, sA.ID(), sA, sL)
+		test(t, sA, sA.ID(), sA, sL)
 	})
 }
 

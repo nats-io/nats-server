@@ -601,7 +601,7 @@ func (n *raft) recreateInternalSubsLocked() error {
 		if a, _ := n.s.lookupAccount(n.accName); a != nil {
 			a.mu.RLock()
 			if a.js != nil {
-				target = a.js.nrgAccount
+				target = a.nrgAccount
 			}
 			a.mu.RUnlock()
 		}

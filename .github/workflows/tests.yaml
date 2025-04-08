@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  RACE: ${{ (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && github.event_name != 'pull_request') && '-race' || '' }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
@@ -86,6 +89,7 @@ jobs:
     name: Test Stores
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -102,6 +106,7 @@ jobs:
     name: Test JetStream
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,10 +119,45 @@ jobs:
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh js_tests
 
+  raft:
+    name: Test Raft
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh raft_tests
+
+  js-consumers:
+    name: Test JetStream Consumers
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh js_consumer_tests
+
   js-cluster-1:
     name: Test JetStream Cluster 1
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -134,6 +174,7 @@ jobs:
     name: Test JetStream Cluster 2
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -150,6 +191,7 @@ jobs:
     name: Test JetStream Cluster 3
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -166,6 +208,7 @@ jobs:
     name: Test JetStream Cluster 4
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,6 +225,7 @@ jobs:
     name: Test JetStream Supercluster
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -194,10 +238,11 @@ jobs:
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh js_super_cluster_tests
 
-  no-race:
-    name: Test No-Race
+  no-race-1:
+    name: Test No-Race 1
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -208,12 +253,30 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh no_race_tests
+        run: ./scripts/runTestsOnTravis.sh no_race_1_tests
+
+  no-race-2:
+    name: Test No-Race 2
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh no_race_2_tests
 
   mqtt:
     name: Test MQTT
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -230,6 +293,7 @@ jobs:
     name: Test Message Tracing
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -242,10 +306,28 @@ jobs:
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh msgtrace_tests
 
+  jwt:
+    name: Test JWT
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh jwt_tests
+
   server-pkg-non-js:
     name: Test Remaining Server Tests
     needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    runs-on: ${{ vars.GHA_WORKER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -257,12 +339,12 @@ jobs:
 
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh srv_pkg_non_js_tests
-        timeout-minutes: 15
 
   non-server-pkg:
     name: Test Other Packages
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4

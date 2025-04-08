@@ -3761,6 +3761,8 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 
 	_, err := nc.Subscribe("HELP", func(m *nats.Msg) { m.Respond([]byte("OK")) })
 	require_NoError(t, err)
+	// Make sure the subscription is processed before using a new connection to publish.
+	natsFlush(t, nc)
 
 	// Now create connection to account b where we will publish to HELP.
 	nc, _ = jsClientConnect(t, s, nats.UserInfo("b", "p"))

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/conf"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
@@ -3474,4 +3475,259 @@ func TestProcessConfigString(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuthorizationTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name                string
+		config              string
+		expectParsed        float64
+		expectRunning       float64
+		expectErrorContains string
+	}
+
+	for _, tc := range []testCase{{
+		name:          "defaults",
+		config:        "authorization {}",
+		expectParsed:  0,
+		expectRunning: 2,
+	}, {
+		name: "explicit zero",
+		config: `
+			authorization {
+				timeout: 0
+			}`,
+		expectParsed:  0,
+		expectRunning: 2,
+	}, {
+		name: "explicit one",
+		config: `
+			authorization {
+				timeout: 1
+			}`,
+		expectParsed:  1,
+		expectRunning: 1,
+	}, {
+		name: "garbage",
+		config: `
+			authorization {
+				timeout: random_garbage
+			}`,
+		expectErrorContains: `invalid duration "random_garbage"`,
+	}, {
+		name: "human readable",
+		config: `
+			authorization {
+				timeout: 10s
+			}`,
+		expectParsed:  10,
+		expectRunning: 10,
+	}, {
+		name: "bare values could be parsed as integers",
+		config: `
+			authorization {
+				timeout: 1m
+			}`,
+		expectParsed:  1000000,
+		expectRunning: 1000000,
+	}, {
+		name: "but quoted values will be parsed as durations",
+		config: `
+			authorization {
+				timeout: "1m"
+			}`,
+		expectParsed:  60,
+		expectRunning: 60,
+	}, {
+		name: "human readable minutes quoted",
+		config: `
+			authorization {
+				timeout: "10m5s30ms"
+			}`,
+		expectParsed:  605.03,
+		expectRunning: 605.03,
+	}, {
+		name: "floats work",
+		config: `
+			authorization {
+				timeout: 0.091
+			}`,
+		expectParsed:  .091,
+		expectRunning: .091,
+	}, {
+		name: "but no leading digit fails",
+		config: `
+			authorization {
+				timeout: .091
+			}`,
+		expectErrorContains: "Floats must start with a digit",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseConfigTolerantly(t, tc.config)
+			if tc.expectErrorContains != "" {
+				if !strings.Contains(err.Error(), tc.expectErrorContains) {
+					t.Errorf("Expected error like %q, got %v", tc.expectErrorContains, err)
+				}
+				return
+			} else {
+				if err != nil {
+					t.Errorf("Error processing config: %v", err)
+				}
+			}
+
+			if opts.AuthTimeout != tc.expectParsed {
+				t.Errorf("Expected Parsed AuthTimeout to be %f, got %f", tc.expectParsed, opts.AuthTimeout)
+			}
+
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			sopts := s.getOpts()
+			if sopts.AuthTimeout != tc.expectRunning {
+				t.Errorf("Expected Running AuthTimeout to be %f, got %f", tc.expectRunning, sopts.AuthTimeout)
+			}
+		})
+	}
+}
+
+func TestLeafnodeAuthorizationTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name                string
+		config              string
+		expect              float64
+		expectErrorContains string
+	}
+
+	for _, tc := range []testCase{{
+		name:   "defaults",
+		config: "leafnodes { authorization {} }",
+		expect: 0,
+	}, {
+		name: "explicit zero",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 0
+				}
+			}`,
+		expect: 0,
+	}, {
+		name: "explicit one",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 1
+				}
+			}`,
+		expect: 1,
+	}, {
+		name: "garbage",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: random_garbage
+				}
+			}`,
+		expectErrorContains: `invalid duration "random_garbage"`,
+	}, {
+		name: "human readable",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 10s
+				}
+			}`,
+		expect: 10,
+	}, {
+		name: "bare values could be parsed as integers",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 1m
+				}
+			}`,
+		expect: 1000000,
+	}, {
+		name: "but quoted values will be parsed as durations",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: "1m"
+				}
+			}`,
+		expect: 60,
+	}, {
+		name: "human readable minutes quoted",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: "10m5s30ms"
+				}
+			}`,
+		expect: 605.03,
+	}, {
+		name: "floats work",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 0.091
+				}
+			}`,
+		expect: .091,
+	}, {
+		name: "but no leading digit fails",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: .091
+				}
+			}`,
+		expectErrorContains: "Floats must start with a digit",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseConfigTolerantly(t, tc.config)
+			if tc.expectErrorContains != "" {
+				if !strings.Contains(err.Error(), tc.expectErrorContains) {
+					t.Errorf("Expected error like %q, got %v", tc.expectErrorContains, err)
+				}
+				return
+			} else {
+				if err != nil {
+					t.Errorf("Error processing config: %v", err)
+				}
+			}
+
+			if opts.LeafNode.AuthTimeout != tc.expect {
+				t.Errorf("Expected Parsed LeafNode AuthTimeout to be %f, got %f", tc.expect, opts.LeafNode.AuthTimeout)
+			}
+		})
+	}
+}
+
+func parseConfigTolerantly(t *testing.T, data string) (*Options, error) {
+	t.Helper()
+
+	m, err := conf.ParseWithChecks(data)
+	if err != nil {
+		return nil, err
+	}
+
+	o := new(Options)
+	if err = o.processConfigFile(_EMPTY_, m); err != nil {
+		switch v := err.(type) {
+		case *processConfigErr:
+			if len(v.errors) > 0 {
+				return o, err
+			}
+			for _, w := range v.warnings {
+				t.Logf("WARNING: %v", w)
+			}
+			return o, nil
+		default:
+			t.Logf("Unexpected error type %T", v)
+			return o, err
+		}
+	}
+
+	return o, nil
 }

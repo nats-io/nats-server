@@ -2836,7 +2836,14 @@ func (mset *stream) setupMirrorConsumer() error {
 		}
 		mirror.sfs = sfs
 		mirror.trs = trs
-		req.Config.FilterSubjects = sfs
+		// If there was no explicit FilterSubject defined and we have a single
+		// subject transform, use Config.FilterSubject instead of FilterSubjects
+		// so that we can use the extended consumer create API down below.
+		if req.Config.FilterSubject == _EMPTY_ && len(sfs) == 1 {
+			req.Config.FilterSubject = sfs[0]
+		} else {
+			req.Config.FilterSubjects = sfs
+		}
 	}
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
@@ -2862,8 +2869,6 @@ func (mset *stream) setupMirrorConsumer() error {
 		return nil
 	}
 
-	b, _ := json.Marshal(req)
-
 	var subject string
 	if req.Config.FilterSubject != _EMPTY_ {
 		req.Config.Name = fmt.Sprintf("mirror-%s", createConsumerName())
@@ -2875,6 +2880,9 @@ func (mset *stream) setupMirrorConsumer() error {
 		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
+
+	// Marshal now that we are done with `req`.
+	b, _ := json.Marshal(req)
 
 	// Reset
 	mirror.msgs = nil
@@ -5166,6 +5174,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return err
 	}
 
+	// If subject delete markers are used, ensure message TTL is that at minimum.
+	// Otherwise, subject delete markers could be missed if one already exists for this subject.
+	if ttl > 0 && mset.cfg.SubjectDeleteMarkerTTL > 0 {
+		if minTtl := int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds()); ttl < minTtl {
+			ttl = minTtl
+		}
+	}
+
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg, ttl)
@@ -6305,6 +6321,10 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	if err != nil {
 		return nil, err
 	}
+	js := jsa.js
+	if js == nil {
+		return nil, NewJSNotEnabledForAccountError()
+	}
 
 	cfg, apiErr := s.checkStreamCfg(ncfg, a, false)
 	if apiErr != nil {
@@ -6339,6 +6359,22 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	sdirCheck := filepath.Clean(sdir) + string(os.PathSeparator)
 
+	_, isClustered := jsa.jetStreamAndClustered()
+	jsa.usageMu.RLock()
+	selected, tier, hasTier := jsa.selectLimits(cfg.Replicas)
+	jsa.usageMu.RUnlock()
+	reserved := int64(0)
+	if hasTier {
+		if isClustered {
+			js.mu.RLock()
+			_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, &cfg)
+			js.mu.RUnlock()
+		} else {
+			reserved = jsa.tieredReservation(tier, &cfg)
+		}
+	}
+
+	var bc int64
 	tr := tar.NewReader(s2.NewReader(r))
 	for {
 		hdr, err := tr.Next()
@@ -6350,6 +6386,13 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			return nil, logAndReturnError()
+		}
+		bc += hdr.Size
+		js.mu.RLock()
+		err = js.checkAllLimits(&selected, &cfg, reserved, bc)
+		js.mu.RUnlock()
+		if err != nil {
+			return nil, err
 		}
 		fpath := filepath.Join(sdir, filepath.Clean(hdr.Name))
 		if !strings.HasPrefix(fpath, sdirCheck) {

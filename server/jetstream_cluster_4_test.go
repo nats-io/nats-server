@@ -2011,7 +2011,7 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond * 100)
 		for _, s := range c.servers {
-			s.GlobalAccount().js.nrgAccount = ""
+			s.GlobalAccount().nrgAccount = ""
 			s.updateNRGAccountStatus()
 		}
 
@@ -2051,9 +2051,9 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		time.Sleep(time.Millisecond * 100)
 		for i, s := range c.servers {
 			if i == 0 {
-				s.GlobalAccount().js.nrgAccount = globalAccountName
+				s.GlobalAccount().nrgAccount = globalAccountName
 			} else {
-				s.GlobalAccount().js.nrgAccount = ""
+				s.GlobalAccount().nrgAccount = ""
 			}
 			s.updateNRGAccountStatus()
 		}
@@ -2092,7 +2092,7 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond * 100)
 		for _, s := range c.servers {
-			s.GlobalAccount().js.nrgAccount = globalAccountName
+			s.GlobalAccount().nrgAccount = globalAccountName
 			s.updateNRGAccountStatus()
 		}
 
@@ -2121,6 +2121,34 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 			require_True(t, msg != nil)
 		}
 	})
+}
+
+func TestJetStreamClusterAccountNRGConfigNoPanic(t *testing.T) {
+	clusterConf := `
+		listen: 127.0.0.1:-1
+
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts {
+			ONE { jetstream: { cluster_traffic: system } }
+		}
+	`
+
+	cl := createJetStreamClusterWithTemplate(t, clusterConf, "test", 3)
+	defer cl.shutdown()
+
+	for _, s := range cl.servers {
+		acc, err := s.lookupAccount("ONE")
+		require_NoError(t, err)
+		require_Equal(t, acc.nrgAccount, _EMPTY_) // Empty for the system account
+	}
 }
 
 func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {
@@ -5139,6 +5167,12 @@ func TestJetStreamClusterServerPeerRemovePeersDrift(t *testing.T) {
 	})
 	require_NoError(t, err)
 
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:  "CONSUMER",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
 	var acc *Account
 	var mset *stream
 
@@ -5150,14 +5184,18 @@ func TestJetStreamClusterServerPeerRemovePeersDrift(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			_, err = acc.lookupStream("TEST")
+			mset, err = acc.lookupStream("TEST")
 			if err != nil {
+				continue
+			}
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
 				continue
 			}
 			count++
 		}
 		if count != 3 {
-			return fmt.Errorf("expected 3 streams, got: %d", count)
+			return fmt.Errorf("expected 3 streams/consumers, got: %d", count)
 		}
 		return nil
 	})
@@ -5196,7 +5234,8 @@ func TestJetStreamClusterServerPeerRemovePeersDrift(t *testing.T) {
 	// Eventually there should again be a R3 stream and everyone should agree on the peers.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		count := 0
-		var ps []string
+		var streamPeers []string
+		var consumerPeers []string
 		for _, s := range c.servers {
 			if s == rs {
 				continue
@@ -5209,23 +5248,276 @@ func TestJetStreamClusterServerPeerRemovePeersDrift(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			rn := mset.raftNode().(*raft)
-			rn.RLock()
-			peerNames := rn.peerNames()
-			rn.RUnlock()
-			slices.Sort(peerNames)
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
+				return fmt.Errorf("consumer not found on %s", s.Name())
+			}
+			mrn := mset.raftNode().(*raft)
+			mrn.RLock()
+			streamPeerNames := mrn.peerNames()
+			mrn.RUnlock()
+
+			orn := o.raftNode().(*raft)
+			orn.RLock()
+			consumerPeerNames := orn.peerNames()
+			orn.RUnlock()
+
+			slices.Sort(streamPeerNames)
+			slices.Sort(consumerPeerNames)
 			if count == 0 {
-				ps = peerNames
-			} else if !slices.Equal(ps, peerNames) {
+				streamPeers = streamPeerNames
+				consumerPeers = consumerPeerNames
+			} else if !slices.Equal(streamPeers, streamPeerNames) {
 				rsid := rs.NodeName()
-				containsOld := slices.Contains(ps, rsid) || slices.Contains(peerNames, rsid)
-				return fmt.Errorf("no equal peers, expected: %v, got: %v, contains old peer (%s): %v", ps, peerNames, rsid, containsOld)
+				containsOld := slices.Contains(streamPeers, rsid) || slices.Contains(streamPeerNames, rsid)
+				return fmt.Errorf("no equal stream peers, expected: %v, got: %v, contains old peer (%s): %v", streamPeers, streamPeerNames, rsid, containsOld)
+			} else if !slices.Equal(consumerPeers, consumerPeerNames) {
+				rsid := rs.NodeName()
+				containsOld := slices.Contains(consumerPeers, rsid) || slices.Contains(consumerPeerNames, rsid)
+				return fmt.Errorf("no equal consumer peers, expected: %v, got: %v, contains old peer (%s): %v", consumerPeers, consumerPeerNames, rsid, containsOld)
 			}
 			count++
 		}
 		if count != 3 {
-			return fmt.Errorf("expected 3 servers hosting stream, got: %d", count)
+			return fmt.Errorf("expected 3 servers hosting stream/consumer, got: %d", count)
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterObserverNotElectedMetaLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	c.waitOnLeader()
+
+	getMeta := func(s *Server) *raft {
+		if js := s.getJetStream(); js != nil {
+			if mg := js.getMetaGroup(); mg != nil {
+				return mg.(*raft)
+			}
+		}
+		return nil
+	}
+
+	setToObserverAndStepDown := func(s *Server) {
+		if meta := getMeta(s); meta != nil {
+			meta.setObserver(true, extExtended)
+			meta.StepDown()
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	for range 10 {
+		// Pick what will be the new leader since we are going to switch
+		// the 2 other servers to observer mode and make them step down.
+		newLeader := c.randomNonLeader()
+		leader := c.leader()
+
+		var other *Server
+		for _, s := range c.servers {
+			if s != newLeader && s != leader {
+				other = s
+				break
+			}
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Add some random delay before changing state and stepping down.
+			time.Sleep(time.Duration(rand.Intn(25)) * time.Millisecond)
+			setToObserverAndStepDown(other)
+		}()
+		setToObserverAndStepDown(leader)
+		wg.Wait()
+
+		// Wait for the newLeader to really be elected.
+		checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+			if !newLeader.JetStreamIsLeader() {
+				return fmt.Errorf("Server %q is still not leader", newLeader)
+			}
+			return nil
+		})
+
+		// Change the observer back to false.
+		for _, s := range []*Server{leader, other} {
+			if meta := getMeta(s); meta != nil {
+				meta.SetObserver(false)
+			}
+		}
+	}
+}
+
+func TestJetStreamClusterParallelCreateRaftGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	ml := c.leader()
+	sjs := ml.getJetStream()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	acc, err := ml.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	rg, storage := sa.Group, sa.Group.Storage
+	rn := mset.raftNode().(*raft)
+	// Do first half of Stop.
+	require_NotEqual(t, rn.state.Swap(int32(Closed)), int32(Closed))
+
+	var wg sync.WaitGroup
+	var finish sync.WaitGroup
+	wg.Add(2)
+	finish.Add(2)
+
+	var mu sync.Mutex
+	var nodes []RaftNode
+
+	// Call createRaftGroup in parallel.
+	for i := 0; i < 2; i++ {
+		go func() {
+			wg.Done()
+			defer finish.Done()
+			if n, rerr := sjs.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{}); rerr == nil {
+				mu.Lock()
+				nodes = append(nodes, n)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	// Wait for both goroutines, and allow some time for both to have entered createRaftGroup.
+	wg.Wait()
+	time.Sleep(100 * time.Millisecond)
+
+	// Do second half of Stop while goroutines are in createRaftGroup.
+	rn.leaderState.Store(false)
+	close(rn.quit)
+
+	// Wait for node and goroutines to stop.
+	rn.WaitForStop()
+	finish.Wait()
+
+	// Should only create one new node instance.
+	require_Len(t, len(nodes), 2)
+	require_Equal(t, nodes[0], nodes[1])
+}
+
+func TestJetStreamClusterSubjectDeleteMarkersMinimumTTL(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		for _, replicas := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s/R%d", storageType, replicas), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				_, err := jsStreamCreate(t, nc, &StreamConfig{
+					Name:                   "TEST",
+					Retention:              LimitsPolicy,
+					Subjects:               []string{"foo"},
+					Replicas:               replicas,
+					Storage:                storageType,
+					SubjectDeleteMarkerTTL: 3 * time.Second,
+					AllowMsgTTL:            true,
+				})
+				require_NoError(t, err)
+
+				m := nats.NewMsg("foo")
+				m.Header.Set(JSMessageTTL, "1s")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+
+				_, err = js.GetMsg("TEST", 1)
+				require_NoError(t, err)
+
+				// After the TTL expires it should still be there, because SubjectDeleteMarkerTTL is the minimum.
+				time.Sleep(1500 * time.Millisecond)
+				_, err = js.GetMsg("TEST", 1)
+				require_NoError(t, err)
+
+				// Need to wait for the subject delete marker to be placed.
+				time.Sleep(2 * time.Second)
+
+				_, err = js.GetMsg("TEST", 1)
+				require_Error(t, err, nats.ErrMsgNotFound)
+
+				// Expect a subject delete marker based on per-message TTL.
+				sm, err := js.GetMsg("TEST", 2)
+				require_NoError(t, err)
+				require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+				require_Equal(t, sm.Subject, "foo")
+
+				// Since we have a subject delete marker now with a higher TTL, if this
+				// message's lower TTL would be respected then we would not have a new
+				// subject delete marker when this message expires.
+				pa, err := js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pa.Sequence, 3)
+
+				// After some time the first subject delete marker should be gone, and the new one should be placed.
+				time.Sleep(3500 * time.Millisecond)
+
+				_, err = js.GetMsg("TEST", 2)
+				require_Error(t, err, nats.ErrMsgNotFound)
+
+				sm, err = js.GetMsg("TEST", 4)
+				require_NoError(t, err)
+				require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+				require_Equal(t, sm.Subject, "foo")
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterSubjectDeleteMarkersNoMsgTTLSet(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		for _, replicas := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s/R%d", storageType, replicas), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				_, err := jsStreamCreate(t, nc, &StreamConfig{
+					Name:                   "TEST",
+					Retention:              LimitsPolicy,
+					Subjects:               []string{"foo"},
+					Replicas:               replicas,
+					Storage:                storageType,
+					SubjectDeleteMarkerTTL: time.Second,
+					AllowMsgTTL:            true,
+				})
+				require_NoError(t, err)
+
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+
+				_, err = js.GetMsg("TEST", 1)
+				require_NoError(t, err)
+
+				// Message should not expire based on SubjectDeleteMarkerTTL if no TTL is set.
+				time.Sleep(1500 * time.Millisecond)
+				_, err = js.GetMsg("TEST", 1)
+				require_NoError(t, err)
+			})
+		}
+	}
 }
