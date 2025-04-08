@@ -20,12 +20,23 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/internal/antithesis"
+	"go.uber.org/automaxprocs/maxprocs"
 )
+
+func init() {
+	// Adjust MAXPROCS if running under linux/cgroups quotas.
+	fmt.Println("GOMAXPROCS before:", runtime.GOMAXPROCS(-1))
+	if undo, err := maxprocs.Set(); err != nil {
+		undo()
+	}
+	fmt.Println("GOMAXPROCS after:", runtime.GOMAXPROCS(-1))
+}
 
 // DefaultTestOptions are default options for the unit tests.
 var DefaultTestOptions = Options{
