@@ -299,10 +299,10 @@ func (m MathRandReader) Read(buf []byte) (int, error) {
 //   - buf:            Additional bytes to inject into ClientHello message
 //   - corruptCertOffset: Position to corrupt in client certificate (MaxUint16 = no corruption)
 //
-// Expectations:
-//   The server should either:
-//     a) Successfully complete the TLS handshake and protocol exchange, or
-//     b) Cleanly reject invalid connections without crashing
+// Expectations
+// The server should either:
+//   - Successfully complete the TLS handshake and protocol exchange, or
+//   - Cleanly reject invalid connections without crashing
 func FuzzServerTLS(f *testing.F) {
 	srvTc := &TLSConfigOpts{
 		CertFile: "../test/configs/certs/tlsauth/server.pem",
