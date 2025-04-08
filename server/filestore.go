@@ -2122,6 +2122,12 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		return nil
 	}
 
+	// If subject delete markers is configured, can't expire on recover.
+	// When clustered we need to go through proposals.
+	if fs.cfg.SubjectDeleteMarkerTTL > 0 {
+		return nil
+	}
+
 	var minAge = time.Now().UnixNano() - int64(fs.cfg.MaxAge)
 	var purged, bytes uint64
 	var deleted int
@@ -2163,11 +2169,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			break
 		}
 		// Can we remove whole block here?
-		// TODO(nat): We can't do this with LimitsTTL as we have no way to know
-		// if we're throwing away real messages or other tombstones without
-		// loading them, so in this case we'll fall through to the "slow path".
-		// There might be a better way of handling this though.
-		if mb.fs.cfg.SubjectDeleteMarkerTTL <= 0 && mb.last.ts <= minAge {
+		if mb.last.ts <= minAge {
 			purged += mb.msgs
 			bytes += mb.bytes
 			err := deleteEmptyBlock(mb)

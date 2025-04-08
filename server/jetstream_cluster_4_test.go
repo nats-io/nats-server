@@ -5521,3 +5521,46 @@ func TestJetStreamClusterSubjectDeleteMarkersNoMsgTTLSet(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterSDMMaxAgeOnRecover(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:                   "TEST",
+		Retention:              LimitsPolicy,
+		Subjects:               []string{"foo"},
+		Storage:                FileStorage,
+		Replicas:               3,
+		MaxAge:                 time.Second,
+		SubjectDeleteMarkerTTL: time.Second,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Wait for all servers to have applied the published message.
+	checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	rs := c.randomServer()
+	for _, s := range c.servers {
+		s.Shutdown()
+	}
+
+	// MaxAge would expire the message on recovery, ensure that's not done because we're clustered with SDM.
+	time.Sleep(1500 * time.Millisecond)
+
+	rs = c.restartServer(rs)
+	acc, err := rs.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	_, err = mset.getMsg(1)
+	require_NoError(t, err)
+}
