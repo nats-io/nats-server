@@ -8060,6 +8060,64 @@ func TestJetStreamClusterPreserveRedeliveredWithLaggingStream(t *testing.T) {
 	require_Equal(t, meta.NumDelivered, 3)
 }
 
+func TestJetStreamClusterInvalidJSACKOverRoute(t *testing.T) {
+	test := func(t *testing.T, stream, consumer, subject string) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      stream,
+			Subjects:  []string{"foo.>"},
+			Retention: nats.LimitsPolicy,
+			Replicas:  3,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
+			Durable:   consumer,
+			AckPolicy: nats.AckExplicitPolicy,
+		})
+		require_NoError(t, err)
+
+		// Reconnect to consumer follower.
+		nc.Close()
+		rs := c.randomNonConsumerLeader(globalAccountName, stream, consumer)
+		nc, js = jsClientConnect(t, rs)
+		defer nc.Close()
+
+		_, err = js.Publish(subject, nil)
+		require_NoError(t, err)
+
+		checkFor(t, time.Second, 100*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, stream)
+		})
+
+		sub, err := js.PullSubscribe("foo.>", consumer)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		// The message went over a route and should have the correct subject, and working ACK.
+		msgs, err := sub.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_Equal(t, msgs[0].Subject, subject)
+		require_NoError(t, msgs[0].AckSync())
+	}
+
+	for _, s := range []string{"StreamNoAt", "StreamWith@At"} {
+		for _, c := range []string{"ConsumerNoAt", "ConsumerWith@At"} {
+			for _, subject := range []string{"foo.no.at", "foo.with@at"} {
+				t.Run(fmt.Sprintf("%s/%s/%s", s, c, subject), func(t *testing.T) {
+					test(t, s, c, subject)
+				})
+			}
+		}
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

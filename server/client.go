@@ -4684,7 +4684,19 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		c.kind != CLIENT && c.kind != SYSTEM && c.kind != JETSTREAM && c.kind != ACCOUNT &&
 		bytes.HasPrefix(creply, []byte(jsAckPre)) {
 		// We need to rewrite the subject and the reply.
-		if li := bytes.LastIndex(creply, []byte("@")); li != -1 && li < len(creply)-1 {
+		// But, we must be careful that the stream name, consumer name, and subject can contain '@' characters.
+		// JS ACK contains at least 8 dots, find the first @ after this prefix.
+		// - $JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<tm>.<pending>
+		counter := 0
+		li := bytes.IndexFunc(creply, func(rn rune) bool {
+			if rn == '.' {
+				counter++
+			} else if rn == '@' {
+				return counter >= 8
+			}
+			return false
+		})
+		if li != -1 && li < len(creply)-1 {
 			remapped = true
 			subj, creply = creply[li+1:], creply[:li]
 		}
