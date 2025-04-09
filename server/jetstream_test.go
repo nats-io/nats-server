@@ -19591,6 +19591,7 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Automatically setup pre-requisites for SDM.
 	cfg = StreamConfig{
 		Name:                   "AUTO",
 		Storage:                FileStorage,
@@ -19606,4 +19607,36 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 	require_True(t, si.Config.AllowMsgTTL)
 	require_True(t, si.Config.AllowRollup)
 	require_False(t, si.Config.DenyPurge)
+
+	// Allow updating to use SDM and TTL.
+	cfg = StreamConfig{
+		Name:     "UPDATE",
+		Storage:  FileStorage,
+		Subjects: []string{"update"},
+	}
+
+	si, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require_False(t, si.Config.AllowMsgTTL)
+	require_False(t, si.Config.AllowRollup)
+	require_False(t, si.Config.DenyPurge)
+
+	cfg.SubjectDeleteMarkerTTL = time.Second
+	si, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require_Equal(t, si.Config.SubjectDeleteMarkerTTL, time.Second)
+	require_True(t, si.Config.AllowMsgTTL)
+	require_True(t, si.Config.AllowRollup)
+	require_False(t, si.Config.DenyPurge)
+
+	// Should not be allowed to disable msg TTL.
+	cfg = si.Config
+	cfg.SubjectDeleteMarkerTTL = 0
+	cfg.AllowMsgTTL = false
+	_, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("message TTL status can not be disabled"))
 }

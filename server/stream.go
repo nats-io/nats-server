@@ -1841,12 +1841,12 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 	}
 
 	// Check on the allowed message TTL status.
-	if cfg.AllowMsgTTL != old.AllowMsgTTL {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("message TTL status can not be changed after stream creation"))
+	if old.AllowMsgTTL && !cfg.AllowMsgTTL {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("message TTL status can not be disabled"))
 	}
 
 	// Do some adjustments for being sealed.
-	// Pedantic mode will allow those changes to be made, as they are determinictic and important to get a sealed stream.
+	// Pedantic mode will allow those changes to be made, as they are deterministic and important to get a sealed stream.
 	if cfg.Sealed {
 		cfg.MaxAge = 0
 		cfg.Discard = DiscardNew
