@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/time/rate"
 
 	"github.com/nats-io/nats-server/v2/internal/antithesis"
@@ -1252,6 +1253,19 @@ func jsClientConnectEx(t testing.TB, s *Server, jsOpts []nats.JSOpt, opts ...nat
 		jo = append(jo, jsOpts...)
 	}
 	js, err := nc.JetStream(jo...)
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	return nc, js
+}
+
+func jsClientConnectNewAPI(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, jetstream.JetStream) {
+	t.Helper()
+	nc, err := nats.Connect(s.ClientURL(), opts...)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(10*time.Second))
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
