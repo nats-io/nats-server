@@ -1387,14 +1387,23 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	}
 
 	if cfg.SubjectDeleteMarkerTTL > 0 {
-		if !cfg.AllowMsgTTL {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete cannot be set if message TTLs are disabled"))
-		}
 		if cfg.SubjectDeleteMarkerTTL < time.Second {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker TTL must be at least 1 second"))
+		}
+		if !cfg.AllowMsgTTL {
+			if pedantic {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker cannot be set if message TTLs are disabled"))
+			}
+			cfg.AllowMsgTTL = true
+		}
+		if !cfg.AllowRollup {
+			if pedantic {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker cannot be set if roll-ups are disabled"))
+			}
+			cfg.AllowRollup, cfg.DenyPurge = true, false
 		}
 	} else if cfg.SubjectDeleteMarkerTTL < 0 {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must not be negative"))
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker TTL must not be negative"))
 	}
 
 	getStream := func(streamName string) (bool, StreamConfig) {
@@ -1832,12 +1841,12 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 	}
 
 	// Check on the allowed message TTL status.
-	if cfg.AllowMsgTTL != old.AllowMsgTTL {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("message TTL status can not be changed after stream creation"))
+	if old.AllowMsgTTL && !cfg.AllowMsgTTL {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("message TTL status can not be disabled"))
 	}
 
 	// Do some adjustments for being sealed.
-	// Pedantic mode will allow those changes to be made, as they are determinictic and important to get a sealed stream.
+	// Pedantic mode will allow those changes to be made, as they are deterministic and important to get a sealed stream.
 	if cfg.Sealed {
 		cfg.MaxAge = 0
 		cfg.Discard = DiscardNew
@@ -2225,7 +2234,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	mset.mu.RUnlock()
 
 	if preq != nil {
-		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep, false /*preq.NoMarkers*/)
+		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep)
 	} else {
 		purged, err = mset.store.Purge()
 	}
@@ -2966,7 +2975,7 @@ func (mset *stream) setupMirrorConsumer() error {
 					// Check to see if delivered is past our last and we have no msgs. This will help the
 					// case when mirroring a stream that has a very high starting sequence number.
 					if state.Msgs == 0 && ccr.ConsumerInfo.Delivered.Stream > state.LastSeq {
-						mset.store.PurgeEx(_EMPTY_, ccr.ConsumerInfo.Delivered.Stream+1, 0, true)
+						mset.store.PurgeEx(_EMPTY_, ccr.ConsumerInfo.Delivered.Stream+1, 0)
 						mset.lseq = ccr.ConsumerInfo.Delivered.Stream
 					} else {
 						mset.skipMsgs(state.LastSeq+1, ccr.ConsumerInfo.Delivered.Stream)
@@ -4123,6 +4132,18 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	}
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
+	mset.store.RegisterStorageRemoveMsg(func(seq uint64) {
+		if mset.IsClustered() {
+			if mset.IsLeader() {
+				mset.mu.RLock()
+				md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
+				mset.node.Propose(encodeMsgDelete(&md))
+				mset.mu.RUnlock()
+			}
+		} else {
+			mset.removeMsg(seq)
+		}
+	})
 	mset.store.RegisterSubjectDeleteMarkerUpdates(func(im *inMsg) {
 		if mset.IsClustered() {
 			if mset.IsLeader() {

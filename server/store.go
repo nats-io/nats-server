@@ -84,6 +84,9 @@ type StoreMsg struct {
 // For the cases where its a single message we will also supply sequence number and subject.
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 
+// Used to call back into the upper layers to remove a message.
+type StorageRemoveMsgHandler func(seq uint64)
+
 // Used to call back into the upper layers to report on newly created subject delete markers.
 type SubjectDeleteMarkerUpdateHandler func(*inMsg)
 
@@ -100,7 +103,7 @@ type StreamStore interface {
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() (uint64, error)
-	PurgeEx(subject string, seq, keep uint64, noMarkers bool) (uint64, error)
+	PurgeEx(subject string, seq, keep uint64) (uint64, error)
 	Compact(seq uint64) (uint64, error)
 	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64
@@ -116,6 +119,7 @@ type StreamStore interface {
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
+	RegisterStorageRemoveMsg(handler StorageRemoveMsgHandler)
 	RegisterSubjectDeleteMarkerUpdates(SubjectDeleteMarkerUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error

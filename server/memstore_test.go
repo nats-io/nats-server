@@ -448,7 +448,7 @@ func TestMemStorePurgeExWithSubject(t *testing.T) {
 	}
 
 	// This should purge all.
-	ms.PurgeEx("foo", 1, 0, false)
+	ms.PurgeEx("foo", 1, 0)
 	require_True(t, ms.State().Msgs == 0)
 }
 
@@ -1042,7 +1042,7 @@ func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
 	ms.RemoveMsg(2)
 	ms.RemoveMsg(9) // This was the bug
 
-	n, err := ms.PurgeEx(_EMPTY_, 9, 0, true)
+	n, err := ms.PurgeEx(_EMPTY_, 9, 0)
 	require_NoError(t, err)
 	require_Equal(t, n, 7)
 
@@ -1235,183 +1235,27 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 
 	// Capture subject delete marker proposals.
 	ch := make(chan *inMsg, 1)
+	fs.rmcb = func(seq uint64) {
+		_, err := fs.RemoveMsg(seq)
+		require_NoError(t, err)
+	}
 	fs.sdmcb = func(im *inMsg) {
 		ch <- im
 	}
 
 	// Store three messages that will expire because of MaxAge.
-	var seq uint64
 	for i := 0; i < 3; i++ {
-		seq, _, err = fs.StoreMsg("test", nil, nil, 0)
+		_, _, err = fs.StoreMsg("test", nil, nil, 0)
 		require_NoError(t, err)
 	}
 
-	// The last message should be gone after MaxAge has passed.
+	// Wait for MaxAge to pass.
 	time.Sleep(time.Second + time.Millisecond*500)
-	sm, err := fs.LoadMsg(seq, nil)
-	require_Error(t, err)
-	require_Equal(t, sm, nil)
 
-	// We should have replaced it with a tombstone.
+	// We should have placed a subject delete marker.
 	im := require_ChanRead(t, ch, time.Second*5)
 	require_Equal(t, bytesToString(getHeader(JSMarkerReason, im.hdr)), JSMarkerReasonMaxAge)
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, im.hdr)), "1s")
-}
-
-func TestMemStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
-	t.SkipNow()
-
-	ms, err := newMemStore(
-		&StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer ms.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = ms.Purge()
-	require_NoError(t, err)
-
-	for i := uint64(0); i < 10; i++ {
-		sm, err := ms.LoadMsg(11+i, nil)
-		require_NoError(t, err)
-		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
-		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
-		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-	}
-}
-
-func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
-	t.SkipNow()
-
-	ms, err := newMemStore(
-		&StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer ms.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = ms.PurgeEx("test.*", 1, 0, false)
-	require_NoError(t, err)
-
-	for i := uint64(0); i < 10; i++ {
-		sm, err := ms.LoadMsg(11+i, nil)
-		require_NoError(t, err)
-		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
-		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
-		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-	}
-}
-
-func TestMemStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
-	t.SkipNow()
-
-	ms, err := newMemStore(
-		&StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer ms.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = ms.PurgeEx("test.*", 1, 0, true)
-	require_NoError(t, err)
-
-	for i := uint64(0); i < 10; i++ {
-		_, err := ms.LoadMsg(11+i, nil)
-		require_Error(t, err)
-	}
-}
-
-func TestMemStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
-	t.SkipNow()
-
-	ms, err := newMemStore(
-		&StreamConfig{
-			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer ms.Stop()
-
-	for i := 0; i < 10; i++ {
-		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	_, err = ms.Compact(6)
-	require_NoError(t, err)
-
-	for i := uint64(6); i <= 15; i++ {
-		sm, err := ms.LoadMsg(i, nil)
-		require_NoError(t, err)
-		if i <= 10 {
-			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i-1))
-			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), _EMPTY_)
-			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), _EMPTY_)
-		} else {
-			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", 15-i))
-			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
-			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-		}
-	}
-}
-
-func TestMemStoreSubjectDeleteMarkersOnRemoveMsg(t *testing.T) {
-	t.SkipNow()
-
-	ms, err := newMemStore(
-		&StreamConfig{
-			Name: "zzz", Subjects: []string{"test"}, Storage: MemoryStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkerTTL: time.Second,
-		},
-	)
-	require_NoError(t, err)
-	defer ms.Stop()
-
-	_, _, err = ms.StoreMsg("test", nil, nil, 0)
-	require_NoError(t, err)
-
-	_, err = ms.RemoveMsg(1)
-	require_NoError(t, err)
-
-	sm, err := ms.LoadMsg(2, nil)
-	require_NoError(t, err)
-	require_Equal(t, sm.subj, "test")
-	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonRemove)
-	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
-
-	_, err = ms.RemoveMsg(2)
-	require_NoError(t, err)
-
-	// The deleted subject marker at seq 2 should not have been replaced.
-	_, err = ms.LoadMsg(3, nil)
-	require_Error(t, err)
 }
 
 ///////////////////////////////////////////////////////////////////////////

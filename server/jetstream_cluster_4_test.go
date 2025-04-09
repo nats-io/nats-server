@@ -5521,3 +5521,670 @@ func TestJetStreamClusterSubjectDeleteMarkersNoMsgTTLSet(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterSDMMaxAgeOnRecover(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:                   "TEST",
+		Retention:              LimitsPolicy,
+		Subjects:               []string{"foo"},
+		Storage:                FileStorage,
+		Replicas:               3,
+		MaxAge:                 time.Second,
+		SubjectDeleteMarkerTTL: time.Second,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Wait for all servers to have applied the published message.
+	checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	rs := c.randomServer()
+	for _, s := range c.servers {
+		s.Shutdown()
+	}
+
+	// MaxAge would expire the message on recovery, ensure that's not done because we're clustered with SDM.
+	time.Sleep(1500 * time.Millisecond)
+
+	rs = c.restartServer(rs)
+	acc, err := rs.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	_, err = mset.getMsg(1)
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterSDMMaxAgeRemoveMsgProposal(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo"},
+				Storage:                storageType,
+				Replicas:               3,
+				MaxAge:                 time.Second,
+				SubjectDeleteMarkerTTL: time.Hour,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Wait for all servers to have applied the published message.
+			checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+			acc, err := rs.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			rn := mset.raftNode()
+			require_NoError(t, rn.PauseApply())
+
+			// Check we can get the message.
+			_, err = mset.getMsg(1)
+			require_NoError(t, err)
+
+			// Let MaxAge expire the message, but this replica is paused so should not remove on its own.
+			time.Sleep(1500 * time.Millisecond)
+			_, err = mset.getMsg(1)
+			require_NoError(t, err)
+
+			// Resume and check all replicas agree on the state.
+			rn.ResumeApply()
+			checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			// Now the message should be gone.
+			_, err = mset.getMsg(1)
+			require_Error(t, err, ErrStoreMsgNotFound)
+
+			_, err = js.GetMsg("TEST", 1)
+			require_Error(t, err, nats.ErrMsgNotFound)
+
+			// Expect a subject delete marker.
+			sm, err := js.GetMsg("TEST", 2)
+			require_NoError(t, err)
+			require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+			require_Equal(t, sm.Subject, "foo")
+		})
+	}
+}
+
+func TestJetStreamClusterSDMMaxAgeRemoveMsgProposalLimitRetries(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo"},
+				Storage:                storageType,
+				Replicas:               3,
+				MaxAge:                 time.Second,
+				SubjectDeleteMarkerTTL: time.Hour,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Wait for all servers to have applied the published message.
+			checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+			acc, err := sl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			rn := mset.raftNode().(*raft)
+
+			// Force the leader to not be able to know its remove proposals were accepted.
+			rn.Lock()
+			pindex, pcommit := rn.pindex, rn.commit
+			rn.commit = 1_000 * pcommit
+			rn.Unlock()
+
+			// Let MaxAge expire the message.
+			time.Sleep(1500 * time.Millisecond)
+
+			// Spam a bunch of expiry calls, shouldn't spam message delete proposals.
+			for i := 0; i < 100; i++ {
+				if fs, ok := mset.store.(*fileStore); ok {
+					fs.expireMsgs()
+				} else if ms, ok := mset.store.(*memStore); ok {
+					ms.expireMsgs()
+				}
+				// Spread them out, so that they can't be grouped into just one Raft proposal.
+				time.Sleep(2 * time.Millisecond)
+			}
+
+			// Put the original commit back, so they can now be committed/applied.
+			rn.Lock()
+			rn.commit = pcommit
+			rn.Unlock()
+
+			// Ensures we can check the stream leader's full log has been applied.
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Expect two entries: one initial removal, one publish.
+			nindex, _, _ := rn.Progress()
+			require_Equal(t, nindex, pindex+2)
+		})
+	}
+}
+
+func TestJetStreamClusterSDMTTLRemoveMsgProposal(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo"},
+				Storage:                storageType,
+				Replicas:               3,
+				SubjectDeleteMarkerTTL: 2 * time.Second,
+			})
+			require_NoError(t, err)
+
+			m := nats.NewMsg("foo")
+			m.Header.Set(JSMessageTTL, "2s")
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+
+			// Wait for all servers to have applied the published message.
+			checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+			acc, err := rs.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			rn := mset.raftNode()
+			require_NoError(t, rn.PauseApply())
+
+			// Check we can get the message.
+			_, err = mset.getMsg(1)
+			require_NoError(t, err)
+
+			// Let TTL expire the message, but this replica is paused so should not remove on its own.
+			time.Sleep(2500 * time.Millisecond)
+			_, err = mset.getMsg(1)
+			require_NoError(t, err)
+
+			// Resume and check all replicas agree on the state.
+			rn.ResumeApply()
+			checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			// Now the message should be gone.
+			_, err = mset.getMsg(1)
+			require_Error(t, err, ErrStoreMsgNotFound)
+
+			_, err = js.GetMsg("TEST", 1)
+			require_Error(t, err, nats.ErrMsgNotFound)
+
+			// Expect a subject delete marker.
+			sm, err := js.GetMsg("TEST", 2)
+			require_NoError(t, err)
+			require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+			require_Equal(t, sm.Subject, "foo")
+		})
+	}
+}
+
+func TestJetStreamClusterSDMInflightTTL(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo"},
+				Storage:                storageType,
+				Replicas:               3,
+				SubjectDeleteMarkerTTL: time.Second,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < 2; i++ {
+				m := nats.NewMsg("foo")
+				m.Header.Set(JSMessageTTL, fmt.Sprintf("%dms", 1000+500*i))
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+			}
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+			acc, err := sl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			rn := mset.raftNode().(*raft)
+
+			// Force the leader to not be able to know its remove proposals were accepted.
+			rn.Lock()
+			pcommit := rn.commit
+			rn.commit = 1_000 * pcommit
+			rn.Unlock()
+
+			// Check all messages are there.
+			for seq := uint64(1); seq <= 2; seq++ {
+				_, err = js.GetMsg("TEST", seq)
+				require_NoError(t, err)
+			}
+
+			// Let TTL expire the messages while we're not applying the removals.
+			time.Sleep(2500 * time.Millisecond)
+
+			// Put the original commit back, so they can now be committed/applied.
+			rn.Lock()
+			rn.commit = pcommit
+			rn.Unlock()
+
+			// Ensures we can check the stream leader's full log has been applied.
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Check all messages are removed.
+			for seq := uint64(1); seq <= 2; seq++ {
+				_, err = js.GetMsg("TEST", seq)
+				require_Error(t, err, nats.ErrMsgNotFound)
+			}
+
+			// Expect a subject delete marker.
+			sm, err := js.GetMsg("TEST", 3)
+			require_NoError(t, err)
+			require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+			require_Equal(t, sm.Subject, "foo")
+		})
+	}
+}
+
+func TestJetStreamClusterSDMTTLAndMaxMsgsPer(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo"},
+				Storage:                storageType,
+				Replicas:               3,
+				SubjectDeleteMarkerTTL: time.Second,
+				// Used for the second part of this test, checks proper accounting
+				// with removals through MaxMsgsPer and TTL.
+				MaxMsgsPer: 3,
+			})
+			require_NoError(t, err)
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+			acc, err := sl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+
+			checkNoPending := func() {
+				t.Helper()
+				if fs, ok := mset.store.(*fileStore); ok {
+					fs.mu.RLock()
+					pending := fs.sdm.pending
+					fs.mu.RUnlock()
+					if len(pending) > 0 {
+						t.Fatalf("Expected no pending messages, but got: %v", pending)
+					}
+				} else if ms, ok := mset.store.(*memStore); ok {
+					ms.mu.RLock()
+					pending := ms.sdm.pending
+					ms.mu.RUnlock()
+					if len(pending) > 0 {
+						t.Fatalf("Expected no pending messages, but got: %v", pending)
+					}
+				}
+			}
+
+			// Publish initial batch of messages with TTLs, but wait
+			// in-between so they expire as we publish.
+			for i := 0; i < 6; i++ {
+				m := nats.NewMsg("foo")
+				m.Header.Set(JSMessageTTL, "1s")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			// Wait for all messages to be expired.
+			time.Sleep(time.Second)
+
+			// Check all messages are removed. Must not have subject delete markers be placed in-between.
+			for seq := uint64(1); seq <= 6; seq++ {
+				sm, err := js.GetMsg("TEST", seq)
+				if sm != nil && sm.Header.Get(JSMarkerReason) != _EMPTY_ {
+					t.Fatalf("Got unexpected subject delete marker at sequence %d", seq)
+				}
+				require_Error(t, err, nats.ErrMsgNotFound)
+			}
+
+			// Expect a subject delete marker.
+			sm, err := js.GetMsg("TEST", 7)
+			require_NoError(t, err)
+			require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+			require_Equal(t, sm.Subject, "foo")
+
+			require_NoError(t, js.DeleteMsg("TEST", 7))
+			checkNoPending()
+
+			// Publish another batch of messages with TTLs, but only
+			// wait initially and have MaxMsgsPer kick in during it.
+			for i := 0; i < 6; i++ {
+				m := nats.NewMsg("foo")
+				m.Header.Set(JSMessageTTL, "1s")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+				if i < 3 {
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
+
+			// Wait for all messages to be expired.
+			time.Sleep(1500 * time.Millisecond)
+
+			// Check all messages are removed. Must not have subject delete markers be placed in-between.
+			for seq := uint64(8); seq <= 13; seq++ {
+				sm, err = js.GetMsg("TEST", seq)
+				if sm != nil && sm.Header.Get(JSMarkerReason) != _EMPTY_ {
+					t.Fatalf("Got unexpected subject delete marker at sequence %d", seq)
+				}
+				require_Error(t, err, nats.ErrMsgNotFound)
+			}
+
+			checkNoPending()
+
+			// Expect a subject delete marker.
+			sm, err = js.GetMsg("TEST", 14)
+			require_NoError(t, err)
+			require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+			require_Equal(t, sm.Subject, "foo")
+		})
+	}
+}
+
+func TestJetStreamClusterSDMMsgTTLReverseExpiry(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo", "bar"},
+				Storage:                storageType,
+				Replicas:               3,
+				SubjectDeleteMarkerTTL: time.Second,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < 2; i++ {
+				m := nats.NewMsg("foo")
+				m.Header.Set(JSMessageTTL, fmt.Sprintf("%ds", 2-i))
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+			}
+
+			// Wait for all servers to have applied the published message.
+			checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+			acc, err := sl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			rn := mset.raftNode().(*raft)
+
+			// Force the leader to not be able to know its remove proposals were accepted.
+			rn.Lock()
+			pindex, pcommit := rn.pindex, rn.commit
+			rn.commit = 1_000 * pcommit
+			rn.Unlock()
+
+			// Let TTL expire the messages, but the leader does not know the proposals will go through.
+			time.Sleep(2500 * time.Millisecond)
+
+			// Put the original commit back, so they can now be committed/applied.
+			rn.Lock()
+			rn.commit = pcommit
+			rn.Unlock()
+
+			// Eventually the message should be gone.
+			// Ensures we can check the stream leader's full log has been applied.
+			_, err = js.Publish("bar", nil)
+			require_NoError(t, err)
+
+			// Expect a subject delete marker.
+			sm, err := js.GetMsg("TEST", 3)
+			require_NoError(t, err)
+			require_Equal(t, sm.Subject, "foo")
+			require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+
+			// Expect three entries, one leader change, the subject delete marker rollup, and one published message.
+			nindex, _, _ := rn.Progress()
+			require_Equal(t, nindex, pindex+3)
+		})
+	}
+}
+
+func TestJetStreamClusterSDMResetLast(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo"},
+				Storage:                storageType,
+				Replicas:               3,
+				MaxAge:                 2 * time.Second,
+				SubjectDeleteMarkerTTL: time.Second,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Wait for all servers to have applied the published message.
+			checkFor(t, 500*time.Millisecond, 50*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+
+			pauseApplies := func(pause bool) {
+				for _, s := range c.servers {
+					if s == sl {
+						continue
+					}
+					acc, err := s.lookupAccount(globalAccountName)
+					require_NoError(t, err)
+					mset, err := acc.lookupStream("TEST")
+					require_NoError(t, err)
+					rn := mset.raftNode().(*raft)
+					if pause {
+						require_NoError(t, rn.PauseApply())
+					} else {
+						rn.ResumeApply()
+					}
+				}
+			}
+
+			// Pause applies on all replicas.
+			pauseApplies(true)
+
+			// Publish message after pause, so the replicas cache the first message as needing SDM.
+			// Then once applies are resumed they should not place SDM.
+			m := nats.NewMsg("foo")
+			m.Header.Set(JSMessageTTL, "never")
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+
+			acc, err := sl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			rn := mset.raftNode().(*raft)
+
+			// Force the leader to not be able to make proposals.
+			rn.Lock()
+			rn.werr = errors.New("block proposals")
+			rn.Unlock()
+
+			// Let MaxAge expire the message, but the replicas are paused.
+			time.Sleep(2500 * time.Millisecond)
+
+			// Resume applies on all replicas.
+			pauseApplies(false)
+
+			// Shutdown and wait for new stream leader.
+			sl.Shutdown()
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+
+			// Wait for the new leader to have removed the first message and added the second message.
+			checkFor(t, 2500*time.Millisecond, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("TEST")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 1 || si.State.FirstSeq != 2 {
+					return fmt.Errorf("incorrect state: %v", si.State)
+				}
+				return nil
+			})
+
+			_, err = js.GetMsg("TEST", 1)
+			require_Error(t, err, nats.ErrMsgNotFound)
+
+			// There should be no subject delete marker. Only the "never" TTL message.
+			sm, err := js.GetMsg("TEST", 2)
+			require_NoError(t, err)
+			require_Equal(t, sm.Subject, "foo")
+			require_Equal(t, sm.Header.Get(JSMessageTTL), "never")
+			require_Equal(t, sm.Header.Get(JSMarkerReason), _EMPTY_)
+		})
+	}
+}
+
+func TestJetStreamClusterSDMMaxAgeProposeExpiryShortRetry(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc := clientConnectToServer(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := &StreamConfig{
+				Name:                   "TEST",
+				Retention:              LimitsPolicy,
+				Subjects:               []string{"foo"},
+				Storage:                storageType,
+				Replicas:               3,
+				MaxAge:                 2 * time.Second,
+				SubjectDeleteMarkerTTL: time.Hour,
+			}
+
+			_, err := jsStreamCreate(t, nc, cfg)
+			require_NoError(t, err)
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+			acc, err := sl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+
+			if fs, ok := mset.store.(*fileStore); ok {
+				require_NoError(t, fs.StoreRawMsg("foo", nil, nil, 1, 1, 0))
+			} else if ms, ok := mset.store.(*memStore); ok {
+				require_NoError(t, ms.StoreRawMsg("foo", nil, nil, 1, 1, 0))
+			}
+
+			cfg.MaxAge = time.Hour
+			_, err = jsStreamUpdate(t, nc, cfg)
+			require_NoError(t, err)
+
+			if fs, ok := mset.store.(*fileStore); ok {
+				fs.mu.Lock()
+				fs.resetAgeChk(0)
+				fs.mu.Unlock()
+			} else if ms, ok := mset.store.(*memStore); ok {
+				ms.mu.Lock()
+				ms.resetAgeChk(0)
+				ms.mu.Unlock()
+			}
+
+			checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
+				_, err = mset.getMsg(1)
+				if !errors.Is(err, ErrStoreMsgNotFound) {
+					return fmt.Errorf("expected msg not found error: %v", err)
+				}
+				return nil
+			})
+		})
+	}
+}

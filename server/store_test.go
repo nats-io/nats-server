@@ -527,7 +527,7 @@ func TestStorePurgeExZero(t *testing.T) {
 			require_Equal(t, ss.LastSeq, 0)
 
 			// PurgeEx(seq=0) must be equal.
-			_, err = fs.PurgeEx(_EMPTY_, 0, 0, false)
+			_, err = fs.PurgeEx(_EMPTY_, 0, 0)
 			require_NoError(t, err)
 			ss = fs.State()
 			require_Equal(t, ss.FirstSeq, 1)

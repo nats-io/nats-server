@@ -1,4 +1,4 @@
-// Copyright 2024 The NATS Authors
+// Copyright 2024-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -83,14 +83,61 @@ func TestHashWheelExpiration(t *testing.T) {
 
 	// Process expired tasks.
 	expired := make(map[uint64]bool)
-	hw.ExpireTasks(func(seq uint64, expires int64) {
+	hw.ExpireTasks(func(seq uint64, expires int64) bool {
 		expired[seq] = true
+		return true
 	})
 
 	// Verify only sequence 1 expired.
 	require_Equal(t, len(expired), 1)
 	require_True(t, expired[1])
 	require_Equal(t, hw.count, 3)
+}
+
+func TestHashWheelManualExpiration(t *testing.T) {
+	hw := NewHashWheel()
+	now := time.Now().UnixNano()
+
+	for seq := uint64(1); seq <= 4; seq++ {
+		require_NoError(t, hw.Add(seq, now))
+	}
+	require_Equal(t, hw.count, 4)
+
+	// Loop over expired multiple times, but without removing them.
+	expired := make(map[uint64]uint64)
+	for i := uint64(0); i <= 1; i++ {
+		hw.ExpireTasks(func(seq uint64, expires int64) bool {
+			expired[seq]++
+			return false
+		})
+
+		require_Equal(t, len(expired), 4)
+		require_Equal(t, expired[1], 1+i)
+		require_Equal(t, expired[2], 1+i)
+		require_Equal(t, expired[3], 1+i)
+		require_Equal(t, expired[4], 1+i)
+		require_Equal(t, hw.count, 4)
+	}
+
+	// Only remove even sequences.
+	for i := uint64(0); i <= 1; i++ {
+		hw.ExpireTasks(func(seq uint64, expires int64) bool {
+			expired[seq]++
+			return seq%2 == 0
+		})
+
+		// Verify even sequences are removed.
+		require_Equal(t, expired[1], 3+i)
+		require_Equal(t, expired[2], 3)
+		require_Equal(t, expired[3], 3+i)
+		require_Equal(t, expired[4], 3)
+		require_Equal(t, hw.count, 2)
+	}
+
+	// Manually remove last items.
+	require_NoError(t, hw.Remove(1, now))
+	require_NoError(t, hw.Remove(3, now))
+	require_Equal(t, hw.count, 0)
 }
 
 func TestHashWheelNextExpiration(t *testing.T) {

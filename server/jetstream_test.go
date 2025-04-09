@@ -18985,120 +18985,6 @@ func TestJetStreamSubjectDeleteMarkersWithMirror(t *testing.T) {
 	require_Error(t, err)
 }
 
-func TestJetStreamSubjectDeleteMarkersAfterPurge(t *testing.T) {
-	t.SkipNow()
-
-	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
-		t.Run(storage.String(), func(t *testing.T) {
-			s := RunBasicJetStreamServer(t)
-			defer s.Shutdown()
-
-			nc, js := jsClientConnect(t, s)
-			defer nc.Close()
-
-			jsStreamCreate(t, nc, &StreamConfig{
-				Name:                   "TEST",
-				Storage:                storage,
-				Subjects:               []string{"test.>"},
-				MaxAge:                 time.Second,
-				AllowMsgTTL:            true,
-				SubjectDeleteMarkerTTL: time.Second,
-			})
-
-			sub, err := js.SubscribeSync("test.>")
-			require_NoError(t, err)
-
-			for i := 0; i < 5; i++ {
-				_, err = js.Publish(fmt.Sprintf("test.%d", i), nil)
-				require_NoError(t, err)
-			}
-
-			for i := 0; i < 5; i++ {
-				_, err := sub.NextMsg(time.Second)
-				require_NoError(t, err)
-			}
-
-			body, err := json.Marshal(JSApiStreamPurgeRequest{
-				Sequence: 6,
-				// NoMarkers: false,
-			})
-			require_NoError(t, err)
-
-			resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "TEST"), body, time.Second)
-			require_NoError(t, err)
-
-			var apiresp JSApiStreamPurgeResponse
-			require_NoError(t, json.Unmarshal(resp.Data, &apiresp))
-			require_True(t, apiresp.Success)
-
-			si, err := js.StreamInfo("TEST")
-			require_NoError(t, err)
-			require_Equal(t, si.State.FirstSeq, 6)
-			require_Equal(t, si.State.Msgs, 5)
-
-			for i := 0; i < 5; i++ {
-				msg, err := sub.NextMsg(time.Second)
-				require_NoError(t, err)
-				require_Equal(t, msg.Header.Get(JSMarkerReason), JSMarkerReasonPurge)
-			}
-		})
-	}
-}
-
-func TestJetStreamSubjectDeleteMarkersAfterPurgeNoMarkers(t *testing.T) {
-	t.SkipNow()
-
-	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
-		t.Run(storage.String(), func(t *testing.T) {
-			s := RunBasicJetStreamServer(t)
-			defer s.Shutdown()
-
-			nc, js := jsClientConnect(t, s)
-			defer nc.Close()
-
-			jsStreamCreate(t, nc, &StreamConfig{
-				Name:                   "TEST",
-				Storage:                storage,
-				Subjects:               []string{"test.>"},
-				MaxAge:                 time.Second,
-				AllowMsgTTL:            true,
-				SubjectDeleteMarkerTTL: time.Second,
-			})
-
-			sub, err := js.SubscribeSync("test.>")
-			require_NoError(t, err)
-
-			for i := 0; i < 5; i++ {
-				_, err = js.Publish(fmt.Sprintf("test.%d", i), nil)
-				require_NoError(t, err)
-			}
-
-			for i := 0; i < 5; i++ {
-				_, err := sub.NextMsg(time.Second)
-				require_NoError(t, err)
-			}
-
-			body, err := json.Marshal(JSApiStreamPurgeRequest{
-				Sequence: 6,
-				// NoMarkers: true,
-			})
-			require_NoError(t, err)
-
-			resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "TEST"), body, time.Second)
-			require_NoError(t, err)
-
-			var apiresp JSApiStreamPurgeResponse
-			require_NoError(t, json.Unmarshal(resp.Data, &apiresp))
-			require_True(t, apiresp.Success)
-
-			si, err := js.StreamInfo("TEST")
-			require_NoError(t, err)
-			require_Equal(t, si.State.FirstSeq, 6)
-			require_Equal(t, si.State.Msgs, 0)
-		})
-	}
-}
-
 // https://github.com/nats-io/nats-server/issues/6538
 func TestJetStreamInterestMaxDeliveryReached(t *testing.T) {
 	maxWait := 250 * time.Millisecond
@@ -19663,4 +19549,94 @@ func TestJetStreamFileStoreFirstSeqAfterRestart(t *testing.T) {
 	require_Equal(t, si.State.Msgs, 1)
 	require_Equal(t, si.State.FirstSeq, fseq)
 	require_Equal(t, si.State.LastSeq, fseq)
+}
+
+func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := StreamConfig{
+		Name:                   "PEDANTIC",
+		Storage:                FileStorage,
+		Subjects:               []string{"pedantic"},
+		SubjectDeleteMarkerTTL: -time.Millisecond,
+	}
+
+	_, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker TTL must not be negative"))
+
+	cfg.SubjectDeleteMarkerTTL = time.Millisecond
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker TTL must be at least 1 second"))
+
+	cfg.SubjectDeleteMarkerTTL = time.Second
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker cannot be set if message TTLs are disabled"))
+
+	cfg.AllowMsgTTL = true
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("subject delete marker cannot be set if roll-ups are disabled"))
+
+	cfg.AllowRollup = true
+	cfg.DenyPurge = true
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("roll-ups require the purge permission"))
+
+	cfg.DenyPurge = false
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Automatically setup pre-requisites for SDM.
+	cfg = StreamConfig{
+		Name:                   "AUTO",
+		Storage:                FileStorage,
+		Subjects:               []string{"auto"},
+		SubjectDeleteMarkerTTL: time.Second,
+	}
+
+	si, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require_Equal(t, si.Config.SubjectDeleteMarkerTTL, time.Second)
+	require_True(t, si.Config.AllowMsgTTL)
+	require_True(t, si.Config.AllowRollup)
+	require_False(t, si.Config.DenyPurge)
+
+	// Allow updating to use SDM and TTL.
+	cfg = StreamConfig{
+		Name:     "UPDATE",
+		Storage:  FileStorage,
+		Subjects: []string{"update"},
+	}
+
+	si, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require_False(t, si.Config.AllowMsgTTL)
+	require_False(t, si.Config.AllowRollup)
+	require_False(t, si.Config.DenyPurge)
+
+	cfg.SubjectDeleteMarkerTTL = time.Second
+	si, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require_Equal(t, si.Config.SubjectDeleteMarkerTTL, time.Second)
+	require_True(t, si.Config.AllowMsgTTL)
+	require_True(t, si.Config.AllowRollup)
+	require_False(t, si.Config.DenyPurge)
+
+	// Should not be allowed to disable msg TTL.
+	cfg = si.Config
+	cfg.SubjectDeleteMarkerTTL = 0
+	cfg.AllowMsgTTL = false
+	_, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	require_Error(t, err, errors.New("message TTL status can not be disabled"))
 }

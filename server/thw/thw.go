@@ -1,4 +1,4 @@
-// Copyright 2024 The NATS Authors
+// Copyright 2024-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -149,8 +149,8 @@ func (hw *HashWheel) Update(seq uint64, oldExpires int64, newExpires int64) erro
 	return hw.Add(seq, newExpires)
 }
 
-// ExpireTasks processes all expired tasks using a callback.
-func (hw *HashWheel) ExpireTasks(callback func(seq uint64, expires int64)) {
+// ExpireTasks processes all expired tasks using a callback, but only expires a task if the callback returns true.
+func (hw *HashWheel) ExpireTasks(callback func(seq uint64, expires int64) bool) {
 	now := time.Now().UnixNano()
 
 	// Quick return if nothing is expired.
@@ -179,12 +179,13 @@ func (hw *HashWheel) ExpireTasks(callback func(seq uint64, expires int64)) {
 		// Track new lowest while processing expirations
 		newLowest := int64(math.MaxInt64)
 		for seq, expires := range slot.entries {
-			if expires <= now {
-				callback(seq, expires)
+			if expires <= now && callback(seq, expires) {
 				delete(slot.entries, seq)
 				hw.count--
 				updateLowest = true
-			} else if expires < newLowest {
+				continue
+			}
+			if expires < newLowest {
 				newLowest = expires
 			}
 		}

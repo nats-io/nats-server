@@ -174,6 +174,7 @@ type fileStore struct {
 	tombs       []uint64
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
+	rmcb        StorageRemoveMsgHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
 	ageChk      *time.Timer
 	syncTmr     *time.Timer
@@ -202,7 +203,7 @@ type fileStore struct {
 	firstMoved  bool
 	ttls        *thw.HashWheel
 	ttlseq      uint64 // How up-to-date is the `ttls` THW?
-	markers     []string
+	sdm         *SDMMeta
 }
 
 // Represents a message store block and its data.
@@ -546,7 +547,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// sequence. Need to do this locked as by now the age check timer
 	// has started.
 	if cfg.FirstSeq > 0 && firstSeq < cfg.FirstSeq {
-		if _, err := fs.purge(cfg.FirstSeq, true); err != nil {
+		if _, err := fs.purge(cfg.FirstSeq); err != nil {
 			return nil, err
 		}
 	}
@@ -2123,6 +2124,12 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		return nil
 	}
 
+	// If subject delete markers is configured, can't expire on recover.
+	// When clustered we need to go through proposals.
+	if fs.cfg.SubjectDeleteMarkerTTL > 0 {
+		return nil
+	}
+
 	var minAge = time.Now().UnixNano() - int64(fs.cfg.MaxAge)
 	var purged, bytes uint64
 	var deleted int
@@ -2144,7 +2151,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			subj := bytesToString(bsubj)
 			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj, false)
+				fs.removePerSubject(subj)
 			}
 			return true
 		})
@@ -2164,11 +2171,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			break
 		}
 		// Can we remove whole block here?
-		// TODO(nat): We can't do this with LimitsTTL as we have no way to know
-		// if we're throwing away real messages or other tombstones without
-		// loading them, so in this case we'll fall through to the "slow path".
-		// There might be a better way of handling this though.
-		if mb.fs.cfg.SubjectDeleteMarkerTTL <= 0 && mb.last.ts <= minAge {
+		if mb.last.ts <= minAge {
 			purged += mb.msgs
 			bytes += mb.bytes
 			err := deleteEmptyBlock(mb)
@@ -2238,7 +2241,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			// Update fss
 			// Make sure we have fss loaded.
 			mb.removeSeqPerSubject(sm.subj, seq)
-			fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkerTTL > 0 && len(getHeader(JSMarkerReason, sm.hdr)) == 0)
+			fs.removePerSubject(sm.subj)
 		}
 		// Make sure we have a proper next first sequence.
 		if needNextFirst {
@@ -2294,9 +2297,6 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		// Clear any global subject state.
 		fs.psim, fs.tsl = fs.psim.Empty(), 0
 	}
-
-	// If we have pending markers, then create them.
-	fs.subjectDeleteMarkersAfterOperation(JSMarkerReasonMaxAge)
 
 	// If we purged anything, make sure we kick flush state loop.
 	if purged > 0 {
@@ -3762,7 +3762,11 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.subjectsTotalsLocked(filter)
+}
 
+// Lock should be held.
+func (fs *fileStore) subjectsTotalsLocked(filter string) map[string]uint64 {
 	if fs.psim.Size() == 0 {
 		return nil
 	}
@@ -3788,6 +3792,14 @@ func (fs *fileStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	if cb != nil && bsz > 0 {
 		cb(0, int64(bsz), 0, _EMPTY_)
 	}
+}
+
+// RegisterStorageRemoveMsg registers a callback to remove messages.
+// Replicated streams should propose removals, R1 can remove inline.
+func (fs *fileStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
+	fs.mu.Lock()
+	fs.rmcb = cb
+	fs.mu.Unlock()
 }
 
 // RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new tombstones.
@@ -4513,10 +4525,10 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 }
 
 // Convenience function to remove per subject tracking at the filestore level.
-// Lock should be held. Returns if we deleted the last message on the subject.
-func (fs *fileStore) removePerSubject(subj string, marker bool) bool {
+// Lock should be held.
+func (fs *fileStore) removePerSubject(subj string) {
 	if len(subj) == 0 || fs.psim == nil {
-		return false
+		return
 	}
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
 	bsubj := stringToBytes(subj)
@@ -4527,14 +4539,10 @@ func (fs *fileStore) removePerSubject(subj string, marker bool) bool {
 		} else if info.total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
-				if marker {
-					fs.markers = append(fs.markers, subj)
-				}
-				return true
+				return
 			}
 		}
 	}
-	return false
 }
 
 // Remove a message, optionally rewriting the mb file.
@@ -4646,7 +4654,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 
 	// If we are tracking multiple subjects here make sure we update that accounting.
 	mb.removeSeqPerSubject(sm.subj, seq)
-	wasLast := fs.removePerSubject(sm.subj, false)
+	fs.removePerSubject(sm.subj)
 
 	if secure {
 		// Grab record info.
@@ -4702,15 +4710,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 	mb.mu.Unlock()
 
-	// If the deleted message was itself a delete marker then
-	// don't write out more of them or we'll churn endlessly.
-	var sdmcb func()
-	if wasLast && len(getHeader(JSMarkerReason, sm.hdr)) == 0 { // Not a marker.
-		if viaLimits {
-			sdmcb = fs.subjectDeleteMarkerIfNeeded(sm.subj, JSMarkerReasonMaxAge)
-		}
-	}
-
 	// If we emptied the current message block and the seq was state.FirstSeq
 	// then we need to jump message blocks. We will also write the index so
 	// we don't lose track of the first sequence.
@@ -4727,7 +4726,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		fs.writeTombstone(sm.seq, sm.ts)
 	}
 
-	if cb := fs.scb; cb != nil || sdmcb != nil {
+	if cb := fs.scb; cb != nil {
 		// If we have a callback registered we need to release lock regardless since cb might need it to lookup msg, etc.
 		fs.mu.Unlock()
 		// Storage updates.
@@ -4738,9 +4737,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			}
 			delta := int64(msz)
 			cb(-1, -delta, seq, subj)
-		}
-		if sdmcb != nil {
-			sdmcb()
 		}
 
 		if !needFSLock {
@@ -5466,6 +5462,15 @@ func (fs *fileStore) resetAgeChk(delta int64) {
 
 	// Check to see if we should be firing sooner than MaxAge for an expiring TTL.
 	fireIn := fs.cfg.MaxAge
+
+	// If delta for next-to-expire message is unset, but we still have messages to remove.
+	// Assume messages are removed through proposals, and we need to speed up subsequent age check.
+	if delta == 0 && fs.state.Msgs > 0 {
+		if until := 2 * time.Second; until < fireIn {
+			fireIn = until
+		}
+	}
+
 	if next < math.MaxInt64 {
 		// Looks like there's a next expiration, use it either if there's no
 		// MaxAge set or if it looks to be sooner than MaxAge is.
@@ -5502,70 +5507,6 @@ func (fs *fileStore) cancelAgeChk() {
 	}
 }
 
-// Lock must be held so that nothing else can interleave and write a
-// new message on this subject before we get the chance to write the
-// delete marker. If the delete marker is written successfully then
-// this function returns a callback func to call scb and sdmcb after
-// the lock has been released.
-func (fs *fileStore) subjectDeleteMarkerIfNeeded(subj string, reason string) func() {
-	if fs.cfg.SubjectDeleteMarkerTTL <= 0 {
-		return nil
-	}
-	if _, ok := fs.psim.Find(stringToBytes(subj)); ok {
-		// There are still messages left with this subject,
-		// therefore it wasn't the last message deleted.
-		return nil
-	}
-	// Build the subject delete marker. If no TTL is specified then
-	// we'll default to 15 minutes — by that time every possible condition
-	// should have cleared (i.e. ordered consumer timeout, client timeouts,
-	// route/gateway interruptions, even device/client restarts etc).
-	ttl := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
-	if ttl <= 0 {
-		return nil
-	}
-	var _hdr [128]byte
-	hdr := fmt.Appendf(
-		_hdr[:0],
-		"NATS/1.0\r\n%s: %s\r\n%s: %s\r\n%s: %d\r\n%s: %s\r\n\r\n\r\n",
-		JSMarkerReason, reason,
-		JSMessageTTL, time.Duration(ttl)*time.Second,
-		JSExpectedLastSubjSeq, 0,
-		JSExpectedLastSubjSeqSubj, subj,
-	)
-	msg := &inMsg{
-		subj: subj,
-		hdr:  hdr,
-	}
-	sdmcb := fs.sdmcb
-	return func() {
-		if sdmcb != nil {
-			sdmcb(msg)
-		}
-	}
-}
-
-// Filestore lock must be held but message block locks must not be.
-// The caller should call the callback, if non-nil, after releasing
-// the filestore lock.
-func (fs *fileStore) subjectDeleteMarkersAfterOperation(reason string) func() {
-	if fs.cfg.SubjectDeleteMarkerTTL <= 0 || len(fs.markers) == 0 {
-		return nil
-	}
-	cbs := make([]func(), 0, len(fs.markers))
-	for _, subject := range fs.markers {
-		if cb := fs.subjectDeleteMarkerIfNeeded(subject, reason); cb != nil {
-			cbs = append(cbs, cb)
-		}
-	}
-	fs.markers = nil
-	return func() {
-		for _, cb := range cbs {
-			cb()
-		}
-	}
-}
-
 // Will expire msgs that are too old.
 func (fs *fileStore) expireMsgs() {
 	// We need to delete one by one here and can not optimize for the time being.
@@ -5575,7 +5516,14 @@ func (fs *fileStore) expireMsgs() {
 	fs.mu.RLock()
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
+	rmcb := fs.rmcb
+	sdmcb := fs.sdmcb
+	sdmTTL := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
+	sdmEnabled := sdmTTL > 0
 	fs.mu.RUnlock()
+	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+		return
+	}
 
 	if maxAge > 0 {
 		var seq uint64
@@ -5589,9 +5537,16 @@ func (fs *fileStore) expireMsgs() {
 			}
 			// Remove the message and then, if LimitsTTL is enabled, try and work out
 			// if it was the last message of that particular subject that we just deleted.
-			fs.mu.Lock()
-			fs.removeMsgViaLimits(sm.seq)
-			fs.mu.Unlock()
+			if sdmEnabled {
+				if last, ok := fs.shouldProcessSdm(seq, sm.subj); ok {
+					sdm := last && len(getHeader(JSMarkerReason, sm.hdr)) == 0
+					fs.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
+				}
+			} else {
+				fs.mu.Lock()
+				fs.removeMsgViaLimits(sm.seq)
+				fs.mu.Unlock()
+			}
 			// Recalculate in case we are expiring a bunch.
 			minAge = time.Now().UnixNano() - maxAge
 		}
@@ -5602,9 +5557,24 @@ func (fs *fileStore) expireMsgs() {
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
+	var ttlSdm map[string][]SDMBySubj
 	if fs.ttls != nil {
-		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
-			fs.removeMsgViaLimits(seq)
+		fs.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
+			if sdmEnabled {
+				// Need to grab subject for the specified sequence, and check
+				// if the message hasn't been removed in the meantime.
+				sm, _ = fs.msgForSeqLocked(seq, &smv, false)
+				if sm != nil {
+					if ttlSdm == nil {
+						ttlSdm = make(map[string][]SDMBySubj, 1)
+					}
+					ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
+					return false
+				}
+			} else {
+				fs.removeMsgViaLimits(seq)
+			}
+			return true
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
@@ -5613,6 +5583,29 @@ func (fs *fileStore) expireMsgs() {
 		} else {
 			nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
 		}
+	}
+
+	// THW is unordered, so must sort by sequence and must not be holding the lock.
+	if len(ttlSdm) > 0 {
+		fs.mu.Unlock()
+		for subj, es := range ttlSdm {
+			slices.SortFunc(es, func(a, b SDMBySubj) int {
+				if a.seq == b.seq {
+					return 0
+				} else if a.seq < b.seq {
+					return -1
+				} else {
+					return 1
+				}
+			})
+			for _, e := range es {
+				if last, ok := fs.shouldProcessSdm(e.seq, subj); ok {
+					sdm := last && !e.sdm
+					fs.handleRemovalOrSdm(e.seq, subj, sdm, sdmTTL)
+				}
+			}
+		}
+		fs.mu.Lock()
 	}
 
 	// Only cancel if no message left, not on potential lookup error that would result in sm == nil.
@@ -5624,6 +5617,63 @@ func (fs *fileStore) expireMsgs() {
 		} else {
 			fs.resetAgeChk(sm.ts - minAge)
 		}
+	}
+}
+
+func (fs *fileStore) shouldProcessSdm(seq uint64, subj string) (bool, bool) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	if fs.sdm == nil {
+		fs.sdm = newSDMMeta()
+	}
+
+	if p, ok := fs.sdm.pending[seq]; ok {
+		// If we're about to use the cached value, and we knew it was last before,
+		// quickly check that we don't have more remaining messages for the subject now.
+		// Which means we are not the last anymore and must reset to not remove later data.
+		if p.last {
+			msgs := fs.subjectsTotalsLocked(subj)[subj]
+			numPending := fs.sdm.totals[subj]
+			if remaining := msgs - numPending; remaining > 0 {
+				p.last = false
+			}
+		}
+
+		// Don't allow more proposals for the same sequence if we already did recently.
+		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
+			return p.last, false
+		}
+		fs.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
+		return p.last, true
+	}
+
+	msgs := fs.subjectsTotalsLocked(subj)[subj]
+	if msgs == 0 {
+		return false, true
+	}
+	numPending := fs.sdm.totals[subj]
+	remaining := msgs - numPending
+	return fs.sdm.trackPending(seq, subj, remaining == 1), true
+}
+
+func (fs *fileStore) handleRemovalOrSdm(seq uint64, subj string, sdm bool, sdmTTL int64) {
+	if sdm {
+		var _hdr [128]byte
+		hdr := fmt.Appendf(
+			_hdr[:0],
+			"NATS/1.0\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n\r\n\r\n",
+			JSMarkerReason, JSMarkerReasonMaxAge,
+			JSMessageTTL, time.Duration(sdmTTL)*time.Second,
+			JSMsgRollup, JSMsgRollupSubject,
+		)
+		msg := &inMsg{
+			subj: subj,
+			hdr:  hdr,
+		}
+		fs.sdmcb(msg)
+	} else {
+		fs.rmcb(seq)
 	}
 }
 
@@ -7016,11 +7066,20 @@ func (fs *fileStore) sizeForSeq(seq uint64) int {
 
 // Will return message for the given sequence number.
 func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
+	return fs.msgForSeqLocked(seq, sm, true)
+}
+
+// Will return message for the given sequence number.
+func (fs *fileStore) msgForSeqLocked(seq uint64, sm *StoreMsg, needFSLock bool) (*StoreMsg, error) {
 	// TODO(dlc) - Since Store, Remove, Skip all hold the write lock on fs this will
 	// be stalled. Need another lock if want to happen in parallel.
-	fs.mu.RLock()
+	if needFSLock {
+		fs.mu.RLock()
+	}
 	if fs.closed {
-		fs.mu.RUnlock()
+		if needFSLock {
+			fs.mu.RUnlock()
+		}
 		return nil, ErrStoreClosed
 	}
 	// Indicates we want first msg.
@@ -7029,7 +7088,9 @@ func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	}
 	// Make sure to snapshot here.
 	mb, lseq := fs.selectMsgBlock(seq), fs.state.LastSeq
-	fs.mu.RUnlock()
+	if needFSLock {
+		fs.mu.RUnlock()
+	}
 
 	if mb == nil {
 		var err = ErrStoreEOF
@@ -7692,17 +7753,13 @@ func compareFn(subject string) func(string, string) bool {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarkers */ bool) (purged uint64, err error) {
-	// TODO: Don't write markers on purge until we have solved performance
-	// issues with them.
-	noMarkers := true
-
+func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && sequence == 0 {
-			return fs.purge(0, noMarkers)
+			return fs.purge(0)
 		}
 		if sequence > 1 {
-			return fs.compact(sequence, noMarkers)
+			return fs.compact(sequence)
 		}
 	}
 
@@ -7777,7 +7834,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarke
 				}
 				// PSIM and FSS updates.
 				mb.removeSeqPerSubject(sm.subj, seq)
-				fs.removePerSubject(sm.subj, !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0)
+				fs.removePerSubject(sm.subj)
 				// Track tombstones we need to write.
 				tombs = append(tombs, msgId{sm.seq, sm.ts})
 
@@ -7827,14 +7884,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarke
 	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
 	fs.dirty++
 	cb := fs.scb
-	sdmcb := fs.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
 	fs.mu.Unlock()
 
 	if cb != nil {
 		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
-	}
-	if sdmcb != nil {
-		sdmcb()
 	}
 
 	return purged, nil
@@ -7843,14 +7896,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarke
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
 func (fs *fileStore) Purge() (uint64, error) {
-	return fs.purge(0, false)
+	return fs.purge(0)
 }
 
-func (fs *fileStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
-	// TODO: Don't write markers on purge until we have solved performance
-	// issues with them.
-	noMarkers := true
-
+func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -7873,15 +7922,9 @@ func (fs *fileStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) 
 	fs.blks = nil
 	fs.lmb = nil
 	fs.bim = make(map[uint32]*msgBlock)
-	// Subject delete markers if needed.
-	if !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0 {
-		fs.psim.IterOrdered(func(subject []byte, _ *psi) bool {
-			fs.markers = append(fs.markers, string(subject))
-			return true
-		})
-	}
 	// Clear any per subject tracking.
 	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	fs.sdm.empty()
 	// Mark dirty.
 	fs.dirty++
 
@@ -7936,7 +7979,6 @@ func (fs *fileStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) 
 	}
 
 	cb := fs.scb
-	sdmcb := fs.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
 	fs.mu.Unlock()
 
 	// Force a new index.db to be written.
@@ -7947,29 +7989,20 @@ func (fs *fileStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) 
 	if cb != nil {
 		cb(-int64(purged), -rbytes, 0, _EMPTY_)
 	}
-	if sdmcb != nil {
-		sdmcb()
-	}
 
 	return purged, nil
 }
 
 // Compact will remove all messages from this store up to
 // but not including the seq parameter.
-// No subject delete markers will be left if they are enabled. If they are disabled,
-// then this is functionally equivalent to a normal Compact() call.
 // Will return the number of purged messages.
 func (fs *fileStore) Compact(seq uint64) (uint64, error) {
-	return fs.compact(seq, false)
+	return fs.compact(seq)
 }
 
-func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error) {
-	// TODO: Don't write markers on compact until we have solved performance
-	// issues with them.
-	noMarkers := true
-
+func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	if seq == 0 {
-		return fs.purge(seq, noMarkers)
+		return fs.purge(seq)
 	}
 
 	var purged, bytes uint64
@@ -7978,7 +8011,7 @@ func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error)
 	// Same as purge all.
 	if lseq := fs.state.LastSeq; seq > lseq {
 		fs.mu.Unlock()
-		return fs.purge(seq, noMarkers)
+		return fs.purge(seq)
 	}
 	// We have to delete interior messages.
 	smb := fs.selectMsgBlock(seq)
@@ -8001,7 +8034,7 @@ func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error)
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			subj := bytesToString(bsubj)
 			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj, !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0)
+				fs.removePerSubject(subj)
 			}
 			return true
 		})
@@ -8048,7 +8081,7 @@ func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error)
 			}
 			// Update fss
 			smb.removeSeqPerSubject(sm.subj, mseq)
-			fs.removePerSubject(sm.subj, !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0)
+			fs.removePerSubject(sm.subj)
 			tombs = append(tombs, msgId{sm.seq, sm.ts})
 		}
 	}
@@ -8164,8 +8197,6 @@ SKIP:
 	// after we release the lock.
 	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
 	fs.dirty++
-	// Subject delete markers if needed.
-	sdmcb := fs.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
 	cb := fs.scb
 	fs.mu.Unlock()
 
@@ -8176,9 +8207,6 @@ SKIP:
 
 	if cb != nil && purged > 0 {
 		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
-	}
-	if sdmcb != nil {
-		sdmcb()
 	}
 
 	return purged, err
@@ -8221,6 +8249,7 @@ func (fs *fileStore) reset() error {
 
 	// Reset subject mappings.
 	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	fs.sdm.empty()
 	fs.bim = make(map[uint32]*msgBlock)
 
 	// If we purged anything, make sure we kick flush state loop.
@@ -8506,6 +8535,7 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 		return
 	}
 
+	mb.fs.sdm.removeSeqAndSubject(seq, subj)
 	if ss.Msgs == 1 {
 		mb.fss.Delete(bsubj)
 		return
