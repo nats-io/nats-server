@@ -5786,13 +5786,13 @@ func TestJetStreamClusterSDMInflightTTL(t *testing.T) {
 				Subjects:               []string{"foo"},
 				Storage:                storageType,
 				Replicas:               3,
-				SubjectDeleteMarkerTTL: time.Second,
+				SubjectDeleteMarkerTTL: 2 * time.Second,
 			})
 			require_NoError(t, err)
 
 			for i := 0; i < 2; i++ {
 				m := nats.NewMsg("foo")
-				m.Header.Set(JSMessageTTL, fmt.Sprintf("%dms", 1000+500*i))
+				m.Header.Set(JSMessageTTL, fmt.Sprintf("%dms", 2000+500*i))
 				_, err = js.PublishMsg(m)
 				require_NoError(t, err)
 			}
@@ -5817,7 +5817,7 @@ func TestJetStreamClusterSDMInflightTTL(t *testing.T) {
 			}
 
 			// Let TTL expire the messages while we're not applying the removals.
-			time.Sleep(2500 * time.Millisecond)
+			time.Sleep(3 * time.Second)
 
 			// Put the original commit back, so they can now be committed/applied.
 			rn.Lock()
@@ -5858,7 +5858,7 @@ func TestJetStreamClusterSDMTTLAndMaxMsgsPer(t *testing.T) {
 				Subjects:               []string{"foo"},
 				Storage:                storageType,
 				Replicas:               3,
-				SubjectDeleteMarkerTTL: time.Second,
+				SubjectDeleteMarkerTTL: 2 * time.Second,
 				// Used for the second part of this test, checks proper accounting
 				// with removals through MaxMsgsPer and TTL.
 				MaxMsgsPer: 3,
@@ -5894,14 +5894,14 @@ func TestJetStreamClusterSDMTTLAndMaxMsgsPer(t *testing.T) {
 			// in-between so they expire as we publish.
 			for i := 0; i < 6; i++ {
 				m := nats.NewMsg("foo")
-				m.Header.Set(JSMessageTTL, "1s")
+				m.Header.Set(JSMessageTTL, "2s")
 				_, err = js.PublishMsg(m)
 				require_NoError(t, err)
 				time.Sleep(500 * time.Millisecond)
 			}
 
 			// Wait for all messages to be expired.
-			time.Sleep(time.Second)
+			time.Sleep(2 * time.Second)
 
 			// Check all messages are removed. Must not have subject delete markers be placed in-between.
 			for seq := uint64(1); seq <= 6; seq++ {
@@ -5925,7 +5925,7 @@ func TestJetStreamClusterSDMTTLAndMaxMsgsPer(t *testing.T) {
 			// wait initially and have MaxMsgsPer kick in during it.
 			for i := 0; i < 6; i++ {
 				m := nats.NewMsg("foo")
-				m.Header.Set(JSMessageTTL, "1s")
+				m.Header.Set(JSMessageTTL, "2s")
 				_, err = js.PublishMsg(m)
 				require_NoError(t, err)
 				if i < 3 {
@@ -5934,7 +5934,7 @@ func TestJetStreamClusterSDMTTLAndMaxMsgsPer(t *testing.T) {
 			}
 
 			// Wait for all messages to be expired.
-			time.Sleep(1500 * time.Millisecond)
+			time.Sleep(2500 * time.Millisecond)
 
 			// Check all messages are removed. Must not have subject delete markers be placed in-between.
 			for seq := uint64(8); seq <= 13; seq++ {
@@ -5971,13 +5971,13 @@ func TestJetStreamClusterSDMMsgTTLReverseExpiry(t *testing.T) {
 				Subjects:               []string{"foo", "bar"},
 				Storage:                storageType,
 				Replicas:               3,
-				SubjectDeleteMarkerTTL: time.Second,
+				SubjectDeleteMarkerTTL: 2 * time.Second,
 			})
 			require_NoError(t, err)
 
 			for i := 0; i < 2; i++ {
 				m := nats.NewMsg("foo")
-				m.Header.Set(JSMessageTTL, fmt.Sprintf("%ds", 2-i))
+				m.Header.Set(JSMessageTTL, fmt.Sprintf("%ds", 3-i))
 				_, err = js.PublishMsg(m)
 				require_NoError(t, err)
 			}
@@ -6001,7 +6001,7 @@ func TestJetStreamClusterSDMMsgTTLReverseExpiry(t *testing.T) {
 			rn.Unlock()
 
 			// Let TTL expire the messages, but the leader does not know the proposals will go through.
-			time.Sleep(2500 * time.Millisecond)
+			time.Sleep(3500 * time.Millisecond)
 
 			// Put the original commit back, so they can now be committed/applied.
 			rn.Lock()
