@@ -208,6 +208,11 @@ func (hw *HashWheel) GetNextExpiration(before int64) int64 {
 	return math.MaxInt64
 }
 
+// Count returns the amount of tasks in the THW.
+func (hw *HashWheel) Count() uint64 {
+	return hw.count
+}
+
 // AppendEncode writes out the contents of the THW into a binary snapshot
 // and returns it. The high seq number is included in the snapshot and will
 // be returned on decode.
