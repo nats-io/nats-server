@@ -8580,6 +8580,68 @@ func TestFileStoreMessageTTLRecoveredSingleMessageWithoutStreamState(t *testing.
 	})
 }
 
+func TestFileStoreMessageTTLWriteTombstone(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: dir, srv: s},
+		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ttl := int64(1)
+
+	// When the timed hash wheel state is deleted, the only way we can recover
+	// the TTL is to look at the original message header, therefore the TTL
+	// must be in the headers for this test to work.
+	hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
+	_, _, err = fs.StoreMsg("test", hdr, nil, ttl)
+	require_NoError(t, err)
+
+	// Publish another message, but without TTL.
+	_, _, err = fs.StoreMsg("test", nil, nil, 0)
+	require_NoError(t, err)
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.Msgs, 2)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 2)
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if fs.State().FirstSeq == 1 {
+			return errors.New("message not expired yet")
+		}
+		return nil
+	})
+
+	fs.FastState(&ss)
+	require_Equal(t, ss.Msgs, 1)
+	require_Equal(t, ss.FirstSeq, 2)
+	require_Equal(t, ss.LastSeq, 2)
+
+	fs.Stop()
+
+	// Delete the stream state file so that we need to rebuild.
+	// Should have written a tombstone so we can properly recover.
+	fn := filepath.Join(dir, msgDir, streamStreamStateFile)
+	require_NoError(t, os.RemoveAll(fn))
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: dir, srv: s},
+		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.FastState(&ss)
+	require_Equal(t, ss.Msgs, 1)
+	require_Equal(t, ss.FirstSeq, 2)
+	require_Equal(t, ss.LastSeq, 2)
+}
+
 func TestFileStoreDontSpamCompactWhenMostlyTombstones(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: defaultMediumBlockSize},

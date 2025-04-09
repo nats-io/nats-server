@@ -5572,7 +5572,7 @@ func (fs *fileStore) expireMsgs() {
 					return false
 				}
 			} else {
-				fs.removeMsgViaLimits(seq)
+				fs.removeMsg(seq, false, false, false)
 			}
 			return true
 		})
