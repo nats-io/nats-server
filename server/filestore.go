@@ -202,7 +202,6 @@ type fileStore struct {
 	receivedAny bool
 	firstMoved  bool
 	ttls        *thw.HashWheel
-	ttlseq      uint64 // How up-to-date is the `ttls` THW?
 	sdm         *SDMMeta
 }
 
@@ -1867,28 +1866,29 @@ func (fs *fileStore) recoverTTLState() error {
 
 	fs.ttls = thw.NewHashWheel()
 
+	var ttlseq uint64
 	if err == nil {
-		fs.ttlseq, err = fs.ttls.Decode(buf)
+		ttlseq, err = fs.ttls.Decode(buf)
 		if err != nil {
 			fs.warn("Error decoding TTL state: %s", err)
 			os.Remove(fn)
 		}
 	}
 
-	if fs.ttlseq < fs.state.FirstSeq {
-		fs.ttlseq = fs.state.FirstSeq
+	if ttlseq < fs.state.FirstSeq {
+		ttlseq = fs.state.FirstSeq
 	}
 
 	defer fs.resetAgeChk(0)
-	if fs.state.Msgs > 0 && fs.ttlseq <= fs.state.LastSeq {
-		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", fs.ttlseq, fs.state.LastSeq)
+	if fs.state.Msgs > 0 && ttlseq <= fs.state.LastSeq {
+		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", ttlseq, fs.state.LastSeq)
 		var sm StoreMsg
-		mb := fs.selectMsgBlock(fs.ttlseq)
+		mb := fs.selectMsgBlock(ttlseq)
 		if mb == nil {
 			return nil
 		}
 		mblseq := atomic.LoadUint64(&mb.last.seq)
-		for seq := fs.ttlseq; seq <= fs.state.LastSeq; seq++ {
+		for seq := ttlseq; seq <= fs.state.LastSeq; seq++ {
 		retry:
 			if mb.ttls == 0 {
 				// None of the messages in the block have message TTLs so don't
@@ -1920,9 +1920,6 @@ func (fs *fileStore) recoverTTLState() error {
 			if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
 				expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
 				fs.ttls.Add(seq, int64(expires))
-				if seq > fs.ttlseq {
-					fs.ttlseq = seq
-				}
 			}
 		}
 	}
@@ -4061,9 +4058,6 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
 		fs.ttls.Add(seq, int64(expires))
 		fs.lmb.ttls++
-		if seq > fs.ttlseq {
-			fs.ttlseq = seq
-		}
 	}
 
 	// Check if we have and need the age expiration timer running.
@@ -9202,7 +9196,8 @@ func (fs *fileStore) writeTTLState() error {
 
 	fs.mu.RLock()
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
-	buf := fs.ttls.Encode(fs.state.LastSeq)
+	// Must be lseq+1 to identify up to which sequence the TTLs are valid.
+	buf := fs.ttls.Encode(fs.state.LastSeq + 1)
 	fs.mu.RUnlock()
 
 	<-dios

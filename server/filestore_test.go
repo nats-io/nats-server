@@ -8642,6 +8642,61 @@ func TestFileStoreMessageTTLWriteTombstone(t *testing.T) {
 	require_Equal(t, ss.LastSeq, 2)
 }
 
+func TestFileStoreMessageTTLRecoveredOffByOne(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: dir, srv: s},
+		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ts := time.Now().UnixNano()
+	ttl := int64(120) // 2 minutes
+	expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
+
+	// When the timed hash wheel state is deleted, the only way we can recover
+	// the TTL is to look at the original message header, therefore the TTL
+	// must be in the headers for this test to work.
+	hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
+	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl))
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.Msgs, 1)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 1)
+
+	fs.mu.Lock()
+	ttlc := fs.ttls.Count()
+	// Adding to the THW is idempotent, so we sneakily remove it here
+	// so we can check it doesn't get re-added during restart.
+	err = fs.ttls.Remove(1, int64(expires))
+	fs.mu.Unlock()
+	require_Equal(t, ttlc, 1)
+	require_NoError(t, err)
+
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: dir, srv: s},
+		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.FastState(&ss)
+	require_Equal(t, ss.Msgs, 1)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 1)
+
+	fs.mu.Lock()
+	ttlc = fs.ttls.Count()
+	fs.mu.Unlock()
+	require_Equal(t, ttlc, 0)
+}
+
 func TestFileStoreDontSpamCompactWhenMostlyTombstones(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: defaultMediumBlockSize},
