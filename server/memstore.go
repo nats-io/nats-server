@@ -1038,6 +1038,7 @@ func (ms *memStore) expireMsgs() {
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
+	var rmSeqs []uint64
 	var ttlSdm map[string][]SDMBySubj
 	if ms.ttls != nil {
 		ms.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
@@ -1053,7 +1054,9 @@ func (ms *memStore) expireMsgs() {
 					return false
 				}
 			} else {
-				ms.removeMsg(seq, false)
+				// Collect sequences to remove. Don't remove messages inline here,
+				// as that releases the lock and THW is not thread-safe.
+				rmSeqs = append(rmSeqs, seq)
 			}
 			return true
 		})
@@ -1064,6 +1067,11 @@ func (ms *memStore) expireMsgs() {
 		} else {
 			nextTTL = ms.ttls.GetNextExpiration(math.MaxInt64)
 		}
+	}
+
+	// Remove messages collected by THW.
+	for _, seq := range rmSeqs {
+		ms.removeMsg(seq, false)
 	}
 
 	// THW is unordered, so must sort by sequence and must not be holding the lock.

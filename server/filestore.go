@@ -5551,6 +5551,7 @@ func (fs *fileStore) expireMsgs() {
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
+	var rmSeqs []uint64
 	var ttlSdm map[string][]SDMBySubj
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
@@ -5566,7 +5567,9 @@ func (fs *fileStore) expireMsgs() {
 					return false
 				}
 			} else {
-				fs.removeMsg(seq, false, false, false)
+				// Collect sequences to remove. Don't remove messages inline here,
+				// as that releases the lock and THW is not thread-safe.
+				rmSeqs = append(rmSeqs, seq)
 			}
 			return true
 		})
@@ -5577,6 +5580,11 @@ func (fs *fileStore) expireMsgs() {
 		} else {
 			nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
 		}
+	}
+
+	// Remove messages collected by THW.
+	for _, seq := range rmSeqs {
+		fs.removeMsg(seq, false, false, false)
 	}
 
 	// THW is unordered, so must sort by sequence and must not be holding the lock.

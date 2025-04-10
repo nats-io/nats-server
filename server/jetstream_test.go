@@ -19668,3 +19668,90 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 	_, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
 	require_Error(t, err, errors.New("message TTL status can not be disabled"))
 }
+
+func TestJetStreamTHWExpireTasksRace(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:        "TEST",
+				Storage:     storageType,
+				Subjects:    []string{"foo"},
+				AllowMsgTTL: true,
+			})
+			require_NoError(t, err)
+
+			acc, err := s.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+
+			// Send a bunch of message that need to be expired.
+			m := nats.NewMsg("foo")
+			m.Header.Set(JSMessageTTL, "1s")
+			for i := 0; i < 10_000; i++ {
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+			}
+
+			// Manually lock so that expirations can't be done without us unlocking.
+			if fs, ok := mset.store.(*fileStore); ok {
+				fs.mu.Lock()
+			} else if ms, ok := mset.store.(*memStore); ok {
+				ms.mu.Lock()
+			}
+
+			// Wait for all message TTLs to have expired.
+			time.Sleep(1500 * time.Millisecond)
+
+			// Spawn a number of goroutines that will all want to lock and unlock the store lock.
+			n := 50
+			var ready sync.WaitGroup
+			var wg sync.WaitGroup
+			ready.Add(n)
+			wg.Add(n)
+			for i := 0; i < n; i++ {
+				go func() {
+					defer wg.Done()
+					ready.Done()
+					if fs, ok := mset.store.(*fileStore); ok {
+						fs.expireMsgs()
+					} else if ms, ok := mset.store.(*memStore); ok {
+						ms.expireMsgs()
+					}
+				}()
+			}
+
+			// Wait for all goroutines to be ready.
+			ready.Wait()
+
+			// Manually unlock so that goroutines can run expirations in parallel.
+			if fs, ok := mset.store.(*fileStore); ok {
+				fs.mu.Unlock()
+			} else if ms, ok := mset.store.(*memStore); ok {
+				ms.mu.Unlock()
+			}
+
+			// Wait for all goroutines to finish.
+			wg.Wait()
+
+			// Count of entries in the THW should be exactly 0, and not underflow.
+			var hwCount uint64
+			if fs, ok := mset.store.(*fileStore); ok {
+				fs.mu.Lock()
+				hwCount = fs.ttls.Count()
+				fs.mu.Unlock()
+			} else if ms, ok := mset.store.(*memStore); ok {
+				ms.mu.Lock()
+				hwCount = ms.ttls.Count()
+				ms.mu.Unlock()
+			}
+			require_Equal(t, hwCount, 0)
+		})
+	}
+}
