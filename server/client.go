@@ -1910,6 +1910,10 @@ func (c *client) traceOp(format, op string, arg []byte) {
 	c.Tracef(format, opa)
 }
 
+func (c *client) traceMsgDelivery(msg []byte) {
+	c.Tracef("->> MSG_DELIVER: [%q]", msg[:len(msg)-LEN_CR_LF])
+}
+
 // Process the information messages from Clients and other Routes.
 func (c *client) processInfo(arg []byte) error {
 	info := Info{}
@@ -2060,7 +2064,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 		}
 		if ncs != _EMPTY_ {
-			c.ncs.CompareAndSwap(nil, fmt.Sprintf("%s - %q", c, ncs))
+			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
 		}
 	}
 
@@ -3589,6 +3593,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	if client.trace {
 		client.traceOutOp(bytesToString(mh[:len(mh)-LEN_CR_LF]), nil)
+		client.traceMsgDelivery(msg)
 	}
 
 	client.mu.Unlock()
@@ -3993,6 +3998,14 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(c.pa.reply) > 0 {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
+		}
+		// log sending to gateways
+		if len(reply) > 0 {
+			if strings.Contains(string(reply), "NRG") {
+				// skip
+			} else {
+				c.Tracef(">>>>>>>>>>>>>>>>> %s", string(reply))
+			}
 		}
 		didDeliver = c.sendMsgToGateways(acc, msg, c.pa.subject, reply, qnames, false) || didDeliver
 	}

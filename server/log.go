@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -266,6 +267,17 @@ func (s *Server) Tracef(format string, v ...any) {
 	if atomic.LoadInt32(&s.logging.trace) == 0 {
 		return
 	}
+
+	sss := fmt.Sprintf(format, v...)
+	if strings.Contains(sss, "NRG") || strings.Contains(sss, "JSC") || strings.Contains(sss, `\x00`) || strings.Contains(sss, "$SYS.SERVER") || strings.Contains(sss, "$SYS.SERVER") {
+		return
+	}
+	if strings.Contains(sss, "active_servers") || strings.Contains(sss, "advisory") {
+		return
+	}
+	// if strings.Contains(sss, "RMSG") {
+	// 	// debug.PrintStack()
+	// }
 
 	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Tracef(format, v...)

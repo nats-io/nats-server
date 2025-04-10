@@ -830,6 +830,8 @@ func (c *client) processRouteInfo(info *Info) {
 
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
+	ncs := fmt.Sprintf("%s:%s", clusterName, info.Name)
+ 	c.ncs.Store(fmt.Sprintf("%s - %s", c, ncs))
 	c.mu.Unlock()
 
 	if added := s.addRoute(c, didSolicit, info, accName); added {
