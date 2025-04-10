@@ -1521,16 +1521,19 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				}
 			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
-			if !cfg.NoAck && (subjectIsSubsetMatch(subj, "$JS.>") || subjectIsSubsetMatch(subj, "$JSC.>")) {
-				// We allow an exception for $JS.EVENT.> since these could have been created in the past.
-				if !subjectIsSubsetMatch(subj, "$JS.EVENT.>") {
-					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with jetstream api require no-ack to be true"))
+			if !cfg.NoAck {
+				for _, namespace := range []string{"$JS.>", "$JSC.>", "$NRG.>"} {
+					if SubjectsCollide(subj, namespace) {
+						// We allow an exception for $JS.EVENT.> since these could have been created in the past.
+						if !subjectIsSubsetMatch(subj, "$JS.EVENT.>") {
+							return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with jetstream api require no-ack to be true"))
+						}
+					}
 				}
-			}
-			// And the $SYS subjects.
-			if !cfg.NoAck && subjectIsSubsetMatch(subj, "$SYS.>") {
-				if !subjectIsSubsetMatch(subj, "$SYS.ACCOUNT.>") {
-					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with system api require no-ack to be true"))
+				if SubjectsCollide(subj, "$SYS.>") {
+					if !subjectIsSubsetMatch(subj, "$SYS.ACCOUNT.>") {
+						return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with system api require no-ack to be true"))
+					}
 				}
 			}
 			// Mark for duplicate check.
