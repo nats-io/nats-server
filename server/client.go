@@ -56,6 +56,11 @@ const (
 	ACCOUNT
 )
 
+// Internal clients. kind should be SYSTEM, JETSTREAM or ACCOUNT
+func isInternalClient(kind int) bool {
+	return kind == SYSTEM || kind == JETSTREAM || kind == ACCOUNT
+}
+
 // Extended type of a CLIENT connection. This is returned by c.clientType()
 // and indicate what type of client connection we are dealing with.
 // If invoked on a non CLIENT connection, NON_CLIENT type is returned.
@@ -2782,7 +2787,7 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 
 	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
 	// When a connection is closed though, we set c.subs to nil. So check for the map to not be nil.
-	if (c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT)) || (c.subs == nil) {
+	if (c.isClosed() && !isInternalClient(kind)) || (c.subs == nil) {
 		c.mu.Unlock()
 		return nil, ErrConnectionClosed
 	}
@@ -4680,9 +4685,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Check for JetStream encoded reply subjects.
 	// For now these will only be on $JS.ACK prefixed reply subjects.
 	var remapped bool
-	if len(creply) > 0 &&
-		c.kind != CLIENT && c.kind != SYSTEM && c.kind != JETSTREAM && c.kind != ACCOUNT &&
-		bytes.HasPrefix(creply, []byte(jsAckPre)) {
+	if len(creply) > 0 && c.kind != CLIENT && !isInternalClient(c.kind) && bytes.HasPrefix(creply, []byte(jsAckPre)) {
 		// We need to rewrite the subject and the reply.
 		// But, we must be careful that the stream name, consumer name, and subject can contain '@' characters.
 		// JS ACK contains at least 8 dots, find the first @ after this prefix.

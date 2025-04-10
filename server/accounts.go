@@ -3801,13 +3801,18 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 	}
 
-	for i, c := range clients {
+	count := 0
+	for _, c := range clients {
 		a.mu.RLock()
-		exceeded := a.mconns != jwt.NoLimit && i >= int(a.mconns)
+		exceeded := a.mconns != jwt.NoLimit && count >= int(a.mconns)
 		a.mu.RUnlock()
-		if exceeded {
-			c.maxAccountConnExceeded()
-			continue
+		// Only kick non-internal clients.
+		if !isInternalClient(c.kind) {
+			if exceeded {
+				c.maxAccountConnExceeded()
+				continue
+			}
+			count++
 		}
 		c.mu.Lock()
 		c.applyAccountLimits()

@@ -7221,3 +7221,63 @@ func TestJWTUpdateAccountClaimsStreamAndServiceImportDeadlock(t *testing.T) {
 		})
 	}
 }
+
+func TestJWTJetStreamClientsExcludedForMaxConnsUpdate(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2}
+	accClaim.Limits.Conn = 5
+	accJwt1 := encodeClaim(t, accClaim, accPub)
+	accCreds := newUser(t, accKp)
+
+	storeDir := t.TempDir()
+
+	dirSrv := t.TempDir()
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, storeDir, ojwt, syspub, dirSrv)))
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+
+	nc, js := jsClientConnectURL(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 1, Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	accClaim.Limits.Conn = 1
+	accJwt1 = encodeClaim(t, accClaim, accPub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+
+	// Manually reconnect.
+	nc.Close()
+	nc, js = jsClientConnectURL(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+}

@@ -1837,9 +1837,9 @@ func (s *Server) createInternalAccountClient() *client {
 	return s.createInternalClient(ACCOUNT)
 }
 
-// Internal clients. kind should be SYSTEM or JETSTREAM
+// Internal clients. kind should be SYSTEM, JETSTREAM or ACCOUNT
 func (s *Server) createInternalClient(kind int) *client {
-	if kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT {
+	if !isInternalClient(kind) {
 		return nil
 	}
 	now := time.Now()
