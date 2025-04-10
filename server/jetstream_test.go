@@ -640,9 +640,11 @@ func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	expectErr(acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"baz", "bar"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "b", Subjects: []string{">"}, NoAck: true}))
 	expectErr(acc.addStream(&StreamConfig{Name: "c", Subjects: []string{"baz.33"}}))
-	expectErr(acc.addStream(&StreamConfig{Name: "d", Subjects: []string{"*.33"}}))
-	expectErr(acc.addStream(&StreamConfig{Name: "e", Subjects: []string{"*.>"}}))
-	expectErr(acc.addStream(&StreamConfig{Name: "f", Subjects: []string{"foo.bar", "*.bar.>"}}))
+
+	// Using NoAck on the following because technically they overlap with the $JS.> namespace...
+	expectErr(acc.addStream(&StreamConfig{Name: "d", Subjects: []string{"*.33"}, NoAck: true}))
+	expectErr(acc.addStream(&StreamConfig{Name: "e", Subjects: []string{"*.>"}, NoAck: true}))
+	expectErr(acc.addStream(&StreamConfig{Name: "f", Subjects: []string{"foo.bar", "*.bar.>"}, NoAck: true}))
 }
 
 func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
@@ -651,10 +653,25 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 
 	acc := s.GlobalAccount()
 
+	expectNoErr := func(_ *stream, err error) {
+		t.Helper()
+		switch {
+		case err == nil:
+		default:
+			t.Errorf("Unexpected error: %v", err)
+		}
+	}
+
 	expectErr := func(_ *stream, err error) {
 		t.Helper()
-		if err == nil || !strings.Contains(err.Error(), "subjects that overlap with jetstream api") {
-			t.Fatalf("Expected error but got none")
+		switch {
+		case err == nil:
+			t.Errorf("Expected error but got none")
+		case !strings.Contains(err.Error(), "subjects that overlap with jetstream api"):
+		case !strings.Contains(err.Error(), "subjects that overlap with system api"):
+		case !strings.Contains(err.Error(), "capturing all subjects requires no-ack to be true"):
+		default:
+			t.Errorf("Unexpected error: %v", err)
 		}
 	}
 
@@ -662,11 +679,22 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 	expectErr(acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.API.foo", "$JS.API.bar"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "b", Subjects: []string{"$JS.API.>"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "c", Subjects: []string{"$JS.API.*"}}))
+	expectErr(acc.addStream(&StreamConfig{Name: "d", Subjects: []string{"$JS.>"}}))
+	expectErr(acc.addStream(&StreamConfig{Name: "e", Subjects: []string{"$SYS.>"}}))
+	expectErr(acc.addStream(&StreamConfig{Name: "f", Subjects: []string{"*.>"}}))
+	expectErr(acc.addStream(&StreamConfig{Name: "g", Subjects: []string{">"}}))
 
-	// Events and Advisories etc should be ok.
-	if _, err := acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.>"}, NoAck: true}); err != nil {
-		t.Fatalf("Expected this to work: %v", err)
+	// Events and advisories should be OK.
+	expectNoErr(acc.addStream(&StreamConfig{Name: "h", Subjects: []string{"$JS.EVENT.>"}}))
+	expectNoErr(acc.addStream(&StreamConfig{Name: "i", Subjects: []string{"$SYS.ACCOUNT.>"}}))
+
+	// So should a full wild-card with NoAck, but need to clean up overlapping streams first.
+	for _, name := range []string{"h", "i"} {
+		mset, err := acc.lookupStream(name)
+		require_NoError(t, err)
+		require_NoError(t, mset.delete())
 	}
+	expectNoErr(acc.addStream(&StreamConfig{Name: "j", Subjects: []string{">"}, NoAck: true}))
 }
 
 func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
