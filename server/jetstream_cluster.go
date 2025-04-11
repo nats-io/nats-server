@@ -5043,6 +5043,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				o.mu.Lock()
 				err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
 				o.ldt = time.Now()
+				// Need to send message to the client, since we have quorum to do so now.
+				if pmsg, ok := o.pendingDeliveries[sseq]; ok {
+					o.outq.send(pmsg)
+					delete(o.pendingDeliveries, sseq)
+				}
 				o.mu.Unlock()
 				if err != nil {
 					panic(err.Error())
