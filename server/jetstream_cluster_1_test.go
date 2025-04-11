@@ -8118,6 +8118,72 @@ func TestJetStreamClusterInvalidJSACKOverRoute(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerOnlyDeliverMsgAfterQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+		AckWait:   2 * time.Second,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	acc, err := cl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+	rn := o.raftNode().(*raft)
+
+	// Force the leader to not be able to make proposals.
+	rn.Lock()
+	rn.werr = errors.New("block proposals")
+	rn.Unlock()
+
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// We must only receive a message AFTER quorum was met for updating delivered state.
+	// This should time out since proposals are blocked.
+	msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	require_Error(t, err, nats.ErrTimeout)
+	require_Len(t, len(msgs), 0)
+
+	// Allow proposals to be made again.
+	rn.Lock()
+	rn.werr = nil
+	rn.Unlock()
+
+	// Now it should pass.
+	msgs, err = sub.Fetch(1, nats.MaxWait(2*time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_NoError(t, msgs[0].AckSync())
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
