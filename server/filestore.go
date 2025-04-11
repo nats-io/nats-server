@@ -8460,8 +8460,6 @@ func (fs *fileStore) removeMsgBlockFromList(mb *msgBlock) {
 // Removes the msgBlock
 // Both locks should be held.
 func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
-	mb.dirtyCloseWithRemove(true)
-	fs.removeMsgBlockFromList(mb)
 	// Check for us being last message block
 	if mb == fs.lmb {
 		lseq, lts := atomic.LoadUint64(&mb.last.seq), mb.last.ts
@@ -8473,6 +8471,9 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 		}
 		mb.mu.Lock()
 	}
+	// Only delete message block after (potentially) writing a new lmb.
+	mb.dirtyCloseWithRemove(true)
+	fs.removeMsgBlockFromList(mb)
 }
 
 // Called by purge to simply get rid of the cache and close our fds.
