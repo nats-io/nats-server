@@ -2516,7 +2516,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	start := time.Now()
 	defer func() {
 		if took := time.Since(start); took > 50*time.Millisecond {
-			c.Tracef("GW SEND: %v - %v - took:%v", string(subject), string(reply))
+			c.Tracef("GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 	}()
 	// We had some times when we were sending across a GW with no subject, and the other side would break
@@ -2539,14 +2539,14 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	thisClusterOldReplyPrefix := gw.oldReplyPfx
 	gw.RUnlock()
 	if took := time.Since(start); took > 50*time.Millisecond {
-		c.Tracef("1] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+		c.Tracef("1] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
 	if len(gws) == 0 {
 		return false
 	}
 	if took := time.Since(start); took > 50*time.Millisecond {
-		c.Tracef("2] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+		c.Tracef("2] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
 	var (
@@ -2566,7 +2566,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	sub := subPool.Get().(*subscription)
 
 	if took := time.Since(start); took > 50*time.Millisecond {
-		c.Tracef("3] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+		c.Tracef("3] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
 	// Check if the subject is on the reply prefix, if so, we
@@ -2642,7 +2642,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			}
 		}
 		if took := time.Since(start); took > 50*time.Millisecond {
-			c.Tracef("4] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+			c.Tracef("4] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
 		if checkReply {
@@ -2665,7 +2665,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			}
 		}
 		if took := time.Since(start); took > 50*time.Millisecond {
-			c.Tracef("5] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+			c.Tracef("5] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
 		// Setup the message header.
@@ -2717,7 +2717,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		sub.subject = subject
 
 		if took := time.Since(start); took > 50*time.Millisecond {
-			c.Tracef("7] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+			c.Tracef("7] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
 		if c.deliverMsg(prodIsMQTT, sub, acc, subject, mreply, mh, msg, false) {
@@ -2728,13 +2728,13 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			didDeliver = true
 		}
 		if took := time.Since(start); took > 50*time.Millisecond {
-			c.Tracef("8] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+			c.Tracef("8] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
 	}
 
 	if took := time.Since(start); took > 50*time.Millisecond {
-		c.Tracef("9 TOTAL] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+		c.Tracef("9 TOTAL] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
 	if dlvMsgs > 0 {
@@ -2757,7 +2757,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	subPool.Put(sub)
 
 	if took := time.Since(start); took > 50*time.Millisecond {
-		c.Tracef("10 TOTAL] GW SEND: %v - %v - took:%v", string(subject), string(reply))
+		c.Tracef("10 TOTAL] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
 	return didDeliver
@@ -3092,9 +3092,9 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 // <Invoked from inbound connection's readLoop>
 func (c *client) processInboundGatewayMsg(msg []byte) {
 	start := time.Now()
- 	defer func() {
- 		c.Tracef("GW INBOUND: %v - %v - took:%v", string(c.pa.subject), string(c.pa.reply), time.Since(start))
- 	}()
+	defer func() {
+		c.Tracef("GW INBOUND: %v - %v - took:%v", string(c.pa.subject), string(c.pa.reply), time.Since(start))
+	}()
 
 	// Update statistics
 	c.in.msgs++
