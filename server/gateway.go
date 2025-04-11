@@ -3094,7 +3094,9 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 func (c *client) processInboundGatewayMsg(msg []byte) {
 	start := time.Now()
 	defer func() {
-		c.Tracef("GW INBOUND: %v - %v - took:%v", string(c.pa.subject), string(c.pa.reply), time.Since(start))
+		if took := time.Since(start); took > 500*time.Millisecond {
+			c.Tracef("GW INBOUND: %v - %v - took:%v", string(c.pa.subject), string(c.pa.reply), time.Since(start))
+		}
 	}()
 
 	// Update statistics

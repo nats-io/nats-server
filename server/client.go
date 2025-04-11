@@ -1878,6 +1878,11 @@ func (c *client) flushSignal() {
 // Traces a message.
 // Will NOT check if tracing is enabled, does NOT need the client lock.
 func (c *client) traceMsg(msg []byte) {
+	if len(msg) > 1048576/2 {
+		c.Tracef("<<- MSG_PAYLOAD: [BIG_MESSAGE]")
+		return
+	}
+
 	maxTrace := c.srv.getOpts().MaxTracedMsgLen
 	if maxTrace > 0 && (len(msg)-LEN_CR_LF) > maxTrace {
 		tm := fmt.Sprintf("%q", msg[:maxTrace])
