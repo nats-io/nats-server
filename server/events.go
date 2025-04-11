@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -376,6 +378,8 @@ type ServerStats struct {
 	Gateways           []*GatewayStat      `json:"gateways,omitempty"`
 	ActiveServers      int                 `json:"active_servers,omitempty"`
 	JetStream          *JetStreamVarz      `json:"jetstream,omitempty"`
+	MemLimit           int64               `json:"gomemlimit,omitempty"`
+	MaxProcs           int                 `json:"gomaxprocs,omitempty"`
 }
 
 // RouteStat holds route statistics.
@@ -821,6 +825,10 @@ func (s *Server) updateServerUsage(v *ServerStats) {
 	var vss int64
 	pse.ProcUsage(&v.CPU, &v.Mem, &vss)
 	v.Cores = runtime.NumCPU()
+	v.MaxProcs = runtime.GOMAXPROCS(-1)
+	if mm := debug.SetMemoryLimit(-1); mm < math.MaxInt64 {
+		v.MemLimit = mm
+	}
 }
 
 // Generate a route stat for our statz update.
