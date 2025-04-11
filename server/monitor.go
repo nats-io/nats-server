@@ -23,12 +23,14 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"slices"
 	"sort"
@@ -1215,6 +1217,7 @@ type Varz struct {
 	Mem                   int64                  `json:"mem"`
 	Cores                 int                    `json:"cores"`
 	MaxProcs              int                    `json:"gomaxprocs"`
+	MemLimit              int64                  `json:"gomemlimit,omitempty"`
 	CPU                   float64                `json:"cpu"`
 	Connections           int                    `json:"connections"`
 	TotalConnections      uint64                 `json:"total_connections"`
@@ -1604,6 +1607,9 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		Tags:                  opts.Tags,
 		TrustedOperatorsJwt:   opts.operatorJWT,
 		TrustedOperatorsClaim: opts.TrustedOperators,
+	}
+	if mm := debug.SetMemoryLimit(-1); mm < math.MaxInt64 {
+		varz.MemLimit = mm
 	}
 	// If this is a leaf without cluster, reset the cluster name (that is otherwise
 	// set to the server name).
