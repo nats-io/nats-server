@@ -2513,9 +2513,10 @@ var subPool = &sync.Pool{
 // regardless if it is a LEAF connection or not.
 // <Invoked from any client connection's readLoop>
 func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte, checkLeafQF bool) bool {
+	maxDelay := 500*time.Millisecond
 	start := time.Now()
 	defer func() {
-		if took := time.Since(start); took > 50*time.Millisecond {
+		if took := time.Since(start); took > maxDelay {
 			c.Tracef("GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 	}()
@@ -2538,14 +2539,14 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	thisClusterReplyPrefix := gw.replyPfx
 	thisClusterOldReplyPrefix := gw.oldReplyPfx
 	gw.RUnlock()
-	if took := time.Since(start); took > 50*time.Millisecond {
+	if took := time.Since(start); took > maxDelay {
 		c.Tracef("1] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
 	if len(gws) == 0 {
 		return false
 	}
-	if took := time.Since(start); took > 50*time.Millisecond {
+	if took := time.Since(start); took > maxDelay {
 		c.Tracef("2] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
@@ -2565,7 +2566,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	// Get a subscription from the pool
 	sub := subPool.Get().(*subscription)
 
-	if took := time.Since(start); took > 50*time.Millisecond {
+	if took := time.Since(start); took > maxDelay {
 		c.Tracef("3] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
@@ -2641,7 +2642,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 				continue
 			}
 		}
-		if took := time.Since(start); took > 50*time.Millisecond {
+		if took := time.Since(start); took > maxDelay {
 			c.Tracef("4] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
@@ -2664,7 +2665,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 				mreply = append(mreply, reply...)
 			}
 		}
-		if took := time.Since(start); took > 50*time.Millisecond {
+		if took := time.Since(start); took > maxDelay {
 			c.Tracef("5] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
@@ -2716,7 +2717,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		sub.client = gwc
 		sub.subject = subject
 
-		if took := time.Since(start); took > 50*time.Millisecond {
+		if took := time.Since(start); took > maxDelay {
 			c.Tracef("7] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
@@ -2727,13 +2728,13 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			}
 			didDeliver = true
 		}
-		if took := time.Since(start); took > 50*time.Millisecond {
+		if took := time.Since(start); took > maxDelay {
 			c.Tracef("8] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 		}
 
 	}
 
-	if took := time.Since(start); took > 50*time.Millisecond {
+	if took := time.Since(start); took > maxDelay {
 		c.Tracef("9 TOTAL] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
@@ -2756,7 +2757,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	sub.client = nil
 	subPool.Put(sub)
 
-	if took := time.Since(start); took > 50*time.Millisecond {
+	if took := time.Since(start); took > maxDelay {
 		c.Tracef("10 TOTAL] GW SEND: %v - %v - took:%v", string(subject), string(reply), took)
 	}
 
