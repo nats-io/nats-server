@@ -353,7 +353,9 @@ func nbPoolGet(sz int) []byte {
 	case sz <= nbPoolSizeMedium:
 		return nbPoolMedium.Get().(*[nbPoolSizeMedium]byte)[:0]
 	default:
-		return nbPoolLarge.Get().(*[nbPoolSizeLarge]byte)[:0]
+		buf := nbPoolLarge.Get().(*[nbPoolSizeLarge]byte)[:0]
+		fmt.Println("SIZE GET: ", sz, len(buf), cap(buf))
+		return buf
 	}
 }
 
@@ -371,6 +373,7 @@ func nbPoolPut(b []byte) {
 		nbPoolMedium.Put(b)
 	case nbPoolSizeLarge:
 		b := (*[nbPoolSizeLarge]byte)(b[0:nbPoolSizeLarge])
+		fmt.Println("SIZE PUT: ", len(b), cap(b))
 		nbPoolLarge.Put(b)
 	default:
 		// Ignore frames that are the wrong size, this might happen
