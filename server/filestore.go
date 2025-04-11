@@ -8463,6 +8463,7 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 		}
 		mb.mu.Lock()
 	}
+	// Only delete message block after (potentially) writing a new lmb.
 	mb.dirtyCloseWithRemove(true)
 	fs.removeMsgBlockFromList(mb)
 }
