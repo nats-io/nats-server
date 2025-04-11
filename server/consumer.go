@@ -3159,7 +3159,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 			needSignal = true
 		}
 		sgap = sseq - o.asflr
-		floor = sgap // start at same and set lower as we go.
+		floor = sseq // start at same and set lower as we go.
 		o.adflr, o.asflr = dseq, sseq
 
 		remove := func(seq uint64) {
