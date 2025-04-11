@@ -1911,7 +1911,11 @@ func (c *client) traceOp(format, op string, arg []byte) {
 }
 
 func (c *client) traceMsgDelivery(msg []byte) {
-	c.Tracef("->> MSG_DELIVER: [%q]", msg[:len(msg)-LEN_CR_LF])
+	if len(msg) > 1048576/2 {
+		c.Tracef("->> MSG_DELIVER: [BIG_MESSAGE]")
+	} else {
+		c.Tracef("->> MSG_DELIVER: [%q]", msg[:len(msg)-LEN_CR_LF])
+	}
 }
 
 // Process the information messages from Clients and other Routes.
