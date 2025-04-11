@@ -24,6 +24,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3770,4 +3772,35 @@ func TestServerEventsPingStatsSlowConsumersStats(t *testing.T) {
 			require_Equal(t, scs.Leafs, 4)
 		})
 	}
+}
+
+func TestServerEventsStatszMaxProcsMemLimit(t *testing.T) {
+	// We want to prove that our set values are reflected in STATSZ,
+	// so we can't use constants that might match the system that
+	// the test is run on.
+	omp, omm := runtime.GOMAXPROCS(-1), debug.SetMemoryLimit(-1)
+	mp, mm := runtime.GOMAXPROCS(omp*2)*2, debug.SetMemoryLimit(omm/2)/2
+
+	// When we're done, put everything back.
+	defer runtime.GOMAXPROCS(omp)
+	defer debug.SetMemoryLimit(omm)
+
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
+	require_NoError(t, err)
+	defer ncs.Close()
+
+	msg, err := ncs.Request("$SYS.REQ.SERVER.PING.STATSZ", nil, time.Second)
+	require_NoError(t, err)
+
+	var stats ServerStatsMsg
+	require_NoError(t, json.Unmarshal(msg.Data, &stats))
+	require_Equal(t, stats.Stats.MaxProcs, mp)
+	require_Equal(t, stats.Stats.MemLimit, mm)
 }
