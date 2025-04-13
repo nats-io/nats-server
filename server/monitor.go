@@ -3017,7 +3017,10 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if opts == nil {
 		opts = &JSzOptions{}
 	}
-	if opts.Limit == 0 {
+	if opts.Offset <= 0 {
+		opts.Offset = 0
+	}
+	if opts.Limit <= 0 {
 		opts.Limit = 1024
 	}
 	if opts.Consumer {
@@ -3056,8 +3059,12 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	js.mu.RLock()
 	jsi.Config = js.config
-	for _, info := range js.accounts {
-		accounts = append(accounts, info)
+	if opts.Account != "" {
+		accounts = append(accounts, js.accounts[opts.Account])
+	} else {
+		for _, info := range js.accounts {
+			accounts = append(accounts, info)
+		}
 	}
 	js.mu.RUnlock()
 
@@ -3075,11 +3082,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	jsi.JetStreamStats = *js.usageStats()
 
-	filterIdx := -1
-	for i, jsa := range accounts {
-		if jsa.acc().GetName() == opts.Account {
-			filterIdx = i
-		}
+	for _, jsa := range accounts {
 		jsa.mu.RLock()
 		streams := make([]*stream, 0, len(jsa.streams))
 		for _, stream := range jsa.streams {
@@ -3095,24 +3098,18 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		}
 	}
 
-	// filter logic
-	if filterIdx != -1 {
-		accounts = []*jsAccount{accounts[filterIdx]}
-	} else if opts.Accounts {
-		if opts.Offset != 0 {
-			slices.SortFunc(accounts, func(i, j *jsAccount) int { return cmp.Compare(i.acc().Name, j.acc().Name) })
-			if opts.Offset > len(accounts) {
-				accounts = []*jsAccount{}
-			} else {
-				accounts = accounts[opts.Offset:]
-			}
-		}
-		if opts.Limit != 0 {
-			if opts.Limit < len(accounts) {
-				accounts = accounts[:opts.Limit]
-			}
-		}
-	} else {
+	// If multiple accounts request, apply the limit and offset.
+	if opts.Accounts {
+		// Sort by name for a consistent read (barring any concurrent changes)
+		slices.SortFunc(accounts, func(i, j *jsAccount) int { return cmp.Compare(i.acc().Name, j.acc().Name) })
+
+		// Offset larger than the number of accounts.
+		offset := min(opts.Offset, len(accounts))
+		accounts = accounts[offset:]
+
+		limit := min(opts.Limit, len(accounts))
+		accounts = accounts[:limit]
+	} else if opts.Account == "" {
 		accounts = []*jsAccount{}
 	}
 	if len(accounts) > 0 {
