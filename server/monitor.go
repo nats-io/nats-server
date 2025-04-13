@@ -3059,14 +3059,8 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	js.mu.RLock()
 	jsi.Config = js.config
-	if opts.Accounts {
-		for _, info := range js.accounts {
-			accounts = append(accounts, info)
-		}
-	} else if opts.Account != "" {
-		if acc, ok := js.accounts[opts.Account]; ok {
-			accounts = append(accounts, acc)
-		}
+	for _, info := range js.accounts {
+		accounts = append(accounts, info)
 	}
 	js.mu.RUnlock()
 
@@ -3084,13 +3078,22 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	jsi.JetStreamStats = *js.usageStats()
 
-	for _, jsa := range accounts {
+	// If a specific account is requested, track the index.
+	filterIdx := -1
+
+	// Calculate the stats of all accounts and streams regardless of the filtering.
+	for i, jsa := range accounts {
+		if opts.Account == jsa.acc().Name {
+			filterIdx = i
+		}
+
 		jsa.mu.RLock()
 		streams := make([]*stream, 0, len(jsa.streams))
 		for _, stream := range jsa.streams {
 			streams = append(streams, stream)
 		}
 		jsa.mu.RUnlock()
+
 		jsi.Streams += len(streams)
 		for _, stream := range streams {
 			streamState := stream.state()
@@ -3111,11 +3114,14 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 		limit := min(opts.Limit, len(accounts))
 		accounts = accounts[:limit]
+	} else if filterIdx >= 0 {
+		accounts = accounts[filterIdx : filterIdx+1]
+	} else {
+		accounts = accounts[:0]
 	}
 
-	if len(accounts) > 0 {
-		jsi.AccountDetails = make([]*AccountDetail, 0, len(accounts))
-	}
+	jsi.AccountDetails = make([]*AccountDetail, 0, len(accounts))
+
 	// if wanted, obtain accounts/streams/consumer
 	for _, jsa := range accounts {
 		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly)
