@@ -3060,7 +3060,9 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	js.mu.RLock()
 	jsi.Config = js.config
 	if opts.Account != "" {
-		accounts = append(accounts, js.accounts[opts.Account])
+		if acc, ok := js.accounts[opts.Account]; ok {
+			accounts = append(accounts, acc)
+		}
 	} else {
 		for _, info := range js.accounts {
 			accounts = append(accounts, info)
