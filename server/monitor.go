@@ -3059,13 +3059,13 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	js.mu.RLock()
 	jsi.Config = js.config
-	if opts.Account != "" {
-		if acc, ok := js.accounts[opts.Account]; ok {
-			accounts = append(accounts, acc)
-		}
-	} else {
+	if opts.Accounts {
 		for _, info := range js.accounts {
 			accounts = append(accounts, info)
+		}
+	} else if opts.Account != "" {
+		if acc, ok := js.accounts[opts.Account]; ok {
+			accounts = append(accounts, acc)
 		}
 	}
 	js.mu.RUnlock()
@@ -3111,9 +3111,8 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 		limit := min(opts.Limit, len(accounts))
 		accounts = accounts[:limit]
-	} else if opts.Account == "" {
-		accounts = []*jsAccount{}
 	}
+
 	if len(accounts) > 0 {
 		jsi.AccountDetails = make([]*AccountDetail, 0, len(accounts))
 	}
