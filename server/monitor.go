@@ -3017,7 +3017,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if opts == nil {
 		opts = &JSzOptions{}
 	}
-	if opts.Offset <= 0 {
+	if opts.Offset < 0 {
 		opts.Offset = 0
 	}
 	if opts.Limit <= 0 {
@@ -3083,7 +3083,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	// Calculate the stats of all accounts and streams regardless of the filtering.
 	for i, jsa := range accounts {
-		if opts.Account == jsa.acc().Name {
+		if jsa.acc().GetName() == opts.Account {
 			filterIdx = i
 		}
 
@@ -3103,8 +3103,10 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		}
 	}
 
-	// If multiple accounts request, apply the limit and offset.
-	if opts.Accounts {
+	// Targeted account takes precedence.
+	if filterIdx >= 0 {
+		accounts = accounts[filterIdx : filterIdx+1]
+	} else if opts.Accounts {
 		// Sort by name for a consistent read (barring any concurrent changes)
 		slices.SortFunc(accounts, func(i, j *jsAccount) int { return cmp.Compare(i.acc().Name, j.acc().Name) })
 
@@ -3114,19 +3116,19 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 		limit := min(opts.Limit, len(accounts))
 		accounts = accounts[:limit]
-	} else if filterIdx >= 0 {
-		accounts = accounts[filterIdx : filterIdx+1]
 	} else {
-		accounts = accounts[:0]
+		accounts = nil
 	}
 
-	jsi.AccountDetails = make([]*AccountDetail, 0, len(accounts))
+	if len(accounts) > 0 {
+		jsi.AccountDetails = make([]*AccountDetail, 0, len(accounts))
 
-	// if wanted, obtain accounts/streams/consumer
-	for _, jsa := range accounts {
-		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly)
-		jsi.AccountDetails = append(jsi.AccountDetails, detail)
+		for _, jsa := range accounts {
+			detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly)
+			jsi.AccountDetails = append(jsi.AccountDetails, detail)
+		}
 	}
+
 	return jsi, nil
 }
 
