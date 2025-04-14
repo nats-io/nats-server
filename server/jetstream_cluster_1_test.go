@@ -8184,6 +8184,64 @@ func TestJetStreamClusterConsumerOnlyDeliverMsgAfterQuorum(t *testing.T) {
 	require_NoError(t, msgs[0].AckSync())
 }
 
+func TestJetStreamClusterConsumerResetPendingDeliveriesOnMaxAckPendingUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{
+		Durable:       "CONSUMER",
+		AckPolicy:     nats.AckExplicitPolicy,
+		Replicas:      3,
+		AckWait:       2 * time.Second,
+		MaxAckPending: 100,
+	}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	acc, err := cl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	o.mu.Lock()
+	o.pendingDeliveries = map[uint64]*jsPubMsg{0: getJSPubMsgFromPool()}
+	o.mu.Unlock()
+
+	// Increasing does not reset pending deliveries.
+	cfg.MaxAckPending++
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	o.mu.Lock()
+	l := len(o.pendingDeliveries)
+	o.mu.Unlock()
+	require_Equal(t, l, 1)
+
+	// Decreasing does reset pending deliveries, so we can shrink the map.
+	cfg.MaxAckPending--
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	o.mu.Lock()
+	l = len(o.pendingDeliveries)
+	o.mu.Unlock()
+	require_Equal(t, l, 0)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
