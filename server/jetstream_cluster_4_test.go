@@ -3439,6 +3439,99 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerDesyncAfterErrorDuringStreamCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	consumerLeader := ci.Cluster.Leader
+	consumerLeaderServer := c.serverByName(consumerLeader)
+	nc.Close()
+	nc, js = jsClientConnect(t, consumerLeaderServer)
+	defer nc.Close()
+
+	servers := slices.DeleteFunc([]string{"S-1", "S-2", "S-3"}, func(s string) bool {
+		return s == consumerLeader
+	})
+
+	// Publish 1 message, consume, and ack it.
+	pubAck, err := js.Publish("foo", []byte("ok"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_NoError(t, msgs[0].AckSync())
+
+	outdatedServerName := servers[0]
+	clusterResetServerName := servers[1]
+
+	outdatedServer := c.serverByName(outdatedServerName)
+	outdatedServer.Shutdown()
+	outdatedServer.WaitForShutdown()
+
+	// Publish and ack another message, one server will be behind.
+	pubAck, err = js.Publish("foo", []byte("ok"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_NoError(t, msgs[0].AckSync())
+
+	// We will not need the client anymore.
+	nc.Close()
+
+	// Shutdown consumer leader so one server remains.
+	consumerLeaderServer.Shutdown()
+	consumerLeaderServer.WaitForShutdown()
+
+	clusterResetServer := c.serverByName(clusterResetServerName)
+	acc, err := clusterResetServer.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Run error condition.
+	mset.resetClusteredState(nil)
+
+	// Consumer leader stays offline, we only start the server with missing stream/consumer data.
+	// We expect that the reset server must not allow the outdated server to become leader, as that would result in desync.
+	c.restartServer(outdatedServer)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+
+	// Outdated server must NOT become the leader.
+	newConsummerLeaderServer := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_Equal(t, newConsummerLeaderServer.Name(), clusterResetServerName)
+}
+
 func TestJetStreamClusterReservedResourcesAccountingAfterClusterReset(t *testing.T) {
 	for _, clusterResetErr := range []error{errLastSeqMismatch, errFirstSequenceMismatch} {
 		t.Run(clusterResetErr.Error(), func(t *testing.T) {
