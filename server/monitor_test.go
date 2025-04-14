@@ -5019,7 +5019,7 @@ func TestMonitorJsz(t *testing.T) {
 				t.Fatalf("expected one account to be returned by %s but got %v", url, info2)
 			}
 			if info1.AccountDetails[0].Name != info2.AccountDetails[0].Name {
-				t.Fatalf("absent changes, same offset should result in same account but gut: %v %v",
+				t.Fatalf("absent changes, same offset should result in same account but got: %v %v",
 					info1.AccountDetails[0].Name, info2.AccountDetails[0].Name)
 			}
 
