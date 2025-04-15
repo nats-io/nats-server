@@ -7153,6 +7153,7 @@ func TestDefaultSentinelUser(t *testing.T) {
 	uKP, err := nkeys.CreateUser()
 	require_NoError(t, err)
 	uPub, err := uKP.PublicKey()
+	require_NoError(t, err)
 	uc := jwt.NewUserClaims(uPub)
 	uc.BearerToken = true
 	uc.Name = "sentinel"
