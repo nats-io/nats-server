@@ -1,71 +1,89 @@
-# Config file for golangci-lint
+version: "2"
 run:
   concurrency: 4
+  modules-download-mode: readonly
   issues-exit-code: 1
   tests: true
-  modules-download-mode: readonly
-
 output:
   formats:
-    - format: colored-line-number
+    text:
       path: stdout
-  print-issued-lines: true
-  print-linter-name: true
-
+      print-linter-name: true
+      print-issued-lines: true
 linters:
-  disable-all: true
+  default: none
   enable:
-    # - errcheck
     - forbidigo
-    - goimports
-    - gosimple
     - govet
     - ineffassign
-    # - maligned
     - misspell
-    # - prealloc
     - staticcheck
-    # - unparam
     - unused
-
-linters-settings:
-  errcheck:
-    check-type-assertions: false
-    check-blank: false
-  forbidigo:
-    forbid:
-      - ^fmt\.Print(f|ln)?$
-  govet:
-    settings:
-      printf:
-        funcs:
-          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
-          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
-          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
-          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
-  misspell:
-    locale: US
-  unparam:
-    check-exported: false
-  prealloc:
-    simple: true
-    range-loops: true
-    for-loops: true
-
-issues:
-  exclude-dirs:
-    - .github
-    - doc
-    - docker
-    - logos
-    - scripts
-    - util
-  exclude-rules:
-    - path: "main.go" # Excludes main usage
-      linters: [forbidigo]
-    - source: "nats-server: v%s" # Excludes PrintServerAndExit
-      linters: [forbidigo]
-    - path: "server/opts.go" # Excludes TLS usage options
-      linters: [forbidigo]
-    - path: "_test.go" # Excludes unit tests
-      linters: [forbidigo]
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print(f|ln)?$
+    govet:
+      settings:
+        printf:
+          funcs:
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
+    misspell:
+      locale: US
+    staticcheck:
+      checks:
+        - all
+        - -QF*
+        - -ST1003
+        - -ST1016
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - forbidigo
+        path: main.go
+      - linters:
+          - forbidigo
+        source: "nats-server: v%s"
+      - linters:
+          - forbidigo
+        path: server/opts.go
+      - linters:
+          - forbidigo
+        path: _test.go
+    paths:
+      - .github
+      - doc
+      - docker
+      - logos
+      - scripts
+      - util
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - .github
+      - doc
+      - docker
+      - logos
+      - scripts
+      - util
+      - third_party$
+      - builtin$
+      - examples$

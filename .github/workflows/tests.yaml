@@ -26,9 +26,9 @@ jobs:
           go-version: stable
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.64.8
+          version: v2.1.2
           skip-cache: true
           skip-save-cache: true
           args: --timeout=5m --config=.golangci.yml
