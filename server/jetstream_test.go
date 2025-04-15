@@ -23524,3 +23524,35 @@ func TestJetStreamFileStoreFirstSeqAfterRestart(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, fseq)
 	require_Equal(t, si.State.LastSeq, fseq)
 }
+
+func TestJetStreamRejectLargePublishes(t *testing.T) {
+	tdir := t.TempDir()
+
+	// The test relies on the MaxPayload being larger than the
+	// rlBadThresh, otherwise you can't publish a message large
+	// enough.
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		max_payload: %d
+		jetstream: {store_dir: %q}
+	`, rlBadThresh+2048, tdir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("test", make([]byte, rlBadThresh-1024))
+	require_NoError(t, err)
+
+	_, err = js.Publish("test", make([]byte, rlBadThresh+1024))
+	require_Error(t, err)
+	require_Contains(t, err.Error(), ErrMsgTooLarge.Error())
+}

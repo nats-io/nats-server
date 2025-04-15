@@ -1940,7 +1940,7 @@ func getStreamDetails(t *testing.T, c *cluster, accountName, streamName string) 
 }
 
 func checkState(t *testing.T, c *cluster, accountName, streamName string) error {
-	t.Helper()
+	// t.Helper()
 
 	leaderSrv := c.streamLeader(accountName, streamName)
 	if leaderSrv == nil {
@@ -1959,7 +1959,9 @@ func checkState(t *testing.T, c *cluster, accountName, streamName string) error 
 		acc, err := srv.LookupAccount(accountName)
 		require_NoError(t, err)
 		stream, err := acc.lookupStream(streamName)
-		require_NoError(t, err)
+		if err != nil {
+			return err
+		}
 		state := stream.state()
 
 		if state.Msgs != streamLeader.State.Msgs {
