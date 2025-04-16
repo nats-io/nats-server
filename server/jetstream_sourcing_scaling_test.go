@@ -15,10 +15,11 @@ package server
 
 import (
 	"fmt"
-	"github.com/nats-io/nats.go"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 var serverConfig1 = `
