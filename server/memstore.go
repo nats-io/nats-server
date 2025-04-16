@@ -17,6 +17,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -601,7 +602,75 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 	return fss
 }
 
-// SubjectsTotal return message totals per subject.
+// AllLastSeqs will return a sorted list of last sequences for all subjects.
+func (ms *memStore) AllLastSeqs() ([]uint64, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if len(ms.msgs) == 0 {
+		return nil, nil
+	}
+
+	seqs := make([]uint64, 0, ms.fss.Size())
+	ms.fss.IterFast(func(subj []byte, ss *SimpleState) bool {
+		seqs = append(seqs, ss.Last)
+		return true
+	})
+
+	slices.Sort(seqs)
+	return seqs, nil
+}
+
+// MultiLastSeqs will return a sorted list of sequences that match all subjects presented in filters.
+// We will not exceed the maxSeq, which if 0 becomes the store's last sequence.
+func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if len(ms.msgs) == 0 {
+		return nil, nil
+	}
+
+	// Implied last sequence.
+	if maxSeq == 0 {
+		maxSeq = ms.state.LastSeq
+	}
+
+	seqs := make([]uint64, 0, 64)
+	seen := make(map[uint64]struct{})
+
+	addIfNotDupe := func(seq uint64) {
+		if _, ok := seen[seq]; !ok {
+			seqs = append(seqs, seq)
+			seen[seq] = struct{}{}
+		}
+	}
+
+	for _, filter := range filters {
+		ms.fss.Match(stringToBytes(filter), func(subj []byte, ss *SimpleState) {
+			if ss.Last <= maxSeq {
+				addIfNotDupe(ss.Last)
+			} else if ss.Msgs > 1 {
+				// The last is greater than maxSeq.
+				s := bytesToString(subj)
+				for seq := maxSeq; seq > 0; seq-- {
+					if sm, ok := ms.msgs[seq]; ok && sm.subj == s {
+						addIfNotDupe(seq)
+						break
+					}
+				}
+			}
+		})
+		// If maxAllowed was sepcified check that we will not exceed that.
+		if maxAllowed > 0 && len(seqs) > maxAllowed {
+			return nil, ErrTooManyResults
+		}
+	}
+	slices.Sort(seqs)
+	return seqs, nil
+}
+
+// SubjectsTotals return message totals per subject.
 func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()

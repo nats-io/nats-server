@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -1084,6 +1085,39 @@ func TestMemStorePurgeLeaksDmap(t *testing.T) {
 	dmaps = ms.dmap.Size()
 	ms.mu.Unlock()
 	require_Equal(t, dmaps, 0)
+}
+
+func TestMemStoreAllLastSeqs(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:       "zzz",
+		Subjects:   []string{"*.*"},
+		MaxMsgsPer: 50,
+		Storage:    MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	subjs := []string{"foo.foo", "foo.bar", "foo.baz", "bar.foo", "bar.bar", "bar.baz"}
+	msg := []byte("abc")
+
+	for i := 0; i < 100_000; i++ {
+		subj := subjs[rand.Intn(len(subjs))]
+		ms.StoreMsg(subj, nil, msg)
+	}
+
+	expected := make([]uint64, 0, len(subjs))
+	var smv StoreMsg
+	for _, subj := range subjs {
+		sm, err := ms.LoadLastMsg(subj, &smv)
+		require_NoError(t, err)
+		expected = append(expected, sm.seq)
+	}
+	slices.Sort(expected)
+
+	seqs, err := ms.AllLastSeqs()
+	require_NoError(t, err)
+	require_True(t, reflect.DeepEqual(seqs, expected))
 }
 
 ///////////////////////////////////////////////////////////////////////////

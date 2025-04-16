@@ -66,6 +66,8 @@ var (
 	ErrSequenceMismatch = errors.New("expected sequence does not match store")
 	// ErrCorruptStreamState
 	ErrCorruptStreamState = errors.New("stream state snapshot is corrupt")
+	// ErrTooManyResults
+	ErrTooManyResults = errors.New("too many matching results for request")
 )
 
 // StoreMsg is the stored message format for messages that are retained by the Store layer.
@@ -102,6 +104,8 @@ type StreamStore interface {
 	FilteredState(seq uint64, subject string) SimpleState
 	SubjectsState(filterSubject string) map[string]SimpleState
 	SubjectsTotals(filterSubject string) map[string]uint64
+	AllLastSeqs() ([]uint64, error)
+	MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error)
 	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
 	NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
