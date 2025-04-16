@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -1256,6 +1257,195 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 	im := require_ChanRead(t, ch, time.Second*5)
 	require_Equal(t, bytesToString(getHeader(JSMarkerReason, im.hdr)), JSMarkerReasonMaxAge)
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, im.hdr)), "1s")
+}
+
+func TestMemStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
+	t.SkipNow()
+
+	ms, err := newMemStore(
+		&StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = ms.Purge()
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		sm, err := ms.LoadMsg(11+i, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
+		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
+		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+	}
+}
+
+func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
+	t.SkipNow()
+
+	ms, err := newMemStore(
+		&StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = ms.PurgeEx("test.*", 1, 0)
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		sm, err := ms.LoadMsg(11+i, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
+		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
+		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+	}
+}
+
+func TestMemStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
+	t.SkipNow()
+
+	ms, err := newMemStore(
+		&StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = ms.PurgeEx("test.*", 1, 0)
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		_, err := ms.LoadMsg(11+i, nil)
+		require_Error(t, err)
+	}
+}
+
+func TestMemStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
+	t.SkipNow()
+
+	ms, err := newMemStore(
+		&StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = ms.Compact(6)
+	require_NoError(t, err)
+
+	for i := uint64(6); i <= 15; i++ {
+		sm, err := ms.LoadMsg(i, nil)
+		require_NoError(t, err)
+		if i <= 10 {
+			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i-1))
+			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), _EMPTY_)
+			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), _EMPTY_)
+		} else {
+			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", 15-i))
+			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
+			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+		}
+	}
+}
+
+func TestMemStoreSubjectDeleteMarkersOnRemoveMsg(t *testing.T) {
+	t.SkipNow()
+
+	ms, err := newMemStore(
+		&StreamConfig{
+			Name: "zzz", Subjects: []string{"test"}, Storage: MemoryStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	_, _, err = ms.StoreMsg("test", nil, nil, 0)
+	require_NoError(t, err)
+
+	_, err = ms.RemoveMsg(1)
+	require_NoError(t, err)
+
+	sm, err := ms.LoadMsg(2, nil)
+	require_NoError(t, err)
+	require_Equal(t, sm.subj, "test")
+	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonRemove)
+	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+
+	_, err = ms.RemoveMsg(2)
+	require_NoError(t, err)
+
+	// The deleted subject marker at seq 2 should not have been replaced.
+	_, err = ms.LoadMsg(3, nil)
+	require_Error(t, err)
+}
+
+func TestMemStoreAllLastSeqs(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:       "zzz",
+		Subjects:   []string{"*.*"},
+		MaxMsgsPer: 50,
+		Storage:    MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	subjs := []string{"foo.foo", "foo.bar", "foo.baz", "bar.foo", "bar.bar", "bar.baz"}
+	msg := []byte("abc")
+
+	for i := 0; i < 100_000; i++ {
+		subj := subjs[rand.Intn(len(subjs))]
+		ms.StoreMsg(subj, nil, msg, 0)
+	}
+
+	expected := make([]uint64, 0, len(subjs))
+	var smv StoreMsg
+	for _, subj := range subjs {
+		sm, err := ms.LoadLastMsg(subj, &smv)
+		require_NoError(t, err)
+		expected = append(expected, sm.seq)
+	}
+	slices.Sort(expected)
+
+	seqs, err := ms.AllLastSeqs()
+	require_NoError(t, err)
+	require_True(t, reflect.DeepEqual(seqs, expected))
 }
 
 ///////////////////////////////////////////////////////////////////////////
