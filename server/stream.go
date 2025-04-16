@@ -2279,7 +2279,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 			// or consumer filter subject is subset of purged subject,
 			// but not the other way around.
 			o.isEqualOrSubsetMatch(preq.Subject)
-		// Check if a consumer has a wider subject space then what we purged
+		// Check if a consumer has a wider subject space than what we purged
 		var isWider bool
 		if !doPurge && preq != nil && o.isFilteredMatch(preq.Subject) {
 			doPurge, isWider = true, true

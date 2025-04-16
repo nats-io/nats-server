@@ -1,4 +1,4 @@
-// Copyright 2015-2020 The NATS Authors
+// Copyright 2015-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -22,7 +22,7 @@
 // We've switched the other implementation to include '_cgo' in the filename,
 // to show that it's not the default.  This isn't an os or arch build tag,
 // so we have to use explicit build-tags within.
-// If lacking CGO support and targetting an unsupported arch, then before the
+// If lacking CGO support and targeting an unsupported arch, then before the
 // change you would have a compile failure for not being able to cross-compile.
 // After the change, you have a compile failure for not having the symbols
 // because no source file satisfies them.
