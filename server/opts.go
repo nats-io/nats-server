@@ -306,6 +306,7 @@ type Options struct {
 	Users                      []*User       `json:"-"`
 	Accounts                   []*Account    `json:"-"`
 	NoAuthUser                 string        `json:"-"`
+	DefaultSentinel            string        `json:"-"`
 	SystemAccount              string        `json:"-"`
 	NoSystemAccount            bool          `json:"-"`
 	Username                   string        `json:"-"`
@@ -1031,6 +1032,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			*errors = append(*errors, err)
 			return
 		}
+	case "default_sentinel":
+		o.DefaultSentinel = v.(string)
 	case "authorization":
 		auth, err := parseAuthorization(tk, errors, warnings)
 		if err != nil {

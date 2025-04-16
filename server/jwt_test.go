@@ -7118,6 +7118,72 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 	}
 }
 
+func TestDefaultSentinelUser(t *testing.T) {
+	var err error
+	preload := make(map[string]string)
+
+	_, sysPub, sysAC := NewJwtAccountClaim("SYS")
+	preload[sysPub], err = sysAC.Encode(oKp)
+	require_NoError(t, err)
+
+	aKP, aPub, aAC := NewJwtAccountClaim("A")
+	preload[aPub], err = aAC.Encode(oKp)
+	require_NoError(t, err)
+
+	preloadConfig, err := json.MarshalIndent(preload, "", " ")
+	require_NoError(t, err)
+
+	// test that the user will be rejected
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+`, ojwt, sysPub, preloadConfig)))
+
+	ns, _ := RunServerWithConfig(conf)
+	defer ns.Shutdown()
+	_, err = nats.Connect(ns.ClientURL(), nats.MaxReconnects(0))
+	require_Error(t, err)
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+	ns.Shutdown()
+
+	// test that user can connect
+	uKP, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	uPub, err := uKP.PublicKey()
+	require_NoError(t, err)
+	uc := jwt.NewUserClaims(uPub)
+	uc.BearerToken = true
+	uc.Name = "sentinel"
+	sentinelToken, err := uc.Encode(aKP)
+	require_NoError(t, err)
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+			default_sentinel: %s
+`, ojwt, sysPub, preloadConfig, sentinelToken)))
+
+	ns, _ = RunServerWithConfig(conf)
+	defer ns.Shutdown()
+	nc, err := nats.Connect(ns.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+
+	r, err := nc.Request("$SYS.REQ.USER.INFO", nil, time.Second*5)
+	require_NoError(t, err)
+	type SR struct {
+		Data UserInfo `json:"data"`
+	}
+	var ui SR
+	require_NoError(t, json.Unmarshal(r.Data, &ui))
+	require_Equal(t, ui.Data.UserID, uPub)
+}
+
 func TestJWTUpdateAccountClaimsStreamAndServiceImportDeadlock(t *testing.T) {
 	for _, exportType := range []jwt.ExportType{jwt.Stream, jwt.Service} {
 		t.Run(exportType.String(), func(t *testing.T) {
