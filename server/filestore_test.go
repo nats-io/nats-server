@@ -3670,6 +3670,12 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		// Make sure we have our state file prior to Purge call.
 		fs.forceWriteFullState()
 
+		// Capture the current index.db file.
+		sfile := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+		buf, err := os.ReadFile(sfile)
+		require_NoError(t, err)
+		require_True(t, len(buf) > 0)
+
 		// This should purge all "foo.1"
 		p, err := fs.PurgeEx("foo.1", 1, 0)
 		require_NoError(t, err)
@@ -3678,12 +3684,6 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		state := fs.State()
 		require_Equal(t, state.Msgs, 2)
 		require_Equal(t, state.FirstSeq, 1)
-
-		// Capture the current index.db file if it exists.
-		sfile := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
-		buf, err := os.ReadFile(sfile)
-		require_NoError(t, err)
-		require_True(t, len(buf) > 0)
 
 		// Make sure we can recover same state.
 		fs.Stop()
