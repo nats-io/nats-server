@@ -5010,11 +5010,24 @@ func TestMonitorJsz(t *testing.T) {
 	})
 	t.Run("offset-stable", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
-			info1 := readJsInfo(url + "?accounts=true&offset=1&limit=1")
+			info1 := readJsInfo(url + "?accounts=true&offset=0&limit=1")
 			if len(info1.AccountDetails) != 1 {
 				t.Fatalf("expected one account to be returned by %s but got %v", url, info1)
 			}
-			info2 := readJsInfo(url + "?accounts=true&offset=1&limit=1")
+			info2 := readJsInfo(url + "?accounts=true&offset=0&limit=1")
+			if len(info2.AccountDetails) != 1 {
+				t.Fatalf("expected one account to be returned by %s but got %v", url, info2)
+			}
+			if info1.AccountDetails[0].Name != info2.AccountDetails[0].Name {
+				t.Fatalf("absent changes, same offset should result in same account but got: %v %v",
+					info1.AccountDetails[0].Name, info2.AccountDetails[0].Name)
+			}
+
+			info1 = readJsInfo(url + "?accounts=true&offset=1&limit=1")
+			if len(info1.AccountDetails) != 1 {
+				t.Fatalf("expected one account to be returned by %s but got %v", url, info1)
+			}
+			info2 = readJsInfo(url + "?accounts=true&offset=1&limit=1")
 			if len(info2.AccountDetails) != 1 {
 				t.Fatalf("expected one account to be returned by %s but got %v", url, info2)
 			}
