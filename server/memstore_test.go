@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -920,7 +921,7 @@ func TestMemStoreSkipMsgs(t *testing.T) {
 func TestMemStoreMultiLastSeqs(t *testing.T) {
 	cfg := &StreamConfig{
 		Name:     "zzz",
-		Subjects: []string{"foo.*"},
+		Subjects: []string{"foo.*", "bar.*"},
 		Storage:  MemoryStorage,
 	}
 	ms, err := newMemStore(cfg)
@@ -1256,6 +1257,39 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 	im := require_ChanRead(t, ch, time.Second*5)
 	require_Equal(t, bytesToString(getHeader(JSMarkerReason, im.hdr)), JSMarkerReasonMaxAge)
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, im.hdr)), "1s")
+}
+
+func TestMemStoreAllLastSeqs(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:       "zzz",
+		Subjects:   []string{"*.*"},
+		MaxMsgsPer: 50,
+		Storage:    MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	subjs := []string{"foo.foo", "foo.bar", "foo.baz", "bar.foo", "bar.bar", "bar.baz"}
+	msg := []byte("abc")
+
+	for i := 0; i < 100_000; i++ {
+		subj := subjs[rand.Intn(len(subjs))]
+		ms.StoreMsg(subj, nil, msg, 0)
+	}
+
+	expected := make([]uint64, 0, len(subjs))
+	var smv StoreMsg
+	for _, subj := range subjs {
+		sm, err := ms.LoadLastMsg(subj, &smv)
+		require_NoError(t, err)
+		expected = append(expected, sm.seq)
+	}
+	slices.Sort(expected)
+
+	seqs, err := ms.AllLastSeqs()
+	require_NoError(t, err)
+	require_True(t, reflect.DeepEqual(seqs, expected))
 }
 
 ///////////////////////////////////////////////////////////////////////////

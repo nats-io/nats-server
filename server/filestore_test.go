@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -3666,6 +3667,15 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		_, _, err = fs.StoreMsg("foo.2", nil, []byte("xxxxxx"), 0)
 		require_NoError(t, err)
 
+		// Make sure we have our state file prior to Purge call.
+		fs.forceWriteFullState()
+
+		// Capture the current index.db file.
+		sfile := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+		buf, err := os.ReadFile(sfile)
+		require_NoError(t, err)
+		require_True(t, len(buf) > 0)
+
 		// This should purge all "foo.1"
 		p, err := fs.PurgeEx("foo.1", 1, 0)
 		require_NoError(t, err)
@@ -3698,6 +3708,79 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		if state := fs.State(); !reflect.DeepEqual(state, before) {
 			t.Fatalf("Expected state of %+v, got %+v without index.db state", before, state)
 		}
+
+		// If we had an index.db from after PurgeEx but before Stop() would rewrite, make sure we
+		// properly can recover with the old index file. This would be a crash after the PurgeEx() call.
+		fs.Stop()
+		err = os.WriteFile(sfile, buf, defaultFilePerms)
+		require_NoError(t, err)
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of %+v, got %+v with old index.db state", before, state)
+		}
+	})
+}
+
+func TestFileStorePurgeExNoTombsOnBlockRemoval(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 1000
+		cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		payload := make([]byte, 20)
+
+		total := 100
+		for i := 0; i < total; i++ {
+			_, _, err = fs.StoreMsg("foo.1", nil, payload, 0)
+			require_NoError(t, err)
+		}
+		_, _, err = fs.StoreMsg("foo.2", nil, payload, 0)
+		require_NoError(t, err)
+
+		require_Equal(t, fs.numMsgBlocks(), 6)
+
+		// Make sure we have our state file prior to Purge call.
+		fs.forceWriteFullState()
+
+		// Capture the current index.db file if it exists.
+		sfile := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+		buf, err := os.ReadFile(sfile)
+		require_NoError(t, err)
+		require_True(t, len(buf) > 0)
+
+		// This should purge all "foo.1". This will remove the blocks so we want to make sure
+		// we do not write excessive tombstones here.
+		p, err := fs.PurgeEx("foo.1", 1, 0)
+		require_NoError(t, err)
+		require_Equal(t, p, uint64(total))
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.FirstSeq, 101)
+
+		// Check that we only have 1 msg block.
+		require_Equal(t, fs.numMsgBlocks(), 1)
+
+		// Put the old index.db back. We want to make sure without the empty block tombstones that we
+		// properly recover state.
+		fs.Stop()
+		err = os.WriteFile(sfile, buf, defaultFilePerms)
+		require_NoError(t, err)
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		state = fs.State()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.FirstSeq, 101)
 	})
 }
 
@@ -4941,7 +5024,7 @@ func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
 		fs.SkipMsg()
 	}
 	fs.StoreMsg(subj, nil, msg, 0)
-	require_True(t, fs.numMsgBlocks() == 2)
+	require_Equal(t, fs.numMsgBlocks(), 3)
 }
 
 func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
@@ -6457,7 +6540,7 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	fs.StoreMsg("A", nil, msg, 0)
 
 	// Let cache's expire before PurgeEx which will load them back in.
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	p, err := fs.PurgeEx("A", 1, 0)
 	require_NoError(t, err)
@@ -6508,7 +6591,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 	}
 	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
 	// needing to worry about last write times blocking forced expiration.
-	time.Sleep(expire)
+	time.Sleep(expire + accessTimeTickInterval)
 
 	checkNoCache := func() {
 		t.Helper()
@@ -6731,7 +6814,7 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 func TestFileStoreMultiLastSeqs(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256}, // Make block size small to test multiblock selections with maxSeq
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*", "bar.*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
 
@@ -9442,4 +9525,33 @@ func TestFileStoreRemoveMsgBlockLast(t *testing.T) {
 	require_Equal(t, ss.LastSeq, 1)
 	_, err = os.Stat(ofn)
 	require_True(t, os.IsNotExist(err))
+}
+
+func TestFileStoreAllLastSeqs(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()}, // Make block size small to test multiblock selections with maxSeq
+		StreamConfig{Name: "zzz", Subjects: []string{"*.*"}, MaxMsgsPer: 50, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subjs := []string{"foo.foo", "foo.bar", "foo.baz", "bar.foo", "bar.bar", "bar.baz"}
+	msg := []byte("abc")
+
+	for i := 0; i < 100_000; i++ {
+		subj := subjs[rand.Intn(len(subjs))]
+		fs.StoreMsg(subj, nil, msg, 0)
+	}
+
+	expected := make([]uint64, 0, len(subjs))
+	var smv StoreMsg
+	for _, subj := range subjs {
+		sm, err := fs.LoadLastMsg(subj, &smv)
+		require_NoError(t, err)
+		expected = append(expected, sm.seq)
+	}
+	slices.Sort(expected)
+
+	seqs, err := fs.AllLastSeqs()
+	require_NoError(t, err)
+	require_True(t, reflect.DeepEqual(seqs, expected))
 }

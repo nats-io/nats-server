@@ -5322,9 +5322,6 @@ func (o *consumer) selectStartingSeqNo() {
 				if mmp == 1 {
 					o.sseq = state.FirstSeq
 				} else {
-					// A threshold for when we switch from get last msg to subjects state.
-					const numSubjectsThresh = 256
-					lss := &lastSeqSkipList{resume: state.LastSeq}
 					var filters []string
 					if o.subjf == nil {
 						filters = append(filters, o.cfg.FilterSubject)
@@ -5333,24 +5330,10 @@ func (o *consumer) selectStartingSeqNo() {
 							filters = append(filters, filter.subject)
 						}
 					}
-					for _, filter := range filters {
-						if st := o.mset.store.SubjectsTotals(filter); len(st) < numSubjectsThresh {
-							var smv StoreMsg
-							for subj := range st {
-								if sm, err := o.mset.store.LoadLastMsg(subj, &smv); err == nil {
-									lss.seqs = append(lss.seqs, sm.seq)
-								}
-							}
-						} else if mss := o.mset.store.SubjectsState(filter); len(mss) > 0 {
-							for _, ss := range mss {
-								lss.seqs = append(lss.seqs, ss.Last)
-							}
-						}
-					}
-					// Sort the skip list if needed.
-					if len(lss.seqs) > 1 {
-						slices.Sort(lss.seqs)
-					}
+
+					lss := &lastSeqSkipList{resume: state.LastSeq}
+					lss.seqs, _ = o.mset.store.MultiLastSeqs(filters, 0, 0)
+
 					if len(lss.seqs) == 0 {
 						o.sseq = state.LastSeq
 					} else {
@@ -5874,7 +5857,10 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 
 	// Check if this message was pending.
 	p, wasPending := o.pending[sseq]
-	rdc := o.deliveryCount(sseq)
+	var rdc uint64
+	if wasPending {
+		rdc = o.deliveryCount(sseq)
+	}
 
 	o.mu.Unlock()
 
