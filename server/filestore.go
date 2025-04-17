@@ -3176,7 +3176,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 			// If we are equal or below just add to seqs slice.
 			if ss.Last <= maxSeq {
 				seqs = append(seqs, ss.Last)
-				delete(subs, string(bsubj))
+				delete(subs, bytesToString(bsubj))
 			} else {
 				// Need to search for the real last since recorded last is > maxSeq.
 				if mb.cacheNotLoaded() {
@@ -3184,10 +3184,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 				}
 				var smv StoreMsg
 				fseq := atomic.LoadUint64(&mb.first.seq)
-				lseq := atomic.LoadUint64(&mb.last.seq)
-				if lseq > maxSeq {
-					lseq = maxSeq
-				}
+				lseq := min(atomic.LoadUint64(&mb.last.seq), maxSeq)
 				ssubj := bytesToString(bsubj)
 				for seq := lseq; seq >= fseq; seq-- {
 					sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -6637,7 +6634,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			// TODO(nat): Not terribly optimal...
 			if hasHeaders {
 				if fsm, err := mb.msgFromBufNoCopy(buf[index:], &sm, nil); err == nil && fsm != nil {
-					if ttl := getHeader(JSMessageTTL, fsm.hdr); len(ttl) > 0 {
+					if ttl := sliceHeader(JSMessageTTL, fsm.hdr); len(ttl) > 0 {
 						ttls++
 					}
 				}
