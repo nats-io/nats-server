@@ -5078,7 +5078,7 @@ func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
 		Durable:       "foo",
 		FilterSubject: "foo",
 		MaxAckPending: 20000,
-		AckWait:       time.Minute,
+		AckWait:       5 * time.Second,
 		AckPolicy:     nats.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
@@ -5147,7 +5147,7 @@ func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
 	case <-ch:
 		// OK
 	case <-time.After(30 * time.Second):
-		t.Fatalf("Consumers took too long to consumer all messages")
+		t.Fatalf("Consumers took too long to consume all messages")
 	}
 }
 

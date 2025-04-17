@@ -436,6 +436,7 @@ type consumer struct {
 	rdqi              avl.SequenceSet
 	rdc               map[uint64]uint64
 	replies           map[uint64]string
+	pendingDeliveries map[uint64]*jsPubMsg // Messages that can be delivered after achieving quorum.
 	maxdc             uint64
 	waiting           *waitQueue
 	cfg               ConsumerConfig
@@ -1533,6 +1534,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
+		o.resetPendingDeliveries()
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
@@ -2170,6 +2172,11 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	if cfg.MaxAckPending != o.cfg.MaxAckPending {
 		o.maxp = cfg.MaxAckPending
 		o.signalNewMessages()
+		// If MaxAckPending is lowered, we could have allocated a pending deliveries map of larger size.
+		// Reset it here, so we can shrink the map.
+		if cfg.MaxAckPending < o.cfg.MaxAckPending {
+			o.resetPendingDeliveries()
+		}
 	}
 	// AckWait
 	if cfg.AckWait != o.cfg.AckWait {
@@ -2527,6 +2534,16 @@ func (o *consumer) addAckReply(sseq uint64, reply string) {
 		o.replies = make(map[uint64]string)
 	}
 	o.replies[sseq] = reply
+}
+
+// Used to remember messages that need to be sent for a replicated consumer, after delivered quorum.
+// Lock should be held.
+func (o *consumer) addReplicatedQueuedMsg(pmsg *jsPubMsg) {
+	// Is not explicitly limited in size, but will at maximum hold maximum ack pending.
+	if o.pendingDeliveries == nil {
+		o.pendingDeliveries = make(map[uint64]*jsPubMsg)
+	}
+	o.pendingDeliveries[pmsg.seq] = pmsg
 }
 
 // Lock should be held.
@@ -3089,7 +3106,6 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	}
 
 	// Check if this ack is above the current pointer to our next to deliver.
-	// This could happen on a cooperative takeover with high speed deliveries.
 	if sseq >= o.sseq {
 		// Let's make sure this is valid.
 		// This is only received on the consumer leader, so should never be higher
@@ -4842,7 +4858,14 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	}
 
 	// Send message.
-	o.outq.send(pmsg)
+	// If we're replicated we MUST only send the message AFTER we've got quorum for updating
+	// delivered state. Otherwise, we could be in an invalid state after a leader change.
+	// We can send immediately if not replicated, not using acks, or using flow control (incompatible).
+	if o.node == nil || ap == AckNone || o.cfg.FlowControl {
+		o.outq.send(pmsg)
+	} else {
+		o.addReplicatedQueuedMsg(pmsg)
+	}
 
 	// Flow control.
 	if o.maxpb > 0 && o.needFlowControl(psz) {
@@ -6103,4 +6126,11 @@ func (o *consumer) resetPtmr(delay time.Duration) {
 func (o *consumer) stopAndClearPtmr() {
 	stopAndClearTimer(&o.ptmr)
 	o.ptmrEnd = time.Time{}
+}
+
+func (o *consumer) resetPendingDeliveries() {
+	for _, pmsg := range o.pendingDeliveries {
+		pmsg.returnToPool()
+	}
+	o.pendingDeliveries = nil
 }
