@@ -621,6 +621,23 @@ func (ms *memStore) AllLastSeqs() ([]uint64, error) {
 	return seqs, nil
 }
 
+// Helper to determine if the filter(s) represent all the subjects.
+// Most clients send in subjects even if they match the stream's ingest subjects.
+// Lock should be held.
+func (ms *memStore) filterIsAll(filters []string) bool {
+	if len(filters) != len(ms.cfg.Subjects) {
+		return false
+	}
+	// Sort so we can compare.
+	slices.Sort(filters)
+	for i, subj := range filters {
+		if !subjectIsSubsetMatch(ms.cfg.Subjects[i], subj) {
+			return false
+		}
+	}
+	return true
+}
+
 // MultiLastSeqs will return a sorted list of sequences that match all subjects presented in filters.
 // We will not exceed the maxSeq, which if 0 becomes the store's last sequence.
 func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
@@ -629,6 +646,11 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 
 	if len(ms.msgs) == 0 {
 		return nil, nil
+	}
+
+	// See if we can short circuit if we think they are asking for all last sequences and have no maxSeq or maxAllowed set.
+	if maxSeq == 0 && maxAllowed <= 0 && ms.filterIsAll(filters) {
+		return ms.AllLastSeqs()
 	}
 
 	// Implied last sequence.
