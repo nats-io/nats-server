@@ -1552,14 +1552,8 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	// Simulate upper layer calling down to apply.
 	n.Applied(1)
 
-	// Send heartbeat, which commits the second message.
-	n.processAppendEntryResponse(&appendEntryResponse{
-		term:    aeHeartbeat1.term,
-		index:   aeHeartbeat1.pindex,
-		peer:    nats1,
-		reply:   _EMPTY_,
-		success: true,
-	})
+	// Receive heartbeat, which commits the second message.
+	n.processAppendEntry(aeHeartbeat1, n.aesub)
 	require_Equal(t, n.commit, 2)
 
 	// Simulate upper layer calling down to apply.
