@@ -4573,9 +4573,9 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 	}
 	o.mu.Unlock()
 
-	// If we do not have interest update that here.
-	if checkDeliveryInterest && o.hasNoLocalInterest() {
-		o.updateDeliveryInterest(false)
+	if checkDeliveryInterest {
+		localInterest := !o.hasNoLocalInterest()
+		o.updateDeliveryInterest(localInterest)
 	}
 }
 

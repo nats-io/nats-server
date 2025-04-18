@@ -7902,6 +7902,72 @@ func TestJetStreamClusterInvalidJSACKOverRoute(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerActiveAfterDidNotDeliverOverRoute(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "CONSUMER",
+		Replicas:       3,
+		DeliverSubject: "deliver_subject",
+	})
+	require_NoError(t, err)
+
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_False(t, ci.PushBound)
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	ncRs, jsRs := jsClientConnect(t, rs)
+	defer ncRs.Close()
+
+	// Just noop callback.
+	cb := func(msg *nats.Msg) {}
+	_, err = jsRs.Subscribe("foo", cb, nats.Bind("TEST", "CONSUMER"))
+	require_NoError(t, err)
+
+	// Eventually the sub should be known to the leader, and report active/bound.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+		if err != nil {
+			return err
+		}
+		if !ci.PushBound {
+			return errors.New("push not bound")
+		}
+		return nil
+	})
+
+	// Simulate failed delivery over route connection.
+	acc, err := cl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+	o.didNotDeliver(1, "foo")
+
+	// Consumer should still be active/bound.
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_True(t, ci.PushBound)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
