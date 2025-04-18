@@ -940,7 +940,7 @@ func (c *client) parse(buf []byte) error {
 					return err
 				}
 				if trace {
-					c.traceInOp("CONNECT", removePassFromTrace(arg))
+					c.traceInOp("CONNECT", removeSecretsFromTrace(arg))
 				}
 				if err := c.processConnect(arg); err != nil {
 					return err

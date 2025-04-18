@@ -1624,6 +1624,18 @@ func TestClientUserInfo(t *testing.T) {
 	if got != expected {
 		t.Errorf("Expected %q, got %q", expected, got)
 	}
+
+	c = &client{
+		cid: 1024,
+		opts: ClientOpts{
+			Token: "s3cr3t!",
+		},
+	}
+	got = c.getAuthUser()
+	expected = `Token "[REDACTED]"`
+	if got != expected {
+		t.Errorf("Expected %q, got %q", expected, got)
+	}
 }
 
 type captureWarnLogger struct {
