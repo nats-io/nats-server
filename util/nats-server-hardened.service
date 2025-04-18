@@ -11,16 +11,20 @@ Type=simple
 EnvironmentFile=-/etc/default/nats-server
 ExecStart=/usr/sbin/nats-server -c /etc/nats-server.conf
 ExecReload=/bin/kill -s HUP $MAINPID
-ExecStop=/bin/kill -s SIGINT $MAINPID
+
+# The nats-server uses SIGUSR2 to trigger Lame Duck Mode (LDM) shutdown
+# https://docs.nats.io/running-a-nats-service/nats_admin/lame_duck_mode
+ExecStop=/bin/kill -s SIGUSR2  $MAINPID
 
 User=nats
 Group=nats
 
 Restart=always
 RestartSec=5
-# The nats-server uses SIGUSR2 to trigger using Lame Duck Mode (LDM) shutdown
-KillSignal=SIGUSR2
-# You might want to adjust TimeoutStopSec too.
+
+# This should be `lame_duck_duration` + some buffer to finish the shutdown.
+# By default, `lame_duck_duration` is 2 mins.
+TimeoutStopSec=150
 
 # Capacity Limits
 # JetStream requires 2 FDs open per stream.
