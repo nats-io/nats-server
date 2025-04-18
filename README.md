@@ -63,7 +63,8 @@ Who uses NATS? See our [list of users](https://nats.io/#who-uses-nats) on [https
 
 ### Security Audit
 
-A third party security audit was performed by Cure53, you can see the full report [here](https://github.com/nats-io/nats-general/blob/main/reports/Cure53_NATS_Audit.pdf).
+A third-party security audit was performed by ostif.org with the help of "Trail of Bits".  
+You can see the full report [on Trail of Bit’s Github](https://github.com/trailofbits/publications/blob/master/reviews/2025-04-ostif-nats-securityreview.pdf).
 
 ### Reporting Security Vulnerabilities
 
