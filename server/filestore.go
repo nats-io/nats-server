@@ -5382,7 +5382,7 @@ func (fs *fileStore) resetAgeChk(delta int64) {
 		if fireIn = time.Duration(delta); fireIn < 250*time.Millisecond {
 			// Only fire at most once every 250ms.
 			// Excessive firing can effect ingest performance.
-			fireIn = time.Second
+			fireIn = 250 * time.Millisecond
 		}
 	}
 	if fs.ageChk != nil {
