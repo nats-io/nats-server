@@ -1459,7 +1459,7 @@ func TestLeafNodePubAllowedPruning(t *testing.T) {
 	for i := 0; i < gr; i++ {
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 100; i++ {
+			for j := 0; j < 100; j++ {
 				c.pubAllowed(nats.NewInbox())
 			}
 		}()
@@ -6847,6 +6847,18 @@ func TestLeafNodeTLSHandshakeFirst(t *testing.T) {
 	// Reload again with "true"
 	reloadUpdateConfig(t, s1, confHub, fmt.Sprintf(tmpl1, "true"))
 	checkLeafNodeConnected(t, s2)
+
+	// Shutdown the remote
+	s2.Shutdown()
+
+	// Reload the hub with handshake_first with a duration
+	reloadUpdateConfig(t, s1, confHub, fmt.Sprintf(tmpl1, `"250ms"`))
+
+	// Now start s2 with a remote that does not use handshake_first (set to false)
+	confSpoke = createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port, "false")))
+	s2, _ = RunServerWithConfig(confSpoke)
+	defer s2.Shutdown()
+	checkLeafNodeConnected(t, s2)
 }
 
 func TestLeafNodeTLSHandshakeEvenForRemoteWithNoTLSBlock(t *testing.T) {
@@ -6977,9 +6989,12 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 			if !reflect.DeepEqual(test.rtts, o.LeafNode.Compression.RTTThresholds) {
 				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.LeafNode.Compression.RTTThresholds)
 			}
+			port := s.getOpts().Port
+			leafNodePort := s.getOpts().LeafNode.Port
 			s.Shutdown()
 
-			o.LeafNode.Port = -1
+			o.Port = port
+			o.LeafNode.Port = leafNodePort
 			o.LeafNode.Compression.Mode = test.mode
 			if len(test.rttVals) > 0 {
 				o.LeafNode.Compression.Mode = CompressionS2Auto
@@ -7081,9 +7096,12 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 			if !reflect.DeepEqual(test.rtts, r.Compression.RTTThresholds) {
 				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, r.Compression.RTTThresholds)
 			}
+			port := s.getOpts().Port
+			leafNodePort := s.getOpts().LeafNode.Port
 			s.Shutdown()
 
-			o.LeafNode.Port = -1
+			o.Port = port
+			o.LeafNode.Port = leafNodePort
 			o.LeafNode.Remotes[0].Compression.Mode = test.mode
 			if len(test.rttVals) > 0 {
 				o.LeafNode.Remotes[0].Compression.Mode = CompressionS2Auto
@@ -8449,12 +8467,15 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	}
 	nc.Flush()
 
+	// Drain can lose some messages since it only checks pending messages known to the client,
+	// and is not aware of other messages that are inflight on other servers.
+	numMin := num * 99 / 100
 	checkFor(t, time.Second, 200*time.Millisecond, func() error {
 		total := int(r1.Load() + r2.Load())
-		if total == num {
+		if total >= numMin {
 			return nil
 		}
-		return fmt.Errorf("Not all received: %d vs %d", total, num)
+		return fmt.Errorf("Not all received: %d vs %d (minimum %d)", total, num, numMin)
 	})
 	require_True(t, r2.Load() > r1.Load())
 
@@ -9412,6 +9433,150 @@ func TestLeafNodeLoopDetectionOnActualLoop(t *testing.T) {
 	}
 }
 
+func TestLeafNodeConnectionSucceedsEvenWithDelayedFirstINFO(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		websocket bool
+	}{
+		{"regular", false},
+		{"websocket", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ob := DefaultOptions()
+			ob.ServerName = "HUB"
+			ob.LeafNode.Host = "127.0.0.1"
+			ob.LeafNode.Port = -1
+			ob.LeafNode.AuthTimeout = 10
+			if test.websocket {
+				ob.Websocket.Host = "127.0.0.1"
+				ob.Websocket.Port = -1
+				ob.Websocket.HandshakeTimeout = 10 * time.Second
+				ob.Websocket.AuthTimeout = 10
+				ob.Websocket.NoTLS = true
+			}
+			sb := RunServer(ob)
+			defer sb.Shutdown()
+
+			var port int
+			var scheme string
+			if test.websocket {
+				port = ob.Websocket.Port
+				scheme = wsSchemePrefix
+			} else {
+				port = ob.LeafNode.Port
+				scheme = "nats"
+			}
+
+			urlStr := fmt.Sprintf("%s://127.0.0.1:%d", scheme, port)
+			proxy := createNetProxy(1100*time.Millisecond, 1024*1024*1024, 1024*1024*1024, urlStr, true)
+			defer proxy.stop()
+			proxyURL := proxy.clientURL()
+			_, proxyPort, err := net.SplitHostPort(proxyURL[len(scheme)+3:])
+			require_NoError(t, err)
+
+			lnBURL, err := url.Parse(fmt.Sprintf("%s://127.0.0.1:%s", scheme, proxyPort))
+			require_NoError(t, err)
+
+			oa := DefaultOptions()
+			oa.ServerName = "SPOKE"
+			oa.Cluster.Name = "xyz"
+			remote := &RemoteLeafOpts{
+				URLs:             []*url.URL{lnBURL},
+				FirstInfoTimeout: 3 * time.Second,
+			}
+			oa.LeafNode.Remotes = []*RemoteLeafOpts{remote}
+			sa := RunServer(oa)
+			defer sa.Shutdown()
+
+			checkLeafNodeConnected(t, sa)
+		})
+	}
+}
+
+type captureLeafConnClosed struct {
+	DummyLogger
+	ch chan struct{}
+}
+
+func (l *captureLeafConnClosed) Noticef(format string, v ...any) {
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "Leafnode connection closed: Read Error") {
+		select {
+		case l.ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func TestLeafNodeDetectsStaleConnectionIfNoInfo(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		websocket bool
+	}{
+		{"regular", false},
+		{"websocket", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			require_NoError(t, err)
+			defer l.Close()
+
+			ch := make(chan struct{})
+			wg := sync.WaitGroup{}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				defer c.Close()
+				<-ch
+			}()
+
+			var scheme string
+			if test.websocket {
+				scheme = wsSchemePrefix
+			} else {
+				scheme = "nats"
+			}
+			urlStr := fmt.Sprintf("%s://%s", scheme, l.Addr())
+			lnBURL, err := url.Parse(urlStr)
+			require_NoError(t, err)
+
+			oa := DefaultOptions()
+			oa.ServerName = "SPOKE"
+			oa.Cluster.Name = "xyz"
+			remote := &RemoteLeafOpts{
+				URLs:             []*url.URL{lnBURL},
+				FirstInfoTimeout: 250 * time.Millisecond,
+			}
+			oa.LeafNode.Remotes = []*RemoteLeafOpts{remote}
+			oa.DisableShortFirstPing = false
+			oa.NoLog = false
+			sa, err := NewServer(oa)
+			require_NoError(t, err)
+			defer sa.Shutdown()
+
+			log := &captureLeafConnClosed{ch: make(chan struct{}, 1)}
+			sa.SetLogger(log, false, false)
+			sa.Start()
+
+			select {
+			case <-log.ch:
+				// OK
+			case <-time.After(750 * time.Millisecond):
+				t.Fatalf("Connection was not closed")
+			}
+
+			sa.Shutdown()
+			close(ch)
+			wg.Wait()
+			sa.WaitForShutdown()
+		})
+	}
+}
+
 // https://github.com/nats-io/nats-server/issues/5473
 func TestLeafNodeDupeDeliveryQueueSubAndPlainSub(t *testing.T) {
 	clusterCommonConf := `
@@ -9564,7 +9729,42 @@ func TestLeafNodeServerKickClient(t *testing.T) {
 	require_True(t, ln.Start.After(disconnectTime))
 }
 
-func TestLeafCredFormatting(t *testing.T) {
+func TestLeafNodeBannerNoClusterNameIfNoCluster(t *testing.T) {
+	u, err := url.Parse("nats://127.0.0.1:1234")
+	require_NoError(t, err)
+
+	opts := DefaultOptions()
+	opts.ServerName = "LEAF_SERVER"
+	opts.Cluster.Name = _EMPTY_
+	opts.Cluster.Port = 0
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	opts.NoLog = false
+
+	s, err := NewServer(opts)
+	require_NoError(t, err)
+	defer func() {
+		s.Shutdown()
+		s.WaitForShutdown()
+	}()
+	l := &captureNoticeLogger{}
+	s.SetLogger(l, false, false)
+	s.Start()
+
+	if !s.ReadyForConnections(time.Second) {
+		t.Fatal("Server not ready!")
+	}
+
+	l.Lock()
+	for _, n := range l.notices {
+		if strings.Contains(n, "Cluster: ") {
+			l.Unlock()
+			t.Fatalf("Cluster name should not be displayed, got %q", n)
+		}
+	}
+	l.Unlock()
+}
+
+func TestLeafNodeCredFormatting(t *testing.T) {
 	//create the operator/sys/account tree
 	oKP, err := nkeys.CreateOperator()
 	require_NoError(t, err)
@@ -9638,14 +9838,15 @@ func TestLeafCredFormatting(t *testing.T) {
 		require_NoError(t, file.Close())
 
 		template := fmt.Sprintf(`
-		listen: 127.0.0.1:-1
-		leaf { remotes: [
-			{
-				urls: [ nats-leaf://127.0.0.1:%d ]
-				credentials: "%s"
-			}
-		] }`, o.LeafNode.Port, file.Name())
-
+			listen: 127.0.0.1:-1
+			leafnodes {
+				remotes: [
+					{
+						urls: [ nats-leaf://127.0.0.1:%d ]
+						credentials: "%s"
+					}
+				]
+			}`, o.LeafNode.Port, file.Name())
 		conf := createConfFile(t, []byte(template))
 		leaf, _ := RunServerWithConfig(conf)
 		defer leaf.Shutdown()
@@ -9714,148 +9915,4 @@ func TestLeafNodePermissionWithLiteralSubjectAndQueueInterest(t *testing.T) {
 	resp, err := ncHub.Request("my.subject", []byte("hello"), time.Second)
 	require_NoError(t, err)
 	require_Equal(t, "OK", string(resp.Data))
-}
-
-func TestLeafNodeConnectionSucceedsEvenWithDelayedFirstINFO(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		websocket bool
-	}{
-		{"regular", false},
-		{"websocket", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ob := DefaultOptions()
-			ob.ServerName = "HUB"
-			ob.LeafNode.Host = "127.0.0.1"
-			ob.LeafNode.Port = -1
-			ob.LeafNode.AuthTimeout = 10
-			if test.websocket {
-				ob.Websocket.Host = "127.0.0.1"
-				ob.Websocket.Port = -1
-				ob.Websocket.HandshakeTimeout = 10 * time.Second
-				ob.Websocket.AuthTimeout = 10
-				ob.Websocket.NoTLS = true
-			}
-			sb := RunServer(ob)
-			defer sb.Shutdown()
-
-			var port int
-			var scheme string
-			if test.websocket {
-				port = ob.Websocket.Port
-				scheme = wsSchemePrefix
-			} else {
-				port = ob.LeafNode.Port
-				scheme = "nats"
-			}
-
-			urlStr := fmt.Sprintf("%s://127.0.0.1:%d", scheme, port)
-			proxy := createNetProxy(1100*time.Millisecond, 1024*1024*1024, 1024*1024*1024, urlStr, true)
-			defer proxy.stop()
-			proxyURL := proxy.clientURL()
-			_, proxyPort, err := net.SplitHostPort(proxyURL[len(scheme)+3:])
-			require_NoError(t, err)
-
-			lnBURL, err := url.Parse(fmt.Sprintf("%s://127.0.0.1:%s", scheme, proxyPort))
-			require_NoError(t, err)
-
-			oa := DefaultOptions()
-			oa.ServerName = "SPOKE"
-			oa.Cluster.Name = "xyz"
-			remote := &RemoteLeafOpts{
-				URLs:             []*url.URL{lnBURL},
-				FirstInfoTimeout: 3 * time.Second,
-			}
-			oa.LeafNode.Remotes = []*RemoteLeafOpts{remote}
-			sa := RunServer(oa)
-			defer sa.Shutdown()
-
-			checkLeafNodeConnected(t, sa)
-		})
-	}
-}
-
-type captureLeafConnClosed struct {
-	DummyLogger
-	ch chan struct{}
-}
-
-func (l *captureLeafConnClosed) Noticef(format string, v ...any) {
-	msg := fmt.Sprintf(format, v...)
-	if strings.Contains(msg, "Leafnode connection closed: Read Error") {
-		select {
-		case l.ch <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func TestLeafNodeDetectsStaleConnectionIfNoInfo(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		websocket bool
-	}{
-		{"regular", false},
-		{"websocket", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			l, err := net.Listen("tcp", "127.0.0.1:0")
-			require_NoError(t, err)
-			defer l.Close()
-
-			ch := make(chan struct{})
-			wg := sync.WaitGroup{}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				c, err := l.Accept()
-				if err != nil {
-					return
-				}
-				defer c.Close()
-				<-ch
-			}()
-
-			var scheme string
-			if test.websocket {
-				scheme = wsSchemePrefix
-			} else {
-				scheme = "nats"
-			}
-			urlStr := fmt.Sprintf("%s://%s", scheme, l.Addr())
-			lnBURL, err := url.Parse(urlStr)
-			require_NoError(t, err)
-
-			oa := DefaultOptions()
-			oa.ServerName = "SPOKE"
-			oa.Cluster.Name = "xyz"
-			remote := &RemoteLeafOpts{
-				URLs:             []*url.URL{lnBURL},
-				FirstInfoTimeout: 250 * time.Millisecond,
-			}
-			oa.LeafNode.Remotes = []*RemoteLeafOpts{remote}
-			oa.DisableShortFirstPing = false
-			oa.NoLog = false
-			sa, err := NewServer(oa)
-			require_NoError(t, err)
-			defer sa.Shutdown()
-
-			log := &captureLeafConnClosed{ch: make(chan struct{}, 1)}
-			sa.SetLogger(log, false, false)
-			sa.Start()
-
-			select {
-			case <-log.ch:
-				// OK
-			case <-time.After(750 * time.Millisecond):
-				t.Fatalf("Connection was not closed")
-			}
-
-			sa.Shutdown()
-			close(ch)
-			wg.Wait()
-			sa.WaitForShutdown()
-		})
-	}
 }

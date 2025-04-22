@@ -31,10 +31,11 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/nats-io/nats-server/v2/internal/ocsp"
 	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/crypto/ocsp"
+
+	. "github.com/nats-io/nats-server/v2/internal/ocsp"
 )
 
 func init() {
@@ -4726,19 +4727,19 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			if !test.public {
 				accs = []*Account{barA1}
 			}
-			fooA1.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooA1.AddServiceExport("ngs.update.*", accs))
 			if !test.public {
 				accs = []*Account{barA2}
 			}
-			fooA2.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooA2.AddServiceExport("ngs.update.*", accs))
 			if !test.public {
 				accs = []*Account{barB1}
 			}
-			fooB1.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooB1.AddServiceExport("ngs.update.*", accs))
 			if !test.public {
 				accs = []*Account{barB2}
 			}
-			fooB2.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooB2.AddServiceExport("ngs.update.*", accs))
 
 			// Add import abilities to server B's bar account from foo.
 			if err := barB1.AddServiceImport(fooB1, "ngs.update", "ngs.update.$bar"); err != nil {
@@ -4771,6 +4772,9 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 
 			subB := natsSubSync(t, clientB, "reply")
 			natsFlush(t, clientB)
+
+			// Ensure the subscription is known by the server we're connected to.
+			time.Sleep(100 * time.Millisecond)
 
 			var msg *nats.Msg
 			var err error
@@ -4836,7 +4840,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			checkSubs(t, fooB2, "B2", 1)
 			checkSubs(t, barB2, "B2", 2)
 
-			// Speed up exiration
+			// Speed up expiration
 			err = fooA1.SetServiceExportResponseThreshold("ngs.update.*", 10*time.Millisecond)
 			if err != nil {
 				t.Fatalf("Error setting response threshold: %v", err)
@@ -4859,7 +4863,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 				}
 			}
 
-			// Unsubsribe all and ensure counts go to 0.
+			// Unsubscribe all and ensure counts go to 0.
 			natsUnsub(t, subA)
 			natsFlush(t, clientA)
 			natsUnsub(t, subB)
@@ -4907,6 +4911,9 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 
 			subB = natsSubSync(t, clientB, "reply")
 			natsFlush(t, clientB)
+
+			// Ensure the subscription is known by the server we're connected to.
+			time.Sleep(100 * time.Millisecond)
 
 			for attempts := 1; attempts <= 2; attempts++ {
 				// Send the request from clientB on foo.request,

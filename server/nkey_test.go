@@ -15,14 +15,15 @@ package server
 
 import (
 	"bufio"
-	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	mrand "math/rand"
 	"strings"
 	"testing"
 	"time"
+
+	crand "crypto/rand"
+	mrand "math/rand"
 
 	"github.com/nats-io/nkeys"
 )

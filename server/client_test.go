@@ -16,6 +16,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,8 +31,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"crypto/tls"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"

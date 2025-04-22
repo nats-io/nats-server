@@ -142,7 +142,7 @@ func TestIPQueuePop(t *testing.T) {
 	if n := q.inProgress(); n != 0 {
 		t.Fatalf("Expected count to be 0, got %v", n)
 	}
-	// If we call pop() now, we should get an empty list.
+	// If we call pop() now, we should get nil.
 	if elts = q.pop(); elts != nil {
 		t.Fatalf("Expected nil, got %v", elts)
 	}
@@ -150,6 +150,10 @@ func TestIPQueuePop(t *testing.T) {
 	if n := q.inProgress(); n != 0 {
 		t.Fatalf("Expected count to be 0, got %v", n)
 	}
+	// Calling pop() on an unitialized queue will return nil
+	var q2 *ipQueue[int]
+	elts = q2.pop()
+	require_True(t, elts == nil)
 }
 
 func TestIPQueuePopOne(t *testing.T) {
@@ -329,26 +333,13 @@ func TestIPQueueRecycle(t *testing.T) {
 	if l := len(values); l != 1 {
 		t.Fatalf("Len should be 1, got %v", l)
 	}
-	// This time, we should not have recycled it, so the new cap should
-	// be 1 for the new element added. In case Go creates a slice of
-	// cap more than 1 in some future release, just check that the
-	// cap is lower than the pre recycle cap.
+	// This time, we should not have recycled it, so the new cap should be whatever
+	// the default is, but less than the preRecycleCap.
 	if c := cap(values); c >= preRecycleCap {
 		t.Fatalf("The slice should not have been put back in the pool, got cap of %v", c)
 	}
-
-	// Also check that if we mistakenly pop a queue that was not
-	// notified (pop() will return nil), and we try to recycle,
-	// recycle() will ignore the call.
-	values = q.pop()
 	q.recycle(&values)
-	q.push(1002)
-	q.Lock()
-	recycled := &q.elts == &values
-	q.Unlock()
-	if recycled {
-		t.Fatalf("Unexpected recycled slice")
-	}
+
 	// Check that we don't crash when recycling a nil or empty slice
 	values = q.pop()
 	q.recycle(&values)

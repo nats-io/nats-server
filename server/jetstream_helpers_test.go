@@ -14,6 +14,8 @@
 // Do not exlude this file with the !skip_js_tests since those helpers
 // are also used by MQTT.
 
+//lint:file-ignore U1000 Avoid detecting as unused code
+
 package server
 
 import (
@@ -34,6 +36,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/time/rate"
 )
 
@@ -111,7 +114,7 @@ var jsClusterAccountsTempl = `
 	listen: 127.0.0.1:-1
 
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	leaf {
 		listen: 127.0.0.1:-1
@@ -143,7 +146,7 @@ var jsClusterAccountsTempl = `
 var jsClusterTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	leaf {
 		listen: 127.0.0.1:-1
@@ -162,7 +165,7 @@ var jsClusterTempl = `
 var jsClusterEncryptedTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s', key: "s3cr3t!"}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s', key: "s3cr3t!"}
 
 	leaf {
 		listen: 127.0.0.1:-1
@@ -181,7 +184,7 @@ var jsClusterEncryptedTempl = `
 var jsClusterMaxBytesTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	leaf {
 		listen: 127.0.0.1:-1
@@ -291,7 +294,7 @@ var jsGWTempl = `%s{name: %s, urls: [%s]}`
 var jsClusterAccountLimitsTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	cluster {
 		name: %s
@@ -326,31 +329,36 @@ func createJetStreamTaggedSuperClusterWithGWProxy(t *testing.T, gwm gwProxyMap) 
 	}
 
 	// Make first cluster AWS, US country code.
-	for _, s := range sc.clusterForName("C1").servers {
+	for i, s := range sc.clusterForName("C1").servers {
 		s.optsMu.Lock()
 		s.opts.Tags.Add("cloud:aws")
 		s.opts.Tags.Add("country:us")
+		s.opts.Tags.Add(fmt.Sprintf("node:%d", i+1))
 		s.optsMu.Unlock()
 		reset(s)
 	}
 	// Make second cluster GCP, UK country code.
-	for _, s := range sc.clusterForName("C2").servers {
+	for i, s := range sc.clusterForName("C2").servers {
 		s.optsMu.Lock()
 		s.opts.Tags.Add("cloud:gcp")
 		s.opts.Tags.Add("country:uk")
+		s.opts.Tags.Add(fmt.Sprintf("node:%d", i+1))
 		s.optsMu.Unlock()
 		reset(s)
 	}
 	// Make third cluster AZ, JP country code.
-	for _, s := range sc.clusterForName("C3").servers {
+	for i, s := range sc.clusterForName("C3").servers {
 		s.optsMu.Lock()
 		s.opts.Tags.Add("cloud:az")
 		s.opts.Tags.Add("country:jp")
+		s.opts.Tags.Add(fmt.Sprintf("node:%d", i+1))
 		s.optsMu.Unlock()
 		reset(s)
 	}
 
+	sc.waitOnLeader()
 	ml := sc.leader()
+	require_True(t, ml != nil)
 	js := ml.getJetStream()
 	require_True(t, js != nil)
 	js.mu.RLock()
@@ -604,9 +612,13 @@ func (sc *supercluster) waitOnPeerCount(n int) {
 	sc.waitOnLeader()
 	leader := sc.leader()
 	expires := time.Now().Add(30 * time.Second)
+	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		peers := leader.JetStreamClusterPeers()
-		if len(peers) == n {
+		if leader = sc.leader(); leader == nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if len(leader.JetStreamClusterPeers()) == n {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -617,7 +629,7 @@ func (sc *supercluster) waitOnPeerCount(n int) {
 var jsClusterMirrorSourceImportsTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	cluster {
 		name: %s
@@ -653,7 +665,7 @@ var jsClusterMirrorSourceImportsTempl = `
 var jsClusterImportsTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	cluster {
 		name: %s
@@ -890,7 +902,7 @@ func (c *cluster) createSingleLeafNodeNoSystemAccountAndEnablesJetStreamWithDoma
 var jsClusterSingleLeafNodeLikeNGSTempl = `
 	listen: 127.0.0.1:-1
 	server_name: LNJS
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	leaf { remotes [ { urls: [ %s ] } ] }
 `
@@ -898,7 +910,7 @@ var jsClusterSingleLeafNodeLikeNGSTempl = `
 var jsClusterSingleLeafNodeTempl = `
 	listen: 127.0.0.1:-1
 	server_name: LNJS
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	leaf { remotes [
 		{ urls: [ %s ], account: "JSY" }
@@ -915,7 +927,7 @@ var jsClusterSingleLeafNodeTempl = `
 var jsClusterTemplWithLeafNode = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	{{leaf}}
 
@@ -934,7 +946,7 @@ var jsClusterTemplWithLeafNodeNoJS = `
 	server_name: %s
 
 	# Need to keep below since it fills in the store dir by default so just comment out.
-	# jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	# jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	{{leaf}}
 
@@ -951,7 +963,7 @@ var jsClusterTemplWithLeafNodeNoJS = `
 var jsClusterTemplWithSingleLeafNode = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	{{leaf}}
 
@@ -963,7 +975,7 @@ var jsClusterTemplWithSingleFleetLeafNode = `
 	listen: 127.0.0.1:-1
 	server_name: %s
 	cluster: { name: fleet }
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
 
 	{{leaf}}
 
@@ -1229,6 +1241,19 @@ func jsClientConnectEx(t testing.TB, s *Server, jsOpts []nats.JSOpt, opts ...nat
 	return nc, js
 }
 
+func jsClientConnectNewAPI(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, jetstream.JetStream) {
+	t.Helper()
+	nc, err := nats.Connect(s.ClientURL(), opts...)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(10*time.Second))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	return nc, js
+}
+
 func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 
@@ -1241,6 +1266,48 @@ func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Co
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
 	return nc, js
+}
+
+// jsStreamCreate is for sending a stream create for fields that nats.go does not know about yet.
+func jsStreamCreate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) (*StreamConfig, error) {
+	t.Helper()
+
+	j, err := json.Marshal(cfg)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), j, time.Second*3)
+	require_NoError(t, err)
+
+	var resp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+
+	require_NotNil(t, resp.StreamInfo)
+	return &resp.Config, nil
+}
+
+// jsStreamUpdate is for sending a stream create for fields that nats.go does not know about yet.
+func jsStreamUpdate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) (*StreamConfig, error) {
+	t.Helper()
+
+	j, err := json.Marshal(cfg)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), j, time.Second*3)
+	require_NoError(t, err)
+
+	var resp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+
+	require_NotNil(t, resp.StreamInfo)
+	return &resp.Config, nil
 }
 
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
@@ -1302,21 +1369,17 @@ func (c *cluster) waitOnPeerCount(n int) {
 	c.t.Helper()
 	c.waitOnLeader()
 	leader := c.leader()
-	for leader == nil {
-		c.waitOnLeader()
-		leader = c.leader()
-	}
 	expires := time.Now().Add(30 * time.Second)
+	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if peers := leader.JetStreamClusterPeers(); len(peers) == n {
+		if leader = c.leader(); leader == nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if len(leader.JetStreamClusterPeers()) == n {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
-		leader = c.leader()
-		for leader == nil {
-			c.waitOnLeader()
-			leader = c.leader()
-		}
 	}
 	c.t.Fatalf("Expected a cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
 }
@@ -1492,8 +1555,13 @@ func (c *cluster) waitOnAccount(account string) {
 	for time.Now().Before(expires) {
 		found := true
 		for _, s := range c.servers {
+			s.optsMu.RLock()
+			wantJS := s.opts.JetStream
+			s.optsMu.RUnlock()
 			acc, err := s.fetchAccount(account)
-			found = found && err == nil && acc != nil
+			if found = found && err == nil && acc != nil; wantJS {
+				found = found && acc.JetStreamEnabled()
+			}
 		}
 		if found {
 			return
@@ -1509,6 +1577,7 @@ func (c *cluster) waitOnAccount(account string) {
 func (c *cluster) waitOnClusterReady() {
 	c.t.Helper()
 	c.waitOnClusterReadyWithNumPeers(len(c.servers))
+	c.waitOnLeader()
 }
 
 func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
@@ -1575,6 +1644,9 @@ func (c *cluster) stopAll() {
 	for _, s := range c.servers {
 		s.Shutdown()
 	}
+	for _, s := range c.servers {
+		s.WaitForShutdown()
+	}
 }
 
 func (c *cluster) restartAll() {
@@ -1592,8 +1664,10 @@ func (c *cluster) restartAll() {
 
 func (c *cluster) lameDuckRestartAll() {
 	c.t.Helper()
-	for i, s := range c.servers {
+	for _, s := range c.servers {
 		s.lameDuckMode()
+	}
+	for i, s := range c.servers {
 		s.WaitForShutdown()
 		if !s.Running() {
 			opts := c.opts[i]
@@ -1940,7 +2014,7 @@ func getStreamDetails(t *testing.T, c *cluster, accountName, streamName string) 
 }
 
 func checkState(t *testing.T, c *cluster, accountName, streamName string) error {
-	// t.Helper()
+	t.Helper()
 
 	leaderSrv := c.streamLeader(accountName, streamName)
 	if leaderSrv == nil {
@@ -1950,19 +2024,41 @@ func checkState(t *testing.T, c *cluster, accountName, streamName string) error 
 	if streamLeader == nil {
 		return fmt.Errorf("no leader found for stream %q", streamName)
 	}
+
+	acc, err := leaderSrv.LookupAccount(accountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream(streamName)
+	require_NoError(t, err)
+
+	cfgReplicas := mset.cfg.Replicas
+	foundReplicas := 1 // We already know the leader.
 	var errs []error
 	for _, srv := range c.servers {
 		if srv == leaderSrv {
 			// Skip self
 			continue
 		}
-		acc, err := srv.LookupAccount(accountName)
-		require_NoError(t, err)
-		stream, err := acc.lookupStream(streamName)
-		if err != nil {
-			return err
+		if srv.isShuttingDown() {
+			// Skip if shutdown.
+			for _, replica := range streamLeader.Cluster.Replicas {
+				if replica.Name == srv.Name() {
+					foundReplicas++
+					break
+				}
+			}
+			continue
 		}
-		state := stream.state()
+		acc, err = srv.LookupAccount(accountName)
+		if err != nil {
+			continue
+		}
+		mset, err = acc.lookupStream(streamName)
+		if err != nil {
+			continue
+		}
+
+		foundReplicas++
+		state := mset.state()
 
 		if state.Msgs != streamLeader.State.Msgs {
 			err := fmt.Errorf("[%s] Leader %v has %d messages, Follower %v has %d messages",
@@ -1992,6 +2088,10 @@ func checkState(t *testing.T, c *cluster, accountName, streamName string) error 
 			)
 			errs = append(errs, err)
 		}
+	}
+	if cfgReplicas != foundReplicas {
+		err := fmt.Errorf("[%s] Expected %d Replicas, got %d\n", streamName, cfgReplicas, foundReplicas)
+		errs = append(errs, err)
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)

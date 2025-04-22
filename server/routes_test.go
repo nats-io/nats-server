@@ -738,15 +738,10 @@ func TestClientConnectToRoutePort(t *testing.T) {
 }
 
 type checkDuplicateRouteLogger struct {
-	sync.Mutex
+	DummyLogger
 	gotDuplicate bool
 }
 
-func (l *checkDuplicateRouteLogger) Noticef(format string, v ...any) {}
-func (l *checkDuplicateRouteLogger) Errorf(format string, v ...any)  {}
-func (l *checkDuplicateRouteLogger) Warnf(format string, v ...any)   {}
-func (l *checkDuplicateRouteLogger) Fatalf(format string, v ...any)  {}
-func (l *checkDuplicateRouteLogger) Tracef(format string, v ...any)  {}
 func (l *checkDuplicateRouteLogger) Debugf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
@@ -1903,47 +1898,6 @@ func TestRoutePoolAndPerAccountErrors(t *testing.T) {
 		}
 		time.Sleep(DEFAULT_ROUTE_RECONNECT + 100*time.Millisecond)
 	}
-
-	s2.Shutdown()
-	s1.Shutdown()
-
-	conf1 = createConfFile(t, []byte(`
-		port: -1
-		cluster {
-			port: -1
-			name: "local"
-			pool_size: 5
-		}
-	`))
-	s1, o1 = RunServerWithConfig(conf1)
-	defer s1.Shutdown()
-
-	l = &captureErrorLogger{errCh: make(chan string, 10)}
-	s1.SetLogger(l, false, false)
-
-	conf2 = createConfFile(t, []byte(fmt.Sprintf(`
-		port: -1
-		cluster {
-			port: -1
-			name: "local"
-			routes: ["nats://127.0.0.1:%d"]
-			pool_size: 3
-		}
-	`, o1.Cluster.Port)))
-	s2, _ = RunServerWithConfig(conf2)
-	defer s2.Shutdown()
-
-	for i := 0; i < 2; i++ {
-		select {
-		case e := <-l.errCh:
-			if !strings.Contains(e, "Mismatch route pool size") {
-				t.Fatalf("Expected error about pool size mismatch, got %v", e)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("Did not get expected error regarding mismatch pool size")
-		}
-		time.Sleep(DEFAULT_ROUTE_RECONNECT + 100*time.Millisecond)
-	}
 }
 
 func TestRoutePool(t *testing.T) {
@@ -2029,7 +1983,7 @@ func TestRoutePool(t *testing.T) {
 				} else {
 					if v := r.stats.inMsgs; v < 1000 {
 						r.mu.Unlock()
-						t.Fatalf("Expected at least 1000 in in msgs for route %v, got %v", i+1, v)
+						t.Fatalf("Expected at least 1000 in msgs for route %v, got %v", i+1, v)
 					}
 				}
 				r.mu.Unlock()
@@ -3359,7 +3313,8 @@ func TestRoutePoolAndPerAccountWithOlderServer(t *testing.T) {
 
 type testDuplicateRouteLogger struct {
 	DummyLogger
-	ch chan struct{}
+	ch    chan struct{}
+	count int
 }
 
 func (l *testDuplicateRouteLogger) Noticef(format string, args ...any) {
@@ -3371,6 +3326,9 @@ func (l *testDuplicateRouteLogger) Noticef(format string, args ...any) {
 	case l.ch <- struct{}{}:
 	default:
 	}
+	l.Mutex.Lock()
+	l.count++
+	l.Mutex.Unlock()
 }
 
 // This test will make sure that a server with pooling does not

@@ -4312,7 +4312,7 @@ func TestJWTLimits(t *testing.T) {
 	})
 }
 
-func TestJwtTemplates(t *testing.T) {
+func TestJWTTemplates(t *testing.T) {
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
 	ukp, _ := nkeys.CreateUser()
@@ -4363,7 +4363,37 @@ func TestJwtTemplates(t *testing.T) {
 	require_Contains(t, err.Error(), "generated invalid subject")
 }
 
-func TestJwtTemplateGoodTagAfterBadTag(t *testing.T) {
+func TestJWTInLineTemplates(t *testing.T) {
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	ukp, _ := nkeys.CreateUser()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Name = "myname"
+	uclaim.Subject = upub
+	uclaim.SetScoped(true)
+	uclaim.IssuerAccount = aPub
+	uclaim.Tags.Add("bucket:a")
+
+	lim := jwt.UserPermissionLimits{}
+	lim.Pub.Allow.Add("$JS.API.STREAM.INFO.KV_{{tag(bucket)}}")
+	acc := &Account{nameTag: "accname", tags: []string{"acc:acc1", "acc:acc2"}}
+
+	resLim, err := processUserPermissionsTemplate(lim, uclaim, acc)
+	require_NoError(t, err)
+
+	test := func(expectedSubjects []string, res jwt.StringList) {
+		t.Helper()
+		require_True(t, len(res) == len(expectedSubjects))
+		for _, expetedSubj := range expectedSubjects {
+			require_True(t, res.Contains(expetedSubj))
+		}
+	}
+
+	test(resLim.Pub.Allow, []string{"$JS.API.STREAM.INFO.KV_a"})
+}
+
+func TestJWTTemplateGoodTagAfterBadTag(t *testing.T) {
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
 	ukp, _ := nkeys.CreateUser()
@@ -4568,7 +4598,7 @@ func TestJWTUserRevocation(t *testing.T) {
 			t.Fatalf("Expected connection to have failed")
 		}
 		m := <-ncChan
-		require_Len(t, strings.Count(string(m.Data), apub), 2)
+		require_Len(t, strings.Count(string(m.Data), apub), 3)
 		require_True(t, strings.Contains(string(m.Data), `"jwt":"eyJ0`))
 		// try again with old credentials. Expected to fail
 		if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
@@ -5762,7 +5792,7 @@ func TestJWTQueuePermissions(t *testing.T) {
 	}
 }
 
-func TestJWScopedSigningKeys(t *testing.T) {
+func TestJWTScopedSigningKeys(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
@@ -6485,7 +6515,7 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	doRequest()
 }
 
-func TestAccountWeightedMappingInSuperCluster(t *testing.T) {
+func TestJWTAccountWeightedMappingInSuperCluster(t *testing.T) {
 	skp, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "SYS"
@@ -6615,7 +6645,7 @@ func TestAccountWeightedMappingInSuperCluster(t *testing.T) {
 	}
 }
 
-func TestServerOperatorModeNoAuthRequired(t *testing.T) {
+func TestJWTServerOperatorModeNoAuthRequired(t *testing.T) {
 	_, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "$SYS"
@@ -6664,7 +6694,7 @@ func TestServerOperatorModeNoAuthRequired(t *testing.T) {
 	require_True(t, nc.AuthRequired())
 }
 
-func TestServerOperatorModeUserInfoExpiration(t *testing.T) {
+func TestJWTServerOperatorModeUserInfoExpiration(t *testing.T) {
 	_, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "$SYS"
@@ -7086,6 +7116,72 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		receive(t)
 	}
+}
+
+func TestDefaultSentinelUser(t *testing.T) {
+	var err error
+	preload := make(map[string]string)
+
+	_, sysPub, sysAC := NewJwtAccountClaim("SYS")
+	preload[sysPub], err = sysAC.Encode(oKp)
+	require_NoError(t, err)
+
+	aKP, aPub, aAC := NewJwtAccountClaim("A")
+	preload[aPub], err = aAC.Encode(oKp)
+	require_NoError(t, err)
+
+	preloadConfig, err := json.MarshalIndent(preload, "", " ")
+	require_NoError(t, err)
+
+	// test that the user will be rejected
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+`, ojwt, sysPub, preloadConfig)))
+
+	ns, _ := RunServerWithConfig(conf)
+	defer ns.Shutdown()
+	_, err = nats.Connect(ns.ClientURL(), nats.MaxReconnects(0))
+	require_Error(t, err)
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+	ns.Shutdown()
+
+	// test that user can connect
+	uKP, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	uPub, err := uKP.PublicKey()
+	require_NoError(t, err)
+	uc := jwt.NewUserClaims(uPub)
+	uc.BearerToken = true
+	uc.Name = "sentinel"
+	sentinelToken, err := uc.Encode(aKP)
+	require_NoError(t, err)
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+			default_sentinel: %s
+`, ojwt, sysPub, preloadConfig, sentinelToken)))
+
+	ns, _ = RunServerWithConfig(conf)
+	defer ns.Shutdown()
+	nc, err := nats.Connect(ns.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+
+	r, err := nc.Request("$SYS.REQ.USER.INFO", nil, time.Second*5)
+	require_NoError(t, err)
+	type SR struct {
+		Data UserInfo `json:"data"`
+	}
+	var ui SR
+	require_NoError(t, json.Unmarshal(r.Data, &ui))
+	require_Equal(t, ui.Data.UserID, uPub)
 }
 
 func TestJWTUpdateAccountClaimsStreamAndServiceImportDeadlock(t *testing.T) {

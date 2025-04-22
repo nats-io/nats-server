@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_js_tests && !skip_js_cluster_tests && !skip_js_cluster_tests_2
-// +build !skip_js_tests,!skip_js_cluster_tests,!skip_js_cluster_tests_2
 
 package server
 

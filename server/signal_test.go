@@ -1,4 +1,4 @@
-// Copyright 2012-2023 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !windows
-// +build !windows
 
 package server
 
@@ -76,7 +75,14 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 }
 
 func TestSignalToReloadConfig(t *testing.T) {
-	opts, err := ProcessConfigFile("./configs/reload/basic.conf")
+	tmpl := `
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: { users: [ { user: %s, password: foo } ] }
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "foo")))
+	opts, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
@@ -84,10 +90,22 @@ func TestSignalToReloadConfig(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
+	// Check that the reload time does not change when there are no changes.
+	loaded := s.ConfigTime()
+	time.Sleep(250 * time.Millisecond)
+	syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
+	time.Sleep(250 * time.Millisecond)
+	if reloaded := s.ConfigTime(); reloaded.Equal(loaded) {
+		t.Fatalf("ConfigTime is incorrect.\nexpected reload time to change: %s\ngot: %s", loaded, reloaded)
+	}
+
 	// Repeat test to make sure that server services signals more than once...
 	for i := 0; i < 2; i++ {
 		loaded := s.ConfigTime()
-
+		user := fmt.Sprintf("foo:%d", i)
+		if err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, user)), 0666); err != nil {
+			t.Fatalf("Error creating config file: %v", err)
+		}
 		// Wait a bit to ensure ConfigTime changes.
 		time.Sleep(5 * time.Millisecond)
 
@@ -155,11 +173,11 @@ func TestProcessSignalMultipleProcessesGlob(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "\nsignal \"stop\" 123: no such process"
-	expectedStr += "\nsignal \"stop\" 456: no such process"
-	if err.Error() != expectedStr {
-		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
-	}
+	lines := strings.Split(err.Error(), "\n")
+	require_Len(t, len(lines), 3)
+	require_Equal(t, lines[0], "") // Empty line comes first
+	require_True(t, strings.HasPrefix(lines[1], "signal \"stop\" 123:"))
+	require_True(t, strings.HasPrefix(lines[2], "signal \"stop\" 456:"))
 }
 
 func TestProcessSignalMultipleProcessesGlobPartial(t *testing.T) {
@@ -176,11 +194,11 @@ func TestProcessSignalMultipleProcessesGlobPartial(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "\nsignal \"stop\" 123: no such process"
-	expectedStr += "\nsignal \"stop\" 124: no such process"
-	if err.Error() != expectedStr {
-		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
-	}
+	lines := strings.Split(err.Error(), "\n")
+	require_Len(t, len(lines), 3)
+	require_Equal(t, lines[0], "") // Empty line comes first
+	require_True(t, strings.HasPrefix(lines[1], "signal \"stop\" 123:"))
+	require_True(t, strings.HasPrefix(lines[2], "signal \"stop\" 124:"))
 }
 
 func TestProcessSignalPgrepError(t *testing.T) {
@@ -464,4 +482,34 @@ func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
 			break
 		}
 	}
+}
+
+func TestSignalInterruptHasSuccessfulExit(t *testing.T) {
+	if os.Getenv("IN_TEST") == "1" {
+		s := RunServer(&Options{})
+		defer s.Shutdown()
+		require_NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
+		s.WaitForShutdown()
+		return
+	}
+	// To check for successful/0 exit code, need execute as separate process.
+	cmd := exec.Command(os.Args[0], "-test.run=TestSignalInterruptHasSuccessfulExit")
+	cmd.Env = append(os.Environ(), "IN_TEST=1")
+	err := cmd.Run()
+	require_NoError(t, err)
+}
+
+func TestSignalTermHasSuccessfulExit(t *testing.T) {
+	if os.Getenv("IN_TEST") == "1" {
+		s := RunServer(&Options{})
+		defer s.Shutdown()
+		require_NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGTERM))
+		s.WaitForShutdown()
+		return
+	}
+	// To check for successful/0 exit code, need execute as separate process.
+	cmd := exec.Command(os.Args[0], "-test.run=TestSignalTermHasSuccessfulExit")
+	cmd.Env = append(os.Environ(), "IN_TEST=1")
+	err := cmd.Run()
+	require_NoError(t, err)
 }

@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_js_tests && !skip_js_cluster_tests && !skip_js_cluster_tests_2 && !skip_js_super_cluster_tests
-// +build !skip_js_tests,!skip_js_cluster_tests,!skip_js_cluster_tests_2,!skip_js_super_cluster_tests
 
 package server
 
@@ -213,6 +212,7 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 			si, err := js.AddStream(cfg)
 			require_NoError(t, err)
 			require_Equal(t, si.Cluster.Name, "C2")
+			s.waitOnStreamLeader(globalAccountName, cfg.Name)
 			cfg.Replicas = 2
 			si, err = js.UpdateStream(cfg)
 			require_NoError(t, err)
@@ -1610,74 +1610,87 @@ func TestJetStreamSuperClusterRemovedPeersAndStreamsListAndDelete(t *testing.T) 
 }
 
 func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
-	sc := createJetStreamSuperCluster(t, 3, 3)
-	defer sc.shutdown()
+	for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			sc := createJetStreamSuperCluster(t, 3, 3)
+			defer sc.shutdown()
 
-	pcn := "C2"
-	sc.waitOnLeader()
-	ml := sc.leader()
-	if ml.ClusterName() == pcn {
-		pcn = "C1"
-	}
+			pcn := "C2"
+			sc.waitOnLeader()
+			ml := sc.leader()
+			if ml.ClusterName() == pcn {
+				pcn = "C1"
+			}
 
-	// Client based API
-	nc, js := jsClientConnect(t, ml)
-	defer nc.Close()
+			// Client based API
+			nc, js := jsClientConnect(t, ml)
+			defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:      "T",
-		Replicas:  3,
-		Placement: &nats.Placement{Cluster: pcn},
-	})
-	require_NoError(t, err)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      "T",
+				Replicas:  3,
+				Placement: &nats.Placement{Cluster: pcn},
+				Storage:   storage,
+			})
+			require_NoError(t, err)
 
-	// Put messages in..
-	num := 100
-	for i := 0; i < num; i++ {
-		js.PublishAsync("T", []byte("OK"))
-	}
-	select {
-	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Did not receive completion signal")
-	}
+			// Put messages in..
+			num := 100
+			for i := 0; i < num; i++ {
+				js.PublishAsync("T", []byte("OK"))
+			}
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
 
-	ci, err := js.AddConsumer("T", &nats.ConsumerConfig{
-		Durable:       "d",
-		AckPolicy:     nats.AckExplicitPolicy,
-		DeliverPolicy: nats.DeliverNewPolicy,
-	})
-	require_NoError(t, err)
+			ci, err := js.AddConsumer("T", &nats.ConsumerConfig{
+				Durable:       "d",
+				AckPolicy:     nats.AckExplicitPolicy,
+				DeliverPolicy: nats.DeliverNewPolicy,
+			})
+			require_NoError(t, err)
 
-	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 100 {
-		t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
-	}
+			if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 100 {
+				t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
+			}
 
-	c := sc.clusterForName(pcn)
-	for _, s := range c.servers {
-		sd := s.JetStreamConfig().StoreDir
-		s.Shutdown()
-		removeDir(t, sd)
-		s = c.restartServer(s)
-		c.waitOnServerHealthz(s)
-		c.waitOnConsumerLeader("$G", "T", "d")
-	}
+			c := sc.clusterForName(pcn)
+			for _, s := range c.servers {
+				sd := s.JetStreamConfig().StoreDir
+				s.Shutdown()
+				removeDir(t, sd)
+				s = c.restartServer(s)
+				c.waitOnServerHealthz(s)
+				c.waitOnConsumerLeader("$G", "T", "d")
+			}
 
-	c.waitOnConsumerLeader("$G", "T", "d")
+			c.waitOnConsumerLeader("$G", "T", "d")
 
-	cl := c.consumerLeader(globalAccountName, "T", "d")
-	mset, err := cl.GlobalAccount().lookupStream("T")
-	require_NoError(t, err)
-	o := mset.lookupConsumer("d")
-	require_NotNil(t, o)
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+			// Each server, after being caught up, needs to fully agree on stream/consumer sequences.
+			// For both the in-memory consumer state, as the stored state.
+			for _, s := range c.servers {
+				mset, err := s.GlobalAccount().lookupStream("T")
+				require_NoError(t, err)
+				o := mset.lookupConsumer("d")
+				require_NotNil(t, o)
+				o.mu.RLock()
+				defer o.mu.RUnlock()
 
-	if o.dseq-1 != 0 || o.sseq-1 != 100 {
-		t.Fatalf("Incorrect consumer delivered info: dseq=%d, sseq=%d", o.dseq-1, o.sseq-1)
-	}
-	if np := o.checkNumPending(); np != 0 {
-		t.Fatalf("Did not expect NumPending, got %d", np)
+				if o.dseq-1 != 0 || o.sseq-1 != 100 {
+					t.Fatalf("Incorrect consumer delivered info: dseq=%d, sseq=%d", o.dseq-1, o.sseq-1)
+				}
+				state, err := o.store.BorrowState()
+				require_NoError(t, err)
+				if state.Delivered.Consumer != 0 || state.Delivered.Stream != 100 {
+					t.Fatalf("Incorrect consumer state: consumer_seq=%d, stream_seq=%d", state.Delivered.Consumer, state.Delivered.Stream)
+				}
+				if np := o.checkNumPending(); np != 0 {
+					t.Fatalf("Did not expect NumPending, got %d", np)
+				}
+			}
+		})
 	}
 }
 
@@ -1782,9 +1795,12 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			})
 			require_NoError(t, err)
 
-			if si.Cluster.Name != "C1" {
-				t.Fatalf("Expected cluster of %q but got %q", "C1", si.Cluster.Name)
-			}
+			checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+				if si.Cluster.Name != "C1" {
+					return fmt.Errorf("Expected cluster of %q but got %q", "C1", si.Cluster.Name)
+				}
+				return nil
+			})
 
 			// Make sure we can not move an inflight stream and consumers, should error.
 			_, err = js.UpdateStream(&nats.StreamConfig{
@@ -2711,10 +2727,17 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
-	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 5*time.Second)
-	require_NoError(t, err)
+	// Retry in case stream is still being created and without a leader we won't receive a response
 	var cancelResp JSApiStreamUpdateResponse
-	require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 1*time.Second)
+		if errors.Is(err, nats.ErrTimeout) {
+			return err
+		}
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+		return nil
+	})
 	if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
 		t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
 		return
@@ -3730,6 +3753,9 @@ func TestJetStreamSuperClusterMixedModeSwitchToInterestOnlyOperatorConfig(t *tes
 	nc, js := jsClientConnect(t, s, createUserCreds(t, nil, akp))
 	defer nc.Close()
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(apub)
+
 	// Just create a stream and then make sure that all gateways have switched
 	// to interest-only mode.
 	si, err := js.AddStream(&nats.StreamConfig{Name: "interest", Replicas: 3})
@@ -4002,7 +4028,7 @@ func TestJetStreamSuperClusterMovingR1Stream(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		sc.waitOnStreamLeader(globalAccountName, "TEST")
 		si, err := js.StreamInfo("TEST")
 		if err != nil {

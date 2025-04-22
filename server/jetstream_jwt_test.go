@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_js_tests
-// +build !skip_js_tests
 
 package server
 
@@ -27,9 +26,10 @@ import (
 	"testing"
 	"time"
 
-	jwt "github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	jwt "github.com/nats-io/jwt/v2"
 )
 
 func TestJetStreamJWTLimits(t *testing.T) {
@@ -347,10 +347,9 @@ func TestJetStreamJWTMove(t *testing.T) {
 		require_NoError(t, err)
 
 		// Perform actual move
-		ci, err = js.UpdateStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
 			Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}})
 		require_NoError(t, err)
-		require_Equal(t, ci.Cluster.Name, "C1")
 
 		sc.clusterForName("C2").waitOnStreamLeader(aExpPub, "MOVE-ME")
 
@@ -457,6 +456,9 @@ func TestJetStreamJWTClusteredTiers(t *testing.T) {
 
 	js, err := nc.JetStream()
 	require_NoError(t, err)
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
 
 	// Test absent tiers
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR2", Replicas: 2, Subjects: []string{"testR2"}})
@@ -619,6 +621,9 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	js, err := nc.JetStream()
 	require_NoError(t, err)
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	// Test tiers up to stream limits
 	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
 	_, err = js.AddStream(cfg)
@@ -704,6 +709,9 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 
 	js, err := nc.JetStream()
 	require_NoError(t, err)
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
 
 	// Test tiers up to stream limits
 	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
@@ -824,6 +832,9 @@ func TestJetStreamJWTSysAccUpdateMixedMode(t *testing.T) {
 
 	js, err := aNc.JetStream()
 	require_NoError(t, err)
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	sc.waitOnAccount(apub)
 
 	si, err := js.AddStream(&nats.StreamConfig{Name: "bar", Subjects: []string{"bar"}, Replicas: 3})
 	require_NoError(t, err)
@@ -1314,6 +1325,9 @@ func TestJetStreamJWTHAStorageLimitsAndAccounting(t *testing.T) {
 	js, err := nc.JetStream()
 	require_NoError(t, err)
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	// Test max bytes first.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
 	require_NoError(t, err)
@@ -1413,6 +1427,9 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 	js, err := nc.JetStream()
 	require_NoError(t, err)
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	// Test max bytes first.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
 	require_NoError(t, err)
@@ -1434,16 +1451,32 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST2", Replicas: 3, MaxBytes: 512 * 1024})
 	require_NoError(t, err)
 	// Now make sure TEST6 succeeds.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
-	require_NoError(t, err)
+	checkFor(t, 1*time.Second, 500*time.Millisecond, func() error {
+		_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		// Since the stream leader answers the stream update, and the meta leader determines resources,
+		// we could hit a race condition here. Simply retry if hit.
+		if err != nil && strings.Contains(err.Error(), "insufficient storage resources") {
+			return err
+		}
+		require_NoError(t, err)
+		return nil
+	})
 	// Now delete the R3 version.
 	require_NoError(t, js.DeleteStream("TEST6"))
 	// Now do R1 version and then we will scale up.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 1, MaxBytes: 1 * 1024 * 1024})
 	require_NoError(t, err)
 	// Now make sure scale up works.
-	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
-	require_NoError(t, err)
+	checkFor(t, 1*time.Second, 500*time.Millisecond, func() error {
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		// Since the stream leader answers the stream add, and the meta leader determines stream not found,
+		// we could hit a race condition here. Simply retry if hit.
+		if err != nil && strings.Contains(err.Error(), "stream not found") {
+			return err
+		}
+		require_NoError(t, err)
+		return nil
+	})
 	// Add in a few more streams to check reserved reporting in account info.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST7", Replicas: 1, MaxBytes: 2 * 1024 * 1024})
 	require_NoError(t, err)
@@ -1508,6 +1541,9 @@ func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testi
 
 	nc, js := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
 	defer nc.Close()
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
 
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",

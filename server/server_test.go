@@ -36,6 +36,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	srvlog "github.com/nats-io/nats-server/v2/logger"
 )
 
 func checkForErr(totalWait, sleepDur time.Duration, f func() error) error {
@@ -86,6 +88,13 @@ func RunServer(opts *Options) *Server {
 		s.ConfigureLogger()
 	}
 
+	if ll := os.Getenv("NATS_LOGGING"); ll != "" {
+		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", s), true)
+		debug := ll == "debug" || ll == "trace"
+		trace := ll == "trace"
+		s.SetLoggerV2(log, debug, trace, false)
+	}
+
 	// Run server in Go routine.
 	s.Start()
 
@@ -111,6 +120,12 @@ func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
 	opts = LoadConfig(configFile)
 	srv = RunServer(opts)
 	return
+}
+
+func TestSemanticVersion(t *testing.T) {
+	if !semVerRe.MatchString(VERSION) {
+		t.Fatalf("Version (%s) is not a valid SemVer string", VERSION)
+	}
 }
 
 func TestVersionMatchesTag(t *testing.T) {
@@ -942,13 +957,13 @@ func TestLameDuckMode(t *testing.T) {
 	// of connections in the server A to be 0, the polling of connection closed may
 	// need a bit more time.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
+		cz := pollConnz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
 		if n := len(cz.Conns); n != total {
 			return fmt.Errorf("expected %v closed connections, got %v", total, n)
 		}
 		return nil
 	})
-	cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
+	cz := pollConnz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
 	if n := len(cz.Conns); n != total {
 		t.Fatalf("Expected %v closed connections, got %v", total, n)
 	}
@@ -2268,4 +2283,27 @@ func TestServerClientURL(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, s.ClientURL(), expected)
 	}
+}
+
+// This is a test that guards against using goccy/go-json.
+// At least until it's fully compatible with std encoding/json, and we've thoroughly tested it.
+// This is just one bug (at the time of writing) that results in a panic.
+// https://github.com/goccy/go-json/issues/519
+func TestServerJsonMarshalNestedStructsPanic(t *testing.T) {
+	type Item struct {
+		A string `json:"a"`
+		B string `json:"b,omitempty"`
+	}
+
+	type Detail struct {
+		I Item `json:"i"`
+	}
+
+	type Body struct {
+		Payload *Detail `json:"p,omitempty"`
+	}
+
+	b, err := json.Marshal(Body{Payload: &Detail{I: Item{A: "a", B: "b"}}})
+	require_NoError(t, err)
+	require_Equal(t, string(b), "{\"p\":{\"i\":{\"a\":\"a\",\"b\":\"b\"}}}")
 }

@@ -1,4 +1,4 @@
-// Copyright 2019-2024 The NATS Authors
+// Copyright 2019-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_store_tests
-// +build !skip_store_tests
 
 package server
 
@@ -843,6 +842,7 @@ func TestMemStoreGetSeqFromTimeWithLastDeleted(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	// Put in 1000 msgs.
 	total := 1000
@@ -874,6 +874,7 @@ func TestMemStoreSkipMsgs(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	// Test on empty FS first.
 	// Make sure wrong starting sequence fails.

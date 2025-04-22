@@ -1,4 +1,4 @@
-// Copyright 2019-2024 The NATS Authors
+// Copyright 2019-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_store_tests
-// +build !skip_store_tests
 
 package server
 
@@ -41,6 +40,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nuid"
@@ -5373,7 +5373,7 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		require_NoError(t, err)
 		_, _, err = fs.StoreMsg(subj, nil, msgZ)
 		require_NoError(t, err)
-		require_True(t, fs.numMsgBlocks() == 1)
+		require_Equal(t, fs.numMsgBlocks(), 1)
 
 		// Make sure there is a full state file after we do a stop.
 		require_NoError(t, fs.Stop())
@@ -6465,9 +6465,9 @@ func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
 	// Force bad subject.
 	fs.mu.Lock()
 	psi, _ := fs.psim.Find(stringToBytes("foo.bar"))
-	bad := make([]byte, 7)
-	crand.Read(bad)
-	fs.psim.Insert(bad, *psi)
+	bad := []rune("foo.bar")
+	bad[3] = utf8.RuneError
+	fs.psim.Insert(stringToBytes(string(bad)), *psi)
 	fs.psim.Delete(stringToBytes("foo.bar"))
 	fs.dirty++
 	fs.mu.Unlock()
@@ -8462,58 +8462,50 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 }
 
 func TestFileStoreStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
-	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 500 * time.Millisecond}
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir()},
-		cfg)
-
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024}, cfg)
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	msg := bytes.Repeat([]byte("Z"), 1024)
-	directory := fs.fcfg.StoreDir
-	ORIGINAL_FILE_MODE, _ := os.Stat(directory)
 	READONLY_MODE := os.FileMode(0o555)
-	changeDirectoryPermission(directory, READONLY_MODE)
+	ORIGINAL_FILE_MODE, err := os.Stat(fs.fcfg.StoreDir)
 	require_NoError(t, err)
+	require_NoError(t, changeDirectoryPermission(fs.fcfg.StoreDir, READONLY_MODE))
+	defer func() {
+		require_NoError(t, changeDirectoryPermission(fs.fcfg.StoreDir, ORIGINAL_FILE_MODE.Mode()))
+	}()
+
 	totalMsgs := 10000
-	i := 0
-	for i = 0; i < totalMsgs; i++ {
-		_, _, err = fs.StoreMsg("ev.1", nil, msg)
-		if err != nil {
+	msg := bytes.Repeat([]byte("Z"), 1024)
+	for i := 0; i < totalMsgs; i++ {
+		if _, _, err = fs.StoreMsg("ev.1", nil, msg); err != nil {
 			break
 		}
 	}
-	changeDirectoryPermission(directory, ORIGINAL_FILE_MODE.Mode())
 	require_Error(t, err, os.ErrPermission)
 }
 
 func TestFileStoreWriteFullStateThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
-	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 500 * time.Millisecond}
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir()},
-		cfg)
-
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	msg := bytes.Repeat([]byte("Z"), 1024)
-	directory := fs.fcfg.StoreDir
-	ORIGINAL_FILE_MODE, _ := os.Stat(directory)
 	READONLY_MODE := os.FileMode(0o555)
+	ORIGINAL_FILE_MODE, err := os.Stat(fs.fcfg.StoreDir)
 	require_NoError(t, err)
+
 	totalMsgs := 10000
-	i := 0
-	for i = 0; i < totalMsgs; i++ {
-		_, _, err = fs.StoreMsg("ev.1", nil, msg)
-		if err != nil {
+	msg := bytes.Repeat([]byte("Z"), 1024)
+	for i := 0; i < totalMsgs; i++ {
+		if _, _, err := fs.StoreMsg("ev.1", nil, msg); err != nil {
 			break
 		}
 	}
-	changeDirectoryPermission(directory, READONLY_MODE)
-	err = fs.writeFullState()
-	changeDirectoryPermission(directory, ORIGINAL_FILE_MODE.Mode())
-	require_Error(t, err, os.ErrPermission)
+
+	require_NoError(t, changeDirectoryPermission(fs.fcfg.StoreDir, READONLY_MODE))
+	require_Error(t, fs.writeFullState(), os.ErrPermission)
+	require_NoError(t, changeDirectoryPermission(fs.fcfg.StoreDir, ORIGINAL_FILE_MODE.Mode()))
 }
 
 func changeDirectoryPermission(directory string, mode fs.FileMode) error {

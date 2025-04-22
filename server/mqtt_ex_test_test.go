@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_mqtt_tests
-// +build !skip_mqtt_tests
 
 package server
 

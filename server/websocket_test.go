@@ -34,11 +34,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/flate"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
-
-	"github.com/klauspost/compress/flate"
 )
 
 type testReader struct {
@@ -1796,12 +1795,13 @@ func TestWSAbnormalFailureOfWebServer(t *testing.T) {
 }
 
 type testWSClientOptions struct {
-	compress, web bool
-	host          string
-	port          int
-	extraHeaders  map[string][]string
-	noTLS         bool
-	path          string
+	compress, web        bool
+	host                 string
+	port                 int
+	extraHeaders         map[string][]string
+	noTLS                bool
+	path                 string
+	extraResponseHeaders map[string]string
 }
 
 func testNewWSClient(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Reader, []byte) {
@@ -1858,6 +1858,11 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		return nil, nil, nil, fmt.Errorf("Expected response status %v, got %v", http.StatusSwitchingProtocols, resp.StatusCode)
+	}
+	for k, v := range o.extraResponseHeaders {
+		if value := resp.Header.Get(k); value != v {
+			return nil, nil, nil, fmt.Errorf("Expected header %q to be %q, got %q", k, v, value)
+		}
 	}
 	var info []byte
 	if o.path == mqttWSPath {
@@ -1960,14 +1965,20 @@ func setupAddCookie(o *Options) {
 	o.Websocket.JWTCookie = "jwt"
 }
 
-func testWSCreateClientGetInfo(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader, []byte) {
+func testWSCreateClientGetInfo(t testing.TB, compress, web bool, host string, port int, cookies ...string) (net.Conn, *bufio.Reader, []byte) {
 	t.Helper()
-	return testNewWSClient(t, testWSClientOptions{
+	opts := testWSClientOptions{
 		compress: compress,
 		web:      web,
 		host:     host,
 		port:     port,
-	})
+	}
+
+	if len(cookies) > 0 {
+		opts.extraHeaders = map[string][]string{}
+		opts.extraHeaders["Cookie"] = cookies
+	}
+	return testNewWSClient(t, opts)
 }
 
 func testWSCreateClient(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader) {
@@ -3144,11 +3155,12 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 
 func TestWSBasicAuth(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		opts func() *Options
-		user string
-		pass string
-		err  string
+		name    string
+		opts    func() *Options
+		user    string
+		pass    string
+		err     string
+		cookies []string
 	}{
 		{
 			"top level auth, no override, wrong u/p",
@@ -3159,6 +3171,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"websocket", "client", "-ERR 'Authorization Violation'",
+			nil,
 		},
 		{
 			"top level auth, no override, correct u/p",
@@ -3169,6 +3182,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"normal", "client", "",
+			nil,
 		},
 		{
 			"no top level auth, ws auth, wrong u/p",
@@ -3179,6 +3193,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"normal", "client", "-ERR 'Authorization Violation'",
+			nil,
 		},
 		{
 			"no top level auth, ws auth, correct u/p",
@@ -3189,6 +3204,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"websocket", "client", "",
+			nil,
 		},
 		{
 			"top level auth, ws override, wrong u/p",
@@ -3201,6 +3217,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"normal", "client", "-ERR 'Authorization Violation'",
+			nil,
 		},
 		{
 			"top level auth, ws override, correct u/p",
@@ -3213,6 +3230,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"websocket", "client", "",
+			nil,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3220,7 +3238,7 @@ func TestWSBasicAuth(t *testing.T) {
 			s := RunServer(o)
 			defer s.Shutdown()
 
-			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port, test.cookies...)
 			defer wsc.Close()
 
 			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"%s\"}\r\nPING\r\n",
@@ -3739,7 +3757,6 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 }
 
 func TestWSJWTCookieUser(t *testing.T) {
-
 	nucSigFunc := func() *jwt.UserClaims { return newJWTTestUserClaims() }
 	nucBearerFunc := func() *jwt.UserClaims {
 		ret := newJWTTestUserClaims()
@@ -4182,7 +4199,7 @@ func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
 	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o2.Websocket.Port))
 	defer nc2.Close()
 
-	payload := make([]byte, 100000)
+	payload := make([]byte, 2*wsFrameSizeForBrowsers+123)
 	for i := 0; i < len(payload); i++ {
 		payload[i] = 'A' + byte(i%26)
 	}
