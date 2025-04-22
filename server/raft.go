@@ -151,7 +151,7 @@ type raft struct {
 	qn    int             // Number of nodes needed to establish quorum
 	peers map[string]*lps // Other peers in the Raft group
 
-	removed map[string]struct{}            // Peers that were removed from the group
+	removed map[string]time.Time           // Peers that were removed from the group
 	acks    map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
 	pae     map[uint64]*appendEntry        // Pending append entries
 
@@ -246,6 +246,7 @@ const (
 	lostQuorumIntervalDefault      = hbIntervalDefault * 10 // 10 seconds
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
 	observerModeIntervalDefault    = 48 * time.Hour
+	peerRemoveTimeoutDefault       = 5 * time.Minute
 )
 
 var (
@@ -257,6 +258,7 @@ var (
 	lostQuorumInterval   = lostQuorumIntervalDefault
 	lostQuorumCheck      = lostQuorumCheckIntervalDefault
 	observerModeInterval = observerModeIntervalDefault
+	peerRemoveTimeout    = peerRemoveTimeoutDefault
 )
 
 type RaftConfig struct {
@@ -787,9 +789,9 @@ func (n *raft) ProposeAddPeer(peer string) error {
 func (n *raft) doRemovePeerAsLeader(peer string) {
 	n.Lock()
 	if n.removed == nil {
-		n.removed = map[string]struct{}{}
+		n.removed = map[string]time.Time{}
 	}
-	n.removed[peer] = struct{}{}
+	n.removed[peer] = time.Now()
 	if _, ok := n.peers[peer]; ok {
 		delete(n.peers, peer)
 		// We should decrease our cluster size since we are tracking this peer and the peer is most likely already gone.
@@ -2853,9 +2855,9 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// Make sure we have our removed map.
 			if n.removed == nil {
-				n.removed = make(map[string]struct{})
+				n.removed = make(map[string]time.Time)
 			}
-			n.removed[peer] = struct{}{}
+			n.removed[peer] = time.Now()
 
 			if _, ok := n.peers[peer]; ok {
 				delete(n.peers, peer)
@@ -2962,8 +2964,13 @@ func (n *raft) adjustClusterSizeAndQuorum() {
 func (n *raft) trackPeer(peer string) error {
 	n.Lock()
 	var needPeerAdd, isRemoved bool
+	var rts time.Time
 	if n.removed != nil {
-		_, isRemoved = n.removed[peer]
+		rts, isRemoved = n.removed[peer]
+		// Removed peers can rejoin after timeout.
+		if isRemoved && time.Since(rts) >= peerRemoveTimeout {
+			isRemoved = false
+		}
 	}
 	if n.State() == Leader {
 		if lp, ok := n.peers[peer]; !ok || !lp.kp {
