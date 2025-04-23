@@ -4752,7 +4752,7 @@ func TestMonitorAuthorizedUsers(t *testing.T) {
 		nats.Token("sometoken"))
 	defer c.Close()
 	// We should get the token specified by the user
-	checkAuthUser("sometoken")
+	checkAuthUser("[REDACTED]")
 	c.Close()
 	s.Shutdown()
 
