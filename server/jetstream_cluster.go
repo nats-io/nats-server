@@ -4732,12 +4732,12 @@ func (o *consumer) raftNode() RaftNode {
 }
 
 func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
-	s, n, cc := js.server(), o.raftNode(), js.cluster
+	s, n, meta := js.server(), o.raftNode(), js.getMetaGroup()
 	defer s.grWG.Done()
 
 	defer o.clearMonitorRunning()
 
-	if n == nil {
+	if n == nil || meta == nil {
 		s.Warnf("No RAFT group for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 		return
 	}
@@ -4747,7 +4747,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	// from underneath the one that is running since it will be the same raft node.
 	defer n.Stop()
 
-	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), cc.meta.ID()
+	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), meta.ID()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
@@ -4942,7 +4942,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				cca := ca.copyGroup()
 				cca.Group.Peers = newPeers
 				cca.Group.Cluster = s.cachedClusterName()
-				cc.meta.ForwardProposal(encodeAddConsumerAssignment(cca))
+				meta.ForwardProposal(encodeAddConsumerAssignment(cca))
 				s.Noticef("Scaling down '%s > %s > %s' to %+v", ca.Client.serviceAccount(), ca.Stream, ca.Name, s.peerSetToNames(newPeers))
 
 			} else {
