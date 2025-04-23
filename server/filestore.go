@@ -5412,7 +5412,8 @@ func (fs *fileStore) expireMsgs() {
 	minAge := getAccessTime() - maxAge
 	fs.mu.RUnlock()
 
-	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
+	var seq uint64
+	for sm, seq, _ = fs.LoadNextMsg(fwcs, true, 0, &smv); sm != nil && sm.ts <= minAge; sm, seq, _ = fs.LoadNextMsg(fwcs, true, seq+1, &smv) {
 		fs.mu.Lock()
 		fs.removeMsgViaLimits(sm.seq)
 		fs.mu.Unlock()
