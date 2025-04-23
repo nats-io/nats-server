@@ -3148,7 +3148,9 @@ func (a *Account) expiredTimeout() {
 	// Collect the clients and expire them.
 	cs := a.getClients()
 	for _, c := range cs {
-		c.accountAuthExpired()
+		if !isInternalClient(c.kind) {
+			c.accountAuthExpired()
+		}
 	}
 }
 
