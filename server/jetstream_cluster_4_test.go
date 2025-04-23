@@ -5579,6 +5579,71 @@ func TestJetStreamClusterSubjectDeleteMarkersMinimumTTL(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterSubjectDeleteMarkersMinimumTTLExceptionMaxMsgsPer(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		for _, replicas := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s/R%d", storageType, replicas), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				_, err := jsStreamCreate(t, nc, &StreamConfig{
+					Name:                   "TEST",
+					Retention:              LimitsPolicy,
+					Subjects:               []string{"foo"},
+					Replicas:               replicas,
+					Storage:                storageType,
+					SubjectDeleteMarkerTTL: time.Hour,
+					AllowMsgTTL:            true,
+					MaxMsgsPer:             1,
+				})
+				require_NoError(t, err)
+
+				m := nats.NewMsg("foo")
+				m.Header.Set(JSMessageTTL, "1s")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+
+				_, err = js.GetMsg("TEST", 1)
+				require_NoError(t, err)
+
+				// After the TTL expires the message should be gone, even though SubjectDeleteMarkerTTL is the minimum
+				// normally. This works because MaxMsgsPer=1 is set.
+				time.Sleep(1500 * time.Millisecond)
+				_, err = js.GetMsg("TEST", 1)
+				require_Error(t, err, nats.ErrMsgNotFound)
+
+				// Expect a subject delete marker based on per-message TTL.
+				sm, err := js.GetMsg("TEST", 2)
+				require_NoError(t, err)
+				require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+				require_Equal(t, sm.Subject, "foo")
+
+				// Since we have a subject delete marker now with a higher TTL, if this
+				// message's lower TTL would be respected then we would not have a new
+				// subject delete marker when this message expires. But with MaxMsgsPer=1
+				// this doesn't apply, because the subject delete marker gets removed.
+				pa, err := js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pa.Sequence, 3)
+
+				// After some time the first subject delete marker should be gone, and the new one should be placed.
+				time.Sleep(1500 * time.Millisecond)
+
+				_, err = js.GetMsg("TEST", 2)
+				require_Error(t, err, nats.ErrMsgNotFound)
+
+				sm, err = js.GetMsg("TEST", 4)
+				require_NoError(t, err)
+				require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
+				require_Equal(t, sm.Subject, "foo")
+			})
+		}
+	}
+}
+
 func TestJetStreamClusterSubjectDeleteMarkersNoMsgTTLSet(t *testing.T) {
 	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
 		for _, replicas := range []int{1, 3} {

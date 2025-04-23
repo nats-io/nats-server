@@ -5200,7 +5200,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// If subject delete markers are used, ensure message TTL is that at minimum.
 	// Otherwise, subject delete markers could be missed if one already exists for this subject.
-	if ttl > 0 && mset.cfg.SubjectDeleteMarkerTTL > 0 {
+	// MaxMsgsPer=1 is an exception, because we'll only ever have one message.
+	if ttl > 0 && mset.cfg.SubjectDeleteMarkerTTL > 0 && mset.cfg.MaxMsgsPer != 1 {
 		if minTtl := int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds()); ttl < minTtl {
 			ttl = minTtl
 		}
