@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -988,6 +989,124 @@ func TestJetStreamJWTExpiredAccountNotCountedTowardLimits(t *testing.T) {
 	ai, err = jsB.AccountInfo()
 	require_NoError(t, err)
 	require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
+}
+
+func TestJetStreamJWTExpiredAccountWorksAfterExpirationUpdated(t *testing.T) {
+	sysKp, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+	sysCreds := newUser(t, sysKp)
+
+	akp, apub := createKey(t)
+	require_NoError(t, err)
+	accClaim := jwt.NewAccountClaims(apub)
+	accClaim.Name = "TEST"
+	accClaim.Limits.JetStreamLimits = jwt.JetStreamLimits{MemoryStorage: 1024 * 1024, DiskStorage: 2048 * 1024, Streams: 1}
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	dirSrv := t.TempDir()
+	dir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb, store_dir: "%s"}
+				operator: %s
+				system_account: %s
+				resolver: {
+					type: full
+					allow_delete: true
+					dir: '%s'
+				}
+			`, dirSrv, ojwt, spub, dir)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+
+	userCreds := newUser(t, akp)
+	nc, js := jsClientConnect(t, s, nats.UserCredentials(userCreds), nats.NoReconnect(),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			// Default handler would print to stderr, silence it
+		}))
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			if _, err := js.Publish("foo", []byte("hello")); err != nil {
+				return
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}()
+
+	// Update the account so it expires in 2 seconds.
+	expires := time.Now().Add(2 * time.Second)
+	accClaim.Expires = expires.Unix()
+	accJwt = encodeClaim(t, accClaim, apub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+
+	// Wait for the publishing routine to fail.
+	wg.Wait()
+
+	// Close this client, we will create a new one.
+	nc.Close()
+
+	// Verify that we can't connect anymore. Because of rounding, we may have
+	// to try to avoid flapping.
+	for range 5 {
+		nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(userCreds), nats.NoReconnect(),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+				// Default handler would print to stderr, silence it
+			}))
+		if err != nil {
+			// ok!
+			break
+		}
+		nc.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Check that the user account is marked as expired.
+	az, err := s.Accountz(&AccountzOptions{Account: apub})
+	require_NoError(t, err)
+	require_True(t, az.Account != nil)
+	require_True(t, az.Account.Expired)
+	// But should still be true
+	require_True(t, az.Account.JetStream)
+
+	// Update the expiration to 1 hour
+	expires = time.Now().Add(time.Hour)
+	accClaim.Expires = expires.Unix()
+	accJwt = encodeClaim(t, accClaim, apub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+
+	// Check that its is no longer expired and has still JetStream enabled.
+	az, err = s.Accountz(&AccountzOptions{Account: apub})
+	require_NoError(t, err)
+	require_True(t, az.Account != nil)
+	require_False(t, az.Account.Expired)
+	require_True(t, az.Account.JetStream)
+
+	// Create a connection and ensure we connect ok and can send a message.
+	nc, js = jsClientConnect(t, s, nats.UserCredentials(userCreds), nats.NoReconnect())
+	defer nc.Close()
+
+	_, err = js.Publish("foo", []byte("hello"))
+	require_NoError(t, err)
 }
 
 func TestJetStreamJWTDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
