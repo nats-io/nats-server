@@ -4558,6 +4558,9 @@ func TestMonitorJsz(t *testing.T) {
 			if info.Messages != 2 {
 				t.Fatalf("expected two message but got %d", info.Messages)
 			}
+			if info.Total != 2 {
+				t.Fatalf("expected total to be 2 but got %d", info.Total)
+			}
 		}
 	})
 	t.Run("accounts", func(t *testing.T) {
