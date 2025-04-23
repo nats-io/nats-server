@@ -7945,7 +7945,7 @@ func TestNoRaceParallelStreamAndConsumerCreation(t *testing.T) {
 
 	// Check for no errors.
 	if len(errCh) > 0 {
-		t.Fatalf("Expected no errors, got %d", len(errCh))
+		t.Fatalf("Expected no errors, got %d: %v", len(errCh), <-errCh)
 	}
 
 	// Now make sure we really only created one stream.
@@ -8008,7 +8008,7 @@ func TestNoRaceParallelStreamAndConsumerCreation(t *testing.T) {
 
 	// Check for no errors.
 	if len(errCh) > 0 {
-		t.Fatalf("Expected no errors, got %d", len(errCh))
+		t.Fatalf("Expected no errors, got %d: %v", len(errCh), <-errCh)
 	}
 
 	// Now make sure we really only created one stream.
@@ -9334,7 +9334,7 @@ func TestNoRaceJetStreamAPIDispatchQueuePending(t *testing.T) {
 	wg.Wait()
 
 	if len(errCh) > 0 {
-		t.Fatalf("Expected no errors, got %d", len(errCh))
+		t.Fatalf("Expected no errors, got %d: %v", len(errCh), <-errCh)
 	}
 }
 
