@@ -47,7 +47,7 @@ func (s *Server) handleSignals() {
 		for {
 			select {
 			case sig := <-c:
-				s.Debugf("Trapped %q signal", sig)
+				s.Noticef("Trapped %q signal", sig)
 				switch sig {
 				case syscall.SIGINT:
 					s.Shutdown()
