@@ -4934,6 +4934,9 @@ func TestMonitorJsz(t *testing.T) {
 			if info.Limits.MaxHAAssets != 1000 {
 				t.Fatalf("expected max_ha_assets limit to be 1000 got %v", info.Limits)
 			}
+			if info.Total != 2 {
+				t.Fatalf("expected total to be 2 but got %d", info.Total)
+			}
 		}
 	})
 	t.Run("accounts", func(t *testing.T) {

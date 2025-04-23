@@ -2875,20 +2875,19 @@ type MetaClusterInfo struct {
 
 // JSInfo has detailed information on JetStream.
 type JSInfo struct {
-	ID       string          `json:"server_id"`
-	Now      time.Time       `json:"now"`
-	Disabled bool            `json:"disabled,omitempty"`
-	Config   JetStreamConfig `json:"config,omitempty"`
-	Limits   *JSLimitOpts    `json:"limits,omitempty"`
 	JetStreamStats
-	Streams   int              `json:"streams"`
-	Consumers int              `json:"consumers"`
-	Messages  uint64           `json:"messages"`
-	Bytes     uint64           `json:"bytes"`
-	Meta      *MetaClusterInfo `json:"meta_cluster,omitempty"`
-
-	// aggregate raft info
+	ID             string           `json:"server_id"`
+	Now            time.Time        `json:"now"`
+	Disabled       bool             `json:"disabled,omitempty"`
+	Config         JetStreamConfig  `json:"config,omitempty"`
+	Limits         *JSLimitOpts     `json:"limits,omitempty"`
+	Streams        int              `json:"streams"`
+	Consumers      int              `json:"consumers"`
+	Messages       uint64           `json:"messages"`
+	Bytes          uint64           `json:"bytes"`
+	Meta           *MetaClusterInfo `json:"meta_cluster,omitempty"`
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`
+	Total          int              `json:"total"`
 }
 
 func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg, optRaft, optStreamLeader bool) *AccountDetail {
@@ -3026,7 +3025,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if opts.Offset < 0 {
 		opts.Offset = 0
 	}
-	if opts.Limit <= 0 {
+	if opts.Limit == 0 {
 		opts.Limit = 1024
 	}
 	if opts.Consumer {
@@ -3069,6 +3068,8 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		accounts = append(accounts, info)
 	}
 	js.mu.RUnlock()
+
+	jsi.Total = len(accounts)
 
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
@@ -3113,15 +3114,18 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if filterIdx >= 0 {
 		accounts = accounts[filterIdx : filterIdx+1]
 	} else if opts.Accounts {
-		// Sort by name for a consistent read (barring any concurrent changes)
-		slices.SortFunc(accounts, func(i, j *jsAccount) int { return cmp.Compare(i.acc().Name, j.acc().Name) })
 
-		// Offset larger than the number of accounts.
-		offset := min(opts.Offset, len(accounts))
-		accounts = accounts[offset:]
+		if opts.Limit > 0 {
+			// Sort by name for a consistent read (barring any concurrent changes)
+			slices.SortFunc(accounts, func(i, j *jsAccount) int { return cmp.Compare(i.acc().Name, j.acc().Name) })
 
-		limit := min(opts.Limit, len(accounts))
-		accounts = accounts[:limit]
+			// Offset larger than the number of accounts.
+			offset := min(opts.Offset, len(accounts))
+			accounts = accounts[offset:]
+
+			limit := min(opts.Limit, len(accounts))
+			accounts = accounts[:limit]
+		}
 	} else {
 		accounts = nil
 	}
