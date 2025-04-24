@@ -1747,13 +1747,20 @@ func IntersectStree[T any](st *stree.SubjectTree[T], sl *Sublist, cb func(subj [
 }
 
 func intersectStree[T any](st *stree.SubjectTree[T], r *level, subj []byte, cb func(subj []byte, entry *T)) {
-	if r.numNodes() == 0 {
-		// For wildcards we can't avoid Match, but if it's a literal subject at
-		// this point, using Find is considerably cheaper.
-		if subjectHasWildcard(bytesToString(subj)) {
-			st.Match(subj, cb)
-		} else if e, ok := st.Find(subj); ok {
+	// This level could potentially match literals, despite being followed up by
+	// additional wildcards. For literals we can use Find since it is considerably
+	// faster. Then we can carry on checking for further matches in the usual way.
+	wc := subjectHasWildcard(bytesToString(subj))
+	if !wc {
+		if e, ok := st.Find(subj); ok {
 			cb(subj, e)
+		}
+	}
+	if r.numNodes() == 0 {
+		// No further recursions to be made at this point but there's still a wildcard
+		// to match, so let the subject tree work it out.
+		if wc {
+			st.Match(subj, cb)
 		}
 		return
 	}

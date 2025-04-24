@@ -17,6 +17,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -33,6 +34,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
@@ -9472,4 +9475,59 @@ func TestJetStreamConsumerPullMaxBytes(t *testing.T) {
 	require_NoError(t, err)
 	checkHeader(m, badReq)
 	checkSubsPending(t, sub, 0)
+}
+
+// https://github.com/nats-io/nats-server/issues/6824
+func TestJetStreamConsumerDeliverAllOverlappingFilterSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnectNewAPI(t, s)
+	defer nc.Close()
+
+	ctx := context.Background()
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"stream.>"},
+	})
+	require_NoError(t, err)
+
+	publishMessageCount := 10
+	for i := 0; i < publishMessageCount; i++ {
+		_, err = js.Publish(ctx, "stream.A", nil)
+		require_NoError(t, err)
+	}
+
+	// Create consumer
+	consumer, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		FilterSubjects: []string{
+			"stream.A",
+			"stream.A.>",
+		},
+	})
+	require_NoError(t, err)
+
+	messages := make(chan jetstream.Msg)
+	cc, err := consumer.Consume(func(msg jetstream.Msg) {
+		messages <- msg
+		msg.Ack()
+	})
+	require_NoError(t, err)
+	defer cc.Drain()
+
+	var count = 0
+	for {
+		if count == publishMessageCount {
+			// All messages received.
+			return
+		}
+		select {
+		case <-messages:
+			count++
+		case <-time.After(2 * time.Second):
+			t.Errorf("Timeout reached, %d messages received. Exiting.", count)
+			return
+		}
+	}
 }
