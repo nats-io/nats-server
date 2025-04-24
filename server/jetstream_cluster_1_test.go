@@ -3776,6 +3776,89 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignmentWithoutSpace(t *testing
 	streamCurrent(2)
 }
 
+func TestJetStreamClusterPeerRemovalAndServerBroughtBack(t *testing.T) {
+	// Speed up for this test
+	peerRemoveTimeout = 2 * time.Second
+	defer func() {
+		peerRemoveTimeout = peerRemoveTimeoutDefault
+	}()
+
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	// Client based API
+	ml := c.leader()
+	nc, err := nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Failed to create system client: %v", err)
+	}
+	defer nc.Close()
+
+	getPeersCount := func() int {
+		js := ml.getJetStream()
+		if js == nil {
+			return 0
+		}
+		js.mu.RLock()
+		defer js.mu.RUnlock()
+
+		cc := js.cluster
+		if !cc.isLeader() || cc.meta == nil {
+			return 0
+		}
+		return len(cc.meta.Peers())
+	}
+
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		if l := getPeersCount(); l != 5 {
+			return fmt.Errorf("expected 5 peers, got %d", l)
+		}
+		return nil
+	})
+
+	// Shutdown server first.
+	rs := c.randomNonLeader()
+	rs.Shutdown()
+
+	// Peers should still remain the same, even if one server is shut down.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		if l := getPeersCount(); l != 5 {
+			return fmt.Errorf("expected 5 peers, got %d", l)
+		}
+		return nil
+	})
+
+	// Peer-remove after shutdown.
+	req := &JSApiMetaServerRemoveRequest{Server: rs.Name()}
+	jsreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(JSApiRemoveServer, jsreq, time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", resp.Error)
+	}
+
+	// Peer should be removed.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		if l := getPeersCount(); l != 4 {
+			return fmt.Errorf("expected 4 peers, got %d", l)
+		}
+		return nil
+	})
+
+	// Bringing back the server should re-add to peers after peer-remove timeout.
+	c.restartServer(rs)
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		if l := getPeersCount(); l != 5 {
+			return fmt.Errorf("expected 5 peers, got %d", l)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 3,
 		func(serverName, clusterName, storeDir, conf string) string {
