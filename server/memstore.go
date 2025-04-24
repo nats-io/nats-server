@@ -1193,7 +1193,7 @@ func (ms *memStore) handleRemovalOrSdm(seq uint64, subj string, sdm bool, sdmTTL
 		var _hdr [128]byte
 		hdr := fmt.Appendf(
 			_hdr[:0],
-			"NATS/1.0\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n\r\n\r\n",
+			"NATS/1.0\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n\r\n",
 			JSMarkerReason, JSMarkerReasonMaxAge,
 			JSMessageTTL, time.Duration(sdmTTL)*time.Second,
 			JSMsgRollup, JSMsgRollupSubject,
