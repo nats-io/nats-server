@@ -9529,7 +9529,7 @@ func TestFileStoreRemoveMsgBlockLast(t *testing.T) {
 
 func TestFileStoreAllLastSeqs(t *testing.T) {
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir()}, // Make block size small to test multiblock selections with maxSeq
+		FileStoreConfig{StoreDir: t.TempDir()},
 		StreamConfig{Name: "zzz", Subjects: []string{"*.*"}, MaxMsgsPer: 50, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
