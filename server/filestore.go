@@ -5646,23 +5646,26 @@ func (fs *fileStore) expireMsgs() {
 	var ttlSdm map[string][]SDMBySubj
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
+			// Need to grab subject for the specified sequence if for SDM, and check
+			// if the message hasn't been removed in the meantime.
+			sm, _ = fs.msgForSeqLocked(seq, &smv, false)
+			if sm == nil {
+				return true
+			}
+
 			if sdmEnabled {
-				// Need to grab subject for the specified sequence, and check
-				// if the message hasn't been removed in the meantime.
-				sm, _ = fs.msgForSeqLocked(seq, &smv, false)
-				if sm != nil {
-					if ttlSdm == nil {
-						ttlSdm = make(map[string][]SDMBySubj, 1)
-					}
-					ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
-					return false
+				if ttlSdm == nil {
+					ttlSdm = make(map[string][]SDMBySubj, 1)
 				}
+				ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
 			} else {
 				// Collect sequences to remove. Don't remove messages inline here,
 				// as that releases the lock and THW is not thread-safe.
 				rmSeqs = append(rmSeqs, seq)
 			}
-			return true
+			// Removing messages out of band, those can fail, and we can be shutdown halfway
+			// through so don't remove from THW just yet.
+			return false
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit

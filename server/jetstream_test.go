@@ -19740,6 +19740,13 @@ func TestJetStreamTHWExpireTasksRace(t *testing.T) {
 			// Wait for all goroutines to finish.
 			wg.Wait()
 
+			// Run once more to clean up for removed messages.
+			if fs, ok := mset.store.(*fileStore); ok {
+				fs.expireMsgs()
+			} else if ms, ok := mset.store.(*memStore); ok {
+				ms.expireMsgs()
+			}
+
 			// Count of entries in the THW should be exactly 0, and not underflow.
 			var hwCount uint64
 			if fs, ok := mset.store.(*fileStore); ok {
