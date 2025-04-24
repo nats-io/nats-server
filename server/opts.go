@@ -616,6 +616,9 @@ type MQTTOpts struct {
 	// PubRels).
 	AckWait time.Duration
 
+	// JSAPITimeout defines timeout for JetStream api calls (default is 5 seconds)
+	JSAPITimeout time.Duration
+
 	// MaxAckPending is the amount of QoS 1 and 2 messages (combined) the server
 	// can send to a subscription without receiving any PUBACK for those
 	// messages. The valid range is [0..65535].
@@ -5205,6 +5208,8 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 			o.MQTT.NoAuthUser = mv.(string)
 		case "ack_wait", "ackwait":
 			o.MQTT.AckWait = parseDuration("ack_wait", tk, mv, errors, warnings)
+		case "js_api_timeout", "api_timeout":
+			o.MQTT.JSAPITimeout = parseDuration("js_api_timeout", tk, mv, errors, warnings)
 		case "max_ack_pending", "max_pending", "max_inflight":
 			tmp := int(mv.(int64))
 			if tmp < 0 || tmp > 0xFFFF {
