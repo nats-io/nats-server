@@ -19787,3 +19787,40 @@ func TestJetStreamRejectLargePublishes(t *testing.T) {
 	require_Error(t, err)
 	require_Contains(t, err.Error(), ErrMsgTooLarge.Error())
 }
+
+func TestJetStreamDirectGetSubjectDeleteMarker(t *testing.T) {
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:                   "TEST",
+				Subjects:               []string{"test"},
+				Storage:                storageType,
+				SubjectDeleteMarkerTTL: time.Second,
+				AllowMsgTTL:            true,
+				AllowDirect:            true,
+			})
+			require_NoError(t, err)
+
+			m := nats.NewMsg("test")
+			m.Header.Set(JSMessageTTL, "1s")
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+
+			first, err := js.GetLastMsg("TEST", "test", nats.DirectGet())
+			require_NoError(t, err)
+			require_Equal(t, first.Header.Get(JSSequence), "1")
+
+			time.Sleep(1500 * time.Millisecond)
+
+			second, err := js.GetLastMsg("TEST", "test", nats.DirectGet())
+			require_NoError(t, err)
+			require_Equal(t, second.Header.Get(JSSequence), "2")
+		})
+	}
+}
