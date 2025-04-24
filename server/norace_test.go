@@ -11560,3 +11560,46 @@ func TestNoRaceProducerStallLimits(t *testing.T) {
 	// just past 12ms, hence the Max setting below to avoid a flapper.
 	require_True(t, elapsed < stallTotalAllowed+stallClientMaxDuration)
 }
+
+func TestNoRaceFileStorePurgeExAsyncTombstones(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("zzz")
+
+	fs.StoreMsg("foo.A", nil, msg)
+	fs.StoreMsg("foo.B", nil, msg)
+	for i := 0; i < 500; i++ {
+		fs.StoreMsg("foo.C", nil, msg)
+	}
+	fs.StoreMsg("foo.D", nil, msg)
+
+	// Load all blocks to avoid that being a factor in timing.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.loadMsgs()
+	}
+	fs.mu.RUnlock()
+
+	// Now purge 1 that is not the first message and take note of time.
+	// Since we are loaded this should mostly be the time to write / flush tombstones.
+	start := time.Now()
+	n, err := fs.PurgeEx("foo.B", 0, 0)
+	elapsed := time.Since(start)
+	require_NoError(t, err)
+	require_Equal(t, n, 1)
+
+	start = time.Now()
+	n, err = fs.PurgeEx("foo.C", 0, 0)
+	elapsed2 := time.Since(start)
+	require_NoError(t, err)
+	require_Equal(t, n, 500)
+
+	// If we are flushing for each tombstone the second elapsed time will be a larger multiple of the single message purge.
+	// In testing this is like >200x
+	// With async and flush for all tombstones will be ~30x
+	require_True(t, elapsed*50 > elapsed2)
+}
