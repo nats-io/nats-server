@@ -371,6 +371,10 @@ type Server struct {
 	// Controls whether or not the account NRG capability is set in statsz.
 	// Currently used by unit tests to simulate nodes not supporting account NRG.
 	accountNRGAllowed atomic.Bool
+
+	// For optimizing the number of syscalls we make to get time.Now().
+	tsOnce     sync.Once
+	accessTime atomic.Int64
 }
 
 // For tracking JS nodes.
@@ -4580,4 +4584,29 @@ func (s *Server) LDMClientByID(id uint64) error {
 	} else {
 		return errors.New("client does not support Lame Duck Mode or is not ready to receive the notification")
 	}
+}
+
+// Update every 100ms.
+const accessTimeTickInterval = 100 * time.Millisecond
+
+// Will load the access time from an atomic. We will also setup the Go routine
+// to update this in one place.
+func (s *Server) getAccessTime() int64 {
+	s.tsOnce.Do(func() {
+		s.accessTime.Store(time.Now().UnixNano())
+		go func() {
+			ticker := time.NewTicker(accessTimeTickInterval)
+			for {
+				select {
+				case <-ticker.C:
+					s.accessTime.Store(time.Now().UnixNano())
+				case <-s.shutdownComplete:
+					// Shutdown complete instead of quit channel to ensure that
+					// we can still access the time when shutting down.
+					return
+				}
+			}
+		}()
+	})
+	return s.accessTime.Load()
 }
