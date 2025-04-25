@@ -6763,7 +6763,8 @@ func TestJetStreamClusterMaxDeliveriesOnInterestStreams(t *testing.T) {
 	sub2, err := js.PullSubscribe("foo.*", "c2", nats.AckWait(10*time.Millisecond), nats.MaxDeliver(1))
 	require_NoError(t, err)
 
-	js.Publish("foo.bar", []byte("HELLO"))
+	_, err = js.Publish("foo.bar", []byte("HELLO"))
+	require_NoError(t, err)
 
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
@@ -6792,8 +6793,8 @@ func TestJetStreamClusterMaxDeliveriesOnInterestStreams(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, ci.Delivered.Consumer, 1)
 		require_Equal(t, ci.Delivered.Stream, 1)
-		require_Equal(t, ci.AckFloor.Consumer, 1)
-		require_Equal(t, ci.AckFloor.Stream, 1)
+		require_Equal(t, ci.AckFloor.Consumer, 0)
+		require_Equal(t, ci.AckFloor.Stream, 0)
 		require_Equal(t, ci.NumAckPending, 0)
 		require_Equal(t, ci.NumRedelivered, 1)
 		require_Equal(t, ci.NumPending, 0)

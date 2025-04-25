@@ -18870,7 +18870,7 @@ func TestJetStreamConsumerPendingLowerThanStreamFirstSeq(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10; i++ {
 		sendStreamMsg(t, nc, "foo", "msg")
 	}
 
@@ -18885,7 +18885,8 @@ func TestJetStreamConsumerPendingLowerThanStreamFirstSeq(t *testing.T) {
 
 	sub := natsSubSync(t, nc, inbox)
 	for i := 0; i < 10; i++ {
-		natsNexMsg(t, sub, time.Second)
+		msg := natsNexMsg(t, sub, time.Second)
+		require_NoError(t, msg.AckSync())
 	}
 
 	acc, err := s.lookupAccount(globalAccountName)
@@ -18911,6 +18912,13 @@ func TestJetStreamConsumerPendingLowerThanStreamFirstSeq(t *testing.T) {
 	require_True(t, si.State.FirstSeq == 1_000_000)
 	require_True(t, si.State.LastSeq == 999_999)
 
+	acc, err = s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err = acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o = mset.lookupConsumer("dur")
+	require_True(t, o != nil)
+
 	natsSubSync(t, nc, inbox)
 	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("TEST", "dur")
@@ -18920,8 +18928,19 @@ func TestJetStreamConsumerPendingLowerThanStreamFirstSeq(t *testing.T) {
 		if ci.NumAckPending != 0 {
 			return fmt.Errorf("NumAckPending should be 0, got %v", ci.NumAckPending)
 		}
-		if ci.Delivered.Stream != 999_999 {
-			return fmt.Errorf("Delivered.Stream should be 999,999, got %v", ci.Delivered.Stream)
+		// Delivered stays the same because it reflects what was actually delivered.
+		// And must not be influenced by purges/compacts.
+		if ci.Delivered.Stream != 10 {
+			return fmt.Errorf("Delivered.Stream should be 10, got %v", ci.Delivered.Stream)
+		}
+
+		// Starting sequence should be skipped ahead, respecting the compact.
+		o.mu.RLock()
+
+		sseq := o.sseq
+		o.mu.RUnlock()
+		if sseq != 1_000_000 {
+			return fmt.Errorf("o.sseq should be 1,000,000, got %v", sseq)
 		}
 		return nil
 	})
@@ -19720,10 +19739,10 @@ func TestJetStreamConsumerMultipleSubjectsLast(t *testing.T) {
 	info, err := js.ConsumerInfo("name", durable)
 	require_NoError(t, err)
 
-	require_True(t, info.NumAckPending == 0)
-	require_True(t, info.AckFloor.Stream == 8)
-	require_True(t, info.AckFloor.Consumer == 1)
-	require_True(t, info.NumPending == 0)
+	require_Equal(t, info.NumAckPending, 0)
+	require_Equal(t, info.AckFloor.Stream, 6)
+	require_Equal(t, info.AckFloor.Consumer, 1)
+	require_Equal(t, info.NumPending, 0)
 }
 
 func TestJetStreamConsumerMultipleSubjectsLastPerSubject(t *testing.T) {
@@ -19798,10 +19817,10 @@ func TestJetStreamConsumerMultipleSubjectsLastPerSubject(t *testing.T) {
 	info, err := js.ConsumerInfo("name", durable)
 	require_NoError(t, err)
 
-	require_True(t, info.AckFloor.Consumer == 2)
-	require_True(t, info.AckFloor.Stream == 9)
-	require_True(t, info.Delivered.Stream == 12)
-	require_True(t, info.Delivered.Consumer == 3)
+	require_Equal(t, info.AckFloor.Consumer, 2)
+	require_Equal(t, info.AckFloor.Stream, 9)
+	require_Equal(t, info.Delivered.Stream, 10)
+	require_Equal(t, info.Delivered.Consumer, 3)
 
 	require_NoError(t, err)
 
