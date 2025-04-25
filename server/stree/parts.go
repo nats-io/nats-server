@@ -123,7 +123,10 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 		// but update the part to what was consumed. This allows upper layers to continue.
 		if end < si+lp {
 			if end >= lf {
-				parts = append([][]byte{}, parts...) // Create a copy before modifying.
+				// Create a copy before modifying. Reuse slice capacity available at the
+				// end of the parts slice, since this saves us additional allocations.
+				lp := len(parts)
+				parts = append(parts[lp:], parts[:lp]...)
 				parts[i] = parts[i][lf-si:]
 			} else {
 				i++
