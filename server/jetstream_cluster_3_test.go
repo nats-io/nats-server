@@ -5474,14 +5474,9 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		t.Helper()
 		require_Equal(t, a.Delivered.Consumer, 10)
 		require_Equal(t, a.Delivered.Stream, 10)
-		// If replicated, agreed upon state is used. Otherwise, o.asflr and o.adflr would be skipped ahead for R1.
-		if replicated {
-			require_Equal(t, a.AckFloor.Consumer, 0)
-			require_Equal(t, a.AckFloor.Stream, 0)
-		} else {
-			require_Equal(t, a.AckFloor.Consumer, 10)
-			require_Equal(t, a.AckFloor.Stream, 10)
-		}
+		// Agreed upon state is always used. Otherwise, o.asflr and o.adflr would be skipped ahead.
+		require_Equal(t, a.AckFloor.Consumer, 0)
+		require_Equal(t, a.AckFloor.Stream, 0)
 		require_Equal(t, a.NumPending, 40)
 		require_Equal(t, a.NumRedelivered, 10)
 		a.Cluster, b.Cluster = nil, nil
