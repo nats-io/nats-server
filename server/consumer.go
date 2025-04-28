@@ -2983,13 +2983,14 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		}
 	}
 
-	// If we are replicated, we need to pull certain data from our store.
-	if rg != nil && rg.node != nil && o.store != nil {
+	// We always need to pull certain data from our store.
+	if o.store != nil {
 		state, err := o.store.BorrowState()
 		if err != nil {
 			o.mu.Unlock()
 			return nil
 		}
+
 		// If we are the leader we could have o.sseq that is skipped ahead.
 		// To maintain consistency in reporting (e.g. jsz) we always take the state for our delivered/ackfloor stream sequence.
 		// Only use skipped ahead o.sseq if we're a new consumer and have not yet replicated this state yet.
