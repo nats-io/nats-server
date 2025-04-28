@@ -30,10 +30,14 @@ jobs:
           go test -race -v -run=TestVersionMatchesTag ./server -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -count=1 -vet=off
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3.8.1
+        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
+        # Commit 3454372f43399081ed03b604cb2d021dabca52bb = tag v3.8.2
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb
 
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@v0.18.0
+        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
+        # Commit 9f7302141466aa6482940f15371237e9d9f4c34a = tag v0.19.0
+        uses: anchore/sbom-action/download-syft@9f7302141466aa6482940f15371237e9d9f4c34a
         with:
           syft-version: "v1.20.0"
 

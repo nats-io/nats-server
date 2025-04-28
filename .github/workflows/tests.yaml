@@ -26,7 +26,9 @@ jobs:
           go-version: stable
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
+        # Commit 1481404843c368bc19ca9406f87d6e0fc97bdcfd = tag v7.0.0
+        uses: golangci/golangci-lint-action@1481404843c368bc19ca9406f87d6e0fc97bdcfd
         with:
           version: v2.1.2
           skip-cache: true
