@@ -1818,6 +1818,42 @@ func TestJetStreamConsumerDeliverAllOverlappingFilterSubjects(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/6844
+func TestJetStreamConsumerDeliverAllNonOverlappingFilterSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnectNewAPI(t, s)
+	defer nc.Close()
+
+	ctx := context.Background()
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"stream.>"},
+	})
+	require_NoError(t, err)
+
+	publishMessageCount := 10
+	for i := 0; i < publishMessageCount; i++ {
+		_, err = js.Publish(ctx, "stream.subject", nil)
+		require_NoError(t, err)
+	}
+
+	// Create consumer
+	consumer, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		FilterSubjects: []string{
+			"stream.subject.A",
+			"stream.subject.A.>",
+		},
+	})
+	require_NoError(t, err)
+
+	i, err := consumer.Info(ctx)
+	require_NoError(t, err)
+	require_Equal(t, i.NumPending, 0)
+}
+
 func TestJetStreamConsumerStateAlwaysFromStore(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
