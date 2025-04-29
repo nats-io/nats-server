@@ -16,6 +16,7 @@ package gsl
 import (
 	"errors"
 	"sync"
+	"unsafe"
 
 	"github.com/nats-io/nats-server/v2/server/stree"
 )
@@ -479,13 +480,20 @@ func IntersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], sl *Generi
 }
 
 func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T2], subj []byte, cb func(subj []byte, entry *T1)) {
-	if r.numNodes() == 0 {
-		// For wildcards we can't avoid Match, but if it's a literal subject at
-		// this point, using Find is considerably cheaper.
-		if subjectHasWildcard(string(subj)) {
-			st.Match(subj, cb)
-		} else if e, ok := st.Find(subj); ok {
+	// This level could potentially match literals, despite being followed up by
+	// additional wildcards. For literals we can use Find since it is considerably
+	// faster. Then we can carry on checking for further matches in the usual way.
+	wc := subjectHasWildcard(bytesToString(subj))
+	if !wc {
+		if e, ok := st.Find(subj); ok {
 			cb(subj, e)
+		}
+	}
+	if r.numNodes() == 0 {
+		// No further recursions to be made at this point but there's still a wildcard
+		// to match, so let the subject tree work it out.
+		if wc {
+			st.Match(subj, cb)
 		}
 		return
 	}
@@ -529,4 +537,14 @@ func subjectHasWildcard(subject string) bool {
 		}
 	}
 	return false
+}
+
+// Note this will avoid a copy of the data used for the string, but it will also reference the existing slice's data pointer.
+// So this should be used sparingly when we know the encompassing byte slice's lifetime is the same.
+func bytesToString(b []byte) string {
+	if len(b) == 0 {
+		return _EMPTY_
+	}
+	p := unsafe.SliceData(b)
+	return unsafe.String(p, len(b))
 }
