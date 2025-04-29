@@ -340,7 +340,17 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	// Search by individual CID.
 	if cid > 0 {
-		if state == ConnClosed || state == ConnAll {
+		// Let's first check if user also selects on ConnOpen or ConnAll
+		// and look for opened connections.
+		if state == ConnOpen || state == ConnAll {
+			if client := s.clients[cid]; client != nil {
+				openClients = append(openClients, client)
+				closedClients = nil
+			}
+		}
+		// If we did not find, and the user selected for ConnClosed or ConnAll,
+		// look for closed connections.
+		if len(openClients) == 0 && (state == ConnClosed || state == ConnAll) {
 			copyClosed := closedClients
 			closedClients = nil
 			for _, cc := range copyClosed {
@@ -348,11 +358,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 					closedClients = []*closedClient{cc}
 					break
 				}
-			}
-		} else if state == ConnOpen || state == ConnAll {
-			client := s.clients[cid]
-			if client != nil {
-				openClients = append(openClients, client)
 			}
 		}
 	} else {

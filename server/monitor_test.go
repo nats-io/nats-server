@@ -1890,6 +1890,12 @@ func TestConnzWithStateForClosedConns(t *testing.T) {
 			if lc := len(c.Conns); lc != 1 {
 				return fmt.Errorf("Expected a connection in open array, got %d", lc)
 			}
+			// It should also work if we ask for "state=all"
+			c = pollConz(t, s, mode, url+"connz?cid=2&state=all", &ConnzOptions{CID: 2, State: ConnAll})
+			if lc := len(c.Conns); lc != 1 {
+				return fmt.Errorf("Expected a connection in open array, got %d", lc)
+			}
+			// But not for "state=closed"
 			c = pollConz(t, s, mode, url+"connz?cid=2&state=closed", &ConnzOptions{CID: 2, State: ConnClosed})
 			if lc := len(c.Conns); lc != 0 {
 				return fmt.Errorf("Expected no connections in closed array, got %d", lc)
