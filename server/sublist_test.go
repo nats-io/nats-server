@@ -2118,6 +2118,19 @@ func TestSublistInterestBasedIntersection(t *testing.T) {
 		})
 		require_Len(t, len(got), 0)
 	})
+
+	t.Run("NoMatchPartial", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("stream.A.not-child"))
+		sl.Insert(newSub("stream.A.child.>"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			fmt.Println("Matched", string(subj))
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 0)
+		require_NoDuplicates(t, got)
+	})
 }
 
 func subsInit(pre string, toks []string) {

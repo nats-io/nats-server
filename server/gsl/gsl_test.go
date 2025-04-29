@@ -301,8 +301,11 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 	st.Insert([]byte("one.two.six"), struct{}{})
 	st.Insert([]byte("one.two.seven"), struct{}{})
 	st.Insert([]byte("eight.nine"), struct{}{})
+	st.Insert([]byte("stream.A"), struct{}{})
+	st.Insert([]byte("stream.A.child"), struct{}{})
 
 	require_NoDuplicates := func(t *testing.T, got map[string]int) {
+		t.Helper()
 		for _, c := range got {
 			require_Equal(t, c, 1)
 		}
@@ -355,7 +358,7 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
 			got[string(subj)]++
 		})
-		require_Len(t, len(got), 5)
+		require_Len(t, len(got), 7)
 		require_NoDuplicates(t, got)
 	})
 
@@ -382,6 +385,18 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 		require_NoDuplicates(t, got)
 	})
 
+	t.Run("FWCExtended", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublist[int]()
+		require_NoError(t, sl.Insert("stream.A.>", 11))
+		require_NoError(t, sl.Insert("stream.A", 22))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 2)
+		require_NoDuplicates(t, got)
+	})
+
 	t.Run("FWCAll", func(t *testing.T) {
 		got := map[string]int{}
 		sl := NewSublist[int]()
@@ -389,7 +404,7 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
 			got[string(subj)]++
 		})
-		require_Len(t, len(got), 5)
+		require_Len(t, len(got), 7)
 		require_NoDuplicates(t, got)
 	})
 
@@ -413,6 +428,18 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 			got[string(subj)]++
 		})
 		require_Len(t, len(got), 0)
+	})
+
+	t.Run("NoMatchPartial", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublist[int]()
+		require_NoError(t, sl.Insert("stream.A.not-child", 11))
+		require_NoError(t, sl.Insert("stream.A.child.>", 22))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 0)
+		require_NoDuplicates(t, got)
 	})
 }
 
