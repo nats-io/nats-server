@@ -2694,13 +2694,14 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		TimeStamp:      time.Now().UTC(),
 	}
 
-	// If we are replicated, we need to pull certain data from our store.
-	if rg != nil && rg.node != nil && o.store != nil {
+	// We always need to pull certain data from our store.
+	if o.store != nil {
 		state, err := o.store.BorrowState()
 		if err != nil {
 			o.mu.Unlock()
 			return nil
 		}
+
 		// If we are the leader we could have o.sseq that is skipped ahead.
 		// To maintain consistency in reporting (e.g. jsz) we always take the state for our delivered/ackfloor stream sequence.
 		info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream

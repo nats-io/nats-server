@@ -16,6 +16,7 @@ package gsl
 import (
 	"errors"
 	"sync"
+	"unsafe"
 
 	"github.com/nats-io/nats-server/v2/server/stree"
 )
@@ -479,16 +480,6 @@ func IntersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], sl *Generi
 }
 
 func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T2], subj []byte, cb func(subj []byte, entry *T1)) {
-	if r.numNodes() == 0 {
-		// For wildcards we can't avoid Match, but if it's a literal subject at
-		// this point, using Find is considerably cheaper.
-		if subjectHasWildcard(string(subj)) {
-			st.Match(subj, cb)
-		} else if e, ok := st.Find(subj); ok {
-			cb(subj, e)
-		}
-		return
-	}
 	nsubj := subj
 	if len(nsubj) > 0 {
 		nsubj = append(subj, '.')
@@ -504,15 +495,28 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 		// check whether there's interest at this level (without triggering dupes) and
 		// match if so.
 		nsubj := append(nsubj, '*')
-		if len(r.pwc.subs) > 0 && r.pwc.next != nil && r.pwc.next.numNodes() > 0 {
+		if len(r.pwc.subs) > 0 {
 			st.Match(nsubj, cb)
 		}
-		intersectStree(st, r.pwc.next, nsubj, cb)
-	case r.numNodes() > 0:
+		if r.pwc.next != nil && r.pwc.next.numNodes() > 0 {
+			intersectStree(st, r.pwc.next, nsubj, cb)
+		}
+	default:
 		// Normal node with subject literals, keep iterating.
 		for t, n := range r.nodes {
 			nsubj := append(nsubj, t...)
-			intersectStree(st, n.next, nsubj, cb)
+			if len(n.subs) > 0 {
+				if subjectHasWildcard(bytesToString(nsubj)) {
+					st.Match(nsubj, cb)
+				} else {
+					if e, ok := st.Find(nsubj); ok {
+						cb(nsubj, e)
+					}
+				}
+			}
+			if n.next != nil && n.next.numNodes() > 0 {
+				intersectStree(st, n.next, nsubj, cb)
+			}
 		}
 	}
 }
@@ -529,4 +533,14 @@ func subjectHasWildcard(subject string) bool {
 		}
 	}
 	return false
+}
+
+// Note this will avoid a copy of the data used for the string, but it will also reference the existing slice's data pointer.
+// So this should be used sparingly when we know the encompassing byte slice's lifetime is the same.
+func bytesToString(b []byte) string {
+	if len(b) == 0 {
+		return _EMPTY_
+	}
+	p := unsafe.SliceData(b)
+	return unsafe.String(p, len(b))
 }

@@ -1817,3 +1817,96 @@ func TestJetStreamConsumerDeliverAllOverlappingFilterSubjects(t *testing.T) {
 		}
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/6844
+func TestJetStreamConsumerDeliverAllNonOverlappingFilterSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnectNewAPI(t, s)
+	defer nc.Close()
+
+	ctx := context.Background()
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"stream.>"},
+	})
+	require_NoError(t, err)
+
+	publishMessageCount := 10
+	for i := 0; i < publishMessageCount; i++ {
+		_, err = js.Publish(ctx, "stream.subject", nil)
+		require_NoError(t, err)
+	}
+
+	// Create consumer
+	consumer, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		FilterSubjects: []string{
+			"stream.subject.A",
+			"stream.subject.A.>",
+		},
+	})
+	require_NoError(t, err)
+
+	i, err := consumer.Info(ctx)
+	require_NoError(t, err)
+	require_Equal(t, i.NumPending, 0)
+}
+
+func TestJetStreamConsumerStateAlwaysFromStore(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "CONSUMER",
+		AckWait:       2 * time.Second,
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "foo.bar",
+	})
+	require_NoError(t, err)
+
+	// Publish two messages, one the consumer is interested in.
+	_, err = js.Publish("foo.bar", nil)
+	require_NoError(t, err)
+	_, err = js.Publish("foo.other", nil)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo.bar", "CONSUMER")
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Consumer info should start empty.
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Stream, 0)
+	require_Equal(t, ci.AckFloor.Stream, 0)
+
+	// Fetch more messages than match our filter.
+	msgs, err := sub.Fetch(2, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+
+	// We have received, but not acknowledged, consumer info must reflect that.
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Stream, 1)
+	require_Equal(t, ci.AckFloor.Stream, 0)
+
+	// Now we acknowledge the message and expect our delivered/ackfloor to be correct.
+	require_NoError(t, msgs[0].AckSync())
+
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Stream, 1)
+	require_Equal(t, ci.AckFloor.Stream, 1)
+}
