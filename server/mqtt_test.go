@@ -469,6 +469,11 @@ func TestMQTTValidateOptions(t *testing.T) {
 			o.MQTT.AckWait = -10 * time.Second
 			return o
 		}, errMQTTAckWaitMustBePositive},
+		{"js api timeout should be >=0", func() *Options {
+			o := mqtto.Clone()
+			o.MQTT.JSAPITimeout = -10 * time.Second
+			return o
+		}, errMQTTJSAPITimeoutMustBePositive},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateMQTTOptions(test.getOpts())
@@ -498,6 +503,7 @@ func TestMQTTParseOptions(t *testing.T) {
 		{"ack wait", `mqtt: {ack_wait: abc}`, nil, "invalid duration"},
 		{"max ack pending", `mqtt: {max_ack_pending: abc}`, nil, "not int64"},
 		{"max ack pending too high", `mqtt: {max_ack_pending: 12345678}`, nil, "invalid value"},
+		{"js_api_timeout bad duration", `mqtt: {js_api_timeout: abc}`, nil, "invalid duration"},
 		// Positive tests
 		{"tls gen fails", `
 			mqtt {
@@ -624,6 +630,17 @@ func TestMQTTParseOptions(t *testing.T) {
 			`, func(o *MQTTOpts) error {
 				if !o.downgradeQoS2Sub {
 					return fmt.Errorf("Invalid: expected downgradeQoS2Sub to be set")
+				}
+				return nil
+			}, ""},
+		{"js_api_timeout",
+			`
+			mqtt {
+				js_api_timeout: "60s"
+			}
+			`, func(o *MQTTOpts) error {
+				if o.JSAPITimeout != 60*time.Second {
+					return fmt.Errorf("Invalid JS API timeout: %v", o.JSAPITimeout)
 				}
 				return nil
 			}, ""},
