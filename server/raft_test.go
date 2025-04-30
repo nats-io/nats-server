@@ -2160,3 +2160,64 @@ func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
 	n.Applied(2)
 	require_True(t, n.Healthy())
 }
+
+func TestNRGSignalLeadChangeFalseIfCampaignImmediately(t *testing.T) {
+	tests := []struct {
+		title      string
+		switchNode func(n *raft)
+	}{
+		{
+			title: "Follower",
+		},
+		{
+			title: "Candidate",
+			switchNode: func(n *raft) {
+				n.switchToCandidate()
+			},
+		},
+		{
+			title: "Leader",
+			switchNode: func(n *raft) {
+				n.switchToCandidate()
+				n.switchToLeader()
+				select {
+				case isLeader := <-n.LeadChangeC():
+					require_True(t, isLeader)
+				default:
+					t.Error("Expected leadChange signal")
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.title, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			// Create a sample entry, the content doesn't matter, just that it's stored.
+			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+			entries := []*Entry{newEntry(EntryNormal, esm)}
+
+			nats0 := "S1Nunr6R" // "nats-0"
+			aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+
+			// Campaigning immediately signals we're the preferred leader.
+			require_NoError(t, n.CampaignImmediately())
+			if test.switchNode != nil {
+				test.switchNode(n)
+			}
+
+			n.processAppendEntry(aeMsg1, n.aesub)
+
+			select {
+			case isLeader := <-n.LeadChangeC():
+				require_False(t, isLeader)
+			default:
+				t.Error("Expected leadChange signal")
+			}
+			require_Equal(t, n.State(), Follower)
+			require_Equal(t, n.leader, nats0)
+			require_Equal(t, n.term, 1)
+		})
+	}
+}
