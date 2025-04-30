@@ -19,7 +19,7 @@ ExecStop=/bin/kill -s SIGUSR2  $MAINPID
 User=nats
 Group=nats
 
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 # This should be `lame_duck_duration` + some buffer to finish the shutdown.
