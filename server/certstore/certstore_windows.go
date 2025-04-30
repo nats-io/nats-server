@@ -593,7 +593,7 @@ func winSignECDSA(kh uintptr, digest []byte) ([]byte, error) {
 		return nil, ErrStoreECDSASigningError
 	}
 
-	return winPackECDSASigValue(bytes.NewReader(buf[:size]), len(digest))
+	return winPackECDSASigValue(bytes.NewReader(buf[:size]), int(size/2))
 }
 
 func winPackECDSASigValue(r io.Reader, digestLength int) ([]byte, error) {
