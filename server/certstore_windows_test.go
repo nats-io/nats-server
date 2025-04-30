@@ -16,6 +16,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/url"
 	"os"
@@ -186,7 +187,7 @@ func TestLeafTLSWindowsCertStore(t *testing.T) {
 }
 
 // TestServerTLSWindowsCertStore tests the topology of a NATS server requiring TLS and gettings it own server
-// cert identiy (as used when accepting NATS client connections and negotiating TLS) from Windows certificate store.
+// cert identity (as used when accepting NATS client connections and negotiating TLS) from Windows certificate store.
 func TestServerTLSWindowsCertStore(t *testing.T) {
 
 	// Server Identity (server.pem)
@@ -304,6 +305,46 @@ func TestServerIgnoreExpiredCerts(t *testing.T) {
 			} else {
 				t.Fatalf("expected server to start with non expired certificate")
 			}
+		})
+	}
+}
+
+func TestWindowsTLS12ECDSA(t *testing.T) {
+	err := runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-server.ps1", []string{"ecdsa_server.pfx"})
+	if err != nil {
+		t.Fatalf("expected powershell provision to succeed: %v", err)
+	}
+
+	config := createConfFile(t, []byte(`
+	listen: "localhost:-1"
+	tls {
+		cert_store: "WindowsCurrentUser"
+		cert_match_by: "Thumbprint"
+		cert_match: "4F8AF21756E5DBBD54619BBB6F3CC5D455ED4468"
+		cert_match_skip_invalid: true
+		timeout: 5
+	}
+	`))
+	defer removeFile(t, config)
+
+	srv, _ := RunServerWithConfig(config)
+	if srv == nil {
+		t.Fatalf("expected to be able start server with cert store configuration")
+	}
+	defer srv.Shutdown()
+
+	for name, version := range map[string]uint16{
+		"TLS 1.3": tls.VersionTLS13,
+		"TLS 1.2": tls.VersionTLS12,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc := &tls.Config{MaxVersion: version, MinVersion: version, InsecureSkipVerify: true}
+
+			if _, err = nats.Connect(srv.clientConnectURLs[0], nats.Secure(tc)); err != nil {
+				t.Fatalf("connection with %s: %v", name, err)
+			}
+
+			t.Logf("successful connection with %s", name)
 		})
 	}
 }
