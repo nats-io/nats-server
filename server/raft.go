@@ -177,10 +177,11 @@ type raft struct {
 	c  *client    // Internal client for subscriptions
 	js *jetStream // JetStream, if running, to see if we are out of resources
 
-	dflag     bool        // Debug flag
-	hasleader atomic.Bool // Is there a group leader right now?
-	pleader   atomic.Bool // Has the group ever had a leader?
-	observer  bool        // The node is observing, i.e. not participating in voting
+	dflag       bool        // Debug flag
+	hasleader   atomic.Bool // Is there a group leader right now?
+	pleader     atomic.Bool // Has the group ever had a leader?
+	observer    bool        // The node is observing, i.e. not participating in voting
+	maybeLeader bool        // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
 
 	extSt extensionState // Extension state
 
@@ -1538,6 +1539,7 @@ func (n *raft) Campaign() error {
 func (n *raft) CampaignImmediately() error {
 	n.Lock()
 	defer n.Unlock()
+	n.maybeLeader = true
 	return n.campaign(minCampaignTimeout / 2)
 }
 
@@ -3186,6 +3188,16 @@ func (n *raft) updateLeader(newLeader string) {
 	n.hasleader.Store(newLeader != _EMPTY_)
 	if !n.pleader.Load() && newLeader != noLeader {
 		n.pleader.Store(true)
+		// If we were preferred to become the first leader, but didn't end up successful.
+		// Ensure to call lead change. When scaling from R1 to R3 we've optimized for a scale up
+		// not flipping leader/non-leader/leader status if the leader remains the same. But we need to
+		// correct that if the first leader turns out to be different.
+		if n.maybeLeader {
+			n.maybeLeader = false
+			if n.id != newLeader {
+				n.updateLeadChange(false)
+			}
+		}
 	}
 }
 
