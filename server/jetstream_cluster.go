@@ -6289,6 +6289,13 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		return
 	}
 
+	// Don't allow updating if all peers are offline.
+	if s.allPeersOffline(osa.Group) {
+		resp.Error = NewJSStreamOfflineError()
+		s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp), nil, errRespDelay)
+		return
+	}
+
 	// Update asset version metadata.
 	setStaticStreamMetadata(cfg)
 
@@ -7411,6 +7418,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			if err := acc.checkNewConsumerConfig(ca.Config, cfg); err != nil {
 				resp.Error = NewJSConsumerCreateError(err, Unless(err))
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
+			// Don't allow updating if all peers are offline.
+			if s.allPeersOffline(ca.Group) {
+				resp.Error = NewJSConsumerOfflineError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp), nil, errRespDelay)
 				return
 			}
 		} else {
