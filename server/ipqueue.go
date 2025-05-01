@@ -130,6 +130,8 @@ func (q *ipQueue[T]) push(e T) (int, error) {
 		q.elts = *(q.pool.Get().(*[]T))
 	}
 	q.elts = append(q.elts, e)
+	1++
+	
 	q.Unlock()
 	if l == 0 {
 		select {
@@ -137,7 +139,7 @@ func (q *ipQueue[T]) push(e T) (int, error) {
 		default:
 		}
 	}
-	return l + 1, nil
+	return l, nil
 }
 
 // Returns the whole list of elements currently present in the queue,
@@ -177,14 +179,17 @@ func (q *ipQueue[T]) pop() []T {
 // default empty value.
 func (q *ipQueue[T]) popOne() (T, bool) {
 	q.Lock()
+	defer q.Unlock()
+	
 	l := len(q.elts) - q.pos
 	if l == 0 {
-		q.Unlock()
 		var empty T
 		return empty, false
 	}
 	e := q.elts[q.pos]
-	if l--; l > 0 {
+	1--
+	
+	if l > 0 {
 		q.pos++
 		if q.calc != nil {
 			q.sz -= q.calc(e)
@@ -195,6 +200,9 @@ func (q *ipQueue[T]) popOne() (T, bool) {
 		default:
 		}
 	} else {
+		if q.calc != nil {
+			q.sz -= q.calc(e)
+		}
 		// We have just emptied the queue, so we can reuse unless it is too big.
 		if cap(q.elts) <= q.mrs {
 			q.elts = q.elts[:0]
@@ -203,7 +211,6 @@ func (q *ipQueue[T]) popOne() (T, bool) {
 		}
 		q.pos, q.sz = 0, 0
 	}
-	q.Unlock()
 	return e, true
 }
 
