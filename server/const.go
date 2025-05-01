@@ -36,7 +36,8 @@ const (
 
 var (
 	// gitCommit and serverVersion injected at build.
-	gitCommit, serverVersion string
+	gitCommit     string = "unknown"
+	serverVersion string = VERSION // add default value
 	// trustedKeys is a whitespace separated array of trusted operator's public nkeys.
 	trustedKeys string
 	// SemVer regexp to validate the VERSION.
@@ -50,7 +51,11 @@ func init() {
 		for _, setting := range info.Settings {
 			switch setting.Key {
 			case "vcs.revision":
-				gitCommit = setting.Value[:7]
+				if len(setting.Value) >= 7 {
+					gitCommit = setting.Value[:7]
+				} else {
+					gitCommit = setting.Value
+				}
 			}
 		}
 	}
