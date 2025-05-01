@@ -16,6 +16,8 @@ ExecStop=/bin/kill -s SIGUSR2  $MAINPID
 # By default, `lame_duck_duration` is 2 mins.
 TimeoutStopSec=150
 
+Restart=on-failure
+
 User=nats
 Group=nats
 
