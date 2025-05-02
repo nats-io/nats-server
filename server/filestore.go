@@ -8332,8 +8332,13 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	} else {
 		// Make sure to sync changes.
 		smb.needSync = true
-		// Update fs first seq and time.
-		atomic.StoreUint64(&smb.first.seq, seq-1) // Just for start condition for selectNextFirst.
+		// Just for start condition for selectNextFirst.
+		if smb.first.seq < seq {
+			atomic.StoreUint64(&smb.first.seq, seq-1)
+		} else {
+			// selectNextFirst always adds 1, so need to subtract 1 here.
+			atomic.StoreUint64(&smb.first.seq, smb.first.seq-1)
+		}
 		smb.selectNextFirst()
 
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.first.seq)

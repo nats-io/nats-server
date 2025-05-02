@@ -19831,3 +19831,90 @@ func TestJetStreamDirectGetSubjectDeleteMarker(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamPurgeExSeqSimple(t *testing.T) {
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"test"},
+				Storage:  storageType,
+			})
+			require_NoError(t, err)
+
+			data := make([]byte, 1024)
+			for i := 0; i < 10_000; i++ {
+				_, err = js.Publish("test", data)
+				require_NoError(t, err)
+			}
+
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 10_000)
+
+			require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 9_000}))
+
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 1_001)
+			require_Equal(t, si.State.NumDeleted, 0)
+			require_Equal(t, si.State.FirstSeq, 9_000)
+			require_Equal(t, si.State.LastSeq, 10_000)
+		})
+	}
+}
+
+func TestJetStreamPurgeExSeqInInteriorDeleteGap(t *testing.T) {
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"test.*"},
+				Storage:  storageType,
+			})
+			require_NoError(t, err)
+
+			data := make([]byte, 1024)
+			_, err = js.Publish("test.start", data)
+			require_NoError(t, err)
+			for i := 0; i < 10_000; i++ {
+				_, err = js.Publish("test.mid", data)
+				require_NoError(t, err)
+			}
+			_, err = js.Publish("test.end", data)
+			require_NoError(t, err)
+
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 10_002)
+
+			require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "test.mid"}))
+
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 2)
+			require_Equal(t, si.State.NumDeleted, 10_000)
+
+			require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 9_000}))
+
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 1)
+			require_Equal(t, si.State.NumDeleted, 0)
+			require_Equal(t, si.State.FirstSeq, 10_002)
+			require_Equal(t, si.State.LastSeq, 10_002)
+		})
+	}
+}
