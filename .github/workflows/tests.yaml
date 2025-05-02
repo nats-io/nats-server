@@ -13,6 +13,26 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 jobs:
+  signoffs:
+    name: Sign-offs
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check all commits are signed off
+        run: |
+          base=$(git merge-base HEAD ${{ github.event.pull_request.base.sha }})
+          for c in $(git rev-list $base..HEAD); do
+            if ! git log -1 --pretty=%B "$c" | grep -q '^Signed-off-by:'; then
+              echo "::error ::Commit $c has not been signed off in the commit message with a \`Signed-off-by:\` line"
+              git log -1 --pretty=format:"%h %s" "$c"
+              missing=1
+            fi
+          done
+          exit $missing
+
   lint:
     name: Lint
     runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
