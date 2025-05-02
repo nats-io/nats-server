@@ -8392,6 +8392,78 @@ func TestJetStreamClusterConsumerActiveAfterDidNotDeliverOverRoute(t *testing.T)
 	require_True(t, ci.PushBound)
 }
 
+func TestJetStreamClusterOfflineR1StreamDenyUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Stop current R1 stream leader.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	sl.Shutdown()
+	nc.Close()
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Wait for meta leader, so we can send an update.
+	c.waitOnLeader()
+
+	_, err = js.StreamInfo("TEST")
+	require_Error(t, err, NewJSStreamOfflineError())
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStreamOfflineError())
+}
+
+func TestJetStreamClusterOfflineR1ConsumerDenyUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{
+		Durable:  "CONSUMER",
+		Replicas: 1,
+	}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	// Stop current R1 consumer leader.
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	cl.Shutdown()
+	nc.Close()
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Wait for meta leader, so we can send an update.
+	c.waitOnLeader()
+
+	_, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_Error(t, err, NewJSConsumerOfflineError())
+
+	cfg.Replicas = 3
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_Error(t, err, NewJSConsumerOfflineError())
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
