@@ -4405,7 +4405,21 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	// For re-use below.
 	var sm StoreMsg
 
-	for i := fblk; i <= lblk; i++ {
+	done := make(chan struct{})
+	defer close(done)
+	i := fblk
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		for {
+			select {
+			case <-t.C:
+				fs.warn("Enforce message per subject limit %d progress: %d/%d blocks, %d subjects remaining", maxMsgsPer, i-fblk, lblk-fblk+1, needAttention.Count())
+			case <-done:
+				return
+			}
+		}
+	}()
+	for ; i <= lblk; i++ {
 		mb := fs.bim[i]
 		if mb == nil {
 			continue
