@@ -43,6 +43,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -18766,6 +18767,33 @@ func TestJetStreamMessageTTLWhenMirroring(t *testing.T) {
 			}
 		})
 	}
+}
+
+// If the stream has `SubjectDeleteMarkerTTL` set to a value higher
+// than the per-message TTL, the message should expire after the per-message
+// TTL, not the stream's `SubjectDeleteMarkerTTL`.
+func TestJetStreamMessageTTLWithSubjectDeleteMarker(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnectNewAPI(t, s)
+	defer nc.Close()
+
+	ctx := context.Background()
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:                   "TEST",
+		SubjectDeleteMarkerTTL: 10 * time.Second,
+		AllowMsgTTL:            true,
+		Subjects:               []string{"kv"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish(ctx, "kv", []byte("test"), jetstream.WithMsgTTL(time.Second))
+	require_NoError(t, err)
+
+	time.Sleep(2 * time.Second)
+	_, err = stream.GetMsg(ctx, 1)
+	require_Error(t, err, jetstream.ErrMsgNotFound)
 }
 
 func TestJetStreamSubjectDeleteMarkers(t *testing.T) {
