@@ -4193,6 +4193,10 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 						total--
 						blks[mb] = struct{}{}
 					}
+				} else if lseq := atomic.LoadUint64(&mb.last.seq); lseq > seq {
+					// Nothing left in the block at this point matching this
+					// subject so skip to the next block.
+					break
 				} else {
 					// On error just do single increment.
 					seq++
