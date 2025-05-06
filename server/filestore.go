@@ -4492,11 +4492,18 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	var numMsgs uint64
 
 	// collect all that are not correct.
-	needAttention := make(map[string]*psi)
+	needAttention := stree.NewSubjectTree[uint64]()
+	fblk, lblk := uint32(math.MaxUint32), uint32(0)
 	fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 		numMsgs += psi.total
 		if psi.total > maxMsgsPer {
-			needAttention[string(subj)] = psi
+			needAttention.Insert(subj, psi.total)
+			if psi.fblk < fblk {
+				fblk = psi.fblk
+			}
+			if psi.lblk > lblk {
+				lblk = psi.lblk
+			}
 		}
 		return true
 	})
@@ -4517,13 +4524,25 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		// Rebuild fs state too.
 		fs.rebuildStateLocked(nil)
 		// Need to redo blocks that need attention.
-		needAttention = make(map[string]*psi)
+		needAttention.Empty()
+		fblk, lblk = uint32(math.MaxUint32), uint32(0)
 		fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 			if psi.total > maxMsgsPer {
-				needAttention[string(subj)] = psi
+				needAttention.Insert(subj, psi.total)
+				if psi.fblk < fblk {
+					fblk = psi.fblk
+				}
+				if psi.lblk > lblk {
+					lblk = psi.lblk
+				}
 			}
 			return true
 		})
+	}
+
+	// If nothing to do then stop.
+	if fblk == math.MaxUint32 {
+		return
 	}
 
 	// Collect all the msgBlks we alter.
@@ -4531,41 +4550,45 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// For re-use below.
 	var sm StoreMsg
-
-	// Walk all subjects that need attention here.
-	for subj, info := range needAttention {
-		total, start, stop := info.total, info.fblk, info.lblk
-
-		for i := start; i <= stop; i++ {
-			mb := fs.bim[i]
-			if mb == nil {
-				continue
+	var fss *stree.SubjectTree[*SimpleState]
+	for i := fblk; i <= lblk; i++ {
+		mb := fs.bim[i]
+		if mb == nil {
+			continue
+		}
+		mb.mu.Lock()
+		mb.ensurePerSubjectInfoLoaded()
+		// It isn't safe to intersect mb.fss directly, because removeMsgViaLimits modifies it
+		// during the iteration, which can cause us to miss keys. We won't copy the entire
+		// SimpleState structs though but rather just take pointers for speed.
+		fss = fss.Empty()
+		mb.fss.IterFast(func(subject []byte, val *SimpleState) bool {
+			fss.Insert(subject, val)
+			return true
+		})
+		mb.mu.Unlock()
+		stree.LazyIntersect(needAttention, fss, func(subj []byte, total *uint64, ssptr **SimpleState) {
+			if ssptr == nil || total == nil {
+				return
 			}
-			// Grab the ss entry for this subject in case sparse.
-			mb.mu.Lock()
-			mb.ensurePerSubjectInfoLoaded()
-			ss, ok := mb.fss.Find(stringToBytes(subj))
-			if ok && ss != nil && (ss.firstNeedsUpdate || ss.lastNeedsUpdate) {
-				mb.recalculateForSubj(subj, ss)
+			ss := *ssptr
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				mb.mu.Lock()
+				mb.recalculateForSubj(bytesToString(subj), ss)
+				mb.mu.Unlock()
 			}
-			mb.mu.Unlock()
-			if ss == nil {
-				continue
-			}
-			for seq := ss.First; seq <= ss.Last && total > maxMsgsPer; {
-				m, _, err := mb.firstMatching(subj, false, seq, &sm)
-				if err == nil {
-					seq = m.seq + 1
-					if removed, _ := fs.removeMsgViaLimits(m.seq); removed {
-						total--
-						blks[mb] = struct{}{}
-					}
-				} else {
-					// On error just do single increment.
-					seq++
+			for first := ss.First; *total > maxMsgsPer && first <= ss.Last; {
+				m, _, err := mb.firstMatching(bytesToString(subj), false, first, &sm)
+				if err != nil {
+					break
+				}
+				first = m.seq + 1
+				if removed, _ := fs.removeMsgViaLimits(m.seq); removed {
+					blks[mb] = struct{}{}
+					*total--
 				}
 			}
-		}
+		})
 	}
 
 	// Expire the cache if we can.
@@ -8946,7 +8969,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	}
 
 	// Create new one regardless.
-	mb.fss = stree.NewSubjectTree[SimpleState]()
+	mb.fss = mb.fss.Empty()
 
 	var smv StoreMsg
 	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)

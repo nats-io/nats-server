@@ -418,3 +418,29 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, ordered bool, cb func(subject 
 	}
 	return true
 }
+
+// LazyIntersect iterates the smaller of the two provided subject trees and
+// looks for matching entries in the other. It is lazy in that it does not
+// aggressively optimize against repeated walks, but is considerably faster
+// in most cases than intersecting against a potentially large sublist.
+func LazyIntersect[TL, TR any](tl *SubjectTree[TL], tr *SubjectTree[TR], cb func([]byte, *TL, *TR)) {
+	if tl.root == nil || tr.root == nil {
+		return
+	}
+	// Iterate over the smaller tree to reduce the number of rounds.
+	if tl.Size() <= tr.Size() {
+		tl.IterFast(func(key []byte, v1 *TL) bool {
+			if v2, ok := tr.Find(key); ok {
+				cb(key, v1, v2)
+			}
+			return true
+		})
+	} else {
+		tr.IterFast(func(key []byte, v2 *TR) bool {
+			if v1, ok := tl.Find(key); ok {
+				cb(key, v1, v2)
+			}
+			return true
+		})
+	}
+}
