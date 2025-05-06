@@ -13,6 +13,47 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 jobs:
+  signoffs:
+    name: Sign-offs
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check all branch commits are signed off
+        if: github.event_name != 'pull_request'
+        run: |
+          for c in $(git rev-list --no-merges ${{ github.event.before }}..${{ github.event.after }}); do
+            if ! git log -1 --pretty=%B "$c" | grep -q '^Signed-off-by:'; then
+              echo "::error ::Commit $c has not been signed off in the commit message with a \`Signed-off-by:\` line"
+              git log -1 --pretty=format:"%h %s" "$c"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Check all PR commits are signed off
+        if: github.event_name == 'pull_request'
+        run: |
+          for c in $(git rev-list origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}); do
+            if ! git log -1 --pretty=%B "$c" | grep -q '^Signed-off-by:'; then
+              echo "::error ::Commit $c has not been signed off in the commit message with a \`Signed-off-by:\` line"
+              git log -1 --pretty=format:"%h %s" "$c"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Check PR description is signed off
+        if: github.event_name == 'pull_request'
+        run: |
+          if ! echo "${{ github.event.pull_request.body }}" | grep -Pq '^Signed-off-by:\s*(?!Your Name|.*<your\.email@example\.com>)'; then
+              echo "::error ::Pull request has not been signed off in the PR description with a \`Signed-off-by:\` line"
+              exit 1
+          fi
+
   lint:
     name: Lint
     runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
