@@ -44,6 +44,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/avl"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -4345,11 +4346,18 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	var numMsgs uint64
 
 	// collect all that are not correct.
-	needAttention := make(map[string]*psi)
+	needAttention := gsl.NewSublist[*psi]()
+	fblk, lblk := uint32(math.MaxUint32), uint32(0)
 	fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 		numMsgs += psi.total
 		if psi.total > maxMsgsPer {
-			needAttention[string(subj)] = psi
+			needAttention.Insert(string(subj), psi)
+			if psi.fblk < fblk {
+				fblk = psi.fblk
+			}
+			if psi.lblk > lblk {
+				lblk = psi.lblk
+			}
 		}
 		return true
 	})
@@ -4370,13 +4378,25 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		// Rebuild fs state too.
 		fs.rebuildStateLocked(nil)
 		// Need to redo blocks that need attention.
-		needAttention = make(map[string]*psi)
+		needAttention = gsl.NewSublist[*psi]()
+		fblk, lblk = uint32(math.MaxUint32), uint32(0)
 		fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 			if psi.total > maxMsgsPer {
-				needAttention[string(subj)] = psi
+				needAttention.Insert(string(subj), psi)
+			}
+			if psi.fblk < fblk {
+				fblk = psi.fblk
+			}
+			if psi.lblk > lblk {
+				lblk = psi.lblk
 			}
 			return true
 		})
+	}
+
+	// If nothing to do then stop.
+	if fblk == math.MaxUint32 || lblk == 0 {
+		return
 	}
 
 	// Collect all the msgBlks we alter.
@@ -4385,28 +4405,34 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	// For re-use below.
 	var sm StoreMsg
 
-	// Walk all subjects that need attention here.
-	for subj, info := range needAttention {
-		total, start, stop := info.total, info.fblk, info.lblk
-
-		for i := start; i <= stop; i++ {
-			mb := fs.bim[i]
-			if mb == nil {
-				continue
-			}
-			// Grab the ss entry for this subject in case sparse.
-			mb.mu.Lock()
-			mb.ensurePerSubjectInfoLoaded()
-			ss, ok := mb.fss.Find(stringToBytes(subj))
-			if ok && ss != nil && (ss.firstNeedsUpdate || ss.lastNeedsUpdate) {
-				mb.recalculateForSubj(subj, ss)
-			}
-			mb.mu.Unlock()
+	for i := fblk; i <= lblk; i++ {
+		mb := fs.bim[i]
+		if mb == nil {
+			continue
+		}
+		mb.mu.Lock()
+		mb.ensurePerSubjectInfoLoaded()
+		mb.mu.Unlock()
+		gsl.IntersectStree(mb.fss, needAttention, func(subj []byte, ss *SimpleState) {
 			if ss == nil {
-				continue
+				return
+			}
+			// Does the per subject state suggest we still need to do anything with this
+			// subject? If not then don't waste the time.
+			var ps *psi
+			needAttention.MatchBytes(subj, func(p *psi) {
+				ps = p
+			})
+			if ps == nil {
+				return
+			}
+			total := ps.total
+			// Update the first/last sequences for the subject if needed.
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				mb.recalculateForSubj(bytesToString(subj), ss)
 			}
 			for seq := ss.First; seq <= ss.Last && total > maxMsgsPer; {
-				m, _, err := mb.firstMatching(subj, false, seq, &sm)
+				m, _, err := mb.firstMatching(bytesToString(subj), false, seq, &sm)
 				if err == nil {
 					seq = m.seq + 1
 					if removed, _ := fs.removeMsgViaLimits(m.seq); removed {
@@ -4418,7 +4444,12 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 					seq++
 				}
 			}
-		}
+			// If we no longer need to prune this subject then take it out of
+			// the needs attention list to speed up intersection on future blocks.
+			if ps.total <= maxMsgsPer {
+				needAttention.Remove(bytesToString(subj), ps)
+			}
+		})
 	}
 
 	// Expire the cache if we can.
