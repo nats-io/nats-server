@@ -380,7 +380,7 @@ authorization {
 `
 
 func TestIncludeVariablesWithChecks(t *testing.T) {
-	p, err := parse(varIncludedVariablesSample, "", true)
+	p, err := parse(varIncludedVariablesSample, "", true, false)
 	if err != nil {
 		t.Fatalf("Received err: %v\n", err)
 	}
@@ -467,7 +467,7 @@ func TestParseWithNoValuesAreInvalid(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := parse(test.conf, "", true); err == nil {
+			if _, err := parse(test.conf, "", true, false); err == nil {
 				t.Error("expected an error")
 			} else if !strings.Contains(err.Error(), test.err) {
 				t.Errorf("expected invalid conf error, got: %v", err)
@@ -501,7 +501,7 @@ func TestParseWithNoValuesEmptyConfigsAreValid(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := parse(test.conf, "", true); err != nil {
+			if _, err := parse(test.conf, "", true, false); err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
@@ -543,7 +543,7 @@ func TestParseWithTrailingBracketsAreValid(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := parse(test.conf, "", true); err != nil {
+			if _, err := parse(test.conf, "", true, false); err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
@@ -612,7 +612,7 @@ func TestParseWithNoValuesIncludes(t *testing.T) {
 					}
 				}
 			}
-			if _, err := parse(test.input, f.Name(), true); err == nil {
+			if _, err := parse(test.input, f.Name(), true, false); err == nil {
 				t.Error("expected an error")
 			} else if !strings.Contains(err.Error(), test.err) || !strings.Contains(err.Error(), test.linepos) {
 				t.Errorf("expected invalid conf error, got: %v", err)
@@ -870,6 +870,61 @@ func TestBlocks(t *testing.T) {
 				t.Errorf("expected invalid conf error, got: %v", err)
 			} else if err != nil {
 				t.Error(err)
+			}
+		})
+	}
+}
+
+func TestParseFileSafely(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		input     string
+		digest    string
+		shouldErr string
+	}{
+		{
+			"Variables not allowed",
+			"foo = $VAR",
+			"",
+			"variable references are not allowed in safe mode, but got 'VAR' on line 1",
+		},
+		{
+			"Includes not allowed",
+			"include 'test.conf'",
+			"",
+			"includes are not allowed in safe mode, but got 'test.conf' on line 1",
+		},
+		{
+			"Parses with valid digest",
+			`foo = bar`,
+			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+			"",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sdir := t.TempDir()
+			f, err := os.CreateTemp(sdir, "nats.conf-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+				t.Error(err)
+			}
+			res, digest, err := ParseFileSafelyWithChecksDigest(f.Name())
+			if test.shouldErr != "" {
+				if err == nil {
+					t.Errorf("Expected an error, got none")
+				}
+				if !strings.Contains(err.Error(), test.shouldErr) {
+					t.Errorf("\ngot: %s\nexpected: %s", err, test.shouldErr)
+				}
+				if res != nil {
+					t.Errorf("expected nil result, got: %v", res)
+				}
+			}
+
+			if digest != test.digest {
+				t.Errorf("\ngot: %s\nexpected: %s", digest, test.digest)
 			}
 		})
 	}

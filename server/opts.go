@@ -294,6 +294,8 @@ type Options struct {
 	TraceHeaders               bool          `json:"-"`
 	NoLog                      bool          `json:"-"`
 	NoSigs                     bool          `json:"-"`
+	NoReload                   bool          `json:"-"` // prevents configuration file reloads
+	NoIncludes                 bool          `json:"-"` // prevents the use of `include` and variables in config files
 	NoSublistCache             bool          `json:"-"`
 	NoHeaderSupport            bool          `json:"-"`
 	DisableShortFirstPing      bool          `json:"-"`
@@ -896,15 +898,28 @@ func configureSystemAccount(o *Options, m map[string]any) (retErr error) {
 // achieve that with the non receiver ProcessConfigFile() version,
 // since one would not know after the call if "debug" was not present
 // or was present but set to false.
+//
+// If the NoIncludes option is set to true then the parser will error
+// if any Variables or `include` directives are used in the file
 func (o *Options) ProcessConfigFile(configFile string) error {
 	o.ConfigFile = configFile
 	if configFile == _EMPTY_ {
 		return nil
 	}
-	m, digest, err := conf.ParseFileWithChecksDigest(configFile)
+
+	var m map[string]any
+	var digest string
+	var err error
+
+	if o.NoIncludes {
+		m, digest, err = conf.ParseFileSafelyWithChecksDigest(configFile)
+	} else {
+		m, digest, err = conf.ParseFileWithChecksDigest(configFile)
+	}
 	if err != nil {
 		return err
 	}
+
 	o.configDigest = digest
 
 	return o.processConfigFile(configFile, m)
@@ -913,10 +928,20 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 // ProcessConfigString is the same as ProcessConfigFile, but expects the
 // contents of the config file to be passed in rather than the file name.
 func (o *Options) ProcessConfigString(data string) error {
-	m, err := conf.ParseWithChecks(data)
+	var m map[string]any
+	var digest string
+	var err error
+
+	if o.NoIncludes {
+		m, digest, err = conf.ParseSafelyWithChecksDigest(data)
+	} else {
+		m, digest, err = conf.ParseWithChecksDigest(data)
+	}
 	if err != nil {
 		return err
 	}
+
+	o.configDigest = digest
 
 	return o.processConfigFile(_EMPTY_, m)
 }
