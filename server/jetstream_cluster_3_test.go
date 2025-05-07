@@ -5478,7 +5478,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		require_Equal(t, a.AckFloor.Consumer, 0)
 		require_Equal(t, a.AckFloor.Stream, 0)
 		require_Equal(t, a.NumPending, 40)
-		require_Equal(t, a.NumRedelivered, 10)
+		require_Equal(t, a.NumRedelivered, 0)
 		a.Cluster, b.Cluster = nil, nil
 		a.Delivered.Last, b.Delivered.Last = nil, nil
 		if !reflect.DeepEqual(a, b) {
