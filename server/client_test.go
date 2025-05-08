@@ -1955,11 +1955,9 @@ func TestPingNotSentTooSoon(t *testing.T) {
 	if c.sendRTTPing() {
 		t.Fatalf("RTT ping should not have been sent")
 	}
-	// Speed up detection of time elapsed by moving the c.start to more than
-	// 2 secs in the past.
-	c.mu.Lock()
-	c.start = time.Unix(0, c.start.UnixNano()-int64(maxNoRTTPingBeforeFirstPong+time.Second))
-	c.mu.Unlock()
+	// Used to move c.start here but it is often causing race conditions,
+	// so we'll just wait instead.
+	time.Sleep(maxNoRTTPingBeforeFirstPong)
 
 	errCh := make(chan error, 1)
 	go func() {

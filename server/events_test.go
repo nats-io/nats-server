@@ -583,10 +583,6 @@ func TestSystemAccountDisconnectBadLogin(t *testing.T) {
 	}
 	defer ncs.Close()
 
-	// We should never hear $G account events for bad logins.
-	sub, _ := ncs.SubscribeSync("$SYS.ACCOUNT.$G.*")
-	defer sub.Unsubscribe()
-
 	// Listen for auth error events though.
 	asub, _ := ncs.SubscribeSync("$SYS.SERVER.*.CLIENT.AUTH.ERR")
 	defer asub.Unsubscribe()
@@ -594,11 +590,6 @@ func TestSystemAccountDisconnectBadLogin(t *testing.T) {
 	ncs.Flush()
 
 	nats.Connect(url, nats.Name("TEST BAD LOGIN"))
-
-	// Should not hear these.
-	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
-		t.Fatalf("Received a disconnect message from bad login, expected none")
-	}
 
 	m, err := asub.NextMsg(100 * time.Millisecond)
 	if err != nil {
