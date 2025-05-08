@@ -19118,6 +19118,85 @@ func TestJetStreamInterestMaxDeliveryReached(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/6874
+func TestJetStreamMaxDeliveryRedeliveredReporting(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Storage:   nats.FileStorage,
+		Subjects:  []string{"foo"},
+		Replicas:  1,
+		Retention: nats.LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	maxWait := 250 * time.Millisecond
+	cfg := &nats.ConsumerConfig{
+		Durable:    "CONSUMER",
+		AckPolicy:  nats.AckExplicitPolicy,
+		AckWait:    maxWait,
+		MaxDeliver: 1,
+	}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER", nats.BindStream("TEST"))
+	require_NoError(t, err)
+
+	nfo, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, nfo.State.Msgs, uint64(1))
+
+	msgs, err := sub.Fetch(1, nats.MaxWait(maxWait))
+	require_NoError(t, err)
+	require_Len(t, 1, len(msgs))
+
+	cnfo, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, cnfo.NumAckPending, 1)
+	require_Equal(t, cnfo.NumRedelivered, 0)
+
+	time.Sleep(2 * maxWait)
+
+	// Max deliver 1 so this will fail.
+	_, err = sub.Fetch(1, nats.MaxWait(maxWait))
+	require_Error(t, err)
+
+	// Redelivered should remain 0, as it doesn't get redelivered with MaxDeliver 1.
+	cnfo, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, cnfo.NumAckPending, 0)
+	require_Equal(t, cnfo.NumRedelivered, 0)
+
+	// With a higher MaxDeliver we should report it.
+	cfg.MaxDeliver = 2
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	cnfo, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, cnfo.NumAckPending, 0)
+	require_Equal(t, cnfo.NumRedelivered, 1)
+
+	// Unset should also report.
+	cfg.MaxDeliver = -1
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	cnfo, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, cnfo.NumAckPending, 0)
+	require_Equal(t, cnfo.NumRedelivered, 1)
+}
+
 func TestJetStreamRecoversStreamFirstSeqWhenNotEmpty(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

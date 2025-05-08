@@ -2976,6 +2976,11 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		TimeStamp:      time.Now().UTC(),
 		PriorityGroups: priorityGroups,
 	}
+	// Reset redelivered for MaxDeliver 1. Redeliveries are disabled so must not report it (is confusing otherwise).
+	// The state does still keep track of these messages.
+	if o.cfg.MaxDeliver == 1 {
+		info.NumRedelivered = 0
+	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
 		if info.Paused = time.Now().Before(p); info.Paused {
