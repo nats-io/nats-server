@@ -1143,3 +1143,50 @@ func TestLongClusterJetStreamRestartThenScaleStreamReplicas(t *testing.T) {
 	cancel()
 	wg.Wait()
 }
+
+func TestLongFileStoreEnforceMsgPerSubjectLimit(t *testing.T) {
+	td := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: td, BlockSize: 1024},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	t.Logf("Starting publishes")
+	for i := 0; i < 100_000; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%06d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+	// Now update some of them. Leave a bit of a mess with some big gaps.
+	for i := 0; i < 5_000_000; i++ {
+		n := rand.Int31n(100_000)
+		if n < 5000 {
+			continue
+		}
+		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%06d", n), nil, nil, 0)
+		require_NoError(t, err)
+	}
+	t.Logf("Publish complete")
+
+	require_NoError(t, fs.Stop())
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: td, BlockSize: 1024},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage,
+			MaxMsgsPer: 1,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Mangle the filestore state and then see how long it takes to enforce
+	// the per-subject limit.
+	fs.state.Msgs++
+	start := time.Now()
+	fs.enforceMsgPerSubjectLimit(false)
+	require_LessThan(t, time.Since(start), time.Minute)
+	t.Logf("Took %s", time.Since(start))
+}

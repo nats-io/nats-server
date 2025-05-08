@@ -923,3 +923,36 @@ func TestSubjectTreeMatchHasFWCNoPanic(t *testing.T) {
 	st.Insert(subj, 1)
 	st.Match([]byte("."), func(subject []byte, val *int) {})
 }
+
+func TestSubjectTreeLazyIntersect(t *testing.T) {
+	st1 := NewSubjectTree[int]()
+	st2 := NewSubjectTree[int]()
+
+	// Should cause an intersection.
+	st1.Insert([]byte("foo.bar"), 1)
+	st2.Insert([]byte("foo.bar"), 1)
+
+	// Should cause an intersection.
+	st1.Insert([]byte("foo.bar.baz.qux"), 1)
+	st2.Insert([]byte("foo.bar.baz.qux"), 1)
+
+	// Should not cause any intersections.
+	st1.Insert([]byte("bar"), 1)
+	st2.Insert([]byte("baz"), 1)
+	st1.Insert([]byte("a.b.c"), 1)
+	st2.Insert([]byte("a.b.d"), 1)
+	st1.Insert([]byte("a.b.ee"), 1)
+	st2.Insert([]byte("a.b.e"), 1)
+	st1.Insert([]byte("bb.c.d"), 1)
+	st2.Insert([]byte("b.c.d"), 1)
+	st2.Insert([]byte("foo.bar.baz.qux.alice"), 1)
+	st2.Insert([]byte("foo.bar.baz.qux.bob"), 1)
+
+	intersected := map[string]int{}
+	LazyIntersect(st1, st2, func(key []byte, val1, val2 *int) {
+		intersected[string(key)]++
+	})
+	require_Equal(t, len(intersected), 2)
+	require_Equal(t, intersected["foo.bar"], 1)
+	require_Equal(t, intersected["foo.bar.baz.qux"], 1)
+}
