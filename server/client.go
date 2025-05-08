@@ -15,8 +15,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -6066,10 +6068,22 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	}
 
 	if err != nil {
+		var detail string
+		var subjs []string
+		if ve, ok := err.(*tls.CertificateVerificationError); ok {
+			for _, cert := range ve.UnverifiedCertificates {
+				fp := sha256.Sum256(cert.Raw)
+				fph := hex.EncodeToString(fp[:])
+				subjs = append(subjs, fmt.Sprintf("%s SHA-256: %s", cert.Subject.String(), fph))
+			}
+		}
+		if len(subjs) > 0 {
+			detail = fmt.Sprintf(" (%s)", strings.Join(subjs, "; "))
+		}
 		if kind == CLIENT {
-			c.Errorf("TLS handshake error: %v", err)
+			c.Errorf("TLS handshake error: %v%s", err, detail)
 		} else {
-			c.Errorf("TLS %s handshake error: %v", typ, err)
+			c.Errorf("TLS %s handshake error: %v%s", typ, err, detail)
 		}
 		c.closeConnection(TLSHandshakeError)
 
