@@ -3876,3 +3876,45 @@ func TestSubszPagination(t *testing.T) {
 	require_Equal(t, len(subszFiltered.Subsz.Subs), 5)
 	require_Equal(t, subszFiltered.Subsz.Total, 10)
 }
+
+func TestServerEventsConnectDisconnectForGlobalAcc(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts {
+			$SYS {
+				users [{user: "admin", password: "pwd"}]
+			}
+		}
+	`))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncs, err := nats.Connect(url, nats.UserInfo("admin", "pwd"))
+	require_NoError(t, err)
+	defer ncs.Close()
+
+	s1, err := ncs.SubscribeSync(fmt.Sprintf(connectEventSubj, "*"))
+	require_NoError(t, err)
+	s2, err := ncs.SubscribeSync(fmt.Sprintf(disconnectEventSubj, "*"))
+	require_NoError(t, err)
+
+	// Connect to global account
+	ncg, err := nats.Connect(url, nats.UserInfo("", ""))
+	require_NoError(t, err)
+
+	// System account should get a connect event
+	msg, err := s1.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Subject, fmt.Sprintf(connectEventSubj, globalAccountName))
+
+	// Disconnect from global account
+	ncg.Close()
+
+	// System account should get a disconnect event
+	msg, err = s2.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Subject, fmt.Sprintf(disconnectEventSubj, globalAccountName))
+}
