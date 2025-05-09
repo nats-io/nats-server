@@ -7032,7 +7032,7 @@ func TestJetStreamClusterLeaderAbortsCatchupOnFollowerError(t *testing.T) {
 	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
-	snapshot := &streamSnapshot{
+	snapshot := &StreamReplicatedState{
 		Msgs:     state.Msgs,
 		Bytes:    state.Bytes,
 		FirstSeq: state.FirstSeq,

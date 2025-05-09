@@ -1036,7 +1036,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 			t.Fatalf("Expected %d msgs, got %d", tseq-2, state.Msgs)
 		}
 		expected := []uint64{10, 20}
-		if !reflect.DeepEqual(state.Deleted, expected) {
+		if !slices.Equal(state.Deleted, expected) {
 			t.Fatalf("Expected deleted to be %+v, got %+v\n", expected, state.Deleted)
 		}
 

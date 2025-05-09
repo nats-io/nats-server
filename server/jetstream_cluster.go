@@ -3145,21 +3145,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					return err
 				}
 			} else {
-				var snap streamSnapshot
-				if err := json.Unmarshal(e.Data, &snap); err != nil {
+				ss = &StreamReplicatedState{}
+				if err := json.Unmarshal(e.Data, ss); err != nil {
 					onBadState(err)
 					return err
-				}
-				// Convert over to StreamReplicatedState
-				ss = &StreamReplicatedState{
-					Msgs:     snap.Msgs,
-					Bytes:    snap.Bytes,
-					FirstSeq: snap.FirstSeq,
-					LastSeq:  snap.LastSeq,
-					Failed:   snap.Failed,
-				}
-				if len(snap.Deleted) > 0 {
-					ss.Deleted = append(ss.Deleted, DeleteSlice(snap.Deleted))
 				}
 			}
 
@@ -7824,17 +7813,6 @@ func (mset *stream) supportsBinarySnapshotLocked() bool {
 	return true
 }
 
-// StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
-// Legacy, replace with binary stream snapshots.
-type streamSnapshot struct {
-	Msgs     uint64   `json:"messages"`
-	Bytes    uint64   `json:"bytes"`
-	FirstSeq uint64   `json:"first_seq"`
-	LastSeq  uint64   `json:"last_seq"`
-	Failed   uint64   `json:"clfs"`
-	Deleted  []uint64 `json:"deleted,omitempty"`
-}
-
 // Grab a snapshot of a stream for clustered mode.
 func (mset *stream) stateSnapshot() []byte {
 	mset.mu.RLock()
@@ -7856,13 +7834,13 @@ func (mset *stream) stateSnapshotLocked() []byte {
 
 	// Older v1 version with deleted as a sorted []uint64.
 	state := mset.store.State()
-	snap := &streamSnapshot{
+	snap := &StreamReplicatedState{
 		Msgs:     state.Msgs,
 		Bytes:    state.Bytes,
 		FirstSeq: state.FirstSeq,
 		LastSeq:  state.LastSeq,
 		Failed:   mset.getCLFS(),
-		Deleted:  state.Deleted,
+		Deleted:  DeleteBlocks{state.Deleted},
 	}
 	b, _ := json.Marshal(snap)
 	return b

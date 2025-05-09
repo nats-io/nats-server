@@ -15,6 +15,7 @@ package server
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -167,7 +168,7 @@ type StreamState struct {
 	NumSubjects int               `json:"num_subjects,omitempty"`
 	Subjects    map[string]uint64 `json:"subjects,omitempty"`
 	NumDeleted  int               `json:"num_deleted,omitempty"`
-	Deleted     []uint64          `json:"deleted,omitempty"`
+	Deleted     DeleteSlice       `json:"deleted,omitempty"`
 	Lost        *LostStreamData   `json:"lost,omitempty"`
 	Consumers   int               `json:"consumer_count"`
 }
@@ -220,15 +221,46 @@ type DeleteBlock interface {
 
 type DeleteBlocks []DeleteBlock
 
+// Legacy JSON format is always as a single []uint64, so convert into that.
+func (d DeleteBlocks) MarshalJSON() ([]byte, error) {
+	// Optimize a little by working out what the total capacity needed
+	// for the new DeleteSlice.
+	var c uint64
+	for _, b := range d {
+		_, _, n := b.State()
+		c += n
+	}
+	// Range through and build the slice.
+	r := make([]uint64, 0, c)
+	for _, b := range d {
+		b.Range(func(f uint64) bool {
+			r = append(r, f)
+			return true
+		})
+	}
+	return json.Marshal(r)
+}
+
+// Legacy JSON format is always as a single []uint64, so convert from that.
+func (d *DeleteBlocks) UnmarshalJSON(b []byte) error {
+	*d = (*d)[:0]
+	s := DeleteSlice{}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	*d = append(*d, s)
+	return nil
+}
+
 // StreamReplicatedState represents what is encoded in a binary stream snapshot used
 // for stream replication in an NRG.
 type StreamReplicatedState struct {
-	Msgs     uint64
-	Bytes    uint64
-	FirstSeq uint64
-	LastSeq  uint64
-	Failed   uint64
-	Deleted  DeleteBlocks
+	Msgs     uint64       `json:"messages"`
+	Bytes    uint64       `json:"bytes"`
+	FirstSeq uint64       `json:"first_seq"`
+	LastSeq  uint64       `json:"last_seq"`
+	Failed   uint64       `json:"clfs"`
+	Deleted  DeleteBlocks `json:"deleted,omitempty"`
 }
 
 // Determine if this is an encoded stream state.

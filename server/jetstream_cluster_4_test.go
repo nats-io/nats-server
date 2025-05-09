@@ -3286,7 +3286,7 @@ func TestJetStreamClusterDesyncAfterQuitDuringCatchup(t *testing.T) {
 			require_NoError(t, err)
 
 			rn := mset.raftNode()
-			snap, err := json.Marshal(streamSnapshot{Msgs: 1, Bytes: 1, FirstSeq: 100, LastSeq: 100, Failed: 0, Deleted: nil})
+			snap, err := json.Marshal(StreamReplicatedState{Msgs: 1, Bytes: 1, FirstSeq: 100, LastSeq: 100, Failed: 0, Deleted: nil})
 			require_NoError(t, err)
 			esm := encodeStreamMsgAllowCompress("foo", _EMPTY_, nil, nil, 0, 0, false)
 

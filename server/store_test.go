@@ -16,8 +16,11 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
+
+	"github.com/nats-io/nats-server/v2/server/avl"
 )
 
 func testAllStoreAllPermutations(t *testing.T, compressionAndEncryption bool, cfg StreamConfig, fn func(t *testing.T, fs StreamStore)) {
@@ -534,4 +537,78 @@ func TestStorePurgeExZero(t *testing.T) {
 			require_Equal(t, ss.LastSeq, 0)
 		},
 	)
+}
+
+func TestStoreDeleteBlocksLegacyJSON(t *testing.T) {
+	expect := `[1,2,3,4,5,6,7,8]`
+
+	t.Run("MarshalAVL", func(t *testing.T) {
+		av := &avl.SequenceSet{}
+		for i := range uint64(8) {
+			av.Insert(i + 1)
+		}
+		db := DeleteBlocks{av}
+		j, err := json.Marshal(db)
+		require_NoError(t, err)
+		require_Equal(t, string(j), expect)
+	})
+
+	t.Run("MarshalRange", func(t *testing.T) {
+		r := &DeleteRange{
+			First: 1,
+			Num:   8,
+		}
+		db := DeleteBlocks{r}
+		j, err := json.Marshal(db)
+		require_NoError(t, err)
+		require_Equal(t, string(j), expect)
+	})
+
+	t.Run("MarshalSlice", func(t *testing.T) {
+		s := &DeleteSlice{1, 2, 3, 4, 5, 6, 7, 8}
+		db := DeleteBlocks{s}
+		j, err := json.Marshal(db)
+		require_NoError(t, err)
+		require_Equal(t, string(j), expect)
+	})
+
+	t.Run("MarshalAVLRange", func(t *testing.T) {
+		av := &avl.SequenceSet{}
+		for i := range uint64(5) {
+			av.Insert(i + 1)
+		}
+		r := &DeleteRange{
+			First: 6,
+			Num:   3,
+		}
+		db := DeleteBlocks{av, r}
+		j, err := json.Marshal(db)
+		require_NoError(t, err)
+		require_Equal(t, string(j), expect)
+	})
+
+	t.Run("MarshalAVLRangeSlice", func(t *testing.T) {
+		av := &avl.SequenceSet{}
+		for i := range uint64(4) {
+			av.Insert(i + 1)
+		}
+		r := &DeleteRange{
+			First: 5,
+			Num:   2,
+		}
+		s := DeleteSlice{7, 8}
+		db := DeleteBlocks{av, r, s}
+		j, err := json.Marshal(db)
+		require_NoError(t, err)
+		require_Equal(t, string(j), expect)
+	})
+
+	t.Run("Unmarshal", func(t *testing.T) {
+		var db DeleteBlocks
+		require_NoError(t, json.Unmarshal([]byte(expect), &db))
+		require_Len(t, len(db), 1)
+		s, ok := db[0].(DeleteSlice)
+		require_True(t, ok)
+		require_Len(t, len(s), 8)
+	})
 }
