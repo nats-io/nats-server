@@ -2446,13 +2446,11 @@ func (s *Server) accountConnectEvent(c *client) {
 		s.mu.Unlock()
 		return
 	}
-	gacc := s.gacc
 	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
-	// Ignore global account activity
-	if c.acc == nil || c.acc == gacc {
+	if c.acc == nil {
 		c.mu.Unlock()
 		return
 	}
@@ -2495,18 +2493,15 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 		s.mu.Unlock()
 		return
 	}
-	gacc := s.gacc
 	eid := s.nextEventID()
 	s.mu.Unlock()
 
 	c.mu.Lock()
 
-	// Ignore global account activity
-	if c.acc == nil || c.acc == gacc {
+	if c.acc == nil {
 		c.mu.Unlock()
 		return
 	}
-
 	m := DisconnectEventMsg{
 		TypedEvent: TypedEvent{
 			Type: DisconnectEventMsgType,
