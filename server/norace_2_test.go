@@ -3395,3 +3395,32 @@ func TestNoRaceFileStorePurgeExAsyncTombstones(t *testing.T) {
 	// With async and flush for all tombstones will be ~30x
 	require_True(t, elapsed*50 > elapsed2)
 }
+
+// Chck that we do not leak any go routines from access time optimization.
+func TestNoRaceAccessTimeLeakCheck(t *testing.T) {
+	time.Sleep(time.Second)
+	ngrp := runtime.NumGoroutine()
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("Hello World"))
+	require_NoError(t, err)
+
+	// Close down client and server.
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	ngra := runtime.NumGoroutine()
+	require_Equal(t, ngrp, ngra)
+}

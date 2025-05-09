@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nuid"
 )
 
@@ -6591,7 +6593,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 	}
 	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
 	// needing to worry about last write times blocking forced expiration.
-	time.Sleep(expire + accessTimeTickInterval)
+	time.Sleep(expire + ats.TickInterval)
 
 	checkNoCache := func() {
 		t.Helper()
@@ -9583,5 +9585,25 @@ func TestFileStoreRecoverDoesNotResetStreamState(t *testing.T) {
 	fs, err = newFileStoreWithCreated(fs.fcfg, cfg, time.Now(), prf(&fs.fcfg), nil)
 	require_NoError(t, err)
 	require_True(t, fs.state.FirstSeq|fs.state.LastSeq != 0)
+}
 
+func TestFileStoreAccessTimeSpinUp(t *testing.T) {
+	// In case running lots of tests.
+	time.Sleep(time.Second)
+	ngr := runtime.NumGoroutine()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	at := ats.AccessTime()
+	require_True(t, at != 0)
+
+	// Now check we also cleanup.
+	fs.Stop()
+	time.Sleep(2 * ats.TickInterval)
+	ngra := runtime.NumGoroutine()
+	require_Equal(t, ngr, ngra)
 }
