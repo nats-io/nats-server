@@ -424,38 +424,48 @@ func (s *Server) newGateway(opts *Options) error {
 func (g *srvGateway) updateRemotesTLSConfig(opts *Options) {
 	g.Lock()
 	defer g.Unlock()
-
-	for _, ro := range opts.Gateway.Gateways {
-		if ro.Name == g.name {
+	// Instead of going over opts.Gateway.Gateways, which would include only
+	// explicit remotes, we are going to go through g.remotes.
+	for name, cfg := range g.remotes {
+		if name == g.name {
 			continue
 		}
-		if cfg, ok := g.remotes[ro.Name]; ok {
-			cfg.Lock()
-			// If TLS config is in remote, use that one, otherwise,
-			// use the TLS config from the main block.
-			if ro.TLSConfig != nil {
-				cfg.TLSConfig = ro.TLSConfig.Clone()
-			} else if opts.Gateway.TLSConfig != nil {
-				cfg.TLSConfig = opts.Gateway.TLSConfig.Clone()
-			}
-
-			// Ensure that OCSP callbacks are always setup after a reload if needed.
-			mustStaple := opts.OCSPConfig != nil && opts.OCSPConfig.Mode == OCSPModeAlways
-			if mustStaple && opts.Gateway.TLSConfig != nil {
-				clientCB := opts.Gateway.TLSConfig.GetClientCertificate
-				verifyCB := opts.Gateway.TLSConfig.VerifyConnection
-				if mustStaple && cfg.TLSConfig != nil {
-					if clientCB != nil && cfg.TLSConfig.GetClientCertificate == nil {
-						cfg.TLSConfig.GetClientCertificate = clientCB
-					}
-					if verifyCB != nil && cfg.TLSConfig.VerifyConnection == nil {
-						cfg.TLSConfig.VerifyConnection = verifyCB
-					}
+		var ro *RemoteGatewayOpts
+		// We now need to go back and find the RemoteGatewayOpts but only if
+		// this remote is explicit (otherwise it won't be found).
+		if !cfg.isImplicit() {
+			for _, r := range opts.Gateway.Gateways {
+				if r.Name == name {
+					ro = r
+					break
 				}
 			}
-
-			cfg.Unlock()
 		}
+		cfg.Lock()
+		// If we have an `ro` (that means an explicitly defined remote gateway)
+		// and it has an explicit TLS config, use that one, otherwise (no explicit
+		// TLS config in the remote, or implicit remote), use the TLS config from
+		// the main block.
+		if ro != nil && ro.TLSConfig != nil {
+			cfg.TLSConfig = ro.TLSConfig.Clone()
+		} else if opts.Gateway.TLSConfig != nil {
+			cfg.TLSConfig = opts.Gateway.TLSConfig.Clone()
+		}
+		// Ensure that OCSP callbacks are always setup after a reload if needed.
+		mustStaple := opts.OCSPConfig != nil && opts.OCSPConfig.Mode == OCSPModeAlways
+		if mustStaple && opts.Gateway.TLSConfig != nil {
+			clientCB := opts.Gateway.TLSConfig.GetClientCertificate
+			verifyCB := opts.Gateway.TLSConfig.VerifyConnection
+			if mustStaple && cfg.TLSConfig != nil {
+				if clientCB != nil && cfg.TLSConfig.GetClientCertificate == nil {
+					cfg.TLSConfig.GetClientCertificate = clientCB
+				}
+				if verifyCB != nil && cfg.TLSConfig.VerifyConnection == nil {
+					cfg.TLSConfig.VerifyConnection = verifyCB
+				}
+			}
+		}
+		cfg.Unlock()
 	}
 }
 
