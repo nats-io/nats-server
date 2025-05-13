@@ -205,6 +205,7 @@ type fileStore struct {
 	ttls        *thw.HashWheel
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
+	evict       *ipQueue[*msgBlock]
 }
 
 // Represents a message store block and its data.
@@ -313,6 +314,8 @@ const (
 	maxBufReuse = 2 * 1024 * 1024
 	// default cache buffer expiration
 	defaultCacheBufferExpiration = 10 * time.Second
+	// deault cache size before eviction
+	defaultCacheEvictionThreshold = 32
 	// default sync interval
 	defaultSyncInterval = 2 * time.Minute
 	// default idle timeout to close FDs.
@@ -420,6 +423,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		qch:    make(chan struct{}),
 		fsld:   make(chan struct{}),
 		srv:    fcfg.srv,
+		evict:  newIPQueue[*msgBlock](nil, _EMPTY_),
 	}
 
 	// Register with access time service.
@@ -7058,6 +7062,14 @@ checkCache:
 	if len(buf) > 0 {
 		mb.cloads++
 		mb.startCacheExpireTimer()
+
+		// If loading this block into the cache caused us to reach the eviction
+		// threshold for cached blocks, evict the oldest one.
+		if n, _ := mb.fs.evict.push(mb); n == defaultCacheEvictionThreshold {
+			if emb, ok := mb.fs.evict.popOne(); ok && emb != mb {
+				emb.tryForceExpireCache()
+			}
+		}
 	}
 
 	return nil
