@@ -5945,28 +5945,43 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		l |= hbit
 	}
 
-	// Reserve space for the header on the underlying buffer.
-	mb.cache.buf = append(mb.cache.buf, make([]byte, msgHdrSize)...)
-	hdr := mb.cache.buf[len(mb.cache.buf)-msgHdrSize : len(mb.cache.buf)]
-	le.PutUint32(hdr[0:], l)
-	le.PutUint64(hdr[4:], seq)
-	le.PutUint64(hdr[12:], uint64(ts))
-	le.PutUint16(hdr[20:], uint16(len(subj)))
-
-	// Now write to underlying buffer.
-	mb.cache.buf = append(mb.cache.buf, subj...)
-
+	// To avoid reallocations, work out how big the new record will be and if
+	// we can fit it in existing mb.cache.buf capacity, or if we can keep our
+	// scratch record on the stack, or if we just have to make() after all.
+	rsz := msgHdrSize + len(subj) + len(msg) + highwayhash.Size64
 	if hasHeaders {
-		var hlen [4]byte
-		le.PutUint32(hlen[0:], uint32(len(mhdr)))
-		mb.cache.buf = append(mb.cache.buf, hlen[:]...)
-		mb.cache.buf = append(mb.cache.buf, mhdr...)
+		rsz += 4 + len(mhdr)
 	}
-	mb.cache.buf = append(mb.cache.buf, msg...)
+	var record []byte
+	if len(mb.cache.buf)+rsz < cap(mb.cache.buf) {
+		// There's enough free capacity at the end of mb.cache.buf.
+		record = mb.cache.buf[len(mb.cache.buf):]
+	} else if rsz <= 8192 {
+		// Not enough free capacity so mb.cache.buf will reallocate, but the
+		// record is small enough to keep scratch space on disk.
+		var _record [8192]byte
+		record = _record[:0]
+	} else {
+		// Not enough free capacity so mb.cache.buf will reallocate, and we
+		// have to make a larger scratch space, probably on the heap.
+		record = make([]byte, 0, rsz)
+	}
+
+	// Write out the record header.
+	record = le.AppendUint32(record, l)
+	record = le.AppendUint64(record, seq)
+	record = le.AppendUint64(record, uint64(ts))
+	record = le.AppendUint16(record, uint16(len(subj)))
+	record = append(record, subj...)
+	if hasHeaders {
+		record = le.AppendUint32(record, uint32(len(mhdr)))
+		record = append(record, mhdr...)
+	}
+	record = append(record, msg...)
 
 	// Calculate hash.
 	mb.hh.Reset()
-	mb.hh.Write(hdr[4:20])
+	mb.hh.Write(record[4:20])
 	mb.hh.Write(stringToBytes(subj))
 	if hasHeaders {
 		mb.hh.Write(mhdr)
@@ -5977,7 +5992,8 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 
 	// Update write through cache.
 	// Write to msg record.
-	mb.cache.buf = append(mb.cache.buf, checksum...)
+	record = append(record, checksum...)
+	mb.cache.buf = append(mb.cache.buf, record...)
 	mb.cache.lrl = uint32(rl)
 
 	// Set cache timestamp for last store.
