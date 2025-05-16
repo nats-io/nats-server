@@ -5378,6 +5378,92 @@ func TestJetStreamClusterServerPeerRemovePeersDrift(t *testing.T) {
 	})
 }
 
+func TestJetStreamStreamTagPlacement(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for i, c := range []nats.StreamConfig{
+		{Replicas: 1, Placement: &nats.Placement{Tags: []string{"!S-1", "!S-2", "!S-3"}}}, // exclude all servers.
+		{Replicas: 2, Placement: &nats.Placement{Tags: []string{"!S-1", "!S-2"}}},         // exclude two servers.
+		{Replicas: 3, Placement: &nats.Placement{Tags: []string{"!S-2"}}},                 // not enough server.
+	} {
+		c.Name = fmt.Sprintf("TEST%d", i)
+		c.Subjects = []string{c.Name}
+		_, err := js.AddStream(&c)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "no suitable peers for placement", "tags excluded", "S-2")
+	}
+
+	// Test adding excluded tags to an existing stream.
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	cfg.Placement = &nats.Placement{Tags: []string{"!S-1"}}
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "no suitable peers for placement", "tags excluded", "S-1")
+
+	// Test changing replicas to 2 and then add the excluded tag.
+	cfg.Replicas = 2
+	cfg.Placement = nil
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	var leaderName string
+	// Wait until we have two replicas
+	checkFor(t, 6*time.Second, 1*time.Second, func() error {
+		s, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+
+		if s.Cluster.Leader == "" {
+			return fmt.Errorf("no leader yet")
+		}
+
+		if len(s.Cluster.Replicas) != 1 {
+			return fmt.Errorf("expected 1 replica, got %d", len(s.Cluster.Replicas))
+		}
+		leaderName = s.Cluster.Leader
+		return nil
+	})
+
+	// Now that we only have two servers, we can exclude one.
+	cfg.Replicas = 2
+	cfg.Placement = &nats.Placement{Tags: []string{"!" + leaderName}}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Check that the stream grab the correct servers.
+	// This can take a bit as we need to first add the new replica and later remove the old one.
+	checkFor(t, 6*time.Second, 1*time.Second, func() error {
+		s, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+
+		if len(s.Cluster.Replicas) != 1 {
+			return fmt.Errorf("expected 1 replica, got %d", len(s.Cluster.Replicas))
+		}
+
+		if s.Cluster.Leader == leaderName {
+			return fmt.Errorf("expected leader to be different than %q", leaderName)
+		}
+
+		if s.Cluster.Replicas[0].Name == leaderName {
+			return fmt.Errorf("expected replica to be different than %q", leaderName)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamClusterObserverNotElectedMetaLeader(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
