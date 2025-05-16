@@ -641,7 +641,13 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 func (ms *memStore) AllLastSeqs() ([]uint64, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+	return ms.allLastSeqsLocked()
+}
 
+// allLastSeqsLocked will return a sorted list of last sequences for all
+// subjects, but won't take the lock to do it, to avoid the issue of compounding
+// read locks causing a deadlock with a write lock.
+func (ms *memStore) allLastSeqsLocked() ([]uint64, error) {
 	if len(ms.msgs) == 0 {
 		return nil, nil
 	}
@@ -685,7 +691,7 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 
 	// See if we can short circuit if we think they are asking for all last sequences and have no maxSeq or maxAllowed set.
 	if maxSeq == 0 && maxAllowed <= 0 && ms.filterIsAll(filters) {
-		return ms.AllLastSeqs()
+		return ms.allLastSeqsLocked()
 	}
 
 	// Implied last sequence.
