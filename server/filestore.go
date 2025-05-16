@@ -3042,7 +3042,13 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 func (fs *fileStore) AllLastSeqs() ([]uint64, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.allLastSeqsLocked()
+}
 
+// allLastSeqsLocked will return a sorted list of last sequences for all
+// subjects, but won't take the lock to do it, to avoid the issue of compounding
+// read locks causing a deadlock with a write lock.
+func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
 		return nil, nil
 	}
@@ -3113,7 +3119,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 
 	// See if we can short circuit if we think they are asking for all last sequences and have no maxSeq or maxAllowed set.
 	if maxSeq == 0 && maxAllowed <= 0 && fs.filterIsAll(filters) {
-		return fs.AllLastSeqs()
+		return fs.allLastSeqsLocked()
 	}
 
 	lastBlkIndex := len(fs.blks) - 1
