@@ -2344,6 +2344,10 @@ func TestServerEventsHealthZClustered(t *testing.T) {
 		t.Fatalf("Error creating consumer: %v", err)
 	}
 
+	c.waitOnStreamLeader("ONE", "test")
+	c.waitOnConsumerLeader("ONE", "test", "cons")
+	c.waitOnAllCurrent()
+
 	subj := fmt.Sprintf(serverHealthzReqSubj, c.servers[0].ID())
 	pingSubj := fmt.Sprintf(serverHealthzReqSubj, "PING")
 
