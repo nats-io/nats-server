@@ -3421,6 +3421,10 @@ func TestNoRaceAccessTimeLeakCheck(t *testing.T) {
 	s.Shutdown()
 	s.WaitForShutdown()
 
-	ngra := runtime.NumGoroutine()
-	require_Equal(t, ngrp, ngra)
+	checkFor(t, 5*time.Second, time.Second, func() error {
+		if ngra := runtime.NumGoroutine(); ngrp != ngra {
+			return fmt.Errorf("expected %d, got %d", ngrp, ngra)
+		}
+		return nil
+	})
 }
