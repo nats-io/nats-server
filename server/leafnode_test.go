@@ -9965,7 +9965,13 @@ func TestLeafNodePermissionWithLiteralSubjectAndQueueInterest(t *testing.T) {
 	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("user", "pwd"))
 	defer ncHub.Close()
 
-	resp, err := ncHub.Request("my.subject", []byte("hello"), time.Second)
-	require_NoError(t, err)
+	var resp *nats.Msg
+	var err error
+	checkFor(t, 5*time.Second, time.Second, func() error {
+		// Make sure we don't fail the test on the first "no responders", might
+		// take time for the sub to propagate.
+		resp, err = ncHub.Request("my.subject", []byte("hello"), time.Second)
+		return err
+	})
 	require_Equal(t, "OK", string(resp.Data))
 }

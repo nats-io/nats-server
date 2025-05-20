@@ -2486,7 +2486,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		mb.mu.Unlock()
 	}()
 
-	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
+	fseq, isAll := start, filter == _EMPTY_ || filter == fwcs
 
 	var didLoad bool
 	if mb.fssNotLoaded() {
@@ -2514,18 +2514,15 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 	}
 	// Make sure to start at mb.first.seq if fseq < mb.first.seq
-	if seq := atomic.LoadUint64(&mb.first.seq); seq > fseq {
-		fseq = seq
-	}
+	fseq = max(fseq, atomic.LoadUint64(&mb.first.seq))
 	lseq := atomic.LoadUint64(&mb.last.seq)
 
 	// Optionally build the isMatch for wildcard filters.
-	_tsa, _fsa := [32]string{}, [32]string{}
-	tsa, fsa := _tsa[:0], _fsa[:0]
 	var isMatch func(subj string) bool
 	// Decide to build.
 	if wc {
-		fsa = tokenizeSubjectIntoSlice(fsa[:0], filter)
+		_tsa, _fsa := [32]string{}, [32]string{}
+		tsa, fsa := _tsa[:0], tokenizeSubjectIntoSlice(_fsa[:0], filter)
 		isMatch = func(subj string) bool {
 			tsa = tokenizeSubjectIntoSlice(tsa[:0], subj)
 			return isSubsetMatchTokenized(tsa, fsa)
@@ -2545,42 +2542,28 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 
 	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
-		if wc {
-			subs = subs[:0]
-			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, _ *SimpleState) {
-				subs = append(subs, string(bsubj))
-			})
-			// Check if we matched anything
-			if len(subs) == 0 {
-				return nil, didLoad, ErrStoreMsgNotFound
-			}
-		}
 		fseq = lseq + 1
-		for _, subj := range subs {
-			ss, _ := mb.fss.Find(stringToBytes(subj))
-			if ss != nil && (ss.firstNeedsUpdate || ss.lastNeedsUpdate) {
-				mb.recalculateForSubj(subj, ss)
+		if bfilter := stringToBytes(filter); wc {
+			mb.fss.Match(bfilter, func(bsubj []byte, ss *SimpleState) {
+				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+					mb.recalculateForSubj(bytesToString(bsubj), ss)
+				}
+				if start <= ss.Last {
+					fseq = min(fseq, max(start, ss.First))
+				}
+			})
+		} else if ss, _ := mb.fss.Find(bfilter); ss != nil {
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				mb.recalculateForSubj(filter, ss)
 			}
-			if ss == nil || start > ss.Last || ss.First >= fseq {
-				continue
-			}
-			if ss.First < start {
-				fseq = start
-			} else {
-				fseq = ss.First
+			if start <= ss.Last {
+				fseq = min(fseq, max(start, ss.First))
 			}
 		}
 	}
 
 	if fseq > lseq {
 		return nil, didLoad, ErrStoreMsgNotFound
-	}
-
-	// If we guess to not do a linear scan, but the above resulted in alot of subs that will
-	// need to be checked for every scanned message, revert.
-	// TODO(dlc) - we could memoize the subs across calls.
-	if !doLinearScan && len(subs) > int(lseq-fseq) {
-		doLinearScan = true
 	}
 
 	// Need messages loaded from here on out.
@@ -2615,18 +2598,10 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		if isAll {
 			return fsm, expireOk, nil
 		}
-		if doLinearScan {
-			if wc && isMatch(sm.subj) {
-				return fsm, expireOk, nil
-			} else if !wc && fsm.subj == filter {
-				return fsm, expireOk, nil
-			}
-		} else {
-			for _, subj := range subs {
-				if fsm.subj == subj {
-					return fsm, expireOk, nil
-				}
-			}
+		if wc && isMatch(sm.subj) {
+			return fsm, expireOk, nil
+		} else if !wc && fsm.subj == filter {
+			return fsm, expireOk, nil
 		}
 		// If we are here we did not match, so put the llseq back.
 		mb.llseq = llseq
@@ -3042,7 +3017,13 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 func (fs *fileStore) AllLastSeqs() ([]uint64, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.allLastSeqsLocked()
+}
 
+// allLastSeqsLocked will return a sorted list of last sequences for all
+// subjects, but won't take the lock to do it, to avoid the issue of compounding
+// read locks causing a deadlock with a write lock.
+func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
 		return nil, nil
 	}
@@ -3113,7 +3094,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 
 	// See if we can short circuit if we think they are asking for all last sequences and have no maxSeq or maxAllowed set.
 	if maxSeq == 0 && maxAllowed <= 0 && fs.filterIsAll(filters) {
-		return fs.AllLastSeqs()
+		return fs.allLastSeqsLocked()
 	}
 
 	lastBlkIndex := len(fs.blks) - 1

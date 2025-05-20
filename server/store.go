@@ -55,7 +55,7 @@ var (
 	// while a snapshot is in progress.
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
 	// ErrMsgTooLarge is returned when a message is considered too large.
-	ErrMsgTooLarge = errors.New("message to large")
+	ErrMsgTooLarge = errors.New("message too large")
 	// ErrStoreWrongType is for when you access the wrong storage type.
 	ErrStoreWrongType = errors.New("wrong storage type")
 	// ErrNoAckPolicy is returned when trying to update a consumer's acks with no ack policy.
