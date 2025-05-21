@@ -956,3 +956,25 @@ func TestSubjectTreeLazyIntersect(t *testing.T) {
 	require_Equal(t, intersected["foo.bar"], 1)
 	require_Equal(t, intersected["foo.bar.baz.qux"], 1)
 }
+
+func TestSubjectTreeDeleteShortSubjectNoPanic(t *testing.T) {
+	defer func() {
+		p := recover()
+		require_True(t, p == nil)
+	}()
+
+	st := NewSubjectTree[int]()
+
+	st.Insert(b("foo.bar.baz"), 1)
+	st.Insert(b("foo.bar.qux"), 2)
+
+	v, found := st.Delete(b("foo.bar"))
+	require_False(t, found)
+	require_Equal(t, v, nil)
+	v, found = st.Find(b("foo.bar.baz"))
+	require_True(t, found)
+	require_Equal(t, *v, 1)
+	v, found = st.Find(b("foo.bar.qux"))
+	require_True(t, found)
+	require_Equal(t, *v, 2)
+}
