@@ -124,7 +124,7 @@ func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
 	t.match(t.root, parts, _pre[:0], cb)
 }
 
-// IterOrdered will walk all entries in the SubjectTree lexographically. The callback can return false to terminate the walk.
+// IterOrdered will walk all entries in the SubjectTree lexicographically. The callback can return false to terminate the walk.
 func (t *SubjectTree[T]) IterOrdered(cb func(subject []byte, val *T) bool) {
 	if t == nil || t.root == nil {
 		return
@@ -244,6 +244,10 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 	}
 	// Not a leaf node.
 	if bn := n.base(); len(bn.prefix) > 0 {
+		// subject could be shorter and would panic on bad index into subject slice.
+		if len(subject) < si+len(bn.prefix) {
+			return nil, false
+		}
 		if !bytes.Equal(subject[si:si+len(bn.prefix)], bn.prefix) {
 			return nil, false
 		}
@@ -377,7 +381,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 	}
 }
 
-// Interal iter function to walk nodes in lexigraphical order.
+// Internal iter function to walk nodes in lexicographical order.
 func (t *SubjectTree[T]) iter(n node, pre []byte, ordered bool, cb func(subject []byte, val *T) bool) bool {
 	if n.isLeaf() {
 		ln := n.(*leaf[T])
