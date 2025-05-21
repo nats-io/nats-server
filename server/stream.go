@@ -4542,8 +4542,15 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// If we have UpToTime set get the proper sequence.
 	if req.UpToTime != nil {
 		upToSeq = store.GetSeqFromTime((*req.UpToTime).UTC())
+		// Avoid selecting a first sequence that will take us to before the stream first
+		// sequence, otherwise we can return messages after the supplied UpToTime.
+		if upToSeq <= mset.state().FirstSeq {
+			hdr := []byte("NATS/1.0 404 No Results\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
 		// We need to back off one since this is used to determine start sequence normally,
-		// were as here we want it to be the ceiling.
+		// whereas here we want it to be the ceiling.
 		upToSeq--
 	}
 	// If not set, set to the last sequence and remember that for EOB.
