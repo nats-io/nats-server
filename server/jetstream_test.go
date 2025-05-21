@@ -19997,3 +19997,75 @@ func TestJetStreamPurgeExSeqInInteriorDeleteGap(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamDirectGetUpToTime(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+		Storage:     nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	for i := range 10 {
+		sendStreamMsg(t, nc, "foo", fmt.Sprintf("message %d", i+1))
+	}
+
+	sendRequest := func(mreq *JSApiMsgGetRequest) *nats.Subscription {
+		t.Helper()
+		req, err := json.Marshal(mreq)
+		require_NoError(t, err)
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		require_NoError(t, nc.PublishRequest("$JS.API.DIRECT.GET.TEST", reply, req))
+		return sub
+	}
+
+	checkResponses := func(t *testing.T, upToTime time.Time, expected ...string) {
+		t.Helper()
+		sub := sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo"}, UpToTime: &upToTime})
+		defer sub.Unsubscribe()
+		for _, expect := range expected {
+			msg, err := sub.NextMsg(25 * time.Millisecond)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get(JSSubject), "foo")
+			require_Equal(t, bytesToString(msg.Data), expect)
+		}
+		// By this time we're either at the end of our expected and looking
+		// for an EOB marker (204) or we're not finding anything (404).
+		msg, err := sub.NextMsg(25 * time.Millisecond)
+		require_NoError(t, err)
+		if len(expected) == 0 {
+			require_Equal(t, msg.Header.Get("Status"), "404")
+		} else {
+			require_Equal(t, msg.Header.Get("Status"), "204")
+		}
+	}
+
+	t.Run("DistantPast", func(t *testing.T) {
+		checkResponses(t, time.Time{})
+	})
+
+	t.Run("DistantFuture", func(t *testing.T) {
+		checkResponses(t, time.Unix(0, math.MaxInt64), "message 10")
+	})
+
+	t.Run("BeforeFirstSeq", func(t *testing.T) {
+		first, err := js.GetMsg("TEST", 1)
+		require_NoError(t, err)
+		checkResponses(t, first.Time)
+	})
+
+	t.Run("BeforeFifthSeq", func(t *testing.T) {
+		fifth, err := js.GetMsg("TEST", 5)
+		require_NoError(t, err)
+		checkResponses(t, fifth.Time, "message 4")
+	})
+}
