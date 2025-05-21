@@ -76,8 +76,8 @@ func runSolicitLeafServerToURL(surl string) (*server.Server, *server.Options) {
 	return RunServer(&o), &o
 }
 
-func runSolicitLeafServerCustomDialer(lso *server.Options,dialer server.CustomDialer) (*server.Server, *server.Options) {
-	surl := fmt.Sprintf("nats-leaf://%s:%d", lso.LeafNode.Host, lso.LeafNode.Port
+func runSolicitLeafServerCustomDialer(lso *server.Options, dialer server.CustomDialer) (*server.Server, *server.Options) {
+	surl := fmt.Sprintf("nats-leaf://%s:%d", lso.LeafNode.Host, lso.LeafNode.Port)
 	o := DefaultTestOptions
 	o.Port = -1
 	o.NoSystemAccount = true
