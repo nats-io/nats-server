@@ -20069,3 +20069,47 @@ func TestJetStreamDirectGetUpToTime(t *testing.T) {
 		checkResponses(t, fifth.Time, "message 4")
 	})
 }
+
+func TestJetStreamDirectGetStartTimeSingleMsg(t *testing.T) {
+	for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:        "TEST",
+				Subjects:    []string{"foo"},
+				AllowDirect: true,
+				Storage:     storage,
+			})
+			require_NoError(t, err)
+
+			sendStreamMsg(t, nc, "foo", "message")
+
+			sendRequest := func(mreq *JSApiMsgGetRequest) *nats.Subscription {
+				t.Helper()
+				req, err := json.Marshal(mreq)
+				require_NoError(t, err)
+				reply := nats.NewInbox()
+				sub, err := nc.SubscribeSync(reply)
+				require_NoError(t, err)
+				require_NoError(t, nc.PublishRequest("$JS.API.DIRECT.GET.TEST", reply, req))
+				return sub
+			}
+
+			first, err := js.GetMsg("TEST", 1)
+			require_NoError(t, err)
+
+			future := first.Time.Add(10 * time.Second)
+			sub := sendRequest(&JSApiMsgGetRequest{StartTime: &future, NextFor: "foo", Batch: 1})
+			defer sub.Unsubscribe()
+
+			msg, err := sub.NextMsg(25 * time.Millisecond)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Status"), "404")
+		})
+	}
+}

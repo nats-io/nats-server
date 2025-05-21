@@ -369,7 +369,7 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 		}
 	}
 	if lmsg == nil {
-		return ms.state.FirstSeq
+		return ms.state.LastSeq + 1
 	}
 
 	last := lmsg.ts
