@@ -124,6 +124,14 @@ func TestConfigReloadNoConfigFile(t *testing.T) {
 	}
 }
 
+func TestConfigReloadDisabled(t *testing.T) {
+	server := New(&Options{NoSigs: true, NoReload: true})
+	err := server.Reload()
+	if err == nil || err.Error() != "can not reload config when NoReload is set" {
+		t.Fatalf("Expected error to be 'can not reload config when NoReload is set', got: %v", err)
+	}
+}
+
 // Ensure Reload returns an error when attempting to change an option which
 // does not support reloading.
 func TestConfigReloadUnsupported(t *testing.T) {
