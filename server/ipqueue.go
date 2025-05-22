@@ -95,15 +95,17 @@ func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt[T]) *ipQueue[T
 			},
 		},
 		name: name,
-		m:    &s.ipQueues,
 		ipQueueOpts: ipQueueOpts[T]{
 			mrs: ipQueueDefaultMaxRecycleSize,
 		},
 	}
+	if s != nil {
+		q.m = &s.ipQueues
+		q.m.Store(name, q)
+	}
 	for _, o := range opts {
 		o(&q.ipQueueOpts)
 	}
-	s.ipQueues.Store(name, q)
 	return q
 }
 
@@ -279,7 +281,7 @@ func (q *ipQueue[T]) inProgress() int64 {
 // Remove this queue from the server's map of ipQueues.
 // All ipQueue operations (such as push/pop/etc..) are still possible.
 func (q *ipQueue[T]) unregister() {
-	if q == nil {
+	if q == nil || q.m == nil {
 		return
 	}
 	q.m.Delete(q.name)
