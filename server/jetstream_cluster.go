@@ -5672,6 +5672,7 @@ type selectPeerError struct {
 	misc        bool
 	noJsClust   bool
 	noMatchTags map[string]struct{}
+	excludeTags map[string]struct{}
 }
 
 func (e *selectPeerError) Error() string {
@@ -5704,6 +5705,21 @@ func (e *selectPeerError) Error() string {
 		}
 		b.WriteString("]")
 	}
+	if len(e.excludeTags) != 0 {
+		b.WriteString(", tags excluded [")
+		var firstTagWritten bool
+		for tag := range e.excludeTags {
+			if firstTagWritten {
+				b.WriteString(", ")
+			}
+			firstTagWritten = true
+			b.WriteRune('\'')
+			b.WriteString(tag)
+			b.WriteRune('\'')
+		}
+		b.WriteString("]")
+	}
+
 	return b.String()
 }
 
@@ -5712,6 +5728,13 @@ func (e *selectPeerError) addMissingTag(t string) {
 		e.noMatchTags = map[string]struct{}{}
 	}
 	e.noMatchTags[t] = struct{}{}
+}
+
+func (e *selectPeerError) addExcludeTag(t string) {
+	if e.excludeTags == nil {
+		e.excludeTags = map[string]struct{}{}
+	}
+	e.excludeTags[t] = struct{}{}
 }
 
 func (e *selectPeerError) accumulate(eAdd *selectPeerError) {
@@ -5732,6 +5755,9 @@ func (e *selectPeerError) accumulate(eAdd *selectPeerError) {
 	for tag := range eAdd.noMatchTags {
 		e.addMissingTag(tag)
 	}
+	for tag := range eAdd.excludeTags {
+		e.addExcludeTag(tag)
+	}
 }
 
 // selectPeerGroup will select a group of peers to start a raft group.
@@ -5748,9 +5774,19 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	}
 
 	// Check for tags.
-	var tags []string
-	if cfg.Placement != nil && len(cfg.Placement.Tags) > 0 {
-		tags = cfg.Placement.Tags
+	type tagInfo struct {
+		tag     string
+		exclude bool
+	}
+	var ti []tagInfo
+	if cfg.Placement != nil {
+		ti = make([]tagInfo, 0, len(cfg.Placement.Tags))
+		for _, t := range cfg.Placement.Tags {
+			ti = append(ti, tagInfo{
+				tag:     strings.TrimPrefix(t, "!"),
+				exclude: strings.HasPrefix(t, "!"),
+			})
+		}
 	}
 
 	// Used for weighted sorting based on availability.
@@ -5767,8 +5803,8 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 
 	uniqueTagPrefix := s.getOpts().JetStreamUniqueTag
 	if uniqueTagPrefix != _EMPTY_ {
-		for _, tag := range tags {
-			if strings.HasPrefix(tag, uniqueTagPrefix) {
+		for _, t := range ti {
+			if strings.HasPrefix(t.tag, uniqueTagPrefix) {
 				// disable uniqueness check if explicitly listed in tags
 				uniqueTagPrefix = _EMPTY_
 				break
@@ -5884,14 +5920,21 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			continue
 		}
 
-		if len(tags) > 0 {
+		if len(ti) > 0 {
 			matched := true
-			for _, t := range tags {
-				if !ni.tags.Contains(t) {
+			for _, t := range ti {
+				contains := ni.tags.Contains(t.tag)
+				if t.exclude && contains {
+					matched = false
+					s.Debugf("Peer selection: discard %s@%s tags: %v reason: excluded tag %s present",
+						ni.name, ni.cluster, ni.tags, t)
+					err.addExcludeTag(t.tag)
+					break
+				} else if !t.exclude && !contains {
 					matched = false
 					s.Debugf("Peer selection: discard %s@%s tags: %v reason: mandatory tag %s not present",
 						ni.name, ni.cluster, ni.tags, t)
-					err.addMissingTag(t)
+					err.addMissingTag(t.tag)
 					break
 				}
 			}
