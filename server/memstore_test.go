@@ -1292,6 +1292,26 @@ func TestMemStoreAllLastSeqs(t *testing.T) {
 	require_True(t, reflect.DeepEqual(seqs, expected))
 }
 
+func TestMemStoreUpdateConfigTTLState(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{">"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+	require_Equal(t, ms.ttls, nil)
+
+	cfg.AllowMsgTTL = true
+	require_NoError(t, ms.UpdateConfig(cfg))
+	require_NotEqual(t, ms.ttls, nil)
+
+	cfg.AllowMsgTTL = false
+	require_NoError(t, ms.UpdateConfig(cfg))
+	require_Equal(t, ms.ttls, nil)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
