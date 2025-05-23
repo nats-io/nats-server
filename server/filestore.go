@@ -648,6 +648,13 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		return err
 	}
 
+	// Create or delete the THW if needed.
+	if cfg.AllowMsgTTL && fs.ttls == nil {
+		fs.ttls = thw.NewHashWheel()
+	} else if !cfg.AllowMsgTTL && fs.ttls != nil {
+		fs.ttls = nil
+	}
+
 	// Limits checks and enforcement.
 	fs.enforceMsgLimit()
 	fs.enforceBytesLimit()
@@ -666,7 +673,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 	fs.mu.Unlock()
 
-	if cfg.MaxAge != 0 {
+	if cfg.MaxAge != 0 || cfg.AllowMsgTTL {
 		fs.expireMsgs()
 	}
 	return nil

@@ -9607,3 +9607,23 @@ func TestFileStoreAccessTimeSpinUp(t *testing.T) {
 	ngra := runtime.NumGoroutine()
 	require_Equal(t, ngr, ngra)
 }
+
+func TestFileStoreUpdateConfigTTLState(t *testing.T) {
+	cfg := StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{">"},
+		Storage:  FileStorage,
+	}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	require_Equal(t, fs.ttls, nil)
+
+	cfg.AllowMsgTTL = true
+	require_NoError(t, fs.UpdateConfig(&cfg))
+	require_NotEqual(t, fs.ttls, nil)
+
+	cfg.AllowMsgTTL = false
+	require_NoError(t, fs.UpdateConfig(&cfg))
+	require_Equal(t, fs.ttls, nil)
+}
