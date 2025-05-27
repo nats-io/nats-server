@@ -5965,6 +5965,18 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Expected to see 1 Stream, got %d", info.Streams)
 	}
 
+	// Make sure count works.
+	resp, err = nc.Request(JSApiStreamCount, nil, time.Second)
+	require_NoError(t, err)
+	var countResponse JSApiStreamCountResponse
+	if err = json.Unmarshal(resp.Data, &countResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if countResponse.Count != 1 {
+		t.Fatalf("Expected count to be 1 but got %d", countResponse.Count)
+	}
+
 	// Make sure list names works.
 	resp, err = nc.Request(JSApiStreams, nil, time.Second)
 	require_NoError(t, err)

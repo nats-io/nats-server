@@ -76,6 +76,10 @@ const (
 	JSApiStreamUpdate  = "$JS.API.STREAM.UPDATE.*"
 	JSApiStreamUpdateT = "$JS.API.STREAM.UPDATE.%s"
 
+	// JsApiStreamCount is the endpoint to count the number of streams for this account.
+	// Will return JSON response.
+	JSApiStreamCount = "$JS.API.STREAM.COUNT"
+
 	// JSApiStreams is the endpoint to list all stream names for this account.
 	// Will return JSON response.
 	JSApiStreams = "$JS.API.STREAM.NAMES"
@@ -452,6 +456,13 @@ type JSApiStreamInfoResponse struct {
 }
 
 const JSApiStreamInfoResponseType = "io.nats.jetstream.api.v1.stream_info_response"
+
+type JSApiStreamCountResponse struct {
+	ApiResponse
+	Count uint64 `json:"int"`
+}
+
+const JSApiStreamCountResponseType = "io.nats.jetstream.api.v1.stream_count_response"
 
 // JSApiNamesLimit is the maximum entries we will return for streams or consumers lists.
 // TODO(dlc) - with header or request support could request chunked response.
@@ -982,6 +993,7 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiTemplateDelete, s.jsTemplateDeleteRequest},
 		{JSApiStreamCreate, s.jsStreamCreateRequest},
 		{JSApiStreamUpdate, s.jsStreamUpdateRequest},
+		{JSApiStreamCount, s.jsStreamCountRequest},
 		{JSApiStreams, s.jsStreamNamesRequest},
 		{JSApiStreamList, s.jsStreamListRequest},
 		{JSApiStreamInfo, s.jsStreamInfoRequest},
@@ -1747,6 +1759,49 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		Sources:   mset.sourcesInfo(),
 		TimeStamp: time.Now().UTC(),
 	}
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request for the count of all streams.
+func (s *Server) jsStreamCountRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	var resp = JSApiStreamCountResponse{ApiResponse: ApiResponse{Type: JSApiStreamCountResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if js.isLeaderless() {
+			resp.Error = NewJSClusterNotAvailError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = NewJSNotEnabledForAccountError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
+		return
+	}
+
+	resp.Count = uint64(acc.numStreams())
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
