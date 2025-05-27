@@ -137,10 +137,11 @@ const (
 	// This was also the legacy endpoint for ephemeral consumers.
 	// It now can take consumer name and optional filter subject, which when part of the subject controls access.
 	// Will return JSON response.
-	JSApiConsumerCreate    = "$JS.API.CONSUMER.CREATE.*"
-	JSApiConsumerCreateT   = "$JS.API.CONSUMER.CREATE.%s"
-	JSApiConsumerCreateEx  = "$JS.API.CONSUMER.CREATE.*.>"
-	JSApiConsumerCreateExT = "$JS.API.CONSUMER.CREATE.%s.%s.%s"
+	JSApiConsumerCreate     = "$JS.API.CONSUMER.CREATE.*"
+	JSApiConsumerCreateT    = "$JS.API.CONSUMER.CREATE.%s"
+	JSApiConsumerCreateEx   = "$JS.API.CONSUMER.CREATE.*.>"
+	JSApiConsumerCreateExT  = "$JS.API.CONSUMER.CREATE.%s.%s.%s"
+	JSApiConsumerCreateExTW = "$JS.API.CONSUMER.CREATE.%s.>"
 
 	// JSApiDurableCreate is the endpoint to create durable consumers for streams.
 	// You need to include the stream and consumer name in the subject.
@@ -2305,6 +2306,9 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiConsumerLeaderStepDownResponseType}}
 
@@ -2961,10 +2965,11 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	ns, nc := 0, 0
 	streams, hasAccount := cc.streams[accName]
 	for _, osa := range streams {
+		node := cc.nodeForConsumerProposals(osa)
 		for _, oca := range osa.consumers {
 			oca.deleted = true
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client}
-			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+			node.Propose(encodeDeleteConsumerAssignment(ca))
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client}
@@ -3491,6 +3496,9 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -4254,10 +4262,49 @@ const (
 	ccLegacyDurable
 )
 
+// Returns whether or not the handler should ignore the request, this will return true if the
+// metaleader is ignoring a request for a stream-managed consumer, or if a stream leader is
+// ignoring a request for a metaleader-managed consumer.
+func (s *Server) jsShouldIgnoreConsumerRequest(sub *subscription, a *Account, subject string) bool {
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return false
+	}
+	stream := streamNameFromSubject(subject)
+	isMeta := bytesToString(sub.subject) == jsAllAPI
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	if !isMeta {
+		ignore := !cc.isStreamAssigned(a, stream) || !cc.isStreamLeader(a.GetName(), stream)
+		if ignore {
+			fmt.Println(subject, "ignored by stream")
+		} else {
+			fmt.Println(subject, "handled by stream")
+		}
+		return ignore
+	}
+	acc, ok := cc.streams[a.Name]
+	if !ok || acc == nil {
+		fmt.Println(subject, "ignored for unknown account")
+		return false
+	}
+	sa, ok := acc[stream]
+	if !ok || sa == nil {
+		fmt.Println(subject, "ignored for unknown stream")
+		return false
+	}
+	if sa.Config.ManagesConsumers {
+		fmt.Println(subject, "ignored by metalayer")
+	} else {
+		fmt.Println(subject, "handled by metalayer")
+	}
+	return sa.Config.ManagesConsumers
+}
+
 // Request to create a consumer where stream and optional consumer name are part of the subject, and optional
 // filtered subjects can be at the tail end.
 // Assumes stream and consumer names are single tokens.
-func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Account, subject, reply string, rmsg []byte) {
+func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
@@ -4265,6 +4312,9 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -4477,6 +4527,9 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerNamesResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType},
@@ -4599,6 +4652,9 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerListResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
@@ -4690,6 +4746,9 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -4875,6 +4934,9 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, _ *Accoun
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 
@@ -4945,6 +5007,9 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -5022,7 +5087,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		setStaticConsumerMetadata(nca.Config)
 
 		eca := encodeAddConsumerAssignment(&nca)
-		cc.meta.Propose(eca)
+		cc.nodeForConsumerProposals(sa).Propose(eca)
 
 		resp.PauseUntil = pauseUTC
 		if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {

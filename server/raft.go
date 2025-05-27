@@ -862,6 +862,10 @@ func (n *raft) ProposeMulti(entries []*Entry) error {
 // ForwardProposal will forward the proposal to the leader if known.
 // If we are the leader this is the same as calling propose.
 func (n *raft) ForwardProposal(entry []byte) error {
+	if n == nil {
+		return fmt.Errorf("no Raft group present")
+	}
+
 	if n.State() == Leader {
 		return n.Propose(entry)
 	}
