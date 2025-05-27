@@ -2065,17 +2065,16 @@ func (o *consumer) deleteNotActive() {
 	if !isDirect && s.JetStreamIsClustered() {
 		js.mu.RLock()
 		var (
-			cca         consumerAssignment
-			meta        RaftNode
+			node        RaftNode
 			removeEntry []byte
 		)
 		ca, cc := js.consumerAssignment(acc, stream, name), js.cluster
 		if ca != nil && cc != nil {
-			meta = cc.meta
-			cca = *ca
+			node = cc.nodeForConsumerProposals(o.mset.sa)
+			cca := ca.copyGroup()
 			cca.Reply = _EMPTY_
-			removeEntry = encodeDeleteConsumerAssignment(&cca)
-			meta.ForwardProposal(removeEntry)
+			removeEntry = encodeDeleteConsumerAssignment(cca)
+			node.ForwardProposal(removeEntry)
 		}
 		js.mu.RUnlock()
 
@@ -2104,7 +2103,7 @@ func (o *consumer) deleteNotActive() {
 				// Make sure this is the same consumer assignment, and not a new consumer with the same name.
 				if nca != nil && reflect.DeepEqual(nca, ca) {
 					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
-					meta.ForwardProposal(removeEntry)
+					node.ForwardProposal(removeEntry)
 					if interval < cnaMax {
 						interval *= 2
 						ticker.Reset(interval)
