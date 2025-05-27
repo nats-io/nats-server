@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -6540,5 +6541,69 @@ func TestJetStreamClusterSDMMaxAgeProposeExpiryShortRetry(t *testing.T) {
 				return nil
 			})
 		})
+	}
+}
+
+func TestJetStreamClusterStreamManagesConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST1",
+		Retention:        LimitsPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: true,
+	})
+	require_NoError(t, err)
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST2",
+		Retention:        LimitsPolicy,
+		Subjects:         []string{"bar"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: false,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST1")
+	c.waitOnStreamLeader(globalAccountName, "TEST2")
+
+	_, err = js.AddConsumer("TEST1", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST2", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Prove that none of the servers have consumers for this stream
+	// in their metadata.
+	for _, s := range c.servers {
+		js := s.getJetStream()
+		compressed, err := js.metaSnapshot()
+		require_NoError(t, err)
+		var metadata []writeableStreamAssignment
+		decompressed, err := s2.Decode(nil, compressed)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(decompressed, &metadata))
+		require_Len(t, len(metadata), 2)
+		for _, sa := range metadata {
+			switch sa.Config.Name {
+			case "TEST1": // TEST1 manages its own consumers so the metalayer should not contain any.
+				require_Len(t, len(sa.Consumers), 0)
+			case "TEST2": // TEST2 does not manage its own consumers so we expect them to be here.
+				require_Len(t, len(sa.Consumers), 1)
+			}
+		}
 	}
 }

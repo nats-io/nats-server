@@ -1005,6 +1005,16 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	return false
 }
 
+func (cc *jetStreamCluster) nodeForConsumerProposals(sa *streamAssignment) RaftNode {
+	if sa.Config.ManagesConsumers {
+		if sa.Group == nil || sa.Group.node == nil {
+			return nil
+		}
+		return sa.Group.node
+	}
+	return cc.meta
+}
+
 // Remove the stream `streamName` for the account `accName` from the inflight
 // proposals map. This is done on success (processStreamAssignment) or on
 // failure (processStreamAssignmentResults).
@@ -1405,25 +1415,29 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	for _, asa := range cc.streams {
 		for _, sa := range asa {
 			wsa := writeableStreamAssignment{
-				Client:    sa.Client.forAssignmentSnap(),
-				Created:   sa.Created,
-				Config:    sa.Config,
-				Group:     sa.Group,
-				Sync:      sa.Sync,
-				Consumers: make([]*consumerAssignment, 0, len(sa.consumers)),
+				Client:  sa.Client.forAssignmentSnap(),
+				Created: sa.Created,
+				Config:  sa.Config,
+				Group:   sa.Group,
+				Sync:    sa.Sync,
 			}
-			for _, ca := range sa.consumers {
-				// Skip if the consumer is pending, we can't include it in our snapshot.
-				// If the proposal fails after we marked it pending, it would result in a ghost consumer.
-				if ca.pending {
-					continue
+			if !sa.Config.ManagesConsumers {
+				// If this stream manages its own consumers then don't include the consumers in the
+				// metalayer snapshot.
+				wsa.Consumers = make([]*consumerAssignment, 0, len(sa.consumers))
+				for _, ca := range sa.consumers {
+					// Skip if the consumer is pending, we can't include it in our snapshot.
+					// If the proposal fails after we marked it pending, it would result in a ghost consumer.
+					if ca.pending {
+						continue
+					}
+					cca := *ca
+					cca.Stream = wsa.Config.Name // Needed for safe roll-backs.
+					cca.Client = cca.Client.forAssignmentSnap()
+					cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
+					wsa.Consumers = append(wsa.Consumers, &cca)
+					nca++
 				}
-				cca := *ca
-				cca.Stream = wsa.Config.Name // Needed for safe roll-backs.
-				cca.Client = cca.Client.forAssignmentSnap()
-				cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
-				wsa.Consumers = append(wsa.Consumers, &cca)
-				nca++
 			}
 			streams = append(streams, wsa)
 		}
@@ -1482,7 +1496,9 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		}
 		sa := &streamAssignment{Client: wsa.Client, Created: wsa.Created, Config: wsa.Config, Group: wsa.Group, Sync: wsa.Sync}
 		if len(wsa.Consumers) > 0 {
-			sa.consumers = make(map[string]*consumerAssignment)
+			if sa.consumers == nil {
+				sa.consumers = make(map[string]*consumerAssignment)
+			}
 			for _, ca := range wsa.Consumers {
 				if ca.Stream == _EMPTY_ {
 					ca.Stream = sa.Config.Name // Rehydrate from the stream name.
@@ -1696,12 +1712,13 @@ func (js *jetStream) processAddPeer(peer string) {
 				csa.Group.Peers = append(csa.Group.Peers, peer)
 				// Send our proposal for this csa. Also use same group definition for all the consumers as well.
 				cc.meta.Propose(encodeAddStreamAssignment(csa))
+				node := cc.nodeForConsumerProposals(sa)
 				for _, ca := range sa.consumers {
 					// Ephemerals are R=1, so only auto-remap durables, or R>1.
 					if ca.Config.Durable != _EMPTY_ || len(ca.Group.Peers) > 1 {
 						cca := ca.copyGroup()
 						cca.Group.Peers = csa.Group.Peers
-						cc.meta.Propose(encodeAddConsumerAssignment(cca))
+						node.ForwardProposal(encodeAddConsumerAssignment(cca))
 					}
 				}
 			}
@@ -1786,15 +1803,16 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 	// Send our proposal for this csa. Also use same group definition for all the consumers as well.
 	cc.meta.Propose(encodeAddStreamAssignment(csa))
 	rg := csa.Group
+	node := cc.nodeForConsumerProposals(sa)
 	for _, ca := range sa.consumers {
 		// Ephemerals are R=1, so only auto-remap durables, or R>1.
 		if ca.Config.Durable != _EMPTY_ {
 			cca := ca.copyGroup()
 			cca.Group.Peers, cca.Group.Preferred = rg.Peers, _EMPTY_
-			cc.meta.Propose(encodeAddConsumerAssignment(cca))
+			node.ForwardProposal(encodeAddConsumerAssignment(cca))
 		} else if ca.Group.isMember(peer) {
 			// These are ephemerals. Check to see if we deleted this peer.
-			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+			node.ForwardProposal(encodeDeleteConsumerAssignment(ca))
 		}
 	}
 	return replaced
@@ -2330,7 +2348,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		// This shouldn't happen for streams like it can for pull
 		// consumers on idle streams but better to be safe than sorry!
 		ne, nb := n.Size()
-		if curState == lastState && ne < compactNumMin && nb < compactSizeMin {
+		// TODO(nat): this consumer count check needs improving
+		if mset.numConsumers() == 0 && curState == lastState && ne < compactNumMin && nb < compactSizeMin {
 			return
 		}
 
@@ -2757,7 +2776,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 					// We make these compressed in case state is complex.
 					addEntry := encodeAddConsumerAssignmentCompressed(ca)
-					cc.meta.ForwardProposal(addEntry)
+					cc.nodeForConsumerProposals(sa).ForwardProposal(addEntry)
 
 					// Check to make sure we see the assignment.
 					go func() {
@@ -3124,6 +3143,70 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						s.sendAPIResponse(sp.Client, mset.account(), sp.Subject, sp.Reply, _EMPTY_, s.jsonResponse(resp))
 					}
 				}
+			case assignConsumerOp:
+				ca, err := decodeConsumerAssignment(buf[1:])
+				if err != nil {
+					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
+					// return didSnap, didRemoveStream, didRemoveConsumer, err
+					continue
+				}
+				// if isRecovering {
+				// 	js.setConsumerAssignmentRecovering(ca)
+				// 	key := ca.recoveryKey()
+				// 	skey := ca.streamRecoveryKey()
+				// 	if consumers, ok := ru.removeConsumers[skey]; ok {
+				// 		delete(consumers, key)
+				// 	}
+				// 	if _, ok := ru.updateConsumers[skey]; !ok {
+				// 		ru.updateConsumers[skey] = map[string]*consumerAssignment{}
+				// 	}
+				// 	ru.updateConsumers[skey][key] = ca
+				// } else {
+				js.processConsumerAssignment(ca)
+				// }
+			case assignCompressedConsumerOp:
+				ca, err := decodeConsumerAssignmentCompressed(buf[1:])
+				if err != nil {
+					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
+					// return didSnap, didRemoveStream, didRemoveConsumer, err
+					continue
+				}
+				// if isRecovering {
+				// 	js.setConsumerAssignmentRecovering(ca)
+				// 	key := ca.recoveryKey()
+				// 	skey := ca.streamRecoveryKey()
+				// 	if consumers, ok := ru.removeConsumers[skey]; ok {
+				// 		delete(consumers, key)
+				// 	}
+				// 	if _, ok := ru.updateConsumers[skey]; !ok {
+				// 		ru.updateConsumers[skey] = map[string]*consumerAssignment{}
+				// 	}
+				// 	ru.updateConsumers[skey][key] = ca
+				// } else {
+				js.processConsumerAssignment(ca)
+				// }
+			case removeConsumerOp:
+				ca, err := decodeConsumerAssignment(buf[1:])
+				if err != nil {
+					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
+					// return didSnap, didRemoveStream, didRemoveConsumer, err
+					continue
+				}
+				// if isRecovering {
+				// 	js.setConsumerAssignmentRecovering(ca)
+				// 	key := ca.recoveryKey()
+				// 	skey := ca.streamRecoveryKey()
+				// 	if _, ok := ru.removeConsumers[skey]; !ok {
+				// 		ru.removeConsumers[skey] = map[string]*consumerAssignment{}
+				// 	}
+				// 	ru.removeConsumers[skey][key] = ca
+				// 	if consumers, ok := ru.updateConsumers[skey]; ok {
+				// 		delete(consumers, key)
+				// 	}
+				// } else {
+				js.processConsumerRemoval(ca)
+				// didRemoveConsumer = true
+				// }
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", op))
 			}
@@ -3163,11 +3246,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 				// Convert over to StreamReplicatedState
 				ss = &StreamReplicatedState{
-					Msgs:     snap.Msgs,
-					Bytes:    snap.Bytes,
-					FirstSeq: snap.FirstSeq,
-					LastSeq:  snap.LastSeq,
-					Failed:   snap.Failed,
+					Msgs:      snap.Msgs,
+					Bytes:     snap.Bytes,
+					FirstSeq:  snap.FirstSeq,
+					LastSeq:   snap.LastSeq,
+					Failed:    snap.Failed,
+					Consumers: snap.Consumers,
 				}
 				if len(snap.Deleted) > 0 {
 					ss.Deleted = append(ss.Deleted, DeleteSlice(snap.Deleted))
@@ -3178,6 +3262,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err := mset.processSnapshot(ss, ce.Index); err != nil {
 					return err
 				}
+			}
+
+			// Process consumer assignments from the stream snapshot.
+			for _, ca := range ss.Consumers {
+				js.processConsumerAssignment(ca)
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
@@ -3984,7 +4073,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 							}
 
 							addEntry := encodeAddConsumerAssignment(ca)
-							cc.meta.ForwardProposal(addEntry)
+							cc.nodeForConsumerProposals(sa).ForwardProposal(addEntry)
 
 							// Check to make sure we see the assignment.
 							go func() {
@@ -4955,7 +5044,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				cca := ca.copyGroup()
 				cca.Group.Peers = newPeers
 				cca.Group.Cluster = s.cachedClusterName()
-				meta.ForwardProposal(encodeAddConsumerAssignment(cca))
+				js.cluster.nodeForConsumerProposals(o.mset.sa).ForwardProposal(encodeAddConsumerAssignment(cca))
 				s.Noticef("Scaling down '%s > %s > %s' to %+v", ca.Client.serviceAccount(), ca.Stream, ca.Name, s.peerSetToNames(newPeers))
 
 			} else {
@@ -5474,6 +5563,7 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 	}
 
 	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil && sa.consumers != nil {
+		node := cc.nodeForConsumerProposals(sa)
 		if ca := sa.consumers[result.Consumer]; ca != nil && !ca.responded {
 			js.srv.sendAPIErrResponse(ca.Client, acc, ca.Subject, ca.Reply, _EMPTY_, s.jsonResponse(result.Response))
 			ca.responded = true
@@ -5484,7 +5574,7 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 			if result.Response.Error != nil && result.Response.Error != NewJSConsumerNameExistError() && time.Since(ca.Created) < 2*time.Second {
 				// So while we are deleting we will not respond to list/names requests.
 				ca.err = NewJSClusterNotAssignedError()
-				cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+				node.ForwardProposal(encodeDeleteConsumerAssignment(ca))
 				s.Warnf("Proposing to delete consumer `%s > %s > %s' due to assignment response error: %v",
 					result.Account, result.Stream, result.Consumer, result.Response.Error)
 			}
@@ -6699,8 +6789,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	meta.Propose(encodeUpdateStreamAssignment(sa))
 
 	// Process any staged consumers.
-	for _, ca := range consumers {
-		meta.Propose(encodeAddConsumerAssignment(ca))
+	// TODO(nat): This needs looking at.
+	if node := cc.nodeForConsumerProposals(sa); node != nil {
+		for _, ca := range consumers {
+			node.Propose(encodeAddConsumerAssignment(ca))
+		}
 	}
 }
 
@@ -7193,7 +7286,7 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, acc *Account, 
 	}
 	oca.deleted = true
 	ca := &consumerAssignment{Group: oca.Group, Stream: stream, Name: consumer, Config: oca.Config, Subject: subject, Reply: reply, Client: ci}
-	cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+	cc.nodeForConsumerProposals(sa).ForwardProposal(encodeDeleteConsumerAssignment(ca))
 }
 
 func encodeMsgDelete(md *streamMsgDelete) []byte {
@@ -7393,6 +7486,14 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	sa := js.streamAssignment(acc.Name, stream)
 	if sa == nil {
 		resp.Error = NewJSStreamNotFoundError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
+	node := cc.nodeForConsumerProposals(sa)
+	if node == nil {
+		// TODO(nat): is this the right thing to do?
+		resp.Error = NewJSStreamOfflineError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
@@ -7684,7 +7785,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 
 	// Do formal proposal.
-	if err := cc.meta.Propose(encodeAddConsumerAssignment(ca)); err == nil {
+	if err := node.ForwardProposal(encodeAddConsumerAssignment(ca)); err == nil {
 		// Mark this as pending.
 		if sa.consumers == nil {
 			sa.consumers = make(map[string]*consumerAssignment)
@@ -7890,12 +7991,13 @@ func (mset *stream) supportsBinarySnapshotLocked() bool {
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
 // Legacy, replace with binary stream snapshots.
 type streamSnapshot struct {
-	Msgs     uint64   `json:"messages"`
-	Bytes    uint64   `json:"bytes"`
-	FirstSeq uint64   `json:"first_seq"`
-	LastSeq  uint64   `json:"last_seq"`
-	Failed   uint64   `json:"clfs"`
-	Deleted  []uint64 `json:"deleted,omitempty"`
+	Msgs      uint64                `json:"messages"`
+	Bytes     uint64                `json:"bytes"`
+	FirstSeq  uint64                `json:"first_seq"`
+	LastSeq   uint64                `json:"last_seq"`
+	Failed    uint64                `json:"clfs"`
+	Deleted   []uint64              `json:"deleted,omitempty"`
+	Consumers []*consumerAssignment `json:"consumers,omitempty"`
 }
 
 // Grab a snapshot of a stream for clustered mode.
@@ -7909,7 +8011,8 @@ func (mset *stream) stateSnapshot() []byte {
 // Lock should be held.
 func (mset *stream) stateSnapshotLocked() []byte {
 	// Decide if we can support the new style of stream snapshots.
-	if mset.supportsBinarySnapshotLocked() {
+	// TODO(nat): Fix this once we have added the consumers into the binary snap format.
+	if mset.supportsBinarySnapshotLocked() && !mset.cfg.ManagesConsumers {
 		snap, err := mset.store.EncodedStreamState(mset.getCLFS())
 		if err != nil {
 			return nil
@@ -7920,12 +8023,25 @@ func (mset *stream) stateSnapshotLocked() []byte {
 	// Older v1 version with deleted as a sorted []uint64.
 	state := mset.store.State()
 	snap := &streamSnapshot{
-		Msgs:     state.Msgs,
-		Bytes:    state.Bytes,
-		FirstSeq: state.FirstSeq,
-		LastSeq:  state.LastSeq,
-		Failed:   mset.getCLFS(),
-		Deleted:  state.Deleted,
+		Msgs:      state.Msgs,
+		Bytes:     state.Bytes,
+		FirstSeq:  state.FirstSeq,
+		LastSeq:   state.LastSeq,
+		Failed:    mset.getCLFS(),
+		Deleted:   state.Deleted,
+		Consumers: make([]*consumerAssignment, 0, len(mset.consumers)),
+	}
+	for _, o := range mset.consumers {
+		// Skip if the consumer is pending, we can't include it in our snapshot.
+		// If the proposal fails after we marked it pending, it would result in a ghost consumer.
+		if o.ca == nil || o.ca.pending {
+			continue
+		}
+		cca := *o.ca
+		cca.Stream = mset.cfg.Name // Needed for safe roll-backs.
+		cca.Client = cca.Client.forAssignmentSnap()
+		cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
+		snap.Consumers = append(snap.Consumers, &cca)
 	}
 	b, _ := json.Marshal(snap)
 	return b
