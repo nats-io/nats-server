@@ -45,6 +45,11 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 		requires(1)
 	}
 
+	// Streams owning their consumers were added in 2.12 and require API level 2.
+	if cfg.ManagesConsumers {
+		requires(2)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 

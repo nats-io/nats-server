@@ -109,6 +109,9 @@ type StreamConfig struct {
 	// subject delete markers.
 	SubjectDeleteMarkerTTL time.Duration `json:"subject_delete_marker_ttl,omitempty"`
 
+	// Controls whether or not the stream manages its consumers instead of the metalayer.
+	ManagesConsumers bool `json:"managed_consumers,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -351,6 +354,7 @@ type stream struct {
 	catchups  map[string]uint64 // The number of messages that need to be caught per peer.
 	syncSub   *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
 	infoSub   *subscription     // Internal subscription for stream info requests.
+	apiSubs   *Sublist          // Internal subscriptions for JS API consumer endpoints.
 	clMu      sync.Mutex        // The mutex for clseq and clfs.
 	clseq     uint64            // The current last seq being proposed to the NRG layer.
 	clfs      uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
@@ -669,11 +673,12 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			ipqLimitByLen[*inMsg](mlen),
 			ipqLimitBySize[*inMsg](msz),
 		),
-		gets: newIPQueue[*directGetReq](s, qpfx+"direct gets"),
-		qch:  make(chan struct{}),
-		mqch: make(chan struct{}),
-		uch:  make(chan struct{}, 4),
-		sch:  make(chan struct{}, 1),
+		gets:    newIPQueue[*directGetReq](s, qpfx+"direct gets"),
+		qch:     make(chan struct{}),
+		mqch:    make(chan struct{}),
+		uch:     make(chan struct{}, 4),
+		sch:     make(chan struct{}, 1),
+		apiSubs: NewSublistNoCache(),
 	}
 
 	// Start our signaling routine to process consumers.
@@ -975,6 +980,39 @@ func (mset *stream) setLeader(isLeader bool) error {
 			mset.mu.Unlock()
 			return err
 		}
+
+		if mset.cfg.ManagesConsumers {
+			// If the consumers are managed by the stream and not by the metalayer then
+			// the stream leader is responsible for subscribing to these API endpoints,
+			// as the metaleader will ignore requests for these streams.
+			pairs := []struct {
+				subject string
+				handler msgHandler
+			}{
+				{fmt.Sprintf(JSApiConsumerCreateExTW, mset.cfg.Name), mset.srv.jsConsumerCreateRequest},
+				{fmt.Sprintf(JSApiConsumerCreateT, mset.cfg.Name), mset.srv.jsConsumerCreateRequest},
+				{fmt.Sprintf(JSApiDurableCreateT, mset.cfg.Name, "*"), mset.srv.jsConsumerCreateRequest},
+				{fmt.Sprintf(JSApiConsumersT, mset.cfg.Name), mset.srv.jsConsumerNamesRequest},
+				{fmt.Sprintf(JSApiConsumerListT, mset.cfg.Name), mset.srv.jsConsumerListRequest},
+				{fmt.Sprintf(JSApiConsumerInfoT, mset.cfg.Name, "*"), mset.srv.jsConsumerInfoRequest},
+				{fmt.Sprintf(JSApiConsumerDeleteT, mset.cfg.Name, "*"), mset.srv.jsConsumerDeleteRequest},
+				{fmt.Sprintf(JSApiConsumerPauseT, mset.cfg.Name, "*"), mset.srv.jsConsumerPauseRequest},
+				{fmt.Sprintf(JSApiConsumerUnpinT, mset.cfg.Name, "*"), mset.srv.jsConsumerUnpinRequest},
+			}
+			for _, p := range pairs {
+				// Add them into the system account sublist, we need this interest to be propagated whereas
+				// it won't be if we add it into the JS API dispatch sublist.
+				sub, err := mset.sysc.processSub([]byte(p.subject), nil, []byte(p.subject), p.handler, false)
+				if err != nil {
+					return err
+				}
+				// Keep our own tracking of the subs for this stream so that we can unsubscribe
+				// easily if we stop being leader or get deleted etc.
+				if err := mset.apiSubs.Insert(sub); err != nil {
+					return err
+				}
+			}
+		}
 	} else {
 		// cancel timer to create the source consumers if not fired yet
 		if mset.sourcesConsumerSetup != nil {
@@ -989,6 +1027,15 @@ func (mset *stream) setLeader(isLeader bool) error {
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
 		mset.unsubscribeToStream(false)
+		// Unsubscribe from the JS API consumer endpoints.
+		{
+			var subs []*subscription
+			mset.apiSubs.All(&subs)
+			for _, sub := range subs {
+				mset.sysc.processUnsub(sub.sid)
+			}
+			mset.apiSubs.RemoveBatch(subs)
+		}
 		// Clear catchup state
 		mset.clearAllCatchupPeers()
 	}
@@ -1763,6 +1810,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	// For now don't allow preferred server in placement.
 	if cfg.Placement != nil && cfg.Placement.Preferred != _EMPTY_ {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("preferred server not permitted in placement"))
+	}
+
+	// Only allow stream-managed consumers on replicated streams, otherwise we
+	// don't have anywhere to snapshot the consumer assignments to.
+	if cfg.ManagesConsumers && cfg.Replicas <= 1 {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("replicated stream required for stream-managed consumers"))
 	}
 
 	return cfg, nil

@@ -223,12 +223,13 @@ type DeleteBlocks []DeleteBlock
 // StreamReplicatedState represents what is encoded in a binary stream snapshot used
 // for stream replication in an NRG.
 type StreamReplicatedState struct {
-	Msgs     uint64
-	Bytes    uint64
-	FirstSeq uint64
-	LastSeq  uint64
-	Failed   uint64
-	Deleted  DeleteBlocks
+	Msgs      uint64
+	Bytes     uint64
+	FirstSeq  uint64
+	LastSeq   uint64
+	Failed    uint64
+	Deleted   DeleteBlocks
+	Consumers []*consumerAssignment
 }
 
 // Determine if this is an encoded stream state.

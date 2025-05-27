@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -6540,5 +6541,47 @@ func TestJetStreamClusterSDMMaxAgeProposeExpiryShortRetry(t *testing.T) {
 				return nil
 			})
 		})
+	}
+}
+
+func TestJetStreamClusterStreamManagesConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        LimitsPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: true,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	// time.Sleep(time.Second)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Prove that none of the servers have consumers for this stream
+	// in their metadata.
+	for _, s := range c.servers {
+		js := s.getJetStream()
+		compressed, err := js.metaSnapshot()
+		require_NoError(t, err)
+		var metadata []writeableStreamAssignment
+		decompressed, err := s2.Decode(nil, compressed)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(decompressed, &metadata))
+		require_Len(t, len(metadata), 1)
+		require_Equal(t, metadata[0].Config.Name, "TEST")
+		require_Len(t, len(metadata[0].Consumers), 0)
 	}
 }

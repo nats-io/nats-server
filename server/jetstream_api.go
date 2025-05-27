@@ -137,10 +137,11 @@ const (
 	// This was also the legacy endpoint for ephemeral consumers.
 	// It now can take consumer name and optional filter subject, which when part of the subject controls access.
 	// Will return JSON response.
-	JSApiConsumerCreate    = "$JS.API.CONSUMER.CREATE.*"
-	JSApiConsumerCreateT   = "$JS.API.CONSUMER.CREATE.%s"
-	JSApiConsumerCreateEx  = "$JS.API.CONSUMER.CREATE.*.>"
-	JSApiConsumerCreateExT = "$JS.API.CONSUMER.CREATE.%s.%s.%s"
+	JSApiConsumerCreate     = "$JS.API.CONSUMER.CREATE.*"
+	JSApiConsumerCreateT    = "$JS.API.CONSUMER.CREATE.%s"
+	JSApiConsumerCreateEx   = "$JS.API.CONSUMER.CREATE.*.>"
+	JSApiConsumerCreateExT  = "$JS.API.CONSUMER.CREATE.%s.%s.%s"
+	JSApiConsumerCreateExTW = "$JS.API.CONSUMER.CREATE.%s.>"
 
 	// JSApiDurableCreate is the endpoint to create durable consumers for streams.
 	// You need to include the stream and consumer name in the subject.
@@ -856,7 +857,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	}
 
 	// We should only have psubs and only 1 per result.
-	if len(rr.psubs) != 1 {
+	if len(rr.psubs) < 1 {
 		s.Warnf("Malformed JetStream API Request: [%s] %q", subject, rmsg)
 		if c.kind == CLIENT || c.kind == LEAF {
 			ci, acc, _, _, _ := s.getRequestInfo(c, rmsg)
@@ -868,45 +869,46 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 		}
 		return
 	}
-	jsub := rr.psubs[0]
 
-	// If this is directly from a client connection ok to do in place.
-	if c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF {
-		start := time.Now()
-		jsub.icb(sub, c, acc, subject, reply, rmsg)
-		if dur := time.Since(start); dur >= readLoopReportThreshold {
-			s.Warnf("Internal subscription on %q took too long: %v", subject, dur)
+	for _, jsub := range rr.psubs {
+		// If this is directly from a client connection ok to do in place.
+		if c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF {
+			start := time.Now()
+			jsub.icb(sub, c, acc, subject, reply, rmsg)
+			if dur := time.Since(start); dur >= readLoopReportThreshold {
+				s.Warnf("Internal subscription on %q took too long: %v", subject, dur)
+			}
+			continue
 		}
-		return
-	}
 
-	// If we are here we have received this request over a non-client connection.
-	// We need to make sure not to block. We will send the request to a long-lived
-	// pool of go routines.
+		// If we are here we have received this request over a non-client connection.
+		// We need to make sure not to block. We will send the request to a long-lived
+		// pool of go routines.
 
-	// Increment inflight. Do this before queueing.
-	atomic.AddInt64(&js.apiInflight, 1)
+		// Increment inflight. Do this before queueing.
+		atomic.AddInt64(&js.apiInflight, 1)
 
-	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
-	// header from the msg body. No other references are needed.
-	// Check pending and warn if getting backed up.
-	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
-	limit := atomic.LoadInt64(&js.queueLimit)
-	if pending >= int(limit) {
-		s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", pending)
-		drained := int64(s.jsAPIRoutedReqs.drain())
-		atomic.AddInt64(&js.apiInflight, -drained)
+		// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
+		// header from the msg body. No other references are needed.
+		// Check pending and warn if getting backed up.
+		pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
+		limit := atomic.LoadInt64(&js.queueLimit)
+		if pending >= int(limit) {
+			s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", pending)
+			drained := int64(s.jsAPIRoutedReqs.drain())
+			atomic.AddInt64(&js.apiInflight, -drained)
 
-		s.publishAdvisory(nil, JSAdvisoryAPILimitReached, JSAPILimitReachedAdvisory{
-			TypedEvent: TypedEvent{
-				Type: JSAPILimitReachedAdvisoryType,
-				ID:   nuid.Next(),
-				Time: time.Now().UTC(),
-			},
-			Server:  s.Name(),
-			Domain:  js.config.Domain,
-			Dropped: drained,
-		})
+			s.publishAdvisory(nil, JSAdvisoryAPILimitReached, JSAPILimitReachedAdvisory{
+				TypedEvent: TypedEvent{
+					Type: JSAPILimitReachedAdvisoryType,
+					ID:   nuid.Next(),
+					Time: time.Now().UTC(),
+				},
+				Server:  s.Name(),
+				Domain:  js.config.Domain,
+				Dropped: drained,
+			})
+		}
 	}
 }
 
@@ -2305,6 +2307,9 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiConsumerLeaderStepDownResponseType}}
 
@@ -2961,10 +2966,11 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	ns, nc := 0, 0
 	streams, hasAccount := cc.streams[accName]
 	for _, osa := range streams {
+		node := cc.nodeForConsumerProposals(osa)
 		for _, oca := range osa.consumers {
 			oca.deleted = true
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client}
-			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+			node.Propose(encodeDeleteConsumerAssignment(ca))
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client}
@@ -3491,6 +3497,9 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -4254,10 +4263,36 @@ const (
 	ccLegacyDurable
 )
 
+// Returns whether or not the handler should ignore the request, this will return true if the
+// metaleader is ignoring a request for a stream-managed consumer, or if a stream leader is
+// ignoring a request for a metaleader-managed consumer.
+func (s *Server) jsShouldIgnoreConsumerRequest(sub *subscription, a *Account, subject string) bool {
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return false
+	}
+	stream := streamNameFromSubject(subject)
+	isMeta := bytesToString(sub.subject) == jsAllAPI
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	if !isMeta {
+		return !cc.isStreamAssigned(a, stream) || !cc.isStreamLeader(a.GetName(), stream)
+	}
+	acc, ok := cc.streams[a.Name]
+	if !ok || acc == nil {
+		return false
+	}
+	sa, ok := acc[stream]
+	if !ok || sa == nil {
+		return false
+	}
+	return sa.Config.ManagesConsumers
+}
+
 // Request to create a consumer where stream and optional consumer name are part of the subject, and optional
 // filtered subjects can be at the tail end.
 // Assumes stream and consumer names are single tokens.
-func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Account, subject, reply string, rmsg []byte) {
+func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
@@ -4265,6 +4300,9 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -4477,6 +4515,9 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerNamesResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType},
@@ -4599,6 +4640,9 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerListResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
@@ -4690,6 +4734,9 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -4875,6 +4922,9 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, _ *Accoun
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+		return
+	}
 
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 
@@ -4945,6 +4995,9 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
 		return
 	}
 
@@ -5022,7 +5075,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		setStaticConsumerMetadata(nca.Config)
 
 		eca := encodeAddConsumerAssignment(&nca)
-		cc.meta.Propose(eca)
+		cc.nodeForConsumerProposals(sa).Propose(eca)
 
 		resp.PauseUntil = pauseUTC
 		if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {
