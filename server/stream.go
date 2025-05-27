@@ -120,6 +120,9 @@ type StreamConfig struct {
 	// to the stream, improving throughput.
 	AllowAsyncFlush bool `json:"allow_async_flush"`
 
+	// Controls whether or not the stream manages its consumers instead of the metalayer.
+	ManagesConsumers bool `json:"managed_consumers,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -1862,6 +1865,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	// For now don't allow preferred server in placement.
 	if cfg.Placement != nil && cfg.Placement.Preferred != _EMPTY_ {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("preferred server not permitted in placement"))
+	}
+
+	// Only allow stream-managed consumers on replicated streams, otherwise we
+	// don't have anywhere to snapshot the consumer assignments to.
+	if cfg.ManagesConsumers && cfg.Replicas <= 1 {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("replicated stream required for stream-managed consumers"))
 	}
 
 	return cfg, nil

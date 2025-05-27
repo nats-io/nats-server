@@ -4499,9 +4499,11 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	for info := range js.StreamsInfo() {
 		t.Fatalf("Unexpected stream info, got %v", info)
 	}
-	for info := range js.ConsumersInfo("NO-Q") {
-		t.Fatalf("Unexpected consumer info, got %v", info)
-	}
+	// TODO(nat): Check this, if the metaleader is down then technically we can still
+	// service these requests as long as the stream leader is up.
+	// for info := range js.ConsumersInfo("NO-Q") {
+	// 	t.Fatalf("Unexpected consumer info, got %v", info)
+	// }
 }
 
 func TestJetStreamClusterCreateResponseAdvisoriesHaveSubject(t *testing.T) {

@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -6640,4 +6641,229 @@ func TestJetStreamClusterSDMMaxAgeProposeExpiryShortRetry(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestJetStreamClusterManagedConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST1",
+		Retention:        LimitsPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: true,
+	})
+	require_NoError(t, err)
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST2",
+		Retention:        LimitsPolicy,
+		Subjects:         []string{"bar"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: false,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST1")
+	c.waitOnStreamLeader(globalAccountName, "TEST2")
+
+	_, err = js.AddConsumer("TEST1", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST2", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Prove that none of the servers have consumers for this stream
+	// in their metadata.
+	for _, s := range c.servers {
+		js := s.getJetStream()
+		compressed, err := js.metaSnapshot()
+		require_NoError(t, err)
+		var metadata []writeableStreamAssignment
+		decompressed, err := s2.Decode(nil, compressed)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(decompressed, &metadata))
+		require_Len(t, len(metadata), 2)
+		for _, sa := range metadata {
+			switch sa.Config.Name {
+			case "TEST1": // TEST1 manages its own consumers so the metalayer should not contain any.
+				require_Len(t, len(sa.Consumers), 0)
+			case "TEST2": // TEST2 does not manage its own consumers so we expect them to be here.
+				require_Len(t, len(sa.Consumers), 1)
+			}
+		}
+	}
+}
+
+func TestJetStreamClusterManagedConsumerStreamScaleDown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        InterestPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: true,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	require_Len(t, len(ci.Cluster.Replicas), 2)
+
+	_, err = jsStreamUpdate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        InterestPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         1,
+		ManagesConsumers: true,
+	})
+	require_Error(t, err) // 10052
+	jserr, ok := err.(*ApiError)
+	require_True(t, ok)
+	require_Equal(t, jserr.Code, 500)
+	require_Equal(t, jserr.ErrCode, 10052)
+}
+
+func TestJetStreamClusterManagedConsumerStreamScaleUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        InterestPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: true,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	_ = js
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		if ci, err = js.ConsumerInfo("TEST", "TestConsumer"); err != nil {
+			return err
+		}
+		if replicas := len(ci.Cluster.Replicas); replicas != 2 {
+			return fmt.Errorf("expected 2 replicas, got %d replicas", replicas)
+		}
+		return nil
+	})
+
+	_, err = jsStreamUpdate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        InterestPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         5,
+		ManagesConsumers: true,
+	})
+	require_NoError(t, err)
+
+	c.waitOnAllCurrent()
+
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		if ci, err = js.ConsumerInfo("TEST", "TestConsumer"); err != nil {
+			return err
+		}
+		if replicas := len(ci.Cluster.Replicas); replicas != 4 {
+			return fmt.Errorf("expected 4 replicas, got %d replicas", replicas)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterManagedConsumerStreamScaleMove(t *testing.T) {
+	gid := 0
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 6,
+		func(serverName, clusterName, storeDir, conf string) string {
+			gid++
+			return fmt.Sprintf("%s\nserver_tags: [group:%d]", conf, (gid%2)+1)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	sc, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        InterestPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: true,
+		Placement: &Placement{
+			Tags: []string{"group:1"},
+		},
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "TestConsumer",
+		Durable:   "TestConsumer",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		if ci, err = js.ConsumerInfo("TEST", "TestConsumer"); err != nil {
+			return err
+		}
+		if replicas := len(ci.Cluster.Replicas); replicas != 2 {
+			return fmt.Errorf("expected 2 replicas, got %d replicas", replicas)
+		}
+		return nil
+	})
+
+	sc.Placement.Tags = []string{"group:2"}
+	_, err = jsStreamUpdate(t, nc, sc)
+	require_NoError(t, err)
+
+	c.waitOnAllCurrent()
+
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		if ci, err = js.ConsumerInfo("TEST", "TestConsumer"); err != nil {
+			return err
+		}
+		if replicas := len(ci.Cluster.Replicas); replicas != 2 {
+			return fmt.Errorf("expected 2 replicas, got %d replicas", replicas)
+		}
+		return nil
+	})
 }

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -145,10 +146,11 @@ const (
 	// This was also the legacy endpoint for ephemeral consumers.
 	// It now can take consumer name and optional filter subject, which when part of the subject controls access.
 	// Will return JSON response.
-	JSApiConsumerCreate    = "$JS.API.CONSUMER.CREATE.*"
-	JSApiConsumerCreateT   = "$JS.API.CONSUMER.CREATE.%s"
-	JSApiConsumerCreateEx  = "$JS.API.CONSUMER.CREATE.*.>"
-	JSApiConsumerCreateExT = "$JS.API.CONSUMER.CREATE.%s.%s.%s"
+	JSApiConsumerCreate     = "$JS.API.CONSUMER.CREATE.*"
+	JSApiConsumerCreateT    = "$JS.API.CONSUMER.CREATE.%s"
+	JSApiConsumerCreateEx   = "$JS.API.CONSUMER.CREATE.*.>"
+	JSApiConsumerCreateExT  = "$JS.API.CONSUMER.CREATE.%s.%s.%s"
+	JSApiConsumerCreateExTW = "$JS.API.CONSUMER.CREATE.%s.>"
 
 	// JSApiDurableCreate is the endpoint to create durable consumers for streams.
 	// You need to include the stream and consumer name in the subject.
@@ -2346,27 +2348,28 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 	if js == nil || cc == nil {
 		return
 	}
-	if js.isLeaderless() {
-		resp.Error = NewJSClusterNotAvailError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
 
 	// Have extra token for this one.
 	stream := tokenAt(subject, 6)
 	consumer := tokenAt(subject, 7)
 
 	js.mu.RLock()
-	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
+	isLeaderless, sa := js.isLeaderless(), js.streamAssignment(acc.Name, stream)
+	managesConsumers := sa != nil && sa.Config != nil && sa.Config.ManagesConsumers
 	js.mu.RUnlock()
 
-	if isLeader && sa == nil {
+	if !managesConsumers && isLeaderless {
+		resp.Error = NewJSClusterNotAvailError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if sa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
-	} else if sa == nil {
-		return
 	}
+
 	var ca *consumerAssignment
 	if sa.consumers != nil {
 		ca = sa.consumers[consumer]
@@ -2987,10 +2990,11 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	ns, nc := 0, 0
 	streams, hasAccount := cc.streams[accName]
 	for _, osa := range streams {
+		node := cc.nodeForConsumerProposals(osa)
 		for _, oca := range osa.consumers {
 			oca.deleted = true
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client}
-			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+			node.Propose(encodeDeleteConsumerAssignment(ca))
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client}
@@ -3532,12 +3536,12 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
+	var resp = JSApiConsumerUnpinResponse{ApiResponse: ApiResponse{Type: JSApiConsumerUnpinResponseType}}
+
 	stream := streamNameFromSubject(subject)
 	consumer := consumerNameFromSubject(subject)
 
 	var req JSApiConsumerUnpinRequest
-	var resp = JSApiConsumerUnpinResponse{ApiResponse: ApiResponse{Type: JSApiConsumerUnpinResponseType}}
-
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -4295,7 +4299,7 @@ const (
 // Request to create a consumer where stream and optional consumer name are part of the subject, and optional
 // filtered subjects can be at the tail end.
 // Assumes stream and consumer names are single tokens.
-func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Account, subject, reply string, rmsg []byte) {
+func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
@@ -4317,20 +4321,24 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 
 	var js *jetStream
 	isClustered := s.JetStreamIsClustered()
+	streamName := streamNameFromSubject(subject)
 
 	// Determine if we should proceed here when we are in clustered mode.
 	if isClustered {
-		if req.Config.Direct {
-			// Check to see if we have this stream and are the stream leader.
-			if !acc.JetStreamIsStreamLeader(streamNameFromSubject(subject)) {
+		var cc *jetStreamCluster
+		js, cc = s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		js.mu.RLock()
+		sa := js.streamAssignment(acc.Name, streamName)
+		managesConsumers := sa != nil && sa.Config != nil && sa.Config.ManagesConsumers
+		js.mu.RUnlock()
+		if req.Config.Direct || managesConsumers {
+			if !acc.JetStreamIsStreamLeader(streamName) {
 				return
 			}
 		} else {
-			var cc *jetStreamCluster
-			js, cc = s.getJetStreamCluster()
-			if js == nil || cc == nil {
-				return
-			}
 			if js.isLeaderless() {
 				resp.Error = NewJSClusterNotAvailError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -4343,7 +4351,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		}
 	}
 
-	var streamName, consumerName, filteredSubject string
+	var consumerName, filteredSubject string
 	var rt ccReqType
 
 	if n := numTokens(subject); n < 5 {
@@ -4514,23 +4522,6 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		Consumers:   []string{},
 	}
 
-	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
-			return
-		}
-	}
-
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
 			resp.Error = NewJSNotEnabledForAccountError()
@@ -4636,23 +4627,6 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		Consumers:   []*ConsumerInfo{},
 	}
 
-	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
-			return
-		}
-	}
-
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
 			resp.Error = NewJSNotEnabledForAccountError()
@@ -4724,10 +4698,10 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
+	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
+
 	streamName := streamNameFromSubject(subject)
 	consumerName := consumerNameFromSubject(subject)
-
-	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
 
 	if !isEmptyRequest(msg) {
 		resp.Error = NewJSNotEmptyRequestError()
@@ -4754,6 +4728,16 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
+		if sa != nil && sa.Config != nil && sa.Config.ManagesConsumers {
+			// If the stream manages its own consumers then we care about the stream
+			// leader at this point, not the metaleader, as the metaleader will not
+			// know or not whether the consumer is meant to exist.
+			isLeader = cc.isStreamLeader(acc.Name, streamName)
+			if node := cc.nodeForConsumerProposals(sa); node != nil {
+				groupLeaderless = node.Leaderless()
+				groupCreated = node.Created()
+			}
+		}
 		var rg *raftGroup
 		var offline, isMember bool
 		if ca != nil {
@@ -4909,23 +4893,6 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, _ *Accoun
 
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 
-	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
-			return
-		}
-	}
-
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
 			resp.Error = NewJSNotEnabledForAccountError()
@@ -4979,31 +4946,13 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
-	var req JSApiConsumerPauseRequest
 	var resp = JSApiConsumerPauseResponse{ApiResponse: ApiResponse{Type: JSApiConsumerPauseResponseType}}
 
+	var req JSApiConsumerPauseRequest
 	if isJSONObjectOrArray(msg) {
 		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-	}
-
-	// Determine if we should proceed here when we are in clustered mode.
-	isClustered := s.JetStreamIsClustered()
-	js, cc := s.getJetStreamCluster()
-	if isClustered {
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
 			return
 		}
 	}
@@ -5019,7 +4968,8 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	stream := streamNameFromSubject(subject)
 	consumer := consumerNameFromSubject(subject)
 
-	if isClustered {
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
 		js.mu.RLock()
 		sa := js.streamAssignment(acc.Name, stream)
 		if sa == nil {
@@ -5040,6 +4990,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		nca := *ca
 		ncfg := *ca.Config
 		nca.Config = &ncfg
+		nca.Config.Metadata = maps.Clone(ca.Config.Metadata)
 		js.mu.RUnlock()
 		pauseUTC := req.PauseUntil.UTC()
 		if !pauseUTC.IsZero() {
@@ -5053,7 +5004,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		setStaticConsumerMetadata(nca.Config)
 
 		eca := encodeAddConsumerAssignment(&nca)
-		cc.meta.Propose(eca)
+		cc.nodeForConsumerProposals(sa).ForwardProposal(eca)
 
 		resp.PauseUntil = pauseUTC
 		if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {

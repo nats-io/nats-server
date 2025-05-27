@@ -87,6 +87,11 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			cfg:              &StreamConfig{AllowAsyncFlush: true},
 			expectedMetadata: metadataAtLevel("2"),
 		},
+		{
+			desc:             "ManagesConsumers",
+			cfg:              &StreamConfig{ManagesConsumers: true},
+			expectedMetadata: metadataAtLevel("2"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg)
