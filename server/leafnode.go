@@ -1780,7 +1780,13 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 	cid := c.cid
 	if c.leaf != nil {
 		if c.leaf.tsubt != nil {
-			c.leaf.tsubt.Stop()
+			if !c.leaf.tsubt.Stop() {
+				// Drain the channel before clearing timer.
+				select {
+				case <-c.leaf.tsubt.C:
+				default:
+				}
+			}
 			c.leaf.tsubt = nil
 		}
 		if c.leaf.gwSub != nil {
@@ -2257,7 +2263,13 @@ func (c *client) updateSmap(sub *subscription, delta int32, isLDS bool) {
 			delete(c.leaf.tsub, sub)
 			if len(c.leaf.tsub) == 0 {
 				c.leaf.tsub = nil
-				c.leaf.tsubt.Stop()
+				if !c.leaf.tsubt.Stop() {
+					// Drain the channel before clearing timer.
+					select {
+					case <-c.leaf.tsubt.C:
+					default:
+					}
+				}
 				c.leaf.tsubt = nil
 			}
 			return
