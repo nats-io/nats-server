@@ -3494,10 +3494,18 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		if !client.pubAllowedFullCheck(string(subject), true, true) {
+		var subjectToCheck []byte
+		if subject[0] == '_' && bytes.HasPrefix(subject, []byte(gwReplyPrefix)) {
+			subjectToCheck = subject[gwSubjectOffset:]
+		} else if subject[0] == '$' && bytes.HasPrefix(subject, []byte(oldGWReplyPrefix)) {
+			subjectToCheck = subject[oldGWReplyStart:]
+		} else {
+			subjectToCheck = subject
+		}
+		if !client.pubAllowedFullCheck(string(subjectToCheck), true, true) {
 			mt.addEgressEvent(client, sub, errMsgTracePubViolation)
 			client.mu.Unlock()
-			client.Debugf("Not permitted to deliver to %q", subject)
+			client.Debugf("Not permitted to deliver to %q", subjectToCheck)
 			return false
 		}
 	}
