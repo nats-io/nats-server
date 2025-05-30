@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/quic-go/quic-go"
 )
 
 // This map is used to store URLs string as the key with a reference count as
@@ -260,6 +263,17 @@ func natsDialTimeout(network, address string, timeout time.Duration) (net.Conn, 
 		KeepAlive: -1,
 	}
 	return d.Dial(network, address)
+}
+
+// natsQUICDialTimeout dials a QUIC connection with the specified timeout.
+func natsQUICDialTimeout(address string, tlsConfig *tls.Config, timeout time.Duration) (quic.Connection, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	return quic.DialAddr(ctx, address, tlsConfig, &quic.Config{
+		KeepAlivePeriod: 30 * time.Second,
+		MaxIdleTimeout:  120 * time.Second,
+	})
 }
 
 // redactURLList() returns a copy of a list of URL pointers where each item

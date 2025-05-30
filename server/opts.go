@@ -82,6 +82,7 @@ type ClusterOpts struct {
 	Compression       CompressionOpts   `json:"-"`
 	PingInterval      time.Duration     `json:"-"`
 	MaxPingsOut       int               `json:"-"`
+	UseQUIC           bool              `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -1880,6 +1881,8 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
 			trackExplicitVal(&opts.inConfig, "Cluster.NoAdvertise", opts.Cluster.NoAdvertise)
+		case "use_quic":
+			opts.Cluster.UseQUIC = mv.(bool)
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
 		case "permissions":

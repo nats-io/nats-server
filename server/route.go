@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/quic-go/quic-go"
 )
 
 // RouteType designates the router type
@@ -87,6 +89,8 @@ type route struct {
 	// Transient value used to set the Info.GossipMode when initiating
 	// an implicit route and sending to the remote.
 	gossipMode byte
+	// Whether this route uses QUIC transport
+	useQUIC bool
 }
 
 // Do not change the values/order since they are exchanged between servers.
@@ -834,9 +838,11 @@ func (c *client) processRouteInfo(info *Info) {
 		// Need to get the remote IP address.
 		switch conn := c.nc.(type) {
 		case *net.TCPConn, *tls.Conn:
-			addr := conn.RemoteAddr().(*net.TCPAddr)
-			info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
-				strconv.Itoa(info.Port)))
+			switch addr := conn.RemoteAddr().(type) {
+			case *net.TCPAddr:
+				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
+					strconv.Itoa(info.Port)))
+			}
 		default:
 			info.IP = c.route.url.String()
 		}
@@ -1917,7 +1923,9 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 	opts := s.getOpts()
 
 	didSolicit := rURL != nil
-	r := &route{routeType: rtype, didSolicit: didSolicit, poolIdx: -1, gossipMode: gossipMode}
+	// Check if this is a QUIC connection
+	_, isQUIC := conn.(*quicConn)
+	r := &route{routeType: rtype, didSolicit: didSolicit, poolIdx: -1, gossipMode: gossipMode, useQUIC: isQUIC}
 
 	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r, start: time.Now()}
 
@@ -2688,15 +2696,38 @@ func (s *Server) startRouteAcceptLoop() {
 	}
 
 	hp := net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(port))
-	l, e := natsListen("tcp", hp)
-	s.routeListenerErr = e
-	if e != nil {
-		s.mu.Unlock()
-		s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
-		return
+
+	// Check if QUIC is enabled and TLS is configured
+	if opts.Cluster.UseQUIC && opts.Cluster.TLSConfig != nil {
+		// Listen for QUIC connections
+		qListener, err := quic.ListenAddr(hp, opts.Cluster.TLSConfig, &quic.Config{
+			KeepAlivePeriod: 30 * time.Second,
+			MaxIdleTimeout:  120 * time.Second,
+		})
+		if err != nil {
+			s.mu.Unlock()
+			s.Fatalf("Error listening on QUIC router port: %d - %v", opts.Cluster.Port, err)
+			return
+		}
+		l := newQUICListener(qListener)
+		s.routeListenerErr = nil
+		s.Noticef("Listening for QUIC route connections on %s", hp)
+		// Store the listener
+		s.routeListener = l
+		// We'll handle the listener setup later in the function
+	} else {
+		// Traditional TCP listener
+		l, e := natsListen("tcp", hp)
+		s.routeListenerErr = e
+		if e != nil {
+			s.mu.Unlock()
+			s.Fatalf("Error listening on router port: %d - %v", opts.Cluster.Port, e)
+			return
+		}
+		s.Noticef("Listening for route connections on %s",
+			net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
+		s.routeListener = l
 	}
-	s.Noticef("Listening for route connections on %s",
-		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
@@ -2735,7 +2766,12 @@ func (s *Server) startRouteAcceptLoop() {
 	// If we have selected a random port...
 	if port == 0 {
 		// Write resolved port back to options.
-		opts.Cluster.Port = l.Addr().(*net.TCPAddr).Port
+		if tcpAddr, ok := s.routeListener.Addr().(*net.TCPAddr); ok {
+			opts.Cluster.Port = tcpAddr.Port
+		} else if udpAddr, ok := s.routeListener.Addr().(*net.UDPAddr); ok {
+			// QUIC uses UDP
+			opts.Cluster.Port = udpAddr.Port
+		}
 	}
 	// Check for Auth items
 	if opts.Cluster.Username != "" {
@@ -2758,12 +2794,12 @@ func (s *Server) startRouteAcceptLoop() {
 	// Possibly override Host/Port and set IP based on Cluster.Advertise
 	if err := s.setRouteInfoHostPortAndIP(); err != nil {
 		s.Fatalf("Error setting route INFO with Cluster.Advertise value of %s, err=%v", opts.Cluster.Advertise, err)
-		l.Close()
+		s.routeListener.Close()
 		s.mu.Unlock()
 		return
 	}
 	// Setup state that can enable shutdown
-	s.routeListener = l
+	// (already set above in the listener creation)
 	// Warn if using Cluster.Insecure
 	if tlsReq && opts.Cluster.TLSConfig.InsecureSkipVerify {
 		s.Warnf(clusterTLSInsecureWarning)
@@ -2787,7 +2823,7 @@ func (s *Server) startRouteAcceptLoop() {
 	}
 
 	// Start the accept loop in a different go routine.
-	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil, Implicit, gossipDefault, _EMPTY_) }, nil)
+	go s.acceptConnections(s.routeListener, "Route", func(conn net.Conn) { s.createRoute(conn, nil, Implicit, gossipDefault, _EMPTY_) }, nil)
 
 	// Solicit Routes if applicable. This will not block.
 	s.solicitRoutes(opts.Routes, opts.Cluster.PinnedAccounts)
@@ -2897,8 +2933,28 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 			return
 		}
 		if err == nil {
-			s.Debugf("Trying to connect to route on %s (%s)", rURL.Host, address)
-			conn, err = natsDialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
+			// Check if QUIC is enabled for routes
+			useQUIC := rURL.Scheme == "quic" || (opts.Cluster.TLSConfig != nil && opts.Cluster.UseQUIC)
+
+			if useQUIC && opts.Cluster.TLSConfig != nil {
+				s.Debugf("Trying to connect to route via QUIC on %s (%s)", rURL.Host, address)
+				qConn, qErr := natsQUICDialTimeout(address, opts.Cluster.TLSConfig.Clone(), DEFAULT_ROUTE_DIAL)
+				if qErr == nil {
+					// Open a stream for the route connection
+					stream, streamErr := qConn.OpenStreamSync(context.Background())
+					if streamErr == nil {
+						conn = newQUICConn(qConn, stream)
+					} else {
+						qConn.CloseWithError(0, "failed to open stream")
+						err = streamErr
+					}
+				} else {
+					err = qErr
+				}
+			} else {
+				s.Debugf("Trying to connect to route on %s (%s)", rURL.Host, address)
+				conn, err = natsDialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
+			}
 		}
 		if err != nil {
 			attempts++
