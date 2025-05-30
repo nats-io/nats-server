@@ -246,6 +246,10 @@ var natsListenConfig = &net.ListenConfig{
 	KeepAlive: -1,
 }
 
+func init() {
+	natsListenConfig.SetMultipathTCP(true)
+}
+
 // natsListen() is the same as net.Listen() except that TCP keepalives are
 // disabled (to match Go's behavior before Go 1.13).
 func natsListen(network, address string) (net.Listener, error) {
@@ -259,6 +263,7 @@ func natsDialTimeout(network, address string, timeout time.Duration) (net.Conn, 
 		Timeout:   timeout,
 		KeepAlive: -1,
 	}
+	d.SetMultipathTCP(true)
 	return d.Dial(network, address)
 }
 
