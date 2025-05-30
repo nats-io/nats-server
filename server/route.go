@@ -842,6 +842,9 @@ func (c *client) processRouteInfo(info *Info) {
 			case *net.TCPAddr:
 				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
 					strconv.Itoa(info.Port)))
+			case *net.UDPAddr:
+				info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
+					strconv.Itoa(info.Port)))
 			}
 		default:
 			info.IP = c.route.url.String()
