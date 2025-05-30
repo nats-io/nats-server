@@ -801,6 +801,7 @@ type RouteInfo struct {
 	SubsDetail   []SubDetail        `json:"subscriptions_list_detail,omitempty"`
 	Account      string             `json:"account,omitempty"`
 	Compression  string             `json:"compression,omitempty"`
+	QUIC         bool               `json:"quic,omitempty"`
 }
 
 // Routez returns a Routez struct containing information about routes.
@@ -848,6 +849,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			Idle:         myUptime(rs.Now.Sub(r.last)),
 			Account:      string(r.route.accName),
 			Compression:  r.route.compression,
+			QUIC:         s.getOpts().Cluster.UseQUIC,
 		}
 
 		if len(r.subs) > 0 {
@@ -860,9 +862,14 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 
 		switch conn := r.nc.(type) {
 		case *net.TCPConn, *tls.Conn:
-			addr := conn.RemoteAddr().(*net.TCPAddr)
-			ri.Port = addr.Port
-			ri.IP = addr.IP.String()
+			switch addr := conn.RemoteAddr().(type) {
+			case *net.TCPAddr:
+				ri.Port = addr.Port
+				ri.IP = addr.IP.String()
+			case *net.UDPAddr:
+				ri.Port = addr.Port
+				ri.IP = addr.IP.String()
+			}
 		}
 		r.mu.Unlock()
 		rs.Routes = append(rs.Routes, ri)
