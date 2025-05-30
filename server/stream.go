@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2267,8 +2268,12 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		fseq = ss.First
 	}
 
+	// Take a copy of cList to avoid o.purge() potentially taking the stream lock and
+	// violating the lock ordering.
 	mset.clsMu.RLock()
-	for _, o := range mset.cList {
+	cList := slices.Clone(mset.cList)
+	mset.clsMu.RUnlock()
+	for _, o := range cList {
 		start := fseq
 		o.mu.RLock()
 		// we update consumer sequences if:
@@ -2290,7 +2295,6 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 			o.purge(start, lseq, isWider)
 		}
 	}
-	mset.clsMu.RUnlock()
 
 	return purged, nil
 }
