@@ -2941,7 +2941,7 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 
 			if useQUIC && opts.Cluster.TLSConfig != nil {
 				s.Debugf("Trying to connect to route via QUIC on %s (%s)", rURL.Host, address)
-				qConn, qErr := natsQUICDialTimeout(address, opts.Cluster.TLSConfig.Clone(), DEFAULT_ROUTE_DIAL)
+				qConn, qErr := natsQUICDialTimeout(rURL.Host, opts.Cluster.TLSConfig.Clone(), DEFAULT_ROUTE_DIAL)
 				if qErr == nil {
 					// Open a stream for the route connection
 					stream, streamErr := qConn.OpenStreamSync(context.Background())
