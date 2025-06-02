@@ -375,6 +375,10 @@ func TestConfigReload(t *testing.T) {
 	if updated.MaxPayload != 1024 {
 		t.Fatalf("MaxPayload is incorrect.\nexpected 1024\ngot: %d", updated.MaxPayload)
 	}
+	expectedMetadata := map[string]string{"key1": "value1", "key2": "value2"}
+	if !reflect.DeepEqual(expectedMetadata, updated.Metadata) {
+		t.Fatalf("Metadata is incorrect.\nexpected: %v\ngot: %v", expectedMetadata, updated.Metadata)
+	}
 
 	if reloaded := server.ConfigTime(); !reloaded.After(loaded) {
 		t.Fatalf("ConfigTime is incorrect.\nexpected greater than: %s\ngot: %s", loaded, reloaded)
