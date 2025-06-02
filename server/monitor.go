@@ -828,7 +828,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 		rs.Import = perms.Import
 		rs.Export = perms.Export
 	}
-	rs.Name = s.getOpts().ServerName
+	rs.Name = s.info.Name
 
 	addRoute := func(r *client) {
 		r.mu.Lock()
@@ -1704,6 +1704,8 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.WriteDeadline = opts.WriteDeadline
 	v.ConfigLoadTime = s.configTime.UTC()
 	v.ConfigDigest = opts.configDigest
+	v.Tags = opts.Tags
+	v.Metadata = opts.Metadata
 	// Update route URLs if applicable
 	if s.varzUpdateRouteURLs {
 		v.Cluster.URLs = urlsToStrings(opts.Routes)
