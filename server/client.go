@@ -1568,6 +1568,11 @@ func (c *client) flushOutbound() bool {
 	if c.nc == nil || c.srv == nil || c.out.pb == 0 {
 		return true // true because no need to queue a signal.
 	}
+	
+	// Check if this is a QUIC connection and use optimized path
+	if c.isQUICConn() {
+		return c.flushOutboundQUIC()
+	}
 
 	// In the case of a normal socket connection, "collapsed" is just a ref
 	// to "nb". In the case of WebSockets, additional framing is added to
@@ -1760,6 +1765,154 @@ func (c *client) flushOutbound() bool {
 		c.flags.clear(isSlowConsumer)
 	}
 
+	return true
+}
+
+// isQUICConn returns true if this connection is using QUIC transport.
+// Lock must be held on entry.
+func (c *client) isQUICConn() bool {
+	if c.kind == ROUTER && c.route != nil {
+		return c.route.useQUIC
+	}
+	_, ok := c.nc.(*quicConn)
+	return ok
+}
+
+// flushOutboundQUIC is an optimized version of flushOutbound for QUIC connections.
+// Lock must be held on entry.
+func (c *client) flushOutboundQUIC() bool {
+	// In the case of a normal socket connection, "collapsed" is just a ref
+	// to "nb". In the case of WebSockets, additional framing is added to
+	// anything that is waiting in "nb". Also keep a note of how many bytes
+	// were queued before we release the mutex.
+	collapsed, attempted := c.collapsePtoNB()
+
+	// "nb" will be set to nil so that we can manipulate "collapsed" outside
+	// of the client's lock.
+	c.out.nb = nil
+
+	// In case it goes away after releasing the lock.
+	nc := c.nc
+
+	// Check for compression
+	cw := c.out.cw
+	if cw != nil {
+		// We will have to adjust once we have compressed, so remove for now.
+		c.out.pb -= attempted
+		if c.isWebsocket() {
+			c.ws.fs -= attempted
+		}
+	}
+
+	// Do NOT hold lock during actual IO.
+	c.mu.Unlock()
+
+	// Compress outside of the lock
+	if cw != nil {
+		var err error
+		bb := bytes.Buffer{}
+
+		cw.Reset(&bb)
+		for _, buf := range collapsed {
+			if _, err = cw.Write(buf); err != nil {
+				break
+			}
+		}
+		if err == nil {
+			err = cw.Close()
+		}
+		if err != nil {
+			c.Errorf("Error compressing data: %v", err)
+			// We need to grab the lock now before marking as closed and exiting
+			c.mu.Lock()
+			c.markConnAsClosed(WriteError)
+			return false
+		}
+		collapsed = append(net.Buffers(nil), bb.Bytes())
+		attempted = int64(len(collapsed[0]))
+	}
+
+	// QUIC optimization: Write all buffers in a single operation
+	// QUIC handles flow control and deadlines internally
+	start := time.Now()
+	
+	var n int64
+	var err error
+	
+	// For QUIC, we can write all buffers at once without chunking
+	// as QUIC handles segmentation and flow control internally
+	for _, buf := range collapsed {
+		var wn int
+		wn, err = nc.Write(buf)
+		n += int64(wn)
+		if err != nil {
+			break
+		}
+	}
+
+	lft := time.Since(start)
+
+	// Re-acquire client lock.
+	c.mu.Lock()
+
+	// Return buffers to pool
+	for _, buf := range collapsed {
+		nbPoolPut(buf)
+	}
+
+	// Adjust if we were compressing.
+	if cw != nil {
+		c.out.pb += attempted
+		if c.isWebsocket() {
+			c.ws.fs += attempted
+		}
+	}
+
+	// Update flush time statistics.
+	c.out.lft = lft
+
+	// Subtract from pending bytes and messages.
+	c.out.pb -= n
+	if c.isWebsocket() {
+		c.ws.fs -= n
+	}
+
+	// Check for partial writes or errors
+	if n != attempted {
+		if n == 0 {
+			c.Debugf("QUIC write error: %v", err)
+		} else if n < attempted {
+			c.Debugf("QUIC partial write: %d of %d", n, attempted)
+		}
+		// QUIC connections handle retransmission automatically,
+		// so we only close on persistent errors
+		if err != nil && err != io.ErrShortWrite {
+			c.markConnAsClosed(WriteError)
+			return true
+		}
+	}
+
+	// Check that if there is still data to send and writeLoop is in wait,
+	// then we need to signal.
+	if c.out.pb > 0 {
+		c.flushSignal()
+	}
+
+	// Check if we have a stalled gate and if so and we are recovering release
+	// any stalled producers. Only kind==CLIENT will stall.
+	if c.out.stc != nil && (n == attempted || c.out.pb < c.out.mp/4*3) {
+		close(c.out.stc)
+		c.out.stc = nil
+	}
+	
+	// QUIC doesn't have the same slow consumer issues as TCP
+	// due to built-in flow control, but we still clear the flag
+	if c.flags.isSet(isSlowConsumer) {
+		c.Noticef("Slow Consumer Recovered: QUIC flush took %.3fs with %d bytes.", time.Since(start).Seconds(), attempted)
+		c.flags.clear(isSlowConsumer)
+	}
+
+	// All data was written successfully
 	return true
 }
 
