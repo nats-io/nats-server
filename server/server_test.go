@@ -1147,6 +1147,8 @@ func TestLameDuckModeInfo(t *testing.T) {
 
 	getInfo(false)
 	c.Write([]byte("CONNECT {\"protocol\":1,\"verbose\":false}\r\nPING\r\n"))
+	// Consume both the first PONG and INFO in response to the Connect.
+	client.ReadString('\n')
 	client.ReadString('\n')
 
 	optsB := testWSOptions()

@@ -1991,12 +1991,16 @@ func (c *client) remoteCluster() string {
 // its permission settings for local enforcement.
 func (s *Server) sendPermsAndAccountInfo(c *client) {
 	// Copy
+	s.mu.Lock()
 	info := s.copyLeafNodeInfo()
+	s.mu.Unlock()
 	c.mu.Lock()
 	info.CID = c.cid
 	info.Import = c.opts.Import
 	info.Export = c.opts.Export
 	info.RemoteAccount = c.acc.Name
+	// s.SystemAccount() uses an atomic operation and does not get the server lock, so this is safe.
+	info.IsSystemAccount = c.acc == s.SystemAccount()
 	info.ConnectInfo = true
 	c.enqueueProto(generateInfoJSON(info))
 	c.mu.Unlock()
