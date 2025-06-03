@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"runtime/debug"
 	"testing"
 )
 
@@ -41,7 +42,7 @@ func TestPSEmulation(t *testing.T) {
 	psRss *= 1024 // 1k blocks, want bytes.
 	psVss *= 1024 // 1k blocks, want bytes.
 
-	runtime.GC()
+	debug.FreeOSMemory()
 
 	// Our internal version
 	ProcUsage(&pcpu, &rss, &vss)
