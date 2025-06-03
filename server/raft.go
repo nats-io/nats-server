@@ -3259,7 +3259,11 @@ func (n *raft) truncateWAL(term, index uint64) {
 	n.debug("Truncating and repairing WAL to Term %d Index %d", term, index)
 
 	if term == 0 && index == 0 {
-		n.warn("Resetting WAL state")
+		if n.commit > 0 {
+			n.warn("Resetting WAL state")
+		} else {
+			n.debug("Clearing WAL state (no commits)")
+		}
 	}
 
 	defer func() {
