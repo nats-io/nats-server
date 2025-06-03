@@ -135,4 +135,12 @@ elif [ "$1" = "non_srv_pkg_tests" ]; then
 
     go test $RACE -v -p=1 $(go list ./... | grep -v "/server") -count=1 -vet=off -timeout=30m -failfast
 
+elif [ "$1" = "windows_tests" ]; then
+
+    # Run all tests that have Windows-specific code.
+
+    go test $RACE -v -p=1 ./server/*_windows_test.go -count=1 -vet=off -timeout=30m -failfast
+    go test $RACE -v -p=1 ./server/pse/... -count=1 -vet=off -timeout=30m -failfast
+    go test $RACE -v -p=1 ./logger/*_windows_test.go -count=1 -vet=off -timeout=30m -failfast
+
 fi
