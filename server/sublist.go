@@ -116,9 +116,9 @@ func newLevel() *level {
 
 // NewSublist will create a default sublist with caching enabled per the flag.
 func NewSublist(enableCache bool) *Sublist {
-	if enableCache {
-		return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
-	}
+	// if enableCache {
+	// 	return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
+	// }
 	return &Sublist{root: newLevel()}
 }
 

@@ -2802,36 +2802,8 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 		return
 	}
 
-	// Match the subscriptions. We will use our own L1 map if
-	// it's still valid, avoiding contention on the shared sublist.
-	var r *SublistResult
-	var ok bool
-
-	genid := atomic.LoadUint64(&c.acc.sl.genid)
-	if genid == c.in.genid && c.in.results != nil {
-		r, ok = c.in.results[subject]
-	} else {
-		// Reset our L1 completely.
-		c.in.results = make(map[string]*SublistResult)
-		c.in.genid = genid
-	}
-
-	// Go back to the sublist data structure.
-	if !ok {
-		r = c.acc.sl.Match(subject)
-		// Prune the results cache. Keeps us from unbounded growth. Random delete.
-		if len(c.in.results) >= maxResultCacheSize {
-			n := 0
-			for subj := range c.in.results {
-				delete(c.in.results, subj)
-				if n++; n > pruneSize {
-					break
-				}
-			}
-		}
-		// Then add the new cache entry.
-		c.in.results[subject] = r
-	}
+	// Match the subscriptions.
+	r := c.acc.sl.Match(subject)
 
 	// Collect queue names if needed.
 	var qnames [][]byte

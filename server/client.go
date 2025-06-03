@@ -448,13 +448,6 @@ const sysGroup = "_sys_"
 
 // Used in readloop to cache hot subject lookups and group statistics.
 type readCache struct {
-	// These are for clients who are bound to a single account.
-	genid   uint64
-	results map[string]*SublistResult
-
-	// This is for routes and gateways to have their own L1 as well that is account aware.
-	pacache map[string]*perAccountCache
-
 	// This is for when we deliver messages across a route. We use this structure
 	// to make sure to only send one message and properly scope to queues as needed.
 	rts []routeTarget
@@ -1326,9 +1319,6 @@ func (c *client) readLoop(pre []byte) {
 		if c.isMqtt() {
 			s.mqttHandleClosedClient(c)
 		}
-		// These are used only in the readloop, so we can set them to nil
-		// on exit of the readLoop.
-		c.in.results, c.in.pacache = nil, nil
 	}()
 
 	// Start read buffer.
@@ -1516,7 +1506,6 @@ func (c *client) readLoop(pre []byte) {
 		}
 
 		if cpacc && (c.in.start.Sub(lpacc)) >= closedSubsCheckInterval {
-			c.pruneClosedSubFromPerAccountCache()
 			lpacc = time.Now()
 		}
 	}
@@ -4012,7 +4001,6 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		return false, false
 	}
 	acc := c.acc
-	genidAddr := &acc.sl.genid
 
 	// Check pub permissions
 	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowedFullCheck(string(c.pa.subject), true, true) {
@@ -4091,37 +4079,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 
 	// Match the subscriptions. We will use our own L1 map if
 	// it's still valid, avoiding contention on the shared sublist.
-	var r *SublistResult
-	var ok bool
-
-	genid := atomic.LoadUint64(genidAddr)
-	if genid == c.in.genid && c.in.results != nil {
-		r, ok = c.in.results[string(c.pa.subject)]
-	} else {
-		// Reset our L1 completely.
-		c.in.results = make(map[string]*SublistResult)
-		c.in.genid = genid
-	}
-
-	// Go back to the sublist data structure.
-	if !ok {
-		// Match may use the subject here to populate a cache, so can not use bytesToString here.
-		r = acc.sl.Match(string(c.pa.subject))
-		if len(r.psubs)+len(r.qsubs) > 0 {
-			// Prune the results cache. Keeps us from unbounded growth. Random delete.
-			if len(c.in.results) >= maxResultCacheSize {
-				n := 0
-				for subject := range c.in.results {
-					delete(c.in.results, subject)
-					if n++; n > pruneSize {
-						break
-					}
-				}
-			}
-			// Then add the new cache entry.
-			c.in.results[string(c.pa.subject)] = r
-		}
-	}
+	r := acc.sl.MatchBytes(c.pa.subject)
 
 	// Indication if we attempted to deliver the message to anyone.
 	var didDeliver bool
@@ -5830,27 +5788,9 @@ func (c *client) getRTTValue() time.Duration {
 func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 	var (
 		acc *Account
-		pac *perAccountCache
 		r   *SublistResult
 		ok  bool
 	)
-	// Check our cache.
-	if pac, ok = c.in.pacache[string(c.pa.pacache)]; ok {
-		// Check the genid to see if it's still valid.
-		// Since v2.10.0, the config reload of accounts has been fixed
-		// and an account's sublist pointer should not change, so no need to
-		// lock to access it.
-		sl := pac.acc.sl
-
-		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
-			ok = false
-			c.in.pacache = make(map[string]*perAccountCache)
-		} else {
-			acc = pac.acc
-			r = pac.results
-		}
-	}
-
 	if !ok {
 		if c.kind == ROUTER && len(c.route.accName) > 0 {
 			if acc = c.acc; acc == nil {
@@ -5866,14 +5806,6 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 		// Match against the account sublist.
 		r = sl.MatchBytes(c.pa.subject)
-
-		// Check if we need to prune.
-		if len(c.in.pacache) >= maxPerAccountCacheSize {
-			c.prunePerAccountCache()
-		}
-
-		// Store in our cache,make sure to do so after we prune.
-		c.in.pacache[string(c.pa.pacache)] = &perAccountCache{acc, r, atomic.LoadUint64(&sl.genid)}
 	}
 	return acc, r
 }
@@ -5887,39 +5819,6 @@ func (c *client) Account() *Account {
 	acc := c.acc
 	c.mu.Unlock()
 	return acc
-}
-
-// prunePerAccountCache will prune off a random number of cache entries.
-func (c *client) prunePerAccountCache() {
-	n := 0
-	for cacheKey := range c.in.pacache {
-		delete(c.in.pacache, cacheKey)
-		if n++; n > prunePerAccountCacheSize {
-			break
-		}
-	}
-}
-
-// pruneClosedSubFromPerAccountCache remove entries that contain subscriptions
-// that have been closed.
-func (c *client) pruneClosedSubFromPerAccountCache() {
-	for cacheKey, pac := range c.in.pacache {
-		for _, sub := range pac.results.psubs {
-			if sub.isClosed() {
-				goto REMOVE
-			}
-		}
-		for _, qsub := range pac.results.qsubs {
-			for _, sub := range qsub {
-				if sub.isClosed() {
-					goto REMOVE
-				}
-			}
-		}
-		continue
-	REMOVE:
-		delete(c.in.pacache, cacheKey)
-	}
 }
 
 // Returns our service account for this request.

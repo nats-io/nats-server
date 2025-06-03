@@ -1979,7 +1979,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 	// Do final client initialization
 
 	// Initialize the per-account cache.
-	c.in.pacache = make(map[string]*perAccountCache)
 	if didSolicit {
 		// Set permissions associated with the route user (if applicable).
 		// No lock needed since we are already under client lock.
