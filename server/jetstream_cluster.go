@@ -2417,6 +2417,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			doSnapshot()
 			return
 		case <-mqch:
+			// Clean signal from shutdown routine so do best effort attempt to snapshot.
+			doSnapshot()
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.

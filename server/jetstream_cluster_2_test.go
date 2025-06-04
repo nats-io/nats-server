@@ -6316,7 +6316,11 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	// Now clear raft WAL.
 	mset, err := nsl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
-	require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot()))
+	// Snapshot could already be done during shutdown. If so, snapshotting again will not be available.
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	if err != nil {
+		require_Error(t, err, errNoSnapAvailable)
+	}
 
 	nsl.Shutdown()
 	nsl = c.restartServer(nsl)
