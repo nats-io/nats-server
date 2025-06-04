@@ -129,6 +129,9 @@ type Info struct {
 	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
 	LameDuckMode      bool     `json:"ldm,omitempty"`
 	Compression       string   `json:"compression,omitempty"`
+	ConnectInfo       bool     `json:"connect_info,omitempty"`   // When true this is the server INFO response to CONNECT
+	RemoteAccount     string   `json:"remote_account,omitempty"` // Lets the client or leafnode side know the remote account that they bind to.
+	IsSystemAccount   bool     `json:"acc_is_sys,omitempty"`     // Indicates if the account is a system account.
 
 	// Route Specific
 	Import        *SubjectPermission `json:"import,omitempty"`
@@ -136,7 +139,6 @@ type Info struct {
 	LNOC          bool               `json:"lnoc,omitempty"`
 	LNOCU         bool               `json:"lnocu,omitempty"`
 	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
-	ConnectInfo   bool               `json:"connect_info,omitempty"`    // When true this is the server INFO response to CONNECT
 	RoutePoolSize int                `json:"route_pool_size,omitempty"`
 	RoutePoolIdx  int                `json:"route_pool_idx,omitempty"`
 	RouteAccount  string             `json:"route_account,omitempty"`
@@ -153,8 +155,7 @@ type Info struct {
 	GatewayIOM        bool     `json:"gateway_iom,omitempty"`         // Indicate that all accounts will be switched to InterestOnly mode "right away"
 
 	// LeafNode Specific
-	LeafNodeURLs  []string `json:"leafnode_urls,omitempty"`  // LeafNode URLs that the server can reconnect to.
-	RemoteAccount string   `json:"remote_account,omitempty"` // Lets the other side know the remote account that they bind to.
+	LeafNodeURLs []string `json:"leafnode_urls,omitempty"` // LeafNode URLs that the server can reconnect to.
 
 	XKey string `json:"xkey,omitempty"` // Public server's x25519 key.
 }
@@ -258,8 +259,6 @@ type Server struct {
 
 	// Used internally for quick look-ups.
 	clientConnectURLsMap refCountedUrlSet
-
-	lastCURLsUpdate int64
 
 	// For Gateways
 	gatewayListener    net.Listener // Accept listener
@@ -3490,8 +3489,6 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 		updateInfo(&s.info.WSConnectURLs, s.websocket.connectURLs, s.websocket.connectURLsMap)
 	}
 	if cliUpdated || wsUpdated {
-		// Update the time of this update
-		s.lastCURLsUpdate = time.Now().UnixNano()
 		// Send to all registered clients that support async INFO protocols.
 		s.sendAsyncInfoToClients(cliUpdated, wsUpdated)
 	}

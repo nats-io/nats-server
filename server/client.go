@@ -2507,36 +2507,29 @@ func (c *client) processPing() {
 	// If we are here, the CONNECT has been received so we know
 	// if this client supports async INFO or not.
 	var (
-		checkInfoChange bool
+		sendConnectInfo bool
 		srv             = c.srv
 	)
-	// For older clients, just flip the firstPongSent flag if not already
-	// set and we are done.
-	if c.opts.Protocol < ClientProtoInfo || srv == nil {
-		c.flags.setIfNotSet(firstPongSent)
-	} else {
-		// This is a client that supports async INFO protocols.
-		// If this is the first PING (so firstPongSent is not set yet),
-		// we will need to check if there was a change in cluster topology
-		// or we have a different max payload. We will send this first before
-		// pong since most clients do flush after connect call.
-		checkInfoChange = !c.flags.isSet(firstPongSent)
+	// For the first PING (so firstPongSet is false) and for clients
+	// that support async INFO protocols, we will send one with ConnectInfo=true,
+	// the name of the account the client is bound to, and if the
+	// account is the system account.
+	if !c.flags.isSet(firstPongSent) {
+		// Flip the flag.
+		c.flags.set(firstPongSent)
+		// Evaluate if we should send the INFO protocol.
+		sendConnectInfo = srv != nil && c.opts.Protocol >= ClientProtoInfo
 	}
 	c.mu.Unlock()
 
-	if checkInfoChange {
-		opts := srv.getOpts()
+	if sendConnectInfo {
 		srv.mu.Lock()
+		info := srv.copyInfo()
 		c.mu.Lock()
-		// Now that we are under both locks, we can flip the flag.
-		// This prevents sendAsyncInfoToClients() and code here to
-		// send a double INFO protocol.
-		c.flags.set(firstPongSent)
-		// If there was a cluster update since this client was created,
-		// send an updated INFO protocol now.
-		if srv.lastCURLsUpdate >= c.start.UnixNano() || c.mpay != int32(opts.MaxPayload) {
-			c.enqueueProto(c.generateClientInfoJSON(srv.copyInfo()))
-		}
+		info.RemoteAccount = c.acc.Name
+		info.IsSystemAccount = c.acc == srv.SystemAccount()
+		info.ConnectInfo = true
+		c.enqueueProto(c.generateClientInfoJSON(info))
 		c.mu.Unlock()
 		srv.mu.Unlock()
 	}
