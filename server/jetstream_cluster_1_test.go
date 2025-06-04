@@ -8464,6 +8464,63 @@ func TestJetStreamClusterOfflineR1ConsumerDenyUpdate(t *testing.T) {
 	require_Error(t, err, NewJSConsumerOfflineError())
 }
 
+func TestJetStreamClusterSnapshotStreamAssetOnShutdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	var sds []string
+	for _, s := range c.servers {
+		sds = append(sds, s.StoreDir())
+	}
+
+	for _, sd := range sds {
+		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir, "*"))
+		require_NoError(t, err)
+		require_True(t, len(matches) > 0)
+		for _, match := range matches {
+			require_NoError(t, os.RemoveAll(match))
+		}
+	}
+
+	// Publish, so we have something new to snapshot.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Shutdown servers, and check if all made stream snapshots.
+	for _, s := range c.servers {
+		s.Shutdown()
+	}
+	for _, sd := range sds {
+		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir))
+		require_NoError(t, err)
+		// Matches _meta_ and stream raft groups.
+		require_Len(t, len(matches), 2)
+		var foundStream bool
+		for _, match := range matches {
+			if !strings.Contains(match, "S-R3F") {
+				continue
+			}
+			foundStream = true
+			dirs, err := os.ReadDir(match)
+			require_NoError(t, err)
+			if len(dirs) != 1 {
+				t.Errorf("Missing snapshot for %s", match)
+			}
+		}
+		require_True(t, foundStream)
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

@@ -5788,7 +5788,8 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		if deleteFlag {
 			n.Delete()
 			sa = mset.sa
-		} else {
+		} else if !isShuttingDown {
+			// Stop Raft, unless JetStream is already shutting down, in which case they'll be stopped separately.
 			n.Stop()
 		}
 	}
