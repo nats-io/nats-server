@@ -1,4 +1,4 @@
-// Copyright 2013-2024 The NATS Authors
+// Copyright 2013-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -54,6 +54,7 @@ func DefaultMonitorOptions() *Options {
 		NoLog:        true,
 		NoSigs:       true,
 		Tags:         []string{"tag"},
+		Metadata:     map[string]string{"key1": "value1", "key2": "value2"},
 	}
 }
 
@@ -6114,4 +6115,17 @@ func TestMonitorVarzJSApiLevel(t *testing.T) {
 	varz := pollVarz(t, s, 0, url, nil)
 	apiLevel := varz.JetStream.Stats.API.Level
 	require_Equal(t, apiLevel, JSApiLevel)
+}
+
+func TestMonitorVarzMetadata(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	v, err := s.Varz(nil)
+	require_NoError(t, err)
+
+	expected := map[string]string{"key1": "value1", "key2": "value2"}
+	if !reflect.DeepEqual(expected, v.Metadata) {
+		t.Fatalf("expected: %v, got: %v", expected, v.Metadata)
+	}
 }
