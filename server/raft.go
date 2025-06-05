@@ -3015,6 +3015,12 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 
 	n.Lock()
 
+	// Check state under lock, we might not be leader anymore.
+	if n.State() != Leader {
+		n.Unlock()
+		return
+	}
+
 	// Update peer's last index.
 	if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
 		ps.li = ar.index

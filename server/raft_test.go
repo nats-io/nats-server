@@ -1567,6 +1567,7 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	n.Applied(1)
 
 	// Send heartbeat, which commits the second message.
+	n.switchToLeader()
 	n.processAppendEntryResponse(&appendEntryResponse{
 		term:    aeHeartbeat1.term,
 		index:   aeHeartbeat1.pindex,
@@ -1598,6 +1599,7 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	require_Equal(t, entry.leader, nats0)
 
 	// Receive heartbeat from new leader, should not lose commits.
+	n.stepdown(noLeader)
 	n.processAppendEntry(aeHeartbeat2, n.aesub)
 	require_Equal(t, n.wal.State().Msgs, 0)
 	require_Equal(t, n.commit, 2)
@@ -2422,6 +2424,35 @@ func TestNRGCatchupDontCountTowardQuorum(t *testing.T) {
 	require_Equal(t, ar.index, aeHeartbeat.pindex)
 	require_True(t, ar.success)
 	require_Equal(t, msg.Reply, _EMPTY_)
+}
+
+func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	// Switch this node to leader, and send two entries. The first will get quorum, the second will not.
+	n.term++
+	n.switchToLeader()
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.pindex, 0)
+	n.sendAppendEntry(entries)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.pterm, 1)
+	require_Equal(t, n.commit, 0)
+
+	// Step down
+	n.stepdown(noLeader)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.pterm, 1)
+	require_Equal(t, n.commit, 0)
+
+	// Normally would commit the entry, but since we're not leader anymore we should ignore it.
+	n.trackResponse(&appendEntryResponse{1, 1, "peer", _EMPTY_, true})
+	require_Equal(t, n.commit, 0)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
