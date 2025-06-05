@@ -428,7 +428,7 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, ordered bool, cb func(subject 
 // aggressively optimize against repeated walks, but is considerably faster
 // in most cases than intersecting against a potentially large sublist.
 func LazyIntersect[TL, TR any](tl *SubjectTree[TL], tr *SubjectTree[TR], cb func([]byte, *TL, *TR)) {
-	if tl.root == nil || tr.root == nil {
+	if tl == nil || tr == nil || tl.root == nil || tr.root == nil {
 		return
 	}
 	// Iterate over the smaller tree to reduce the number of rounds.

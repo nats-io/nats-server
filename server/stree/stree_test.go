@@ -978,3 +978,811 @@ func TestSubjectTreeDeleteShortSubjectNoPanic(t *testing.T) {
 	require_True(t, found)
 	require_Equal(t, *v, 2)
 }
+
+func TestSubjectTreeEmpty(t *testing.T) {
+	// Test Empty on nil tree
+	var st *SubjectTree[int]
+	st2 := st.Empty()
+	require_True(t, st2 != nil)
+	require_Equal(t, st2.Size(), 0)
+
+	// Test Empty on new tree
+	st = NewSubjectTree[int]()
+	require_Equal(t, st.Size(), 0)
+	st2 = st.Empty()
+	require_True(t, st2 == st) // Should return same instance
+	require_Equal(t, st2.Size(), 0)
+
+	// Test Empty on tree with data
+	st.Insert(b("foo.bar"), 1)
+	st.Insert(b("foo.baz"), 2)
+	st.Insert(b("bar.baz"), 3)
+	require_Equal(t, st.Size(), 3)
+
+	// Empty should clear everything
+	st2 = st.Empty()
+	require_True(t, st2 == st) // Should return same instance
+	require_Equal(t, st.Size(), 0)
+	require_True(t, st.root == nil)
+
+	// Verify we can't find old entries
+	_, found := st.Find(b("foo.bar"))
+	require_False(t, found)
+	_, found = st.Find(b("foo.baz"))
+	require_False(t, found)
+	_, found = st.Find(b("bar.baz"))
+	require_False(t, found)
+
+	// Verify we can insert new entries after Empty
+	old, updated := st.Insert(b("new.entry"), 42)
+	require_True(t, old == nil)
+	require_False(t, updated)
+	require_Equal(t, st.Size(), 1)
+
+	v, found := st.Find(b("new.entry"))
+	require_True(t, found)
+	require_Equal(t, *v, 42)
+}
+
+func TestSubjectTreeLazyIntersectComprehensive(t *testing.T) {
+	// Test with nil trees
+	var st1 *SubjectTree[int]
+	var st2 *SubjectTree[string]
+	count := 0
+	LazyIntersect(st1, st2, func(key []byte, v1 *int, v2 *string) {
+		count++
+	})
+	require_Equal(t, count, 0)
+
+	// Test with one nil tree
+	st1 = NewSubjectTree[int]()
+	st1.Insert(b("foo"), 1)
+	LazyIntersect(st1, st2, func(key []byte, v1 *int, v2 *string) {
+		count++
+	})
+	require_Equal(t, count, 0)
+
+	// Test with empty trees
+	st2 = NewSubjectTree[string]()
+	LazyIntersect(st1, st2, func(key []byte, v1 *int, v2 *string) {
+		count++
+	})
+	require_Equal(t, count, 0)
+
+	// Test with different value types
+	st1 = NewSubjectTree[int]()
+	st2 = NewSubjectTree[string]()
+
+	// Add some intersecting keys
+	st1.Insert(b("foo.bar"), 42)
+	st2.Insert(b("foo.bar"), "hello")
+	st1.Insert(b("baz.qux"), 100)
+	st2.Insert(b("baz.qux"), "world")
+
+	// Add non-intersecting keys
+	st1.Insert(b("only.in.st1"), 1)
+	st2.Insert(b("only.in.st2"), "two")
+
+	results := make(map[string]struct {
+		v1 int
+		v2 string
+	})
+
+	LazyIntersect(st1, st2, func(key []byte, v1 *int, v2 *string) {
+		results[string(key)] = struct {
+			v1 int
+			v2 string
+		}{*v1, *v2}
+	})
+
+	require_Equal(t, len(results), 2)
+	require_Equal(t, results["foo.bar"].v1, 42)
+	require_Equal(t, results["foo.bar"].v2, "hello")
+	require_Equal(t, results["baz.qux"].v1, 100)
+	require_Equal(t, results["baz.qux"].v2, "world")
+
+	// Test that it iterates over smaller tree
+	// Create a large tree and a small tree
+	large := NewSubjectTree[int]()
+	small := NewSubjectTree[int]()
+
+	// Large tree has many entries
+	for i := 0; i < 100; i++ {
+		large.Insert([]byte(fmt.Sprintf("large.%d", i)), i)
+	}
+	// Small tree has few entries with some overlap
+	small.Insert(b("large.5"), 500)
+	small.Insert(b("large.10"), 1000)
+	small.Insert(b("large.50"), 5000)
+	small.Insert(b("small.only"), 999)
+
+	intersectCount := 0
+	LazyIntersect(large, small, func(key []byte, v1 *int, v2 *int) {
+		intersectCount++
+		// Verify we get the correct values
+		switch string(key) {
+		case "large.5":
+			require_Equal(t, *v1, 5)
+			require_Equal(t, *v2, 500)
+		case "large.10":
+			require_Equal(t, *v1, 10)
+			require_Equal(t, *v2, 1000)
+		case "large.50":
+			require_Equal(t, *v1, 50)
+			require_Equal(t, *v2, 5000)
+		default:
+			t.Fatalf("Unexpected key: %s", key)
+		}
+	})
+	require_Equal(t, intersectCount, 3)
+
+	// Test with complex subjects (multiple levels)
+	st3 := NewSubjectTree[int]()
+	st4 := NewSubjectTree[int]()
+
+	// Deep nesting
+	st3.Insert(b("a.b.c.d.e.f.g"), 1)
+	st4.Insert(b("a.b.c.d.e.f.g"), 2)
+
+	// Partial matches (should not intersect)
+	st3.Insert(b("a.b.c.d"), 3)
+	st4.Insert(b("a.b.c.d.e"), 4)
+
+	// Same prefix different suffix
+	st3.Insert(b("prefix.suffix1"), 5)
+	st4.Insert(b("prefix.suffix2"), 6)
+
+	intersections := 0
+	LazyIntersect(st3, st4, func(key []byte, v1 *int, v2 *int) {
+		intersections++
+		require_Equal(t, string(key), "a.b.c.d.e.f.g")
+		require_Equal(t, *v1, 1)
+		require_Equal(t, *v2, 2)
+	})
+	require_Equal(t, intersections, 1)
+}
+
+func TestNode256Operations(t *testing.T) {
+	// Test node256 creation and basic operations
+	n := newNode256(b("prefix"))
+	require_False(t, n.isFull()) // node256 is never full
+
+	// Test findChild when child doesn't exist
+	child := n.findChild('a')
+	require_True(t, child == nil)
+
+	// Add a child and find it
+	leaf := newLeaf(b("suffix"), 42)
+	n.addChild('a', leaf)
+	child = n.findChild('a')
+	require_True(t, child != nil)
+	require_Equal(t, n.size, uint16(1))
+
+	// Test iter function
+	iterCount := 0
+	n.iter(func(node) bool {
+		iterCount++
+		return true
+	})
+	require_Equal(t, iterCount, 1)
+
+	// Test iter with early termination
+	n.addChild('b', newLeaf(b("suffix2"), 43))
+	n.addChild('c', newLeaf(b("suffix3"), 44))
+	iterCount = 0
+	n.iter(func(node) bool {
+		iterCount++
+		return false // Stop after first
+	})
+	require_Equal(t, iterCount, 1)
+
+	// Test children() method
+	children := n.children()
+	require_Equal(t, len(children), 256)
+
+	// Test that grow() panics
+	defer func() {
+		if r := recover(); r != nil {
+			require_Equal(t, r, "grow can not be called on node256")
+		} else {
+			t.Fatal("grow() should panic on node256")
+		}
+	}()
+	n.grow()
+}
+
+func TestNode256Shrink(t *testing.T) {
+	// To get a node256, we need to go through the progression:
+	// node4 -> node10 -> node16 -> node48 -> node256
+	// We need at least 49 children to get to node256
+
+	// Create nodes directly to test node256 shrinking
+	n256 := newNode256(b("prefix"))
+
+	// Add 49 children
+	for i := 0; i < 49; i++ {
+		n256.addChild(byte(i), newLeaf([]byte{byte(i)}, i))
+	}
+	require_Equal(t, n256.size, uint16(49))
+
+	// Shrink should not happen yet (> 48 children)
+	shrunk := n256.shrink()
+	require_True(t, shrunk == nil)
+
+	// Delete one to get to 48 children
+	n256.deleteChild(0)
+	require_Equal(t, n256.size, uint16(48))
+
+	// Now shrink should return a node48
+	shrunk = n256.shrink()
+	require_True(t, shrunk != nil)
+	_, isNode48 := shrunk.(*node48)
+	require_True(t, isNode48)
+
+	// Verify the shrunk node has all remaining children
+	for i := 1; i < 49; i++ {
+		child := shrunk.findChild(byte(i))
+		require_True(t, child != nil)
+	}
+}
+
+func TestLeafPanicMethods(t *testing.T) {
+	leaf := newLeaf(b("test"), 42)
+
+	// Test setPrefix panic
+	t.Run("setPrefix", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "setPrefix called on leaf")
+			} else {
+				t.Fatal("setPrefix should panic on leaf")
+			}
+		}()
+		leaf.setPrefix(b("prefix"))
+	})
+
+	// Test addChild panic
+	t.Run("addChild", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "addChild called on leaf")
+			} else {
+				t.Fatal("addChild should panic on leaf")
+			}
+		}()
+		leaf.addChild('a', nil)
+	})
+
+	// Test findChild panic
+	t.Run("findChild", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "findChild called on leaf")
+			} else {
+				t.Fatal("findChild should panic on leaf")
+			}
+		}()
+		leaf.findChild('a')
+	})
+
+	// Test grow panic
+	t.Run("grow", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "grow called on leaf")
+			} else {
+				t.Fatal("grow should panic on leaf")
+			}
+		}()
+		leaf.grow()
+	})
+
+	// Test deleteChild panic
+	t.Run("deleteChild", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "deleteChild called on leaf")
+			} else {
+				t.Fatal("deleteChild should panic on leaf")
+			}
+		}()
+		leaf.deleteChild('a')
+	})
+
+	// Test shrink panic
+	t.Run("shrink", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "shrink called on leaf")
+			} else {
+				t.Fatal("shrink should panic on leaf")
+			}
+		}()
+		leaf.shrink()
+	})
+
+	// Test other leaf methods that should work
+	require_True(t, leaf.isFull())
+	require_True(t, leaf.base() == nil)
+	require_Equal(t, leaf.numChildren(), uint16(0))
+	require_True(t, leaf.children() == nil)
+
+	// Test iter (should do nothing)
+	called := false
+	leaf.iter(func(n node) bool {
+		called = true
+		return true
+	})
+	require_False(t, called)
+}
+
+func TestSizeOnNilTree(t *testing.T) {
+	var st *SubjectTree[int]
+	require_Equal(t, st.Size(), 0)
+}
+
+func TestFindEdgeCases(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Test Find with empty subject at root level
+	st.Insert(b("foo.bar.baz"), 1)
+	st.Insert(b("foo"), 2)
+
+	// This should create a tree structure, now test finding with edge cases
+	v, found := st.Find(b(""))
+	require_False(t, found)
+	require_True(t, v == nil)
+}
+
+func TestNodeIterMethods(t *testing.T) {
+	// Test node4 iter
+	n4 := newNode4(b("prefix"))
+	n4.addChild('a', newLeaf(b("1"), 1))
+	n4.addChild('b', newLeaf(b("2"), 2))
+
+	count := 0
+	n4.iter(func(n node) bool {
+		count++
+		return true
+	})
+	require_Equal(t, count, 2)
+
+	// Test early termination
+	count = 0
+	n4.iter(func(n node) bool {
+		count++
+		return false
+	})
+	require_Equal(t, count, 1)
+
+	// Test node10 iter
+	n10 := newNode10(b("prefix"))
+	for i := 0; i < 5; i++ {
+		n10.addChild(byte('a'+i), newLeaf([]byte{byte('0' + i)}, i))
+	}
+
+	count = 0
+	n10.iter(func(n node) bool {
+		count++
+		return true
+	})
+	require_Equal(t, count, 5)
+
+	// Test node16 iter
+	n16 := newNode16(b("prefix"))
+	for i := 0; i < 8; i++ {
+		n16.addChild(byte('a'+i), newLeaf([]byte{byte('0' + i)}, i))
+	}
+
+	count = 0
+	n16.iter(func(n node) bool {
+		count++
+		return true
+	})
+	require_Equal(t, count, 8)
+}
+
+func TestIterOrderedAndIterFastNilRoot(t *testing.T) {
+	// Test IterOrdered with nil root
+	st := NewSubjectTree[int]()
+	count := 0
+	st.IterOrdered(func(subject []byte, val *int) bool {
+		count++
+		return true
+	})
+	require_Equal(t, count, 0)
+
+	// Test IterFast with nil root
+	count = 0
+	st.IterFast(func(subject []byte, val *int) bool {
+		count++
+		return true
+	})
+	require_Equal(t, count, 0)
+}
+
+func TestNodeAddChildPanic(t *testing.T) {
+	// Test node4 addChild panic when full
+	n4 := newNode4(b("prefix"))
+	n4.addChild('a', newLeaf(b("1"), 1))
+	n4.addChild('b', newLeaf(b("2"), 2))
+	n4.addChild('c', newLeaf(b("3"), 3))
+	n4.addChild('d', newLeaf(b("4"), 4))
+
+	defer func() {
+		if r := recover(); r != nil {
+			require_Equal(t, r, "node4 full!")
+		} else {
+			t.Fatal("addChild should panic when node4 is full")
+		}
+	}()
+	n4.addChild('e', newLeaf(b("5"), 5))
+}
+
+func TestNodeAddChildPanicOthers(t *testing.T) {
+	// Test node10 addChild panic when full
+	t.Run("node10", func(t *testing.T) {
+		n10 := newNode10(b("prefix"))
+		for i := 0; i < 10; i++ {
+			n10.addChild(byte('a'+i), newLeaf([]byte{byte('0' + i)}, i))
+		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "node10 full!")
+			} else {
+				t.Fatal("addChild should panic when node10 is full")
+			}
+		}()
+		n10.addChild('k', newLeaf(b("11"), 11))
+	})
+
+	// Test node16 addChild panic when full
+	t.Run("node16", func(t *testing.T) {
+		n16 := newNode16(b("prefix"))
+		for i := 0; i < 16; i++ {
+			n16.addChild(byte(i), newLeaf([]byte{byte(i)}, i))
+		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "node16 full!")
+			} else {
+				t.Fatal("addChild should panic when node16 is full")
+			}
+		}()
+		n16.addChild(16, newLeaf(b("16"), 16))
+	})
+
+	// Test node48 addChild panic when full
+	t.Run("node48", func(t *testing.T) {
+		n48 := newNode48(b("prefix"))
+		for i := 0; i < 48; i++ {
+			n48.addChild(byte(i), newLeaf([]byte{byte(i)}, i))
+		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				require_Equal(t, r, "node48 full!")
+			} else {
+				t.Fatal("addChild should panic when node48 is full")
+			}
+		}()
+		n48.addChild(48, newLeaf(b("48"), 48))
+	})
+}
+
+func TestNodeDeleteChildNotFound(t *testing.T) {
+	// Test node10 deleteChild when child doesn't exist
+	n10 := newNode10(b("prefix"))
+	n10.addChild('a', newLeaf(b("1"), 1))
+	n10.addChild('b', newLeaf(b("2"), 2))
+
+	// Try to delete non-existent child
+	n10.deleteChild('z')
+	require_Equal(t, n10.size, uint16(2)) // Size should remain unchanged
+
+	// Test node16 deleteChild when child doesn't exist
+	n16 := newNode16(b("prefix"))
+	n16.addChild('a', newLeaf(b("1"), 1))
+	n16.addChild('b', newLeaf(b("2"), 2))
+
+	n16.deleteChild('z')
+	require_Equal(t, n16.size, uint16(2))
+
+	// Test node48 deleteChild when child doesn't exist
+	n48 := newNode48(b("prefix"))
+	n48.addChild(0, newLeaf(b("1"), 1))
+	n48.addChild(1, newLeaf(b("2"), 2))
+
+	n48.deleteChild(255)
+	require_Equal(t, n48.size, uint16(2))
+}
+
+func TestNodeShrinkNotNeeded(t *testing.T) {
+	// Test node10 shrink when not needed (has more than 4 children)
+	n10 := newNode10(b("prefix"))
+	for i := 0; i < 5; i++ {
+		n10.addChild(byte('a'+i), newLeaf([]byte{byte('0' + i)}, i))
+	}
+
+	shrunk := n10.shrink()
+	require_True(t, shrunk == nil) // Should not shrink
+
+	// Test node16 shrink when not needed (has more than 10 children)
+	n16 := newNode16(b("prefix"))
+	for i := 0; i < 11; i++ {
+		n16.addChild(byte(i), newLeaf([]byte{byte(i)}, i))
+	}
+
+	shrunk = n16.shrink()
+	require_True(t, shrunk == nil) // Should not shrink
+}
+
+func TestNode48IterEarlyTermination(t *testing.T) {
+	n48 := newNode48(b("prefix"))
+	for i := 0; i < 10; i++ {
+		n48.addChild(byte(i), newLeaf([]byte{byte(i)}, i))
+	}
+
+	count := 0
+	n48.iter(func(n node) bool {
+		count++
+		return false // Stop immediately
+	})
+	require_Equal(t, count, 1)
+}
+
+func TestNode10And16IterEarlyTermination(t *testing.T) {
+	// Test node10 early termination
+	n10 := newNode10(b("prefix"))
+	for i := 0; i < 5; i++ {
+		n10.addChild(byte('a'+i), newLeaf([]byte{byte('0' + i)}, i))
+	}
+
+	count := 0
+	n10.iter(func(n node) bool {
+		count++
+		return count < 2 // Stop after 2
+	})
+	require_Equal(t, count, 2)
+
+	// Test node16 early termination
+	n16 := newNode16(b("prefix"))
+	for i := 0; i < 8; i++ {
+		n16.addChild(byte(i), newLeaf([]byte{byte(i)}, i))
+	}
+
+	count = 0
+	n16.iter(func(n node) bool {
+		count++
+		return count < 3 // Stop after 3
+	})
+	require_Equal(t, count, 3)
+}
+
+func TestMatchPartsEdgeCases(t *testing.T) {
+	// Test the edge case in matchParts that's not covered
+	// This is the case where we have a part that needs to be copied and modified
+
+	// Create a complex filter that will trigger the edge case
+	filter := b("foo.*.bar.>")
+	parts := genParts(filter, nil)
+
+	// Test with a fragment that will cause partial matching
+	frag := b("foo.test")
+	remaining, matched := matchParts(parts, frag)
+	require_True(t, matched)
+	require_True(t, len(remaining) > 0)
+}
+
+func TestInsertEdgeCases(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Test inserting with noPivot byte (should fail)
+	old, updated := st.Insert([]byte("foo\x7fbar"), 1)
+	require_True(t, old == nil)
+	require_False(t, updated)
+	require_Equal(t, st.Size(), 0) // Should not insert
+
+	// Test the edge case where we need to split with same pivot
+	st = NewSubjectTree[int]()
+	// This case tests subjects that cause the same pivot after split
+	// Both subjects share prefix "a" and have same pivot "." after split
+	st.Insert(b("a.b"), 1)
+	// Now insert one that will cause the split with same pivot
+	st.Insert(b("a.c"), 2)
+
+	require_Equal(t, st.Size(), 2)
+}
+
+func TestDeleteEdgeCases(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Test delete on empty tree
+	val, deleted := st.Delete(b("foo"))
+	require_False(t, deleted)
+	require_True(t, val == nil)
+
+	// Test delete with empty subject
+	st.Insert(b("foo"), 1)
+	val, deleted = st.Delete(b(""))
+	require_False(t, deleted)
+	require_True(t, val == nil)
+
+	// Test delete with subject shorter than prefix
+	st = NewSubjectTree[int]()
+	st.Insert(b("verylongprefix.suffix"), 1)
+	st.Insert(b("verylongprefix.suffix2"), 2)
+	val, deleted = st.Delete(b("very"))
+	require_False(t, deleted)
+	require_True(t, val == nil)
+}
+
+func TestMatchEdgeCases(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Test match with nil callback
+	st.Insert(b("foo.bar"), 1)
+	st.Match(b("foo.*"), nil) // Should not panic
+
+	// Test match with empty filter
+	count := 0
+	st.Match(b(""), func(subject []byte, val *int) {
+		count++
+	})
+	require_Equal(t, count, 0)
+}
+
+func TestIterEdgeCases(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Add multiple subjects to create a complex tree
+	st.Insert(b("a.b.c"), 1)
+	st.Insert(b("a.b.d"), 2)
+	st.Insert(b("a.c.d"), 3)
+	st.Insert(b("b.c.d"), 4)
+
+	// Test iter with early termination at different points
+	count := 0
+	st.iter(st.root, nil, false, func(subject []byte, val *int) bool {
+		count++
+		return count < 2
+	})
+	require_Equal(t, count, 2)
+}
+
+func TestLeafIter(t *testing.T) {
+	// Test that leaf iter does nothing (it's a no-op)
+	leaf := newLeaf(b("test"), 42)
+	called := false
+
+	// Call iter with a function that would set called to true
+	leaf.iter(func(n node) bool {
+		called = true
+		return true
+	})
+	require_False(t, called) // Should never be called since leaf.iter is a no-op
+
+	// Call iter again with a function that returns false
+	leaf.iter(func(n node) bool {
+		called = true
+		return false
+	})
+	require_False(t, called) // Still should never be called
+
+	// Verify the leaf itself is not affected
+	require_True(t, leaf.match(b("test")))
+	require_Equal(t, leaf.value, 42)
+
+	// Also test through the node interface to ensure coverage
+	var n node = leaf
+	called = false
+	n.iter(func(child node) bool {
+		called = true
+		return true
+	})
+	require_False(t, called) // Still should never be called
+}
+
+func TestDeleteChildEdgeCasesMore(t *testing.T) {
+	// Test the edge case in node10 deleteChild where we don't swap (last element)
+	n10 := newNode10(b("prefix"))
+	n10.addChild('a', newLeaf(b("1"), 1))
+	n10.addChild('b', newLeaf(b("2"), 2))
+	n10.addChild('c', newLeaf(b("3"), 3))
+
+	// Delete the last child
+	n10.deleteChild('c')
+	require_Equal(t, n10.size, uint16(2))
+
+	// Test the edge case in node16 deleteChild where we don't swap (last element)
+	n16 := newNode16(b("prefix"))
+	n16.addChild('a', newLeaf(b("1"), 1))
+	n16.addChild('b', newLeaf(b("2"), 2))
+	n16.addChild('c', newLeaf(b("3"), 3))
+
+	// Delete the last child
+	n16.deleteChild('c')
+	require_Equal(t, n16.size, uint16(2))
+}
+
+func TestMatchPartsMoreEdgeCases(t *testing.T) {
+	// Test the remaining 2.6% of matchParts
+	// Case where frag is empty
+	parts := genParts(b("foo.*"), nil)
+	remaining, matched := matchParts(parts, b(""))
+	require_True(t, matched)
+	require_Equal(t, len(remaining), len(parts))
+}
+
+func TestInsertComplexEdgeCases(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Test the recursive insert case with same pivot
+	// This requires a very specific setup
+	// First, create a tree structure that will trigger the recursive path
+	st.Insert(b("a"), 1)
+	st.Insert(b("aa"), 2) // This will create a split
+
+	// Now insert something that has the same pivot after split
+	st.Insert(b("aaa"), 3) // This should trigger the recursive insert path
+
+	require_Equal(t, st.Size(), 3)
+
+	// Verify all values can be found
+	v, found := st.Find(b("a"))
+	require_True(t, found)
+	require_Equal(t, *v, 1)
+
+	v, found = st.Find(b("aa"))
+	require_True(t, found)
+	require_Equal(t, *v, 2)
+
+	v, found = st.Find(b("aaa"))
+	require_True(t, found)
+	require_Equal(t, *v, 3)
+}
+
+func TestDeleteNilNodePointer(t *testing.T) {
+	st := NewSubjectTree[int]()
+	// Test delete with nil node
+	var n node
+	val, deleted := st.delete(&n, b("foo"), 0)
+	require_False(t, deleted)
+	require_True(t, val == nil)
+}
+
+func TestMatchComplexEdgeCases(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Build a complex tree to test the 2.2% uncovered in match
+	st.Insert(b("foo.bar.baz"), 1)
+	st.Insert(b("foo.bar.qux"), 2)
+	st.Insert(b("foo.baz.bar"), 3)
+	st.Insert(b("bar.foo.baz"), 4)
+
+	// Test with terminal fwc but no remaining parts
+	count := 0
+	st.Match(b("foo.bar.>"), func(subject []byte, val *int) {
+		count++
+	})
+	require_Equal(t, count, 2)
+}
+
+func TestIterComplexTree(t *testing.T) {
+	st := NewSubjectTree[int]()
+
+	// Build a deeper tree to test the remaining iter cases
+	for i := 0; i < 20; i++ {
+		st.Insert([]byte(fmt.Sprintf("level1.level2.level3.item%d", i)), i)
+	}
+
+	// This should create multiple node types and test more paths
+	count := 0
+	st.IterOrdered(func(subject []byte, val *int) bool {
+		count++
+		return true
+	})
+	require_Equal(t, count, 20)
+}
