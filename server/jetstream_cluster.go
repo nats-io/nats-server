@@ -8620,7 +8620,28 @@ RETRY:
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
-					return nil
+
+					// Sanity check that we've received all data expected by the snapshot.
+					mset.mu.RLock()
+					lseq := mset.lseq
+					mset.mu.RUnlock()
+					if lseq >= snap.LastSeq {
+						return nil
+					}
+
+					// Make sure we do not spin and make things worse.
+					const minRetryWait = 2 * time.Second
+					elapsed := time.Since(reqSendTime)
+					if elapsed < minRetryWait {
+						select {
+						case <-s.quitCh:
+							return ErrServerNotRunning
+						case <-qch:
+							return errCatchupStreamStopped
+						case <-time.After(minRetryWait - elapsed):
+						}
+					}
+					goto RETRY
 				}
 				if _, err := mset.processCatchupMsg(msg); err == nil {
 					if mrec.reply != _EMPTY_ {
@@ -9124,6 +9145,15 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// In the latter case the request expects us to have more. Just continue and value availability here.
 		// This should only be possible if the logs have already desynced, and we shouldn't have become leader
 		// in the first place. Not much we can do here in this (hypothetical) scenario.
+
+		// Do another quick sanity check that we actually have enough data to satisfy the request.
+		// If not, let's step down and hope a new leader can correct this.
+		if state.LastSeq < last {
+			s.Warnf("Catchup for stream '%s > %s' skipped, requested sequence %d was larger than current state: %+v",
+				mset.account(), mset.name(), seq, state)
+			node.StepDown()
+			return
+		}
 	}
 
 	mset.setCatchupPeer(sreq.Peer, last-seq)
@@ -9243,7 +9273,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						// The snapshot has a larger last sequence then we have. This could be due to a truncation
 						// when trying to recover after corruption, still not 100% sure. Could be off by 1 too somehow,
 						// but tested a ton of those with no success.
-						s.Warnf("Catchup for stream '%s > %s' completed, but requested sequence %d was larger then current state: %+v",
+						s.Warnf("Catchup for stream '%s > %s' completed, but requested sequence %d was larger than current state: %+v",
 							mset.account(), mset.name(), seq, state)
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {
