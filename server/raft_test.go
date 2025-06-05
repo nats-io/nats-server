@@ -34,14 +34,18 @@ func TestNRGSimple(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	rg := c.createRaftGroup("TEST", 3, newStateAdder)
-	rg.waitOnLeader()
-	// Do several state transitions.
-	rg.randomMember().(*stateAdder).proposeDelta(22)
-	rg.randomMember().(*stateAdder).proposeDelta(-11)
-	rg.randomMember().(*stateAdder).proposeDelta(-10)
-	// Wait for all members to have the correct state.
-	rg.waitOnTotal(t, 1)
+	for _, r := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", r), func(t *testing.T) {
+			rg := c.createRaftGroup(fmt.Sprintf("TEST_R%d", r), r, newStateAdder)
+			rg.waitOnLeader()
+			// Do several state transitions.
+			rg.randomMember().(*stateAdder).proposeDelta(22)
+			rg.randomMember().(*stateAdder).proposeDelta(-11)
+			rg.randomMember().(*stateAdder).proposeDelta(-10)
+			// Wait for all members to have the correct state.
+			rg.waitOnTotal(t, 1)
+		})
+	}
 }
 
 func TestNRGSnapshotAndRestart(t *testing.T) {
@@ -2700,4 +2704,33 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 			)
 		}
 	}
+}
+
+func TestNRGScaleFromR1ToR3(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 1, newStateAdder)
+
+	// Do several state transitions.
+	original := rg.waitOnLeader()
+	rg.randomMember().(*stateAdder).proposeDelta(22)
+	rg.randomMember().(*stateAdder).proposeDelta(-11)
+	rg.randomMember().(*stateAdder).proposeDelta(-10)
+	// Wait for all members to have the correct state.
+	rg.waitOnTotal(t, 1)
+
+	// Scale the group up to R3.
+	rg = c.createRaftGroup("TEST", 3, newStateAdder)
+	require_Equal(t, rg.waitOnLeader(), original)
+	for _, n := range rg {
+		require_Equal(t, n.node().ClusterSize(), 3)
+	}
+	rg.waitOnTotal(t, 1)
+
+	// Do several more state transitions.
+	rg.randomMember().(*stateAdder).proposeDelta(5)
+	rg.randomMember().(*stateAdder).proposeDelta(-2)
+	// Wait for all members to have the correct state.
+	rg.waitOnTotal(t, 4)
 }

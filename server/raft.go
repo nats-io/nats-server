@@ -530,6 +530,11 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.llqrt = time.Now()
 	n.Unlock()
 
+	// If we are the only participant in the group, we are the leader.
+	if n.standalone() {
+		n.switchToLeader()
+	}
+
 	// Register the Raft group.
 	labels["group"] = n.group
 	s.registerRaftNode(n.group, n)
@@ -661,6 +666,12 @@ func (n *raft) recreateInternalSubsLocked() error {
 	// Recreate any internal subscriptions for voting, append
 	// entries etc in the new account.
 	return n.createInternalSubs()
+}
+
+// standalone returns true if we should skip most of the processing logic
+// and skip straight to applies, specifically for R1 NRGs.
+func (n *raft) standalone() bool {
+	return n.csz == 1
 }
 
 // outOfResources checks to see if we are out of resources.
@@ -970,9 +981,8 @@ func (n *raft) AdjustClusterSize(csz int) error {
 		return errNotLeader
 	}
 	n.Lock()
-	// Same floor as bootstrap.
-	if csz < 2 {
-		csz = 2
+	if csz < 1 {
+		csz = 1
 	}
 
 	// Adjust the cluster size and the number of nodes needed to establish
@@ -1665,6 +1675,9 @@ func randCampaignTimeout() time.Duration {
 // Campaign will have our node start a leadership vote.
 // Lock should be held.
 func (n *raft) campaign(et time.Duration) error {
+	if n.standalone() {
+		return errAlreadyLeader
+	}
 	n.debug("Starting campaign")
 	if n.State() == Leader {
 		return errAlreadyLeader
@@ -2615,6 +2628,10 @@ func (n *raft) runAsLeader() {
 func (n *raft) Quorum() bool {
 	n.RLock()
 	defer n.RUnlock()
+
+	if n.standalone() {
+		return true
+	}
 
 	now, nc := time.Now().UnixNano(), 0
 	for id, peer := range n.peers {
@@ -3829,7 +3846,13 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 			n.warn("%d append entries pending", len(n.pae))
 		}
 	}
-	n.sendRPC(n.asubj, n.areply, ae.buf)
+	// If we're a standalone node then we don't need to send to the
+	// network to reach quorum, just apply it straight away.
+	if n.standalone() {
+		n.applyCommit(ae.pindex + 1)
+	} else {
+		n.sendRPC(n.asubj, n.areply, ae.buf)
+	}
 	if !shouldStore {
 		ae.returnToPool()
 	}
@@ -4219,6 +4242,10 @@ func (n *raft) handleVoteRequest(sub *subscription, c *client, _ *Account, subje
 
 func (n *raft) requestVote() {
 	n.Lock()
+	if n.standalone() {
+		n.Unlock()
+		return
+	}
 	if n.State() != Candidate {
 		n.Unlock()
 		return
@@ -4351,6 +4378,10 @@ func (n *raft) switchToCandidate() {
 
 	n.Lock()
 	defer n.Unlock()
+
+	if n.standalone() {
+		return
+	}
 
 	// If we are catching up or are in observer mode we can not switch.
 	// Avoid petitioning to become leader if we're behind on applies.

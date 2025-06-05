@@ -63,6 +63,7 @@ type cluster struct {
 	name     string
 	t        testing.TB
 	nproxies []*netProxy
+	rns      map[string]smGroup // for Raft tests only, see createRaftGroupWithPeers
 }
 
 // Used to setup superclusters for tests.

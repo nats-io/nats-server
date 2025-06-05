@@ -123,8 +123,10 @@ func (c *cluster) createRaftGroupEx(name string, numMembers int, smf smFactory, 
 func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf smFactory, st StorageType) smGroup {
 	c.t.Helper()
 
-	var sg smGroup
 	var peers []string
+	if c.rns == nil {
+		c.rns = make(map[string]smGroup)
+	}
 
 	for _, s := range servers {
 		// generate peer names.
@@ -134,6 +136,15 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 	}
 
 	for _, s := range servers {
+		// Check if the Raft node already exists on this server, if it does then
+		// we won't recreate but instead will notify it of the new peer set if leader.
+		s.rnMu.RLock()
+		en, ok := s.raftNodes[name]
+		s.rnMu.RUnlock()
+		if ok {
+			en.(*raft).ProposeKnownPeers(peers)
+			continue
+		}
 		var cfg *RaftConfig
 		if st == FileStorage {
 			fs, err := newFileStore(
@@ -151,10 +162,10 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 		n, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
 		require_NoError(c.t, err)
 		sm := smf(s, cfg, n)
-		sg = append(sg, sm)
+		c.rns[name] = append(c.rns[name], sm)
 		go smLoop(sm)
 	}
-	return sg
+	return c.rns[name]
 }
 
 // Driver program for the state machine.
