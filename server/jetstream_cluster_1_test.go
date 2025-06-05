@@ -8495,6 +8495,9 @@ func TestJetStreamClusterSnapshotStreamAssetOnShutdown(t *testing.T) {
 	// Publish, so we have something new to snapshot.
 	_, err = js.Publish("foo", nil)
 	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
 
 	// Shutdown servers, and check if all made stream snapshots.
 	for _, s := range c.servers {

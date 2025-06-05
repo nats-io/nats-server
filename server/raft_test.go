@@ -23,6 +23,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -2361,6 +2362,66 @@ func TestNRGSignalLeadChangeFalseIfCampaignImmediately(t *testing.T) {
 			require_Equal(t, n.term, 1)
 		})
 	}
+}
+
+func TestNRGCatchupDontCountTowardQuorum(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeReply := "$TEST"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(aeReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Timeline
+	aeMissedMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: aeReply})
+	ae := appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries, reply: aeReply}
+	aeCatchupTrigger := encode(t, &ae)
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: nil, reply: aeReply})
+
+	// Simulate we missed all messages up to this point.
+	n.processAppendEntry(aeCatchupTrigger, n.aesub)
+	require_True(t, n.catchup != nil)
+	require_Equal(t, n.catchup.pterm, 0)  // n.pterm
+	require_Equal(t, n.catchup.pindex, 0) // n.pindex
+	require_Equal(t, n.catchup.cterm, ae.pterm)
+	require_Equal(t, n.catchup.cindex, ae.pindex)
+
+	// Should reply we require catchup.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar := n.decodeAppendEntryResponse(msg.Data)
+	require_Equal(t, ar.index, 0)
+	require_False(t, ar.success)
+	require_True(t, strings.HasPrefix(msg.Reply, "$NRG.CR"))
+
+	// Should NEVER respond to catchup messages.
+	n.processAppendEntry(aeMissedMsg, n.catchup.sub)
+	_, err = sub.NextMsg(time.Second)
+	require_Error(t, err, nats.ErrTimeout)
+
+	n.processAppendEntry(aeCatchupTrigger, n.catchup.sub)
+	_, err = sub.NextMsg(time.Second)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Now we've received all messages, stop catchup, and respond success to new message.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar = n.decodeAppendEntryResponse(msg.Data)
+	require_Equal(t, ar.index, aeHeartbeat.pindex)
+	require_True(t, ar.success)
+	require_Equal(t, msg.Reply, _EMPTY_)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before

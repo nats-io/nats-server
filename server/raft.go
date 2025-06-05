@@ -188,7 +188,7 @@ type raft struct {
 	isSysAcc    atomic.Bool // Are we utilizing the system account?
 	maybeLeader bool        // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
 
-	observer bool // The node is observing, i.e. not participating in voting
+	observer bool // The node is observing, i.e. not able to become leader
 
 	extSt extensionState // Extension state
 
@@ -3675,8 +3675,10 @@ CONTINUE:
 		}
 	}
 
+	// Only ever respond to new entries.
+	// Never respond to catchup messages, because providing quorum based on this is unsafe.
 	var ar *appendEntryResponse
-	if sub != nil {
+	if sub != nil && isNew {
 		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
 	n.Unlock()
