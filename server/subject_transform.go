@@ -16,6 +16,7 @@ package server
 import (
 	"fmt"
 	"hash/fnv"
+	"math/rand"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ var (
 	splitMappingFunctionRegEx          = regexp.MustCompile(`{{\s*[sS]plit\s*\((.*)\)\s*}}`)
 	leftMappingFunctionRegEx           = regexp.MustCompile(`{{\s*[lL]eft\s*\((.*)\)\s*}}`)
 	rightMappingFunctionRegEx          = regexp.MustCompile(`{{\s*[rR]ight\s*\((.*)\)\s*}}`)
+	randomMappingFunctionRegEx         = regexp.MustCompile(`{{\s*[rR]andom\s*\((.*)\)\s*}}`)
 )
 
 // Enum for the subject mapping subjectTransform function types
@@ -48,6 +50,7 @@ const (
 	Split
 	Left
 	Right
+	Random
 )
 
 // Transforms for arbitrarily mapping subjects from one to another for maps, tees and filters.
@@ -340,6 +343,19 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 				return Split, []int{i}, -1, args[1], nil
 			}
 
+			// Random(max)
+			args = getMappingFunctionArgs(randomMappingFunctionRegEx, token)
+			if args != nil {
+				if len(args) != 1 {
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationNotEnoughArgs}
+				}
+				mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
+				if err != nil {
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
+				}
+				return Random, []int{}, int32(mappingFunctionIntArg), _EMPTY_, nil
+			}
+
 			return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrUnknownMappingDestinationFunction}
 		}
 	}
@@ -428,6 +444,15 @@ func (tr *subjectTransform) Match(subject string) (string, error) {
 // This API is not part of the public API and not subject to SemVer protection
 func (tr *subjectTransform) TransformSubject(subject string) string {
 	return tr.TransformTokenizedSubject(tokenizeSubject(subject))
+}
+
+func (tr *subjectTransform) getRandomPartition(ceiling int) string {
+	// Avoid an integer divide by zero panic below.
+	if ceiling == 0 {
+		return "0"
+	}
+
+	return strconv.Itoa(int(rand.Int31()) % ceiling)
 }
 
 func (tr *subjectTransform) getHashPartition(key []byte, numBuckets int) string {
@@ -576,6 +601,8 @@ func (tr *subjectTransform) TransformTokenizedSubject(tokens []string) string {
 				} else { // too small to slice at the requested size: don't slice
 					b.WriteString(sourceToken)
 				}
+			case Random:
+				b.WriteString(tr.getRandomPartition(int(tr.dtokmfintargs[i])))
 			}
 		}
 
