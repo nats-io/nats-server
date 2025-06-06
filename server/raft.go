@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2212,12 +2213,13 @@ var aePool = sync.Pool{
 // appendEntry is the main struct that is used to sync raft peers.
 type appendEntry struct {
 	leader  string   // The leader that this append entry came from.
-	term    uint64   // The current term, as the leader understands it.
-	commit  uint64   // The commit index, as the leader understands it.
+	term    uint64   // The term when this entry was stored.
+	commit  uint64   // The commit index of the leader when this append entry was sent.
 	pterm   uint64   // The previous term, for checking consistency.
 	pindex  uint64   // The previous commit index, for checking consistency.
 	entries []*Entry // Entries to process.
 	// Below fields are for internal use only:
+	lterm uint64        // The highest term, as the leader understands it. (If lterm=0, use term instead)
 	reply string        // Reply subject to respond to once committed.
 	sub   *subscription // The subscription that the append entry came in on.
 	buf   []byte
@@ -2227,7 +2229,7 @@ type appendEntry struct {
 func newAppendEntry(leader string, term, commit, pterm, pindex uint64, entries []*Entry) *appendEntry {
 	ae := aePool.Get().(*appendEntry)
 	ae.leader, ae.term, ae.commit, ae.pterm, ae.pindex, ae.entries = leader, term, commit, pterm, pindex, entries
-	ae.reply, ae.sub, ae.buf = _EMPTY_, nil, nil
+	ae.lterm, ae.reply, ae.sub, ae.buf = 0, _EMPTY_, nil, nil
 	return ae
 }
 
@@ -2679,7 +2681,7 @@ func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
 func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64]) {
 	n.RLock()
 	s, reply := n.s, n.areply
-	peer, subj, last := ar.peer, ar.reply, n.pindex
+	peer, subj, term, last := ar.peer, ar.reply, n.term, n.pindex
 	n.RUnlock()
 
 	defer s.grWG.Done()
@@ -2722,7 +2724,9 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 			// Update our tracking total.
 			om[next] = len(ae.buf)
 			total += len(ae.buf)
-			n.sendRPC(subj, reply, ae.buf)
+
+			hdr := generateCatchupHeader(term)
+			n.sendRPCWithHeader(subj, reply, hdr, ae.buf)
 		}
 		return false
 	}
@@ -3196,9 +3200,18 @@ func (n *raft) runAsCandidate() {
 
 // handleAppendEntry handles an append entry from the wire. This function
 // is an internal callback from the "asubj" append entry subscription.
-func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, _, reply string, rmsg []byte) {
+	hdr, msg := c.msgParts(rmsg)
 	msg = copyBytes(msg)
 	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
+		if hdr != nil {
+			if lterm := getHeader(raftLeaderTermHeader, hdr); lterm != nil {
+				if v, err := strconv.ParseUint(string(lterm), 10, 64); err == nil {
+					ae.lterm = v
+				}
+			}
+		}
+
 		// Push to the new entry channel. From here one of the worker
 		// goroutines (runAsLeader, runAsFollower, runAsCandidate) will
 		// pick it up.
@@ -3422,12 +3435,13 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	// Check state if we are catching up.
+	var resetCatchingUp bool
 	if catchingUp {
 		if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
 			// If we are here we are good, so if we have a catchup pending we can cancel.
 			n.cancelCatchup()
 			// Reset our notion of catching up.
-			catchingUp = false
+			resetCatchingUp = true
 		} else if isNew {
 			var ar *appendEntryResponse
 			var inbox string
@@ -3447,9 +3461,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
+	// Grab term from append entry. But if leader explicitly defined its term, use that instead.
+	// This is required during catchup if the leader catches us up on older items from previous terms.
+	// While still allowing us to confirm they're matching our highest known term.
+	lterm := ae.term
+	if ae.lterm != 0 {
+		lterm = ae.lterm
+	}
+
 	// If this term is greater than ours.
-	if ae.term > n.term {
-		n.term = ae.term
+	if lterm > n.term {
+		n.term = lterm
 		n.vote = noVote
 		if isNew {
 			n.writeTermVote()
@@ -3458,13 +3480,21 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.State(), ae.leader)
 			n.stepdownLocked(ae.leader)
 		}
-	} else if ae.term < n.term && !catchingUp && isNew {
-		n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, ae.term)
+	} else if lterm < n.term && sub != nil && !(catchingUp && ae.lterm == 0) {
+		// Anything that's below our expected highest term needs to be rejected.
+		// Unless we're replaying (sub=nil), in which case we'll always continue.
+		// For backward-compatibility we shouldn't reject if we're being caught up by an old server.
+		n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, lterm)
 		ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
 		n.Unlock()
 		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 		arPool.Put(ar)
 		return
+	}
+
+	// Reset after checking the term is correct, because we use catchingUp in a condition above.
+	if resetCatchingUp {
+		catchingUp = false
 	}
 
 	if isNew && n.leader != ae.leader && n.State() == Follower {
@@ -3917,6 +3947,12 @@ func (n *raft) sendHeartbeat() {
 	n.sendAppendEntry(nil)
 }
 
+const raftLeaderTermHeader = "lterm"
+
+func generateCatchupHeader(term uint64) []byte {
+	return fmt.Appendf(nil, "NATS/1.0\r\n%s:%d\r\n\r\n", raftLeaderTermHeader, term)
+}
+
 type voteRequest struct {
 	term      uint64
 	lastTerm  uint64
@@ -4238,6 +4274,12 @@ func (n *raft) requestVote() {
 func (n *raft) sendRPC(subject, reply string, msg []byte) {
 	if n.sq != nil {
 		n.sq.send(subject, reply, nil, msg)
+	}
+}
+
+func (n *raft) sendRPCWithHeader(subject, reply string, hdr, msg []byte) {
+	if n.sq != nil {
+		n.sq.send(subject, reply, hdr, msg)
 	}
 }
 
