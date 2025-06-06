@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2453,6 +2454,336 @@ func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
 	// Normally would commit the entry, but since we're not leader anymore we should ignore it.
 	n.trackResponse(&appendEntryResponse{1, 1, "peer", _EMPTY_, true})
 	require_Equal(t, n.commit, 0)
+}
+
+func TestNRGHandleAppendEntrySupportsHeaders(t *testing.T) {
+	var wg sync.WaitGroup
+	n, cleanup := initSingleMemRaftNode(t)
+	defer func() {
+		cleanup()
+		// If we opened a goroutine, wait for it to finish.
+		wg.Wait()
+	}()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeReply := "$TEST"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(aeReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: aeReply})
+
+	// Will keep running as follower indefinitely, until the test stops.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.runAsFollower()
+	}()
+
+	// Send an append entry, but include headers to confirm it supports those.
+	msg := nats.NewMsg(n.asubj)
+	msg.Data = aeMsg.buf
+	msg.Header.Set("Key", "Value")
+	msg, err = nc.RequestMsg(msg, time.Second)
+	require_NoError(t, err)
+
+	// Should respond with success.
+	ar := n.decodeAppendEntryResponse(msg.Data)
+	require_Equal(t, ar.index, 1)
+	require_True(t, ar.success)
+	require_Equal(t, msg.Reply, _EMPTY_)
+}
+
+func TestNRGRejectNewAppendEntryFromPreviousLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+
+	// Accept first message because it equals our term.
+	n.term = 1
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pterm, 1)
+	require_Equal(t, n.pindex, 1)
+
+	// We are part of the successful vote for a new leader under a new term.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 5, lastTerm: 1, lastIndex: 2}))
+
+	// Must reject entry from a previous term.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pterm, 1)
+	require_Equal(t, n.pindex, 1)
+}
+
+func TestNRGRejectAppendEntryDuringCatchupFromPreviousLeader(t *testing.T) {
+	test := func(t *testing.T, isCatchingUp, oldBehavior bool) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		// Create a sample entry, the content doesn't matter, just that it's stored.
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+
+		nats0 := "S1Nunr6R" // "nats-0"
+
+		// Timeline
+		aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+		aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+
+		// Accept first message because it equals our term.
+		n.term = 1
+		n.processAppendEntry(aeMsg2, n.aesub)
+		require_True(t, n.catchup != nil)
+		require_Equal(t, n.catchup.pterm, 0)  // n.pterm
+		require_Equal(t, n.catchup.pindex, 0) // n.pindex
+		require_Equal(t, n.catchup.cterm, aeMsg2.pterm)
+		require_Equal(t, n.catchup.cindex, aeMsg2.pindex)
+
+		// Under the new behavior the term of the leader that's doing the catchup is included.
+		if !oldBehavior {
+			aeMsg1.lterm = 1
+			aeMsg2.lterm = 1
+		}
+
+		// First catchup message is accepted.
+		catchup := n.catchup
+		n.processAppendEntry(aeMsg1, catchup.sub)
+		require_Equal(t, n.pterm, 1)
+		require_Equal(t, n.pindex, 1)
+
+		// We are part of the successful vote for a new leader under a new term.
+		require_NoError(t, n.processVoteRequest(&voteRequest{term: 5, lastTerm: 1, lastIndex: 2}))
+
+		// Voting cancels catchup. For testing, revert that so we can test
+		// what a catchup message after upping the term does.
+		nsub := n.aesub
+		if isCatchingUp {
+			n.catchup = catchup
+			nsub = catchup.sub
+		}
+
+		// Now send the second catchup entry.
+		n.processAppendEntry(aeMsg2, nsub)
+		require_True(t, n.catchup == nil)
+		require_Equal(t, n.pterm, 1)
+
+		// Under the old behavior this entry is wrongly accepted.
+		// A new server will also know to be backward-compatible if being caught up by an old server.
+		if isCatchingUp && oldBehavior {
+			require_Equal(t, n.pindex, 2)
+		} else {
+			// Under the new behavior the entry is correctly accepted.
+			require_Equal(t, n.pindex, 1)
+		}
+	}
+
+	for _, isCatchingUp := range []bool{false, true} {
+		for _, oldBehavior := range []bool{false, true} {
+			title := "new-entry"
+			if isCatchingUp {
+				title = "catchup"
+			}
+			if oldBehavior {
+				title += "-backward-compatible"
+			}
+			t.Run(title, func(t *testing.T) { test(t, isCatchingUp, oldBehavior) })
+		}
+	}
+}
+
+func TestNRGDontRejectAppendEntryFromReplay(t *testing.T) {
+	test := func(t *testing.T, restart bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		rg := c.createRaftGroup("TEST", 3, newStateAdder)
+		rg.waitOnLeader()
+
+		// Stop all servers except the leader.
+		l := rg.leader().(*stateAdder)
+		rs := rg.nonLeader()
+		for _, sm := range rg {
+			if sm != l {
+				sm.stop()
+			}
+		}
+
+		// Propose a new entry to the leader and confirm it's stored in its log.
+		pindex, _, _ := l.node().Progress()
+		l.proposeDelta(10)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if index, _, _ := l.node().Progress(); index == pindex {
+				return errors.New("proposal not stored yet")
+			}
+			return nil
+		})
+
+		// Optionally restart the leader, which will require replay of the entries in the log.
+		if restart {
+			l.stop()
+			l.restart()
+		}
+
+		// Shutdown server should be caught up.
+		rs.restart()
+
+		// Wait for both online servers to have applied the delta.
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() (err error) {
+			for _, sm := range rg {
+				if sm != l && sm != rs {
+					break
+				}
+				if total := sm.(*stateAdder).total(); total != 10 {
+					err = errors.Join(err, fmt.Errorf("expected 10 total, got: %d", total))
+				}
+			}
+			return err
+		})
+	}
+
+	t.Run("no-restart", func(t *testing.T) { test(t, false) })
+	t.Run("with-restart", func(t *testing.T) { test(t, true) })
+}
+
+func TestNRGSimpleCatchup(t *testing.T) {
+	test := func(t *testing.T, leaderChange bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		rg := c.createRaftGroup("TEST", 3, newStateAdder)
+		rg.waitOnLeader()
+
+		// Shutdown a single group, we'll start it later for catchup.
+		nl := rg.nonLeader()
+		nl.stop()
+
+		l := rg.leader().(*stateAdder)
+		l.proposeDelta(10)
+
+		// Wait for remaining servers to have applied the delta.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() (err error) {
+			for _, sm := range rg {
+				total := sm.(*stateAdder).total()
+				if sm == nl && total != 0 {
+					err = errors.Join(err, errors.New("expected shutdown server to not get data"))
+				} else if sm != nl && total != 10 {
+					err = errors.Join(err, fmt.Errorf("expected 10 total, got: %d", total))
+				}
+			}
+			return err
+		})
+
+		if leaderChange {
+			require_NoError(t, l.node().StepDown())
+		}
+
+		// Shutdown server should be caught up.
+		nl.restart()
+		rg.waitOnTotal(t, 10)
+	}
+
+	t.Run("same-leader", func(t *testing.T) { test(t, false) })
+	t.Run("change-leader", func(t *testing.T) { test(t, true) })
+}
+
+func TestNRGSnapshotCatchup(t *testing.T) {
+	test := func(t *testing.T, restart bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		rg := c.createRaftGroup("TEST", 3, newStateAdder)
+		rg.waitOnLeader()
+
+		l := rg.leader().(*stateAdder)
+		var s1 stateMachine
+		var s2 stateMachine
+		for _, sm := range rg {
+			if sm == l {
+				continue
+			}
+			if s1 == nil {
+				s1 = sm
+			} else {
+				s2 = sm
+			}
+		}
+
+		// Stop one non-leader server.
+		s1.stop()
+
+		// Wait for both online servers to have applied the delta.
+		l.proposeDelta(10)
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() (err error) {
+			for _, sm := range rg {
+				if sm == s1 {
+					continue
+				}
+				if total := sm.(*stateAdder).total(); total != 10 {
+					err = errors.Join(err, fmt.Errorf("expected 10 total, got: %d", total))
+				}
+			}
+			return err
+		})
+
+		// Shutdown last non-leader server.
+		s2.stop()
+
+		// Snapshot so outdated server needs to catchup based on it.
+		l.snapshot(t)
+
+		// Propose a new entry to the leader and confirm it's stored in its log.
+		pindex, _, _ := l.node().Progress()
+		l.proposeDelta(10)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if index, _, _ := l.node().Progress(); index == pindex {
+				return errors.New("proposal not stored yet")
+			}
+			return nil
+		})
+
+		// Optionally restart the leader, which will require replay of the entries in the log.
+		if restart {
+			l.stop()
+			l.restart()
+		}
+
+		// Shutdown server should be caught up.
+		s1.restart()
+
+		// Wait for both online servers to have applied the delta.
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() (err error) {
+			for _, sm := range rg {
+				if sm == s2 {
+					break
+				}
+				if total := sm.(*stateAdder).total(); total != 20 {
+					err = errors.Join(err, fmt.Errorf("expected 20 total, got: %d", total))
+				}
+			}
+			return err
+		})
+	}
+
+	t.Run("no-restart", func(t *testing.T) { test(t, false) })
+	t.Run("with-restart", func(t *testing.T) { test(t, true) })
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
