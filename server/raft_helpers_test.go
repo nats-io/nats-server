@@ -18,6 +18,7 @@ package server
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -329,14 +330,15 @@ func (a *stateAdder) snapshot(t *testing.T) {
 func (rg smGroup) waitOnTotal(t *testing.T, expected int64) {
 	t.Helper()
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		var err error
 		for _, sm := range rg {
 			asm := sm.(*stateAdder)
 			if total := asm.total(); total != expected {
-				return fmt.Errorf("Adder on %v has wrong total: %d vs %d",
-					asm.server(), total, expected)
+				err = errors.Join(err, fmt.Errorf("Adder on %v has wrong total: %d vs %d",
+					asm.server(), total, expected))
 			}
 		}
-		return nil
+		return err
 	})
 }
 

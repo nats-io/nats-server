@@ -188,7 +188,7 @@ type raft struct {
 	isSysAcc    atomic.Bool // Are we utilizing the system account?
 	maybeLeader bool        // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
 
-	observer bool // The node is observing, i.e. not participating in voting
+	observer bool // The node is observing, i.e. not able to become leader
 
 	extSt extensionState // Extension state
 
@@ -3015,6 +3015,12 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 
 	n.Lock()
 
+	// Check state under lock, we might not be leader anymore.
+	if n.State() != Leader {
+		n.Unlock()
+		return
+	}
+
 	// Update peer's last index.
 	if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
 		ps.li = ar.index
@@ -3675,8 +3681,10 @@ CONTINUE:
 		}
 	}
 
+	// Only ever respond to new entries.
+	// Never respond to catchup messages, because providing quorum based on this is unsafe.
 	var ar *appendEntryResponse
-	if sub != nil {
+	if sub != nil && isNew {
 		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
 	n.Unlock()
