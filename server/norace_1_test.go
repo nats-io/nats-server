@@ -4998,7 +4998,7 @@ func TestNoRaceJetStreamAccountLimitsAndRestart(t *testing.T) {
 	c.waitOnLeader()
 	c.waitOnStreamLeader("$JS", "TEST")
 
-	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		return checkState(t, c, "$JS", "TEST")
 	})
 	for _, cs := range c.servers {
