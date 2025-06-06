@@ -255,8 +255,15 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 			// partition(number of partitions, token1, token2, ...)
 			args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
 			if args != nil {
-				if len(args) < 2 {
+				if len(args) < 1 {
 					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationNotEnoughArgs}
+				}
+				if len(args) == 1 {
+					mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
+					if err != nil {
+						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
+					}
+					return Partition, []int{}, int32(mappingFunctionIntArg), _EMPTY_, nil
 				}
 				if len(args) >= 2 {
 					mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
@@ -424,6 +431,11 @@ func (tr *subjectTransform) TransformSubject(subject string) string {
 }
 
 func (tr *subjectTransform) getHashPartition(key []byte, numBuckets int) string {
+	// Avoid an integer divide by zero panic below.
+	if numBuckets == 0 {
+		return "0"
+	}
+
 	h := fnv.New32a()
 	_, _ = h.Write(key)
 
@@ -454,8 +466,14 @@ func (tr *subjectTransform) TransformTokenizedSubject(tokens []string) string {
 					_buffer       [64]byte
 					keyForHashing = _buffer[:0]
 				)
-				for _, sourceToken := range tr.dtokmftokindexesargs[i] {
-					keyForHashing = append(keyForHashing, []byte(tokens[sourceToken])...)
+				if len(tr.dtokmftokindexesargs[i]) > 0 {
+					// When token positions are specified.
+					for _, sourceToken := range tr.dtokmftokindexesargs[i] {
+						keyForHashing = append(keyForHashing, []byte(tokens[sourceToken])...)
+					}
+				} else {
+					// When using the shorthand partition(n).
+					keyForHashing = append(keyForHashing, strings.Join(tokens, ".")...)
 				}
 				b.WriteString(tr.getHashPartition(keyForHashing, int(tr.dtokmfintargs[i])))
 			case Wildcard: // simple substitution
