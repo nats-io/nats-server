@@ -5822,6 +5822,88 @@ func TestMonitorConnzSortByRTT(t *testing.T) {
 	}
 }
 
+func TestMonitorConnzIncludesLeafnodes(t *testing.T) {
+	content := `
+		server_name: "hub"
+		listen: "127.0.0.1:-1"
+		http: "127.0.0.1:-1"
+		operator = "../test/configs/nkeys/op.jwt"
+		resolver = MEMORY
+		ping_interval = 1
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	conf := createConfFile(t, []byte(content))
+	sb, ob := RunServerWithConfig(conf)
+	defer sb.Shutdown()
+
+	createAcc := func(t *testing.T) (*Account, string) {
+		t.Helper()
+		acc, akp := createAccount(sb)
+		kp, _ := nkeys.CreateUser()
+		pub, _ := kp.PublicKey()
+		nuc := jwt.NewUserClaims(pub)
+		ujwt, err := nuc.Encode(akp)
+		if err != nil {
+			t.Fatalf("Error generating user JWT: %v", err)
+		}
+		seed, _ := kp.Seed()
+		creds := genCredsFile(t, ujwt, seed)
+		return acc, creds
+	}
+	acc, mycreds := createAcc(t)
+	leafName := "my-leaf-node"
+
+	content = `
+		port: -1
+		http: "127.0.0.1:-1"
+		ping_interval = 1
+		server_name: %s
+		accounts {
+			%s {
+				users [
+					{user: user1, password: pwd}
+				]
+			}
+		}
+		leafnodes {
+			remotes = [
+				{
+					account: "%s"
+					url: nats-leaf://127.0.0.1:%d
+					credentials: '%s'
+				}
+			]
+		}
+		`
+	config := fmt.Sprintf(content,
+		leafName,
+		acc.Name,
+		acc.Name, ob.LeafNode.Port, mycreds)
+	conf = createConfFile(t, []byte(config))
+	sa, _ := RunServerWithConfig(conf)
+	defer sa.Shutdown()
+
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if n := sa.NumLeafNodes(); n != 1 {
+			return fmt.Errorf("Expected 1 leaf connection, got %v", n)
+		}
+		return nil
+	})
+
+	for test, options := range map[string]*ConnzOptions{
+		"WithoutAccount": {},
+		"WithAccount":    {Account: acc.Name},
+	} {
+		t.Run(test, func(t *testing.T) {
+			c := pollConnz(t, sb, 1, "http://127.0.0.1:%d/connz", options)
+			require_Equal(t, c.NumConns, 1)
+			require_Equal(t, c.Conns[0].Kind, kindStringMap[LEAF])
+		})
+	}
+}
+
 // https://github.com/nats-io/nats-server/issues/4144
 func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
 	conf := createConfFile(t, []byte(`
