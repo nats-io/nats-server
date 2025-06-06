@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -5700,8 +5701,11 @@ func TestMonitorConnzOperatorAccountNames(t *testing.T) {
 	for pollMode := 0; pollMode < 2; pollMode++ {
 		url := fmt.Sprintf("http://127.0.0.1:%d/connz?auth=1", s.MonitorAddr().Port)
 		connz := pollConnz(t, s, pollMode, url, &ConnzOptions{Username: true})
-		require_Equal(t, connz.NumConns, 1)
-		ci := connz.Conns[0]
+		require_Equal(t, connz.NumConns, 2)
+		idx := slices.IndexFunc(connz.Conns, func(c *ConnInfo) bool {
+			return c.Kind == kindStringMap[CLIENT]
+		})
+		ci := connz.Conns[idx]
 		require_Equal(t, ci.Account, accPub)
 		require_Equal(t, ci.NameTag, accName)
 	}
