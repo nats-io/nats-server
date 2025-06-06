@@ -15,6 +15,8 @@ package server
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"testing"
@@ -166,6 +168,9 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldErr("foo.*", "foo.{{splitLeft(2,2}}", false)    // arg out of range
 	shouldErr("foo", "bla.{{wildcard(1)}}", false)        // arg out of range with no wildcard in the source
 
+	shouldErr("foo.*", fmt.Sprintf("foo.{{partition(%d)}}", math.MaxInt32+1), false) // Larger than int32
+	shouldErr("foo.*", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32+1), false)    // Larger than int32
+
 	shouldBeOK := func(src, dest string, strict bool) *subjectTransform {
 		t.Helper()
 		tr, err := NewSubjectTransformWithStrict(src, dest, strict)
@@ -188,6 +193,9 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldBeOK("", "prefix.>", false)
 	shouldBeOK("*.*", "{{partition(10,1,2)}}", false)
 	shouldBeOK("foo.*.*", "foo.{{wildcard(1)}}.{{wildcard(2)}}.{{partition(5,1,2)}}", false)
+
+	shouldBeOK("foo.*", fmt.Sprintf("foo.{{partition(%d)}}", math.MaxInt32), false) // Exactly int32
+	shouldBeOK("foo.*", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)    // Exactly int32
 
 	shouldMatch := func(src, dest, sample string, expected ...string) {
 		t.Helper()

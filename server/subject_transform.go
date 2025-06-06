@@ -16,6 +16,7 @@ package server
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
 	"math/rand"
 	"regexp"
 	"strconv"
@@ -263,14 +264,14 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 				}
 				if len(args) == 1 {
 					mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
-					if err != nil {
+					if err != nil || mappingFunctionIntArg > math.MaxInt32 {
 						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
 					}
 					return Partition, []int{}, int32(mappingFunctionIntArg), _EMPTY_, nil
 				}
 				if len(args) >= 2 {
 					mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
-					if err != nil {
+					if err != nil || mappingFunctionIntArg > math.MaxInt32 {
 						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
 					}
 					var numPositions = len(args[1:])
@@ -350,7 +351,7 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationNotEnoughArgs}
 				}
 				mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
+				if err != nil || mappingFunctionIntArg > math.MaxInt32 {
 					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
 				}
 				return Random, []int{}, int32(mappingFunctionIntArg), _EMPTY_, nil
