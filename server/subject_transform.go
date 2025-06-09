@@ -127,16 +127,15 @@ func NewSubjectTransformWithStrict(src, dest string, strict bool) (*subjectTrans
 				}
 			}
 
-			if npwcs == 0 {
-				if tranformType != NoTransform {
-					return nil, &mappingDestinationErr{token, ErrMappingDestinationIndexOutOfRange}
-				}
-			}
-
 			if tranformType == NoTransform {
 				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
 				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
 				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
+				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
+			} else if tranformType == Random {
+				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, Random)
+				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{})
+				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, transfomArgInt)
 				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
 			} else {
 				nphs += len(transformArgWildcardIndexes)
@@ -162,12 +161,22 @@ func NewSubjectTransformWithStrict(src, dest string, strict bool) (*subjectTrans
 	} else {
 		// no wildcards used in the source: check that no transform functions are used in the destination
 		for _, token := range dtokens {
-			tranformType, _, _, _, err := indexPlaceHolders(token)
+			tranformType, _, transfomArgInt, _, err := indexPlaceHolders(token)
 			if err != nil {
 				return nil, err
 			}
 
-			if tranformType != NoTransform {
+			if tranformType == NoTransform {
+				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
+				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
+				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
+				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
+			} else if tranformType == Random || tranformType == Partition {
+				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, tranformType)
+				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{})
+				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, transfomArgInt)
+				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
+			} else {
 				return nil, &mappingDestinationErr{token, ErrMappingDestinationIndexOutOfRange}
 			}
 		}

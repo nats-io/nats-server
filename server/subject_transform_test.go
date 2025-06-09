@@ -196,6 +196,7 @@ func TestSubjectTransforms(t *testing.T) {
 
 	shouldBeOK("foo.*", fmt.Sprintf("foo.{{partition(%d)}}", math.MaxInt32), false) // Exactly int32
 	shouldBeOK("foo.*", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)    // Exactly int32
+	shouldBeOK("foo.bar", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)  // Exactly int32
 
 	shouldMatch := func(src, dest, sample string, expected ...string) {
 		t.Helper()
@@ -242,6 +243,10 @@ func TestSubjectTransforms(t *testing.T) {
 	for range 100 {
 		shouldMatch("*", "bar.{{random(6)}}", "qux", "bar.0", "bar.1", "bar.2", "bar.3", "bar.4", "bar.5")
 	}
+	shouldBeOK("foo.bar", "baz.{{partition(10)}}", false)
+	shouldMatch("foo.bar", "baz.{{partition(10)}}", "foo.bar", "baz.6")
+	shouldMatch("foo.baz", "qux.{{partition(10)}}", "foo.baz", "qux.4")
+	shouldMatch("test.subject", "result.{{partition(5)}}", "test.subject", "result.0")
 }
 
 func TestSubjectTransformDoesntPanicTransformingMissingToken(t *testing.T) {
