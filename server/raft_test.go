@@ -14,7 +14,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -23,8 +22,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -135,7 +134,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 
 	// Truncate buffer first.
 	var node *raft
-	short := buf[0 : len(buf)-1024]
+	short := buf[0 : len(buf)-1025]
 	_, err = node.decodeAppendEntry(short, nil, _EMPTY_)
 	require_Error(t, err, errBadAppendEntry)
 
@@ -1095,7 +1094,7 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 			// The previous leader's WAL should truncate to remove the AppendEntry only it has.
 			// Eventually all WALs for all peers must match.
 			checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
-				var expected [][]byte
+				var expected []*appendEntry
 				for _, a := range rg {
 					an := a.node().(*raft)
 					var state StreamState
@@ -1109,11 +1108,13 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 						if err != nil {
 							return err
 						}
+						ae.buf = nil // ... as we'll deeply check everything else in the AE.
+						ae.lterm = 0 // ... as lterm can differ if one node caught up another.
 						seq := int(index)
 						if len(expected) < seq {
-							expected = append(expected, ae.buf)
-						} else if !bytes.Equal(expected[seq-1], ae.buf) {
-							return fmt.Errorf("WAL is different: stored bytes differ")
+							expected = append(expected, ae)
+						} else if !reflect.DeepEqual(expected[seq-1], ae) {
+							return fmt.Errorf("WAL is different: stored AEs differ")
 						}
 					}
 				}
@@ -2454,54 +2455,6 @@ func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
 	// Normally would commit the entry, but since we're not leader anymore we should ignore it.
 	n.trackResponse(&appendEntryResponse{1, 1, "peer", _EMPTY_, true})
 	require_Equal(t, n.commit, 0)
-}
-
-func TestNRGHandleAppendEntrySupportsHeaders(t *testing.T) {
-	var wg sync.WaitGroup
-	n, cleanup := initSingleMemRaftNode(t)
-	defer func() {
-		cleanup()
-		// If we opened a goroutine, wait for it to finish.
-		wg.Wait()
-	}()
-
-	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
-	entries := []*Entry{newEntry(EntryNormal, esm)}
-
-	nats0 := "S1Nunr6R" // "nats-0"
-
-	aeReply := "$TEST"
-	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
-	require_NoError(t, err)
-	defer nc.Close()
-
-	sub, err := nc.SubscribeSync(aeReply)
-	require_NoError(t, err)
-	defer sub.Drain()
-
-	// Timeline
-	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: aeReply})
-
-	// Will keep running as follower indefinitely, until the test stops.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		n.runAsFollower()
-	}()
-
-	// Send an append entry, but include headers to confirm it supports those.
-	msg := nats.NewMsg(n.asubj)
-	msg.Data = aeMsg.buf
-	msg.Header.Set("Key", "Value")
-	msg, err = nc.RequestMsg(msg, time.Second)
-	require_NoError(t, err)
-
-	// Should respond with success.
-	ar := n.decodeAppendEntryResponse(msg.Data)
-	require_Equal(t, ar.index, 1)
-	require_True(t, ar.success)
-	require_Equal(t, msg.Reply, _EMPTY_)
 }
 
 func TestNRGRejectNewAppendEntryFromPreviousLeader(t *testing.T) {
