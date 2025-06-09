@@ -16,7 +16,6 @@ package server
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -27,13 +26,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/antithesishq/antithesis-sdk-go/assert"
 
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
@@ -2222,7 +2218,7 @@ type appendEntry struct {
 	pindex  uint64   // The previous commit index, for checking consistency.
 	entries []*Entry // Entries to process.
 	// Below fields are for internal use only:
-	lterm uint64        // The highest term, as the leader understands it. (If lterm=0, use term instead)
+	lterm uint64        // The highest term for catchups only, as the leader understands it. (If lterm=0, use term instead)
 	reply string        // Reply subject to respond to once committed.
 	sub   *subscription // The subscription that the append entry came in on.
 	buf   []byte
@@ -2318,7 +2314,10 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 	for _, e := range ae.entries {
 		elen += len(e.Data) + 1 + 4 // 1 is type, 4 is for size.
 	}
-	tlen := appendEntryBaseLen + elen + 1
+	// Uvarint for lterm can be a maximum 10 bytes for a uint64.
+	var _lterm [10]byte
+	lterm := _lterm[:binary.PutUvarint(_lterm[:], ae.lterm)]
+	tlen := appendEntryBaseLen + elen + len(lterm)
 
 	var buf []byte
 	if cap(b) >= tlen {
@@ -2343,6 +2342,10 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 		copy(buf[wi:], e.Data)
 		wi += len(e.Data)
 	}
+	// This is safe because old nodes will ignore bytes after the
+	// encoded messages. Nodes that are aware of this will decode
+	// it correctly.
+	wi += copy(buf[wi:], lterm)
 	return buf[:wi], nil
 }
 
@@ -2371,6 +2374,10 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 		entry := newEntry(EntryType(msg[ri]), msg[ri+1:ri+le])
 		ae.entries = append(ae.entries, entry)
 		ri += le
+	}
+	if len(msg[ri:]) > 0 {
+		lterm, _ := binary.Uvarint(msg[ri:])
+		ae.lterm = lterm
 	}
 	ae.buf = msg
 	return ae, nil
@@ -2723,6 +2730,14 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 					n.warn("Got an error loading %d index: %v", next, err)
 				}
 				return true
+			}
+			// Re-encode with the lterm if needed
+			if ae.lterm != term {
+				ae.lterm = term
+				if ae.buf, err = ae.encode(ae.buf[:0]); err != nil {
+					n.warn("Got an error re-encoding append entry: %v", err)
+					return true
+				}
 			}
 			// Update our tracking total.
 			om[next] = len(ae.buf)
@@ -3204,33 +3219,9 @@ func (n *raft) runAsCandidate() {
 
 // handleAppendEntry handles an append entry from the wire. This function
 // is an internal callback from the "asubj" append entry subscription.
-func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, _, reply string, rmsg []byte) {
-	hdr, msg := c.msgParts(rmsg)
+func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
 	msg = copyBytes(msg)
 	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
-		if hdr != nil {
-			if lterm := getHeader(raftLeaderTermHeader, hdr); lterm != nil {
-				v, err := strconv.ParseUint(string(lterm), 10, 64)
-				if err != nil {
-					n.RLock()
-					term, pterm, pindex := n.term, n.pterm, n.pindex
-					n.RUnlock()
-					assert.Unreachable("invalid catchup header", map[string]any{
-						"err":       err,
-						"rmsg":      base64.StdEncoding.EncodeToString(rmsg),
-						"n.term":    term,
-						"n.pterm":   pterm,
-						"n.pindex":  pindex,
-						"ae.term":   ae.term,
-						"ae.pterm":  ae.pterm,
-						"ae.pindex": ae.pindex,
-						"ae.leader": ae.leader,
-					})
-				}
-				ae.lterm = v
-			}
-		}
-
 		// Push to the new entry channel. From here one of the worker
 		// goroutines (runAsLeader, runAsFollower, runAsCandidate) will
 		// pick it up.
