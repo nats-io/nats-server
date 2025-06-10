@@ -259,6 +259,9 @@ func (p *parser) popItemKey() item {
 	return last
 }
 
+// We want to allow this to be reserved and not dereferenced.
+const exemptVarKey = "$SYS"
+
 func (p *parser) processItem(it item, fp string) error {
 	setValue := func(it item, v any) {
 		if p.pedantic {
@@ -278,7 +281,7 @@ func (p *parser) processItem(it item, fp string) error {
 
 		// We need to emit itemKey for existing logic but this could be a variable reference.
 		// If so process that here inline.
-		if len(it.val) > 0 && it.val[0] == varStart {
+		if len(it.val) > 0 && it.val[0] == varStart && it.val != exemptVarKey {
 			value, found, err := p.lookupVariable(it.val[1:])
 			if err != nil {
 				return fmt.Errorf("variable reference for '%s' on line %d could not be parsed: %s",
