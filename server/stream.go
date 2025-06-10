@@ -2960,6 +2960,10 @@ func (mset *stream) setupMirrorConsumer() error {
 				msgs := mirror.msgs
 				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 					hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
+					if len(hdr) > 0 {
+						// Remove any Nats-Expected- headers as we don't want to validate them.
+						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
+					}
 					mset.queueInbound(msgs, subject, reply, hdr, msg, nil, nil)
 					mirror.last.Store(time.Now().UnixNano())
 				})
