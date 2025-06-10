@@ -8,6 +8,18 @@ const (
 	// JSAccountResourcesExceededErr resource limits exceeded for account
 	JSAccountResourcesExceededErr ErrorIdentifier = 10002
 
+	// JSAtomicPublishDisabledErr atomic publish is disabled
+	JSAtomicPublishDisabledErr ErrorIdentifier = 10168
+
+	// JSAtomicPublishIncompleteBatchErr atomic publish batch is incomplete
+	JSAtomicPublishIncompleteBatchErr ErrorIdentifier = 10170
+
+	// JSAtomicPublishMissingSeqErr atomic publish sequence is missing
+	JSAtomicPublishMissingSeqErr ErrorIdentifier = 10169
+
+	// JSAtomicPublishRejectedBatchErrF atomic publish batch is rejected: {err}
+	JSAtomicPublishRejectedBatchErrF ErrorIdentifier = 10171
+
 	// JSBadRequestErr bad request
 	JSBadRequestErr ErrorIdentifier = 10003
 
@@ -507,6 +519,10 @@ const (
 var (
 	ApiErrors = map[ErrorIdentifier]*ApiError{
 		JSAccountResourcesExceededErr:              {Code: 400, ErrCode: 10002, Description: "resource limits exceeded for account"},
+		JSAtomicPublishDisabledErr:                 {Code: 400, ErrCode: 10168, Description: "atomic publish is disabled"},
+		JSAtomicPublishIncompleteBatchErr:          {Code: 400, ErrCode: 10170, Description: "atomic publish batch is incomplete"},
+		JSAtomicPublishMissingSeqErr:               {Code: 400, ErrCode: 10169, Description: "atomic publish sequence is missing"},
+		JSAtomicPublishRejectedBatchErrF:           {Code: 400, ErrCode: 10171, Description: "atomic publish batch is rejected: {err}"},
 		JSBadRequestErr:                            {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSClusterIncompleteErr:                     {Code: 503, ErrCode: 10004, Description: "incomplete results"},
 		JSClusterNoPeersErrF:                       {Code: 400, ErrCode: 10005, Description: "{err}"},
@@ -705,6 +721,52 @@ func NewJSAccountResourcesExceededError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSAccountResourcesExceededErr]
+}
+
+// NewJSAtomicPublishDisabledError creates a new JSAtomicPublishDisabledErr error: "atomic publish is disabled"
+func NewJSAtomicPublishDisabledError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAtomicPublishDisabledErr]
+}
+
+// NewJSAtomicPublishIncompleteBatchError creates a new JSAtomicPublishIncompleteBatchErr error: "atomic publish batch is incomplete"
+func NewJSAtomicPublishIncompleteBatchError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAtomicPublishIncompleteBatchErr]
+}
+
+// NewJSAtomicPublishMissingSeqError creates a new JSAtomicPublishMissingSeqErr error: "atomic publish sequence is missing"
+func NewJSAtomicPublishMissingSeqError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAtomicPublishMissingSeqErr]
+}
+
+// NewJSAtomicPublishRejectedBatchError creates a new JSAtomicPublishRejectedBatchErrF error: "atomic publish batch is rejected: {err}"
+func NewJSAtomicPublishRejectedBatchError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSAtomicPublishRejectedBatchErrF]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSBadRequestError creates a new JSBadRequestErr error: "bad request"
