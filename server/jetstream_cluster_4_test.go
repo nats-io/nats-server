@@ -2463,10 +2463,10 @@ func TestJetStreamClusterPubAckSequenceDupeResetAfterLeaderChange(t *testing.T) 
 	require_NoError(t, err)
 
 	// Store one msg ID that needs to be preserved, and another that should be removed during leader change.
-	mset.mu.Lock()
+	mset.ddMu.Lock()
 	mset.storeMsgIdLocked(&ddentry{"genuine", 1, time.Now().UnixNano()})
 	mset.storeMsgIdLocked(&ddentry{"msgId", 0, time.Now().UnixNano()})
-	mset.mu.Unlock()
+	mset.ddMu.Unlock()
 
 	// Simulates the msg ID being in process.
 	_, err = js.Publish("foo", nil, nats.MsgId("msgId"))
@@ -2492,9 +2492,9 @@ func TestJetStreamClusterPubAckSequenceDupeResetAfterLeaderChange(t *testing.T) 
 	nsl := c.streamLeader(globalAccountName, "TEST")
 	require_True(t, nsl == sl)
 
-	mset.mu.Lock()
+	mset.ddMu.Lock()
 	lenDdmap, lenDdarr := len(mset.ddmap), len(mset.ddarr)
-	mset.mu.Unlock()
+	mset.ddMu.Unlock()
 	require_Len(t, lenDdmap, 1)
 	require_Len(t, lenDdarr, 1)
 

@@ -1917,8 +1917,12 @@ func (ms *memStore) Utilization() (total, reported uint64, err error) {
 	return ms.state.Bytes, ms.state.Bytes, nil
 }
 
+func memStoreMsgSizeRaw(slen, hlen, mlen int) uint64 {
+	return uint64(slen + hlen + mlen + 16) // 8*2 for seq + age
+}
+
 func memStoreMsgSize(subj string, hdr, msg []byte) uint64 {
-	return uint64(len(subj) + len(hdr) + len(msg) + 16) // 8*2 for seq + age
+	return memStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
 }
 
 // Delete is same as Stop for memory store.
