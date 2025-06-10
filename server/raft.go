@@ -3515,9 +3515,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.updateLeadChange(false)
 	}
 
-	if len(ae.entries) > 0 {
-		n.debug("DEBUG: processAppendEntry ae.pindex=%d, ae.pterm=%d (term=%d), ae.commit=%d, len(ae.entries)=%d, leader=%s", ae.pindex, ae.pterm, ae.term, ae.commit, len(ae.entries), ae.leader)
-	}
+	//if len(ae.entries) > 0 {
+	n.debug("DEBUG: processAppendEntry ae.pindex=%d, ae.pterm=%d (term=%d, lterm=%d), ae.commit=%d, len(ae.entries)=%d, leader=%s", ae.pindex, ae.pterm, ae.term, ae.lterm, ae.commit, len(ae.entries), ae.leader)
+	//}
 
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
