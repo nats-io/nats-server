@@ -2711,6 +2711,7 @@ func TestNRGScaleFromR1ToR3(t *testing.T) {
 	defer c.shutdown()
 
 	rg := c.createRaftGroup("TEST", 1, newStateAdder)
+	require_Len(t, len(rg), 1)
 
 	// Do several state transitions.
 	original := rg.waitOnLeader()
@@ -2721,11 +2722,54 @@ func TestNRGScaleFromR1ToR3(t *testing.T) {
 	rg.waitOnTotal(t, 1)
 
 	// Scale the group up to R3.
-	rg = c.createRaftGroup("TEST", 3, newStateAdder)
+	rg = c.scaleRaftGroup("TEST", 3, newStateAdder, FileStorage)
+	require_Len(t, len(rg), 3)
+
 	require_Equal(t, rg.waitOnLeader(), original)
-	for _, n := range rg {
-		require_Equal(t, n.node().ClusterSize(), 3)
-	}
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		for _, n := range rg {
+			if csz := n.node().ClusterSize(); csz != 3 {
+				return fmt.Errorf("found cluster size %d instead of %d", csz, 3)
+			}
+		}
+		return nil
+	})
+	rg.waitOnTotal(t, 1)
+
+	// Do several more state transitions.
+	rg.randomMember().(*stateAdder).proposeDelta(5)
+	rg.randomMember().(*stateAdder).proposeDelta(-2)
+	// Wait for all members to have the correct state.
+	rg.waitOnTotal(t, 4)
+}
+
+func TestNRGScaleFromR3ToR1(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	require_Len(t, len(rg), 3)
+
+	// Do several state transitions.
+	original := rg.waitOnLeader()
+	rg.randomMember().(*stateAdder).proposeDelta(22)
+	rg.randomMember().(*stateAdder).proposeDelta(-11)
+	rg.randomMember().(*stateAdder).proposeDelta(-10)
+	// Wait for all members to have the correct state.
+	rg.waitOnTotal(t, 1)
+
+	// Scale the group up to R3.
+	rg = c.scaleRaftGroup("TEST", 1, newStateAdder, FileStorage)
+	require_Len(t, len(rg), 1)
+	require_Equal(t, rg.waitOnLeader(), original)
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		for _, n := range rg {
+			if csz := n.node().ClusterSize(); csz != 1 {
+				return fmt.Errorf("found cluster size %d instead of %d", csz, 1)
+			}
+		}
+		return nil
+	})
 	rg.waitOnTotal(t, 1)
 
 	// Do several more state transitions.

@@ -3849,7 +3849,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	// If we're a standalone node then we don't need to send to the
 	// network to reach quorum, just apply it straight away.
 	if n.standalone() {
-		n.applyCommit(ae.pindex + 1)
+		n.applyCommit(ae.pindex)
 	} else {
 		n.sendRPC(n.asubj, n.areply, ae.buf)
 	}

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -100,6 +101,101 @@ func (sg smGroup) unlockAll() {
 	}
 }
 
+// Scale the group up or down.
+func (c *cluster) scaleRaftGroup(name string, numMembers int, smf smFactory, st StorageType) smGroup {
+	if numMembers > len(c.servers) {
+		c.t.Fatalf("Members > Peers: %d vs  %d", numMembers, len(c.servers))
+	}
+	sg, ok := c.rns[name]
+	if !ok {
+		c.t.Fatalf("Group %q does not exist", name)
+	}
+	if numMembers > len(sg) {
+		toAdd := numMembers - len(sg)
+		candidates := map[*Server]string{}
+		for _, s := range c.servers {
+			s.rnMu.RLock()
+			_, ok := s.raftNodes[name]
+			s.rnMu.RUnlock()
+			if !ok {
+				candidates[s] = s.sys.shash
+			}
+			if len(candidates) == toAdd {
+				break
+			}
+		}
+		for s := range candidates {
+			sm := c.newRaftGroupMember(s, name, nil, smf, st)
+			sg = append(sg, sm)
+			go smLoop(sm)
+		}
+		leader := sg.leader()
+		require_NotNil(c.t, leader)
+		for _, shash := range candidates {
+			require_NoError(c.t, leader.node().ProposeAddPeer(shash))
+		}
+	} else if numMembers < len(sg) {
+		toRemove := len(sg) - numMembers
+		evictions := map[*Server]RaftNode{}
+		for _, s := range c.servers {
+			s.rnMu.RLock()
+			rn, ok := s.raftNodes[name]
+			s.rnMu.RUnlock()
+			if ok && !rn.Leader() {
+				evictions[s] = rn
+			}
+			if len(evictions) == toRemove {
+				break
+			}
+		}
+		leader := sg.leader()
+		for _, rn := range evictions {
+			require_NoError(c.t, leader.node().ProposeRemovePeer(rn.ID()))
+			for i, sm := range sg {
+				if sm != nil && sm.node() == rn {
+					sg = slices.Delete(sg, i, i+1)
+					break
+				}
+			}
+		}
+		for _, rn := range evictions {
+			rn.Stop()
+		}
+	}
+	checkFor(c.t, 5*time.Second, 250*time.Millisecond, func() error {
+		leader := sg.leader()
+		if leader == nil {
+			return fmt.Errorf("no leader")
+		}
+		if csz := leader.node().ClusterSize(); csz != numMembers {
+			return fmt.Errorf("cluster size incorrect: %d vs %d", csz, numMembers)
+		}
+		return nil
+	})
+	c.rns[name] = sg
+	return sg
+}
+
+func (c *cluster) newRaftGroupMember(s *Server, name string, peers []string, smf smFactory, st StorageType) stateMachine {
+	var cfg *RaftConfig
+	if st == FileStorage {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: c.t.TempDir(), BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
+			StreamConfig{Name: name, Storage: FileStorage},
+		)
+		require_NoError(c.t, err)
+		cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: fs}
+	} else {
+		ms, err := newMemStore(&StreamConfig{Name: name, Storage: MemoryStorage})
+		require_NoError(c.t, err)
+		cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: ms}
+	}
+	s.bootstrapRaftNode(cfg, peers, len(peers) > 0)
+	n, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(c.t, err)
+	return smf(s, cfg, n)
+}
+
 // Create a raft group and place on numMembers servers at random.
 // Filestore based.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
@@ -124,9 +220,6 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 	c.t.Helper()
 
 	var peers []string
-	if c.rns == nil {
-		c.rns = make(map[string]smGroup)
-	}
 
 	for _, s := range servers {
 		// generate peer names.
@@ -136,32 +229,10 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 	}
 
 	for _, s := range servers {
-		// Check if the Raft node already exists on this server, if it does then
-		// we won't recreate but instead will notify it of the new peer set if leader.
-		s.rnMu.RLock()
-		en, ok := s.raftNodes[name]
-		s.rnMu.RUnlock()
-		if ok {
-			en.(*raft).ProposeKnownPeers(peers)
-			continue
+		sm := c.newRaftGroupMember(s, name, peers, smf, st)
+		if c.rns == nil {
+			c.rns = map[string]smGroup{}
 		}
-		var cfg *RaftConfig
-		if st == FileStorage {
-			fs, err := newFileStore(
-				FileStoreConfig{StoreDir: c.t.TempDir(), BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
-				StreamConfig{Name: name, Storage: FileStorage},
-			)
-			require_NoError(c.t, err)
-			cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: fs}
-		} else {
-			ms, err := newMemStore(&StreamConfig{Name: name, Storage: MemoryStorage})
-			require_NoError(c.t, err)
-			cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: ms}
-		}
-		s.bootstrapRaftNode(cfg, peers, true)
-		n, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
-		require_NoError(c.t, err)
-		sm := smf(s, cfg, n)
 		c.rns[name] = append(c.rns[name], sm)
 		go smLoop(sm)
 	}
