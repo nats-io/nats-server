@@ -275,10 +275,42 @@ func (p *parser) processItem(it item, fp string) error {
 		// Keep track of the keys as items and strings,
 		// we do this in order to be able to still support
 		// includes without many breaking changes.
-		p.pushKey(it.val)
 
-		if p.pedantic {
-			p.pushItemKey(it)
+		// We need to emit itemKey for existing logic but this could be a variable reference.
+		// If so process that here inline.
+		if len(it.val) > 0 && it.val[0] == varStart {
+			value, found, err := p.lookupVariable(it.val[1:])
+			if err != nil {
+				return fmt.Errorf("variable reference for '%s' on line %d could not be parsed: %s",
+					it.val, it.line, err)
+			}
+			if !found {
+				return fmt.Errorf("variable reference for '%s' on line %d can not be found",
+					it.val, it.line)
+			}
+			switch tk := value.(type) {
+			case *token:
+				p.pushKey(tk.item.val)
+				if p.pedantic {
+					// Mark the looked up variable as used, and make
+					// the variable reference become handled as a token.
+					tk.usedVariable = true
+					p.pushItemKey(item{it.typ, tk.item.val, it.line, it.pos})
+				}
+			case string:
+				p.pushKey(value.(string))
+				if p.pedantic {
+					p.pushItemKey(item{it.typ, value.(string), it.line, it.pos})
+				}
+			default:
+				return fmt.Errorf("variable reference for '%s' on line %d needs to be a string for key map",
+					it.val, it.line)
+			}
+		} else {
+			p.pushKey(it.val)
+			if p.pedantic {
+				p.pushItemKey(it)
+			}
 		}
 	case itemMapStart:
 		newCtx := make(map[string]any)
@@ -355,7 +387,6 @@ func (p *parser) processItem(it item, fp string) error {
 		default:
 			return fmt.Errorf("expected boolean value, but got '%s'", it.val)
 		}
-
 	case itemDatetime:
 		dt, err := time.Parse("2006-01-02T15:04:05Z", it.val)
 		if err != nil {

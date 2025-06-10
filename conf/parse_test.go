@@ -1,3 +1,16 @@
+// Copyright 2013-2025 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package conf
 
 import (
@@ -71,29 +84,27 @@ func TestBools(t *testing.T) {
 	test(t, "foo=on", ex)
 }
 
-var varSample = `
-  index = 22
-  foo = $index
-`
-
 func TestSimpleVariable(t *testing.T) {
+	conf := `
+		index = 22
+		foo = $index
+	`
 	ex := map[string]any{
 		"index": int64(22),
 		"foo":   int64(22),
 	}
-	test(t, varSample, ex)
+	test(t, conf, ex)
 }
 
-var varNestedSample = `
-  index = 22
-  nest {
-    index = 11
-    foo = $index
-  }
-  bar = $index
-`
-
 func TestNestedVariable(t *testing.T) {
+	conf := `
+		index = 22
+		nest {
+			index = 11
+			foo = $index
+		}
+		bar = $index
+	`
 	ex := map[string]any{
 		"index": int64(22),
 		"nest": map[string]any{
@@ -102,10 +113,79 @@ func TestNestedVariable(t *testing.T) {
 		},
 		"bar": int64(22),
 	}
-	test(t, varNestedSample, ex)
+	test(t, conf, ex)
 }
 
-func TestMissingVariable(t *testing.T) {
+func TestVariableAsMapKey(t *testing.T) {
+	conf := `
+		KEY = "name"
+		test {
+			KEY = "first_name"
+			$KEY = derek
+		}
+	`
+	ex := map[string]any{
+		"KEY": "name",
+		"test": map[string]any{
+			"KEY":        "first_name",
+			"first_name": "derek",
+		},
+	}
+	test(t, conf, ex)
+}
+
+// TestVariableKeyUsedFlag tests that usedVariable flag is set when variables are used as keys in pedantic mode.
+// The variable needs to be in the config and not external, yhat is the token that will have the flag set.
+func TestVariableKeyUsedFlag(t *testing.T) {
+	config := `
+	TEST_KEY = mykey
+	test {
+		$TEST_KEY: "value"
+	}`
+
+	// Parse in pedantic mode to get tokens with usedVariable tracking
+	p, err := parse(config, "", true)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	// The variable should be marked as used since it was used as a key
+	// Look for any tokens in the mapping that have usedVariable set
+	var foundUsedVariable bool
+	var checkTokens func(m map[string]any)
+	checkTokens = func(m map[string]any) {
+		for _, v := range m {
+			t := v.(*token)
+			if t.usedVariable {
+				foundUsedVariable = true
+				return
+			}
+			// Cleanup any other env var that is still in the map.
+			if tm, ok := t.value.(map[string]any); ok {
+				checkTokens(tm)
+			}
+		}
+	}
+
+	// Check all values in the parsed mapping
+	checkTokens(p.mapping)
+
+	if !foundUsedVariable {
+		t.Error("Expected to find at least one token with usedVariable=true when variable is used as key")
+	}
+}
+
+func TestMissingVariableAsMapKey(t *testing.T) {
+	_, err := Parse("test { $KEY = derek }")
+	if err == nil {
+		t.Fatalf("Expected an error for a missing variable, got none")
+	}
+	if !strings.HasPrefix(err.Error(), "variable reference") {
+		t.Fatalf("Wanted a variable reference err, got %q\n", err)
+	}
+}
+
+func TestMissingVariableAsMapValue(t *testing.T) {
 	_, err := Parse("foo=$index")
 	if err == nil {
 		t.Fatalf("Expected an error for a missing variable, got none")
@@ -140,19 +220,18 @@ func TestEnvVariableStringStartingWithNumber(t *testing.T) {
 	os.Setenv(evar, "3xyz")
 	defer os.Unsetenv(evar)
 
-	_, err := Parse("foo = $%s")
-	if err == nil {
-		t.Fatalf("Expected err not being able to process string: %v\n", err)
+	if _, err := Parse(fmt.Sprintf("foo = $%s", evar)); err != nil {
+		t.Fatalf("Expected no err but got: %v\n", err)
 	}
 }
 
 func TestEnvVariableStringStartingWithNumberAndSizeUnit(t *testing.T) {
-	ex := map[string]any{
-		"foo": "3Gyz",
-	}
 	evar := "__UNIQ22__"
 	os.Setenv(evar, "3Gyz")
 	defer os.Unsetenv(evar)
+	ex := map[string]any{
+		"foo": "3Gyz",
+	}
 	test(t, fmt.Sprintf("foo = $%s", evar), ex)
 }
 

@@ -1,6 +1,22 @@
+// Copyright 2013-2025 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package conf
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // Test to make sure we get what we expect.
 func expect(t *testing.T, lx *lexer, items []item) {
@@ -1642,4 +1658,39 @@ func TestJSONCompat(t *testing.T) {
 			expect(t, lx, test.expected)
 		})
 	}
+}
+
+func TestMapKeyAsVariables(t *testing.T) {
+	os.Setenv("PORT-NAME", "port")
+	defer os.Unsetenv("PORT-NAME")
+
+	conf := "foo = { $PORT-NAME = 4222 }"
+	expected := []item{
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 7},
+		// We pass this up as a key with the full variable name.
+		{itemKey, "$PORT-NAME", 1, 8},
+		{itemInteger, "4222", 1, 21},
+		{itemMapEnd, "", 1, 27},
+		{itemEOF, "", 1, 0},
+	}
+
+	expect(t, lex(conf), expected)
+}
+
+func TestMapValueAsVariables(t *testing.T) {
+	os.Setenv("C-PORT", "4222")
+	defer os.Unsetenv("C-PORT")
+
+	conf := "foo = { port = $C-PORT }"
+	expected := []item{
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 7},
+		{itemKey, "port", 1, 8},
+		{itemVariable, "C-PORT", 1, 16},
+		{itemMapEnd, "", 1, 24},
+		{itemEOF, "", 1, 0},
+	}
+
+	expect(t, lex(conf), expected)
 }

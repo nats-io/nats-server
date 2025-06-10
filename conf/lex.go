@@ -1,4 +1,4 @@
-// Copyright 2013-2024 The NATS Authors
+// Copyright 2013-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -78,6 +78,7 @@ const (
 	topOptTerm        = '}'
 	blockStart        = '('
 	blockEnd          = ')'
+	varStart          = '$'
 	mapEndString      = string(mapEnd)
 )
 
@@ -888,12 +889,12 @@ func (lx *lexer) isBool() bool {
 		str == "yes" || str == "no"
 }
 
-// Check if the unquoted string is a variable reference, starting with $.
+// Check if the unquoted string is a variable reference, starting with varStart ($).
 func (lx *lexer) isVariable() bool {
 	if lx.start >= len(lx.input) {
 		return false
 	}
-	if lx.input[lx.start] == '$' {
+	if lx.input[lx.start] == varStart {
 		lx.start += 1
 		return true
 	}
@@ -956,9 +957,7 @@ func lexString(lx *lexer) stateFn {
 		return lexStringEscape
 	// Termination of non-quoted strings
 	case isNL(r) || r == eof || r == optValTerm ||
-		r == arrayValTerm || r == arrayEnd || r == mapEnd ||
-		isWhitespace(r):
-
+		r == arrayValTerm || r == arrayEnd || r == mapEnd || isWhitespace(r):
 		lx.backup()
 		if lx.hasEscapedParts() {
 			lx.emitString()
