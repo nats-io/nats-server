@@ -4479,6 +4479,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			delay    time.Duration
 			sz       int
 			wrn, wrb int
+			wrNoWait bool
 		)
 
 		o.mu.Lock()
@@ -4557,7 +4558,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		if o.isPushMode() {
 			dsubj = o.dsubj
 		} else if wr := o.nextWaiting(sz); wr != nil {
-			wrn, wrb = wr.n, wr.b
+			wrn, wrb, wrNoWait = wr.n, wr.b, wr.noWait
 			dsubj = wr.reply
 			if o.cfg.PriorityPolicy == PriorityPinnedClient {
 				// FIXME(jrm): Can we make this prettier?
@@ -4632,7 +4633,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// Do actual delivery.
-		o.deliverMsg(dsubj, ackReply, pmsg, dc, rp)
+		o.deliverMsg(dsubj, ackReply, pmsg, dc, rp, wrNoWait)
 
 		// If given request fulfilled batch size, but there are still pending bytes, send information about it.
 		if wrn <= 0 && wrb > 0 {
@@ -4831,7 +4832,7 @@ func convertToHeadersOnly(pmsg *jsPubMsg) {
 
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64, rp RetentionPolicy) {
+func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64, rp RetentionPolicy, wrNoWait bool) {
 	if o.mset == nil {
 		pmsg.returnToPool()
 		return
@@ -4867,7 +4868,9 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	// If we're replicated we MUST only send the message AFTER we've got quorum for updating
 	// delivered state. Otherwise, we could be in an invalid state after a leader change.
 	// We can send immediately if not replicated, not using acks, or using flow control (incompatible).
-	if o.node == nil || ap == AckNone || o.cfg.FlowControl {
+	// TODO(mvv): If NoWait we also bypass replicating first.
+	//  Ideally we'd only send the NoWait request timeout after replication and delivery.
+	if o.node == nil || ap == AckNone || o.cfg.FlowControl || wrNoWait {
 		o.outq.send(pmsg)
 	} else {
 		o.addReplicatedQueuedMsg(pmsg)
