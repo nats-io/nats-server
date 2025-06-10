@@ -109,6 +109,9 @@ type StreamConfig struct {
 	// subject delete markers.
 	SubjectDeleteMarkerTTL time.Duration `json:"subject_delete_marker_ttl,omitempty"`
 
+	// AllowAtomicPublish allows atomic batch publishing into the stream.
+	AllowAtomicPublish bool `json:"allow_atomic,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -189,6 +192,8 @@ type PubAck struct {
 	Sequence  uint64 `json:"seq"`
 	Domain    string `json:"domain,omitempty"`
 	Duplicate bool   `json:"duplicate,omitempty"`
+	BatchId   string `json:"batch,omitempty"`
+	BatchSize int    `json:"count,omitempty"`
 }
 
 // StreamInfo shows config and current state for this stream.
@@ -299,6 +304,7 @@ type stream struct {
 	created   time.Time               // Time the stream was created.
 	stype     StorageType             // The storage type.
 	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
+	ddMu      sync.Mutex              // Lock for dedupe state.
 	ddmap     map[string]*ddentry     // The dedupe map.
 	ddarr     []*ddentry              // The dedupe array.
 	ddindex   int                     // The dedupe index.
@@ -307,8 +313,7 @@ type stream struct {
 	mqch      chan struct{}           // The monitor's quit channel.
 	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
 	// and/or mirror/sources consumers are scheduled to be established or already started.
-	ddloaded bool        // set to true when the deduplication structures are been built.
-	closed   atomic.Bool // Set to true when stop() is called on the stream.
+	closed atomic.Bool // Set to true when stop() is called on the stream.
 
 	// Mirror
 	mirror *sourceInfo
@@ -367,6 +372,8 @@ type stream struct {
 	lastBySub *subscription
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
+
+	batches *batching // Inflight batches prior to committing them.
 }
 
 type sourceInfo struct {
@@ -422,6 +429,9 @@ const (
 	JSResponseType            = "Nats-Response-Type"
 	JSMessageTTL              = "Nats-TTL"
 	JSMarkerReason            = "Nats-Marker-Reason"
+	JSBatchId                 = "Nats-Batch-Id"
+	JSBatchSeq                = "Nats-Batch-Sequence"
+	JSBatchCommit             = "Nats-Batch-Commit"
 )
 
 // Headers for republished messages and direct gets.
@@ -751,12 +761,12 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	// Possible race with consumer.setLeader during recovery.
 	mset.mu.Lock()
 	mset.lseq = state.LastSeq
-	mset.mu.Unlock()
 
-	// If no msgs (new stream), set dedupe state loaded to true.
-	if state.Msgs == 0 {
-		mset.ddloaded = true
-	}
+	// Ensure dedupe state is loaded.
+	mset.ddMu.Lock()
+	mset.rebuildDedupe()
+	mset.ddMu.Unlock()
+	mset.mu.Unlock()
 
 	// Set our stream assignment if in clustered mode.
 	reserveResources := true
@@ -1100,14 +1110,8 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 // Will be called lazily to avoid penalizing startup times.
 // TODO(dlc) - Might be good to know if this should be checked at all for streams with no
 // headers and msgId in them. Would need signaling from the storage layer.
-// Lock should be held.
+// mset.mu and mset.ddMu locks should be held.
 func (mset *stream) rebuildDedupe() {
-	if mset.ddloaded {
-		return
-	}
-
-	mset.ddloaded = true
-
 	// We have some messages. Lookup starting sequence by duplicate time window.
 	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.cfg.Duplicates))
 	if sseq == 0 {
@@ -2008,10 +2012,12 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 
 		// Check for the Duplicates
+		mset.ddMu.Lock()
 		if cfg.Duplicates != ocfg.Duplicates && mset.ddtmr != nil {
 			// Let it fire right away, it will adjust properly on purge.
 			mset.ddtmr.Reset(time.Microsecond)
 		}
+		mset.ddMu.Unlock()
 
 		// Check for Sources.
 		if len(cfg.Sources) > 0 || len(ocfg.Sources) > 0 {
@@ -4205,20 +4211,14 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 
 // NumMsgIds returns the number of message ids being tracked for duplicate suppression.
 func (mset *stream) numMsgIds() int {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-	if !mset.ddloaded {
-		mset.rebuildDedupe()
-	}
+	mset.ddMu.Lock()
+	defer mset.ddMu.Unlock()
 	return len(mset.ddmap)
 }
 
 // checkMsgId will process and check for duplicates.
-// Lock should be held.
+// mset.ddMu lock should be held.
 func (mset *stream) checkMsgId(id string) *ddentry {
-	if !mset.ddloaded {
-		mset.rebuildDedupe()
-	}
 	if id == _EMPTY_ || len(mset.ddmap) == 0 {
 		return nil
 	}
@@ -4228,12 +4228,14 @@ func (mset *stream) checkMsgId(id string) *ddentry {
 // Will purge the entries that are past the window.
 // Should be called from a timer.
 func (mset *stream) purgeMsgIds() {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-
 	now := time.Now().UnixNano()
+	mset.mu.RLock()
 	tmrNext := mset.cfg.Duplicates
+	mset.mu.RUnlock()
 	window := int64(tmrNext)
+
+	mset.ddMu.Lock()
+	defer mset.ddMu.Unlock()
 
 	for i, dde := range mset.ddarr[mset.ddindex:] {
 		if now-dde.ts >= window {
@@ -4272,7 +4274,7 @@ func (mset *stream) purgeMsgIds() {
 }
 
 // storeMsgIdLocked will store the message id for duplicate detection.
-// Lock should be held.
+// mset.ddMu lock should be held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)
@@ -4301,7 +4303,7 @@ func getExpectedStream(hdr []byte) string {
 
 // Fast lookup of expected stream.
 func getExpectedLastSeq(hdr []byte) (uint64, bool) {
-	bseq := getHeader(JSExpectedLastSeq, hdr)
+	bseq := sliceHeader(JSExpectedLastSeq, hdr)
 	if len(bseq) == 0 {
 		return 0, false
 	}
@@ -4319,7 +4321,7 @@ func getRollup(hdr []byte) string {
 
 // Fast lookup of expected stream sequence per subject.
 func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
-	bseq := getHeader(JSExpectedLastSubjSeq, hdr)
+	bseq := sliceHeader(JSExpectedLastSubjSeq, hdr)
 	if len(bseq) == 0 {
 		return 0, false
 	}
@@ -4366,6 +4368,23 @@ func parseMessageTTL(ttl string) (int64, error) {
 		return 0, NewJSMessageTTLInvalidError()
 	}
 	return t, nil
+}
+
+// Fast lookup of batch ID.
+func getBatchId(hdr []byte) string {
+	if len(hdr) == 0 {
+		return _EMPTY_
+	}
+	return string(getHeader(JSBatchId, hdr))
+}
+
+// Fast lookup of batch sequence.
+func getBatchSequence(hdr []byte) (uint64, bool) {
+	bseq := sliceHeader(JSBatchSeq, hdr)
+	if len(bseq) == 0 {
+		return 0, false
+	}
+	return uint64(parseInt64(bseq)), true
 }
 
 // Signal if we are clustered. Will acquire rlock.
@@ -4911,11 +4930,18 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Process additional msg headers if still present.
 	var msgId string
+	var batchId string
+	var batchSeq uint64
 	var rollupSub, rollupAll bool
 	isClustered := mset.isClustered()
 
 	if len(hdr) > 0 {
 		outq := mset.outq
+
+		// Populate batch details.
+		if batchId = getBatchId(hdr); batchId != _EMPTY_ {
+			batchSeq, _ = getBatchSequence(hdr)
+		}
 
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
@@ -4950,12 +4976,15 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			return errMsgTTLDisabled
 		}
 
-		// Dedupe detection. This is done at the cluster level for dedupe detectiom above the
+		// Dedupe detection. This is done at the cluster level for dedupe detection above the
 		// lower layers. But we still need to pull out the msgId.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 			// Do real check only if not clustered or traceOnly flag is set.
 			if !isClustered || traceOnly {
-				if dde := mset.checkMsgId(msgId); dde != nil {
+				mset.ddMu.Lock()
+				dde := mset.checkMsgId(msgId)
+				mset.ddMu.Unlock()
+				if dde != nil {
 					mset.mu.Unlock()
 					bumpCLFS()
 					if canRespond {
@@ -5023,9 +5052,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		// Expected last msgId.
 		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ {
-			if mset.lmsgId == _EMPTY_ && !mset.ddloaded {
-				mset.rebuildDedupe()
-			}
 			if lmsgId != mset.lmsgId {
 				last := mset.lmsgId
 				mset.mu.Unlock()
@@ -5148,11 +5174,17 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.lmsgId = msgId
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
+			mset.ddMu.Lock()
 			mset.storeMsgIdLocked(&ddentry{msgId, mset.lseq, ts})
+			mset.ddMu.Unlock()
 		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
-			response = append(response, '}')
+			if batchId != _EMPTY_ {
+				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, batchSeq)...)
+			} else {
+				response = append(response, '}')
+			}
 			mset.outq.sendMsg(reply, response)
 		}
 		mset.mu.Unlock()
@@ -5273,9 +5305,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return err
 	}
 
+	// If here we succeeded in storing the message.
+	mset.mu.Unlock()
+
 	// If we have a msgId make sure to save.
 	// This will replace our estimate from the cluster layer if we are clustered.
 	if msgId != _EMPTY_ {
+		mset.ddMu.Lock()
 		if isClustered && isLeader && mset.ddmap != nil {
 			if dde := mset.ddmap[msgId]; dde != nil {
 				dde.seq, dde.ts = seq, ts
@@ -5286,10 +5322,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			// R1 or not leader..
 			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
 		}
+		mset.ddMu.Unlock()
 	}
-
-	// If here we succeeded in storing the message.
-	mset.mu.Unlock()
 
 	// No errors, this is the normal path.
 	if rollupSub {
@@ -5330,7 +5364,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Send response here.
 	if canRespond {
 		response = append(pubAck, strconv.FormatUint(seq, 10)...)
-		response = append(response, '}')
+		if batchId != _EMPTY_ {
+			response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, batchSeq)...)
+		} else {
+			response = append(response, '}')
+		}
 		mset.outq.sendMsg(reply, response)
 	}
 
@@ -5802,6 +5840,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 
 	// Cleanup duplicate timer if running.
+	mset.ddMu.Lock()
 	if mset.ddtmr != nil {
 		mset.ddtmr.Stop()
 		mset.ddtmr = nil
@@ -5809,6 +5848,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		mset.ddarr = nil
 		mset.ddindex = 0
 	}
+	mset.ddMu.Unlock()
 
 	sysc := mset.sysc
 	mset.sysc = nil
