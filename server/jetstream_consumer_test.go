@@ -9674,14 +9674,13 @@ func TestJetStreamConsumerPullNoWaitBatchLargerThanPending(t *testing.T) {
 	sub := sendRequest(t, nc, "rply", req)
 	defer sub.Unsubscribe()
 
-	// we should get all 5 messages
-	// this fails on nats-server >= v2.11.2
+	// Should get all 5 messages.
+	// TODO(mvv): Currently bypassing replicating first, need to figure out
+	//  how to send NoWait's request timeout after replication.
 	for range 5 {
 		msg, err := sub.NextMsg(time.Second)
 		require_NoError(t, err)
 		if len(msg.Data) == 0 && msg.Header != nil {
-			fmt.Printf("Header: %+v\n", msg.Header)
-			time.Sleep(100 * time.Millisecond)
 			t.Fatalf("Expected data, got: %s", msg.Header.Get("Description"))
 		}
 	}
