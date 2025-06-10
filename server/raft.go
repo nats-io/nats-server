@@ -2312,6 +2312,9 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 
 	var elen int
 	for _, e := range ae.entries {
+		if len(e.Data) > math.MaxUint32 {
+			return nil, errBadAppendEntry
+		}
 		elen += len(e.Data) + 1 + 4 // 1 is type, 4 is for size.
 	}
 	// Uvarint for lterm can be a maximum 10 bytes for a uint64.
@@ -2321,32 +2324,28 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 
 	var buf []byte
 	if cap(b) >= tlen {
-		buf = b[:tlen]
+		buf = b[:idLen]
 	} else {
-		buf = make([]byte, tlen)
+		buf = make([]byte, idLen, tlen)
 	}
 
 	var le = binary.LittleEndian
 	copy(buf[:idLen], ae.leader)
-	le.PutUint64(buf[8:], ae.term)
-	le.PutUint64(buf[16:], ae.commit)
-	le.PutUint64(buf[24:], ae.pterm)
-	le.PutUint64(buf[32:], ae.pindex)
-	le.PutUint16(buf[40:], uint16(len(ae.entries)))
-	wi := 42
+	buf = le.AppendUint64(buf, ae.term)
+	buf = le.AppendUint64(buf, ae.commit)
+	buf = le.AppendUint64(buf, ae.pterm)
+	buf = le.AppendUint64(buf, ae.pindex)
+	buf = le.AppendUint16(buf, uint16(len(ae.entries)))
 	for _, e := range ae.entries {
-		le.PutUint32(buf[wi:], uint32(len(e.Data)+1))
-		wi += 4
-		buf[wi] = byte(e.Type)
-		wi++
-		copy(buf[wi:], e.Data)
-		wi += len(e.Data)
+		buf = le.AppendUint32(buf, uint32(1+len(e.Data)))
+		buf = append(buf, byte(e.Type))
+		buf = append(buf, e.Data...)
 	}
 	// This is safe because old nodes will ignore bytes after the
 	// encoded messages. Nodes that are aware of this will decode
 	// it correctly.
-	wi += copy(buf[wi:], lterm)
-	return buf[:wi], nil
+	buf = append(buf, lterm...)
+	return buf, nil
 }
 
 // This can not be used post the wire level callback since we do not copy.
@@ -2361,23 +2360,24 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 	ae.reply, ae.sub = reply, sub
 
 	// Decode Entries.
-	ne, ri := int(le.Uint16(msg[40:])), 42
-	for i, max := 0, len(msg); i < ne; i++ {
+	ne, ri := int(le.Uint16(msg[40:])), uint64(42)
+	for i, max := 0, uint64(len(msg)); i < ne; i++ {
 		if ri >= max-1 {
 			return nil, errBadAppendEntry
 		}
-		le := int(le.Uint32(msg[ri:]))
+		ml := uint64(le.Uint32(msg[ri:]))
 		ri += 4
-		if le <= 0 || ri+le > max {
+		if ml <= 0 || ri+ml > max {
 			return nil, errBadAppendEntry
 		}
-		entry := newEntry(EntryType(msg[ri]), msg[ri+1:ri+le])
+		entry := newEntry(EntryType(msg[ri]), msg[ri+1:ri+ml])
 		ae.entries = append(ae.entries, entry)
-		ri += le
+		ri += ml
 	}
 	if len(msg[ri:]) > 0 {
-		lterm, _ := binary.Uvarint(msg[ri:])
-		ae.lterm = lterm
+		if lterm, n := binary.Uvarint(msg[ri:]); n > 0 {
+			ae.lterm = lterm
+		}
 	}
 	ae.buf = msg
 	return ae, nil
@@ -2734,7 +2734,8 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 			// Re-encode with the lterm if needed
 			if ae.lterm != term {
 				ae.lterm = term
-				if ae.buf, err = ae.encode(ae.buf[:0]); err != nil {
+				var scratch [1024]byte // as reusing ae.buf may not be safe
+				if ae.buf, err = ae.encode(scratch[:0]); err != nil {
 					n.warn("Got an error re-encoding append entry: %v", err)
 					return true
 				}
