@@ -25,12 +25,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/gsl"
@@ -4891,6 +4894,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				b, _ := json.Marshal(resp)
 				outq.sendMsg(reply, b)
 			}
+			assert.Unreachable("last sequence mismatch", map[string]any{
+				"stack":     string(debug.Stack()),
+				"lseq":      lseq,
+				"mset.lseq": mset.lseq,
+				"mset.clfs": mset.clfs,
+			})
 			return errLastSeqMismatch
 		}
 	}
