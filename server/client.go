@@ -1446,14 +1446,25 @@ func (c *client) readLoop(pre []byte) {
 		// Updates stats for client and server that were collected
 		// from parsing through the buffer.
 		if c.in.msgs > 0 {
-			atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
-			atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
+			inMsgs := int64(c.in.msgs)
+			inBytes := int64(c.in.bytes)
+
+			atomic.AddInt64(&c.inMsgs, inMsgs)
+			atomic.AddInt64(&c.inBytes, inBytes)
+
 			if acc != nil {
-				atomic.AddInt64(&acc.inMsgs, int64(c.in.msgs))
-				atomic.AddInt64(&acc.inBytes, int64(c.in.bytes))
+				acc.stats.Lock()
+				acc.stats.inMsgs += inMsgs
+				acc.stats.inBytes += inBytes
+				if c.kind == LEAF {
+					acc.stats.ln.inMsgs += int64(inMsgs)
+					acc.stats.ln.inBytes += int64(inBytes)
+				}
+				acc.stats.Unlock()
 			}
-			atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
-			atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
+
+			atomic.AddInt64(&s.inMsgs, inMsgs)
+			atomic.AddInt64(&s.inBytes, inBytes)
 		}
 
 		// Signal to writeLoop to flush to socket.
@@ -1806,7 +1817,9 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 		c.srv.scStats.leafs.Add(1)
 	}
 	if c.acc != nil {
-		atomic.AddInt64(&c.acc.slowConsumers, 1)
+		c.acc.stats.Lock()
+		c.acc.stats.slowConsumers++
+		c.acc.stats.Unlock()
 	}
 	c.Noticef("Slow Consumer %s: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
 		scState, c.out.wdl, numChunks, attempted)
@@ -2356,7 +2369,9 @@ func (c *client) queueOutbound(data []byte) {
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.srv.scStats.clients.Add(1)
 		if c.acc != nil {
-			atomic.AddInt64(&c.acc.slowConsumers, 1)
+			c.acc.stats.Lock()
+			c.acc.stats.slowConsumers++
+			c.acc.stats.Unlock()
 		}
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
 		c.markConnAsClosed(SlowConsumerPendingBytes)
@@ -4728,6 +4743,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// by having an extra size
 	var dlvMsgs int64
 	var dlvExtraSize int64
+	var dlvRouteMsgs int64
+	var dlvLeafMsgs int64
 
 	// We need to know if this is a MQTT producer because they send messages
 	// without CR_LF (we otherwise remove the size of CR_LF from message size).
@@ -4737,15 +4754,33 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		if dlvMsgs == 0 {
 			return
 		}
+
 		totalBytes := dlvMsgs*int64(len(msg)) + dlvExtraSize
+		routeBytes := dlvRouteMsgs*int64(len(msg)) + dlvExtraSize
+		leafBytes := dlvLeafMsgs*int64(len(msg)) + dlvExtraSize
+
 		// For non MQTT producers, remove the CR_LF * number of messages
 		if !prodIsMQTT {
 			totalBytes -= dlvMsgs * int64(LEN_CR_LF)
+			routeBytes -= dlvRouteMsgs * int64(LEN_CR_LF)
+			leafBytes -= dlvLeafMsgs * int64(LEN_CR_LF)
 		}
+
 		if acc != nil {
-			atomic.AddInt64(&acc.outMsgs, dlvMsgs)
-			atomic.AddInt64(&acc.outBytes, totalBytes)
+			acc.stats.Lock()
+			acc.stats.outMsgs += dlvMsgs
+			acc.stats.outBytes += totalBytes
+			if dlvRouteMsgs > 0 {
+				acc.stats.rt.outMsgs += dlvRouteMsgs
+				acc.stats.rt.outBytes += routeBytes
+			}
+			if dlvLeafMsgs > 0 {
+				acc.stats.ln.outMsgs += dlvLeafMsgs
+				acc.stats.ln.outBytes += leafBytes
+			}
+			acc.stats.Unlock()
 		}
+
 		if srv := c.srv; srv != nil {
 			atomic.AddInt64(&srv.outMsgs, dlvMsgs)
 			atomic.AddInt64(&srv.outBytes, totalBytes)
@@ -5066,6 +5101,12 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				// Update only if not skipped.
 				if !skipDelivery && sub.icb == nil {
 					dlvMsgs++
+					switch sub.client.kind {
+					case ROUTER:
+						dlvRouteMsgs++
+					case LEAF:
+						dlvLeafMsgs++
+					}
 				}
 				// Do the rest even when message delivery was skipped.
 				didDeliver = true
@@ -5156,6 +5197,12 @@ sendToRoutesOrLeafs:
 		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
 			if rt.sub.icb == nil {
 				dlvMsgs++
+				switch dc.kind {
+				case ROUTER:
+					dlvRouteMsgs++
+				case LEAF:
+					dlvLeafMsgs++
+				}
 				dlvExtraSize += int64(len(dmsg) - len(msg))
 			}
 			didDeliver = true
