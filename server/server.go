@@ -389,7 +389,6 @@ type nodeInfo struct {
 	accountNRG      bool
 }
 
-// Make sure all are 64bits for atomic use
 type stats struct {
 	inMsgs        int64
 	outMsgs       int64

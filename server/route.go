@@ -449,7 +449,8 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	size := len(msg) - LEN_CR_LF
+	c.in.bytes += int32(size)
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -471,6 +472,13 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
 		return
 	}
+
+	acc.stats.Lock()
+	acc.stats.inMsgs++
+	acc.stats.inBytes += int64(size)
+	acc.stats.rt.inMsgs++
+	acc.stats.rt.inBytes += int64(size)
+	acc.stats.Unlock()
 
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.

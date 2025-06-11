@@ -4384,7 +4384,6 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 			}
 			cluster {
 				name: c1
-				accounts: [%s]
 				listen: %d
 				routes: [
 					nats-route://127.0.0.1:%d,
@@ -4408,7 +4407,7 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 				%s : %s
 				%s : %s
 			}
-		`, test.port, test.mport, dir, accPub, test.cport, test.route1, test.gport, test.gateway1, test.lport, fmt.Sprintf("n%d", i), ojwt, sysPub, accPub, accJwt, sysPub, sysJwt)))
+		`, test.port, test.mport, dir, test.cport, test.route1, test.gport, test.gateway1, test.lport, fmt.Sprintf("n%d", i), ojwt, sysPub, accPub, accJwt, sysPub, sysJwt)))
 
 		s, _ := RunServerWithConfig(conf)
 		servers = append(servers, s)
@@ -4467,7 +4466,7 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 			http: 127.0.0.1:%d
 			leafnodes: {
 				remotes: [
-					{url: "nats://127.0.0.1:%d", credentials: "%s"},
+					{url: "nats://127.0.0.1:%d", credentials: "%s", account: "APP"},
 				]
 			}
 			accounts {
@@ -4490,6 +4489,8 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 	}
 
 	checkForJSClusterUp(t, servers[:3]...)
+	waitForOutboundGateways(t, servers[0], 1, 2*time.Second)
+	waitForOutboundGateways(t, servers[3], 1, 2*time.Second)
 
 	return servers, sysKp, accKp
 }
@@ -4592,6 +4593,124 @@ func TestMonitorAccountStatzOperatorMode(t *testing.T) {
 				require_Equal(t, acc.Name, DEFAULT_GLOBAL_ACCOUNT)
 			default:
 				t.Fatalf("Unexpected account: %+v", acc)
+			}
+		}
+	}
+}
+
+func TestMonitorAccountStatzDataStatsOperatorMode(t *testing.T) {
+	sysName := "SYS"
+	accName := "APP"
+
+	srvs, _, accKp := runMonitorServerWithOperator(t, sysName, accName)
+	for _, s := range srvs {
+		defer s.Shutdown()
+	}
+	// First three servers are the cluster.
+	n0 := srvs[0]
+	n1 := srvs[1]
+
+	// Gateway server.
+	n3 := srvs[3]
+
+	// Leafnode server.
+	n4 := srvs[4]
+
+	accPub, _ := accKp.PublicKey()
+
+	_, aCreds := createUser(t, accKp)
+
+	n0c, err := nats.Connect(n0.ClientURL(), nats.UserCredentials(aCreds))
+	require_NoError(t, err)
+	defer n0c.Close()
+
+	n1c, err := nats.Connect(n1.ClientURL(), nats.UserCredentials(aCreds))
+	require_NoError(t, err)
+	defer n1c.Close()
+
+	n3c, err := nats.Connect(n3.ClientURL(), nats.UserCredentials(aCreds))
+	require_NoError(t, err)
+	defer n3c.Close()
+
+	// No auth user for leafnode.
+	n4c, err := nats.Connect(n4.ClientURL())
+	require_NoError(t, err)
+	defer n4c.Close()
+
+	// Subscription over a route.
+	_, err = n1c.Subscribe("foo", func(m *nats.Msg) {})
+	require_NoError(t, err)
+
+	// Subscription over a gateway.
+	_, err = n3c.Subscribe("bar", func(m *nats.Msg) {})
+	require_NoError(t, err)
+
+	// Subscription over a leafnode.
+	_, err = n4c.Subscribe("baz", func(m *nats.Msg) {})
+	require_NoError(t, err)
+
+	// Subscription propagation.
+	time.Sleep(10 * time.Millisecond)
+
+	err = n0c.Publish("foo", []byte("Hello"))
+	require_NoError(t, err)
+
+	err = n0c.Publish("bar", []byte("Hello"))
+	require_NoError(t, err)
+
+	err = n0c.Publish("baz", []byte("Hello"))
+	require_NoError(t, err)
+
+	// Publish propagation.
+	time.Sleep(10 * time.Millisecond)
+
+	for pollMode := 0; pollMode < 2; pollMode++ {
+		for _, s := range srvs {
+			a := pollAccountStatz(t, s, pollMode, fmt.Sprintf("http://127.0.0.1:%d%s?unused=1", s.MonitorAddr().Port, AccountStatzPath), &AccountStatzOptions{IncludeUnused: true})
+
+			for _, acc := range a.Accounts {
+				if acc.Account != accPub {
+					continue
+				}
+
+				switch s.Name() {
+				case "n0":
+					// Should have received three messages due to the three publishes.
+					// Should have sent one over a route to n1 for foo.
+					// Should have sent one over a gateway to n3 for bar.
+					// Should have sent one over a leaf node to n4 for baz.
+					require_Equal(t, acc.Sent.Msgs, 3)
+					require_Equal(t, acc.Sent.Routes.Msgs, 1)
+					require_Equal(t, acc.Sent.Gateways.Msgs, 1)
+					require_Equal(t, acc.Sent.Leafs.Msgs, 1)
+					require_Equal(t, acc.Received.Msgs, 3)
+				case "n1":
+					// Should have sent 1 message to a client.
+					// Should have received 1 message from n0.
+					require_Equal(t, acc.Sent.Msgs, 1)
+					require_Equal(t, acc.Sent.Routes.Msgs, 0)
+					require_Equal(t, acc.Received.Msgs, 1)
+					require_Equal(t, acc.Received.Routes.Msgs, 1)
+				case "n2":
+					// Should have not received anything.
+					require_Equal(t, acc.Sent.Msgs, 0)
+					require_Equal(t, acc.Sent.Bytes, 0)
+				// Gateway, connected to n0
+				case "n3":
+					// Should have received 1 message from n0.
+					// Should have sent 1 message to a client.
+					require_Equal(t, acc.Sent.Msgs, 1)
+					require_Equal(t, acc.Sent.Gateways.Msgs, 0)
+					require_Equal(t, acc.Received.Msgs, 1)
+					require_Equal(t, acc.Received.Gateways.Msgs, 1)
+				// Leafnode, connected to n0
+				case "n4":
+					// Should have received 1 message from n0.
+					// Should have sent 1 message to a client.
+					require_Equal(t, acc.Sent.Msgs, 1)
+					require_Equal(t, acc.Received.Msgs, 1)
+					require_Equal(t, acc.Received.Leafs.Msgs, 1)
+				}
 			}
 		}
 	}
