@@ -2734,6 +2734,8 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		if acc != nil {
 			atomic.AddInt64(&acc.outMsgs, dlvMsgs)
 			atomic.AddInt64(&acc.outBytes, totalBytes)
+			atomic.AddInt64(&acc.gw.outMsgs, dlvMsgs)
+			atomic.AddInt64(&acc.gw.outBytes, totalBytes)
 		}
 		atomic.AddInt64(&srv.outMsgs, dlvMsgs)
 		atomic.AddInt64(&srv.outBytes, totalBytes)
@@ -3077,7 +3079,8 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	size := len(msg) - LEN_CR_LF
+	c.in.bytes += int32(size)
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -3101,6 +3104,11 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		c.srv.gatewayHandleAccountNoInterest(c, c.pa.account)
 		return
 	}
+
+	atomic.AddInt64(&acc.inMsgs, 1)
+	atomic.AddInt64(&acc.inBytes, int64(size))
+	atomic.AddInt64(&acc.gw.inMsgs, 1)
+	atomic.AddInt64(&acc.gw.inBytes, int64(size))
 
 	// Check if this is a service reply subject (_R_)
 	noInterest := len(r.psubs) == 0
