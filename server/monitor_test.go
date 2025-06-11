@@ -4692,7 +4692,7 @@ func TestMonitorAccountStatzDataStatsOperatorMode(t *testing.T) {
 					require_Equal(t, acc.Received.Msgs, 1)
 					require_Equal(t, acc.Received.Routes.Msgs, 1)
 				case "n2":
-					// Should have not recieved anything.
+					// Should have not received anything.
 					require_Equal(t, acc.Sent.Msgs, 0)
 					require_Equal(t, acc.Sent.Bytes, 0)
 				// Gateway, connected to n0
