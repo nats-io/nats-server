@@ -4872,30 +4872,34 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// For clustering the lower layers will pass our expected lseq. If it is present check for that here.
-	if lseq > 0 && lseq != (mset.lseq+mset.clfs) {
-		isMisMatch := true
-		// We may be able to recover here if we have no state whatsoever, or we are a mirror.
-		// See if we have to adjust our starting sequence.
-		if mset.lseq == 0 || mset.cfg.Mirror != nil {
-			var state StreamState
-			mset.store.FastState(&state)
-			if state.FirstSeq == 0 {
-				mset.store.Compact(lseq + 1)
-				mset.lseq = lseq
-				isMisMatch = false
+	var clfs uint64
+	if lseq > 0 {
+		clfs = mset.getCLFS()
+		if lseq != (mset.lseq + clfs) {
+			isMisMatch := true
+			// We may be able to recover here if we have no state whatsoever, or we are a mirror.
+			// See if we have to adjust our starting sequence.
+			if mset.lseq == 0 || mset.cfg.Mirror != nil {
+				var state StreamState
+				mset.store.FastState(&state)
+				if state.FirstSeq == 0 {
+					mset.store.Compact(lseq + 1)
+					mset.lseq = lseq
+					isMisMatch = false
+				}
 			}
-		}
-		// Really is a mismatch.
-		if isMisMatch {
-			outq := mset.outq
-			mset.mu.Unlock()
-			if canRespond && outq != nil {
-				resp.PubAck = &PubAck{Stream: name}
-				resp.Error = ApiErrors[JSStreamSequenceNotMatchErr]
-				b, _ := json.Marshal(resp)
-				outq.sendMsg(reply, b)
+			// Really is a mismatch.
+			if isMisMatch {
+				outq := mset.outq
+				mset.mu.Unlock()
+				if canRespond && outq != nil {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = ApiErrors[JSStreamSequenceNotMatchErr]
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return errLastSeqMismatch
 			}
-			return errLastSeqMismatch
 		}
 	}
 
@@ -5159,7 +5163,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Assume this will succeed.
 	olmsgId := mset.lmsgId
 	mset.lmsgId = msgId
-	clfs := mset.clfs
 	mset.lseq++
 	tierName := mset.tier
 
