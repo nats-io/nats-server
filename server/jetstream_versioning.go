@@ -45,6 +45,11 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 		requires(1)
 	}
 
+	// Counter CRDTs were added in v2.12 and require API level 2.
+	if cfg.AllowMsgCounter {
+		requires(2)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 

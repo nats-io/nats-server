@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -3000,6 +3001,21 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mset.clMu.Unlock()
 				}
 
+				// Update running total for counter.
+				if mset.clusteredCounterTotal != nil {
+					mset.clMu.Lock()
+					if counter, found := mset.clusteredCounterTotal[subject]; found {
+						// Decrement from pending operations. Once it reaches zero, it can be deleted.
+						if counter.ops > 0 {
+							counter.ops--
+						}
+						if counter.ops == 0 {
+							delete(mset.clusteredCounterTotal, subject)
+						}
+					}
+					mset.clMu.Unlock()
+				}
+
 				// Clear expected per subject state after processing.
 				if mset.expectedPerSubjectSequence != nil {
 					mset.clMu.Lock()
@@ -3255,6 +3271,8 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	mset.clMu.Lock()
 	// Clear inflight if we have it.
 	mset.inflight = nil
+	// Clear running counter totals.
+	mset.clusteredCounterTotal = nil
 	// Clear expected per subject state.
 	mset.expectedPerSubjectSequence = nil
 	mset.expectedPerSubjectInProcess = nil
@@ -7937,7 +7955,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
-	isLeader, isSealed, allowTTL := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowMsgTTL
+	isLeader, isSealed, allowTTL, allowMsgCounter := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -8017,6 +8035,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Some header checks can be checked pre proposal. Most can not.
 	var msgId string
+	var incr *big.Int
 	if len(hdr) > 0 {
 		// Since we encode header len as u16 make sure we do not exceed.
 		// Again this works if it goes through but better to be pre-emptive.
@@ -8030,6 +8049,64 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
 			}
 			return err
+		}
+		// Counter increments.
+		// Only supported on counter streams, and payload must be empty (if not coming from a source).
+		var ok bool
+		if incr, ok = getMessageIncr(hdr); !ok {
+			apiErr := NewJSMessageIncrInvalidError()
+			if canRespond {
+				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+				resp.Error = apiErr
+				response, _ = json.Marshal(resp)
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+			}
+			return apiErr
+		} else if incr != nil && !sourced {
+			// Only do checks if the message isn't sourced. Otherwise, we need to store verbatim.
+			if !allowMsgCounter {
+				apiErr := NewJSMessageIncrDisabledError()
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.Error = apiErr
+					response, _ = json.Marshal(resp)
+					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+				}
+				return apiErr
+			} else if len(msg) > 0 {
+				apiErr := NewJSMessageIncrPayloadError()
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.Error = apiErr
+					response, _ = json.Marshal(resp)
+					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+				}
+				return apiErr
+			} else {
+				// Check for incompatible headers.
+				var doErr bool
+				if getRollup(hdr) != _EMPTY_ ||
+					getExpectedStream(hdr) != _EMPTY_ ||
+					getExpectedLastMsgId(hdr) != _EMPTY_ ||
+					getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
+					doErr = true
+				} else if _, ok := getExpectedLastSeq(hdr); ok {
+					doErr = true
+				} else if _, ok := getExpectedLastSeqPerSubject(hdr); ok {
+					doErr = true
+				}
+
+				if doErr {
+					apiErr := NewJSMessageIncrInvalidError()
+					if canRespond {
+						var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+						resp.Error = apiErr
+						response, _ = json.Marshal(resp)
+						outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+					}
+					return apiErr
+				}
+			}
 		}
 		// Expected stream name can also be pre-checked.
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
@@ -8093,6 +8170,17 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 	}
 
+	if incr == nil && allowMsgCounter {
+		apiErr := NewJSMessageIncrMissingError()
+		if canRespond {
+			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+			resp.Error = apiErr
+			response, _ = json.Marshal(resp)
+			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+		}
+		return apiErr
+	}
+
 	// Proceed with proposing this message.
 
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
@@ -8102,6 +8190,68 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Re-capture
 		lseq = mset.lastSeq()
 		mset.clseq = lseq + mset.clfs
+	}
+
+	// Apply increment for counter.
+	// But only if it's allowed for this stream. This can happen when we store verbatim for a sourced stream.
+	if incr != nil && allowMsgCounter && store != nil {
+		// Store running totals for counters, we could have multiple counter increments proposed, but not applied yet.
+		if mset.clusteredCounterTotal == nil {
+			mset.clusteredCounterTotal = make(map[string]*msgCounterRunningTotal, 1)
+		}
+
+		// If we've got a running total, update that, since we have inflight proposals updating the same counter.
+		var ok bool
+		var counter *msgCounterRunningTotal
+		if counter, ok = mset.clusteredCounterTotal[subject]; ok {
+			counter.total.Add(counter.total, incr)
+			counter.ops++
+			msg = []byte(fmt.Sprintf("{%q:%q}", "val", counter.total.String()))
+		} else {
+			// Load last message, and store as inflight running total.
+			var smv StoreMsg
+			sm, err := store.LoadLastMsg(subject, &smv)
+			if err == nil && sm != nil {
+				var val CounterValue
+				var initial big.Int
+				// Return an error if the counter is broken somehow.
+				if json.Unmarshal(sm.msg, &val) != nil {
+					mset.clMu.Unlock()
+					apiErr := NewJSMessageCounterBrokenError()
+					if canRespond {
+						var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+						resp.Error = apiErr
+						response, _ = json.Marshal(resp)
+						outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+					}
+					return apiErr
+				}
+				initial.SetString(val.Value, 10)
+				incr.Add(incr, &initial)
+			}
+			counter = &msgCounterRunningTotal{total: incr, ops: 1}
+			mset.clusteredCounterTotal[subject] = counter
+			msg = []byte(fmt.Sprintf("{%q:%q}", "val", counter.total.String()))
+		}
+
+		// Check to see if we are over the max msg size.
+		if int32(len(hdr)+len(msg)) > mset.srv.getOpts().MaxPayload {
+			// Undo staged counter changes.
+			counter.ops--
+			if counter.ops == 0 {
+				delete(mset.clusteredCounterTotal, subject)
+			} else {
+				counter.total.Sub(counter.total, incr)
+			}
+			mset.clMu.Unlock()
+			if canRespond {
+				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+				resp.Error = NewJSStreamMessageExceedsMaximumError()
+				response, _ = json.Marshal(resp)
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+			}
+			return ErrMaxPayload
+		}
 	}
 
 	// Check if we have an interest policy and discard new with max msgs or bytes.
