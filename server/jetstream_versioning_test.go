@@ -72,6 +72,11 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			cfg:              &StreamConfig{SubjectDeleteMarkerTTL: time.Second},
 			expectedMetadata: metadataAtLevel("1"),
 		},
+		{
+			desc:             "AllowMsgCounter",
+			cfg:              &StreamConfig{AllowMsgCounter: true},
+			expectedMetadata: metadataAtLevel("2"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg)
