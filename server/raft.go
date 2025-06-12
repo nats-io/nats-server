@@ -3764,11 +3764,19 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 	if ar.success {
 		// The remote node successfully committed the append entry.
+		// They agree with our leadership and are happy with the state of the log.
+		// In this case ar.term doesn't matter.
 		n.trackResponse(ar)
 		arPool.Put(ar)
+	} else if ar.reply != _EMPTY_ {
+		// The remote node didn't commit the append entry, and they believe they
+		// are behind and have specified a reply subject, so let's try to catch them up.
+		// In this case ar.term was populated with the remote's pterm.
+		n.catchupFollower(ar)
 	} else if ar.term > n.term {
 		// The remote node didn't commit the append entry, it looks like
 		// they are on a newer term than we are. Step down.
+		// In this case ar.term was populated with the remote's term.
 		n.Lock()
 		n.term = ar.term
 		n.vote = noVote
@@ -3777,10 +3785,9 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.stepdownLocked(noLeader)
 		n.Unlock()
 		arPool.Put(ar)
-	} else if ar.reply != _EMPTY_ {
-		// The remote node didn't commit the append entry and they are
-		// still on the same term, so let's try to catch them up.
-		n.catchupFollower(ar)
+	} else {
+		// Ignore, but return back to pool.
+		arPool.Put(ar)
 	}
 }
 
