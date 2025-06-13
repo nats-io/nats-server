@@ -242,6 +242,21 @@ const (
 	// JSMemoryResourcesExceededErr insufficient memory resources available
 	JSMemoryResourcesExceededErr ErrorIdentifier = 10028
 
+	// JSMessageCounterBrokenErr message counter is broken
+	JSMessageCounterBrokenErr ErrorIdentifier = 10172
+
+	// JSMessageIncrDisabledErr message counters is disabled
+	JSMessageIncrDisabledErr ErrorIdentifier = 10168
+
+	// JSMessageIncrInvalidErr message counter increment is invalid
+	JSMessageIncrInvalidErr ErrorIdentifier = 10171
+
+	// JSMessageIncrMissingErr message counter increment is missing
+	JSMessageIncrMissingErr ErrorIdentifier = 10169
+
+	// JSMessageIncrPayloadErr message counter has payload
+	JSMessageIncrPayloadErr ErrorIdentifier = 10170
+
 	// JSMessageTTLDisabledErr per-message TTL is disabled
 	JSMessageTTLDisabledErr ErrorIdentifier = 10166
 
@@ -268,6 +283,9 @@ const (
 
 	// JSMirrorOverlappingSubjectFilters mirror subject filters can not overlap
 	JSMirrorOverlappingSubjectFilters ErrorIdentifier = 10152
+
+	// JSMirrorWithCountersErr stream mirrors can not also calculate counters
+	JSMirrorWithCountersErr ErrorIdentifier = 10173
 
 	// JSMirrorWithFirstSeqErr stream mirrors can not have first sequence configured
 	JSMirrorWithFirstSeqErr ErrorIdentifier = 10143
@@ -585,6 +603,11 @@ var (
 		JSMaximumConsumersLimitErr:                 {Code: 400, ErrCode: 10026, Description: "maximum consumers limit reached"},
 		JSMaximumStreamsLimitErr:                   {Code: 400, ErrCode: 10027, Description: "maximum number of streams reached"},
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
+		JSMessageCounterBrokenErr:                  {Code: 400, ErrCode: 10172, Description: "message counter is broken"},
+		JSMessageIncrDisabledErr:                   {Code: 400, ErrCode: 10168, Description: "message counters is disabled"},
+		JSMessageIncrInvalidErr:                    {Code: 400, ErrCode: 10171, Description: "message counter increment is invalid"},
+		JSMessageIncrMissingErr:                    {Code: 400, ErrCode: 10169, Description: "message counter increment is missing"},
+		JSMessageIncrPayloadErr:                    {Code: 400, ErrCode: 10170, Description: "message counter has payload"},
 		JSMessageTTLDisabledErr:                    {Code: 400, ErrCode: 10166, Description: "per-message TTL is disabled"},
 		JSMessageTTLInvalidErr:                     {Code: 400, ErrCode: 10165, Description: "invalid per-message TTL"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
@@ -594,6 +617,7 @@ var (
 		JSMirrorMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
 		JSMirrorMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10150, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
 		JSMirrorOverlappingSubjectFilters:          {Code: 400, ErrCode: 10152, Description: "mirror subject filters can not overlap"},
+		JSMirrorWithCountersErr:                    {Code: 400, ErrCode: 10173, Description: "stream mirrors can not also calculate counters"},
 		JSMirrorWithFirstSeqErr:                    {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
@@ -1559,6 +1583,56 @@ func NewJSMemoryResourcesExceededError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSMemoryResourcesExceededErr]
 }
 
+// NewJSMessageCounterBrokenError creates a new JSMessageCounterBrokenErr error: "message counter is broken"
+func NewJSMessageCounterBrokenError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageCounterBrokenErr]
+}
+
+// NewJSMessageIncrDisabledError creates a new JSMessageIncrDisabledErr error: "message counters is disabled"
+func NewJSMessageIncrDisabledError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageIncrDisabledErr]
+}
+
+// NewJSMessageIncrInvalidError creates a new JSMessageIncrInvalidErr error: "message counter increment is invalid"
+func NewJSMessageIncrInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageIncrInvalidErr]
+}
+
+// NewJSMessageIncrMissingError creates a new JSMessageIncrMissingErr error: "message counter increment is missing"
+func NewJSMessageIncrMissingError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageIncrMissingErr]
+}
+
+// NewJSMessageIncrPayloadError creates a new JSMessageIncrPayloadErr error: "message counter has payload"
+func NewJSMessageIncrPayloadError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageIncrPayloadErr]
+}
+
 // NewJSMessageTTLDisabledError creates a new JSMessageTTLDisabledErr error: "per-message TTL is disabled"
 func NewJSMessageTTLDisabledError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -1665,6 +1739,16 @@ func NewJSMirrorOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorOverlappingSubjectFilters]
+}
+
+// NewJSMirrorWithCountersError creates a new JSMirrorWithCountersErr error: "stream mirrors can not also calculate counters"
+func NewJSMirrorWithCountersError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorWithCountersErr]
 }
 
 // NewJSMirrorWithFirstSeqError creates a new JSMirrorWithFirstSeqErr error: "stream mirrors can not have first sequence configured"
