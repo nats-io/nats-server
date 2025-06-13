@@ -997,30 +997,23 @@ func (mset *stream) setLeader(isLeader bool) error {
 			// If the consumers are managed by the stream and not by the metalayer then
 			// the stream leader is responsible for subscribing to these API endpoints,
 			// as the metaleader will ignore requests for these streams.
-			pairs := []struct {
-				subject string
-				handler msgHandler
-			}{
-				{fmt.Sprintf(JSApiConsumerCreateExTW, mset.cfg.Name), mset.srv.jsConsumerCreateRequest},
-				{fmt.Sprintf(JSApiConsumerCreateT, mset.cfg.Name), mset.srv.jsConsumerCreateRequest},
-				{fmt.Sprintf(JSApiDurableCreateT, mset.cfg.Name, "*"), mset.srv.jsConsumerCreateRequest},
-				{fmt.Sprintf(JSApiConsumersT, mset.cfg.Name), mset.srv.jsConsumerNamesRequest},
-				{fmt.Sprintf(JSApiConsumerListT, mset.cfg.Name), mset.srv.jsConsumerListRequest},
-				{fmt.Sprintf(JSApiConsumerInfoT, mset.cfg.Name, "*"), mset.srv.jsConsumerInfoRequest},
-				{fmt.Sprintf(JSApiConsumerDeleteT, mset.cfg.Name, "*"), mset.srv.jsConsumerDeleteRequest},
-				{fmt.Sprintf(JSApiConsumerPauseT, mset.cfg.Name, "*"), mset.srv.jsConsumerPauseRequest},
-				{fmt.Sprintf(JSApiConsumerUnpinT, mset.cfg.Name, "*"), mset.srv.jsConsumerUnpinRequest},
-			}
-			for _, p := range pairs {
-				// Add them into the system account sublist, we need this interest to be propagated whereas
-				// it won't be if we add it into the JS API dispatch sublist.
-				sub, err := mset.srv.sysSubscribe(p.subject, p.handler)
-				if err != nil {
+			for _, subj := range []string{
+				fmt.Sprintf(JSApiConsumerCreateExTW, mset.cfg.Name),
+				fmt.Sprintf(JSApiConsumerCreateT, mset.cfg.Name),
+				fmt.Sprintf(JSApiDurableCreateT, mset.cfg.Name, "*"),
+				fmt.Sprintf(JSApiConsumersT, mset.cfg.Name),
+				fmt.Sprintf(JSApiConsumerListT, mset.cfg.Name),
+				fmt.Sprintf(JSApiConsumerInfoT, mset.cfg.Name, "*"),
+				fmt.Sprintf(JSApiConsumerDeleteT, mset.cfg.Name, "*"),
+				fmt.Sprintf(JSApiConsumerPauseT, mset.cfg.Name, "*"),
+				fmt.Sprintf(JSApiConsumerUnpinT, mset.cfg.Name, "*"),
+			} {
+				// Add them into the system account sublist, we need interest to be propagated whereas
+				// it won't be if we add it into the JS API dispatch sublist. Keep a track of our own
+				// subscriptions so we can unsubscribe easily when stepping down, deleting etc.
+				if sub, err := mset.srv.sysSubscribe(subj, mset.js.apiDispatch); err != nil {
 					return err
-				}
-				// Keep our own tracking of the subs for this stream so that we can unsubscribe
-				// easily if we stop being leader or get deleted etc.
-				if err := mset.apiSubs.Insert(sub); err != nil {
+				} else if err := mset.apiSubs.Insert(sub); err != nil {
 					return err
 				}
 			}
