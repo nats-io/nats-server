@@ -125,6 +125,13 @@ const (
 	JSDirectMsgGet  = "$JS.API.DIRECT.GET.*"
 	JSDirectMsgGetT = "$JS.API.DIRECT.GET.%s"
 
+	// JSDirectLeaderMsgGet is the template for non-api layer direct requests for a message by its stream sequence number or last by subject.
+	// Will return the message similar to how a consumer receives the message, no JSON processing.
+	// If the message can not be found we will use a status header of 404. If the stream does not exist the client will get a no-responders or timeout.
+	// Importantly, only the leader will respond to these requests.
+	JSDirectLeaderMsgGet  = "$JS.API.DIRECT.LEADER.GET.*"
+	JSDirectLeaderMsgGetT = "$JS.API.DIRECT.LEADER.GET.%s"
+
 	// This is a direct version of get last by subject, which will be the dominant pattern for KV access once 2.9 is released.
 	// The stream and the key will be part of the subject to allow for no-marshal payloads and subject based security permissions.
 	JSDirectGetLastBySubject  = "$JS.API.DIRECT.GET.*.>"
