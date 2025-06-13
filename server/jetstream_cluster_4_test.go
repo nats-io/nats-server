@@ -6574,6 +6574,18 @@ func TestJetStreamClusterStreamManagesConsumers(t *testing.T) {
 	c.waitOnStreamLeader(globalAccountName, "TEST1")
 	c.waitOnStreamLeader(globalAccountName, "TEST2")
 
+	// Each server in the cluster should have subject interest in the named
+	// consumer create subject from the TEST1 stream leader.
+	for _, s := range c.servers {
+		r, found := s.sys.account.sl.Match("$JS.API.CONSUMER.CREATE.TEST1.TestConsumer"), false
+		for _, sub := range r.psubs {
+			if found = found || string(sub.subject) == "$JS.API.CONSUMER.CREATE.TEST1.>"; found {
+				break
+			}
+		}
+		require_True(t, found)
+	}
+
 	_, err = js.AddConsumer("TEST1", &nats.ConsumerConfig{
 		Name:      "TestConsumer",
 		AckPolicy: nats.AckExplicitPolicy,

@@ -2306,11 +2306,16 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
-		return
-	}
 
 	var resp = JSApiConsumerLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiConsumerLeaderStepDownResponseType}}
+
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
+		return
+	}
 
 	// If we are not in clustered mode this is a failed request.
 	if !s.JetStreamIsClustered() {
@@ -3498,7 +3503,14 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+
+	var resp = JSApiConsumerUnpinResponse{ApiResponse: ApiResponse{Type: JSApiConsumerUnpinResponseType}}
+
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -3506,8 +3518,6 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 	consumer := consumerNameFromSubject(subject)
 
 	var req JSApiConsumerUnpinRequest
-	var resp = JSApiConsumerUnpinResponse{ApiResponse: ApiResponse{Type: JSApiConsumerUnpinResponseType}}
-
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -4264,41 +4274,36 @@ const (
 
 // Returns whether or not the handler should ignore the request, this will return true if the
 // metaleader is ignoring a request for a stream-managed consumer, or if a stream leader is
-// ignoring a request for a metaleader-managed consumer.
-func (s *Server) jsShouldIgnoreConsumerRequest(sub *subscription, a *Account, subject string) bool {
+// ignoring a request for a metaleader-managed consumer. Optionally, if returning true, an API
+// error may be returned which should be sent back to the requesting client.
+func (s *Server) jsShouldIgnoreOrRejectConsumerRequest(sub *subscription, a *Account, subject string) (bool, *ApiError) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
-		return false
+		return false, nil
 	}
 	stream := streamNameFromSubject(subject)
 	isMeta := bytesToString(sub.subject) == jsAllAPI
 	js.mu.RLock()
 	defer js.mu.RUnlock()
 	if !isMeta {
-		ignore := !cc.isStreamAssigned(a, stream) || !cc.isStreamLeader(a.GetName(), stream)
-		if ignore {
-			fmt.Println(subject, "ignored by stream")
-		} else {
-			fmt.Println(subject, "handled by stream")
-		}
-		return ignore
+		return !cc.isStreamAssigned(a, stream), nil
 	}
+	if cc.meta == nil || cc.meta.Leaderless() {
+		return true, NewJSClusterNotAvailError()
+	}
+	if !s.JetStreamIsLeader() {
+		return true, nil
+	}
+	// From this point forward we've established that we are the metaleader handling the request.
 	acc, ok := cc.streams[a.Name]
 	if !ok || acc == nil {
-		fmt.Println(subject, "ignored for unknown account")
-		return false
+		return true, NewJSNoAccountError()
 	}
 	sa, ok := acc[stream]
 	if !ok || sa == nil {
-		fmt.Println(subject, "ignored for unknown stream")
-		return false
+		return true, NewJSStreamNotFoundError()
 	}
-	if sa.Config.ManagesConsumers {
-		fmt.Println(subject, "ignored by metalayer")
-	} else {
-		fmt.Println(subject, "handled by metalayer")
-	}
-	return sa.Config.ManagesConsumers
+	return sa.Config.ManagesConsumers, nil
 }
 
 // Request to create a consumer where stream and optional consumer name are part of the subject, and optional
@@ -4314,11 +4319,16 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, _ *Accoun
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
-		return
-	}
 
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
+		return
+	}
 
 	var req CreateConsumerRequest
 	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
@@ -4527,30 +4537,18 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
-		return
-	}
 
 	var resp = JSApiConsumerNamesResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType},
 		Consumers:   []string{},
 	}
 
-	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
 		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
-			return
-		}
+		return
 	}
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
@@ -4652,30 +4650,18 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
-		return
-	}
 
 	var resp = JSApiConsumerListResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
 		Consumers:   []*ConsumerInfo{},
 	}
 
-	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
 		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
-			return
-		}
+		return
 	}
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
@@ -4748,14 +4734,19 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+
+	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
+
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
 	streamName := streamNameFromSubject(subject)
 	consumerName := consumerNameFromSubject(subject)
-
-	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
 
 	if !isEmptyRequest(msg) {
 		resp.Error = NewJSNotEmptyRequestError()
@@ -4782,6 +4773,11 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
+		if sa.Config.ManagesConsumers {
+			isLeader = cc.isStreamLeader(acc.Name, streamName)
+			groupLeaderless = sa.Group.node.Leaderless()
+			groupCreated = sa.Group.node.Created()
+		}
 		var rg *raftGroup
 		var offline, isMember bool
 		if ca != nil {
@@ -4934,27 +4930,15 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, _ *Accoun
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
-		return
-	}
 
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 
-	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
 		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
-			return
-		}
+		return
 	}
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
@@ -5009,35 +4993,22 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	if s.jsShouldIgnoreConsumerRequest(sub, acc, subject) {
+
+	var resp = JSApiConsumerPauseResponse{ApiResponse: ApiResponse{Type: JSApiConsumerPauseResponseType}}
+
+	if ignore, err := s.jsShouldIgnoreOrRejectConsumerRequest(sub, acc, subject); ignore {
+		if err != nil {
+			resp.Error = err
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
 	var req JSApiConsumerPauseRequest
-	var resp = JSApiConsumerPauseResponse{ApiResponse: ApiResponse{Type: JSApiConsumerPauseResponseType}}
-
 	if isJSONObjectOrArray(msg) {
 		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-	}
-
-	// Determine if we should proceed here when we are in clustered mode.
-	isClustered := s.JetStreamIsClustered()
-	js, cc := s.getJetStreamCluster()
-	if isClustered {
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
-			resp.Error = NewJSClusterNotAvailError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
 			return
 		}
 	}
@@ -5053,7 +5024,8 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	stream := streamNameFromSubject(subject)
 	consumer := consumerNameFromSubject(subject)
 
-	if isClustered {
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
 		js.mu.RLock()
 		sa := js.streamAssignment(acc.Name, stream)
 		if sa == nil {
