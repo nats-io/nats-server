@@ -67,10 +67,21 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			cfg:              &StreamConfig{AllowMsgTTL: true},
 			expectedMetadata: metadataAtLevel("1"),
 		},
+		{
+			desc:             "SubjectDeleteMarkerTTL",
+			cfg:              &StreamConfig{SubjectDeleteMarkerTTL: time.Second},
+			expectedMetadata: metadataAtLevel("1"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg)
-			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
+			level := test.cfg.Metadata[JSRequiredLevelMetadataKey]
+			require_Equal(t, level, test.expectedMetadata[JSRequiredLevelMetadataKey])
+
+			// Ensure we up the server API level if we introduced a feature that requires it.
+			l, err := strconv.Atoi(level)
+			require_NoError(t, err)
+			require_True(t, l <= JSApiLevel)
 		})
 	}
 }
@@ -206,7 +217,13 @@ func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticConsumerMetadata(test.cfg)
-			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
+			level := test.cfg.Metadata[JSRequiredLevelMetadataKey]
+			require_Equal(t, level, test.expectedMetadata[JSRequiredLevelMetadataKey])
+
+			// Ensure we up the server API level if we introduced a feature that requires it.
+			l, err := strconv.Atoi(level)
+			require_NoError(t, err)
+			require_True(t, l <= JSApiLevel)
 		})
 	}
 }
