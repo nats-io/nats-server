@@ -413,6 +413,7 @@ const (
 	JSExpectedLastSubjSeq     = "Nats-Expected-Last-Subject-Sequence"
 	JSExpectedLastSubjSeqSubj = "Nats-Expected-Last-Subject-Sequence-Subject"
 	JSExpectedLastMsgId       = "Nats-Expected-Last-Msg-Id"
+	JSMinLastSeq              = "Nats-Min-Last-Sequence"
 	JSStreamSource            = "Nats-Stream-Source"
 	JSLastConsumerSeq         = "Nats-Last-Consumer"
 	JSLastStreamSeq           = "Nats-Last-Stream"
@@ -4299,7 +4300,7 @@ func getExpectedStream(hdr []byte) string {
 	return string(getHeader(JSExpectedStream, hdr))
 }
 
-// Fast lookup of expected stream.
+// Fast lookup of expected last sequence.
 func getExpectedLastSeq(hdr []byte) (uint64, bool) {
 	bseq := getHeader(JSExpectedLastSeq, hdr)
 	if len(bseq) == 0 {
@@ -4329,6 +4330,15 @@ func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 // Fast lookup of expected subject for the expected stream sequence per subject.
 func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 	return string(getHeader(JSExpectedLastSubjSeqSubj, hdr))
+}
+
+// Fast lookup of minimum last sequence.
+func getMinLastSeq(hdr []byte) (uint64, bool) {
+	bseq := sliceHeader(JSMinLastSeq, hdr)
+	if len(bseq) == 0 {
+		return 0, false
+	}
+	return uint64(parseInt64(bseq)), true
 }
 
 // Fast lookup of the message TTL from headers:
@@ -4434,22 +4444,22 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	if len(reply) == 0 {
 		return
 	}
-	_, msg := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
 	if len(msg) == 0 {
-		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
 	var req JSApiMsgGetRequest
 	err := json.Unmarshal(msg, &req)
 	if err != nil {
-		hdr := []byte("NATS/1.0 408 Malformed Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Malformed Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
 	// Check if nothing set.
 	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && len(req.MultiLastFor) == 0 && req.StartTime == nil {
-		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
@@ -4463,7 +4473,14 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		(req.LastFor != _EMPTY_ && len(req.MultiLastFor) > 0) ||
 		(req.NextFor != _EMPTY_ && len(req.MultiLastFor) > 0) ||
 		(req.UpToSeq > 0 && req.UpToTime != nil) {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	if minLastSeq, ok := getMinLastSeq(hdr); ok && minLastSeq > mset.lastSeq() {
+		hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
@@ -4483,10 +4500,10 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	if len(reply) == 0 {
 		return
 	}
-	_, msg := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
 	// This version expects no payload.
 	if len(msg) != 0 {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
@@ -4504,12 +4521,19 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		}
 	}
 	if len(key) == 0 {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
 
 	req := JSApiMsgGetRequest{LastFor: key}
+
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	if minLastSeq, ok := getMinLastSeq(hdr); ok && minLastSeq > mset.lastSeq() {
+		hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
 
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
 	if !inlineOk {
