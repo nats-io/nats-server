@@ -8563,8 +8563,50 @@ func TestJetStreamClusterMsgGetReadAfterWrite(t *testing.T) {
 		} else {
 			require_True(t, resp.ApiResponse.Error == nil)
 			require_Equal(t, resp.Message.Sequence, 1)
+			require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 		}
 	}
+}
+
+func TestJetStreamClusterMsgGetMonotonicRead(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	// Assuming this process didn't do any writes and this is the very first read.
+	// We'll need to return the currently known last sequence, so it can be used
+	// in subsequent requests to guarantee monotonic reads.
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1})
+	require_NoError(t, err)
+	m := nats.NewMsg(fmt.Sprintf(JSApiMsgGetT, "TEST"))
+	m.Header.Set("Nats-Min-Last-Sequence", "0")
+	m.Data = data
+	msg, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiMsgGetResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.ApiResponse.Error == nil)
+	require_Equal(t, resp.Message.Sequence, 1)
+
+	// We need the currently known last sequence for monotonic reads.
+	require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 }
 
 func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
@@ -8607,6 +8649,9 @@ func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
 			pubAck, err := js.Publish("foo", nil)
 			require_NoError(t, err)
 			require_Equal(t, pubAck.Sequence, seq)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
 		}
 
 		data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1})
@@ -8624,8 +8669,64 @@ func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
 			require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
 			require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
 			require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+			require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 		}
 	}
+}
+
+func TestJetStreamClusterDirectGetMonotonicRead(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure followers can also start responding to direct gets immediately.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.subscribeToDirect())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	// Assuming this process didn't do any writes and this is the very first read.
+	// We'll need to return the currently known last sequence, so it can be used
+	// in subsequent requests to guarantee monotonic reads.
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1})
+	require_NoError(t, err)
+	directMsgGet := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+	msg, err := nc.Request(directMsgGet, data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+
+	// We need the currently known last sequence for monotonic reads.
+	require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 }
 
 func TestJetStreamClusterDirectGetLastBySubjectReadAfterWrite(t *testing.T) {
@@ -8668,6 +8769,9 @@ func TestJetStreamClusterDirectGetLastBySubjectReadAfterWrite(t *testing.T) {
 			pubAck, err := js.Publish("foo", nil)
 			require_NoError(t, err)
 			require_Equal(t, pubAck.Sequence, seq)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
 		}
 
 		m := nats.NewMsg(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"))
@@ -8682,8 +8786,59 @@ func TestJetStreamClusterDirectGetLastBySubjectReadAfterWrite(t *testing.T) {
 			require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
 			require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
 			require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
+			require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 		}
 	}
+}
+
+func TestJetStreamClusterDirectGetLastBySubjectMonotonicRead(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure followers can also start responding to direct gets immediately.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.subscribeToDirect())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	directMsgGetLast := fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo")
+	msg, err := nc.Request(directMsgGetLast, nil, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
+
+	// We need the currently known last sequence for monotonic reads.
+	require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 }
 
 //

@@ -3449,7 +3449,8 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	}
 
 	// Reject request if we can't guarantee the precondition of min last sequence.
-	if minLastSeq, ok := getMinLastSeq(hdr); ok && minLastSeq > mset.lastSeq() {
+	minLastSeq, hasMinLastSeq := getMinLastSeq(hdr)
+	if hasMinLastSeq && minLastSeq > mset.lastSeq() {
 		// Even though only the leader is subscribed and will respond, we must delay the error.
 		// An old leader could think it's still leader, and it must not
 		// error sooner than the real leader can answer.
@@ -3489,8 +3490,18 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		Time:     time.Unix(0, sm.ts).UTC(),
 	}
 
+	// Remain backward compatible if min last sequence was not specified.
+	if !hasMinLastSeq {
+		// Don't send response through API layer for this call.
+		s.sendInternalAccountMsg(nil, reply, s.jsonResponse(resp))
+		return
+	}
+
+	// Include currently known last sequence for monotonic reads.
+	rhdr := map[string]string{JSMinLastSeq: fmt.Sprintf("%d", mset.lastSeq())}
+
 	// Don't send response through API layer for this call.
-	s.sendInternalAccountMsg(nil, reply, s.jsonResponse(resp))
+	s.sendInternalAccountMsgWithReply(nil, reply, _EMPTY_, rhdr, s.jsonResponse(resp), false)
 }
 
 func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {

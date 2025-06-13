@@ -4547,10 +4547,10 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 
 // For direct get batch and multi requests.
 const (
-	dg   = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-	dgb  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
-	eob  = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
-	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\n\r\n"
+	dg   = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
+	dgb  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
+	eob  = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
+	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
 )
 
 // Handle a multi request.
@@ -4630,7 +4630,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		ts := time.Unix(0, sm.ts).UTC()
 
 		if len(hdr) == 0 {
-			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
+			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq, mset.lastSeq())
 		} else {
 			hdr = copyBytes(hdr)
 			hdr = genHeader(hdr, JSStream, name)
@@ -4639,6 +4639,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
 			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+			hdr = genHeader(hdr, JSMinLastSeq, strconv.FormatUint(mset.lastSeq(), 10))
 		}
 		// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
 		if np > 0 {
@@ -4660,7 +4661,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	}
 
 	// Send out EOB
-	hdr := fmt.Appendf(nil, eobm, np, lseq, upToSeq)
+	hdr := fmt.Appendf(nil, eobm, np, lseq, upToSeq, mset.lastSeq())
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 
@@ -4746,7 +4747,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 		if isBatchRequest {
 			if len(hdr) == 0 {
-				hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
+				hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq, mset.lastSeq())
 			} else {
 				hdr = copyBytes(hdr)
 				hdr = genHeader(hdr, JSStream, name)
@@ -4755,18 +4756,20 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
 				hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 				hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+				hdr = genHeader(hdr, JSMinLastSeq, strconv.FormatUint(mset.lastSeq(), 10))
 			}
 			// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
 			np--
 		} else {
 			if len(hdr) == 0 {
-				hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
+				hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), mset.lastSeq())
 			} else {
 				hdr = copyBytes(hdr)
 				hdr = genHeader(hdr, JSStream, name)
 				hdr = genHeader(hdr, JSSubject, sm.subj)
 				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
 				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+				hdr = genHeader(hdr, JSMinLastSeq, strconv.FormatUint(mset.lastSeq(), 10))
 			}
 		}
 		// Track our lseq
@@ -4783,10 +4786,11 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	// If batch was requested send EOB.
 	if isBatchRequest {
 		// Update if the stream's lasts sequence has moved past our validThrough.
-		if mset.lastSeq() > validThrough {
+		mlseq := mset.lastSeq()
+		if mlseq > validThrough {
 			np, _ = store.NumPending(seq, req.NextFor, false)
 		}
-		hdr := fmt.Appendf(nil, eob, np, lseq)
+		hdr := fmt.Appendf(nil, eob, np, lseq, mlseq)
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }
