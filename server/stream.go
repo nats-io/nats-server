@@ -363,8 +363,9 @@ type stream struct {
 	expectedPerSubjectInProcess map[string]struct{} // Current 'expected per subject' subjects in process.
 
 	// Direct get subscription.
-	directSub *subscription
-	lastBySub *subscription
+	directSub       *subscription
+	directLeaderSub *subscription
+	lastBySub       *subscription
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 }
@@ -413,6 +414,7 @@ const (
 	JSExpectedLastSubjSeq     = "Nats-Expected-Last-Subject-Sequence"
 	JSExpectedLastSubjSeqSubj = "Nats-Expected-Last-Subject-Sequence-Subject"
 	JSExpectedLastMsgId       = "Nats-Expected-Last-Msg-Id"
+	JSMinLastSeq              = "Nats-Min-Last-Sequence"
 	JSStreamSource            = "Nats-Stream-Source"
 	JSLastConsumerSeq         = "Nats-Last-Consumer"
 	JSLastStreamSeq           = "Nats-Last-Stream"
@@ -3935,6 +3937,15 @@ func (mset *stream) subscribeToStream() error {
 	// Check for direct get access.
 	// We spin up followers for clustered streams in monitorStream().
 	if mset.cfg.AllowDirect {
+		// If we're leader, we also specifically subscribe to direct get leader requests.
+		if mset.directLeaderSub == nil {
+			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.cfg.Name)
+			if sub, err := mset.subscribeInternal(dsubj, mset.processDirectGetRequest); err != nil {
+				return err
+			} else {
+				mset.directLeaderSub = sub
+			}
+		}
 		if err := mset.subscribeToDirect(); err != nil {
 			return err
 		}
@@ -4036,6 +4047,10 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 	if mset.mirror != nil {
 		mset.cancelSourceInfo(mset.mirror)
 		mset.mirror = nil
+	}
+	if mset.directLeaderSub != nil {
+		mset.unsubscribe(mset.directLeaderSub)
+		mset.directLeaderSub = nil
 	}
 
 	if len(mset.sources) > 0 {
@@ -4299,7 +4314,7 @@ func getExpectedStream(hdr []byte) string {
 	return string(getHeader(JSExpectedStream, hdr))
 }
 
-// Fast lookup of expected stream.
+// Fast lookup of expected last sequence.
 func getExpectedLastSeq(hdr []byte) (uint64, bool) {
 	bseq := getHeader(JSExpectedLastSeq, hdr)
 	if len(bseq) == 0 {
@@ -4329,6 +4344,15 @@ func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 // Fast lookup of expected subject for the expected stream sequence per subject.
 func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 	return string(getHeader(JSExpectedLastSubjSeqSubj, hdr))
+}
+
+// Fast lookup of minimum last sequence.
+func getMinLastSeq(hdr []byte) (uint64, bool) {
+	bseq := sliceHeader(JSMinLastSeq, hdr)
+	if len(bseq) == 0 {
+		return 0, false
+	}
+	return uint64(parseInt64(bseq)), true
 }
 
 // Fast lookup of the message TTL from headers:
@@ -4434,22 +4458,22 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	if len(reply) == 0 {
 		return
 	}
-	_, msg := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
 	if len(msg) == 0 {
-		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
 	var req JSApiMsgGetRequest
 	err := json.Unmarshal(msg, &req)
 	if err != nil {
-		hdr := []byte("NATS/1.0 408 Malformed Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Malformed Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
 	// Check if nothing set.
 	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && len(req.MultiLastFor) == 0 && req.StartTime == nil {
-		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
@@ -4463,8 +4487,30 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		(req.LastFor != _EMPTY_ && len(req.MultiLastFor) > 0) ||
 		(req.NextFor != _EMPTY_ && len(req.MultiLastFor) > 0) ||
 		(req.UpToSeq > 0 && req.UpToTime != nil) {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	if minLastSeq, ok := getMinLastSeq(hdr); ok && minLastSeq > mset.lastSeq() {
+		// Explicitly checking leader node state, instead of full leader state.
+		// If we've just become leader but aren't caught up with applies,
+		// we shouldn't redirect the request (again) and simply answer ourselves.
+		mset.mu.RLock()
+		leaderNodeState := mset.isLeaderNodeState()
+		mset.mu.RUnlock()
+		if leaderNodeState {
+			hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+		// We're not the leader, so we can redirect this request to them.
+		// They should have the data and be able to guarantee a consistent read.
+		// Make copy before sending.
+		hdr, msg = copyBytes(hdr), copyBytes(msg)
+		dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.name())
+		mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, hdr, msg, nil, 0))
 		return
 	}
 
@@ -4483,10 +4529,10 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	if len(reply) == 0 {
 		return
 	}
-	_, msg := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
 	// This version expects no payload.
 	if len(msg) != 0 {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
@@ -4504,12 +4550,35 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		}
 	}
 	if len(key) == 0 {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		hdr = []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
 
 	req := JSApiMsgGetRequest{LastFor: key}
+
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	if minLastSeq, ok := getMinLastSeq(hdr); ok && minLastSeq > mset.lastSeq() {
+		// Explicitly checking leader node state, instead of full leader state.
+		// If we've just become leader but aren't caught up with applies,
+		// we shouldn't redirect the request (again) and simply answer ourselves.
+		mset.mu.RLock()
+		leaderNodeState := mset.isLeaderNodeState()
+		mset.mu.RUnlock()
+		if leaderNodeState {
+			hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+		// We're not the leader, so we can redirect this request to them.
+		// They should have the data and be able to guarantee a consistent read.
+		// Make copy before sending.
+		hdr = copyBytes(hdr)
+		msg, _ = json.Marshal(req)
+		dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.name())
+		mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, hdr, msg, nil, 0))
+		return
+	}
 
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
 	if !inlineOk {
@@ -4523,10 +4592,10 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 
 // For direct get batch and multi requests.
 const (
-	dg   = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-	dgb  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
-	eob  = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
-	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\n\r\n"
+	dg   = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
+	dgb  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
+	eob  = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
+	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\nNats-Min-Last-Sequence: %d\r\n\r\n"
 )
 
 // Handle a multi request.
@@ -4606,7 +4675,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		ts := time.Unix(0, sm.ts).UTC()
 
 		if len(hdr) == 0 {
-			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
+			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq, mset.lastSeq())
 		} else {
 			hdr = copyBytes(hdr)
 			hdr = genHeader(hdr, JSStream, name)
@@ -4615,6 +4684,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
 			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+			hdr = genHeader(hdr, JSMinLastSeq, strconv.FormatUint(mset.lastSeq(), 10))
 		}
 		// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
 		if np > 0 {
@@ -4636,7 +4706,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	}
 
 	// Send out EOB
-	hdr := fmt.Appendf(nil, eobm, np, lseq, upToSeq)
+	hdr := fmt.Appendf(nil, eobm, np, lseq, upToSeq, mset.lastSeq())
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 
@@ -4722,7 +4792,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 		if isBatchRequest {
 			if len(hdr) == 0 {
-				hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
+				hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq, mset.lastSeq())
 			} else {
 				hdr = copyBytes(hdr)
 				hdr = genHeader(hdr, JSStream, name)
@@ -4731,18 +4801,20 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
 				hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 				hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+				hdr = genHeader(hdr, JSMinLastSeq, strconv.FormatUint(mset.lastSeq(), 10))
 			}
 			// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
 			np--
 		} else {
 			if len(hdr) == 0 {
-				hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
+				hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), mset.lastSeq())
 			} else {
 				hdr = copyBytes(hdr)
 				hdr = genHeader(hdr, JSStream, name)
 				hdr = genHeader(hdr, JSSubject, sm.subj)
 				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
 				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+				hdr = genHeader(hdr, JSMinLastSeq, strconv.FormatUint(mset.lastSeq(), 10))
 			}
 		}
 		// Track our lseq
@@ -4759,10 +4831,11 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	// If batch was requested send EOB.
 	if isBatchRequest {
 		// Update if the stream's lasts sequence has moved past our validThrough.
-		if mset.lastSeq() > validThrough {
+		mlseq := mset.lastSeq()
+		if mlseq > validThrough {
 			np, _ = store.NumPending(seq, req.NextFor, false)
 		}
-		hdr := fmt.Appendf(nil, eob, np, lseq)
+		hdr := fmt.Appendf(nil, eob, np, lseq, mlseq)
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }

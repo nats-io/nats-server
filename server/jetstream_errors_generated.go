@@ -284,6 +284,9 @@ const (
 	// JSMirrorWithSubjectsErr stream mirrors can not contain subjects
 	JSMirrorWithSubjectsErr ErrorIdentifier = 10034
 
+	// JSMsgGetMinLastSeqErr min last sequence precondition
+	JSMsgGetMinLastSeqErr ErrorIdentifier = 10168
+
 	// JSNoAccountErr account not found
 	JSNoAccountErr ErrorIdentifier = 10035
 
@@ -599,6 +602,7 @@ var (
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
 		JSMirrorWithSubjectFiltersErr:              {Code: 400, ErrCode: 10033, Description: "stream mirrors can not contain filtered subjects"},
 		JSMirrorWithSubjectsErr:                    {Code: 400, ErrCode: 10034, Description: "stream mirrors can not contain subjects"},
+		JSMsgGetMinLastSeqErr:                      {Code: 412, ErrCode: 10168, Description: "min last sequence precondition"},
 		JSNoAccountErr:                             {Code: 503, ErrCode: 10035, Description: "account not found"},
 		JSNoLimitsErr:                              {Code: 400, ErrCode: 10120, Description: "no JetStream default or applicable tiered limit present"},
 		JSNoMessageFoundErr:                        {Code: 404, ErrCode: 10037, Description: "no message found"},
@@ -1715,6 +1719,16 @@ func NewJSMirrorWithSubjectsError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorWithSubjectsErr]
+}
+
+// NewJSMsgGetMinLastSeqError creates a new JSMsgGetMinLastSeqErr error: "min last sequence precondition"
+func NewJSMsgGetMinLastSeqError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMsgGetMinLastSeqErr]
 }
 
 // NewJSNoAccountError creates a new JSNoAccountErr error: "account not found"
