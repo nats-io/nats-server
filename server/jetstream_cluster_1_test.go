@@ -8674,6 +8674,63 @@ func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterDirectGetReadAfterWriteOutdatedFollower(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure only followers respond to direct gets AND aren't able to apply anything.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if s == sl {
+			mset.unsubscribeToDirect()
+			continue
+		}
+		require_NoError(t, mset.subscribeToDirect())
+		require_NoError(t, mset.raftNode().PauseApply())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	// The follower doesn't know it's outdated, but we know it must have a minimum last sequence.
+	// It should redirect the request directly to the leader so it can respond, and we still
+	// get a response and don't need to error and retry.
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1})
+	require_NoError(t, err)
+	m := nats.NewMsg(fmt.Sprintf(JSDirectMsgGetT, "TEST"))
+	m.Header.Set("Nats-Min-Last-Sequence", "4")
+	m.Data = data
+	msg, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+	require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
+}
+
 func TestJetStreamClusterDirectGetMonotonicRead(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -8789,6 +8846,57 @@ func TestJetStreamClusterDirectGetLastBySubjectReadAfterWrite(t *testing.T) {
 			require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 		}
 	}
+}
+
+func TestJetStreamClusterDirectGetLastBySubjectReadAfterWriteOutdatedLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure only followers respond to direct gets AND aren't able to apply anything.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if s == sl {
+			mset.unsubscribeToDirect()
+			continue
+		}
+		require_NoError(t, mset.subscribeToDirect())
+		require_NoError(t, mset.raftNode().PauseApply())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	m := nats.NewMsg(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"))
+	m.Header.Set("Nats-Min-Last-Sequence", "4")
+	msg, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
+	require_Equal(t, msg.Header.Get("Nats-Min-Last-Sequence"), "4")
 }
 
 func TestJetStreamClusterDirectGetLastBySubjectMonotonicRead(t *testing.T) {

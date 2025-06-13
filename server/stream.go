@@ -363,8 +363,9 @@ type stream struct {
 	expectedPerSubjectInProcess map[string]struct{} // Current 'expected per subject' subjects in process.
 
 	// Direct get subscription.
-	directSub *subscription
-	lastBySub *subscription
+	directSub       *subscription
+	directLeaderSub *subscription
+	lastBySub       *subscription
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 }
@@ -3936,6 +3937,15 @@ func (mset *stream) subscribeToStream() error {
 	// Check for direct get access.
 	// We spin up followers for clustered streams in monitorStream().
 	if mset.cfg.AllowDirect {
+		// If we're leader, we also specifically subscribe to direct get leader requests.
+		if mset.directLeaderSub == nil {
+			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.cfg.Name)
+			if sub, err := mset.subscribeInternal(dsubj, mset.processDirectGetRequest); err != nil {
+				return err
+			} else {
+				mset.directLeaderSub = sub
+			}
+		}
 		if err := mset.subscribeToDirect(); err != nil {
 			return err
 		}
@@ -4037,6 +4047,10 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 	if mset.mirror != nil {
 		mset.cancelSourceInfo(mset.mirror)
 		mset.mirror = nil
+	}
+	if mset.directLeaderSub != nil {
+		mset.unsubscribe(mset.directLeaderSub)
+		mset.directLeaderSub = nil
 	}
 
 	if len(mset.sources) > 0 {
@@ -4480,8 +4494,23 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 
 	// Reject request if we can't guarantee the precondition of min last sequence.
 	if minLastSeq, ok := getMinLastSeq(hdr); ok && minLastSeq > mset.lastSeq() {
-		hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		// Explicitly checking leader node state, instead of full leader state.
+		// If we've just become leader but aren't caught up with applies,
+		// we shouldn't redirect the request (again) and simply answer ourselves.
+		mset.mu.RLock()
+		leaderNodeState := mset.isLeaderNodeState()
+		mset.mu.RUnlock()
+		if leaderNodeState {
+			hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+		// We're not the leader, so we can redirect this request to them.
+		// They should have the data and be able to guarantee a consistent read.
+		// Make copy before sending.
+		hdr, msg = copyBytes(hdr), copyBytes(msg)
+		dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.name())
+		mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, hdr, msg, nil, 0))
 		return
 	}
 
@@ -4530,8 +4559,24 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 
 	// Reject request if we can't guarantee the precondition of min last sequence.
 	if minLastSeq, ok := getMinLastSeq(hdr); ok && minLastSeq > mset.lastSeq() {
-		hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		// Explicitly checking leader node state, instead of full leader state.
+		// If we've just become leader but aren't caught up with applies,
+		// we shouldn't redirect the request (again) and simply answer ourselves.
+		mset.mu.RLock()
+		leaderNodeState := mset.isLeaderNodeState()
+		mset.mu.RUnlock()
+		if leaderNodeState {
+			hdr = []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+		// We're not the leader, so we can redirect this request to them.
+		// They should have the data and be able to guarantee a consistent read.
+		// Make copy before sending.
+		hdr = copyBytes(hdr)
+		msg, _ = json.Marshal(req)
+		dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.name())
+		mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, hdr, msg, nil, 0))
 		return
 	}
 
