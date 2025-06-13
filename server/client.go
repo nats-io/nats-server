@@ -460,9 +460,11 @@ type readCache struct {
 	rts []routeTarget
 
 	// These are all temporary totals for an invocation of a read in readloop.
-	msgs  int32
-	bytes int32
-	subs  int32
+	msgs    int32
+	bytes   int32
+	subs    int32
+	lfmsgs  int32
+	lfbytes int32
 
 	rsz int32 // Read buffer size
 	srs int32 // Short reads, used for dynamic buffer resizing.
@@ -1399,6 +1401,8 @@ func (c *client) readLoop(pre []byte) {
 		c.in.msgs = 0
 		c.in.bytes = 0
 		c.in.subs = 0
+		c.in.lfmsgs = 0
+		c.in.lfbytes = 0
 
 		// Main call into parser for inbound data. This will generate callouts
 		// to process messages, etc.
@@ -1451,6 +1455,8 @@ func (c *client) readLoop(pre []byte) {
 			if acc != nil {
 				atomic.AddInt64(&acc.inMsgs, int64(c.in.msgs))
 				atomic.AddInt64(&acc.inBytes, int64(c.in.bytes))
+				atomic.AddInt64(&acc.lf.inMsgs, int64(c.in.lfmsgs))
+				atomic.AddInt64(&acc.lf.inBytes, int64(c.in.lfbytes))
 			}
 			atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
 			atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
@@ -4728,6 +4734,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// by having an extra size
 	var dlvMsgs int64
 	var dlvExtraSize int64
+	var dlvRouteMsgs int64
+	var dlvLeafMsgs int64
 
 	// We need to know if this is a MQTT producer because they send messages
 	// without CR_LF (we otherwise remove the size of CR_LF from message size).
@@ -4737,15 +4745,32 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		if dlvMsgs == 0 {
 			return
 		}
+
 		totalBytes := dlvMsgs*int64(len(msg)) + dlvExtraSize
+		routeBytes := dlvRouteMsgs*int64(len(msg)) + dlvExtraSize
+		leafBytes := dlvLeafMsgs*int64(len(msg)) + dlvExtraSize
+
 		// For non MQTT producers, remove the CR_LF * number of messages
 		if !prodIsMQTT {
 			totalBytes -= dlvMsgs * int64(LEN_CR_LF)
+			routeBytes -= dlvRouteMsgs * int64(LEN_CR_LF)
+			leafBytes -= dlvLeafMsgs * int64(LEN_CR_LF)
 		}
+
 		if acc != nil {
 			atomic.AddInt64(&acc.outMsgs, dlvMsgs)
 			atomic.AddInt64(&acc.outBytes, totalBytes)
+
+			if dlvRouteMsgs > 0 {
+				atomic.AddInt64(&acc.rt.outMsgs, dlvRouteMsgs)
+				atomic.AddInt64(&acc.rt.outBytes, routeBytes)
+			}
+			if dlvLeafMsgs > 0 {
+				atomic.AddInt64(&acc.lf.outMsgs, dlvLeafMsgs)
+				atomic.AddInt64(&acc.lf.outBytes, leafBytes)
+			}
 		}
+
 		if srv := c.srv; srv != nil {
 			atomic.AddInt64(&srv.outMsgs, dlvMsgs)
 			atomic.AddInt64(&srv.outBytes, totalBytes)
@@ -5066,6 +5091,12 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				// Update only if not skipped.
 				if !skipDelivery && sub.icb == nil {
 					dlvMsgs++
+					switch sub.client.kind {
+					case ROUTER:
+						dlvRouteMsgs++
+					case LEAF:
+						dlvLeafMsgs++
+					}
 				}
 				// Do the rest even when message delivery was skipped.
 				didDeliver = true
@@ -5156,6 +5187,12 @@ sendToRoutesOrLeafs:
 		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
 			if rt.sub.icb == nil {
 				dlvMsgs++
+				switch dc.kind {
+				case ROUTER:
+					dlvRouteMsgs++
+				case LEAF:
+					dlvLeafMsgs++
+				}
 				dlvExtraSize += int64(len(dmsg) - len(msg))
 			}
 			didDeliver = true

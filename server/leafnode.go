@@ -2797,7 +2797,9 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
+	c.in.lfmsgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	c.in.lfbytes += int32(len(msg) - LEN_CR_LF)
 
 	srv, acc, subject := c.srv, c.acc, string(c.pa.subject)
 

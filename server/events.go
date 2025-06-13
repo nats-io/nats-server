@@ -400,10 +400,18 @@ type GatewayStat struct {
 	NumInbound int       `json:"inbound_connections"`
 }
 
-// DataStats reports how may msg and bytes. Applicable for both sent and received.
-type DataStats struct {
+type dataStats struct {
 	Msgs  int64 `json:"msgs"`
 	Bytes int64 `json:"bytes"`
+}
+
+// DataStats reports how may msg and bytes. Applicable for both sent and received.
+type DataStats struct {
+	Msgs     int64     `json:"msgs"`
+	Bytes    int64     `json:"bytes"`
+	Gateways dataStats `json:"gateways,omitempty"`
+	Routes   dataStats `json:"routes,omitempty"`
+	Leafs    dataStats `json:"leafs,omitempty"`
 }
 
 // Used for internally queueing up messages that the server wants to send.
@@ -2412,10 +2420,34 @@ func (a *Account) statz() *AccountStat {
 		Received: DataStats{
 			Msgs:  atomic.LoadInt64(&a.inMsgs),
 			Bytes: atomic.LoadInt64(&a.inBytes),
+			Gateways: dataStats{
+				Msgs:  atomic.LoadInt64(&a.gw.inMsgs),
+				Bytes: atomic.LoadInt64(&a.gw.inBytes),
+			},
+			Routes: dataStats{
+				Msgs:  atomic.LoadInt64(&a.rt.inMsgs),
+				Bytes: atomic.LoadInt64(&a.rt.inBytes),
+			},
+			Leafs: dataStats{
+				Msgs:  atomic.LoadInt64(&a.lf.inMsgs),
+				Bytes: atomic.LoadInt64(&a.lf.inBytes),
+			},
 		},
 		Sent: DataStats{
 			Msgs:  atomic.LoadInt64(&a.outMsgs),
 			Bytes: atomic.LoadInt64(&a.outBytes),
+			Gateways: dataStats{
+				Msgs:  atomic.LoadInt64(&a.gw.outMsgs),
+				Bytes: atomic.LoadInt64(&a.gw.outBytes),
+			},
+			Routes: dataStats{
+				Msgs:  atomic.LoadInt64(&a.rt.outMsgs),
+				Bytes: atomic.LoadInt64(&a.rt.outBytes),
+			},
+			Leafs: dataStats{
+				Msgs:  atomic.LoadInt64(&a.lf.outMsgs),
+				Bytes: atomic.LoadInt64(&a.lf.outBytes),
+			},
 		},
 		SlowConsumers: atomic.LoadInt64(&a.slowConsumers),
 	}

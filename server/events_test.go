@@ -1292,8 +1292,8 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query statz/conns for account
 	resp, err = ncSys.Request(statz(acc.Name), nil, time.Second)
 	require_NoError(t, err)
-	respContentAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
-		`"received":{"msgs":0,"bytes":0}`, `"num_subscriptions":`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+	respContentAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0`,
+		`"received":{"msgs":0,"bytes":0`, `"num_subscriptions":`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
 	require_Contains(t, string(resp.Data), respContentAcc...)
 
 	rIb := ncSys.NewRespInbox()
@@ -1350,11 +1350,11 @@ func TestAccountReqMonitoring(t *testing.T) {
 
 	// Since we now have processed our own message, sent msgs will be at least 1.
 	payload := string(resp.Data)
-	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":1,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":1,"bytes":0`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
 	require_Contains(t, payload, respContentAcc...)
 
 	// Depending on timing, statz message could be accounted too.
-	receivedOK := strings.Contains(payload, `"received":{"msgs":1,"bytes":0}`) || strings.Contains(payload, `"received":{"msgs":2,"bytes":0}`)
+	receivedOK := strings.Contains(payload, `"received":{"msgs":1,"bytes":0`) || strings.Contains(payload, `"received":{"msgs":2,"bytes":0`)
 	require_True(t, receivedOK)
 	_, err = rSub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err)
