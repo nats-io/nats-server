@@ -125,6 +125,13 @@ const (
 	JSDirectMsgGet  = "$JS.API.DIRECT.GET.*"
 	JSDirectMsgGetT = "$JS.API.DIRECT.GET.%s"
 
+	// JSDirectLeaderMsgGet is the template for non-api layer direct requests for a message by its stream sequence number or last by subject.
+	// Will return the message similar to how a consumer receives the message, no JSON processing.
+	// If the message can not be found we will use a status header of 404. If the stream does not exist the client will get a no-responders or timeout.
+	// Importantly, only the leader will respond to these requests.
+	JSDirectLeaderMsgGet  = "$JS.API.DIRECT.LEADER.GET.*"
+	JSDirectLeaderMsgGetT = "$JS.API.DIRECT.LEADER.GET.%s"
+
 	// This is a direct version of get last by subject, which will be the dominant pattern for KV access once 2.9 is released.
 	// The stream and the key will be part of the subject to allow for no-marshal payloads and subject based security permissions.
 	JSDirectGetLastBySubject  = "$JS.API.DIRECT.GET.*.>"
@@ -671,7 +678,7 @@ type JSApiMsgGetRequest struct {
 	LastFor string `json:"last_by_subj,omitempty"`
 	NextFor string `json:"next_by_subj,omitempty"`
 
-	// Batch support. Used to request more then one msg at a time.
+	// Batch support. Used to request more than one msg at a time.
 	// Can be used with simple starting seq, but also NextFor with wildcards.
 	Batch int `json:"batch,omitempty"`
 	// This will make sure we limit how much data we blast out. If not set we will
@@ -3346,7 +3353,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
-	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
 		return
@@ -3448,6 +3455,17 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		return
 	}
 
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	minLastSeq, hasMinLastSeq := getMinLastSeq(hdr)
+	if hasMinLastSeq && minLastSeq > mset.lastSeq() {
+		// Even though only the leader is subscribed and will respond, we must delay the error.
+		// An old leader could think it's still leader, and it must not
+		// error sooner than the real leader can answer.
+		resp.Error = NewJSMsgGetMinLastSeqError()
+		s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
+		return
+	}
+
 	var svp StoreMsg
 	var sm *StoreMsg
 
@@ -3479,8 +3497,18 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		Time:     time.Unix(0, sm.ts).UTC(),
 	}
 
+	// Remain backward compatible if min last sequence was not specified.
+	if !hasMinLastSeq {
+		// Don't send response through API layer for this call.
+		s.sendInternalAccountMsg(nil, reply, s.jsonResponse(resp))
+		return
+	}
+
+	// Include currently known last sequence for monotonic reads.
+	rhdr := map[string]string{JSMinLastSeq: fmt.Sprintf("%d", mset.lastSeq())}
+
 	// Don't send response through API layer for this call.
-	s.sendInternalAccountMsg(nil, reply, s.jsonResponse(resp))
+	s.sendInternalAccountMsgWithReply(nil, reply, _EMPTY_, rhdr, s.jsonResponse(resp), false)
 }
 
 func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
