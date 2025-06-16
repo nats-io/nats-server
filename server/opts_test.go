@@ -122,7 +122,8 @@ func TestConfigFile(t *testing.T) {
 		LameDuckDuration:      4 * time.Minute,
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
-		configDigest:          "sha256:314adbd9997c1183f028f5b620362daa45893da76bac746136bfb48b2fd14996",
+		Metadata:              map[string]string{"key1": "value1", "key2": "value2"},
+		configDigest:          "sha256:a1104db0c8e838096a4f0509ec4d1e7c2c26ff60261ecb8f6a12dde1317872c3",
 		authBlockDefined:      true,
 	}
 
@@ -292,7 +293,8 @@ func TestMergeOverrides(t *testing.T) {
 		JetStream:             true,
 		StoreDir:              "/store/dir",
 		authBlockDefined:      true,
-		configDigest:          "sha256:314adbd9997c1183f028f5b620362daa45893da76bac746136bfb48b2fd14996",
+		Metadata:              map[string]string{"key1": "value1", "key2": "value2"},
+		configDigest:          "sha256:a1104db0c8e838096a4f0509ec4d1e7c2c26ff60261ecb8f6a12dde1317872c3",
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
