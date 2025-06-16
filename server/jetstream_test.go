@@ -20702,7 +20702,10 @@ func TestJetStreamAllowMsgCounterMirror(t *testing.T) {
 			if incr := rsm.Header.Get("Nats-Incr"); incr != "1" {
 				return fmt.Errorf("incorrect increment: %q", incr)
 			}
-			if string(rsm.Data) != "{\"val\":\"1\"}" {
+			var count CounterValue
+			if err := json.Unmarshal(rsm.Data, &count); err != nil {
+				return fmt.Errorf("JSON error: %w", err)
+			} else if count.Value != "1" {
 				return fmt.Errorf("unexpected value: %s", rsm.Data)
 			}
 			return nil
@@ -20784,7 +20787,10 @@ func TestJetStreamAllowMsgCounterSourceAggregates(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if string(rsm.Data) != "{\"val\":\"3\"}" {
+			var count CounterValue
+			if err := json.Unmarshal(rsm.Data, &count); err != nil {
+				return fmt.Errorf("JSON error: %w", err)
+			} else if count.Value != "3" {
 				return fmt.Errorf("unexpected value: %s", rsm.Data)
 			}
 			return nil
@@ -20860,8 +20866,11 @@ func TestJetStreamAllowMsgCounterSourceVerbatim(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if string(rsm.Data) != "{\"val\":\"1\"}" {
-				return fmt.Errorf("unexpected value #1: %s", rsm.Data)
+			var count CounterValue
+			if err := json.Unmarshal(rsm.Data, &count); err != nil {
+				return fmt.Errorf("JSON error: %w", err)
+			} else if count.Value != "1" {
+				return fmt.Errorf("unexpected value: %s", rsm.Data)
 			}
 			return nil
 		})
@@ -20878,11 +20887,164 @@ func TestJetStreamAllowMsgCounterSourceVerbatim(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if string(rsm.Data) != "{\"val\":\"2\"}" {
-				return fmt.Errorf("unexpected value #2: %s", rsm.Data)
+			var count CounterValue
+			if err := json.Unmarshal(rsm.Data, &count); err != nil {
+				return fmt.Errorf("JSON error: %w", err)
+			} else if count.Value != "2" {
+				return fmt.Errorf("unexpected value: %s", rsm.Data)
 			}
 			return nil
 		})
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamAllowMsgCounterSourceStartingAboveZero(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:            "O1",
+			Subjects:        []string{"foo.1"},
+			Storage:         FileStorage,
+			AllowMsgCounter: true,
+			Replicas:        replicas,
+			MaxMsgsPer:      1,
+		})
+		require_NoError(t, err)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:            "O2",
+			Subjects:        []string{"foo.2"},
+			Storage:         FileStorage,
+			AllowMsgCounter: true,
+			Replicas:        replicas,
+			MaxMsgsPer:      1,
+		})
+		require_NoError(t, err)
+
+		for i := range uint64(5) {
+			m := nats.NewMsg("foo.1")
+			m.Header.Set("Nats-Incr", "1")
+			pubAck, err := js.PublishMsg(m)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, i+1)
+
+			m = nats.NewMsg("foo.2")
+			m.Header.Set("Nats-Incr", "2")
+			pubAck, err = js.PublishMsg(m)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, i+1)
+		}
+
+		// Source will only work if counters are enabled on both streams.
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:            "M",
+			Subjects:        []string{"foo"},
+			Storage:         FileStorage,
+			AllowMsgCounter: true,
+			Replicas:        replicas,
+		})
+		require_NoError(t, err)
+
+		// Now make an addition locally on this stream too.
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Incr", "1")
+		pubAck, err := js.PublishMsg(m)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		// Source will only work if counters are enabled on both streams.
+		_, err = jsStreamUpdate(t, nc, &StreamConfig{
+			Name:     "M",
+			Subjects: []string{"foo"},
+			Sources: []*StreamSource{
+				{
+					Name:              "O1",
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.1", Destination: "foo"}},
+				},
+				{
+					Name:              "O2",
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.2", Destination: "foo"}},
+				},
+			},
+			Storage:         FileStorage,
+			AllowMsgCounter: true,
+			Replicas:        replicas,
+		})
+		require_NoError(t, err)
+
+		// Source should aggregate.
+		var first, second, third, fourth *nats.RawStreamMsg
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			first, err = js.GetMsg("M", 1)
+			if err != nil {
+				return err
+			}
+			second, err = js.GetMsg("M", 2)
+			if err != nil {
+				return err
+			}
+			third, err = js.GetMsg("M", 3)
+			return err
+		})
+
+		// Now make an addition locally on this stream too.
+		m = nats.NewMsg("foo")
+		m.Header.Set("Nats-Incr", "1")
+		pubAck, err = js.PublishMsg(m)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 4)
+
+		// Fetch it back out of the stream.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			fourth, err = js.GetMsg("M", 4)
+			return err
+		})
+
+		// There are no local additions to this counter, but the total
+		// comprises changes from the sources.
+		var count CounterValue
+		require_NoError(t, json.Unmarshal(fourth.Data, &count))
+		require_Equal(t, count.Value, "17")
+
+		// The most recent message should contain information about both
+		// sources, so let's check.
+		var sources CounterSources
+		require_NoError(t, json.Unmarshal([]byte(fourth.Header.Get(JSMessageCounterSources)), &sources))
+		require_NotNil(t, sources["O1"])
+		require_NotNil(t, sources["O2"])
+		require_Equal(t, sources["O1"]["foo.1"], "5")
+		require_Equal(t, sources["O2"]["foo.2"], "10")
+
+		// Since this is the first time we've seen a message from these
+		// sources, the Nats-Incr header should have been updated to reflect
+		// the correct delta.
+		for _, rsm := range []*nats.RawStreamMsg{first, second, third, fourth} {
+			require_Equal(t, rsm.Subject, "foo") // Subject transform'd
+			switch rsm {
+			case first:
+				require_Equal(t, rsm.Header.Get(JSMessageIncr), "1")
+			case second, third: // We can't know which order they got sourced in
+				incr := rsm.Header.Get(JSMessageIncr)
+				require_True(t, incr == "5" || incr == "10")
+			case fourth:
+				require_Equal(t, rsm.Header.Get(JSMessageIncr), "1")
+			}
+		}
 	}
 
 	t.Run("R1", func(t *testing.T) { test(t, 1) })

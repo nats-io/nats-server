@@ -202,6 +202,10 @@ type CounterValue struct {
 	Value string `json:"val"`
 }
 
+// CounterSources is the body of the Nats-Counter-Sources header.
+// e.g. {"stream":{"subject":"123"}}
+type CounterSources map[string]map[string]string
+
 // StreamInfo shows config and current state for this stream.
 type StreamInfo struct {
 	Config     StreamConfig        `json:"config"`
@@ -392,8 +396,9 @@ type stream struct {
 // msgCounterRunningTotal stores a running total and a number of inflight
 // but not yet applied clustered proposals/operations for this counter.
 type msgCounterRunningTotal struct {
-	total *big.Int // Running total.
-	ops   uint64   // Inflight operations. If this reaches zero, we can remove the running total.
+	total   *big.Int       // Running total.
+	sources CounterSources // Last seen counter sources.
+	ops     uint64         // Inflight operations. If this reaches zero, we can remove the running total.
 }
 
 type sourceInfo struct {
@@ -450,6 +455,7 @@ const (
 	JSMessageTTL              = "Nats-TTL"
 	JSMarkerReason            = "Nats-Marker-Reason"
 	JSMessageIncr             = "Nats-Incr"
+	JSMessageCounterSources   = "Nats-Counter-Sources"
 )
 
 // Headers for republished messages and direct gets.
@@ -5261,6 +5267,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Apply increment for counter.
 	// But only if it's allowed for this stream. This can happen when we store verbatim for a sourced stream.
 	if !isClustered && incr != nil && allowMsgCounter {
+		var initial big.Int
+		var sources CounterSources
 		var smv StoreMsg
 		sm, err := store.LoadLastMsg(subject, &smv)
 		if err == nil && sm != nil {
@@ -5278,11 +5286,83 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				}
 				return apiErr
 			}
-			var initial big.Int
+			if ncs := getHeader(JSMessageCounterSources, sm.hdr); len(ncs) > 0 {
+				if err := json.Unmarshal(ncs, &sources); err != nil {
+					mset.mu.Unlock()
+					bumpCLFS()
+					apiErr := NewJSMessageCounterBrokenError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				}
+			}
 			initial.SetString(val.Value, 10)
-			incr.Add(incr, &initial)
 		}
-		msg = []byte(fmt.Sprintf("{%q:%q}", "val", incr.String()))
+		srchdr := sliceHeader(JSStreamSource, hdr)
+		if len(srchdr) > 0 {
+			// This is a sourced message, so we can't apply Nats-Incr but
+			// instead should just update the source count header.
+			fields := strings.Split(string(srchdr), " ")
+			origStream := fields[0]
+			origSubj := subject
+			if len(fields) >= 3 {
+				origSubj = fields[2]
+			}
+			var val CounterValue
+			if json.Unmarshal(msg, &val) != nil {
+				mset.mu.Unlock()
+				bumpCLFS()
+				apiErr := NewJSMessageCounterBrokenError()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = apiErr
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return apiErr
+			}
+			var sourced big.Int
+			sourced.SetString(val.Value, 10)
+			if sources == nil {
+				sources = map[string]map[string]string{}
+			}
+			if _, ok := sources[origStream]; !ok {
+				sources[origStream] = map[string]string{}
+			}
+			prevVal := sources[origStream][origSubj]
+			sources[origStream][origSubj] = sourced.String()
+			// We will also replace the Nats-Incr header with the diff
+			// between our last value from this source and this one, so
+			// that the arithmetic is always correct.
+			var previous big.Int
+			previous.SetString(prevVal, 10)
+			incr.Sub(&sourced, &previous)
+			hdr = setHeader(JSMessageIncr, incr.String(), hdr)
+		}
+		// Now make the change.
+		initial.Add(&initial, incr)
+		// Generate the new payload.
+		msg = fmt.Appendf(nil, "{%q:%q}", "val", initial.String())
+		// Write the updated source count headers.
+		if len(sources) > 0 {
+			nhdr, err := json.Marshal(sources)
+			if err != nil {
+				mset.mu.Unlock()
+				bumpCLFS()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSMessageCounterBrokenError()
+					response, _ = json.Marshal(resp)
+					outq.sendMsg(reply, response)
+				}
+				return err
+			}
+			hdr = setHeader(JSMessageCounterSources, string(nhdr), hdr)
+		}
 
 		// Check to see if we are over the max msg size.
 		if int32(len(hdr)+len(msg)) > mset.srv.getOpts().MaxPayload {
