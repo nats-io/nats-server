@@ -35,6 +35,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"slices"
+
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
@@ -4367,6 +4369,27 @@ func sliceHeader(key string, hdr []byte) []byte {
 		index++
 	}
 	return hdr[start:index:index]
+}
+
+func setHeader(key, val string, hdr []byte) []byte {
+	prefix := []byte(key + ": ")
+	start := bytes.Index(hdr, prefix)
+	if start >= 0 {
+		valStart := start + len(prefix)
+		valEnd := bytes.Index(hdr[valStart:], []byte("\r"))
+		if valEnd < 0 {
+			return hdr // malformed headers
+		}
+		valEnd += valStart
+		suffix := slices.Clone(hdr[valEnd:])
+		newHdr := append(hdr[:valStart], val...)
+		return append(newHdr, suffix...)
+	}
+	if len(hdr) > 0 && bytes.HasSuffix(hdr, []byte("\r\n")) {
+		hdr = hdr[:len(hdr)-2]
+		val += "\r\n"
+	}
+	return fmt.Appendf(hdr, "%s: %s\r\n", key, val)
 }
 
 // For bytes.HasPrefix below.

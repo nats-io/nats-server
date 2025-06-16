@@ -8195,6 +8195,8 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Apply increment for counter.
 	// But only if it's allowed for this stream. This can happen when we store verbatim for a sourced stream.
 	if incr != nil && allowMsgCounter && store != nil {
+		var initial big.Int
+		var sources CounterSources
 		// Store running totals for counters, we could have multiple counter increments proposed, but not applied yet.
 		if mset.clusteredCounterTotal == nil {
 			mset.clusteredCounterTotal = make(map[string]*msgCounterRunningTotal, 1)
@@ -8204,16 +8206,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		var ok bool
 		var counter *msgCounterRunningTotal
 		if counter, ok = mset.clusteredCounterTotal[subject]; ok {
-			counter.total.Add(counter.total, incr)
-			counter.ops++
-			msg = []byte(fmt.Sprintf("{%q:%q}", "val", counter.total.String()))
+			initial = *counter.total
+			sources = counter.sources
 		} else {
 			// Load last message, and store as inflight running total.
 			var smv StoreMsg
 			sm, err := store.LoadLastMsg(subject, &smv)
 			if err == nil && sm != nil {
 				var val CounterValue
-				var initial big.Int
 				// Return an error if the counter is broken somehow.
 				if json.Unmarshal(sm.msg, &val) != nil {
 					mset.clMu.Unlock()
@@ -8226,13 +8226,90 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 					}
 					return apiErr
 				}
+				if ncs := getHeader(JSMessageCounterSources, sm.hdr); len(ncs) > 0 {
+					if err := json.Unmarshal(ncs, &sources); err != nil {
+						mset.clMu.Unlock()
+						apiErr := NewJSMessageCounterBrokenError()
+						if canRespond {
+							var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+							resp.Error = apiErr
+							response, _ = json.Marshal(resp)
+							outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+						}
+						return apiErr
+					}
+				}
 				initial.SetString(val.Value, 10)
-				incr.Add(incr, &initial)
 			}
-			counter = &msgCounterRunningTotal{total: incr, ops: 1}
-			mset.clusteredCounterTotal[subject] = counter
-			msg = []byte(fmt.Sprintf("{%q:%q}", "val", counter.total.String()))
 		}
+		srchdr := sliceHeader(JSStreamSource, hdr)
+		if len(srchdr) > 0 {
+			// This is a sourced message, so we can't apply Nats-Incr but
+			// instead should just update the source count header.
+			fields := strings.Split(string(srchdr), " ")
+			origStream := fields[0]
+			origSubj := subject
+			if len(fields) >= 3 {
+				origSubj = fields[2]
+			}
+			var val CounterValue
+			if json.Unmarshal(msg, &val) != nil {
+				mset.clMu.Unlock()
+				apiErr := NewJSMessageCounterBrokenError()
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.Error = apiErr
+					response, _ = json.Marshal(resp)
+					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+				}
+				return apiErr
+			}
+			var sourced big.Int
+			sourced.SetString(val.Value, 10)
+			if sources == nil {
+				sources = map[string]map[string]string{}
+			}
+			if _, ok := sources[origStream]; !ok {
+				sources[origStream] = map[string]string{}
+			}
+			prevVal := sources[origStream][origSubj]
+			sources[origStream][origSubj] = sourced.String()
+			// We will also replace the Nats-Incr header with the diff
+			// between our last value from this source and this one, so
+			// that the arithmetic is always correct.
+			var previous big.Int
+			previous.SetString(prevVal, 10)
+			incr.Sub(&sourced, &previous)
+			hdr = setHeader(JSMessageIncr, incr.String(), hdr)
+		}
+		// Now make the change.
+		initial.Add(&initial, incr)
+		// Generate the new payload.
+		msg = fmt.Appendf(nil, "{%q:%q}", "val", initial.String())
+		// Write the updated source count headers.
+		if len(sources) > 0 {
+			nhdr, err := json.Marshal(sources)
+			if err != nil {
+				mset.clMu.Unlock()
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.Error = NewJSMessageCounterBrokenError()
+					response, _ = json.Marshal(resp)
+					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+				}
+				return err
+			}
+			hdr = setHeader(JSMessageCounterSources, string(nhdr), hdr)
+		}
+
+		// Keep the in-memory counters up-to-date.
+		if counter == nil {
+			counter = &msgCounterRunningTotal{}
+		}
+		counter.total = &initial
+		counter.sources = sources
+		counter.ops++
+		mset.clusteredCounterTotal[subject] = counter
 
 		// Check to see if we are over the max msg size.
 		if int32(len(hdr)+len(msg)) > mset.srv.getOpts().MaxPayload {
