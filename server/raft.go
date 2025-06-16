@@ -65,6 +65,7 @@ type RaftNode interface {
 	Peers() []*Peer
 	ProposeKnownPeers(knownPeers []string)
 	UpdateKnownPeers(knownPeers []string)
+	TransferKnownPeers(knownPeers []string, newLeader string)
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
 	AdjustClusterSize(csz int) error
@@ -1771,6 +1772,17 @@ func (n *raft) UpdateKnownPeers(knownPeers []string) {
 	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
 	n.processPeerState(ps)
 	n.Unlock()
+}
+
+// Propose new set of peers, and transfer leadership.
+func (n *raft) TransferKnownPeers(knownPeers []string, newLeader string) {
+	if n.State() != Leader {
+		return
+	}
+	// Explicitly don't update our peers and just send, we'll be stepping down anyhow.
+	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
+	n.sendAppendEntry([]*Entry{{EntryPeerState, encodePeerState(ps)}})
+	n.StepDown(newLeader)
 }
 
 // ApplyQ returns the apply queue that new commits will be sent to for the

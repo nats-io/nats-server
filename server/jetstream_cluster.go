@@ -2671,8 +2671,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// Check if we have a quorom.
 				if current >= neededCurrent {
 					s.Noticef("Transfer of stream leader for '%s > %s' to '%s'", accName, sa.Config.Name, newLeader)
-					n.ProposeKnownPeers(newPeers)
-					n.StepDown(newLeaderPeer)
+					n.TransferKnownPeers(newPeers, newLeaderPeer)
 				}
 			}
 
