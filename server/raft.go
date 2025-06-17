@@ -2310,20 +2310,23 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 		return nil, errTooManyEntries
 	}
 
-	var elen int
+	var elen uint64
 	for _, e := range ae.entries {
-		if len(e.Data) > math.MaxUint32 {
+		// MaxInt32 instead of MaxUint32 deliberate here to stop int
+		// overflow on 32-bit platforms, still gives us ~2GB limit.
+		ulen := uint64(len(e.Data))
+		if ulen > math.MaxInt32 {
 			return nil, errBadAppendEntry
 		}
-		elen += len(e.Data) + 1 + 4 // 1 is type, 4 is for size.
+		elen += ulen + 1 + 4 // 1 is type, 4 is for size.
 	}
 	// Uvarint for lterm can be a maximum 10 bytes for a uint64.
 	var _lterm [10]byte
 	lterm := _lterm[:binary.PutUvarint(_lterm[:], ae.lterm)]
-	tlen := appendEntryBaseLen + elen + len(lterm)
+	tlen := appendEntryBaseLen + elen + uint64(len(lterm))
 
 	var buf []byte
-	if cap(b) >= tlen {
+	if uint64(cap(b)) >= tlen {
 		buf = b[:idLen]
 	} else {
 		buf = make([]byte, idLen, tlen)
@@ -2337,6 +2340,8 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 	buf = le.AppendUint64(buf, ae.pindex)
 	buf = le.AppendUint16(buf, uint16(len(ae.entries)))
 	for _, e := range ae.entries {
+		// The +1 is safe here as we've already checked len(e.Data)
+		// is not greater than MaxInt32, which is less than MaxUint32.
 		buf = le.AppendUint32(buf, uint32(1+len(e.Data)))
 		buf = append(buf, byte(e.Type))
 		buf = append(buf, e.Data...)
