@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -282,7 +283,9 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	s.mu.RLock()
 	// Default to all client unless filled in above.
 	if clist == nil {
-		clist = s.clients
+		clist = make(map[uint64]*client, len(s.clients)+len(s.leafs))
+		maps.Copy(clist, s.clients)
+		maps.Copy(clist, s.leafs)
 	}
 
 	// copy the server id for monitoring

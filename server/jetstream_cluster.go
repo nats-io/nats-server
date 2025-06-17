@@ -468,6 +468,7 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 		return errors.New("stream not found")
 	}
 
+	msetNode := mset.raftNode()
 	switch {
 	case mset.cfg.Replicas <= 1:
 		return nil // No further checks for R=1 streams
@@ -475,7 +476,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	case node == nil:
 		return errors.New("group node missing")
 
-	case node != mset.raftNode():
+	case msetNode == nil:
+		// Can happen when the stream's node is not yet initialized.
+		return errors.New("stream node missing")
+
+	case node != msetNode:
 		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
 		node.Delete()
 		mset.resetClusteredState(nil)
@@ -521,6 +526,7 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		return errors.New("consumer not found")
 	}
 
+	oNode := o.raftNode()
 	rc, _ := o.replica()
 	switch {
 	case rc <= 1:
@@ -529,7 +535,11 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	case node == nil:
 		return errors.New("group node missing")
 
-	case node != o.raftNode():
+	case oNode == nil:
+		// Can happen when the consumer's node is not yet initialized.
+		return errors.New("consumer node missing")
+
+	case node != oNode:
 		mset.mu.RLock()
 		accName, streamName := mset.acc.GetName(), mset.cfg.Name
 		mset.mu.RUnlock()
@@ -2417,6 +2427,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			doSnapshot()
 			return
 		case <-mqch:
+			// Clean signal from shutdown routine so do best effort attempt to snapshot.
+			doSnapshot()
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
@@ -8575,7 +8587,28 @@ RETRY:
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
-					return nil
+
+					// Sanity check that we've received all data expected by the snapshot.
+					mset.mu.RLock()
+					lseq := mset.lseq
+					mset.mu.RUnlock()
+					if lseq >= snap.LastSeq {
+						return nil
+					}
+
+					// Make sure we do not spin and make things worse.
+					const minRetryWait = 2 * time.Second
+					elapsed := time.Since(reqSendTime)
+					if elapsed < minRetryWait {
+						select {
+						case <-s.quitCh:
+							return ErrServerNotRunning
+						case <-qch:
+							return errCatchupStreamStopped
+						case <-time.After(minRetryWait - elapsed):
+						}
+					}
+					goto RETRY
 				}
 				if _, err := mset.processCatchupMsg(msg); err == nil {
 					if mrec.reply != _EMPTY_ {
@@ -9079,6 +9112,15 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// In the latter case the request expects us to have more. Just continue and value availability here.
 		// This should only be possible if the logs have already desynced, and we shouldn't have become leader
 		// in the first place. Not much we can do here in this (hypothetical) scenario.
+
+		// Do another quick sanity check that we actually have enough data to satisfy the request.
+		// If not, let's step down and hope a new leader can correct this.
+		if state.LastSeq < last {
+			s.Warnf("Catchup for stream '%s > %s' skipped, requested sequence %d was larger than current state: %+v",
+				mset.account(), mset.name(), seq, state)
+			node.StepDown()
+			return
+		}
 	}
 
 	mset.setCatchupPeer(sreq.Peer, last-seq)
@@ -9198,7 +9240,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						// The snapshot has a larger last sequence then we have. This could be due to a truncation
 						// when trying to recover after corruption, still not 100% sure. Could be off by 1 too somehow,
 						// but tested a ton of those with no success.
-						s.Warnf("Catchup for stream '%s > %s' completed, but requested sequence %d was larger then current state: %+v",
+						s.Warnf("Catchup for stream '%s > %s' completed, but requested sequence %d was larger than current state: %+v",
 							mset.account(), mset.name(), seq, state)
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {

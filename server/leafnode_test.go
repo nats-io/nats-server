@@ -9975,3 +9975,115 @@ func TestLeafNodePermissionWithLiteralSubjectAndQueueInterest(t *testing.T) {
 	})
 	require_Equal(t, "OK", string(resp.Data))
 }
+
+func TestLeafNodePermissionWithGateways(t *testing.T) {
+	usConf := createConfFile(t, []byte(`
+		server_name: "US"
+		listen: "127.0.0.1:-1"
+		gateway {
+			name: "US"
+			listen: "127.0.0.1:-1"
+		}
+		accounts {
+			sys { users: [{user: sys, password: sys}] }
+			leaf { users: [{user: leaf, password: leaf}] }
+		}
+		system_account: sys
+	`))
+	us, ous := RunServerWithConfig(usConf)
+	defer us.Shutdown()
+
+	euConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "EU"
+		listen: "127.0.0.1:-1"
+		gateway {
+			name: "EU"
+			listen: "127.0.0.1:-1"
+			gateways: [
+				{
+					name: "US"
+					urls: ["nats://127.0.0.1:%d"]
+				}
+			]
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+		accounts {
+			sys { users: [{user: sys, password: sys}] }
+			leaf {
+				users: [
+					{
+						user: leaf
+						password: leaf
+						permissions: {
+							publish: "bar"
+							subscribe: "foo"
+						}
+					}
+				]
+			}
+		}
+		system_account: sys
+		`, ous.Gateway.Port))
+	eu, oeu := RunServerWithConfig(euConf)
+	defer eu.Shutdown()
+
+	waitForOutboundGateways(t, us, 1, 2*time.Second)
+	waitForOutboundGateways(t, eu, 1, 2*time.Second)
+	waitForInboundGateways(t, us, 1, 2*time.Second)
+	waitForInboundGateways(t, eu, 1, 2*time.Second)
+
+	leafConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes: [
+				{ url: "nats://leaf:leaf@127.0.0.1:%d" }
+			]
+		}
+	`, oeu.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, leaf)
+
+	// Run the service from EU leafnode.
+	ncEU := natsConnect(t, leaf.ClientURL())
+	defer ncEU.Close()
+	natsSub(t, ncEU, "foo", func(m *nats.Msg) {
+		m.Respond([]byte("response"))
+	})
+	natsFlush(t, ncEU)
+
+	// Wait for subject interest to propagate.
+	checkGWInterestOnlyModeInterestOn(t, us, "EU", "leaf", "foo")
+
+	// Connect to the US server
+	ncUS := natsConnect(t, us.ClientURL(), nats.UserInfo("leaf", "leaf"))
+	defer ncUS.Close()
+
+	// Create a subscription on "bar" and send request on "foo"
+	sub := natsSubSync(t, ncUS, "bar")
+	// Wait for subject to propagate so we know that EU server
+	// would know about the "bar" subscription.
+	checkGWInterestOnlyModeInterestOn(t, eu, "US", "leaf", "bar")
+	// Send the request and make sure we receive the reply.
+	natsPubReq(t, ncUS, "foo", "bar", []byte("request"))
+	reply := natsNexMsg(t, sub, time.Second)
+	if string(reply.Data) != "response" {
+		t.Fatalf("Invalid response: %q", reply.Data)
+	}
+	// Make sure that we don't blindly accept any reply because there
+	// is the routing protocol. So create a sub on "baz" that the leaf
+	// would not be allowed to reply to. We should not get the reply
+	// to our request.
+	sub2 := natsSubSync(t, ncUS, "baz")
+	checkGWInterestOnlyModeInterestOn(t, eu, "US", "leaf", "baz")
+	// Send the request. We should not get the message since the
+	// leaf server does not have permission to publish on "baz".
+	natsPubReq(t, ncUS, "foo", "baz", []byte("request2"))
+	if msg, err := sub2.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received the reply, got %q", msg.Data)
+	}
+}

@@ -1418,7 +1418,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		c.setPermissions(perms)
 	}
 
-	var resumeConnect bool
+	var resumeConnect, checkSyncConsumers bool
 
 	// If this is a remote connection and this is the first INFO protocol,
 	// then we need to finish the connect process by sending CONNECT, etc..
@@ -1428,6 +1428,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		resumeConnect = true
 	} else if !firstINFO && didSolicit {
 		c.leaf.remoteAccName = info.RemoteAccount
+		checkSyncConsumers = info.JetStream
 	}
 
 	// Check if we have the remote account information and if so make sure it's stored.
@@ -1445,6 +1446,12 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	}
 	if finishConnect {
 		s.leafNodeFinishConnectProcess(c)
+	}
+
+	// If we have JS enabled and so does the other side, we will
+	// check to see if we need to kick any internal source or mirror consumers.
+	if checkSyncConsumers {
+		s.checkInternalSyncConsumers(c.acc, info.Domain)
 	}
 }
 
@@ -1954,11 +1961,12 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// If we received pub deny permissions from the other end, merge with existing ones.
 	c.mergeDenyPermissions(pub, proto.DenyPub)
 
+	acc := c.acc
 	c.mu.Unlock()
 
 	// Register the cluster, even if empty, as long as we are acting as a hub.
 	if !proto.Hub {
-		c.acc.registerLeafNodeCluster(proto.Cluster)
+		acc.registerLeafNodeCluster(proto.Cluster)
 	}
 
 	// Add in the leafnode here since we passed through auth at this point.
@@ -1973,10 +1981,56 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	s.initLeafNodeSmapAndSendSubs(c)
 
 	// Announce the account connect event for a leaf node.
-	// This will no-op as needed.
+	// This will be a no-op as needed.
 	s.sendLeafNodeConnect(c.acc)
 
+	// If we have JS enabled and so does the other side, we will
+	// check to see if we need to kick any internal source or mirror consumers.
+	if proto.JetStream {
+		s.checkInternalSyncConsumers(acc, proto.Domain)
+	}
 	return nil
+}
+
+// checkInternalSyncConsumers
+func (s *Server) checkInternalSyncConsumers(acc *Account, remoteDomain string) {
+	// Grab our js
+	js := s.getJetStream()
+
+	// Only applicable if we have JS and the leafnode has JS as well.
+	// We check for remote JS outside.
+	if !js.isEnabled() || acc == nil {
+		return
+	}
+
+	// We will check all streams in our local account. They must be a leader and
+	// be sourcing or mirroring. We will check the external config on the stream itself
+	// if this is cross domain, or if the remote domain is empty, meaning we might be
+	// extedning the system across this leafnode connection and hence we would be extending
+	// our own domain.
+	jsa := js.lookupAccount(acc)
+	if jsa == nil {
+		return
+	}
+	var streams []*stream
+	jsa.mu.RLock()
+	for _, mset := range jsa.streams {
+		mset.cfgMu.RLock()
+		// We need to have a mirror or source defined.
+		// We do not want to force another lock here to look for leader status,
+		// so collect and after we release jsa will make sure.
+		if mset.cfg.Mirror != nil || len(mset.cfg.Sources) > 0 {
+			streams = append(streams, mset)
+		}
+		mset.cfgMu.RUnlock()
+	}
+	jsa.mu.RUnlock()
+
+	// Now loop through all candidates and check if we are the leader and have NOT
+	// created the sync up consumer.
+	for _, mset := range streams {
+		mset.retryDisconnectedSyncConsumers(remoteDomain)
+	}
 }
 
 // Returns the remote cluster name. This is set only once so does not require a lock.
