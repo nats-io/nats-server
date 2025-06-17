@@ -2830,6 +2830,7 @@ type ProfilezOptions struct {
 	Name     string        `json:"name"`
 	Debug    int           `json:"debug"`
 	Duration time.Duration `json:"duration,omitempty"`
+	GC       bool          `json:"GC,omitempty"`
 }
 
 // IpqueueszOptions are options passed to Ipqueuesz
@@ -3877,6 +3878,9 @@ func (s *Server) profilez(opts *ProfilezOptions) *ProfilezStatus {
 			return &ProfilezStatus{
 				Error: fmt.Sprintf("Profile %q not found", opts.Name),
 			}
+		}
+		if opts.Name == "heap" && opts.GC {
+			runtime.GC()
 		}
 		if err := profile.WriteTo(&buffer, opts.Debug); err != nil {
 			return &ProfilezStatus{
