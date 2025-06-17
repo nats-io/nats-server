@@ -468,6 +468,7 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 		return errors.New("stream not found")
 	}
 
+	msetNode := mset.raftNode()
 	switch {
 	case mset.cfg.Replicas <= 1:
 		return nil // No further checks for R=1 streams
@@ -475,7 +476,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	case node == nil:
 		return errors.New("group node missing")
 
-	case node != mset.raftNode():
+	case msetNode == nil:
+		// Can happen when the stream's node is not yet initialized.
+		return errors.New("stream node missing")
+
+	case node != msetNode:
 		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
 		node.Delete()
 		mset.resetClusteredState(nil)
@@ -521,6 +526,7 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		return errors.New("consumer not found")
 	}
 
+	oNode := o.raftNode()
 	rc, _ := o.replica()
 	switch {
 	case rc <= 1:
@@ -529,7 +535,11 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	case node == nil:
 		return errors.New("group node missing")
 
-	case node != o.raftNode():
+	case oNode == nil:
+		// Can happen when the consumer's node is not yet initialized.
+		return errors.New("consumer node missing")
+
+	case node != oNode:
 		mset.mu.RLock()
 		accName, streamName := mset.acc.GetName(), mset.cfg.Name
 		mset.mu.RUnlock()
