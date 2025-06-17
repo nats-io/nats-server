@@ -1658,5 +1658,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMsgGetMinLastSeqErr",
+    "code": 412,
+    "error_code": 10168,
+    "description": "min last sequence precondition",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
