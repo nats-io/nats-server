@@ -88,8 +88,11 @@ jobs:
         with:
           go-version: stable
 
-      - name: Build NATS Server
-        run: go build
+      - name: Build NATS Server 64-bit
+        run: GOARCH=amd64 GOOS=linux go build
+
+      - name: Build NATS Server 32-bit
+        run: GOARCH=386 GOOS=linux go build
 
   build-supported:
     name: Build (Minimum Go)
@@ -103,8 +106,11 @@ jobs:
         with:
           go-version-file: "go.mod"
 
-      - name: Build NATS Server
-        run: go build
+      - name: Build NATS Server 64-bit
+        run: GOARCH=amd64 GOOS=linux go build
+
+      - name: Build NATS Server 32-bit
+        run: GOARCH=386 GOOS=linux go build
 
   # Using GitHub-supplied workers for Windows for now.
   # Note that the below testing steps depend on the Linux build
