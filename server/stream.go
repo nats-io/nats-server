@@ -543,8 +543,12 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			s.setIndexName()
 		}
 
+		// Hold lock, because we'll be reading from and writing to a shared object.
+		js.mu.Lock()
 		copyStreamMetadata(cfg, &ocfg)
-		if reflect.DeepEqual(cfg, &ocfg) {
+		deepEqual := reflect.DeepEqual(cfg, &ocfg)
+		js.mu.Unlock()
+		if deepEqual {
 			if sa != nil {
 				mset.setStreamAssignment(sa)
 			}
