@@ -142,6 +142,7 @@ type raft struct {
 
 	wal   WAL         // WAL store (filestore or memstore)
 	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
+	bytes uint64      // Total amount of bytes stored in the WAL. (Saves us from needing to call wal.FastState very often)
 	track bool        //
 	werr  error       // Last write error
 
@@ -164,11 +165,12 @@ type raft struct {
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
 
-	term    uint64 // The current vote term
-	pterm   uint64 // Previous term from the last snapshot
-	pindex  uint64 // Previous index from the last snapshot
-	commit  uint64 // Index of the most recent commit
-	applied uint64 // Index of the most recently applied commit
+	term     uint64 // The current vote term
+	pterm    uint64 // Previous term from the last snapshot
+	pindex   uint64 // Previous index from the last snapshot
+	commit   uint64 // Index of the most recent commit
+	applied  uint64 // Index of the most recently applied commit
+	papplied uint64 // First sequence of our log, matches when we last installed a snapshot.
 
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
@@ -1092,13 +1094,9 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 
 	// Calculate the number of entries and estimate the byte size that
 	// we can now remove with a compaction/snapshot.
-	var state StreamState
-	n.wal.FastState(&state)
-	if n.applied > state.FirstSeq {
-		entries = n.applied - state.FirstSeq
-	}
-	if state.Msgs > 0 {
-		bytes = entries * state.Bytes / state.Msgs
+	entries = n.applied - n.papplied
+	if n.bytes > 0 {
+		bytes = entries * n.bytes / (n.pindex - n.papplied)
 	}
 	return entries, bytes
 }
@@ -1218,6 +1216,10 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 		return err
 	}
 
+	var state StreamState
+	n.wal.FastState(&state)
+	n.papplied = snap.lastIndex
+	n.bytes = state.Bytes
 	return nil
 }
 
@@ -1315,6 +1317,7 @@ func (n *raft) setupLastSnapshot() {
 	n.pindex = snap.lastIndex
 	n.pterm = snap.lastTerm
 	n.commit = snap.lastIndex
+	n.papplied = snap.lastIndex
 	n.applied = snap.lastIndex
 	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
@@ -1699,12 +1702,12 @@ func (n *raft) Progress() (index, commit, applied uint64) {
 }
 
 // Size returns number of entries and total bytes for our WAL.
-func (n *raft) Size() (uint64, uint64) {
+func (n *raft) Size() (entries uint64, bytes uint64) {
 	n.RLock()
-	var state StreamState
-	n.wal.FastState(&state)
+	entries = n.pindex - n.papplied
+	bytes = n.bytes
 	n.RUnlock()
-	return state.Msgs, state.Bytes
+	return entries, bytes
 }
 
 func (n *raft) ID() string {
@@ -2924,9 +2927,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 	ae := n.pae[index]
 	if ae == nil {
-		var state StreamState
-		n.wal.FastState(&state)
-		if index < state.FirstSeq {
+		if index < n.papplied {
 			return nil
 		}
 		var err error
@@ -3310,6 +3311,9 @@ func (n *raft) truncateWAL(term, index uint64) {
 		}
 		if n.applied > n.commit {
 			n.applied = n.commit
+		}
+		if n.papplied > n.applied {
+			n.papplied = n.applied
 		}
 	}()
 
@@ -3841,6 +3845,13 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		return errEntryStoreFailed
 	}
 
+	var sz uint64
+	if n.wtype == FileStorage {
+		sz = fileStoreMsgSize(_EMPTY_, nil, ae.buf)
+	} else {
+		sz = memStoreMsgSize(_EMPTY_, nil, ae.buf)
+	}
+	n.bytes += sz
 	n.pterm = ae.term
 	n.pindex = seq
 	return nil
@@ -4433,11 +4444,8 @@ func (n *raft) switchToLeader() {
 
 	n.debug("Switching to leader")
 
-	var state StreamState
-	n.wal.FastState(&state)
-
 	// Check if we have items pending as we are taking over.
-	sendHB := state.LastSeq > n.commit
+	sendHB := n.pindex > n.commit
 
 	n.lxfer = false
 	n.updateLeader(n.id)
