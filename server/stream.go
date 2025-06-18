@@ -4465,7 +4465,7 @@ func parseMessageTTL(ttl string) (int64, error) {
 // Fast lookup of the message Incr from headers.
 // Return includes the value or nil, and success.
 func getMessageIncr(hdr []byte) (*big.Int, bool) {
-	incr := getHeader(JSMessageIncr, hdr)
+	incr := sliceHeader(JSMessageIncr, hdr)
 	if len(incr) == 0 {
 		return nil, true
 	}
@@ -5287,7 +5287,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				}
 				return apiErr
 			}
-			if ncs := getHeader(JSMessageCounterSources, sm.hdr); len(ncs) > 0 {
+			if ncs := sliceHeader(JSMessageCounterSources, sm.hdr); len(ncs) > 0 {
 				if err := json.Unmarshal(ncs, &sources); err != nil {
 					mset.mu.Unlock()
 					bumpCLFS()
@@ -5347,7 +5347,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Now make the change.
 		initial.Add(&initial, incr)
 		// Generate the new payload.
-		msg = fmt.Appendf(nil, "{%q:%q}", "val", initial.String())
+		var _msg [128]byte
+		msg = fmt.Appendf(_msg[:0], "{%q:%q}", "val", initial.String())
 		// Write the updated source count headers.
 		if len(sources) > 0 {
 			nhdr, err := json.Marshal(sources)

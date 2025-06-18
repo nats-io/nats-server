@@ -8226,7 +8226,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 					}
 					return apiErr
 				}
-				if ncs := getHeader(JSMessageCounterSources, sm.hdr); len(ncs) > 0 {
+				if ncs := sliceHeader(JSMessageCounterSources, sm.hdr); len(ncs) > 0 {
 					if err := json.Unmarshal(ncs, &sources); err != nil {
 						mset.clMu.Unlock()
 						apiErr := NewJSMessageCounterBrokenError()
@@ -8285,7 +8285,8 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Now make the change.
 		initial.Add(&initial, incr)
 		// Generate the new payload.
-		msg = fmt.Appendf(nil, "{%q:%q}", "val", initial.String())
+		var _msg [128]byte
+		msg = fmt.Appendf(_msg[:0], "{%q:%q}", "val", initial.String())
 		// Write the updated source count headers.
 		if len(sources) > 0 {
 			nhdr, err := json.Marshal(sources)
