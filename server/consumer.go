@@ -3304,11 +3304,10 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	// Check if we are filtered, and if so check if this is even applicable to us.
 	if isFiltered {
 		if subj == _EMPTY_ {
-			var svp StoreMsg
-			if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
+			var err error
+			if subj, err = o.mset.store.SubjectForSeq(sseq); err != nil {
 				return false
 			}
-			subj = svp.subj
 		}
 		if !o.isFilteredMatch(subj) {
 			return false

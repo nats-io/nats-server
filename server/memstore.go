@@ -1469,6 +1469,19 @@ func (ms *memStore) deleteFirstMsg() bool {
 	return ms.removeMsg(ms.state.FirstSeq, false)
 }
 
+// SubjectForSeq will return what the subject is for this sequence if found.
+func (ms *memStore) SubjectForSeq(seq uint64) (string, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	if seq < ms.state.FirstSeq {
+		return _EMPTY_, ErrStoreMsgNotFound
+	}
+	if sm, ok := ms.msgs[seq]; ok {
+		return sm.subj, nil
+	}
+	return _EMPTY_, ErrStoreMsgNotFound
+}
+
 // LoadMsg will lookup the message by sequence number and return it if found.
 func (ms *memStore) LoadMsg(seq uint64, smp *StoreMsg) (*StoreMsg, error) {
 	return ms.loadMsgLocked(seq, smp, true)
