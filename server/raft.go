@@ -143,7 +143,6 @@ type raft struct {
 	wal   WAL         // WAL store (filestore or memstore)
 	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
 	bytes uint64      // Total amount of bytes stored in the WAL. (Saves us from needing to call wal.FastState very often)
-	track bool        //
 	werr  error       // Last write error
 
 	state       atomic.Int32 // RaftState
@@ -176,23 +175,19 @@ type raft struct {
 
 	leader string // The ID of the leader
 	vote   string // Our current vote state
-	lxfer  bool   // Are we doing a leadership transfer?
-
-	hcbehind bool // Were we falling behind at the last health check? (see: isCurrent)
 
 	s  *Server    // Reference to top-level server
 	c  *client    // Internal client for subscriptions
 	js *jetStream // JetStream, if running, to see if we are out of resources
 
-	dflag       bool        // Debug flag
-	hasleader   atomic.Bool // Is there a group leader right now?
-	pleader     atomic.Bool // Has the group ever had a leader?
-	isSysAcc    atomic.Bool // Are we utilizing the system account?
-	maybeLeader bool        // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
-
-	observer bool // The node is observing, i.e. not able to become leader
+	hasleader atomic.Bool // Is there a group leader right now?
+	pleader   atomic.Bool // Has the group ever had a leader?
+	isSysAcc  atomic.Bool // Are we utilizing the system account?
 
 	extSt extensionState // Extension state
+
+	track bool // Whether out of resources checking is enabled.
+	dflag bool // Debug flag
 
 	psubj  string // Proposals subject
 	rpsubj string // Remove peers subject
@@ -210,9 +205,7 @@ type raft struct {
 	catchup  *catchupState               // For when we need to catch up as a follower.
 	progress map[string]*ipQueue[uint64] // For leader or server catching up a follower.
 
-	paused    bool   // Whether or not applies are paused
-	hcommit   uint64 // The commit at the time that applies were paused
-	pobserver bool   // Whether we were an observer at the time that applies were paused
+	hcommit uint64 // The commit at the time that applies were paused
 
 	prop  *ipQueue[*proposedEntry]       // Proposals
 	entry *ipQueue[*appendEntry]         // Append entries
@@ -222,6 +215,13 @@ type raft struct {
 	votes *ipQueue[*voteResponse]        // Vote responses
 	leadc chan bool                      // Leader changes
 	quit  chan struct{}                  // Raft group shutdown
+
+	lxfer       bool // Are we doing a leadership transfer?
+	hcbehind    bool // Were we falling behind at the last health check? (see: isCurrent)
+	maybeLeader bool // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
+	paused      bool // Whether or not applies are paused
+	observer    bool // The node is observing, i.e. not able to become leader
+	pobserver   bool // Were we previously an observer?
 }
 
 type proposedEntry struct {
