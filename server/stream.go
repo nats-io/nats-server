@@ -5284,7 +5284,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 		}
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
+		_, err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
 	}
 
 	if err != nil {

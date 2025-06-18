@@ -92,7 +92,7 @@ type SubjectDeleteMarkerUpdateHandler func(*inMsg)
 
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
-	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64) error
+	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64) (uint32, error)
 	SkipMsg() uint64
 	SkipMsgs(seq uint64, num uint64) error
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)

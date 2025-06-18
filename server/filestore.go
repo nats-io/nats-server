@@ -4166,7 +4166,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) (uint32, error) {
 	fs.mu.Lock()
 	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := fs.scb
@@ -4178,13 +4178,17 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		// Instead, set short timeout.
 		fs.resetAgeChk(int64(time.Millisecond * 50))
 	}
+	var lmb uint32
+	if fs.lmb != nil {
+		lmb = fs.lmb.index
+	}
 	fs.mu.Unlock()
 
 	if err == nil && cb != nil {
 		cb(1, int64(fileStoreMsgSize(subj, hdr, msg)), seq, subj)
 	}
 
-	return err
+	return lmb, err
 }
 
 // Store stores a message. We hold the main filestore lock for any write operation.
