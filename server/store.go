@@ -87,6 +87,11 @@ type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 // Used to call back into the upper layers to remove a message.
 type StorageRemoveMsgHandler func(seq uint64)
 
+// Used to call back into the upper layers that an underlying message block was closed.
+// Including what the last sequence of that block is.
+// FIXME(mvv): make sure the returned last sequence here is always the highest seen, not impacted by compaction.
+type StorageCloseMsgBlockHandler func(index uint32, lseq uint64)
+
 // Used to call back into the upper layers to report on newly created subject delete markers.
 type SubjectDeleteMarkerUpdateHandler func(*inMsg)
 
@@ -120,7 +125,8 @@ type StreamStore interface {
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
-	RegisterStorageRemoveMsg(handler StorageRemoveMsgHandler)
+	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
+	RegisterStorageCloseMsgBlock(StorageCloseMsgBlockHandler)
 	RegisterSubjectDeleteMarkerUpdates(SubjectDeleteMarkerUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error

@@ -347,6 +347,13 @@ func (ms *memStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	ms.mu.Unlock()
 }
 
+// RegisterStorageCloseMsgBlock registers a callback to signal to other layers
+// that an underlying message block was closed.
+// TODO(mvv): clarify docs more?
+func (ms *memStore) RegisterStorageCloseMsgBlock(_ StorageCloseMsgBlockHandler) {
+	// Noop, in-memory store doesn't use message blocks.
+}
+
 // RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new subject delete markers.
 func (ms *memStore) RegisterSubjectDeleteMarkerUpdates(cb SubjectDeleteMarkerUpdateHandler) {
 	ms.mu.Lock()

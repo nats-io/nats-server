@@ -176,6 +176,7 @@ type fileStore struct {
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
+	mbcb        StorageCloseMsgBlockHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
 	ageChk      *time.Timer
 	syncTmr     *time.Timer
@@ -3894,6 +3895,15 @@ func (fs *fileStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	fs.mu.Unlock()
 }
 
+// RegisterStorageCloseMsgBlock registers a callback to signal to other layers
+// that an underlying message block was closed.
+// TODO(mvv): clarify docs more?
+func (fs *fileStore) RegisterStorageCloseMsgBlock(cb StorageCloseMsgBlockHandler) {
+	fs.mu.Lock()
+	fs.mbcb = cb
+	fs.mu.Unlock()
+}
+
 // RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new tombstones.
 func (fs *fileStore) RegisterSubjectDeleteMarkerUpdates(cb SubjectDeleteMarkerUpdateHandler) {
 	fs.mu.Lock()
@@ -5143,9 +5153,14 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 			// not we can close FDs and exit.
 			mb.fs.mu.RLock()
 			notLast := mb != mb.fs.lmb
+			mbcb := mb.fs.mbcb
 			mb.fs.mu.RUnlock()
 			if notLast {
 				if err := mb.closeFDs(); err == nil {
+					if mbcb != nil {
+						// FIXME(mvv): make sure the returned last sequence here is always the highest seen, not impacted by compaction.
+						mbcb(mb.index, atomic.LoadUint64(&mb.last.seq))
+					}
 					return
 				}
 				// FIXME(mvv): if there was an error during close, we somehow still have bytes to be flushed but don't close this goroutine?

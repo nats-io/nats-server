@@ -4203,6 +4203,9 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 			mset.removeMsg(seq)
 		}
 	})
+	mset.store.RegisterStorageCloseMsgBlock(func(index uint32, lseq uint64) {
+		// FIXME(mvv): call into Raft logic
+	})
 	mset.store.RegisterSubjectDeleteMarkerUpdates(func(im *inMsg) {
 		if mset.IsClustered() {
 			if mset.IsLeader() {
