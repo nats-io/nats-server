@@ -5250,6 +5250,20 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 	// Calculate new eof.
 	eof := int64(ri + rl)
 
+	// FIXME(mvv): need to write because with async we would truncate to an offset even though we wouldn't have written any data yet
+	// FIXME(dlc) - We could be smarter here.
+	if buf, _ := mb.bytesPending(); len(buf) > 0 {
+		ld, err := mb.flushPendingMsgsLocked()
+		if ld != nil && mb.fs != nil {
+			// We do not know if fs is locked or not at this point.
+			// This should be an exceptional condition so do so in Go routine.
+			go mb.fs.rebuildState(ld)
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+
 	var purged, bytes uint64
 
 	checkDmap := mb.dmap.Size() > 0
