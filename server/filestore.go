@@ -8424,8 +8424,17 @@ SKIP:
 	smb.mu.Unlock()
 
 	// Write any tombstones as needed.
-	for _, tomb := range tombs {
-		fs.writeTombstone(tomb.seq, tomb.ts)
+	// When writing multiple tombstones we will flush at the end.
+	if len(tombs) > 0 {
+		for _, tomb := range tombs {
+			if err := fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
+				return purged, err
+			}
+		}
+		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
+		if lmb := fs.lmb; lmb != nil {
+			lmb.flushPendingMsgs()
+		}
 	}
 
 	if deleted > 0 {
