@@ -8419,7 +8419,13 @@ SKIP:
 
 	// Write any tombstones as needed.
 	for _, tomb := range tombs {
-		fs.writeTombstone(tomb.seq, tomb.ts)
+		fs.writeTombstoneNoFlush(tomb.seq, tomb.ts)
+	}
+	if len(tombs) > 0 {
+		// Flush any pending. If we change blocks the checkLastBlock() will flush any pending for us.
+		if lmb := fs.lmb; lmb != nil {
+			lmb.flushPendingMsgs()
+		}
 	}
 
 	if deleted > 0 {
