@@ -4813,7 +4813,9 @@ func TestJetStreamClusterMsgCounterRunningTotalConsistency(t *testing.T) {
 	rsm, err := js.GetLastMsg("TEST", "foo")
 	require_NoError(t, err)
 	require_Equal(t, rsm.Sequence, 1)
-	require_Equal(t, string(rsm.Data), "{\"val\":\"11\"}")
+	var count CounterValue
+	require_NoError(t, json.Unmarshal(rsm.Data, &count))
+	require_Equal(t, count.Value, "11")
 
 	// Confirm running total has properly been mutated.
 	total, ops := _EMPTY_, uint64(0)
@@ -4844,7 +4846,8 @@ func TestJetStreamClusterMsgCounterRunningTotalConsistency(t *testing.T) {
 	rsm, err = js.GetLastMsg("TEST", "foo")
 	require_NoError(t, err)
 	require_Equal(t, rsm.Sequence, 2)
-	require_Equal(t, string(rsm.Data), "{\"val\":\"12\"}")
+	require_NoError(t, json.Unmarshal(rsm.Data, &count))
+	require_Equal(t, count.Value, "12")
 
 	// Should be cleaned up after publish.
 	mset.clMu.Lock()
