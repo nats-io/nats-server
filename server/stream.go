@@ -736,7 +736,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 	fsCfg.StoreDir = storeDir
-	fsCfg.AsyncFlush = false
+	// FIXME(mvv): only allowed if replicated, need to turn off on update when changing to R1 (or back on to R3)
+	fsCfg.AsyncFlush = true
 	// Grab configured sync interval.
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
