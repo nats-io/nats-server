@@ -1658,5 +1658,45 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishDisabledErr",
+    "code": 400,
+    "error_code": 10168,
+    "description": "atomic publish is disabled",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishMissingSeqErr",
+    "code": 400,
+    "error_code": 10169,
+    "description": "atomic publish sequence is missing",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishIncompleteBatchErr",
+    "code": 400,
+    "error_code": 10170,
+    "description": "atomic publish batch is incomplete",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishRejectedBatchErrF",
+    "code": 400,
+    "error_code": 10171,
+    "description": "atomic publish batch is rejected: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

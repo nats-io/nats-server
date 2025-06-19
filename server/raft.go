@@ -839,11 +839,11 @@ func (n *raft) Propose(data []byte) error {
 	return nil
 }
 
-// ProposeDirect will propose multiple entries at once.
+// ProposeMulti will propose multiple entries at once.
 // This should only be called on the leader.
 func (n *raft) ProposeMulti(entries []*Entry) error {
 	if state := n.State(); state != Leader {
-		n.debug("Direct proposal ignored, not leader (state: %v)", state)
+		n.debug("Multi proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
 	n.Lock()
