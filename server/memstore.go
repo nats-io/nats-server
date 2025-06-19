@@ -245,7 +245,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, _ uint64) error {
 	ms.mu.Lock()
 	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := ms.scb
@@ -347,10 +347,17 @@ func (ms *memStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	ms.mu.Unlock()
 }
 
-// RegisterStorageCloseMsgBlock registers a callback to signal to other layers
-// that an underlying message block was closed.
+// RegisterStorageInitMsgBlock registers a callback to signal to other layers
+// that an underlying message block was created.
 // TODO(mvv): clarify docs more?
-func (ms *memStore) RegisterStorageCloseMsgBlock(_ StorageCloseMsgBlockHandler) {
+func (ms *memStore) RegisterStorageInitMsgBlock(_ StorageInitMsgBlockHandler) {
+	// Noop, in-memory store doesn't use message blocks.
+}
+
+// RegisterStorageFlushMsgBlock registers a callback to signal to other layers
+// that an underlying message block was flushed.
+// TODO(mvv): clarify docs more?
+func (ms *memStore) RegisterStorageFlushMsgBlock(_ StorageFlushMsgBlockHandler) {
 	// Noop, in-memory store doesn't use message blocks.
 }
 

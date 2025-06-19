@@ -4299,7 +4299,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 	validateStreamState(snap)
 
 	// Simulate a message being stored, but not calling Applied yet.
-	err = mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 1, time.Now().UnixNano(), nil, false)
+	err = mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 1, time.Now().UnixNano(), nil, false, 0)
 	require_NoError(t, err)
 
 	// Simulate the stream being stopped before we're able to call Applied.
@@ -6513,9 +6513,9 @@ func TestJetStreamClusterSDMMaxAgeProposeExpiryShortRetry(t *testing.T) {
 			require_NoError(t, err)
 
 			if fs, ok := mset.store.(*fileStore); ok {
-				require_NoError(t, fs.StoreRawMsg("foo", nil, nil, 1, 1, 0))
+				require_NoError(t, fs.StoreRawMsg("foo", nil, nil, 1, 1, 0, 0))
 			} else if ms, ok := mset.store.(*memStore); ok {
-				require_NoError(t, ms.StoreRawMsg("foo", nil, nil, 1, 1, 0))
+				require_NoError(t, ms.StoreRawMsg("foo", nil, nil, 1, 1, 0, 0))
 			}
 
 			cfg.MaxAge = time.Hour

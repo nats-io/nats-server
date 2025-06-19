@@ -87,17 +87,19 @@ type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 // Used to call back into the upper layers to remove a message.
 type StorageRemoveMsgHandler func(seq uint64)
 
-// Used to call back into the upper layers that an underlying message block was closed.
-// Including what the last sequence of that block is.
-// FIXME(mvv): make sure the returned last sequence here is always the highest seen, not impacted by compaction.
-type StorageCloseMsgBlockHandler func(index uint32, lseq uint64)
+// Used to call back into the upper layers that an underlying message block was created and needs to be tracked.
+// Below flush handler will be called once this block is flushed.
+type StorageInitMsgBlockHandler func(index uint32)
+
+// Used to call back into the upper layers that an underlying message block was flushed.
+type StorageFlushMsgBlockHandler func(index uint32, applied uint64, close bool)
 
 // Used to call back into the upper layers to report on newly created subject delete markers.
 type SubjectDeleteMarkerUpdateHandler func(*inMsg)
 
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
-	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64) error
+	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64, ceIndex uint64) error
 	SkipMsg() uint64
 	SkipMsgs(seq uint64, num uint64) error
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
@@ -126,7 +128,8 @@ type StreamStore interface {
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
-	RegisterStorageCloseMsgBlock(StorageCloseMsgBlockHandler)
+	RegisterStorageInitMsgBlock(StorageInitMsgBlockHandler)
+	RegisterStorageFlushMsgBlock(StorageFlushMsgBlockHandler)
 	RegisterSubjectDeleteMarkerUpdates(SubjectDeleteMarkerUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error

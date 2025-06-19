@@ -2989,7 +2989,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mt = mset.getAndDeleteMsgTrace(lseq)
 				}
 				// Process the actual message here.
-				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, ce.Index)
 
 				// If we have inflight make sure to clear after processing.
 				// TODO(dlc) - technically check on inflight != nil could cause datarace.
@@ -3022,7 +3022,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						if state.Msgs == 0 {
 							mset.store.Compact(lseq + 1)
 							// Retry
-							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, ce.Index)
 						}
 						// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
 						// and what we got.
@@ -7945,7 +7945,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We also invoke this in clustering mode for message tracing when not
 	// performing message delivery.
 	if node == nil || mt.traceOnly() {
-		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced)
+		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced, 0)
 	}
 
 	// If message tracing (with message delivery), we will need to send the
@@ -8787,7 +8787,8 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		if lseq := mset.store.SkipMsg(); lseq != seq {
 			return 0, errCatchupWrongSeqForSkip
 		}
-	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl); err != nil {
+	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl, 0); err != nil {
+		// FIXME(mvv): how to ensure correct catchup when underlying store is async?
 		return 0, err
 	}
 

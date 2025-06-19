@@ -176,7 +176,8 @@ type fileStore struct {
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
-	mbcb        StorageCloseMsgBlockHandler
+	mbicb       StorageInitMsgBlockHandler
+	mbfcb       StorageFlushMsgBlockHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
 	ageChk      *time.Timer
 	syncTmr     *time.Timer
@@ -224,6 +225,7 @@ type msgBlock struct {
 	cmp        StoreCompression // Effective compression at the time of loading the block
 	liwsz      int64
 	index      uint32
+	applied    uint64 // If we're the store behind a replicated log, this is our highest known commit index for this block.
 	bytes      uint64 // User visible bytes count.
 	rbytes     uint64 // Total bytes (raw) including deleted. Used for rolling to new blk.
 	cbytes     uint64 // Bytes count after last compaction. 0 if no compaction happened yet.
@@ -3895,12 +3897,21 @@ func (fs *fileStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	fs.mu.Unlock()
 }
 
-// RegisterStorageCloseMsgBlock registers a callback to signal to other layers
-// that an underlying message block was closed.
+// RegisterStorageInitMsgBlock registers a callback to signal to other layers
+// that an underlying message block was created.
 // TODO(mvv): clarify docs more?
-func (fs *fileStore) RegisterStorageCloseMsgBlock(cb StorageCloseMsgBlockHandler) {
+func (fs *fileStore) RegisterStorageInitMsgBlock(cb StorageInitMsgBlockHandler) {
 	fs.mu.Lock()
-	fs.mbcb = cb
+	fs.mbicb = cb
+	fs.mu.Unlock()
+}
+
+// RegisterStorageFlushMsgBlock registers a callback to signal to other layers
+// that an underlying message block was flushed.
+// TODO(mvv): clarify docs more?
+func (fs *fileStore) RegisterStorageFlushMsgBlock(cb StorageFlushMsgBlockHandler) {
+	fs.mu.Lock()
+	fs.mbfcb = cb
 	fs.mu.Unlock()
 }
 
@@ -4036,7 +4047,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
-func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) (err error) {
+func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, ceIndex uint64) (err error) {
 	if fs.closed {
 		return ErrStoreClosed
 	}
@@ -4090,7 +4101,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	// Write msg record.
 	// Add expiry bit to sequence if needed. This is so that if we need to
 	// rebuild, we know which messages to look at more quickly.
-	n, err := fs.writeMsgRecord(seq, ts, subj, hdr, msg)
+	n, err := fs.writeMsgRecord(seq, ts, subj, hdr, msg, ceIndex)
 	if err != nil {
 		return err
 	}
@@ -4176,9 +4187,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, ceIndex uint64) error {
 	fs.mu.Lock()
-	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl, ceIndex)
 	cb := fs.scb
 	// Check if first message timestamp requires expiry
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
@@ -4201,7 +4212,7 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error) {
 	fs.mu.Lock()
 	seq, ts := fs.state.LastSeq+1, time.Now().UnixNano()
-	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl, 0)
 	cb := fs.scb
 	fs.mu.Unlock()
 
@@ -4251,7 +4262,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 	mb.mu.Unlock()
 
 	if needsRecord {
-		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, nowts, true)
+		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, nowts, true, 0)
 	} else {
 		mb.kickFlusher()
 	}
@@ -4341,7 +4352,7 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	mb.mu.Unlock()
 
 	// Write out our placeholder.
-	mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, nowts, true)
+	mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, nowts, true, 0)
 
 	// Now update FS accounting.
 	// Update fs state.
@@ -4808,7 +4819,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	if secure {
-		if ld, _ := mb.flushPendingMsgsLocked(); ld != nil {
+		// TODO(mvv): signal back up?
+		if _, ld, _ := mb.flushPendingMsgsLocked(); ld != nil {
 			// We have the mb lock here, this needs the mb locks so do in its own go routine.
 			go fs.rebuildState(ld)
 		}
@@ -5123,6 +5135,8 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 	for {
 		select {
 		case <-fch:
+			var applied uint64
+
 			// If we have pending messages process them first.
 			if waiting := mb.pendingWriteSize(); waiting != 0 {
 				ts := 1 * time.Millisecond
@@ -5142,25 +5156,32 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 					waiting = newWaiting
 					ts *= 2
 				}
-				mb.flushPendingMsgs()
+
+				// FIXME(mvv): check error
+				applied, _ = mb.flushPendingMsgs()
 			}
 
 			// Check if we are no longer the last message block. If we are
 			// not we can close FDs and exit.
 			mb.fs.mu.RLock()
 			notLast := mb != mb.fs.lmb
-			mbcb := mb.fs.mbcb
+			mbcb := mb.fs.mbfcb
 			mb.fs.mu.RUnlock()
+
 			if notLast {
-				if err := mb.closeFDs(); err == nil {
-					if mbcb != nil {
-						// FIXME(mvv): make sure the returned last sequence here is always the highest seen, not impacted by compaction.
-						mbcb(mb.index, atomic.LoadUint64(&mb.last.seq))
-					}
-					return
+				if err := mb.closeFDs(); err != nil {
+					// FIXME(mvv): if there was an error during close, we somehow still have bytes to be flushed but don't close this goroutine?
+					// Should probably kick ourselves again, because we NEED to flush some data still. (Guard against spin loop though)
 				}
-				// FIXME(mvv): if there was an error during close, we somehow still have bytes to be flushed but don't close this goroutine?
-				// Should probably kick ourselves again, because we NEED to flush some data still. (Guard against spin loop though)
+			}
+
+			if (applied > 0 || notLast) && mbcb != nil {
+				// FIXME(mvv): make sure the returned applied index here is always the highest seen, not impacted by compaction.
+				mbcb(mb.index, applied, notLast)
+			}
+
+			if notLast {
+				return
 			}
 		case <-qch:
 			return
@@ -5249,7 +5270,7 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 	// FIXME(mvv): need to write because with async we would truncate to an offset even though we wouldn't have written any data yet
 	// FIXME(dlc) - We could be smarter here.
 	if buf, _ := mb.bytesPending(); len(buf) > 0 {
-		ld, err := mb.flushPendingMsgsLocked()
+		_, ld, err := mb.flushPendingMsgsLocked()
 		if ld != nil && mb.fs != nil {
 			// We do not know if fs is locked or not at this point.
 			// This should be an exceptional condition so do so in Go routine.
@@ -5837,7 +5858,8 @@ func (fs *fileStore) checkAndFlushAllBlocks() {
 		if mb.pendingWriteSize() > 0 {
 			// Since fs lock is held need to pull this apart in case we need to rebuild state.
 			mb.mu.Lock()
-			ld, _ := mb.flushPendingMsgsLocked()
+			// TODO(mvv): signal back up?
+			_, ld, _ := mb.flushPendingMsgsLocked()
 			mb.mu.Unlock()
 			if ld != nil {
 				fs.rebuildStateLocked(ld)
@@ -5896,7 +5918,7 @@ func (mb *msgBlock) enableForWriting(fip bool) error {
 
 // Helper function to place a delete tombstone.
 func (mb *msgBlock) writeTombstone(seq uint64, ts int64) error {
-	return mb.writeMsgRecord(emptyRecordLen, seq|tbit, _EMPTY_, nil, nil, ts, true)
+	return mb.writeMsgRecord(emptyRecordLen, seq|tbit, _EMPTY_, nil, nil, ts, true, 0)
 }
 
 // Helper function to place a delete tombstone without flush.
@@ -5904,21 +5926,21 @@ func (mb *msgBlock) writeTombstone(seq uint64, ts int64) error {
 func (mb *msgBlock) writeTombstoneNoFlush(seq uint64, ts int64) error {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	return mb.writeMsgRecordLocked(emptyRecordLen, seq|tbit, _EMPTY_, nil, nil, ts, false, false)
+	return mb.writeMsgRecordLocked(emptyRecordLen, seq|tbit, _EMPTY_, nil, nil, ts, false, false, 0)
 }
 
 // Will write the message record to the underlying message block.
 // filestore lock will be held.
-func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush bool) error {
+func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush bool, ceIndex uint64) error {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	return mb.writeMsgRecordLocked(rl, seq, subj, mhdr, msg, ts, flush, true)
+	return mb.writeMsgRecordLocked(rl, seq, subj, mhdr, msg, ts, flush, true, ceIndex)
 }
 
 // Will write the message record to the underlying message block.
 // filestore lock will be held.
 // mb lock should be held.
-func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush, kick bool) error {
+func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush, kick bool, ceIndex uint64) error {
 	// Enable for writing if our mfd is not open.
 	if mb.mfd == nil {
 		if err := mb.enableForWriting(flush && kick); err != nil {
@@ -6025,7 +6047,7 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 
 	// If we should be flushing, or had a write error, do so here.
 	if flush || werr != nil {
-		ld, err := mb.flushPendingMsgsLocked()
+		_, ld, err := mb.flushPendingMsgsLocked()
 		if ld != nil && mb.fs != nil {
 			// We have the mb lock here, this needs the mb locks so do in its own go routine.
 			go mb.fs.rebuildState(ld)
@@ -6034,6 +6056,16 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 			return err
 		}
 	} else if kick {
+		// Need to inform other layers about our async flushes for a new message block.
+		if ceIndex > 0 {
+			if mb.applied == 0 {
+				if cb := mb.fs.mbicb; cb != nil {
+					cb(mb.index)
+				}
+			}
+			// Need to store the highest commit index for tracking when we flush for this index.
+			mb.applied = ceIndex
+		}
 		// Kick the flusher here.
 		kickFlusher(fch)
 	}
@@ -6162,7 +6194,7 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 }
 
 // Lock should be held.
-func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte) (uint64, error) {
+func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte, ceIndex uint64) (uint64, error) {
 	// Get size for this message.
 	rl := fileStoreMsgSize(subj, hdr, msg)
 	if rl&hbit != 0 || rl > rlBadThresh {
@@ -6178,7 +6210,7 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	fs.dirty++
 
 	// Ask msg block to store in write through cache.
-	err = mb.writeMsgRecord(rl, seq, subj, hdr, msg, ts, fs.fip)
+	err = mb.writeMsgRecord(rl, seq, subj, hdr, msg, ts, fs.fip, ceIndex)
 
 	return rl, err
 }
@@ -6734,9 +6766,9 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 }
 
 // flushPendingMsgs writes out any messages for this message block.
-func (mb *msgBlock) flushPendingMsgs() error {
+func (mb *msgBlock) flushPendingMsgs() (uint64, error) {
 	mb.mu.Lock()
-	fsLostData, err := mb.flushPendingMsgsLocked()
+	applied, fsLostData, err := mb.flushPendingMsgsLocked()
 	fs := mb.fs
 	mb.mu.Unlock()
 
@@ -6745,7 +6777,7 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		// Rebuild fs state too.
 		fs.rebuildState(fsLostData)
 	}
-	return err
+	return applied, err
 }
 
 // Write function for actual data.
@@ -6766,12 +6798,12 @@ func (mb *msgBlock) writeAt(buf []byte, woff int64) (int, error) {
 
 // flushPendingMsgsLocked writes out any messages for this message block.
 // Lock should be held.
-func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
+func (mb *msgBlock) flushPendingMsgsLocked() (uint64, *LostStreamData, error) {
 	// Signals us that we need to rebuild filestore state.
 	var fsLostData *LostStreamData
 
 	if mb.cache == nil || mb.mfd == nil {
-		return nil, nil
+		return 0, nil, nil
 	}
 
 	buf, err := mb.bytesPending()
@@ -6781,7 +6813,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		if err == errNoPending || err == errNoCache {
 			err = nil
 		}
-		return nil, err
+		return 0, nil, err
 	}
 
 	woff := int64(mb.cache.off + mb.cache.wp)
@@ -6811,7 +6843,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 			mb.dirtyCloseWithRemove(false)
 			ld, _, _ := mb.rebuildStateLocked()
 			mb.werr = err
-			return ld, err
+			return 0, ld, err
 		}
 		// Update our write offset.
 		woff += int64(n)
@@ -6829,7 +6861,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Cache may be gone.
 	if mb.cache == nil || mb.mfd == nil {
-		return fsLostData, mb.werr
+		return 0, fsLostData, mb.werr
 	}
 
 	// Check if we are in sync always mode.
@@ -6871,7 +6903,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		mb.cache.fseq = 0
 	}
 
-	return fsLostData, mb.werr
+	return mb.applied, fsLostData, mb.werr
 }
 
 // Lock should be held.
@@ -7011,7 +7043,7 @@ checkCache:
 
 	// FIXME(dlc) - We could be smarter here.
 	if buf, _ := mb.bytesPending(); len(buf) > 0 {
-		ld, err := mb.flushPendingMsgsLocked()
+		_, ld, err := mb.flushPendingMsgsLocked()
 		if ld != nil && mb.fs != nil {
 			// We do not know if fs is locked or not at this point.
 			// This should be an exceptional condition so do so in Go routine.

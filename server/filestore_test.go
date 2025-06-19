@@ -5872,7 +5872,7 @@ func TestFileStoreMsgBlockHolesAndIndexing(t *testing.T) {
 	mb := fs.getFirstBlock()
 	writeMsg := func(subj string, seq uint64) {
 		rl := fileStoreMsgSize(subj, nil, []byte(subj))
-		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true))
+		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true, 0))
 		fs.rebuildState(nil)
 	}
 	readMsg := func(seq uint64, expectedSubj string) {
@@ -8747,7 +8747,7 @@ func TestFileStoreMessageTTLRecoveredOffByOne(t *testing.T) {
 	// the TTL is to look at the original message header, therefore the TTL
 	// must be in the headers for this test to work.
 	hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
-	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl))
+	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl, 0))
 
 	var ss StreamState
 	fs.FastState(&ss)
