@@ -4203,13 +4203,19 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 			mset.removeMsg(seq)
 		}
 	})
-	mset.store.RegisterStorageInitMsgBlock(func(index uint32) {
-		// FIXME(mvv): call into Raft logic
-		fmt.Printf("Init %d\n", index)
+	mset.store.RegisterStorageInitMsgBlock(func(index uint32, applied uint64) {
+		// Stream lock is already held.
+		if n := mset.node; n != nil {
+			n.TrackPendingInit(index, applied)
+		}
 	})
 	mset.store.RegisterStorageFlushMsgBlock(func(index uint32, applied uint64, close bool) {
-		// FIXME(mvv): call into Raft logic
-		fmt.Printf("Flush %d, applied=%d, close=%v\n", index, applied, close)
+		mset.mu.RLock()
+		n := mset.node
+		mset.mu.RUnlock()
+		if n != nil {
+			n.TrackPendingApplied(index, applied, close)
+		}
 	})
 	mset.store.RegisterSubjectDeleteMarkerUpdates(func(im *inMsg) {
 		if mset.IsClustered() {

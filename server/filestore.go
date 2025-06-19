@@ -5166,12 +5166,19 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 			mb.fs.mu.RLock()
 			notLast := mb != mb.fs.lmb
 			mbcb := mb.fs.mbfcb
+			compression := mb.fs.fcfg.Compression
 			mb.fs.mu.RUnlock()
 
 			if notLast {
 				if err := mb.closeFDs(); err != nil {
 					// FIXME(mvv): if there was an error during close, we somehow still have bytes to be flushed but don't close this goroutine?
 					// Should probably kick ourselves again, because we NEED to flush some data still. (Guard against spin loop though)
+					mb.kickFlusher()
+					continue
+				} else if compression != NoCompression {
+					// We've now reached the end of this message block, if we want
+					// to compress blocks then now's the time to do it.
+					go mb.recompressOnDiskIfNeeded()
 				}
 			}
 
@@ -6060,7 +6067,7 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		if ceIndex > 0 {
 			if mb.applied == 0 {
 				if cb := mb.fs.mbicb; cb != nil {
-					cb(mb.index)
+					cb(mb.index, ceIndex)
 				}
 			}
 			// Need to store the highest commit index for tracking when we flush for this index.
@@ -6178,12 +6185,17 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 	lmb = fs.lmb
 	rbytes := lmb.blkSize()
 	if lmb == nil || (rbytes > 0 && rbytes+rl > fs.fcfg.BlockSize) {
+		// TODO(mvv): docs, if we're async we can optimize by not forcing a flush inline here.
 		if lmb != nil {
-			lmb.flushPendingMsgs()
-			if fs.fcfg.Compression != NoCompression {
-				// We've now reached the end of this message block, if we want
-				// to compress blocks then now's the time to do it.
-				go lmb.recompressOnDiskIfNeeded()
+			if fs.fip {
+				lmb.flushPendingMsgs()
+				if fs.fcfg.Compression != NoCompression {
+					// We've now reached the end of this message block, if we want
+					// to compress blocks then now's the time to do it.
+					go lmb.recompressOnDiskIfNeeded()
+				}
+			} else {
+				lmb.kickFlusher()
 			}
 		}
 		if lmb, err = fs.newMsgBlockForWrite(); err != nil {

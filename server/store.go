@@ -89,7 +89,7 @@ type StorageRemoveMsgHandler func(seq uint64)
 
 // Used to call back into the upper layers that an underlying message block was created and needs to be tracked.
 // Below flush handler will be called once this block is flushed.
-type StorageInitMsgBlockHandler func(index uint32)
+type StorageInitMsgBlockHandler func(index uint32, applied uint64)
 
 // Used to call back into the upper layers that an underlying message block was flushed.
 type StorageFlushMsgBlockHandler func(index uint32, applied uint64, close bool)

@@ -44,6 +44,8 @@ type RaftNode interface {
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
+	TrackPendingInit(blkIndex uint32, index uint64)
+	TrackPendingApplied(blkIndex uint32, index uint64, close bool)
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
@@ -169,6 +171,8 @@ type raft struct {
 	pindex  uint64 // Previous index from the last snapshot
 	commit  uint64 // Index of the most recent commit
 	applied uint64 // Index of the most recently applied commit
+
+	pending map[uint32]uint64 // TODO: docs
 
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
@@ -1074,6 +1078,27 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		return 0, 0
 	}
 
+	if len(n.pending) > 0 {
+		return 0, 0
+	}
+	n.appliedLocked(index)
+
+	// Calculate the number of entries and estimate the byte size that
+	// we can now remove with a compaction/snapshot.
+	var state StreamState
+	n.wal.FastState(&state)
+	if n.applied > state.FirstSeq {
+		entries = n.applied - state.FirstSeq
+	}
+	if state.Msgs > 0 {
+		bytes = entries * state.Bytes / state.Msgs
+	}
+	return entries, bytes
+}
+
+// TODO: docs
+// Lock should be held.
+func (n *raft) appliedLocked(index uint64) {
 	// Ignore if already applied.
 	if index > n.applied {
 		n.applied = index
@@ -1089,18 +1114,39 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 			n.updateLeadChange(true)
 		}
 	}
+}
 
-	// Calculate the number of entries and estimate the byte size that
-	// we can now remove with a compaction/snapshot.
-	var state StreamState
-	n.wal.FastState(&state)
-	if n.applied > state.FirstSeq {
-		entries = n.applied - state.FirstSeq
+// TODO: docs
+func (n *raft) TrackPendingInit(blkIndex uint32, index uint64) {
+	n.Lock()
+	defer n.Unlock()
+	n.trackPendingLocked(blkIndex, index)
+}
+
+// TODO: docs
+func (n *raft) TrackPendingApplied(blkIndex uint32, index uint64, close bool) {
+	n.Lock()
+	defer n.Unlock()
+
+	if !close {
+		n.trackPendingLocked(blkIndex, index)
+		fmt.Printf("Flush %d, applied=%d, close=%v (%d remaining)\n", blkIndex, index, close, len(n.pending))
+		return
 	}
-	if state.Msgs > 0 {
-		bytes = entries * state.Bytes / state.Msgs
+
+	delete(n.pending, blkIndex)
+	fmt.Printf("Flush %d, applied=%d, close=%v (%d remaining)\n", blkIndex, index, close, len(n.pending))
+}
+
+// TODO: docs
+func (n *raft) trackPendingLocked(blkIndex uint32, index uint64) {
+	if n.pending == nil {
+		n.pending = make(map[uint32]uint64, 1)
 	}
-	return entries, bytes
+	if _, ok := n.pending[blkIndex]; !ok {
+		fmt.Printf("Init %d, applied=%d\n", blkIndex, index)
+	}
+	n.pending[blkIndex] = index
 }
 
 // For capturing data needed by snapshot.
