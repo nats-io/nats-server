@@ -2739,6 +2739,176 @@ func TestNRGSnapshotCatchup(t *testing.T) {
 	t.Run("with-restart", func(t *testing.T) { test(t, true) })
 }
 
+func TestNRGPendingAppliedPermutations(t *testing.T) {
+	t.Run("None", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+		n.commit = 1
+		n.Applied(1)
+		require_Equal(t, n.applied, 1)
+	})
+
+	t.Run("SinglePending/PreApplied", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+		n.commit = 100
+
+		// TODO: docs, pending completes before n.Applied
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingApplied(1, 1, true)
+		require_Equal(t, n.applied, 0)
+		n.Applied(1)
+		require_Equal(t, n.applied, 1)
+
+		// TODO: docs, pending partially completes before n.Applied
+		n.TrackPendingInit(2, 2)
+		n.TrackPendingApplied(2, 2, false)
+		require_Equal(t, n.applied, 1)
+		n.Applied(2)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(2, 3, true)
+		require_Equal(t, n.applied, 2)
+		n.Applied(3)
+		require_Equal(t, n.applied, 3)
+	})
+
+	t.Run("SinglePending/PostApplied", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+		n.commit = 100
+
+		// TODO: docs, pending completes after n.Applied
+		n.TrackPendingInit(1, 1)
+		n.Applied(1)
+		require_Equal(t, n.applied, 0)
+		require_Equal(t, n.papplied, 1)
+		// Ensure our highest seen applied can't roll back.
+		n.Applied(0)
+		require_Equal(t, n.applied, 0)
+		require_Equal(t, n.papplied, 1)
+		n.TrackPendingApplied(1, 1, true)
+		require_Equal(t, n.applied, 1)
+
+		// TODO: docs, pending partially completes after n.Applied
+		n.TrackPendingInit(2, 2)
+		n.Applied(2)
+		require_Equal(t, n.applied, 1)
+		n.TrackPendingApplied(2, 2, false)
+		require_Equal(t, n.applied, 2)
+		n.Applied(3)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(2, 3, true)
+		require_Equal(t, n.applied, 3)
+
+		// TODO: docs, pending partially completes after HIGH n.Applied
+		// Index=2 is a hack and should normally not happen (because applied shouldn't
+		// be that high already then), but check anyhow we can't lower applied.
+		n.TrackPendingInit(4, 2)
+		n.Applied(12)
+		require_Equal(t, n.applied, 3)
+		n.TrackPendingApplied(4, 2, false)
+		require_Equal(t, n.applied, 3)
+		n.TrackPendingApplied(4, 10, false)
+		require_Equal(t, n.applied, 10)
+		n.Applied(12)
+		require_Equal(t, n.applied, 10)
+		n.TrackPendingApplied(4, 13, true)
+		require_Equal(t, n.applied, 12)
+		n.Applied(13)
+		require_Equal(t, n.applied, 13)
+	})
+
+	t.Run("MultiPending/PreApplied", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+		n.commit = 100
+
+		// TODO: docs, pending completes before n.Applied
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingInit(2, 2)
+		n.TrackPendingApplied(1, 1, true)
+		n.TrackPendingApplied(2, 2, true)
+		require_Equal(t, n.applied, 0)
+		n.Applied(2)
+		require_Equal(t, n.applied, 2)
+
+		// TODO: docs, pending partially completes before n.Applied
+		n.TrackPendingInit(3, 3)
+		n.TrackPendingInit(4, 3)
+		n.TrackPendingApplied(4, 3, false)
+		require_Equal(t, n.applied, 2)
+		n.Applied(3)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(3, 3, true)
+		require_Equal(t, n.applied, 3)
+		n.TrackPendingApplied(4, 4, true)
+		require_Equal(t, n.applied, 3)
+		n.Applied(4)
+		require_Equal(t, n.applied, 4)
+
+		// TODO: docs, pending partially completes before n.Applied
+		n.TrackPendingInit(5, 5)
+		n.TrackPendingInit(6, 5)
+		n.TrackPendingApplied(5, 5, false)
+		require_Equal(t, n.applied, 4)
+		n.Applied(5)
+		require_Equal(t, n.applied, 4)
+		n.TrackPendingApplied(6, 6, false)
+		require_Equal(t, n.applied, 5)
+		n.TrackPendingApplied(5, 6, true)
+		require_Equal(t, n.applied, 5)
+		n.Applied(7)
+		require_Equal(t, n.applied, 6)
+		n.TrackPendingApplied(6, 7, true)
+		require_Equal(t, n.applied, 7)
+
+		// TODO: docs, pending partially completes before n.Applied
+		n.TrackPendingInit(8, 8)
+		n.TrackPendingApplied(8, 8, false)
+		n.TrackPendingInit(9, 9)
+		n.TrackPendingApplied(9, 9, false)
+		require_Equal(t, n.applied, 7)
+		n.Applied(8)
+		require_Equal(t, n.applied, 8)
+		n.TrackPendingApplied(9, 10, false)
+		require_Equal(t, n.applied, 8)
+		n.TrackPendingApplied(8, 9, true)
+		require_Equal(t, n.applied, 8)
+		n.Applied(11)
+		require_Equal(t, n.applied, 10)
+		n.TrackPendingApplied(9, 11, true)
+		require_Equal(t, n.applied, 11)
+	})
+
+	t.Run("MultiPending/PostApplied", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+		n.commit = 100
+
+		// TODO: docs, pending completes after n.Applied
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingInit(2, 2)
+		n.Applied(3)
+		require_Equal(t, n.applied, 0)
+		n.TrackPendingApplied(1, 1, true)
+		require_Equal(t, n.applied, 1)
+		n.TrackPendingApplied(2, 2, true)
+		require_Equal(t, n.applied, 3)
+
+		// TODO: docs, pending partially completes after n.Applied
+		n.TrackPendingInit(4, 4)
+		n.TrackPendingInit(5, 5)
+		n.Applied(6)
+		require_Equal(t, n.applied, 3)
+		n.TrackPendingApplied(4, 4, false)
+		require_Equal(t, n.applied, 4)
+		n.TrackPendingApplied(5, 5, true)
+		require_Equal(t, n.applied, 4)
+		n.TrackPendingApplied(4, 5, true)
+		require_Equal(t, n.applied, 6)
+	})
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:

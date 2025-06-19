@@ -172,7 +172,9 @@ type raft struct {
 	commit  uint64 // Index of the most recent commit
 	applied uint64 // Index of the most recently applied commit
 
-	pending map[uint32]uint64 // TODO: docs
+	fapplied uint64                   // TODO: docs, applied floor of pending.
+	papplied uint64                   // Index of the highest applied commit seen when there are async pending.
+	pending  map[uint32]*pendingApply // TODO: docs
 
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
@@ -224,6 +226,11 @@ type raft struct {
 	votes *ipQueue[*voteResponse]        // Vote responses
 	leadc chan bool                      // Leader changes
 	quit  chan struct{}                  // Raft group shutdown
+}
+
+type pendingApply struct {
+	index   uint64 // TODO: docs
+	applied bool   // TODO: docs, if false just initialized, if true the index is applied
 }
 
 type proposedEntry struct {
@@ -1078,10 +1085,21 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		return 0, 0
 	}
 
+	// If pending, this is the highest index we've seen.
+	// It can be applied for real after pending is either cleared.
 	if len(n.pending) > 0 {
-		return 0, 0
+		// If we've registered a pending floor, check if we can move up applied now as well.
+		if n.fapplied > 0 && index >= n.fapplied && n.fapplied > n.applied {
+			n.appliedLocked(n.fapplied)
+			n.fapplied = 0
+		}
+		// Ensure we can't roll back.
+		if index > n.papplied {
+			n.papplied = index
+		}
+	} else {
+		n.appliedLocked(index)
 	}
-	n.appliedLocked(index)
 
 	// Calculate the number of entries and estimate the byte size that
 	// we can now remove with a compaction/snapshot.
@@ -1120,7 +1138,7 @@ func (n *raft) appliedLocked(index uint64) {
 func (n *raft) TrackPendingInit(blkIndex uint32, index uint64) {
 	n.Lock()
 	defer n.Unlock()
-	n.trackPendingLocked(blkIndex, index)
+	n.trackPendingLocked(blkIndex, index, false)
 }
 
 // TODO: docs
@@ -1128,25 +1146,78 @@ func (n *raft) TrackPendingApplied(blkIndex uint32, index uint64, close bool) {
 	n.Lock()
 	defer n.Unlock()
 
-	if !close {
-		n.trackPendingLocked(blkIndex, index)
-		fmt.Printf("Flush %d, applied=%d, close=%v (%d remaining)\n", blkIndex, index, close, len(n.pending))
-		return
+	if close {
+		delete(n.pending, blkIndex)
+
+		// Last pending is closed, we can apply the highest value we've seen.
+		if len(n.pending) == 0 {
+			// Apply the highest observed staged applied value.
+			if n.papplied > n.applied {
+				n.appliedLocked(n.papplied)
+			}
+			n.papplied = 0
+			n.fapplied = 0
+			return
+		}
+	} else {
+		n.trackPendingLocked(blkIndex, index, true)
+
+		// If we are the only one, we can move applied up, either fully or partially.
+		if len(n.pending) == 1 {
+			// If a minimum of n.Applied(index) was called, we can set apply immediately.
+			if n.papplied > n.applied && index > n.applied {
+				n.appliedLocked(min(index, n.papplied))
+			} else if index > n.fapplied {
+				// Otherwise, need to mark this as our new floor, so the next n.Applied call can move applied up.
+				n.fapplied = index
+			}
+			return
+		}
 	}
 
-	delete(n.pending, blkIndex)
-	fmt.Printf("Flush %d, applied=%d, close=%v (%d remaining)\n", blkIndex, index, close, len(n.pending))
+	// Now we search for minimum allowed applied index.
+	var a = uint64(math.MaxUint64)
+	var applied bool
+	for _, pa := range n.pending {
+		if pa.index < a {
+			a = pa.index
+			applied = pa.applied
+		} else if pa.index == a {
+			applied = applied && pa.applied
+		}
+		//if pBlk != blkIndex && pa.index < a /*&& !pa.applied*/ {
+		//	a = pa.index
+		//}
+	}
+	// TODO(mvv): update docs
+	// If we were the last to need to apply this index, we can update applied.
+	if a != math.MaxUint64 {
+		// If floor was not applied yet, we can apply below this.
+		if !applied {
+			a--
+		}
+		//if a == math.MaxUint64 /*&& n.applied < index*/ {
+		// If a minimum of n.Applied(index) was called, we can set apply immediately.
+		if n.papplied > n.applied {
+			n.appliedLocked(min(a, n.papplied))
+		} else if a > n.fapplied {
+			// Otherwise, need to mark this as our new floor, so the next n.Applied call can move applied up.
+			n.fapplied = a
+		}
+	}
 }
 
 // TODO: docs
-func (n *raft) trackPendingLocked(blkIndex uint32, index uint64) {
+func (n *raft) trackPendingLocked(blkIndex uint32, index uint64, applied bool) {
 	if n.pending == nil {
-		n.pending = make(map[uint32]uint64, 1)
+		n.pending = make(map[uint32]*pendingApply, 1)
 	}
-	if _, ok := n.pending[blkIndex]; !ok {
-		fmt.Printf("Init %d, applied=%d\n", blkIndex, index)
+	if p, ok := n.pending[blkIndex]; ok {
+		p.index = index
+		p.applied = applied
+	} else {
+		n.pending[blkIndex] = &pendingApply{index, applied}
 	}
-	n.pending[blkIndex] = index
 }
 
 // For capturing data needed by snapshot.
