@@ -8747,8 +8747,7 @@ func TestFileStoreMessageTTLRecoveredOffByOne(t *testing.T) {
 	// the TTL is to look at the original message header, therefore the TTL
 	// must be in the headers for this test to work.
 	hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
-	_, err = fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl)
-	require_NoError(t, err)
+	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl))
 
 	var ss StreamState
 	fs.FastState(&ss)

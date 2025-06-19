@@ -245,7 +245,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) (uint32, error) {
+func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
 	ms.mu.Lock()
 	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := ms.scb
@@ -262,7 +262,7 @@ func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 		cb(1, int64(memStoreMsgSize(subj, hdr, msg)), seq, subj)
 	}
 
-	return 0, err
+	return err
 }
 
 // Store stores a message.

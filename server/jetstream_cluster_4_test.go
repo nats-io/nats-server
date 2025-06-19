@@ -6513,11 +6513,9 @@ func TestJetStreamClusterSDMMaxAgeProposeExpiryShortRetry(t *testing.T) {
 			require_NoError(t, err)
 
 			if fs, ok := mset.store.(*fileStore); ok {
-				_, err = fs.StoreRawMsg("foo", nil, nil, 1, 1, 0)
-				require_NoError(t, err)
+				require_NoError(t, fs.StoreRawMsg("foo", nil, nil, 1, 1, 0))
 			} else if ms, ok := mset.store.(*memStore); ok {
-				_, err = ms.StoreRawMsg("foo", nil, nil, 1, 1, 0)
-				require_NoError(t, err)
+				require_NoError(t, ms.StoreRawMsg("foo", nil, nil, 1, 1, 0))
 			}
 
 			cfg.MaxAge = time.Hour
