@@ -21050,3 +21050,75 @@ func TestJetStreamAllowMsgCounterSourceStartingAboveZero(t *testing.T) {
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
+
+func TestJetStreamGetNoHeaders(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Storage:     nats.FileStorage,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	msg := &nats.Msg{
+		Subject: "foo",
+		Header: nats.Header{
+			"test": []string{"something"},
+		},
+		Data: []byte{1, 2, 3, 4, 5},
+	}
+	_, err = js.PublishMsg(msg)
+	require_NoError(t, err)
+
+	t.Run("MsgGet", func(t *testing.T) {
+		msgGet := func(noHeaders bool) (payload []byte, hdrs nats.Header) {
+			getSubj := fmt.Sprintf(JSApiMsgGetT, "TEST")
+			req := fmt.Appendf(nil, `{"seq":1,"no_hdr":%v}`, noHeaders)
+			resp, err := nc.Request(getSubj, req, time.Second)
+			require_NoError(t, err)
+			var get JSApiMsgGetResponse
+			require_NoError(t, json.Unmarshal(resp.Data, &get))
+			payload = get.Message.Data
+			if len(get.Message.Header) > 0 {
+				hdrs, err = nats.DecodeHeadersMsg(get.Message.Header)
+				require_NoError(t, err)
+			}
+			return
+		}
+
+		payload, headers := msgGet(false)
+		require_True(t, bytes.Equal(payload, msg.Data))
+		require_Equal(t, headers.Get("test"), "something")
+
+		payload, headers = msgGet(true)
+		require_True(t, bytes.Equal(payload, msg.Data))
+		require_Equal(t, headers.Get("test"), _EMPTY_)
+	})
+
+	t.Run("DirectGet", func(t *testing.T) {
+		directGet := func(noHeaders bool) (payload []byte, hdrs nats.Header) {
+			getSubj := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+			req := fmt.Appendf(nil, `{"seq":1,"no_hdr":%v}`, noHeaders)
+			resp, err := nc.Request(getSubj, req, time.Second)
+			require_NoError(t, err)
+			return resp.Data, resp.Header
+		}
+
+		payload, headers := directGet(false)
+		require_True(t, bytes.Equal(payload, msg.Data))
+		require_Equal(t, headers.Get("test"), "something")
+
+		payload, headers = directGet(true)
+		require_True(t, bytes.Equal(payload, msg.Data))
+		require_Equal(t, headers.Get("test"), _EMPTY_)
+		require_Equal(t, headers.Get("Nats-Stream"), _EMPTY_)
+		require_Equal(t, headers.Get("Nats-Sequence"), _EMPTY_)
+		require_Equal(t, headers.Get("Nats-Time-Stamp"), _EMPTY_)
+	})
+}
