@@ -1332,7 +1332,13 @@ func (c *client) readLoop(pre []byte) {
 	}()
 
 	// Start read buffer.
-	b := make([]byte, c.in.rsz)
+	var b []byte
+	var _b [2048]byte
+	if c.in.rsz <= 2048 {
+		b = _b[:]
+	} else {
+		b = make([]byte, c.in.rsz)
+	}
 
 	// Websocket clients will return several slices if there are multiple
 	// websocket frames in the blind read. For non WS clients though, we
@@ -1482,8 +1488,11 @@ func (c *client) readLoop(pre []byte) {
 			b = make([]byte, c.in.rsz)
 		} else if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
 			// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
-			c.in.rsz = int32(cap(b) / 2)
-			b = make([]byte, c.in.rsz)
+			if c.in.rsz = int32(cap(b) / 2); c.in.rsz <= 2048 {
+				b = _b[:]
+			} else {
+				b = make([]byte, c.in.rsz)
+			}
 		}
 		// re-snapshot the account since it can change during reload, etc.
 		acc = c.acc
