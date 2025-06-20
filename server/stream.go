@@ -2177,7 +2177,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 
 	// If we're changing retention and haven't errored because of consumer
 	// replicas by now, whip through and update the consumer retention.
-	if ocfg.Retention != cfg.Retention && cfg.Retention == InterestPolicy {
+	if ocfg.Retention != cfg.Retention {
 		toUpdate := make([]*consumer, 0, len(mset.consumers))
 		for _, c := range mset.consumers {
 			toUpdate = append(toUpdate, c)
