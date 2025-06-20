@@ -2739,6 +2739,92 @@ func TestNRGSnapshotCatchup(t *testing.T) {
 	t.Run("with-restart", func(t *testing.T) { test(t, true) })
 }
 
+func TestNRGPendingAppliedPermutationsTODO(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+	reset := func() {
+		n.commit, n.applied = 100, 0
+		n.pending, n.papplied, n.fapplied = nil, 0, 0
+	}
+	reset()
+
+	t.Run("None", func(t *testing.T) {
+		defer reset()
+		n.Applied(1)
+		require_Equal(t, n.applied, 1)
+	})
+
+	t.Run("ApplyOnClose", func(t *testing.T) {
+		defer reset()
+		// TODO: docs
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingApplied(1, 1, true)
+		n.Applied(1)
+		require_Equal(t, n.applied, 1)
+
+		// TODO: docs
+		n.TrackPendingInit(2, 2)
+		n.Applied(2)
+		require_Equal(t, n.applied, 1)
+		n.TrackPendingApplied(2, 2, true)
+		require_Equal(t, n.applied, 2)
+	})
+
+	t.Run("B", func(t *testing.T) {
+		defer reset()
+		// TODO: docs
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingApplied(1, 1, false)
+		n.Applied(2)
+		require_Equal(t, n.applied, 2)
+
+		n.TrackPendingInit(1, 3)
+		n.TrackPendingInit(1, 4)
+		n.Applied(4)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(1, 3, false)
+		require_Equal(t, n.applied, 3)
+	})
+
+	t.Run("C", func(t *testing.T) {
+		defer reset()
+		// TODO: docs
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingInit(2, 1)
+		n.TrackPendingApplied(1, 1, false)
+		n.TrackPendingApplied(2, 1, false)
+		n.Applied(2)
+		require_Equal(t, n.applied, 2)
+
+		n.TrackPendingInit(3, 3)
+		n.TrackPendingInit(4, 3)
+		n.TrackPendingInit(5, 100)
+		n.Applied(4)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(3, 3, false)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(4, 3, false)
+		require_Equal(t, n.applied, 4)
+	})
+
+	t.Run("D", func(t *testing.T) {
+		defer reset()
+		// TODO: docs
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingInit(3, 3)
+		n.TrackPendingApplied(1, 1, false)
+		require_Equal(t, n.applied, 0)
+		n.Applied(1)
+		require_Equal(t, n.applied, 1)
+		n.Applied(2)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(3, 3, false)
+		require_Equal(t, n.applied, 2)
+		n.Applied(3)
+		require_Equal(t, n.applied, 3)
+	})
+}
+
 func TestNRGPendingAppliedPermutations(t *testing.T) {
 	t.Run("None", func(t *testing.T) {
 		n, cleanup := initSingleMemRaftNode(t)
@@ -2795,6 +2881,8 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 		require_Equal(t, n.applied, 1)
 		n.TrackPendingApplied(2, 2, false)
 		require_Equal(t, n.applied, 2)
+		n.TrackPendingInit(2, 3)
+		require_Equal(t, n.applied, 2)
 		n.Applied(3)
 		require_Equal(t, n.applied, 2)
 		n.TrackPendingApplied(2, 3, true)
@@ -2803,13 +2891,15 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 		// TODO: docs, pending partially completes after HIGH n.Applied
 		// Index=2 is a hack and should normally not happen (because applied shouldn't
 		// be that high already then), but check anyhow we can't lower applied.
-		n.TrackPendingInit(4, 2)
+		for index := uint64(2); index <= 12; index++ {
+			n.TrackPendingInit(4, index)
+		}
 		n.Applied(12)
 		require_Equal(t, n.applied, 3)
 		n.TrackPendingApplied(4, 2, false)
 		require_Equal(t, n.applied, 3)
 		n.TrackPendingApplied(4, 10, false)
-		require_Equal(t, n.applied, 12)
+		require_Equal(t, n.applied, 10)
 		n.TrackPendingApplied(4, 13, true)
 		require_Equal(t, n.applied, 12)
 		n.Applied(13)
