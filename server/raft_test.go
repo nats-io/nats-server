@@ -2809,9 +2809,7 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 		n.TrackPendingApplied(4, 2, false)
 		require_Equal(t, n.applied, 3)
 		n.TrackPendingApplied(4, 10, false)
-		require_Equal(t, n.applied, 10)
-		n.Applied(12)
-		require_Equal(t, n.applied, 10)
+		require_Equal(t, n.applied, 12)
 		n.TrackPendingApplied(4, 13, true)
 		require_Equal(t, n.applied, 12)
 		n.Applied(13)
@@ -2858,8 +2856,8 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 		n.TrackPendingApplied(5, 6, true)
 		require_Equal(t, n.applied, 5)
 		n.Applied(7)
-		require_Equal(t, n.applied, 6)
-		n.TrackPendingApplied(6, 7, true)
+		require_Equal(t, n.applied, 7)
+		n.TrackPendingApplied(6, 7, true) // cleanup
 		require_Equal(t, n.applied, 7)
 
 		// TODO: docs, pending partially completes before n.Applied
@@ -2875,9 +2873,11 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 		n.TrackPendingApplied(8, 9, true)
 		require_Equal(t, n.applied, 8)
 		n.Applied(11)
-		require_Equal(t, n.applied, 10)
-		n.TrackPendingApplied(9, 11, true)
 		require_Equal(t, n.applied, 11)
+		n.TrackPendingApplied(9, 12, true)
+		require_Equal(t, n.applied, 11)
+		n.Applied(12)
+		require_Equal(t, n.applied, 12)
 	})
 
 	t.Run("MultiPending/PostApplied", func(t *testing.T) {
@@ -2903,9 +2903,40 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 		n.TrackPendingApplied(4, 4, false)
 		require_Equal(t, n.applied, 4)
 		n.TrackPendingApplied(5, 5, true)
-		require_Equal(t, n.applied, 4)
+		require_Equal(t, n.applied, 6)
 		n.TrackPendingApplied(4, 5, true)
 		require_Equal(t, n.applied, 6)
+	})
+
+	t.Run("Pending/InProgress", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+		n.commit = 100
+
+		// TODO: docs
+		n.TrackPendingInit(1, 1)
+		n.TrackPendingApplied(1, 1, false)
+		require_Equal(t, n.applied, 0)
+		n.Applied(2)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(1, 1, true) // cleanup
+
+		// TODO: docs
+		n.TrackPendingInit(3, 3)
+		n.Applied(4)
+		require_Equal(t, n.applied, 2)
+		n.TrackPendingApplied(3, 3, false)
+		require_Equal(t, n.applied, 4)
+		n.TrackPendingApplied(3, 3, true) // cleanup
+
+		// TODO: docs
+		n.TrackPendingInit(5, 5)
+		n.TrackPendingInit(6, 6)
+		n.TrackPendingApplied(5, 5, false)
+		n.TrackPendingApplied(6, 6, false)
+		require_Equal(t, n.applied, 4)
+		n.Applied(7)
+		require_Equal(t, n.applied, 7)
 	})
 }
 

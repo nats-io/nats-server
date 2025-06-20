@@ -6065,12 +6065,10 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	} else if kick {
 		// Need to inform other layers about our async flushes for a new message block.
 		if ceIndex > 0 {
-			if mb.applied == 0 {
-				if cb := mb.fs.mbicb; cb != nil {
-					cb(mb.index, ceIndex)
-				}
+			if cb := mb.fs.mbicb; cb != nil {
+				cb(mb.index, ceIndex)
 			}
-			// Need to store the highest commit index for tracking when we flush for this index.
+			// Need to store the highest commit floor for tracking when we flush for this floor.
 			mb.applied = ceIndex
 		}
 		// Kick the flusher here.

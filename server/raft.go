@@ -173,6 +173,7 @@ type raft struct {
 	applied uint64 // Index of the most recently applied commit
 
 	fapplied uint64                   // TODO: docs, applied floor of pending.
+	happlied uint64                   // TODO: docs, highest ceiling of pending.
 	papplied uint64                   // Index of the highest applied commit seen when there are async pending.
 	pending  map[uint32]*pendingApply // TODO: docs
 
@@ -229,8 +230,9 @@ type raft struct {
 }
 
 type pendingApply struct {
-	index   uint64 // TODO: docs
-	applied bool   // TODO: docs, if false just initialized, if true the index is applied
+	floor   uint64 // TODO: docs
+	high    uint64 // TODO: docs
+	applied bool   // TODO: docs, if false just initialized, if true the floor is applied
 }
 
 type proposedEntry struct {
@@ -1085,17 +1087,23 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		return 0, 0
 	}
 
-	// If pending, this is the highest index we've seen.
+	// If pending, this is the highest floor we've seen.
 	// It can be applied for real after pending is either cleared.
 	if len(n.pending) > 0 {
-		// If we've registered a pending floor, check if we can move up applied now as well.
-		if n.fapplied > 0 && index >= n.fapplied && n.fapplied > n.applied {
-			n.appliedLocked(n.fapplied)
-			n.fapplied = 0
-		}
 		// Ensure we can't roll back.
 		if index > n.papplied {
 			n.papplied = index
+		}
+		// If we've registered a pending floor, check if we can move up applied now as well.
+		if n.fapplied > 0 && n.papplied > n.applied && n.fapplied > n.applied {
+			floor := min(n.fapplied, n.papplied)
+			if n.happlied > 0 && floor == n.happlied {
+				n.appliedLocked(index)
+			} else {
+				n.appliedLocked(floor)
+			}
+			n.fapplied = 0
+			n.happlied = 0
 		}
 	} else {
 		n.appliedLocked(index)
@@ -1164,47 +1172,76 @@ func (n *raft) TrackPendingApplied(blkIndex uint32, index uint64, close bool) {
 
 		// If we are the only one, we can move applied up, either fully or partially.
 		if len(n.pending) == 1 {
-			// If a minimum of n.Applied(index) was called, we can set apply immediately.
-			if n.papplied > n.applied && index > n.applied {
-				n.appliedLocked(min(index, n.papplied))
-			} else if index > n.fapplied {
+			pa, ok := n.pending[blkIndex]
+			if !ok {
+				return
+			}
+			// If a minimum of n.Applied(floor) was called, we can set apply immediately.
+			if n.papplied > n.applied && pa.floor > n.applied { // TODO: remove latter part of this condition?
+				if pa.floor == pa.high {
+					n.appliedLocked(n.papplied)
+				} else {
+					n.appliedLocked(min(pa.floor, n.papplied))
+				}
+			} else if pa.floor > n.fapplied {
 				// Otherwise, need to mark this as our new floor, so the next n.Applied call can move applied up.
-				n.fapplied = index
+				n.fapplied = pa.floor
+				n.happlied = pa.high
 			}
 			return
 		}
 	}
 
-	// Now we search for minimum allowed applied index.
-	var a = uint64(math.MaxUint64)
-	var applied bool
+	// Now we search for minimum allowed applied floor.
+	var (
+		floor       = uint64(math.MaxUint64)
+		high        = uint64(0)
+		applied     bool
+		highApplied bool
+	)
 	for _, pa := range n.pending {
-		if pa.index < a {
-			a = pa.index
+		// TODO(mvv): docs, latter part means we still have something to apply
+		if pa.floor < floor && pa.floor < pa.high {
+			floor = pa.floor
 			applied = pa.applied
-		} else if pa.index == a {
+		} else if pa.floor == floor {
 			applied = applied && pa.applied
 		}
-		//if pBlk != blkIndex && pa.index < a /*&& !pa.applied*/ {
-		//	a = pa.index
-		//}
+		if pa.high > high {
+			high = pa.high
+			highApplied = pa.applied
+		} else {
+			highApplied = highApplied && pa.applied
+		}
 	}
+
+	// TODO(mvv): docs
+	if floor == math.MaxUint64 {
+		if highApplied {
+			n.appliedLocked(n.papplied)
+			n.fapplied, n.happlied = high, high
+			return
+		}
+		floor, applied = high, false
+	}
+
 	// TODO(mvv): update docs
-	// If we were the last to need to apply this index, we can update applied.
-	if a != math.MaxUint64 {
-		// If floor was not applied yet, we can apply below this.
-		if !applied {
-			a--
-		}
-		//if a == math.MaxUint64 /*&& n.applied < index*/ {
-		// If a minimum of n.Applied(index) was called, we can set apply immediately.
-		if n.papplied > n.applied {
-			n.appliedLocked(min(a, n.papplied))
-		} else if a > n.fapplied {
-			// Otherwise, need to mark this as our new floor, so the next n.Applied call can move applied up.
-			n.fapplied = a
-		}
+	// If we were the last to need to apply this floor, we can update applied.
+	//if floor != math.MaxUint64 {
+	// If floor was not applied yet, we can apply below this.
+	if !applied {
+		floor--
 	}
+	//if a == math.MaxUint64 /*&& n.applied < floor*/ {
+	// If a minimum of n.Applied(floor) was called, we can set apply immediately.
+	if n.papplied > n.applied {
+		n.appliedLocked(min(floor, n.papplied))
+	} else if floor > n.fapplied {
+		// Otherwise, need to mark this as our new floor, so the next n.Applied call can move applied up.
+		n.fapplied = floor
+		n.happlied = high
+	}
+	//}
 }
 
 // TODO: docs
@@ -1213,10 +1250,13 @@ func (n *raft) trackPendingLocked(blkIndex uint32, index uint64, applied bool) {
 		n.pending = make(map[uint32]*pendingApply, 1)
 	}
 	if p, ok := n.pending[blkIndex]; ok {
-		p.index = index
-		p.applied = applied
+		if applied {
+			p.floor = max(p.floor, index)
+			p.applied = true
+		}
+		p.high = max(p.high, index)
 	} else {
-		n.pending[blkIndex] = &pendingApply{index, applied}
+		n.pending[blkIndex] = &pendingApply{index, index, applied}
 	}
 }
 
