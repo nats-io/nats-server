@@ -19,19 +19,34 @@ import (
 	"fmt"
 	"net/http"
 	"net/textproto"
+	"sync"
 )
 
 type parserState int
 type parseState struct {
-	state   parserState
-	op      byte
-	as      int
-	drop    int
-	pa      pubArg
-	argBuf  []byte
-	msgBuf  []byte
-	header  http.Header // access via getHeader
-	scratch [MAX_CONTROL_LINE_SIZE]byte
+	state  parserState
+	op     byte
+	as     int
+	drop   int
+	pa     pubArg
+	argBuf []byte
+	msgBuf []byte
+	header http.Header // access via getHeader
+}
+
+var scratchPool = sync.Pool{
+	New: func() any {
+		var b [MAX_CONTROL_LINE_SIZE]byte
+		return &b
+	},
+}
+
+func getScratchBuf() *[MAX_CONTROL_LINE_SIZE]byte {
+	return scratchPool.Get().(*[MAX_CONTROL_LINE_SIZE]byte)
+}
+
+func putScratchBuf(buf *[MAX_CONTROL_LINE_SIZE]byte) {
+	scratchPool.Put(buf)
 }
 
 type pubArg struct {
@@ -1177,9 +1192,10 @@ func (c *client) parse(buf []byte) error {
 		c.state == MSG_ARG || c.state == HMSG_ARG ||
 		c.state == MINUS_ERR_ARG || c.state == CONNECT_ARG || c.state == INFO_ARG {
 
-		// Setup a holder buffer to deal with split buffer scenario.
 		if c.argBuf == nil {
-			c.argBuf = c.scratch[:0]
+			scratchBuf := getScratchBuf()
+			defer putScratchBuf(scratchBuf)
+			c.argBuf = scratchBuf[:0]
 			c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
 		}
 		// Check for violations of control line length here. Note that this is not
@@ -1204,7 +1220,7 @@ func (c *client) parse(buf []byte) error {
 
 		// If we will overflow the scratch buffer, just create a
 		// new buffer to hold the split message.
-		if c.pa.size > cap(c.scratch)-len(c.argBuf) {
+		if c.pa.size > MAX_CONTROL_LINE_SIZE-len(c.argBuf) {
 			lrem := len(buf[c.as:])
 			// Consider it a protocol error when the remaining payload
 			// is larger than the reported size for PUB. It can happen
@@ -1215,7 +1231,9 @@ func (c *client) parse(buf []byte) error {
 			c.msgBuf = make([]byte, lrem, c.pa.size+LEN_CR_LF)
 			copy(c.msgBuf, buf[c.as:])
 		} else {
-			c.msgBuf = c.scratch[len(c.argBuf):len(c.argBuf)]
+			scratchBuf := getScratchBuf()
+			defer putScratchBuf(scratchBuf)
+			c.msgBuf = scratchBuf[len(c.argBuf):len(c.argBuf)]
 			c.msgBuf = append(c.msgBuf, (buf[c.as:])...)
 		}
 	}
@@ -1265,8 +1283,10 @@ func (c *client) overMaxControlLineLimit(arg []byte, mcl int32) error {
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
 func (c *client) clonePubArg(lmsg bool) error {
-	// Just copy and re-process original arg buffer.
-	c.argBuf = c.scratch[:0]
+	// Just copy and re-process original arg buffer using a pooled scratch buffer.
+	scratchBuf := getScratchBuf()
+	defer putScratchBuf(scratchBuf)
+	c.argBuf = (*scratchBuf)[:0]
 	c.argBuf = append(c.argBuf, c.pa.arg...)
 
 	switch c.kind {
