@@ -8224,8 +8224,15 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// If we are using the system account for NRG, add in the extra sent msgs and bytes to our account
 		// so that the end user / account owner has visibility.
 		if node.IsSystemAccount() && mset.acc != nil && r > 1 {
-			atomic.AddInt64(&mset.acc.outMsgs, int64(r-1))
-			atomic.AddInt64(&mset.acc.outBytes, int64(len(esm)*(r-1)))
+			outMsgs := int64(r - 1)
+			outBytes := int64(len(esm) * (r - 1))
+
+			mset.acc.stats.Lock()
+			mset.acc.stats.outMsgs += outMsgs
+			mset.acc.stats.outBytes += outBytes
+			mset.acc.stats.rt.outMsgs += outMsgs
+			mset.acc.stats.rt.outBytes += outBytes
+			mset.acc.stats.Unlock()
 		}
 	}
 
