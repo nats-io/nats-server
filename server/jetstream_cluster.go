@@ -3208,12 +3208,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 // Returns the PeerInfo for all replicas of a raft node. This is different than node.Peers()
 // and is used for external facing advisories.
 func (s *Server) replicas(node RaftNode) []*PeerInfo {
-	now := time.Now()
 	var replicas []*PeerInfo
 	for _, rp := range node.Peers() {
 		if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 			si := sir.(nodeInfo)
-			pi := &PeerInfo{Peer: rp.ID, Name: si.name, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
+			pi := &PeerInfo{Peer: rp.ID, Name: si.name, Current: rp.Current, Offline: si.offline, Lag: rp.Lag}
+			if !rp.Last.IsZero() {
+				pi.Active = time.Since(rp.Last)
+			}
 			replicas = append(replicas, pi)
 		}
 	}
@@ -8831,7 +8833,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	for _, rp := range peers {
 		if rp.ID != id && rg.isMember(rp.ID) {
 			var lastSeen time.Duration
-			if now.After(rp.Last) && rp.Last.Unix() != 0 {
+			if now.After(rp.Last) && !rp.Last.IsZero() {
 				lastSeen = now.Sub(rp.Last)
 			}
 			current := rp.Current
