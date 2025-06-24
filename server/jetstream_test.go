@@ -20210,3 +20210,64 @@ func TestJetStreamStreamRetentionUpdatesConsumers(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamConsumerAcksOnDeliverLastPerSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	const MSGS = 1_000_000
+	const CARDINALITY = 30_000
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:       "test",
+		Subjects:   []string{"test.>"},
+		Retention:  LimitsPolicy,
+		Storage:    FileStorage,
+		MaxMsgsPer: 5,
+	})
+	require_NoError(t, err)
+
+	t.Logf("Starting publish...")
+	for i := range MSGS {
+		subj := fmt.Sprintf("test.%d", i%CARDINALITY)
+		_, err = js.Publish(subj, nil)
+		require_NoError(t, err)
+	}
+	t.Logf("Publishes complete")
+
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+		Name:           "test_consumer",
+		FilterSubjects: []string{"test.>"},
+		DeliverPolicy:  nats.DeliverLastPerSubjectPolicy,
+		AckPolicy:      nats.AckExplicitPolicy,
+		MaxAckPending:  1000,
+	})
+	require_NoError(t, err)
+
+	ps, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test", "test_consumer"))
+	require_NoError(t, err)
+
+	tc := time.NewTicker(time.Second)
+	defer tc.Stop()
+
+	go func() {
+		for range tc.C {
+			ci, err := js.ConsumerInfo("test", "test_consumer")
+			require_NoError(t, err)
+			j, err := json.MarshalIndent(ci, "", "  ")
+			require_NoError(t, err)
+			fmt.Println(string(j))
+		}
+	}()
+
+	for range MSGS {
+		msgs, err := ps.Fetch(1)
+		require_NoError(t, err)
+		for _, msg := range msgs {
+			require_NoError(t, msg.AckSync())
+		}
+	}
+}
