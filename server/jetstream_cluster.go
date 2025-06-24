@@ -482,8 +482,6 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 
 	case node != msetNode:
 		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
-		node.Delete()
-		mset.resetClusteredState(nil)
 		return errors.New("cluster node skew detected")
 
 	case !mset.isMonitorRunning():
@@ -544,14 +542,6 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		accName, streamName := mset.acc.GetName(), mset.cfg.Name
 		mset.mu.RUnlock()
 		s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
-		node.Delete()
-		o.deleteWithoutAdvisory()
-
-		// When we try to restart we nil out the node and reprocess the consumer assignment.
-		js.mu.Lock()
-		ca.Group.node = nil
-		js.mu.Unlock()
-		js.processConsumerAssignment(ca)
 		return errors.New("cluster node skew detected")
 
 	case !o.isMonitorRunning():
@@ -3208,12 +3198,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 // Returns the PeerInfo for all replicas of a raft node. This is different than node.Peers()
 // and is used for external facing advisories.
 func (s *Server) replicas(node RaftNode) []*PeerInfo {
-	now := time.Now()
 	var replicas []*PeerInfo
 	for _, rp := range node.Peers() {
 		if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 			si := sir.(nodeInfo)
-			pi := &PeerInfo{Peer: rp.ID, Name: si.name, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
+			pi := &PeerInfo{Peer: rp.ID, Name: si.name, Current: rp.Current, Offline: si.offline, Lag: rp.Lag}
+			if !rp.Last.IsZero() {
+				pi.Active = time.Since(rp.Last)
+			}
 			replicas = append(replicas, pi)
 		}
 	}
@@ -8181,8 +8173,15 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// If we are using the system account for NRG, add in the extra sent msgs and bytes to our account
 		// so that the end user / account owner has visibility.
 		if node.IsSystemAccount() && mset.acc != nil && r > 1 {
-			atomic.AddInt64(&mset.acc.outMsgs, int64(r-1))
-			atomic.AddInt64(&mset.acc.outBytes, int64(len(esm)*(r-1)))
+			outMsgs := int64(r - 1)
+			outBytes := int64(len(esm) * (r - 1))
+
+			mset.acc.stats.Lock()
+			mset.acc.stats.outMsgs += outMsgs
+			mset.acc.stats.outBytes += outBytes
+			mset.acc.stats.rt.outMsgs += outMsgs
+			mset.acc.stats.rt.outBytes += outBytes
+			mset.acc.stats.Unlock()
 		}
 	}
 
@@ -8824,7 +8823,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	for _, rp := range peers {
 		if rp.ID != id && rg.isMember(rp.ID) {
 			var lastSeen time.Duration
-			if now.After(rp.Last) && rp.Last.Unix() != 0 {
+			if now.After(rp.Last) && !rp.Last.IsZero() {
 				lastSeen = now.Sub(rp.Last)
 			}
 			current := rp.Current

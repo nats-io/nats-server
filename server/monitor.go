@@ -4027,8 +4027,8 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 				Known:               p.kp,
 				LastReplicatedIndex: p.li,
 			}
-			if p.ts > 0 {
-				peer.LastSeen = time.Since(time.Unix(0, p.ts)).String()
+			if !p.ts.IsZero() {
+				peer.LastSeen = time.Since(p.ts).String()
 			}
 			info.Peers[id] = peer
 		}
