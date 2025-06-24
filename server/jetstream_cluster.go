@@ -482,8 +482,6 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 
 	case node != msetNode:
 		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
-		node.Delete()
-		mset.resetClusteredState(nil)
 		return errors.New("cluster node skew detected")
 
 	case !mset.isMonitorRunning():
@@ -544,14 +542,6 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		accName, streamName := mset.acc.GetName(), mset.cfg.Name
 		mset.mu.RUnlock()
 		s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
-		node.Delete()
-		o.deleteWithoutAdvisory()
-
-		// When we try to restart we nil out the node and reprocess the consumer assignment.
-		js.mu.Lock()
-		ca.Group.node = nil
-		js.mu.Unlock()
-		js.processConsumerAssignment(ca)
 		return errors.New("cluster node skew detected")
 
 	case !o.isMonitorRunning():
