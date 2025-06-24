@@ -7387,6 +7387,89 @@ func TestJetStreamClusterStreamHealthCheckMustNotDeleteEarly(t *testing.T) {
 	require_Equal(t, node.State(), Follower)
 }
 
+func TestJetStreamClusterStreamHealthCheckOnlyReportsSkew(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	waitForStreamAssignments := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, time.Second, func() error {
+			for _, s := range c.servers {
+				js := s.getJetStream()
+				js.mu.RLock()
+				sa := js.streamAssignment(globalAccountName, "TEST")
+				js.mu.RUnlock()
+				if sa == nil {
+					return fmt.Errorf("stream assignment not found on %s", s.Name())
+				}
+			}
+			return nil
+		})
+	}
+	getStreamAssignment := func(rs *Server) (*jetStream, *Account, *streamAssignment, *stream) {
+		acc, err := rs.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NotNil(t, err)
+
+		sjs := rs.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+
+		sas := sjs.cluster.streams[globalAccountName]
+		require_True(t, sas != nil)
+		sa := sas["TEST"]
+		require_True(t, sa != nil)
+		sa.Created = time.Time{}
+		return sjs, acc, sa, mset
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	waitForStreamAssignments()
+
+	// Confirm the stream and assignment Raft nodes are equal.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	sjs, acc, sa, mset := getStreamAssignment(rs)
+	mset.mu.RLock()
+	msetNode := mset.node
+	mset.mu.RUnlock()
+	sjs.mu.Lock()
+	group := sa.Group
+	if group == nil {
+		sjs.mu.Unlock()
+		t.Fatal("sa.Group not initialized")
+	}
+	node := group.node
+	if node == nil {
+		sjs.mu.Unlock()
+		t.Fatal("sa.Group.node not initialized")
+	}
+	sjs.mu.Unlock()
+	require_Equal(t, msetNode, node)
+
+	// Simulate stopping and restarting a new instance.
+	node.Stop()
+	node.WaitForStop()
+	node, err = sjs.createRaftGroup(globalAccountName, group, FileStorage, pprofLabels{})
+	require_NoError(t, err)
+	require_NotEqual(t, node.State(), Closed)
+
+	// The health check gets the Raft node of the assignment and checks it against the
+	// Raft node of the stream. We simulate a race condition where the assignment's Raft node
+	// is re-newed, but the stream's node is still the old instance.
+	// The health check MUST NOT delete the node.
+	require_Error(t, sjs.isStreamHealthy(acc, sa), errors.New("cluster node skew detected"))
+	require_NotEqual(t, node.State(), Closed)
+}
+
 func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -7481,7 +7564,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	ca.pending = true
 	sjs.mu.Unlock()
 	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
-	require_False(t, ca.pending)
+	require_True(t, ca.pending)
 
 	err = js.DeleteConsumer("TEST", "CONSUMER")
 	require_NoError(t, err)
@@ -7580,6 +7663,91 @@ func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
 	// is not yet initialized. The health check MUST NOT delete the node.
 	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
 	require_Equal(t, node.State(), Follower)
+}
+
+func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	waitForConsumerAssignments := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, time.Second, func() error {
+			for _, s := range c.servers {
+				if s.getJetStream().consumerAssignment(globalAccountName, "TEST", "CONSUMER") == nil {
+					return fmt.Errorf("stream assignment not found on %s", s.Name())
+				}
+			}
+			return nil
+		})
+	}
+	getConsumerAssignment := func(rs *Server) (*jetStream, *consumerAssignment, *stream, *consumer) {
+		acc, err := rs.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NotNil(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+
+		sjs := rs.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+
+		sas := sjs.cluster.streams[globalAccountName]
+		require_True(t, sas != nil)
+		sa := sas["TEST"]
+		require_True(t, sa != nil)
+		ca := sa.consumers["CONSUMER"]
+		require_True(t, ca != nil)
+		ca.Created = time.Time{}
+		return sjs, ca, mset, o
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Retention: nats.InterestPolicy, // Replicated consumers by default
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+	waitForConsumerAssignments()
+
+	// Confirm the consumer and assignment Raft nodes are equal.
+	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	sjs, ca, mset, o := getConsumerAssignment(rs)
+	o.mu.RLock()
+	oNode := o.node
+	o.mu.RUnlock()
+	sjs.mu.Lock()
+	group := ca.Group
+	if group == nil {
+		sjs.mu.Unlock()
+		t.Fatal("ca.Group not initialized")
+	}
+	node := group.node
+	if node == nil {
+		sjs.mu.Unlock()
+		t.Fatal("ca.Group.node not initialized")
+	}
+	sjs.mu.Unlock()
+	require_Equal(t, oNode, node)
+
+	// Simulate stopping and restarting a new instance.
+	node.Stop()
+	node.WaitForStop()
+	node, err = sjs.createRaftGroup(globalAccountName, group, FileStorage, pprofLabels{})
+	require_NoError(t, err)
+	require_NotEqual(t, node.State(), Closed)
+
+	// The health check gets the Raft node of the assignment and checks it against the
+	// Raft node of the consumer. We simulate a race condition where the assignment's Raft node
+	// is re-newed, but the consumer's node is still the old instance.
+	// The health check MUST NOT delete the node.
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("cluster node skew detected"))
+	require_NotEqual(t, node.State(), Closed)
 }
 
 func TestJetStreamClusterRespectConsumerStartSeq(t *testing.T) {
