@@ -9244,6 +9244,99 @@ func TestJetStreamClusterDirectGetLastBySubjectMonotonicRead(t *testing.T) {
 	require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
 }
 
+func TestJetStreamClusterConsumerReadAfterWrite(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Ensure the streams on all servers have at least one message.
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.raftNode().PauseApply())
+	}
+
+	// Publish a message that only the leader applies.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+
+	var observedTimeout bool
+	testConsumer := func(durable string) {
+		cr := createConsumer(t, nc, "TEST", ConsumerConfig{
+			Durable:    durable,
+			Replicas:   1,
+			MinLastSeq: 2,
+		})
+		require_True(t, cr.Error == nil)
+
+		sub, err := js.PullSubscribe(_EMPTY_, durable, nats.BindStream("TEST"))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		msgs, err := sub.Fetch(2, nats.MaxWait(time.Second))
+		if err != nil {
+			require_Error(t, err, nats.ErrTimeout)
+			observedTimeout = true
+
+			// Resume applies on the followers, and ensure all is up-to-date.
+			for _, s := range c.servers {
+				if s == sl {
+					continue
+				}
+				mset, err := s.globalAccount().lookupStream("TEST")
+				require_NoError(t, err)
+				mset.raftNode().ResumeApply()
+			}
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			// Now we should be able to get all messages.
+			msgs, err = sub.Fetch(2, nats.MaxWait(time.Second))
+		}
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 2)
+		meta, err := msgs[1].Metadata()
+		require_NoError(t, err)
+		require_Equal(t, meta.NumPending, 0)
+	}
+
+	// Create a consumer that expects both messages to be available. This will succeed if
+	// the consumer is created on the leader, but should fail if created on a follower.
+	// The loop will stop once the consumer is created on a follower, but this ensures
+	// we don't have an infinite loop for a failure condition.
+	for i := 0; i < 10; i++ {
+		durable := fmt.Sprintf("CONSUMER-%d", i)
+		testConsumer(durable)
+		if observedTimeout {
+			break
+		}
+	}
+	require_True(t, observedTimeout)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
