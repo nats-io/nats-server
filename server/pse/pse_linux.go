@@ -28,6 +28,7 @@ var (
 	lastTotal    int64
 	lastSeconds  int64
 	ipcpu        int64
+	pageSize     int64
 )
 
 const (
@@ -42,6 +43,7 @@ func init() {
 	// Avoiding to generate docker image without CGO
 	ticks = 100 // int64(C.sysconf(C._SC_CLK_TCK))
 	procStatFile = fmt.Sprintf("/proc/%d/stat", os.Getpid())
+	pageSize = int64(os.Getpagesize())
 	periodic()
 }
 
@@ -94,7 +96,7 @@ func ProcUsage(pcpu *float64, rss, vss *int64) error {
 	fields := bytes.Fields(contents)
 
 	// Memory
-	*rss = (parseInt64(fields[rssPos])) << 12
+	*rss = (parseInt64(fields[rssPos])) * pageSize
 	*vss = parseInt64(fields[vssPos])
 
 	// PCPU
