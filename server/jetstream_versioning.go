@@ -131,6 +131,11 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig) {
 		requires(1)
 	}
 
+	// Added in 2.12, absent | zero is the feature is not used.
+	if cfg.MinLastSeq > 0 {
+		requires(2)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
