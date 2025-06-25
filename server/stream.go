@@ -4452,7 +4452,7 @@ func getExpectedStream(hdr []byte) string {
 	return string(getHeader(JSExpectedStream, hdr))
 }
 
-// Fast lookup of expected stream.
+// Fast lookup of expected last sequence.
 func getExpectedLastSeq(hdr []byte) (uint64, bool) {
 	bseq := sliceHeader(JSExpectedLastSeq, hdr)
 	if len(bseq) == 0 {
@@ -4649,6 +4649,15 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
+		// We are not up-to-date yet, and don't know how long it will take us to be.
+		// Simply reject the request so the client can retry.
+		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
 	if !inlineOk {
 		dg := dgPool.Get().(*directGetReq)
@@ -4664,12 +4673,24 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	if len(reply) == 0 {
 		return
 	}
+	var minLastSeq uint64
 	_, msg := c.msgParts(rmsg)
-	// This version expects no payload.
+	// This version expects no payload, unless min last seq is specified.
 	if len(msg) != 0 {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-		return
+		var req JSApiMsgGetRequest
+		err := json.Unmarshal(msg, &req)
+		if err != nil {
+			hdr := []byte("NATS/1.0 408 Malformed Request\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+
+		if req.MinLastSeq == 0 {
+			hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+		minLastSeq = req.MinLastSeq
 	}
 	// Extract the key.
 	var key string
@@ -4690,7 +4711,16 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		return
 	}
 
-	req := JSApiMsgGetRequest{LastFor: key}
+	req := JSApiMsgGetRequest{LastFor: key, MinLastSeq: minLastSeq}
+
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
+		// We are not up-to-date yet, and don't know how long it will take us to be.
+		// Simply reject the request so the client can retry.
+		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
 
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
 	if !inlineOk {

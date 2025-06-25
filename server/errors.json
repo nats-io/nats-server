@@ -1778,5 +1778,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamMinLastSeqErr",
+    "code": 412,
+    "error_code": 10180,
+    "description": "min last sequence",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

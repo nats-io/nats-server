@@ -437,6 +437,9 @@ const (
 	// JSStreamMessageExceedsMaximumErr message size exceeds maximum allowed
 	JSStreamMessageExceedsMaximumErr ErrorIdentifier = 10054
 
+	// JSStreamMinLastSeqErr min last sequence
+	JSStreamMinLastSeqErr ErrorIdentifier = 10180
+
 	// JSStreamMirrorNotUpdatableErr stream mirror configuration can not be updated
 	JSStreamMirrorNotUpdatableErr ErrorIdentifier = 10055
 
@@ -686,6 +689,7 @@ var (
 		JSStreamMaxBytesRequired:                   {Code: 400, ErrCode: 10113, Description: "account requires a stream config to have max bytes set"},
 		JSStreamMaxStreamBytesExceeded:             {Code: 400, ErrCode: 10122, Description: "stream max bytes exceeds account limit max stream bytes"},
 		JSStreamMessageExceedsMaximumErr:           {Code: 400, ErrCode: 10054, Description: "message size exceeds maximum allowed"},
+		JSStreamMinLastSeqErr:                      {Code: 412, ErrCode: 10180, Description: "min last sequence"},
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "stream mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                    {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
@@ -2375,6 +2379,16 @@ func NewJSStreamMessageExceedsMaximumError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamMessageExceedsMaximumErr]
+}
+
+// NewJSStreamMinLastSeqError creates a new JSStreamMinLastSeqErr error: "min last sequence"
+func NewJSStreamMinLastSeqError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamMinLastSeqErr]
 }
 
 // NewJSStreamMirrorNotUpdatableError creates a new JSStreamMirrorNotUpdatableErr error: "stream mirror configuration can not be updated"
