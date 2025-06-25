@@ -967,6 +967,17 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 	return mb
 }
 
+// Check for encryption, we do not load keys on startup anymore so might need to load them here.
+// Lock for fs should be held.
+func (mb *msgBlock) checkAndLoadEncryption() error {
+	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
+		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Lock for fs should be held.
 func (fs *fileStore) loadEncryptionForMsgBlock(mb *msgBlock) error {
 	if fs.prf == nil {
@@ -1966,11 +1977,8 @@ func (mb *msgBlock) lastChecksum() []byte {
 		return lchk[:]
 	}
 	// Encrypted?
-	// Check for encryption, we do not load keys on startup anymore so might need to load them here.
-	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
-		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
-			return nil
-		}
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return nil
 	}
 	if mb.bek != nil {
 		if buf, _ := mb.loadBlock(nil); len(buf) >= checksumSize {
@@ -6760,6 +6768,9 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// under heavy load.
 
 	// Check if we need to encrypt.
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return nil, err
+	}
 	if mb.bek != nil && lob > 0 {
 		// Need to leave original alone.
 		var dst []byte
@@ -6946,11 +6957,8 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 
 // Lock should be held.
 func (mb *msgBlock) loadMsgsWithLock() error {
-	// Check for encryption, we do not load keys on startup anymore so might need to load them here.
-	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
-		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
-			return err
-		}
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return err
 	}
 
 	// Check to see if we are loading already.
