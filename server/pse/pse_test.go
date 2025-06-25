@@ -1,4 +1,4 @@
-// Copyright 2015-2018 The NATS Authors
+// Copyright 2015-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"runtime/debug"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func TestPSEmulation(t *testing.T) {
 	var rss, vss, psRss, psVss int64
 	var pcpu, psPcpu float64
 
-	runtime.GC()
+	debug.FreeOSMemory()
 
 	// PS version first
 	pidStr := fmt.Sprintf("%d", os.Getpid())
@@ -41,7 +42,7 @@ func TestPSEmulation(t *testing.T) {
 	psRss *= 1024 // 1k blocks, want bytes.
 	psVss *= 1024 // 1k blocks, want bytes.
 
-	runtime.GC()
+	debug.FreeOSMemory()
 
 	// Our internal version
 	ProcUsage(&pcpu, &rss, &vss)

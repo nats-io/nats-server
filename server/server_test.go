@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1147,6 +1147,8 @@ func TestLameDuckModeInfo(t *testing.T) {
 
 	getInfo(false)
 	c.Write([]byte("CONNECT {\"protocol\":1,\"verbose\":false}\r\nPING\r\n"))
+	// Consume both the first PONG and INFO in response to the Connect.
+	client.ReadString('\n')
 	client.ReadString('\n')
 
 	optsB := testWSOptions()

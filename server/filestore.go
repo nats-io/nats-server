@@ -46,6 +46,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
+	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nats-server/v2/server/thw"
@@ -370,7 +371,7 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 	return newFileStoreWithCreated(fcfg, cfg, time.Now().UTC(), nil, nil)
 }
 
-func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen) (*fileStore, error) {
+func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen) (fs *fileStore, err error) {
 	if cfg.Name == _EMPTY_ {
 		return nil, fmt.Errorf("name required")
 	}
@@ -412,7 +413,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	os.Remove(tmpfile.Name())
 	dios <- struct{}{}
 
-	fs := &fileStore{
+	fs = &fileStore{
 		fcfg:   fcfg,
 		psim:   stree.NewSubjectTree[psi](),
 		bim:    make(map[uint32]*msgBlock),
@@ -423,6 +424,16 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fsld:   make(chan struct{}),
 		srv:    fcfg.srv,
 	}
+
+	// Register with access time service.
+	ats.Register()
+
+	// If we error before completion make sure to cleanup.
+	defer func() {
+		if err != nil {
+			ats.Unregister()
+		}
+	}()
 
 	// Only create a THW if we're going to allow TTLs.
 	if cfg.AllowMsgTTL {
@@ -478,18 +489,20 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 
 		// Check if our prior state remembers a last sequence past where we can see.
-		if fs.ld != nil && prior.LastSeq > fs.state.LastSeq {
+		if prior.LastSeq > fs.state.LastSeq {
 			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
 			if fs.state.Msgs == 0 {
 				fs.state.FirstSeq = fs.state.LastSeq + 1
 				fs.state.FirstTime = time.Time{}
 			}
-			if _, err := fs.newMsgBlockForWrite(); err == nil {
-				if err = fs.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
+			if fs.ld != nil {
+				if _, err := fs.newMsgBlockForWrite(); err == nil {
+					if err = fs.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
+						return nil, err
+					}
+				} else {
 					return nil, err
 				}
-			} else {
-				return nil, err
 			}
 		}
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.
@@ -506,7 +519,9 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Also make sure we get rid of old idx and fss files on return.
 	// Do this in separate go routine vs inline and at end of processing.
 	defer func() {
-		go fs.cleanupOldMeta()
+		if fs != nil {
+			go fs.cleanupOldMeta()
+		}
 	}()
 
 	// Lock while we do enforcements and removals.
@@ -636,6 +651,13 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		return err
 	}
 
+	// Create or delete the THW if needed.
+	if cfg.AllowMsgTTL && fs.ttls == nil {
+		fs.ttls = thw.NewHashWheel()
+	} else if !cfg.AllowMsgTTL && fs.ttls != nil {
+		fs.ttls = nil
+	}
+
 	// Limits checks and enforcement.
 	fs.enforceMsgLimit()
 	fs.enforceBytesLimit()
@@ -654,7 +676,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 	fs.mu.Unlock()
 
-	if cfg.MaxAge != 0 {
+	if cfg.MaxAge != 0 || cfg.AllowMsgTTL {
 		fs.expireMsgs()
 	}
 	return nil
@@ -946,6 +968,17 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 		mb.hh, _ = highwayhash.New64(key[:])
 	}
 	return mb
+}
+
+// Check for encryption, we do not load keys on startup anymore so might need to load them here.
+// Lock for fs should be held.
+func (mb *msgBlock) checkAndLoadEncryption() error {
+	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
+		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Lock for fs should be held.
@@ -1947,11 +1980,8 @@ func (mb *msgBlock) lastChecksum() []byte {
 		return lchk[:]
 	}
 	// Encrypted?
-	// Check for encryption, we do not load keys on startup anymore so might need to load them here.
-	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
-		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
-			return nil
-		}
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return nil
 	}
 	if mb.bek != nil {
 		if buf, _ := mb.loadBlock(nil); len(buf) >= checksumSize {
@@ -2356,7 +2386,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 	var updateLLTS bool
 	defer func() {
 		if updateLLTS {
-			mb.llts = getAccessTime()
+			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
 	}()
@@ -2471,12 +2501,12 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	var updateLLTS bool
 	defer func() {
 		if updateLLTS {
-			mb.llts = getAccessTime()
+			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
 	}()
 
-	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
+	fseq, isAll := start, filter == _EMPTY_ || filter == fwcs
 
 	var didLoad bool
 	if mb.fssNotLoaded() {
@@ -2485,7 +2515,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		didLoad = true
 	}
 	// Mark fss activity.
-	mb.lsts = getAccessTime()
+	mb.lsts = ats.AccessTime()
 
 	if filter == _EMPTY_ {
 		filter = fwcs
@@ -2504,18 +2534,15 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 	}
 	// Make sure to start at mb.first.seq if fseq < mb.first.seq
-	if seq := atomic.LoadUint64(&mb.first.seq); seq > fseq {
-		fseq = seq
-	}
+	fseq = max(fseq, atomic.LoadUint64(&mb.first.seq))
 	lseq := atomic.LoadUint64(&mb.last.seq)
 
 	// Optionally build the isMatch for wildcard filters.
-	_tsa, _fsa := [32]string{}, [32]string{}
-	tsa, fsa := _tsa[:0], _fsa[:0]
 	var isMatch func(subj string) bool
 	// Decide to build.
 	if wc {
-		fsa = tokenizeSubjectIntoSlice(fsa[:0], filter)
+		_tsa, _fsa := [32]string{}, [32]string{}
+		tsa, fsa := _tsa[:0], tokenizeSubjectIntoSlice(_fsa[:0], filter)
 		isMatch = func(subj string) bool {
 			tsa = tokenizeSubjectIntoSlice(tsa[:0], subj)
 			return isSubsetMatchTokenized(tsa, fsa)
@@ -2535,42 +2562,28 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 
 	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
-		if wc {
-			subs = subs[:0]
-			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, _ *SimpleState) {
-				subs = append(subs, string(bsubj))
-			})
-			// Check if we matched anything
-			if len(subs) == 0 {
-				return nil, didLoad, ErrStoreMsgNotFound
-			}
-		}
 		fseq = lseq + 1
-		for _, subj := range subs {
-			ss, _ := mb.fss.Find(stringToBytes(subj))
-			if ss != nil && (ss.firstNeedsUpdate || ss.lastNeedsUpdate) {
-				mb.recalculateForSubj(subj, ss)
+		if bfilter := stringToBytes(filter); wc {
+			mb.fss.Match(bfilter, func(bsubj []byte, ss *SimpleState) {
+				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+					mb.recalculateForSubj(bytesToString(bsubj), ss)
+				}
+				if start <= ss.Last {
+					fseq = min(fseq, max(start, ss.First))
+				}
+			})
+		} else if ss, _ := mb.fss.Find(bfilter); ss != nil {
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				mb.recalculateForSubj(filter, ss)
 			}
-			if ss == nil || start > ss.Last || ss.First >= fseq {
-				continue
-			}
-			if ss.First < start {
-				fseq = start
-			} else {
-				fseq = ss.First
+			if start <= ss.Last {
+				fseq = min(fseq, max(start, ss.First))
 			}
 		}
 	}
 
 	if fseq > lseq {
 		return nil, didLoad, ErrStoreMsgNotFound
-	}
-
-	// If we guess to not do a linear scan, but the above resulted in alot of subs that will
-	// need to be checked for every scanned message, revert.
-	// TODO(dlc) - we could memoize the subs across calls.
-	if !doLinearScan && len(subs) > int(lseq-fseq) {
-		doLinearScan = true
 	}
 
 	// Need messages loaded from here on out.
@@ -2605,18 +2618,10 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		if isAll {
 			return fsm, expireOk, nil
 		}
-		if doLinearScan {
-			if wc && isMatch(sm.subj) {
-				return fsm, expireOk, nil
-			} else if !wc && fsm.subj == filter {
-				return fsm, expireOk, nil
-			}
-		} else {
-			for _, subj := range subs {
-				if fsm.subj == subj {
-					return fsm, expireOk, nil
-				}
-			}
+		if wc && isMatch(sm.subj) {
+			return fsm, expireOk, nil
+		} else if !wc && fsm.subj == filter {
+			return fsm, expireOk, nil
 		}
 		// If we are here we did not match, so put the llseq back.
 		mb.llseq = llseq
@@ -2999,7 +3004,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 			shouldExpire = true
 		}
 		// Mark fss activity.
-		mb.lsts = getAccessTime()
+		mb.lsts = ats.AccessTime()
 		mb.fss.Match(stringToBytes(subject), func(bsubj []byte, ss *SimpleState) {
 			subj := string(bsubj)
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
@@ -3032,7 +3037,13 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 func (fs *fileStore) AllLastSeqs() ([]uint64, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.allLastSeqsLocked()
+}
 
+// allLastSeqsLocked will return a sorted list of last sequences for all
+// subjects, but won't take the lock to do it, to avoid the issue of compounding
+// read locks causing a deadlock with a write lock.
+func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
 		return nil, nil
 	}
@@ -3103,7 +3114,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 
 	// See if we can short circuit if we think they are asking for all last sequences and have no maxSeq or maxAllowed set.
 	if maxSeq == 0 && maxAllowed <= 0 && fs.filterIsAll(filters) {
-		return fs.AllLastSeqs()
+		return fs.allLastSeqsLocked()
 	}
 
 	lastBlkIndex := len(fs.blks) - 1
@@ -3354,7 +3365,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			mb.tryForceExpireCacheLocked()
 		}
 		if updateLLTS {
-			mb.llts = getAccessTime()
+			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
 		return total, validThrough
@@ -3380,7 +3391,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				shouldExpire = true
 			}
 			// Mark fss activity.
-			mb.lsts = getAccessTime()
+			mb.lsts = ats.AccessTime()
 
 			var t uint64
 			var havePartial bool
@@ -3480,7 +3491,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					shouldExpire = true
 				}
 				// Mark fss activity.
-				mb.lsts = getAccessTime()
+				mb.lsts = ats.AccessTime()
 
 				mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
 					adjust += ss.Msgs
@@ -3520,7 +3531,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			mb.tryForceExpireCacheLocked()
 		}
 		if updateLLTS {
-			mb.llts = getAccessTime()
+			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
 	}
@@ -3663,7 +3674,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 			mb.tryForceExpireCacheLocked()
 		}
 		if updateLLTS {
-			mb.llts = getAccessTime()
+			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
 		return total, validThrough
@@ -3688,7 +3699,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 				shouldExpire = true
 			}
 			// Mark fss activity.
-			mb.lsts = getAccessTime()
+			mb.lsts = ats.AccessTime()
 
 			var t uint64
 			var havePartial bool
@@ -3741,7 +3752,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 				mb.tryForceExpireCacheLocked()
 			}
 			if updateLLTS {
-				mb.llts = getAccessTime()
+				mb.llts = ats.AccessTime()
 			}
 			mb.mu.Unlock()
 			total += t
@@ -3801,7 +3812,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 					shouldExpire = true
 				}
 				// Mark fss activity.
-				mb.lsts = getAccessTime()
+				mb.lsts = ats.AccessTime()
 				IntersectStree(mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
 					adjust += ss.Msgs
 				})
@@ -3840,7 +3851,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 			mb.tryForceExpireCacheLocked()
 		}
 		if updateLLTS {
-			mb.llts = getAccessTime()
+			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
 	}
@@ -3925,7 +3936,7 @@ func (mb *msgBlock) setupWriteCache(buf []byte) {
 	if fi != nil {
 		mb.cache.off = int(fi.Size())
 	}
-	mb.llts = getAccessTime()
+	mb.llts = ats.AccessTime()
 	mb.startCacheExpireTimer()
 }
 
@@ -3956,7 +3967,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	mb.fss = stree.NewSubjectTree[SimpleState]()
 
 	// Set cache time to creation time to start.
-	mb.llts, mb.lwts = 0, getAccessTime()
+	mb.llts, mb.lwts = 0, ats.AccessTime()
 	// Remember our last sequence number.
 	atomic.StoreUint64(&mb.first.seq, fs.state.LastSeq+1)
 	atomic.StoreUint64(&mb.last.seq, fs.state.LastSeq)
@@ -4214,7 +4225,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 		return
 	}
 	var needsRecord bool
-	nowts := getAccessTime()
+	nowts := ats.AccessTime()
 
 	mb.mu.Lock()
 	// If we are empty can just do meta.
@@ -4406,7 +4417,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			shouldExpire = true
 		}
 		// Mark fss activity.
-		mb.lsts = getAccessTime()
+		mb.lsts = ats.AccessTime()
 
 		bsubj := stringToBytes(subj)
 		if ss, ok := mb.fss.Find(bsubj); ok && ss != nil {
@@ -4495,11 +4506,18 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	var numMsgs uint64
 
 	// collect all that are not correct.
-	needAttention := make(map[string]*psi)
+	needAttention := stree.NewSubjectTree[uint64]()
+	fblk, lblk := uint32(math.MaxUint32), uint32(0)
 	fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 		numMsgs += psi.total
 		if psi.total > maxMsgsPer {
-			needAttention[string(subj)] = psi
+			needAttention.Insert(subj, psi.total)
+			if psi.fblk < fblk {
+				fblk = psi.fblk
+			}
+			if psi.lblk > lblk {
+				lblk = psi.lblk
+			}
 		}
 		return true
 	})
@@ -4520,13 +4538,25 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		// Rebuild fs state too.
 		fs.rebuildStateLocked(nil)
 		// Need to redo blocks that need attention.
-		needAttention = make(map[string]*psi)
+		needAttention.Empty()
+		fblk, lblk = uint32(math.MaxUint32), uint32(0)
 		fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 			if psi.total > maxMsgsPer {
-				needAttention[string(subj)] = psi
+				needAttention.Insert(subj, psi.total)
+				if psi.fblk < fblk {
+					fblk = psi.fblk
+				}
+				if psi.lblk > lblk {
+					lblk = psi.lblk
+				}
 			}
 			return true
 		})
+	}
+
+	// If nothing to do then stop.
+	if fblk == math.MaxUint32 {
+		return
 	}
 
 	// Collect all the msgBlks we alter.
@@ -4534,41 +4564,45 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// For re-use below.
 	var sm StoreMsg
-
-	// Walk all subjects that need attention here.
-	for subj, info := range needAttention {
-		total, start, stop := info.total, info.fblk, info.lblk
-
-		for i := start; i <= stop; i++ {
-			mb := fs.bim[i]
-			if mb == nil {
-				continue
+	var fss *stree.SubjectTree[*SimpleState]
+	for i := fblk; i <= lblk; i++ {
+		mb := fs.bim[i]
+		if mb == nil {
+			continue
+		}
+		mb.mu.Lock()
+		mb.ensurePerSubjectInfoLoaded()
+		// It isn't safe to intersect mb.fss directly, because removeMsgViaLimits modifies it
+		// during the iteration, which can cause us to miss keys. We won't copy the entire
+		// SimpleState structs though but rather just take pointers for speed.
+		fss = fss.Empty()
+		mb.fss.IterFast(func(subject []byte, val *SimpleState) bool {
+			fss.Insert(subject, val)
+			return true
+		})
+		mb.mu.Unlock()
+		stree.LazyIntersect(needAttention, fss, func(subj []byte, total *uint64, ssptr **SimpleState) {
+			if ssptr == nil || total == nil {
+				return
 			}
-			// Grab the ss entry for this subject in case sparse.
-			mb.mu.Lock()
-			mb.ensurePerSubjectInfoLoaded()
-			ss, ok := mb.fss.Find(stringToBytes(subj))
-			if ok && ss != nil && (ss.firstNeedsUpdate || ss.lastNeedsUpdate) {
-				mb.recalculateForSubj(subj, ss)
+			ss := *ssptr
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				mb.mu.Lock()
+				mb.recalculateForSubj(bytesToString(subj), ss)
+				mb.mu.Unlock()
 			}
-			mb.mu.Unlock()
-			if ss == nil {
-				continue
-			}
-			for seq := ss.First; seq <= ss.Last && total > maxMsgsPer; {
-				m, _, err := mb.firstMatching(subj, false, seq, &sm)
-				if err == nil {
-					seq = m.seq + 1
-					if removed, _ := fs.removeMsgViaLimits(m.seq); removed {
-						total--
-						blks[mb] = struct{}{}
-					}
-				} else {
-					// On error just do single increment.
-					seq++
+			for first := ss.First; *total > maxMsgsPer && first <= ss.Last; {
+				m, _, err := mb.firstMatching(bytesToString(subj), false, first, &sm)
+				if err != nil {
+					break
+				}
+				first = m.seq + 1
+				if removed, _ := fs.removeMsgViaLimits(m.seq); removed {
+					blks[mb] = struct{}{}
+					*total--
 				}
 			}
-		}
+		})
 	}
 
 	// Expire the cache if we can.
@@ -4702,7 +4736,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	msz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 
 	// Set cache timestamp for last remove.
-	mb.lrts = getAccessTime()
+	mb.lrts = ats.AccessTime()
 
 	// Global stats
 	if fs.state.Msgs > 0 {
@@ -5492,7 +5526,7 @@ func (mb *msgBlock) expireCacheLocked() {
 	}
 
 	// Grab timestamp to compare.
-	tns := getAccessTime()
+	tns := ats.AccessTime()
 
 	// For the core buffer of messages, we care about reads and writes, but not removes.
 	bufts := mb.llts
@@ -5602,7 +5636,7 @@ func (fs *fileStore) expireMsgs() {
 
 	fs.mu.RLock()
 	maxAge := int64(fs.cfg.MaxAge)
-	minAge := getAccessTime() - maxAge
+	minAge := ats.AccessTime() - maxAge
 	rmcb := fs.rmcb
 	sdmcb := fs.sdmcb
 	sdmTTL := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
@@ -5619,7 +5653,7 @@ func (fs *fileStore) expireMsgs() {
 			if len(sm.hdr) > 0 {
 				if ttl, err := getMessageTTL(sm.hdr); err == nil && ttl < 0 {
 					// The message has a negative TTL, therefore it must "never expire".
-					minAge = getAccessTime() - maxAge
+					minAge = ats.AccessTime() - maxAge
 					continue
 				}
 			}
@@ -5636,7 +5670,7 @@ func (fs *fileStore) expireMsgs() {
 				fs.mu.Unlock()
 			}
 			// Recalculate in case we are expiring a bunch.
-			minAge = getAccessTime() - maxAge
+			minAge = ats.AccessTime() - maxAge
 		}
 	}
 
@@ -5885,7 +5919,7 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 			return err
 		}
 		// Mark fss activity.
-		mb.lsts = getAccessTime()
+		mb.lsts = ats.AccessTime()
 		if ss, ok := mb.fss.Find(stringToBytes(subj)); ok && ss != nil {
 			ss.Msgs++
 			ss.Last = seq
@@ -6568,7 +6602,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		popFss = true
 	}
 	// Mark fss activity.
-	mb.lsts = getAccessTime()
+	mb.lsts = ats.AccessTime()
 	mb.ttls = 0
 
 	lbuf := uint32(len(buf))
@@ -6750,6 +6784,9 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// under heavy load.
 
 	// Check if we need to encrypt.
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return nil, err
+	}
 	if mb.bek != nil && lob > 0 {
 		// Need to leave original alone.
 		var dst []byte
@@ -6802,7 +6839,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Decide what we want to do with the buffer in hand. If we have load interest
 	// we will hold onto the whole thing, otherwise empty the buffer, possibly reusing it.
-	if ts := getAccessTime(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
+	if ts := ats.AccessTime(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
 		mb.cache.wp += lob
 	} else {
 		if cap(mb.cache.buf) <= maxBufReuse {
@@ -6936,11 +6973,8 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 
 // Lock should be held.
 func (mb *msgBlock) loadMsgsWithLock() error {
-	// Check for encryption, we do not load keys on startup anymore so might need to load them here.
-	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
-		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
-			return err
-		}
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return err
 	}
 
 	// Check to see if we are loading already.
@@ -6965,7 +6999,7 @@ checkCache:
 		return nil
 	}
 
-	mb.llts = getAccessTime()
+	mb.llts = ats.AccessTime()
 
 	// FIXME(dlc) - We could be smarter here.
 	if buf, _ := mb.bytesPending(); len(buf) > 0 {
@@ -7154,7 +7188,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 
 	// If we have a delete map check it.
 	if mb.dmap.Exists(seq) {
-		mb.llts = getAccessTime()
+		mb.llts = ats.AccessTime()
 		return nil, errDeletedMsg
 	}
 
@@ -7185,7 +7219,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	}
 
 	// Update cache activity.
-	mb.llts = getAccessTime()
+	mb.llts = ats.AccessTime()
 
 	li := int(bi) - mb.cache.off
 	if li >= len(mb.cache.buf) {
@@ -7389,6 +7423,24 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCop
 	return sm, nil
 }
 
+// SubjectForSeq will return what the subject is for this sequence if found.
+func (fs *fileStore) SubjectForSeq(seq uint64) (string, error) {
+	fs.mu.RLock()
+	if seq < fs.state.FirstSeq {
+		fs.mu.RUnlock()
+		return _EMPTY_, ErrStoreMsgNotFound
+	}
+	var smv StoreMsg
+	mb := fs.selectMsgBlock(seq)
+	fs.mu.RUnlock()
+	if mb != nil {
+		if sm, _, _ := mb.fetchMsgNoCopy(seq, &smv); sm != nil {
+			return sm.subj, nil
+		}
+	}
+	return _EMPTY_, ErrStoreMsgNotFound
+}
+
 // LoadMsg will lookup the message by sequence number and return it if found.
 func (fs *fileStore) LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	return fs.msgForSeq(seq, sm)
@@ -7446,7 +7498,7 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 			return nil, err
 		}
 		// Mark fss activity.
-		mb.lsts = getAccessTime()
+		mb.lsts = ats.AccessTime()
 
 		var l uint64
 		// Optimize if subject is not a wildcard.
@@ -8348,8 +8400,13 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	} else {
 		// Make sure to sync changes.
 		smb.needSync = true
-		// Update fs first seq and time.
-		atomic.StoreUint64(&smb.first.seq, seq-1) // Just for start condition for selectNextFirst.
+		// Just for start condition for selectNextFirst.
+		if smb.first.seq < seq {
+			atomic.StoreUint64(&smb.first.seq, seq-1)
+		} else {
+			// selectNextFirst always adds 1, so need to subtract 1 here.
+			atomic.StoreUint64(&smb.first.seq, smb.first.seq-1)
+		}
 		smb.selectNextFirst()
 
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.first.seq)
@@ -8957,7 +9014,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	}
 
 	// Create new one regardless.
-	mb.fss = stree.NewSubjectTree[SimpleState]()
+	mb.fss = mb.fss.Empty()
 
 	var smv StoreMsg
 	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
@@ -8991,7 +9048,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 
 	if mb.fss.Size() > 0 {
 		// Make sure we run the cache expire timer.
-		mb.llts = getAccessTime()
+		mb.llts = ats.AccessTime()
 		// Mark fss activity same as load time.
 		mb.lsts = mb.llts
 		mb.startCacheExpireTimer()
@@ -9005,7 +9062,7 @@ func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
 	if mb.fss != nil || mb.noTrack {
 		if mb.fss != nil {
 			// Mark fss activity.
-			mb.lsts = getAccessTime()
+			mb.lsts = ats.AccessTime()
 		}
 		return nil
 	}
@@ -9528,6 +9585,9 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 	if bytes > 0 && cb != nil {
 		cb(0, -bytes, 0, _EMPTY_)
 	}
+
+	// Unregister from the access time service.
+	ats.Unregister()
 
 	return nil
 }
@@ -11150,28 +11210,4 @@ func writeFileWithSync(name string, data []byte, perm fs.FileMode) error {
 		return err
 	}
 	return f.Close()
-}
-
-// This is to offload UnixNano() processing from timestamp creation for cache management.
-var (
-	tsOnce     sync.Once
-	accessTime atomic.Int64
-)
-
-// Update every 100ms.
-const accessTimeTickInterval = 100 * time.Millisecond
-
-// Will load the access time from an atomic. We will also setup the Go routine
-// to update this in one place.
-func getAccessTime() int64 {
-	tsOnce.Do(func() {
-		accessTime.Store(time.Now().UnixNano())
-		go func() {
-			ticker := time.NewTicker(accessTimeTickInterval)
-			for range ticker.C {
-				accessTime.Store(time.Now().UnixNano())
-			}
-		}()
-	})
-	return accessTime.Load()
 }

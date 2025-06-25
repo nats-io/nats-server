@@ -1,4 +1,4 @@
-// Copyright 2016-2022 The NATS Authors
+// Copyright 2016-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
 
@@ -86,5 +88,71 @@ func TestTokenInConfig(t *testing.T) {
 	defer nc.Close()
 	if !nc.AuthRequired() {
 		t.Fatal("Expected auth to be required for the server")
+	}
+}
+
+func TestClientConnectInfo(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		sys      string
+		hasSys   bool
+		protocol int
+	}{
+		{"async info support with explicit system account", "system_account: SYS", true, server.ClientProtoInfo},
+		{"async info support without explicit system account", "", false, server.ClientProtoInfo},
+		{"no async info support with explicit system account", "system_account: SYS", true, server.ClientProtoZero},
+		{"no async info support without explicit system account", "", false, server.ClientProtoZero},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				%s
+				accounts {
+					SYS: { users: [{ user: sys, password: pwd}] }
+					A:   { users: [{ user: a, password: pwd}] }
+					B:   { users: [{ user: b, password: pwd}] }
+				}
+			`, test.sys)))
+			hub, oHub := RunServerWithConfig(conf)
+			defer hub.Shutdown()
+
+			checkInfoOnConnect := func(user, acc string, isSys bool) {
+				t.Helper()
+				cc := createClientConn(t, oHub.Host, oHub.Port)
+				defer cc.Close()
+
+				checkInfoMsg(t, cc)
+				sendProto(t, cc, fmt.Sprintf("CONNECT {\"user\":%q,\"pass\":\"pwd\",\"pedantic\":false,\"verbose\":false,\"protocol\":%d}\r\nPING\r\n", user, test.protocol))
+				// Since the PONG and INFO may be receive as a single TCP read,
+				// make sure we consume the pong alone here.
+				pongBuf := make([]byte, len("PONG\r\n"))
+				cc.SetReadDeadline(time.Now().Add(2 * time.Second))
+				n, err := cc.Read(pongBuf)
+				cc.SetReadDeadline(time.Time{})
+				if n <= 0 && err != nil {
+					t.Fatalf("Error reading from conn: %v\n", err)
+				}
+				if !pongRe.Match(pongBuf) {
+					t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
+				}
+				if test.protocol < server.ClientProtoInfo {
+					expectNothing(t, cc)
+				} else {
+					info := checkInfoMsg(t, cc)
+					if !info.ConnectInfo {
+						t.Fatal("Expected ConnectInfo to be true")
+					}
+					if an := info.RemoteAccount; an != acc {
+						t.Fatalf("Expected account %q, got %q", acc, info.RemoteAccount)
+					}
+					if ais := info.IsSystemAccount; ais != isSys {
+						t.Fatalf("Expected IsSystemAccount to be %v, got %v", isSys, ais)
+					}
+				}
+			}
+			checkInfoOnConnect("a", "A", false)
+			checkInfoOnConnect("sys", "SYS", test.hasSys)
+			checkInfoOnConnect("b", "B", false)
+		})
 	}
 }

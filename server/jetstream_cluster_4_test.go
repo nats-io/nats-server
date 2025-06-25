@@ -3528,8 +3528,118 @@ func TestJetStreamClusterConsumerDesyncAfterErrorDuringStreamCatchup(t *testing.
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 
 	// Outdated server must NOT become the leader.
-	newConsummerLeaderServer := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
-	require_Equal(t, newConsummerLeaderServer.Name(), clusterResetServerName)
+	newConsumerLeaderServer := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_Equal(t, newConsumerLeaderServer.Name(), clusterResetServerName)
+}
+
+func TestJetStreamClusterDesyncAfterEofFromOldStreamLeader(t *testing.T) {
+	test := func(t *testing.T, eof bool) {
+		c := createJetStreamClusterExplicit(t, "R5S", 5)
+		defer c.shutdown()
+
+		cs := c.randomServer()
+		nc, js := jsClientConnect(t, cs)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: 5,
+		})
+		require_NoError(t, err)
+
+		sl := c.streamLeader(globalAccountName, "TEST")
+		var rs *Server
+		var catchup *Server
+		for _, s := range c.servers {
+			if s != sl && s != cs {
+				if rs == nil {
+					rs = s
+				} else {
+					catchup = s
+					break
+				}
+			}
+		}
+
+		// Shutdown server that needs to catch up, so it gets a snapshot from the leader after restart.
+		catchup.Shutdown()
+
+		// One message is received and applied by all replicas.
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		// Disable Raft and start cluster subs for server, simulating an old leader with an outdated log.
+		acc, err := rs.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		mset.startClusterSubs()
+		rn := mset.raftNode()
+		rn.Stop()
+		rn.WaitForStop()
+
+		// Temporarily disable cluster subs for this test.
+		// Normally due to multiple cluster subs responses will interleave, but this is simpler for this test.
+		acc, err = sl.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err = acc.lookupStream("TEST")
+		require_NoError(t, err)
+		mset.stopClusterSubs()
+
+		// Publish another message that the old leader will not get.
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_NoError(t, sl.JetStreamSnapshotStream(globalAccountName, "TEST"))
+
+		sa := sl.getJetStream().streamAssignment(globalAccountName, "TEST")
+		require_NotNil(t, sa)
+
+		// Send EOF immediately to requesting server, otherwise the server needs to time out and retry.
+		if eof {
+			snc, err := nats.Connect(rs.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			require_NoError(t, err)
+			defer snc.Close()
+
+			sub, err := snc.Subscribe(sa.Sync, func(msg *nats.Msg) {
+				// EOF
+				rs.sendInternalMsgLocked(msg.Reply, _EMPTY_, nil, nil)
+			})
+			require_NoError(t, err)
+			defer sub.Drain()
+		}
+
+		// Restart server so it starts catching up.
+		catchup = c.restartServer(catchup)
+
+		// Wait for server to start catching up.
+		// This shouldn't be a problem. The server should retry catchup, recognizing it wasn't caught up fully.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if a, err := catchup.lookupAccount(globalAccountName); err != nil {
+				return err
+			} else if m, err := a.lookupStream("TEST"); err != nil {
+				return err
+			} else if !m.isCatchingUp() {
+				return errors.New("stream not catching up")
+			}
+			return nil
+		})
+
+		// Stop old leader, and re-enable cluster subs on proper leader.
+		rs.Shutdown()
+		mset.startClusterSubs()
+
+		// Server should automatically restart catchup and get the missing data.
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+	}
+
+	t.Run("eof", func(t *testing.T) { test(t, true) })
+	t.Run("retry", func(t *testing.T) { test(t, false) })
 }
 
 func TestJetStreamClusterReservedResourcesAccountingAfterClusterReset(t *testing.T) {
@@ -5373,6 +5483,92 @@ func TestJetStreamClusterServerPeerRemovePeersDrift(t *testing.T) {
 		}
 		if count != 3 {
 			return fmt.Errorf("expected 3 servers hosting stream/consumer, got: %d", count)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamStreamTagPlacement(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for i, c := range []nats.StreamConfig{
+		{Replicas: 1, Placement: &nats.Placement{Tags: []string{"!S-1", "!S-2", "!S-3"}}}, // exclude all servers.
+		{Replicas: 2, Placement: &nats.Placement{Tags: []string{"!S-1", "!S-2"}}},         // exclude two servers.
+		{Replicas: 3, Placement: &nats.Placement{Tags: []string{"!S-2"}}},                 // not enough server.
+	} {
+		c.Name = fmt.Sprintf("TEST%d", i)
+		c.Subjects = []string{c.Name}
+		_, err := js.AddStream(&c)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "no suitable peers for placement", "tags excluded", "S-2")
+	}
+
+	// Test adding excluded tags to an existing stream.
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	cfg.Placement = &nats.Placement{Tags: []string{"!S-1"}}
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "no suitable peers for placement", "tags excluded", "S-1")
+
+	// Test changing replicas to 2 and then add the excluded tag.
+	cfg.Replicas = 2
+	cfg.Placement = nil
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	var leaderName string
+	// Wait until we have two replicas
+	checkFor(t, 6*time.Second, 1*time.Second, func() error {
+		s, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+
+		if s.Cluster.Leader == "" {
+			return fmt.Errorf("no leader yet")
+		}
+
+		if len(s.Cluster.Replicas) != 1 {
+			return fmt.Errorf("expected 1 replica, got %d", len(s.Cluster.Replicas))
+		}
+		leaderName = s.Cluster.Leader
+		return nil
+	})
+
+	// Now that we only have two servers, we can exclude one.
+	cfg.Replicas = 2
+	cfg.Placement = &nats.Placement{Tags: []string{"!" + leaderName}}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Check that the stream grab the correct servers.
+	// This can take a bit as we need to first add the new replica and later remove the old one.
+	checkFor(t, 6*time.Second, 1*time.Second, func() error {
+		s, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+
+		if len(s.Cluster.Replicas) != 1 {
+			return fmt.Errorf("expected 1 replica, got %d", len(s.Cluster.Replicas))
+		}
+
+		if s.Cluster.Leader == leaderName {
+			return fmt.Errorf("expected leader to be different than %q", leaderName)
+		}
+
+		if s.Cluster.Replicas[0].Name == leaderName {
+			return fmt.Errorf("expected replica to be different than %q", leaderName)
 		}
 		return nil
 	})

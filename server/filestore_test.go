@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nuid"
 )
 
@@ -6591,7 +6593,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 	}
 	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
 	// needing to worry about last write times blocking forced expiration.
-	time.Sleep(expire + accessTimeTickInterval)
+	time.Sleep(expire + ats.TickInterval)
 
 	checkNoCache := func() {
 		t.Helper()
@@ -9554,4 +9556,134 @@ func TestFileStoreAllLastSeqs(t *testing.T) {
 	seqs, err := fs.AllLastSeqs()
 	require_NoError(t, err)
 	require_True(t, reflect.DeepEqual(seqs, expected))
+}
+
+func TestFileStoreRecoverDoesNotResetStreamState(t *testing.T) {
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 5 * time.Second, Retention: WorkQueuePolicy}
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		cfg)
+
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	toStore := 500
+	for i := 0; i < toStore; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg, 0)
+		require_NoError(t, err)
+	}
+	time.Sleep(5 * time.Second)
+	fs, err = newFileStoreWithCreated(fs.fcfg, cfg, time.Now(), prf(&fs.fcfg), nil) //Expire all messages so stream does not hold any message, this is to simulate consumer consuming all messages.
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())      //To Ensure there is a state file created
+	require_True(t, len(fs.blks) == 1) //Since all messages are expire there should be only 1 blk file exist
+	os.Remove(fs.blks[0].mfn)          // we can change it to have a consumer and consumer all messages too, but removing blk files will simulate same behavior
+
+	//Now at this point stream has only index.db file and no blk files as all are deleted. previously it used to reset the stream state to 0
+	// now it will use index.db to populate stream state if could not be recovered from blk files.
+	fs, err = newFileStoreWithCreated(fs.fcfg, cfg, time.Now(), prf(&fs.fcfg), nil)
+	require_NoError(t, err)
+	require_True(t, fs.state.FirstSeq|fs.state.LastSeq != 0)
+}
+
+func TestFileStoreAccessTimeSpinUp(t *testing.T) {
+	// In case running lots of tests.
+	time.Sleep(time.Second)
+	ngr := runtime.NumGoroutine()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	at := ats.AccessTime()
+	require_True(t, at != 0)
+
+	// Now check we also cleanup.
+	fs.Stop()
+	time.Sleep(2 * ats.TickInterval)
+	ngra := runtime.NumGoroutine()
+	require_Equal(t, ngr, ngra)
+}
+
+func TestFileStoreUpdateConfigTTLState(t *testing.T) {
+	cfg := StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{">"},
+		Storage:  FileStorage,
+	}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	require_Equal(t, fs.ttls, nil)
+
+	cfg.AllowMsgTTL = true
+	require_NoError(t, fs.UpdateConfig(&cfg))
+	require_NotEqual(t, fs.ttls, nil)
+
+	cfg.AllowMsgTTL = false
+	require_NoError(t, fs.UpdateConfig(&cfg))
+	require_Equal(t, fs.ttls, nil)
+}
+
+func TestFileStoreSubjectForSeq(t *testing.T) {
+	cfg := StreamConfig{
+		Name:     "foo",
+		Subjects: []string{"foo.>"},
+		Storage:  FileStorage,
+	}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	seq, _, err := fs.StoreMsg("foo.bar", nil, nil, 0)
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
+
+	_, err = fs.SubjectForSeq(0)
+	require_Error(t, err, ErrStoreMsgNotFound)
+
+	subj, err := fs.SubjectForSeq(1)
+	require_NoError(t, err)
+	require_Equal(t, subj, "foo.bar")
+
+	_, err = fs.SubjectForSeq(2)
+	require_Error(t, err, ErrStoreMsgNotFound)
+}
+
+func BenchmarkFileStoreSubjectAccesses(b *testing.B) {
+	fs, err := newFileStore(FileStoreConfig{StoreDir: b.TempDir()}, StreamConfig{
+		Name:     "foo",
+		Subjects: []string{"foo.>"},
+		Storage:  FileStorage,
+	})
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	seq, _, err := fs.StoreMsg("foo.bar", nil, []byte{1, 2, 3, 4, 5}, 0)
+	require_NoError(b, err)
+	require_Equal(b, seq, 1)
+
+	b.Run("SubjectForSeq", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			subj, err := fs.SubjectForSeq(1)
+			require_NoError(b, err)
+			require_Equal(b, subj, "foo.bar")
+		}
+	})
+
+	b.Run("LoadMsg", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			// smv is deliberately inside the loop here because that's
+			// effectively what is happening with needAck.
+			var smv StoreMsg
+			sm, err := fs.LoadMsg(1, &smv)
+			require_NoError(b, err)
+			require_Equal(b, sm.subj, "foo.bar")
+		}
+	})
 }

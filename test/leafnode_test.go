@@ -1,4 +1,4 @@
-// Copyright 2019-2024 The NATS Authors
+// Copyright 2019-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -4449,4 +4449,56 @@ func TestLeafNodeClusterNameWithSpacesRejected(t *testing.T) {
 	leafSend("INFO {\"cluster\":\"my cluster\"}\r\n")
 	leafExpect(errRe)
 	expectDisconnect(t, lc)
+}
+
+func TestLeafNodeConnectInfo(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		sys    string
+		hasSys bool
+	}{
+		{"with explicit system account", "system_account: SYS", true},
+		{"without explicit system account", "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				%s
+				accounts {
+					SYS: { users: [{ user: sys, password: pwd}] }
+					A:   { users: [{ user: a, password: pwd}] }
+					B:   { users: [{ user: b, password: pwd}] }
+				}
+				leafnodes {
+					port: -1
+				}
+			`, test.sys)))
+			hub, oHub := RunServerWithConfig(conf)
+			defer hub.Shutdown()
+
+			checkInfoOnConnect := func(user, acc string, isSys bool) {
+				t.Helper()
+				lc := createLeafConn(t, oHub.LeafNode.Host, oHub.LeafNode.Port)
+				defer lc.Close()
+
+				checkInfoMsg(t, lc)
+
+				sendProto(t, lc, fmt.Sprintf("CONNECT {\"user\":%q,\"pass\":\"pwd\"}\r\n", user))
+				info := checkInfoMsg(t, lc)
+				if !info.ConnectInfo {
+					t.Fatal("Expected ConnectInfo to be true")
+				}
+				if an := info.RemoteAccount; an != acc {
+					t.Fatalf("Expected account %q, got %q", acc, info.RemoteAccount)
+				}
+				if ais := info.IsSystemAccount; ais != isSys {
+					t.Fatalf("Expected IsSystemAccount to be %v, got %v", isSys, ais)
+				}
+				checkLeafNodeConnected(t, hub)
+			}
+			checkInfoOnConnect("a", "A", false)
+			checkInfoOnConnect("sys", "SYS", test.hasSys)
+			checkInfoOnConnect("b", "B", false)
+		})
+	}
 }

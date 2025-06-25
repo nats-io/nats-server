@@ -233,7 +233,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 type keyGen func(context []byte) ([]byte, error)
 
 // Return a key generation function or nil if encryption not enabled.
-// keyGen defined in filestore.go - keyGen func(iv, context []byte) []byte
 func (s *Server) jsKeyGen(jsKey, info string) keyGen {
 	if ek := jsKey; ek != _EMPTY_ {
 		return func(context []byte) ([]byte, error) {

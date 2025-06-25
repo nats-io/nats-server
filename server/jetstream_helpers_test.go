@@ -1883,6 +1883,7 @@ type netProxy struct {
 	down     int
 	url      string
 	surl     string
+	port     int
 }
 
 func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *netProxy {
@@ -1895,14 +1896,27 @@ func createNetProxy(rtt time.Duration, upRate, downRate int, serverURL string, s
 	if e != nil {
 		panic(fmt.Sprintf("Error listening on port: %s, %q", hp, e))
 	}
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		panic(fmt.Sprintf("Could not parse server URL: %v", err))
+	}
+
+	var clientURL string
 	port := l.Addr().(*net.TCPAddr).Port
+	if u.User != nil {
+		clientURL = fmt.Sprintf("nats://%v@127.0.0.1:%d", u.User, port)
+	} else {
+		clientURL = fmt.Sprintf("nats://127.0.0.1:%d", port)
+	}
+
 	proxy := &netProxy{
 		listener: l,
 		rtt:      rtt,
 		up:       upRate,
 		down:     downRate,
-		url:      fmt.Sprintf("nats://127.0.0.1:%d", port),
+		url:      clientURL,
 		surl:     serverURL,
+		port:     port,
 	}
 	if start {
 		proxy.start()
@@ -1916,6 +1930,16 @@ func (np *netProxy) start() {
 		panic(fmt.Sprintf("Could not parse server URL: %v", err))
 	}
 	host := u.Host
+
+	// Check if this is restart.
+	// We nil out listener on stop()
+	if np.listener == nil && np.port != 0 {
+		hp := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", np.port))
+		np.listener, err = net.Listen("tcp", hp)
+		if err != nil {
+			panic(fmt.Sprintf("Error listening on port: %s, %q", hp, err))
+		}
+	}
 
 	go func() {
 		for {
@@ -1940,6 +1964,10 @@ func (np *netProxy) clientURL() string {
 
 func (np *netProxy) routeURL() string {
 	return strings.Replace(np.url, "nats", "nats-route", 1)
+}
+
+func (np *netProxy) leafURL() string {
+	return strings.Replace(np.url, "nats", "nats-leaf", 1)
 }
 
 func (np *netProxy) loop(tbw int, r, w net.Conn) {

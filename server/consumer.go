@@ -2976,6 +2976,11 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		TimeStamp:      time.Now().UTC(),
 		PriorityGroups: priorityGroups,
 	}
+	// Reset redelivered for MaxDeliver 1. Redeliveries are disabled so must not report it (is confusing otherwise).
+	// The state does still keep track of these messages.
+	if o.cfg.MaxDeliver == 1 {
+		info.NumRedelivered = 0
+	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
 		if info.Paused = time.Now().Before(p); info.Paused {
@@ -3299,11 +3304,10 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	// Check if we are filtered, and if so check if this is even applicable to us.
 	if isFiltered {
 		if subj == _EMPTY_ {
-			var svp StoreMsg
-			if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
+			var err error
+			if subj, err = o.mset.store.SubjectForSeq(sseq); err != nil {
 				return false
 			}
-			subj = svp.subj
 		}
 		if !o.isFilteredMatch(subj) {
 			return false
@@ -4101,6 +4105,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			o.updateSkipped(o.sseq)
 		} else {
 			o.lss.seqs = o.lss.seqs[1:]
+			o.sseq = seq
 		}
 		pmsg := getJSPubMsgFromPool()
 		sm, err := o.mset.store.LoadMsg(seq, &pmsg.StoreMsg)
@@ -4474,6 +4479,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			delay    time.Duration
 			sz       int
 			wrn, wrb int
+			wrNoWait bool
 		)
 
 		o.mu.Lock()
@@ -4552,7 +4558,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		if o.isPushMode() {
 			dsubj = o.dsubj
 		} else if wr := o.nextWaiting(sz); wr != nil {
-			wrn, wrb = wr.n, wr.b
+			wrn, wrb, wrNoWait = wr.n, wr.b, wr.noWait
 			dsubj = wr.reply
 			if o.cfg.PriorityPolicy == PriorityPinnedClient {
 				// FIXME(jrm): Can we make this prettier?
@@ -4627,7 +4633,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// Do actual delivery.
-		o.deliverMsg(dsubj, ackReply, pmsg, dc, rp)
+		o.deliverMsg(dsubj, ackReply, pmsg, dc, rp, wrNoWait)
 
 		// If given request fulfilled batch size, but there are still pending bytes, send information about it.
 		if wrn <= 0 && wrb > 0 {
@@ -4826,7 +4832,7 @@ func convertToHeadersOnly(pmsg *jsPubMsg) {
 
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64, rp RetentionPolicy) {
+func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64, rp RetentionPolicy, wrNoWait bool) {
 	if o.mset == nil {
 		pmsg.returnToPool()
 		return
@@ -4862,7 +4868,9 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	// If we're replicated we MUST only send the message AFTER we've got quorum for updating
 	// delivered state. Otherwise, we could be in an invalid state after a leader change.
 	// We can send immediately if not replicated, not using acks, or using flow control (incompatible).
-	if o.node == nil || ap == AckNone || o.cfg.FlowControl {
+	// TODO(mvv): If NoWait we also bypass replicating first.
+	//  Ideally we'd only send the NoWait request timeout after replication and delivery.
+	if o.node == nil || ap == AckNone || o.cfg.FlowControl || wrNoWait {
 		o.outq.send(pmsg)
 	} else {
 		o.addReplicatedQueuedMsg(pmsg)
@@ -5346,7 +5354,7 @@ func (o *consumer) selectStartingSeqNo() {
 				if mmp == 1 {
 					o.sseq = state.FirstSeq
 				} else {
-					var filters []string
+					filters := make([]string, 0, len(o.subjf))
 					if o.subjf == nil {
 						filters = append(filters, o.cfg.FilterSubject)
 					} else {

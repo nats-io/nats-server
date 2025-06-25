@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,6 +18,7 @@ package server
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func testAllStoreAllPermutations(t *testing.T, compressionAndEncryption bool, cfg StreamConfig, fn func(t *testing.T, fs StreamStore)) {
@@ -532,6 +533,53 @@ func TestStorePurgeExZero(t *testing.T) {
 			ss = fs.State()
 			require_Equal(t, ss.FirstSeq, 1)
 			require_Equal(t, ss.LastSeq, 0)
+		},
+	)
+}
+
+func TestStoreUpdateConfigTTLState(t *testing.T) {
+	config := func() StreamConfig {
+		return StreamConfig{Name: "TEST", Subjects: []string{"foo"}}
+	}
+	testAllStoreAllPermutations(
+		t, false, config(),
+		func(t *testing.T, fs StreamStore) {
+			cfg := config()
+			switch fs.(type) {
+			case *fileStore:
+				cfg.Storage = FileStorage
+			case *memStore:
+				cfg.Storage = MemoryStorage
+			}
+
+			// TTLs disabled at this point so this message should survive.
+			seq, _, err := fs.StoreMsg("foo", nil, nil, 1)
+			require_NoError(t, err)
+			time.Sleep(2 * time.Second)
+			_, err = fs.LoadMsg(seq, nil)
+			require_NoError(t, err)
+
+			// Now enable TTLs.
+			cfg.AllowMsgTTL = true
+			require_NoError(t, fs.UpdateConfig(&cfg))
+
+			// TTLs enabled at this point so this message should be cleaned up.
+			seq, _, err = fs.StoreMsg("foo", nil, nil, 1)
+			require_NoError(t, err)
+			time.Sleep(2 * time.Second)
+			_, err = fs.LoadMsg(seq, nil)
+			require_Error(t, err)
+
+			// Now disable TTLs again.
+			cfg.AllowMsgTTL = false
+			require_NoError(t, fs.UpdateConfig(&cfg))
+
+			// TTLs disabled again so this message should survive.
+			seq, _, err = fs.StoreMsg("foo", nil, nil, 1)
+			require_NoError(t, err)
+			time.Sleep(2 * time.Second)
+			_, err = fs.LoadMsg(seq, nil)
+			require_NoError(t, err)
 		},
 	)
 }

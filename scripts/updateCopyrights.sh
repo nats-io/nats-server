@@ -9,8 +9,8 @@ git ls-files "*.go" | while read -r file; do
     current_copyright=$(grep -oE "^// Copyright [0-9]{4}(-[0-9]{4})? The NATS Authors" "$file" || echo "")
     [[ -z "$current_copyright" ]] && continue
 
-    # Get the last commit year for the file
-    last_year=$(git log --follow --format="%ad" --date=format:%Y -- "$file" | head -1)
+    # Get the last commit year for the file, ignore commit messages containing the word "copyright"
+    last_year=$(git log --follow --format="%ad" --date=format:%Y --grep="(C|c)opyright" --invert-grep -n 1 -- "$file")
     existing_years=$(echo "$current_copyright" | grep -oE "[0-9]{4}(-[0-9]{4})?")
 
     # Determine the new copyright range

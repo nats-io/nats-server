@@ -5,7 +5,7 @@ Revision 1.1
 Authors: Ivan Kozlovic, Lev Brouk
 
 NATS Server currently supports most of MQTT 3.1.1. This document describes how
-it is implementated.
+it is implemented.
 
 It is strongly recommended to review the [MQTT v3.1.1
 specifications](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html)

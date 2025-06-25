@@ -15,8 +15,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1444,14 +1446,25 @@ func (c *client) readLoop(pre []byte) {
 		// Updates stats for client and server that were collected
 		// from parsing through the buffer.
 		if c.in.msgs > 0 {
-			atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
-			atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
+			inMsgs := int64(c.in.msgs)
+			inBytes := int64(c.in.bytes)
+
+			atomic.AddInt64(&c.inMsgs, inMsgs)
+			atomic.AddInt64(&c.inBytes, inBytes)
+
 			if acc != nil {
-				atomic.AddInt64(&acc.inMsgs, int64(c.in.msgs))
-				atomic.AddInt64(&acc.inBytes, int64(c.in.bytes))
+				acc.stats.Lock()
+				acc.stats.inMsgs += inMsgs
+				acc.stats.inBytes += inBytes
+				if c.kind == LEAF {
+					acc.stats.ln.inMsgs += int64(inMsgs)
+					acc.stats.ln.inBytes += int64(inBytes)
+				}
+				acc.stats.Unlock()
 			}
-			atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
-			atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
+
+			atomic.AddInt64(&s.inMsgs, inMsgs)
+			atomic.AddInt64(&s.inBytes, inBytes)
 		}
 
 		// Signal to writeLoop to flush to socket.
@@ -1804,7 +1817,9 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 		c.srv.scStats.leafs.Add(1)
 	}
 	if c.acc != nil {
-		atomic.AddInt64(&c.acc.slowConsumers, 1)
+		c.acc.stats.Lock()
+		c.acc.stats.slowConsumers++
+		c.acc.stats.Unlock()
 	}
 	c.Noticef("Slow Consumer %s: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
 		scState, c.out.wdl, numChunks, attempted)
@@ -2354,7 +2369,9 @@ func (c *client) queueOutbound(data []byte) {
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.srv.scStats.clients.Add(1)
 		if c.acc != nil {
-			atomic.AddInt64(&c.acc.slowConsumers, 1)
+			c.acc.stats.Lock()
+			c.acc.stats.slowConsumers++
+			c.acc.stats.Unlock()
 		}
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
 		c.markConnAsClosed(SlowConsumerPendingBytes)
@@ -2505,36 +2522,29 @@ func (c *client) processPing() {
 	// If we are here, the CONNECT has been received so we know
 	// if this client supports async INFO or not.
 	var (
-		checkInfoChange bool
+		sendConnectInfo bool
 		srv             = c.srv
 	)
-	// For older clients, just flip the firstPongSent flag if not already
-	// set and we are done.
-	if c.opts.Protocol < ClientProtoInfo || srv == nil {
-		c.flags.setIfNotSet(firstPongSent)
-	} else {
-		// This is a client that supports async INFO protocols.
-		// If this is the first PING (so firstPongSent is not set yet),
-		// we will need to check if there was a change in cluster topology
-		// or we have a different max payload. We will send this first before
-		// pong since most clients do flush after connect call.
-		checkInfoChange = !c.flags.isSet(firstPongSent)
+	// For the first PING (so firstPongSet is false) and for clients
+	// that support async INFO protocols, we will send one with ConnectInfo=true,
+	// the name of the account the client is bound to, and if the
+	// account is the system account.
+	if !c.flags.isSet(firstPongSent) {
+		// Flip the flag.
+		c.flags.set(firstPongSent)
+		// Evaluate if we should send the INFO protocol.
+		sendConnectInfo = srv != nil && c.opts.Protocol >= ClientProtoInfo
 	}
 	c.mu.Unlock()
 
-	if checkInfoChange {
-		opts := srv.getOpts()
+	if sendConnectInfo {
 		srv.mu.Lock()
+		info := srv.copyInfo()
 		c.mu.Lock()
-		// Now that we are under both locks, we can flip the flag.
-		// This prevents sendAsyncInfoToClients() and code here to
-		// send a double INFO protocol.
-		c.flags.set(firstPongSent)
-		// If there was a cluster update since this client was created,
-		// send an updated INFO protocol now.
-		if srv.lastCURLsUpdate >= c.start.UnixNano() || c.mpay != int32(opts.MaxPayload) {
-			c.enqueueProto(c.generateClientInfoJSON(srv.copyInfo()))
-		}
+		info.RemoteAccount = c.acc.Name
+		info.IsSystemAccount = c.acc == srv.SystemAccount()
+		info.ConnectInfo = true
+		c.enqueueProto(c.generateClientInfoJSON(info))
 		c.mu.Unlock()
 		srv.mu.Unlock()
 	}
@@ -3492,10 +3502,18 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		if !client.pubAllowedFullCheck(string(subject), true, true) {
+		var subjectToCheck []byte
+		if subject[0] == '_' && bytes.HasPrefix(subject, []byte(gwReplyPrefix)) {
+			subjectToCheck = subject[gwSubjectOffset:]
+		} else if subject[0] == '$' && bytes.HasPrefix(subject, []byte(oldGWReplyPrefix)) {
+			subjectToCheck = subject[oldGWReplyStart:]
+		} else {
+			subjectToCheck = subject
+		}
+		if !client.pubAllowedFullCheck(string(subjectToCheck), true, true) {
 			mt.addEgressEvent(client, sub, errMsgTracePubViolation)
 			client.mu.Unlock()
-			client.Debugf("Not permitted to deliver to %q", subject)
+			client.Debugf("Not permitted to deliver to %q", subjectToCheck)
 			return false
 		}
 	}
@@ -4725,6 +4743,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// by having an extra size
 	var dlvMsgs int64
 	var dlvExtraSize int64
+	var dlvRouteMsgs int64
+	var dlvLeafMsgs int64
 
 	// We need to know if this is a MQTT producer because they send messages
 	// without CR_LF (we otherwise remove the size of CR_LF from message size).
@@ -4734,15 +4754,33 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		if dlvMsgs == 0 {
 			return
 		}
+
 		totalBytes := dlvMsgs*int64(len(msg)) + dlvExtraSize
+		routeBytes := dlvRouteMsgs*int64(len(msg)) + dlvExtraSize
+		leafBytes := dlvLeafMsgs*int64(len(msg)) + dlvExtraSize
+
 		// For non MQTT producers, remove the CR_LF * number of messages
 		if !prodIsMQTT {
 			totalBytes -= dlvMsgs * int64(LEN_CR_LF)
+			routeBytes -= dlvRouteMsgs * int64(LEN_CR_LF)
+			leafBytes -= dlvLeafMsgs * int64(LEN_CR_LF)
 		}
+
 		if acc != nil {
-			atomic.AddInt64(&acc.outMsgs, dlvMsgs)
-			atomic.AddInt64(&acc.outBytes, totalBytes)
+			acc.stats.Lock()
+			acc.stats.outMsgs += dlvMsgs
+			acc.stats.outBytes += totalBytes
+			if dlvRouteMsgs > 0 {
+				acc.stats.rt.outMsgs += dlvRouteMsgs
+				acc.stats.rt.outBytes += routeBytes
+			}
+			if dlvLeafMsgs > 0 {
+				acc.stats.ln.outMsgs += dlvLeafMsgs
+				acc.stats.ln.outBytes += leafBytes
+			}
+			acc.stats.Unlock()
 		}
+
 		if srv := c.srv; srv != nil {
 			atomic.AddInt64(&srv.outMsgs, dlvMsgs)
 			atomic.AddInt64(&srv.outBytes, totalBytes)
@@ -5063,6 +5101,12 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				// Update only if not skipped.
 				if !skipDelivery && sub.icb == nil {
 					dlvMsgs++
+					switch sub.client.kind {
+					case ROUTER:
+						dlvRouteMsgs++
+					case LEAF:
+						dlvLeafMsgs++
+					}
 				}
 				// Do the rest even when message delivery was skipped.
 				didDeliver = true
@@ -5153,6 +5197,12 @@ sendToRoutesOrLeafs:
 		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
 			if rt.sub.icb == nil {
 				dlvMsgs++
+				switch dc.kind {
+				case ROUTER:
+					dlvRouteMsgs++
+				case LEAF:
+					dlvLeafMsgs++
+				}
 				dlvExtraSize += int64(len(dmsg) - len(msg))
 			}
 			didDeliver = true
@@ -6066,10 +6116,22 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	}
 
 	if err != nil {
+		var detail string
+		var subjs []string
+		if ve, ok := err.(*tls.CertificateVerificationError); ok {
+			for _, cert := range ve.UnverifiedCertificates {
+				fp := sha256.Sum256(cert.Raw)
+				fph := hex.EncodeToString(fp[:])
+				subjs = append(subjs, fmt.Sprintf("%s SHA-256: %s", cert.Subject.String(), fph))
+			}
+		}
+		if len(subjs) > 0 {
+			detail = fmt.Sprintf(" (%s)", strings.Join(subjs, "; "))
+		}
 		if kind == CLIENT {
-			c.Errorf("TLS handshake error: %v", err)
+			c.Errorf("TLS handshake error: %v%s", err, detail)
 		} else {
-			c.Errorf("TLS %s handshake error: %v", typ, err)
+			c.Errorf("TLS %s handshake error: %v%s", typ, err, detail)
 		}
 		c.closeConnection(TLSHandshakeError)
 

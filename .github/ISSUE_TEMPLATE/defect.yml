@@ -23,7 +23,7 @@ body:
     attributes:
       label: Server and client version
       description: |-
-        Provide the versions you were using when the detect was observed.
+        **One of the first things we are likely to ask you is if the defect reproduces on the latest version, so please check that first!**
         For the server, use `nats-server --version`, check the startup log output, or the image tag pulled from Docker.
         For the CLI client, use `nats --version`.
         For language-specific clients, check the version downloaded by the language dependency manager.
@@ -42,6 +42,6 @@ body:
     id: steps
     attributes:
       label: Steps to reproduce
-      description: Provide as many concrete steps to reproduce the defect.
+      description: Provide as many concrete steps to reproduce the defect. Please also include stream info and consumer info if this issue is JetStream-related.
     validations:
       required: false

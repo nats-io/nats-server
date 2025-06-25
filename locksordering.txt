@@ -28,5 +28,9 @@ clearObserverState so that they cannot interleave which would leave Raft nodes i
 inconsistent observer states.
 
     jscmMu -> Account -> jsAccount
-    jscmMu -> stream.clsMu 
+    jscmMu -> stream.clsMu
     jscmMu -> RaftNode
+
+The "clsMu" lock protects the consumer list on a stream, used for signalling consumer activity.
+
+    stream -> clsMu

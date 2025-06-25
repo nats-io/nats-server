@@ -1292,6 +1292,50 @@ func TestMemStoreAllLastSeqs(t *testing.T) {
 	require_True(t, reflect.DeepEqual(seqs, expected))
 }
 
+func TestMemStoreUpdateConfigTTLState(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{">"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+	require_Equal(t, ms.ttls, nil)
+
+	cfg.AllowMsgTTL = true
+	require_NoError(t, ms.UpdateConfig(cfg))
+	require_NotEqual(t, ms.ttls, nil)
+
+	cfg.AllowMsgTTL = false
+	require_NoError(t, ms.UpdateConfig(cfg))
+	require_Equal(t, ms.ttls, nil)
+}
+
+func TestMemStoreSubjectForSeq(t *testing.T) {
+	cfg := StreamConfig{
+		Name:     "foo",
+		Subjects: []string{"foo.>"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(&cfg)
+	require_NoError(t, err)
+
+	seq, _, err := ms.StoreMsg("foo.bar", nil, nil, 0)
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
+
+	_, err = ms.SubjectForSeq(0)
+	require_Error(t, err, ErrStoreMsgNotFound)
+
+	subj, err := ms.SubjectForSeq(1)
+	require_NoError(t, err)
+	require_Equal(t, subj, "foo.bar")
+
+	_, err = ms.SubjectForSeq(2)
+	require_Error(t, err, ErrStoreMsgNotFound)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
