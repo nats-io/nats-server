@@ -29,7 +29,7 @@ func TestPSEmulation(t *testing.T) {
 	var rss, vss, psRss, psVss int64
 	var pcpu, psPcpu float64
 
-	runtime.GC()
+	debug.FreeOSMemory()
 
 	// PS version first
 	pidStr := fmt.Sprintf("%d", os.Getpid())
