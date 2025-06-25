@@ -5223,7 +5223,14 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 	}
 
 	if isLeader {
-		s.Noticef("JetStream cluster new consumer leader for '%s > %s > %s'", ca.Client.serviceAccount(), streamName, consumerName)
+		// Only log if the consumer is replicated and/or durable.
+		// Logging about R1 ephemerals, like KV watchers, is mostly noise since the leader will always be known.
+		o.mu.RLock()
+		isReplicated, durable := o.node != nil, o.isDurable()
+		o.mu.RUnlock()
+		if isReplicated || durable {
+			s.Noticef("JetStream cluster new consumer leader for '%s > %s > %s'", ca.Client.serviceAccount(), streamName, consumerName)
+		}
 		s.sendConsumerLeaderElectAdvisory(o)
 	} else {
 		// We are stepping down.
