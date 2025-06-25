@@ -10413,6 +10413,86 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	}
 }
 
+func TestJetStreamServerEncryptionServerRestarts(t *testing.T) {
+	cases := []struct {
+		name   string
+		cstr   string
+		cipher StoreCipher
+	}{
+		{"Default", _EMPTY_, ChaCha},
+		{"ChaCha", ", cipher: chacha", ChaCha},
+		{"AES", ", cipher: aes", AES},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmpl := `
+				server_name: S22
+				listen: 127.0.0.1:-1
+				jetstream: {key: $JS_KEY, store_dir: '%s' %s}
+			`
+			storeDir := t.TempDir()
+
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir, c.cstr)))
+
+			os.Setenv("JS_KEY", "s3cr3t!!")
+			defer os.Unsetenv("JS_KEY")
+
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			config := s.JetStreamConfig()
+			if config == nil {
+				t.Fatalf("Expected config but got none")
+			}
+			defer removeDir(t, config.StoreDir)
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			// Add stream.
+			cfg := &nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Storage:  nats.FileStorage,
+			}
+			_, err := js.AddStream(cfg)
+			require_NoError(t, err)
+
+			// Restart to invalidate any in-memory state that adding the stream created.
+			s.Shutdown()
+			s, _ = RunServerWithConfig(conf)
+			defer s.Shutdown()
+			nc.Close()
+			nc, js = jsClientConnect(t, s)
+			defer nc.Close()
+
+			msg := []byte("ENCRYPTED PAYLOAD!!")
+			_, err = js.Publish("foo", msg)
+			require_NoError(t, err)
+
+			// Restart to invalidate any in-memory state that the publish initialized.
+			s.Shutdown()
+			s, _ = RunServerWithConfig(conf)
+			defer s.Shutdown()
+			nc.Close()
+			nc, js = jsClientConnect(t, s)
+			defer nc.Close()
+
+			// Should still be able to get the data.
+			sub, err := js.SubscribeSync("foo")
+			require_NoError(t, err)
+			defer sub.Drain()
+
+			m, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			meta, err := m.Metadata()
+			require_NoError(t, err)
+			require_Equal(t, meta.Sequence.Stream, 1)
+		})
+	}
+}
+
 func TestJetStreamDeliverLastPerSubject(t *testing.T) {
 	for _, st := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(st.String(), func(t *testing.T) {
