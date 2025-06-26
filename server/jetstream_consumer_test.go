@@ -8384,6 +8384,50 @@ func TestJetStreamConsumerPullMaxWaitingOfOne(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerPullMaxWaitingOfOneWithHeartbeatInterval(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"TEST.A"}})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:    "dur",
+		MaxWaiting: 1,
+		AckPolicy:  nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// First check that a request can timeout (we had an issue where this was
+	// not the case for MaxWaiting of 1).
+	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 250 * time.Millisecond}
+	reqb, _ := json.Marshal(req)
+	msg, err := nc.Request("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", reqb, 13000*time.Millisecond)
+	require_NoError(t, err)
+	if v := msg.Header.Get("Status"); v != "408" {
+		t.Fatalf("Expected 408, got: %s", v)
+	}
+
+	// Now have a request waiting...
+	req = JSApiConsumerGetNextRequest{Batch: 1}
+	reqb, _ = json.Marshal(req)
+	// Send the request, but do not block since we want then to send an extra
+	// request that should be rejected.
+	sub := natsSubSync(t, nc, nats.NewInbox())
+	err = nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", sub.Subject, reqb)
+	require_NoError(t, err)
+
+	// Send a new request, this should not respond since we specified an idle heartbeat,
+	// therefore the client will just expect to miss those instead.
+	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 500 * time.Millisecond, Heartbeat: 250 * time.Millisecond}
+	reqb, _ = json.Marshal(req)
+	_, err = nc.Request("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", reqb, 300*time.Millisecond)
+	require_Error(t, err)
+}
+
 func TestJetStreamConsumerPullMaxWaiting(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
