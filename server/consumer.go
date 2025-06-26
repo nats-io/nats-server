@@ -3917,7 +3917,12 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	wr.received = time.Now()
 
 	if err := o.waiting.add(wr); err != nil {
-		sendErr(409, "Exceeded MaxWaiting")
+		// If the client has a heartbeat interval set, don't bother responding with a 409,
+		// otherwise we can end up in a hot loop with the client re-requesting instead of
+		// waiting for the missing heartbeats instead and retrying.
+		if hb == 0 {
+			sendErr(409, "Exceeded MaxWaiting")
+		}
 		wr.recycle()
 		return
 	}
