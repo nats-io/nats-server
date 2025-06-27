@@ -771,12 +771,14 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		replicas    int
 		messageSize int
 		numSubjects int
-		minMessages int
+		asyncFlush  bool
 	}{
-		{1, 1, 10, 1, 100_000}, // Single node, 10B messages, ~1MB minimum
-		{1, 1, 1024, 1, 1_000}, // Single node, 1KB messages, ~1MB minimum
-		{3, 3, 10, 1, 100_000}, // 3-nodes cluster, R=3, 10B messages, ~1MB minimum
-		{3, 3, 1024, 1, 1_000}, // 3-nodes cluster, R=3, 10B messages, ~1MB minimum
+		{1, 1, 10, 1, false},   // Single node, 10B messages
+		{1, 1, 1024, 1, false}, // Single node, 1KB messages
+		{3, 3, 10, 1, false},   // 3-nodes cluster, R=3, 10B messages
+		{3, 3, 1024, 1, false}, // 3-nodes cluster, R=3, 1KB messages
+		{3, 3, 10, 1, true},    // 3-nodes cluster, R=3, 10B messages (async flush)
+		{3, 3, 1024, 1, true},  // 3-nodes cluster, R=3, 1KB messages (async flush)
 	}
 
 	// All the cases above are run with each of the publisher cases below
@@ -798,6 +800,9 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 			bc.messageSize,
 			bc.numSubjects,
 		)
+		if bc.asyncFlush {
+			name += ",AsyncFlush"
+		}
 
 		b.Run(
 			name,
@@ -846,12 +851,14 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 							if verbose {
 								b.Logf("Creating stream with R=%d and %d input subjects", bc.replicas, bc.numSubjects)
 							}
-							streamConfig := &nats.StreamConfig{
-								Name:     streamName,
-								Subjects: subjects,
-								Replicas: bc.replicas,
-							}
-							if _, err := js.AddStream(streamConfig); err != nil {
+							_, err = jsStreamCreate(b, nc, &StreamConfig{
+								Name:            streamName,
+								Subjects:        subjects,
+								Replicas:        bc.replicas,
+								Storage:         FileStorage,
+								AllowAsyncFlush: bc.asyncFlush,
+							})
+							if err != nil {
 								b.Fatalf("Error creating stream: %v", err)
 							}
 
@@ -1592,9 +1599,11 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 	replicasCases := []struct {
 		clusterSize int
 		replicas    int
+		asyncFlush  bool
 	}{
-		{1, 1},
-		{3, 3},
+		{1, 1, false},
+		{3, 3, false},
+		{3, 3, true},
 	}
 
 	workload := func(b *testing.B, numPubs int, messageSize int64, clientUrl string) {
@@ -1703,8 +1712,12 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 
 	// benchmark case matrix
 	for _, replicasCase := range replicasCases {
+		title := fmt.Sprintf("N=%d,R=%d", replicasCase.clusterSize, replicasCase.replicas)
+		if replicasCase.asyncFlush {
+			title += ",AsyncFlush"
+		}
 		b.Run(
-			fmt.Sprintf("N=%d,R=%d", replicasCase.clusterSize, replicasCase.replicas),
+			title,
 			func(b *testing.B) {
 				for _, messageSize := range messageSizeCases {
 					b.Run(
@@ -1722,10 +1735,12 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 										clientUrl := ls.ClientURL()
 
 										// create stream
-										_, err := js.AddStream(&nats.StreamConfig{
-											Name:     streamName,
-											Subjects: []string{subject},
-											Replicas: replicasCase.replicas,
+										_, err := jsStreamCreate(b, nc, &StreamConfig{
+											Name:            streamName,
+											Subjects:        []string{subject},
+											Replicas:        replicasCase.replicas,
+											Storage:         FileStorage,
+											AllowAsyncFlush: replicasCase.asyncFlush,
 										})
 										if err != nil {
 											b.Fatal(err)
