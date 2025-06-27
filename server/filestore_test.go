@@ -9765,3 +9765,68 @@ func TestFileStoreNoPanicOnRecoverTTLWithCorruptBlocks(t *testing.T) {
 		require_NoError(t, fs.recoverTTLState())
 	})
 }
+
+func TestFileStoreAsyncTruncate(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 8192
+		fcfg.AsyncFlush = true
+
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		require_NotNil(t, lmb)
+
+		// Wait for flusher to be ready.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if !lmb.flusher {
+				return errors.New("flusher not active")
+			}
+			return nil
+		})
+		// Now shutdown flusher and wait for it to be closed.
+		lmb.mu.Lock()
+		if lmb.qch != nil {
+			close(lmb.qch)
+			lmb.qch = nil
+		}
+		lmb.mu.Unlock()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if lmb.flusher {
+				return errors.New("flusher still active")
+			}
+			return nil
+		})
+
+		// Write some messages, none of them will have been flushed asynchronously.
+		subj, msg := "foo", make([]byte, 100)
+		for i := uint64(1); i <= 2; i++ {
+			seq, _, err := fs.StoreMsg(subj, nil, msg, 0)
+			require_NoError(t, err)
+			require_Equal(t, seq, i)
+		}
+		// Truncate needs to flush if the data was not yet flushed asynchronously.
+		require_NoError(t, fs.Truncate(1))
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 1)
+
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			if mb.pendingWriteSize() > 0 {
+				fs.mu.RUnlock()
+				t.Fatalf("Message block %d still has pending writes", mb.index)
+			}
+		}
+		fs.mu.RUnlock()
+	})
+}
