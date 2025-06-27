@@ -32,6 +32,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
+
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -3901,8 +3903,18 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	node := rg.node
 	js.mu.RUnlock()
 
+	assert.Sometimes(mset != nil && mset.isMonitorRunning() != alreadyRunning, "alreadyRunning != monitorRunning", nil)
+
 	// Start our monitoring routine.
 	if node != nil {
+		if mset != nil {
+			if monitorRunning := mset.isMonitorRunning(); monitorRunning != alreadyRunning {
+				assert.Unreachable("monitor goroutine not running", map[string]any{
+					"alreadyRunning": alreadyRunning,
+					"monitorRunning": monitorRunning,
+				})
+			}
+		}
 		if !alreadyRunning {
 			if mset != nil {
 				mset.monitorWg.Add(1)
