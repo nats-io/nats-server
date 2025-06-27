@@ -1656,8 +1656,8 @@ func TestMonitorSubszWithOffsetAndLimit(t *testing.T) {
 		if sl.NumSubs != 200 {
 			t.Fatalf("Expected NumSubs of 200, got %d\n", sl.NumSubs)
 		}
-		if sl.Total != 100 {
-			t.Fatalf("Expected Total of 100, got %d\n", sl.Total)
+		if sl.Total != 200 {
+			t.Fatalf("Expected Total of 200, got %d\n", sl.Total)
 		}
 		if sl.Offset != 10 {
 			t.Fatalf("Expected Offset of 10, got %d\n", sl.Offset)
@@ -1799,8 +1799,8 @@ func TestMonitorSubszMultiAccountWithOffsetAndLimit(t *testing.T) {
 		if sl.NumSubs != 400 {
 			t.Fatalf("Expected NumSubs of 200, got %d\n", sl.NumSubs)
 		}
-		if sl.Total != 100 {
-			t.Fatalf("Expected Total of 100, got %d\n", sl.Total)
+		if sl.Total != 400 {
+			t.Fatalf("Expected Total of 400, got %d\n", sl.Total)
 		}
 		if sl.Offset != 10 {
 			t.Fatalf("Expected Offset of 10, got %d\n", sl.Offset)

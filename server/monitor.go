@@ -1018,7 +1018,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 			return true
 		})
 
-		details := make([]SubDetail, len(subs))
+		details := make([]SubDetail, 0, len(subs))
 		i := 0
 		// TODO(dlc) - may be inefficient and could just do normal match when total subs is large and filtering.
 		for _, sub := range subs {
@@ -1030,7 +1030,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 				continue
 			}
 			sub.client.mu.Lock()
-			details[i] = newSubDetail(sub)
+			details = append(details, newSubDetail(sub))
 			sub.client.mu.Unlock()
 			i++
 		}
@@ -1047,7 +1047,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 			maxoff = maxIndex
 		}
 		sz.Subs = details[minoff:maxoff]
-		sz.Total = len(sz.Subs)
+		sz.Total = len(details)
 	} else {
 		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
