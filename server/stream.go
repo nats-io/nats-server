@@ -3485,7 +3485,6 @@ func (mset *stream) processAllSourceMsgs() {
 					defer mset.mu.Unlock()
 					for _, si := range stalled {
 						mset.setupSourceConsumer(si.iname, si.sseq+1, time.Time{})
-						si.last.Store(time.Now().UnixNano())
 					}
 				}()
 			}
