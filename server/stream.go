@@ -109,6 +109,10 @@ type StreamConfig struct {
 	// subject delete markers.
 	SubjectDeleteMarkerTTL time.Duration `json:"subject_delete_marker_ttl,omitempty"`
 
+	// AllowAsyncFlush allows replicated streams to asynchronously flush
+	// to the stream, improving throughput.
+	AllowAsyncFlush bool `json:"allow_async_flush"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -736,7 +740,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 	fsCfg.StoreDir = storeDir
-	fsCfg.AsyncFlush = false
+	// Async flushing is only allowed if the stream has a sync log backing it.
+	fsCfg.AsyncFlush = config.AllowAsyncFlush && config.Replicas > 1
 	// Grab configured sync interval.
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
@@ -906,6 +911,12 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	mset.node = node
 	if mset.node != nil {
 		mset.node.UpdateKnownPeers(peers)
+	}
+	// Update store callbacks that call into the Raft node (if any).
+	if node != nil {
+		mset.store.RegisterStorageTrackWrites(node.TrackWrite, node.WritePersisted)
+	} else {
+		mset.store.RegisterStorageTrackWrites(nil, nil)
 	}
 
 	// Setup our info sub here as well for all stream members. This is now by design.
@@ -2647,7 +2658,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, true))
 		}
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true, 0)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -3619,7 +3630,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	if node != nil {
 		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil, true)
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true, 0)
 	}
 
 	if err != nil {
@@ -4207,7 +4218,7 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 			}
 		} else {
-			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false)
+			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, 0)
 		}
 	})
 	mset.mu.Unlock()
@@ -4842,7 +4853,7 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
-func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool) (retErr error) {
+func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, ceIndex uint64) (retErr error) {
 	if mt != nil {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
 		// message trace event.
@@ -5190,7 +5201,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Skip msg here.
 	if noInterest {
-		mset.lseq = store.SkipMsg()
+		mset.lseq = store.SkipMsg(ceIndex)
 		mset.lmsgId = msgId
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
@@ -5282,7 +5293,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 		}
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
+		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl, ceIndex)
 	}
 
 	if err != nil {
@@ -5692,7 +5703,7 @@ func (mset *stream) internalLoop() {
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 				} else {
-					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false)
+					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, 0)
 				}
 				im.returnToPool()
 			}

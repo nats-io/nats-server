@@ -45,6 +45,11 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 		requires(1)
 	}
 
+	// Async flush was added in v2.12 and require API level 2.
+	if cfg.AllowAsyncFlush {
+		requires(2)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
