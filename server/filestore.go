@@ -2418,10 +2418,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 				// mb is already loaded into the cache so should be fast-ish.
 				mb.recalculateForSubj(bytesToString(subj), ss)
 			}
-			first := ss.First
-			if start > first {
-				first = start
-			}
+			first := max(start, ss.First)
 			if first > ss.Last || first >= hseq {
 				// The start cutoff is after the last sequence for this subject,
 				// or we think we already know of a subject with an earlier msg
@@ -2463,7 +2460,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 			}
 		})
 		if hseq < uint64(math.MaxUint64) && sm != nil {
-			return sm, didLoad, nil
+			return sm, didLoad && start == lseq, nil
 		}
 	} else {
 		for seq := start; seq <= lseq; seq++ {
