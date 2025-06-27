@@ -44,6 +44,8 @@ type RaftNode interface {
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
+	TrackWrite(index uint64)
+	WritePersisted(index uint64)
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
@@ -169,6 +171,11 @@ type raft struct {
 	pindex  uint64 // Previous index from the last snapshot
 	commit  uint64 // Index of the most recent commit
 	applied uint64 // Index of the most recently applied commit
+
+	persistFloor        uint64 // Lowest index of pending writes, can move applied up to be below this.
+	persistHigh         uint64 // Highest index of pending writes.
+	persistFloorApplied bool   // Whether the floor is persisted and can be applied.
+	pendingApplied      uint64 // Index of the highest applied index seen when there are pending writes.
 
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
@@ -1074,6 +1081,34 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		return 0, 0
 	}
 
+	// If writes are tracked, we can't move applied up until it is persisted.
+	if n.persistFloor > 0 {
+		// Ensure we can't roll back.
+		if index > n.pendingApplied {
+			n.pendingApplied = index
+		}
+		// If we've registered a pending floor, check if we can move up applied now as well.
+		n.appliedLocked(min(n.persistFloor-1, n.pendingApplied))
+	} else {
+		n.appliedLocked(index)
+	}
+
+	// Calculate the number of entries and estimate the byte size that
+	// we can now remove with a compaction/snapshot.
+	var state StreamState
+	n.wal.FastState(&state)
+	if n.applied > state.FirstSeq {
+		entries = n.applied - state.FirstSeq
+	}
+	if state.Msgs > 0 {
+		bytes = entries * state.Bytes / state.Msgs
+	}
+	return entries, bytes
+}
+
+// appliedLocked moves the applied value up, and does additional signaling if required.
+// Lock should be held.
+func (n *raft) appliedLocked(index uint64) {
 	// Ignore if already applied.
 	if index > n.applied {
 		n.applied = index
@@ -1089,18 +1124,54 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 			n.updateLeadChange(true)
 		}
 	}
+}
 
-	// Calculate the number of entries and estimate the byte size that
-	// we can now remove with a compaction/snapshot.
-	var state StreamState
-	n.wal.FastState(&state)
-	if n.applied > state.FirstSeq {
-		entries = n.applied - state.FirstSeq
+// TrackWrite signals writes need to happen for the specified index.
+// Applied can still be called, but will not move up until WritePersisted
+// is called, signaling writes were persisted.
+func (n *raft) TrackWrite(index uint64) {
+	n.Lock()
+	defer n.Unlock()
+	n.trackWritesLocked(index, false)
+}
+
+// WritePersisted signals all writes up to and including the index were persisted.
+// Applied automatically moves up if it was called in the meantime.
+func (n *raft) WritePersisted(index uint64) {
+	n.Lock()
+	defer n.Unlock()
+	n.trackWritesLocked(index, true)
+}
+
+// trackWritesLocked keeps track of pending and persisted writes.
+func (n *raft) trackWritesLocked(index uint64, persisted bool) {
+	if persisted {
+		// Persisted moves the floor up.
+		n.persistFloor = max(n.persistFloor, index)
+	} else if n.persistFloor > 0 {
+		// Track the lowest to-be-persisted index.
+		n.persistFloor = min(n.persistFloor, index)
+	} else {
+		// Initializes if not set.
+		n.persistFloor = index
 	}
-	if state.Msgs > 0 {
-		bytes = entries * state.Bytes / state.Msgs
+	// Track the highest observed pending write.
+	n.persistHigh = max(n.persistHigh, index)
+	// Track whether the floor was persisted.
+	n.persistFloorApplied = n.persistFloorApplied || persisted
+
+	if n.persistFloorApplied {
+		// Move applied up partially.
+		if n.persistFloor != n.persistHigh {
+			n.appliedLocked(min(n.persistFloor, n.pendingApplied))
+			return
+		}
+		// We've persisted everything, move applied up fully and reset fields.
+		n.persistFloor, n.persistHigh = 0, 0
+		n.persistFloorApplied = false
+		n.appliedLocked(n.pendingApplied)
+		n.pendingApplied = 0
 	}
-	return entries, bytes
 }
 
 // For capturing data needed by snapshot.
@@ -1186,7 +1257,8 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	n.debug("Installing snapshot of %d bytes", len(data))
 
-	return n.installSnapshot(&snapshot{
+	async := n.pendingApplied > n.applied
+	return n.installSnapshot(async, &snapshot{
 		lastTerm:  term,
 		lastIndex: n.applied,
 		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
@@ -1196,9 +1268,12 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 // Install the snapshot.
 // Lock should be held.
-func (n *raft) installSnapshot(snap *snapshot) error {
+func (n *raft) installSnapshot(async bool, snap *snapshot) error {
 	snapDir := filepath.Join(n.sd, snapshotsDir)
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
+	if async {
+		sn += snapAsyncSuffix
+	}
 	sfile := filepath.Join(snapDir, sn)
 
 	if err := writeFileWithSync(sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
@@ -1231,21 +1306,23 @@ func (n *raft) NeedSnapshot() bool {
 }
 
 const (
-	snapshotsDir = "snapshots"
-	snapFileT    = "snap.%d.%d"
+	snapshotsDir    = "snapshots"
+	snapFileT       = "snap.%d.%d"
+	snapAsyncSuffix = ".async"
 )
 
 // termAndIndexFromSnapfile tries to load the snapshot file and returns the term
 // and index from that snapshot.
-func termAndIndexFromSnapFile(sn string) (term, index uint64, err error) {
+func termAndIndexFromSnapFile(sn string) (term, index uint64, async bool, err error) {
 	if sn == _EMPTY_ {
-		return 0, 0, errBadSnapName
+		return 0, 0, false, errBadSnapName
 	}
 	fn := filepath.Base(sn)
 	if n, err := fmt.Sscanf(fn, snapFileT, &term, &index); err != nil || n != 2 {
-		return 0, 0, errBadSnapName
+		return 0, 0, false, errBadSnapName
 	}
-	return term, index, nil
+	async = strings.HasSuffix(fn, snapAsyncSuffix)
+	return term, index, async, nil
 }
 
 // setupLastSnapshot is called at startup to try and recover the last snapshot from
@@ -1259,17 +1336,20 @@ func (n *raft) setupLastSnapshot() {
 	}
 
 	var lterm, lindex uint64
+	var async bool
 	var latest string
 	for _, sf := range psnaps {
 		sfile := filepath.Join(snapDir, sf.Name())
 		var term, index uint64
-		term, index, err := termAndIndexFromSnapFile(sf.Name())
+		term, index, a, err := termAndIndexFromSnapFile(sf.Name())
 		if err == nil {
 			if term > lterm {
 				lterm, lindex = term, index
+				async = a
 				latest = sfile
 			} else if term == lterm && index > lindex {
 				lindex = index
+				async = a
 				latest = sfile
 			}
 		} else {
@@ -1316,7 +1396,11 @@ func (n *raft) setupLastSnapshot() {
 	n.pterm = snap.lastTerm
 	n.commit = snap.lastIndex
 	n.applied = snap.lastIndex
-	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	snapshotType := EntrySnapshot
+	if async {
+		snapshotType = EntrySnapshotAsync
+	}
+	n.apply.push(newCommittedEntry(n.applied, []*Entry{{snapshotType, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 	}
@@ -2265,6 +2349,10 @@ const (
 	EntryRemovePeer
 	EntryLeaderTransfer
 	EntrySnapshot
+	// EntrySnapshotAsync is an internal-only snapshot; indicates the snapshot contains new data
+	// that is asynchronously written to storage. We only initialize required data, and then simply
+	// replay during recovery. Async writes that did not hit storage yet, will be replayed this way.
+	EntrySnapshotAsync
 )
 
 func (t EntryType) String() string {
@@ -3607,7 +3695,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				data:      ae.entries[0].Data,
 			}
 			// Install the leader's snapshot as our own.
-			if err := n.installSnapshot(snap); err != nil {
+			if err := n.installSnapshot(false, snap); err != nil {
 				n.setWriteErrLocked(err)
 				n.Unlock()
 				return

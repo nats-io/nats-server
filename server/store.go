@@ -87,14 +87,23 @@ type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 // Used to call back into the upper layers to remove a message.
 type StorageRemoveMsgHandler func(seq uint64)
 
+// Used to call back into the upper layers that a write is scheduled for a given replication index.
+// Below handler will be called once this data is persisted.
+type StorageTrackWriteHandler func(index uint64)
+
+// Used to call back into the upper layers that certain writes were persisted up to
+// and including the specified index.
+type StorageWritePersistedHandler func(index uint64)
+
 // Used to call back into the upper layers to report on newly created subject delete markers.
 type SubjectDeleteMarkerUpdateHandler func(*inMsg)
 
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
-	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64) error
-	SkipMsg() uint64
+	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64, ceIndex uint64) error
+	SkipMsg(ceIndex uint64) uint64
 	SkipMsgs(seq uint64, num uint64) error
+	FlushAllPending()
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
 	LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
@@ -121,8 +130,9 @@ type StreamStore interface {
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
-	RegisterStorageRemoveMsg(handler StorageRemoveMsgHandler)
+	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
 	RegisterSubjectDeleteMarkerUpdates(SubjectDeleteMarkerUpdateHandler)
+	RegisterStorageTrackWrites(StorageTrackWriteHandler, StorageWritePersistedHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error
 	Stop() error

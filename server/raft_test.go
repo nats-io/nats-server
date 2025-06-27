@@ -2739,6 +2739,110 @@ func TestNRGSnapshotCatchup(t *testing.T) {
 	t.Run("with-restart", func(t *testing.T) { test(t, true) })
 }
 
+func TestNRGPendingAppliedPermutations(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+	reset := func() {
+		n.commit, n.applied = 100, 0
+		n.persistFloor, n.persistHigh, n.pendingApplied, n.persistFloorApplied = 0, 0, 0, false
+	}
+	reset()
+
+	// Not using any async pending entries.
+	t.Run("None", func(t *testing.T) {
+		defer reset()
+		n.Applied(1)
+		require_Equal(t, n.applied, 1)
+	})
+
+	// Confirm applied moves up after the last pending entry is done.
+	t.Run("ApplyOnDone", func(t *testing.T) {
+		defer reset()
+		// Call applied after.
+		n.TrackWrite(1)
+		n.WritePersisted(1)
+		n.Applied(10)
+		require_Equal(t, n.applied, 10)
+
+		// Call applied before.
+		n.TrackWrite(11)
+		n.Applied(20)
+		require_Equal(t, n.applied, 10)
+		n.WritePersisted(11)
+		require_Equal(t, n.applied, 20)
+	})
+
+	// Applied can't move up until all pending entries referencing the same index are applied.
+	t.Run("ApplyWhenNotPending", func(t *testing.T) {
+		defer reset()
+		n.TrackWrite(1)
+		n.TrackWrite(2)
+		n.Applied(3)
+		require_Equal(t, n.applied, 0)
+		n.WritePersisted(1)
+		require_Equal(t, n.applied, 1)
+		n.WritePersisted(2)
+		require_Equal(t, n.applied, 3)
+		n.TrackWrite(10)
+		n.Applied(10)
+		require_Equal(t, n.applied, 9)
+
+		// Apply is unblocked once the last pending is applied.
+		n.WritePersisted(10)
+		require_Equal(t, n.applied, 10)
+		n.Applied(11)
+		require_Equal(t, n.applied, 11)
+	})
+
+	// Pending state must be reset if all is done.
+	t.Run("DonePendingResetsState", func(t *testing.T) {
+		defer reset()
+		n.TrackWrite(1)
+		n.Applied(1)
+		require_Equal(t, n.applied, 0)
+		n.WritePersisted(1)
+		require_Equal(t, n.applied, 1)
+		require_Equal(t, n.persistFloor, 0)
+		require_Equal(t, n.persistHigh, 0)
+		require_Equal(t, n.pendingApplied, 0)
+		require_Equal(t, n.persistFloorApplied, false)
+	})
+}
+
+func TestNRGPendingAppliedInSnapshot(t *testing.T) {
+	test := func(t *testing.T, async bool) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		// Create a sample entry, the content doesn't matter, just that it's stored.
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+
+		nats0 := "S1Nunr6R" // "nats-0"
+
+		// Timeline.
+		aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+
+		n.applied = 1
+		n.pendingApplied = 1
+		if async {
+			n.pendingApplied = 5
+		}
+		require_NoError(t, n.storeToWAL(aeMsg))
+		require_NoError(t, n.InstallSnapshot(nil))
+
+		snapDir := filepath.Join(n.sd, snapshotsDir)
+		snaps, err := os.ReadDir(snapDir)
+		require_NoError(t, err)
+		require_Len(t, len(snaps), 1)
+		name := snaps[0].Name()
+		require_True(t, strings.HasSuffix(name, ".async") == async)
+	}
+
+	t.Run("sync", func(t *testing.T) { test(t, false) })
+	t.Run("async", func(t *testing.T) { test(t, true) })
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:

@@ -343,7 +343,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 
 		numSkips := 10
 		for i := 0; i < numSkips; i++ {
-			fs.SkipMsg()
+			fs.SkipMsg(0)
 		}
 		state := fs.State()
 		if state.Msgs != 0 {
@@ -354,10 +354,10 @@ func TestFileStoreSkipMsg(t *testing.T) {
 		}
 
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
-		fs.SkipMsg()
+		fs.SkipMsg(0)
+		fs.SkipMsg(0)
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 
 		state = fs.State()
 		if state.Msgs != 2 {
@@ -391,7 +391,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 			t.Fatalf("Message did not match")
 		}
 
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 		nseq, _, err := fs.StoreMsg("AAA", nil, []byte("Skip?"), 0)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up seq 11: %v", err)
@@ -5023,7 +5023,7 @@ func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
 
 	fs.StoreMsg(subj, nil, msg, 0)
 	for i := 0; i < numMsgs; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg(subj, nil, msg, 0)
 	require_Equal(t, fs.numMsgBlocks(), 3)
@@ -5872,7 +5872,7 @@ func TestFileStoreMsgBlockHolesAndIndexing(t *testing.T) {
 	mb := fs.getFirstBlock()
 	writeMsg := func(subj string, seq uint64) {
 		rl := fileStoreMsgSize(subj, nil, []byte(subj))
-		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true))
+		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true, 0))
 		fs.rebuildState(nil)
 	}
 	readMsg := func(seq uint64, expectedSubj string) {
@@ -6767,7 +6767,7 @@ func TestFileStoreEraseMsgWithDbitSlots(t *testing.T) {
 
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	// Now grab that first block and compact away the skips which will
@@ -6796,7 +6796,7 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	fs.StoreMsg("foo", nil, []byte("abcdefg"), 0)
 
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	// Now grab that first block and compact away the skips which will
 	// introduce dbits into our idx.
@@ -7143,7 +7143,7 @@ func TestFileStoreReloadAndLoseLastSequence(t *testing.T) {
 	defer fs.Stop()
 
 	for i := 0; i < 22; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 
 	// Restart 5 times.
@@ -8747,7 +8747,7 @@ func TestFileStoreMessageTTLRecoveredOffByOne(t *testing.T) {
 	// the TTL is to look at the original message header, therefore the TTL
 	// must be in the headers for this test to work.
 	hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
-	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl))
+	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl, 0))
 
 	var ss StreamState
 	fs.FastState(&ss)
@@ -8990,7 +8990,7 @@ func TestFileStoreLeftoverSkipMsgInDmap(t *testing.T) {
 	}
 
 	// Only skip a message.
-	fs.SkipMsg()
+	fs.SkipMsg(0)
 
 	// Confirm state.
 	state := fs.State()

@@ -2481,7 +2481,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
-			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
+			clfsUpped := mset.getCLFS() > pclfs
+			if ne >= compactNumMin || nb > compactSizeMin || clfsUpped {
+				// If CLFS is upped, we must make sure all pending data is flushed.
+				// Otherwise, replayed async writes could corrupt with the change in CLFS.
+				if clfsUpped {
+					mset.store.FlushAllPending()
+				}
 				doSnapshot()
 			}
 
@@ -2963,7 +2969,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Messages to be skipped have no subject or timestamp or msg or hdr.
 				if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
 					// Skip and update our lseq.
-					last := mset.store.SkipMsg()
+					last := mset.store.SkipMsg(ce.Index)
 					mset.mu.Lock()
 					mset.setLastSeq(last)
 					mset.clearAllPreAcks(last)
@@ -2979,7 +2985,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mt = mset.getAndDeleteMsgTrace(lseq)
 				}
 				// Process the actual message here.
-				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, ce.Index)
 
 				// If we have inflight make sure to clear after processing.
 				// TODO(dlc) - technically check on inflight != nil could cause datarace.
@@ -3012,7 +3018,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						if state.Msgs == 0 {
 							mset.store.Compact(lseq + 1)
 							// Retry
-							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, ce.Index)
 						}
 						// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
 						// and what we got.
@@ -3118,7 +3124,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", op))
 			}
-		} else if e.Type == EntrySnapshot {
+		} else if e.Type == EntrySnapshot || e.Type == EntrySnapshotAsync {
 			if mset == nil {
 				continue
 			}
@@ -3166,7 +3172,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 
 			if isRecovering || !mset.IsLeader() {
-				if err := mset.processSnapshot(ss, ce.Index); err != nil {
+				async := e.Type == EntrySnapshotAsync
+				if err := mset.processSnapshot(ss, ce.Index, async); err != nil {
 					return err
 				}
 			}
@@ -7944,7 +7951,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We also invoke this in clustering mode for message tracing when not
 	// performing message delivery.
 	if node == nil || mt.traceOnly() {
-		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced)
+		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced, 0)
 	}
 
 	// If message tracing (with message delivery), we will need to send the
@@ -8433,10 +8440,16 @@ var (
 )
 
 // Process a stream snapshot.
-func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
+func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64, async bool) (e error) {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
 	mset.setCLFS(snap.Failed)
+
+	// If it's an async snapshot, we only needed to update pre-requisite state, but not trigger catchup.
+	// We've got the entries we need already stored in our log, and can apply them from there.
+	if async {
+		return
+	}
 
 	mset.mu.Lock()
 	var state StreamState
@@ -8642,6 +8655,9 @@ RETRY:
 					lseq := mset.lseq
 					mset.mu.RUnlock()
 					if lseq >= snap.LastSeq {
+						// We MUST ensure all data is flushed up to this point, if the store hadn't already.
+						// Because we'll mark this as applied after we exit here.
+						mset.flushAfterCatchup()
 						return nil
 					}
 
@@ -8790,10 +8806,10 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	// Messages to be skipped have no subject or timestamp.
 	// TODO(dlc) - formalize with skipMsgOp
 	if subj == _EMPTY_ && ts == 0 {
-		if lseq := mset.store.SkipMsg(); lseq != seq {
+		if lseq := mset.store.SkipMsg(0); lseq != seq {
 			return 0, errCatchupWrongSeqForSkip
 		}
-	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl); err != nil {
+	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl, 0); err != nil {
 		return 0, err
 	}
 
@@ -8813,6 +8829,11 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	}
 
 	return seq, nil
+}
+
+// flushAfterCatchup will flush any pending writes after catchup.
+func (mset *stream) flushAfterCatchup() {
+	mset.store.FlushAllPending()
 }
 
 func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {

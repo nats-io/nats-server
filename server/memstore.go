@@ -245,7 +245,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, _ uint64) error {
 	ms.mu.Lock()
 	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := ms.scb
@@ -283,7 +283,7 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, i
 }
 
 // SkipMsg will use the next sequence number but not store anything.
-func (ms *memStore) SkipMsg() uint64 {
+func (ms *memStore) SkipMsg(_ uint64) uint64 {
 	// Grab time.
 	now := time.Now().UTC()
 
@@ -330,6 +330,11 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 	return nil
 }
 
+// FlushAllPending flushes all data that was still pending to be written.
+func (ms *memStore) FlushAllPending() {
+	// Noop, in-memory store doesn't use async applying.
+}
+
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.
@@ -345,6 +350,12 @@ func (ms *memStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	ms.mu.Lock()
 	ms.rmcb = cb
 	ms.mu.Unlock()
+}
+
+// RegisterStorageTrackWrites registers callbacks to signal to other layers
+// that writes were scheduled, and when they were persisted.
+func (ms *memStore) RegisterStorageTrackWrites(_ StorageTrackWriteHandler, _ StorageWritePersistedHandler) {
+	// Noop, in-memory store doesn't persist data outside of memory.
 }
 
 // RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new subject delete markers.
