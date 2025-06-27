@@ -5134,16 +5134,19 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 					waiting = newWaiting
 					ts *= 2
 				}
+
 				mb.flushPendingMsgs()
-				// Check if we are no longer the last message block. If we are
-				// not we can close FDs and exit.
-				mb.fs.mu.RLock()
-				notLast := mb != mb.fs.lmb
-				mb.fs.mu.RUnlock()
-				if notLast {
-					if err := mb.closeFDs(); err == nil {
-						return
-					}
+			}
+
+			// Check if we are no longer the last message block. If we are
+			// not we can close FDs and exit.
+			mb.fs.mu.RLock()
+			notLast := mb != mb.fs.lmb
+			mb.fs.mu.RUnlock()
+
+			if notLast {
+				if err := mb.closeFDs(); err == nil {
+					return
 				}
 			}
 		case <-qch:
