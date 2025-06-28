@@ -15,7 +15,10 @@ package server
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -156,13 +159,17 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldErr("foo.*", "bar.{{Partition(2,1)}}", true)    // can only use Wildcard function (and old-style $x) in import transform
 	shouldErr("foo.*", "foo.{{wildcard(2)}}", false)      // Mapping function being passed an out of range wildcard index
 	shouldErr("foo.*", "foo.{{unimplemented(1)}}", false) // Mapping trying to use an unknown mapping function
-	shouldErr("foo.*", "foo.{{partition(10)}}", false)    // Not enough arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{partition()}}", false)      // Not enough arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{random()}}", false)         // Not enough arguments passed to the random function
 	shouldErr("foo.*", "foo.{{wildcard(foo)}}", false)    // Invalid argument passed to the mapping function
 	shouldErr("foo.*", "foo.{{wildcard()}}", false)       // Not enough arguments passed to the mapping function
 	shouldErr("foo.*", "foo.{{wildcard(1,2)}}", false)    // Too many arguments passed to the mapping function
 	shouldErr("foo.*", "foo.{{ wildcard5) }}", false)     // Bad mapping function
 	shouldErr("foo.*", "foo.{{splitLeft(2,2}}", false)    // arg out of range
 	shouldErr("foo", "bla.{{wildcard(1)}}", false)        // arg out of range with no wildcard in the source
+
+	shouldErr("foo.*", fmt.Sprintf("foo.{{partition(%d)}}", math.MaxInt32+1), false) // Larger than int32
+	shouldErr("foo.*", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32+1), false)    // Larger than int32
 
 	shouldBeOK := func(src, dest string, strict bool) *subjectTransform {
 		t.Helper()
@@ -177,6 +184,8 @@ func TestSubjectTransforms(t *testing.T) {
 
 	shouldBeOK("foo.*.*", "bar.$2", false)              // don't have to use all pwcs.
 	shouldBeOK("foo.*.*", "bar.{{wildcard(1)}}", false) // don't have to use all pwcs.
+	shouldBeOK("foo.*.*", "bar.{{partition(1)}}", false)
+	shouldBeOK("foo.*.*", "bar.{{random(5)}}", false)
 	shouldBeOK("foo", "bar", false)
 	shouldBeOK("foo.*.bar.*.baz", "req.$2.$1", false)
 	shouldBeOK("baz.>", "mybaz.>", false)
@@ -185,7 +194,11 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldBeOK("*.*", "{{partition(10,1,2)}}", false)
 	shouldBeOK("foo.*.*", "foo.{{wildcard(1)}}.{{wildcard(2)}}.{{partition(5,1,2)}}", false)
 
-	shouldMatch := func(src, dest, sample, expected string) {
+	shouldBeOK("foo.*", fmt.Sprintf("foo.{{partition(%d)}}", math.MaxInt32), false) // Exactly int32
+	shouldBeOK("foo.*", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)    // Exactly int32
+	shouldBeOK("foo.bar", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)  // Exactly int32
+
+	shouldMatch := func(src, dest, sample string, expected ...string) {
 		t.Helper()
 		tr := shouldBeOK(src, dest, false)
 		if tr != nil {
@@ -193,7 +206,7 @@ func TestSubjectTransforms(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Got an error %v when expecting a match for %q to %q", err, sample, expected)
 			}
-			if s != expected {
+			if !slices.Contains(expected, s) {
 				t.Fatalf("Dest does not match what was expected. Got %q, expected %q", s, expected)
 			}
 		}
@@ -220,6 +233,20 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch("*", "{{left(1,1)}}", "1234", "1")
 	shouldMatch("*", "{{left(1,3)}}", "1234", "123")
 	shouldMatch("*", "{{left(1,6)}}", "1234", "1234")
+	shouldMatch("*", "bar.{{partition(0)}}", "baz", "bar.0")
+	shouldMatch("*", "bar.{{partition(10, 0)}}", "foo", "bar.3")
+	shouldMatch("*.*", "bar.{{partition(10)}}", "foo.bar", "bar.6")
+	shouldMatch("*", "bar.{{partition(10)}}", "foo", "bar.3")
+	shouldMatch("*", "bar.{{partition(10)}}", "baz", "bar.0")
+	shouldMatch("*", "bar.{{partition(10)}}", "qux", "bar.9")
+	shouldMatch("*", "bar.{{random(0)}}", "qux", "bar.0")
+	for range 100 {
+		shouldMatch("*", "bar.{{random(6)}}", "qux", "bar.0", "bar.1", "bar.2", "bar.3", "bar.4", "bar.5")
+	}
+	shouldBeOK("foo.bar", "baz.{{partition(10)}}", false)
+	shouldMatch("foo.bar", "baz.{{partition(10)}}", "foo.bar", "baz.6")
+	shouldMatch("foo.baz", "qux.{{partition(10)}}", "foo.baz", "qux.4")
+	shouldMatch("test.subject", "result.{{partition(5)}}", "test.subject", "result.0")
 }
 
 func TestSubjectTransformDoesntPanicTransformingMissingToken(t *testing.T) {
