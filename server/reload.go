@@ -1015,6 +1015,10 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 // to apply the changes. This returns an error if the server was not started
 // with a config file or an option which doesn't support hot-swapping was changed.
 func (s *Server) Reload() error {
+	if s.getOpts().NoReload {
+		return errors.New("can not reload config when NoReload is set")
+	}
+
 	s.mu.Lock()
 	configFile := s.configFile
 	s.mu.Unlock()
