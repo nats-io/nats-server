@@ -32,7 +32,7 @@ jobs:
       - name: Install cosign
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
         # Commit 3454372f43399081ed03b604cb2d021dabca52bb = tag v3.8.2
-        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb
+        uses: sigstore/cosign-installer@fb28c2b6339dcd94da6e4cbcbc5e888961f6f8c3
 
       - name: Install syft
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
