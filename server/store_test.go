@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/server/gsl"
 )
 
 func testAllStoreAllPermutations(t *testing.T, compressionAndEncryption bool, cfg StreamConfig, fn func(t *testing.T, fs StreamStore)) {
@@ -62,8 +64,8 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 
 			var smv StoreMsg
 			// Do multi load next with 1 wc entry.
-			sl := NewSublistWithCache()
-			sl.Insert(&subscription{subject: []byte("foo.>")})
+			sl := gsl.NewSublist[struct{}]()
+			sl.Insert("foo.>", struct{}{})
 			for i, seq := 0, uint64(1); i < 1000; i++ {
 				sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
 				require_NoError(t, err)
@@ -73,10 +75,10 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 			}
 
 			// Now do multi load next with 1000 literal subjects.
-			sl = NewSublistWithCache()
+			sl = gsl.NewSublist[struct{}]()
 			for i := 0; i < 1000; i++ {
 				subj := fmt.Sprintf("foo.%d", i)
-				sl.Insert(&subscription{subject: []byte(subj)})
+				sl.Insert(subj, struct{}{})
 			}
 			for i, seq := 0, uint64(1); i < 1000; i++ {
 				sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
@@ -87,10 +89,10 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 			}
 
 			// Check that we can pull out 3 individuals.
-			sl = NewSublistWithCache()
-			sl.Insert(&subscription{subject: []byte("foo.2")})
-			sl.Insert(&subscription{subject: []byte("foo.222")})
-			sl.Insert(&subscription{subject: []byte("foo.999")})
+			sl = gsl.NewSublist[struct{}]()
+			sl.Insert("foo.2", struct{}{})
+			sl.Insert("foo.222", struct{}{})
+			sl.Insert("foo.999", struct{}{})
 			sm, seq, err := fs.LoadNextMsgMulti(sl, 1, &smv)
 			require_NoError(t, err)
 			require_Equal(t, sm.subj, "foo.2")

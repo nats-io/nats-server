@@ -37,6 +37,7 @@ import (
 
 	crand "crypto/rand"
 
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -1855,8 +1856,8 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 	require_LessThan(t, elapsed, 2*baseline)
 
 	// Now do multi load next with 1 wc entry.
-	sl := NewSublistWithCache()
-	require_NoError(t, sl.Insert(&subscription{subject: []byte("foo.>")}))
+	sl := gsl.NewSublist[struct{}]()
+	require_NoError(t, sl.Insert("foo.>", struct{}{}))
 	start = time.Now()
 	for i, seq := 0, uint64(1); i < 1000; i++ {
 		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
@@ -1870,10 +1871,10 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 	require_LessThan(t, elapsed, 2*baseline)
 
 	// Now do multi load next with 1000 literal subjects.
-	sl = NewSublistWithCache()
+	sl = gsl.NewSublist[struct{}]()
 	for i := 0; i < 1000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
-		require_NoError(t, sl.Insert(&subscription{subject: []byte(subj)}))
+		require_NoError(t, sl.Insert(subj, struct{}{}))
 	}
 	start = time.Now()
 	for i, seq := 0, uint64(1); i < 1000; i++ {
