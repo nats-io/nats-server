@@ -45,6 +45,11 @@ var (
 	ErrAlreadyRegistered = errors.New("gsl: notification already registered")
 )
 
+// SimpleSublist is an alias type for GenericSublist that takes
+// empty values, useful for tracking interest only without any
+// unnecessary allocations.
+type SimpleSublist = GenericSublist[struct{}]
+
 // A GenericSublist stores and efficiently retrieves subscriptions.
 type GenericSublist[T comparable] struct {
 	sync.RWMutex

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server/avl"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
 	"golang.org/x/time/rate"
 )
@@ -402,15 +403,15 @@ type consumer struct {
 	sid               int
 	name              string
 	stream            string
-	sseq              uint64         // next stream sequence
-	subjf             subjectFilters // subject filters and their sequences
-	filters           *Sublist       // When we have multiple filters we will use LoadNextMsgMulti and pass this in.
-	dseq              uint64         // delivered consumer sequence
-	adflr             uint64         // ack delivery floor
-	asflr             uint64         // ack store floor
-	chkflr            uint64         // our check floor, interest streams only.
-	npc               int64          // Num Pending Count
-	npf               uint64         // Num Pending Floor Sequence
+	sseq              uint64             // next stream sequence
+	subjf             subjectFilters     // subject filters and their sequences
+	filters           *gsl.SimpleSublist // When we have multiple filters we will use LoadNextMsgMulti and pass this in.
+	dseq              uint64             // delivered consumer sequence
+	adflr             uint64             // ack delivery floor
+	asflr             uint64             // ack store floor
+	chkflr            uint64             // our check floor, interest streams only.
+	npc               int64              // Num Pending Count
+	npf               uint64             // Num Pending Floor Sequence
 	dsubj             string
 	qgroup            string
 	lss               *lastSeqSkipList
@@ -1098,9 +1099,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// If we have multiple filter subjects, create a sublist which we will use
 	// in calling store.LoadNextMsgMulti.
 	if len(o.cfg.FilterSubjects) > 0 {
-		o.filters = NewSublistNoCache()
+		o.filters = gsl.NewSublist[struct{}]()
 		for _, filter := range o.cfg.FilterSubjects {
-			o.filters.Insert(&subscription{subject: []byte(filter)})
+			o.filters.Insert(filter, struct{}{})
 		}
 	} else {
 		// Make sure this is nil otherwise.
@@ -2255,9 +2256,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 			if len(o.subjf) == 1 {
 				o.filters = nil
 			} else {
-				o.filters = NewSublistNoCache()
+				o.filters = gsl.NewSublist[struct{}]()
 				for _, filter := range o.subjf {
-					o.filters.Insert(&subscription{subject: []byte(filter.subject)})
+					o.filters.Insert(filter.subject, struct{}{})
 				}
 			}
 		}
