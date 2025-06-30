@@ -2691,6 +2691,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if mset, err = acc.lookupStream(sa.Config.Name); mset != nil {
 					mset.monitorWg.Add(1)
 					defer mset.monitorWg.Done()
+					mset.checkInMonitor()
 					mset.setStreamAssignment(sa)
 					// Make sure to update our updateC which would have been nil.
 					uch = mset.updateC()
