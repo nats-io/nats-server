@@ -4743,9 +4743,19 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	require_NoError(t, js.DeleteStream("TEST"))
 
 	checkHealth := func() {
-		for _, s := range c.servers {
-			s.healthz(nil)
-		}
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				status := s.healthz(nil)
+				if status.Error != _EMPTY_ {
+					return fmt.Errorf("%s - %v", s.Name(), status.Error)
+				}
+				if status.Status != "ok" {
+					return fmt.Errorf("%s - %v", s.Name(), status.Status)
+				}
+			}
+			return nil
+		})
 	}
 
 	var rresp JSApiStreamRestoreResponse
@@ -4773,7 +4783,7 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 		}
 		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
 		i++
-		// We will call healthz for all servers half way through the restore.
+		// We will call healthz for all servers halfway through the restore.
 		if i%100 == 0 {
 			checkHealth()
 		}
@@ -4788,6 +4798,8 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == uint64(toSend))
 
+	checkHealth()
+
 	// Make sure stepdown works, this would fail before the fix.
 	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, 5*time.Second)
 	require_NoError(t, err)
@@ -4795,6 +4807,8 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == uint64(toSend))
+
+	checkHealth()
 
 	// Now make sure if we try to restore to a single server that the artifact is cleaned up and the server returns ok for healthz.
 	s := RunBasicJetStreamServer(t)
