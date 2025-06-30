@@ -45,6 +45,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/ats"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
 )
 
@@ -8439,11 +8440,11 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 	}
 
 	// Now we want to do a calculate NumPendingMulti.
-	filters := NewSublistNoCache()
+	filters := gsl.NewSublist[struct{}]()
 	for filters.Count() < uint32(numFiltered) {
 		filter := subjects[rand.Intn(totalSubjects)]
 		if !filters.HasInterest(filter) {
-			filters.Insert(&subscription{subject: []byte(filter)})
+			filters.Insert(filter, struct{}{})
 		}
 	}
 
@@ -9709,8 +9710,8 @@ func TestFileStoreFirstMatchingMultiExpiry(t *testing.T) {
 		mb.expireCacheLocked()
 		fs.mu.RUnlock()
 
-		sl := NewSublistNoCache()
-		sl.Insert(&subscription{subject: []byte("foo.foo")})
+		sl := gsl.NewSublist[struct{}]()
+		sl.Insert("foo.foo", struct{}{})
 
 		_, didLoad, err := mb.firstMatchingMulti(sl, 1, nil)
 		require_NoError(t, err)
