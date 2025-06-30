@@ -950,7 +950,7 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	}
 	// Update store callbacks that call into the Raft node (if any).
 	if node != nil {
-		mset.store.RegisterStorageTrackWrites(node.TrackWrite, node.WritePersisted)
+		mset.store.RegisterStorageTrackWrites(node.ApplyWritePending, node.ApplyWritePersisted)
 	} else {
 		mset.store.RegisterStorageTrackWrites(nil, nil)
 	}
@@ -4937,6 +4937,7 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
+// The ceIndex reflects the index of the entry in the WAL, used for signaling when it's persisted.
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, ceIndex uint64) (retErr error) {
 	if mt != nil {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
