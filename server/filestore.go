@@ -4200,6 +4200,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
+// The ceIndex reflects the index of the entry in the WAL, used for signaling when it's persisted.
 func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, ceIndex uint64) error {
 	fs.mu.Lock()
 	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl, ceIndex)
@@ -4282,6 +4283,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time, ceIndex uint64) {
 }
 
 // SkipMsg will use the next sequence number but not store anything.
+// The ceIndex reflects the index of the entry in the WAL, used for signaling when it's persisted.
 func (fs *fileStore) SkipMsg(ceIndex uint64) uint64 {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()

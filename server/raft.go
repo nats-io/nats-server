@@ -44,8 +44,8 @@ type RaftNode interface {
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
-	TrackWrite(index uint64)
-	WritePersisted(index uint64)
+	ApplyWritePending(index uint64)
+	ApplyWritePersisted(index uint64)
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
@@ -1126,42 +1126,49 @@ func (n *raft) appliedLocked(index uint64) {
 	}
 }
 
-// TrackWrite signals writes need to happen for the specified index.
-// Applied can still be called, but will not move up until WritePersisted
-// is called, signaling writes were persisted.
-func (n *raft) TrackWrite(index uint64) {
+// ApplyWritePending signals writes need to happen for the specified index,
+// i.e. writes are done asynchronously and might take some time for them to hit the disk.
+// Applied can still be called after ApplyWritePending if there are any async writes.
+// But applied will not move up until ApplyWritePersisted is called, signaling writes
+// were persisted.
+// If there are async writes ApplyWritePending MUST ALWAYS be called before Applied.
+// This ensures Applied can be blocked from moving up until the writes are fully persisted.
+// If ApplyWritePending is not called, for example when all writes are persisted by default,
+// Applied will be able to freely move up.
+func (n *raft) ApplyWritePending(index uint64) {
 	n.Lock()
 	defer n.Unlock()
-	n.trackWritesLocked(index, false)
+	n.applyWritesLocked(index, false)
 }
 
-// WritePersisted signals all writes up to and including the index were persisted.
-// Applied automatically moves up if it was called in the meantime.
-func (n *raft) WritePersisted(index uint64) {
+// ApplyWritePersisted signals all writes up to and including the index were persisted,
+// this can be called either before Applied or after as long as the writes were persisted.
+// ApplyWritePending MUST be called before this for every index that requires persisting.
+// Applied will have been called in the meantime, and it will be moved up either:
+// - up to the point where we're waiting for other writes to be persisted
+// - or all writes are persisted, and it can fully move up.
+func (n *raft) ApplyWritePersisted(index uint64) {
 	n.Lock()
 	defer n.Unlock()
-	n.trackWritesLocked(index, true)
+	n.applyWritesLocked(index, true)
 }
 
-// trackWritesLocked keeps track of pending and persisted writes.
-func (n *raft) trackWritesLocked(index uint64, persisted bool) {
+// applyWritesLocked keeps track of pending and persisted writes.
+func (n *raft) applyWritesLocked(index uint64, persisted bool) {
 	if persisted {
 		// Persisted moves the floor up.
+		// This indicates all writes up to and including this floor were persisted.
 		n.persistFloor = max(n.persistFloor, index)
-	} else if n.persistFloor > 0 {
-		// Track the lowest to-be-persisted index.
-		n.persistFloor = min(n.persistFloor, index)
-	} else {
+		n.persistFloorApplied = true
+	} else if n.persistFloor == 0 {
 		// Initializes if not set.
 		n.persistFloor = index
 	}
 	// Track the highest observed pending write.
 	n.persistHigh = max(n.persistHigh, index)
-	// Track whether the floor was persisted.
-	n.persistFloorApplied = n.persistFloorApplied || persisted
 
 	if n.persistFloorApplied {
-		// Move applied up partially.
+		// If the floor is persisted, we can move applied up if possible.
 		if n.persistFloor != n.persistHigh {
 			n.appliedLocked(min(n.persistFloor, n.pendingApplied))
 			return
