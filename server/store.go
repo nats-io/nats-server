@@ -89,7 +89,7 @@ type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 type StorageRemoveMsgHandler func(seq uint64)
 
 // Used to call back into the upper layers that a write is scheduled for a given replication index.
-// Below handler will be called once this data is persisted.
+// Below StorageWritePersistedHandler will be called once this data is persisted.
 type StorageTrackWriteHandler func(index uint64)
 
 // Used to call back into the upper layers that certain writes were persisted up to

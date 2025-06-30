@@ -9819,5 +9819,14 @@ func TestFileStoreAsyncTruncate(t *testing.T) {
 		require_Equal(t, state.Msgs, 1)
 		require_Equal(t, state.FirstSeq, 1)
 		require_Equal(t, state.LastSeq, 1)
+
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			if mb.pendingWriteSize() > 0 {
+				fs.mu.RUnlock()
+				t.Fatalf("Message block %d still has pending writes", mb.index)
+			}
+		}
+		fs.mu.RUnlock()
 	})
 }

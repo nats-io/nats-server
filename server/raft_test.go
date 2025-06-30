@@ -2903,36 +2903,36 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 	t.Run("ApplyOnDone", func(t *testing.T) {
 		defer reset()
 		// Call applied after.
-		n.TrackWrite(1)
-		n.WritePersisted(1)
+		n.ApplyWritePending(1)
+		n.ApplyWritePersisted(1)
 		n.Applied(10)
 		require_Equal(t, n.applied, 10)
 
 		// Call applied before.
-		n.TrackWrite(11)
+		n.ApplyWritePending(11)
 		n.Applied(20)
 		require_Equal(t, n.applied, 10)
-		n.WritePersisted(11)
+		n.ApplyWritePersisted(11)
 		require_Equal(t, n.applied, 20)
 	})
 
 	// Applied can't move up until all pending entries referencing the same index are applied.
 	t.Run("ApplyWhenNotPending", func(t *testing.T) {
 		defer reset()
-		n.TrackWrite(1)
-		n.TrackWrite(2)
+		n.ApplyWritePending(1)
+		n.ApplyWritePending(2)
 		n.Applied(3)
 		require_Equal(t, n.applied, 0)
-		n.WritePersisted(1)
+		n.ApplyWritePersisted(1)
 		require_Equal(t, n.applied, 1)
-		n.WritePersisted(2)
+		n.ApplyWritePersisted(2)
 		require_Equal(t, n.applied, 3)
-		n.TrackWrite(10)
+		n.ApplyWritePending(10)
 		n.Applied(10)
 		require_Equal(t, n.applied, 9)
 
-		// Apply is unblocked once the last pending is applied.
-		n.WritePersisted(10)
+		// Apply is unblocked once the last pending is persisted.
+		n.ApplyWritePersisted(10)
 		require_Equal(t, n.applied, 10)
 		n.Applied(11)
 		require_Equal(t, n.applied, 11)
@@ -2941,10 +2941,10 @@ func TestNRGPendingAppliedPermutations(t *testing.T) {
 	// Pending state must be reset if all is done.
 	t.Run("DonePendingResetsState", func(t *testing.T) {
 		defer reset()
-		n.TrackWrite(1)
+		n.ApplyWritePending(1)
 		n.Applied(1)
 		require_Equal(t, n.applied, 0)
-		n.WritePersisted(1)
+		n.ApplyWritePersisted(1)
 		require_Equal(t, n.applied, 1)
 		require_Equal(t, n.persistFloor, 0)
 		require_Equal(t, n.persistHigh, 0)
