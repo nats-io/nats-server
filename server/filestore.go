@@ -4203,6 +4203,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
+// The ceIndex reflects the index of the entry in the WAL, used for signaling when it's persisted.
 func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, ceIndex uint64) error {
 	fs.mu.Lock()
 	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl, ceIndex)
@@ -4285,6 +4286,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time, ceIndex uint64) {
 }
 
 // SkipMsg will use the next sequence number but not store anything.
+// The ceIndex reflects the index of the entry in the WAL, used for signaling when it's persisted.
 func (fs *fileStore) SkipMsg(ceIndex uint64) uint64 {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -6184,8 +6186,10 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 	rbytes := lmb.blkSize()
 	if lmb == nil || (rbytes > 0 && rbytes+rl > fs.fcfg.BlockSize) {
 		if lmb != nil {
-			// We're going to replace this block with a new one,
-			// don't signal persisting this block.
+			// We're going to replace this block with a new one.
+			// Flush this block, but reset applied so we don't signal all writes
+			// for that index were done. We might still write to the new block as
+			// part of the same index.
 			lmb.mu.Lock()
 			lmb.applied = 0
 			lmb.mu.Unlock()
