@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
 )
 
@@ -1107,11 +1108,11 @@ func TestMemStoreNumPendingMulti(t *testing.T) {
 	}
 
 	// Now we want to do a calculate NumPendingMulti.
-	filters := NewSublistNoCache()
+	filters := gsl.NewSublist[struct{}]()
 	for filters.Count() < uint32(numFiltered) {
 		filter := subjects[rand.Intn(totalSubjects)]
 		if !filters.HasInterest(filter) {
-			filters.Insert(&subscription{subject: []byte(filter)})
+			filters.Insert(filter, struct{}{})
 		}
 	}
 

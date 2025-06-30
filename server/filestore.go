@@ -45,6 +45,7 @@ import (
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nats-server/v2/server/thw"
 	"golang.org/x/crypto/chacha20"
@@ -965,6 +966,17 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 		mb.hh, _ = highwayhash.New64(key[:])
 	}
 	return mb
+}
+
+// Check for encryption, we do not load keys on startup anymore so might need to load them here.
+// Lock for fs should be held.
+func (mb *msgBlock) checkAndLoadEncryption() error {
+	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
+		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Lock for fs should be held.
@@ -1966,11 +1978,8 @@ func (mb *msgBlock) lastChecksum() []byte {
 		return lchk[:]
 	}
 	// Encrypted?
-	// Check for encryption, we do not load keys on startup anymore so might need to load them here.
-	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
-		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
-			return nil
-		}
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return nil
 	}
 	if mb.bek != nil {
 		if buf, _ := mb.loadBlock(nil); len(buf) >= checksumSize {
@@ -2369,7 +2378,7 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 }
 
 // Find the first matching message against a sublist.
-func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
+func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
 	var didLoad bool
 	var updateLLTS bool
@@ -2405,15 +2414,12 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 	if uint64(mb.fss.Size()) < lseq-start {
 		// If there are no subject matches then this is effectively no-op.
 		hseq := uint64(math.MaxUint64)
-		IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
+		gsl.IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				// mb is already loaded into the cache so should be fast-ish.
 				mb.recalculateForSubj(bytesToString(subj), ss)
 			}
-			first := ss.First
-			if start > first {
-				first = start
-			}
+			first := max(start, ss.First)
 			if first > ss.Last || first >= hseq {
 				// The start cutoff is after the last sequence for this subject,
 				// or we think we already know of a subject with an earlier msg
@@ -2455,7 +2461,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 			}
 		})
 		if hseq < uint64(math.MaxUint64) && sm != nil {
-			return sm, didLoad, nil
+			return sm, didLoad && start == lseq, nil
 		}
 	} else {
 		for seq := start; seq <= lseq; seq++ {
@@ -3533,7 +3539,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 // NumPending will return the number of pending messages matching any subject in the sublist starting at sequence.
 // Optimized for stream num pending calculations for consumers with lots of filtered subjects.
 // Subjects should not overlap, this property is held when doing multi-filtered consumers.
-func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bool) (total, validThrough uint64) {
+func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -3598,22 +3604,18 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 		mb := fs.blks[seqStart]
 		bi := mb.index
 
-		subs := make([]*subscription, 0, sl.Count())
-		sl.All(&subs)
-		for _, sub := range subs {
-			fs.psim.Match(sub.subject, func(subj []byte, psi *psi) {
-				// If the select blk start is greater than entry's last blk skip.
-				if bi > psi.lblk {
-					return
-				}
-				total++
-				// We will track the subjects that are an exact match to the last block.
-				// This is needed for last block processing.
-				if psi.lblk == bi {
-					lbm[string(subj)] = true
-				}
-			})
-		}
+		gsl.IntersectStree(fs.psim, sl, func(subj []byte, psi *psi) {
+			// If the select blk start is greater than entry's last blk skip.
+			if bi > psi.lblk {
+				return
+			}
+			total++
+			// We will track the subjects that are an exact match to the last block.
+			// This is needed for last block processing.
+			if psi.lblk == bi {
+				lbm[string(subj)] = true
+			}
+		})
 
 		// Now check if we need to inspect the seqStart block.
 		// Grab write lock in case we need to load in msgs.
@@ -3693,7 +3695,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 			var t uint64
 			var havePartial bool
 			var updateLLTS bool
-			IntersectStree[SimpleState](mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
+			gsl.IntersectStree[SimpleState](mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
 				subj := bytesToString(bsubj)
 				if havePartial {
 					// If we already found a partial then don't do anything else.
@@ -3751,17 +3753,14 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
 	start := uint32(math.MaxUint32)
-	subs := make([]*subscription, 0, sl.Count())
-	sl.All(&subs)
-	for _, sub := range subs {
-		fs.psim.Match(sub.subject, func(_ []byte, psi *psi) {
-			total += psi.total
-			// Keep track of start index for this subject.
-			if psi.fblk < start {
-				start = psi.fblk
-			}
-		})
-	}
+	gsl.IntersectStree(fs.psim, sl, func(subj []byte, psi *psi) {
+		total += psi.total
+		// Keep track of start index for this subject.
+		if psi.fblk < start {
+			start = psi.fblk
+		}
+	})
+
 	// See if we were asked for all, if so we are done.
 	if sseq <= fs.state.FirstSeq {
 		return total, validThrough
@@ -3802,7 +3801,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 				}
 				// Mark fss activity.
 				mb.lsts = ats.AccessTime()
-				IntersectStree(mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
+				gsl.IntersectStree(mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
 					adjust += ss.Msgs
 				})
 			}
@@ -6760,6 +6759,9 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// under heavy load.
 
 	// Check if we need to encrypt.
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return nil, err
+	}
 	if mb.bek != nil && lob > 0 {
 		// Need to leave original alone.
 		var dst []byte
@@ -6946,11 +6948,8 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 
 // Lock should be held.
 func (mb *msgBlock) loadMsgsWithLock() error {
-	// Check for encryption, we do not load keys on startup anymore so might need to load them here.
-	if mb.fs != nil && mb.fs.prf != nil && (mb.aek == nil || mb.bek == nil) {
-		if err := mb.fs.loadEncryptionForMsgBlock(mb); err != nil {
-			return err
-		}
+	if err := mb.checkAndLoadEncryption(); err != nil {
+		return err
 	}
 
 	// Check to see if we are loading already.
@@ -7518,7 +7517,7 @@ func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, e
 }
 
 // LoadNextMsgMulti will find the next message matching any entry in the sublist.
-func (fs *fileStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
 	if sl == nil {
 		return fs.LoadNextMsg(_EMPTY_, false, start, smp)
 	}

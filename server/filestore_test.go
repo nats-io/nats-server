@@ -45,6 +45,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/ats"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
 )
 
@@ -8439,11 +8440,11 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 	}
 
 	// Now we want to do a calculate NumPendingMulti.
-	filters := NewSublistNoCache()
+	filters := gsl.NewSublist[struct{}]()
 	for filters.Count() < uint32(numFiltered) {
 		filter := subjects[rand.Intn(totalSubjects)]
 		if !filters.HasInterest(filter) {
-			filters.Insert(&subscription{subject: []byte(filter)})
+			filters.Insert(filter, struct{}{})
 		}
 	}
 
@@ -9685,5 +9686,43 @@ func BenchmarkFileStoreSubjectAccesses(b *testing.B) {
 			require_NoError(b, err)
 			require_Equal(b, sm.subj, "foo.bar")
 		}
+	})
+}
+
+func TestFileStoreFirstMatchingMultiExpiry(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo.>"}, Storage: FileStorage}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo.foo", nil, []byte("A"), 0)
+		require_NoError(t, err)
+
+		_, _, err = fs.StoreMsg("foo.foo", nil, []byte("B"), 0)
+		require_NoError(t, err)
+
+		_, _, err = fs.StoreMsg("foo.foo", nil, []byte("C"), 0)
+		require_NoError(t, err)
+
+		fs.mu.RLock()
+		mb := fs.lmb
+		mb.expireCacheLocked()
+		fs.mu.RUnlock()
+
+		sl := gsl.NewSublist[struct{}]()
+		sl.Insert("foo.foo", struct{}{})
+
+		_, didLoad, err := mb.firstMatchingMulti(sl, 1, nil)
+		require_NoError(t, err)
+		require_False(t, didLoad)
+
+		_, didLoad, err = mb.firstMatchingMulti(sl, 2, nil)
+		require_NoError(t, err)
+		require_False(t, didLoad)
+
+		_, didLoad, err = mb.firstMatchingMulti(sl, 3, nil)
+		require_NoError(t, err)
+		require_True(t, didLoad) // last message, should expire
 	})
 }

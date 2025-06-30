@@ -3808,3 +3808,71 @@ func TestServerEventsStatszMaxProcsMemLimit(t *testing.T) {
 	require_Equal(t, stats.Stats.MaxProcs, mp)
 	require_Equal(t, stats.Stats.MemLimit, mm)
 }
+
+func TestSubszPagination(t *testing.T) {
+	type subszResp struct {
+		Subsz  Subsz      `json:"data"`
+		Server ServerInfo `json:"server"`
+	}
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	sysAcc, sysAkp := createAccount(s)
+	s.setSystemAccount(sysAcc)
+
+	acc, akp := createAccount(s)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncSys, err := nats.Connect(url, createUserCreds(t, s, sysAkp))
+	require_NoError(t, err)
+	defer ncSys.Close()
+
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Create 100 subscriptions.
+	for i := range 100 {
+		nc.Subscribe(fmt.Sprintf("foo.%d", i), func(_ *nats.Msg) {})
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	reqSubject := fmt.Sprintf(accDirectReqSubj, acc.Name, "SUBSZ")
+
+	// Request the first page.
+	subszReq := SubszOptions{Subscriptions: true, Limit: 10}
+	req, _ := json.Marshal(subszReq)
+	msg, err := ncSys.Request(reqSubject, req, time.Second)
+	require_NoError(t, err)
+
+	var subsz subszResp
+	require_NoError(t, json.Unmarshal(msg.Data, &subsz))
+	require_Equal(t, len(subsz.Subsz.Subs), 10)
+
+	// we cannot check for equality since we have to account for the monitoring subscriptions
+	if subsz.Subsz.Total < 100 || subsz.Subsz.Total > 110 {
+		t.Fatalf("Expected total subscriptions to be more than 100 and less than 110, got %d", subsz.Subsz.Total)
+	}
+
+	// Now test with a sub filter
+
+	// create 10 subs on "bar.*"
+	for range 10 {
+		nc.Subscribe("bar.*", func(_ *nats.Msg) {})
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	subszReq = SubszOptions{Subscriptions: true, Limit: 5, Test: "bar.A"}
+	req, _ = json.Marshal(subszReq)
+	msg, err = ncSys.Request(reqSubject, req, time.Second)
+	require_NoError(t, err)
+
+	var subszFiltered subszResp
+	require_NoError(t, json.Unmarshal(msg.Data, &subszFiltered))
+	require_Equal(t, len(subszFiltered.Subsz.Subs), 5)
+	require_Equal(t, subszFiltered.Subsz.Total, 10)
+}
