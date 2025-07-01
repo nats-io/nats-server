@@ -5269,12 +5269,24 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return err
 	}
 
-	// If subject delete markers are used, ensure message TTL is that at minimum.
-	// Otherwise, subject delete markers could be missed if one already exists for this subject.
-	// MaxMsgsPer=1 is an exception, because we'll only ever have one message.
-	if ttl > 0 && mset.cfg.SubjectDeleteMarkerTTL > 0 && mset.cfg.MaxMsgsPer != 1 {
-		if minTtl := int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds()); ttl < minTtl {
-			ttl = minTtl
+	if mset.cfg.SubjectDeleteMarkerTTL > 0 {
+		// If subject delete markers are used, ensure message TTL is that at minimum.
+		// Otherwise, subject delete markers could be missed if one already exists for this subject.
+		// MaxMsgsPer=1 is an exception, because we'll only ever have one message.
+		if ttl > 0 && mset.cfg.MaxMsgsPer != 1 {
+			if minTtl := int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds()); ttl < minTtl {
+				ttl = minTtl
+				hdr = removeHeaderIfPresent(hdr, JSMessageTTL)
+				hdr = genHeader(hdr, JSMessageTTL, strconv.FormatInt(ttl, 10))
+			}
+		}
+
+		// If subject delete markers are used, and this is a KV Purge operation, this is
+		// in essence already a subject delete marker. If no TTL is set, use the subject
+		// delete marker TTL to automatically clean it up.
+		if ttl == 0 && bytes.Equal(sliceHeader(KVOperation, hdr), KVOperationValuePurge) {
+			ttl = int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds())
+			hdr = genHeader(hdr, JSMessageTTL, strconv.FormatInt(ttl, 10))
 		}
 	}
 
