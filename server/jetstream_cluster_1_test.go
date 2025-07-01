@@ -8842,6 +8842,68 @@ func TestJetStreamClusterSnapshotStreamAssetOnShutdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterDontReviveRemovedStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Wait for stream to be assigned on all servers.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if !s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				return fmt.Errorf("stream not yet assigned on %s", s.Name())
+			}
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Simulate the stream being scaled down, quickly after it was scaled up.
+	cfg.Replicas = 1
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Wait for the stream to not be assigned on the servers (except the leader).
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if s == sl {
+				continue
+			}
+			if s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				return fmt.Errorf("stream still assigned on %s", s.Name())
+			}
+		}
+		return nil
+	})
+
+	// Confirm the stream is closed.
+	require_True(t, mset.closed.Load())
+
+	// Simulating the stream was catching up and is resetting after timing out.
+	require_True(t, mset.resetClusteredState(nil))
+
+	// Allow for some time here, mset.resetClusteredState might
+	// spin up a goroutine if it's resetting the stream.
+	// Confirm the stream is not revived.
+	time.Sleep(200 * time.Millisecond)
+	_, err = rs.globalAccount().lookupStream("TEST")
+	require_Error(t, err, ErrJetStreamStreamNotFound)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

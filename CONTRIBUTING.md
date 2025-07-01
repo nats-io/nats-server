@@ -37,7 +37,7 @@ A good pull request includes:
 
 In order to accept a contribution, you will first need to certify that the contribution is your original work and that you license the work to the project under the [Apache-2.0 license](https://github.com/nats-io/nats-server/blob/main/LICENSE).
 
-This is done by using `Signed-off-by` statements, which should appear in **both** your commit messages and your PR description. Please note that we can only accept sign-offs under a legal name. Nicknames and aliases are not permitted.
+This is done by using `Signed-off-by: Your Name <your.email@example.com>` statements, which should appear in **both** your commit messages and your PR description. Please note that we can only accept sign-offs under a legal name. Nicknames and aliases are not permitted.
 
 To perform a sign-off when committing with `git`, use `git commit -s` (or `--signoff`) to add the `Signed-off-by:` trailer to your commit message.
 

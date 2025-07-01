@@ -2978,6 +2978,43 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	})
 }
 
+func TestJetStreamUsageNoReservation(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", replicas)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "FILE", Storage: nats.FileStorage, Replicas: replicas})
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{Name: "MEM", Storage: nats.MemoryStorage, Replicas: replicas})
+		require_NoError(t, err)
+
+		acc := s.globalAccount()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if streams := acc.numStreams(); streams != 2 {
+				return fmt.Errorf("not at 2 streams yet, got %d", streams)
+			}
+			return nil
+		})
+
+		stats := acc.JetStreamUsage()
+		require_Equal(t, stats.ReservedStore, 0)
+		require_Equal(t, stats.ReservedMemory, 0)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
 func TestJetStreamSnapshots(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
