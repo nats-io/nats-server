@@ -1656,12 +1656,12 @@ func diffCheckedLimits(a, b map[string]JetStreamAccountLimits) map[string]JetStr
 	return diff
 }
 
-// Return reserved bytes for memory and store for this account on this server.
+// Return reserved bytes for memory and file store streams for this account on this server.
 // Lock should be held.
 func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 	for _, mset := range jsa.streams {
 		cfg := &mset.cfg
-		if tier == _EMPTY_ || tier == tierName(cfg.Replicas) && cfg.MaxBytes > 0 {
+		if (tier == _EMPTY_ || tier == tierName(cfg.Replicas)) && cfg.MaxBytes > 0 {
 			switch cfg.Storage {
 			case FileStorage:
 				store += uint64(cfg.MaxBytes)
@@ -1673,12 +1673,12 @@ func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 	return mem, store
 }
 
-// Return reserved bytes for memory and store for this account in clustered mode.
+// Return reserved bytes for memory and file store streams for this account in clustered mode.
 // js lock should be held.
 func reservedStorage(sas map[string]*streamAssignment, tier string) (mem, store uint64) {
 	for _, sa := range sas {
 		cfg := sa.Config
-		if tier == _EMPTY_ || tier == tierName(cfg.Replicas) && cfg.MaxBytes > 0 {
+		if (tier == _EMPTY_ || tier == tierName(cfg.Replicas)) && cfg.MaxBytes > 0 {
 			switch cfg.Storage {
 			case FileStorage:
 				store += uint64(cfg.MaxBytes)
