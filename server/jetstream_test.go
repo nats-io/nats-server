@@ -43,6 +43,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -20419,4 +20420,64 @@ func TestJetStreamMaxMsgsPerSubjectAndDeliverLastPerSubject(t *testing.T) {
 	sseq := o.sseq
 	o.mu.RUnlock()
 	require_Equal(t, sseq, resume+1)
+}
+
+func TestJetStreamKVNoSubjectDeleteMarkerOnPurgeMarker(t *testing.T) {
+	for _, storage := range []jetstream.StorageType{jetstream.FileStorage, jetstream.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnectNewAPI(t, s)
+			defer nc.Close()
+
+			ctx := context.Background()
+			kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+				Bucket:         "bucket",
+				History:        1,
+				Storage:        storage,
+				TTL:            2 * time.Second,
+				LimitMarkerTTL: time.Minute,
+			})
+			require_NoError(t, err)
+
+			stream, err := js.Stream(ctx, "KV_bucket")
+			require_NoError(t, err)
+
+			// Purge such that the bucket TTL expires this message.
+			require_NoError(t, kv.Purge(ctx, "key"))
+			rsm, err := stream.GetMsg(ctx, 1)
+			require_NoError(t, err)
+			require_Equal(t, rsm.Header.Get("KV-Operation"), "PURGE")
+
+			// The bucket TTL should have removed the message by now.
+			time.Sleep(2500 * time.Millisecond)
+
+			// Confirm the purge marker is gone.
+			_, err = stream.GetMsg(ctx, 1)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+			require_Equal(t, rsm.Header.Get("KV-Operation"), "PURGE")
+
+			// Confirm we don't get a redundant subject delete marker.
+			_, err = stream.GetMsg(ctx, 2)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+
+			// Purge with a TTL so it expires this message.
+			require_NoError(t, kv.Purge(ctx, "key", jetstream.PurgeTTL(time.Second)))
+			rsm, err = stream.GetMsg(ctx, 2)
+			require_NoError(t, err)
+			require_Equal(t, rsm.Header.Get("KV-Operation"), "PURGE")
+
+			// The purge TTL should have removed the message by now.
+			time.Sleep(1500 * time.Millisecond)
+
+			// Confirm the purge marker is gone.
+			_, err = stream.GetMsg(ctx, 2)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+
+			// Confirm we don't get a redundant subject delete marker.
+			_, err = stream.GetMsg(ctx, 3)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+		})
+	}
 }

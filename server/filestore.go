@@ -5652,7 +5652,7 @@ func (fs *fileStore) expireMsgs() {
 			// if it was the last message of that particular subject that we just deleted.
 			if sdmEnabled {
 				if last, ok := fs.shouldProcessSdm(seq, sm.subj); ok {
-					sdm := last && len(getHeader(JSMarkerReason, sm.hdr)) == 0
+					sdm := last && isSubjectDeleteMarker(sm.hdr)
 					fs.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
 				}
 			} else {
@@ -5685,7 +5685,7 @@ func (fs *fileStore) expireMsgs() {
 				if ttlSdm == nil {
 					ttlSdm = make(map[string][]SDMBySubj, 1)
 				}
-				ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
+				ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, !isSubjectDeleteMarker(sm.hdr)})
 			} else {
 				// Collect sequences to remove. Don't remove messages inline here,
 				// as that releases the lock and THW is not thread-safe.
