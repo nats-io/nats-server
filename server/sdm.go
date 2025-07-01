@@ -13,7 +13,10 @@
 
 package server
 
-import "time"
+import (
+	"bytes"
+	"time"
+)
 
 // SDMMeta holds pending/proposed data for subject delete markers or message removals.
 type SDMMeta struct {
@@ -38,6 +41,12 @@ func newSDMMeta() *SDMMeta {
 		totals:  make(map[string]uint64, 1),
 		pending: make(map[uint64]SDMBySeq, 1),
 	}
+}
+
+// isSubjectDeleteMarker returns whether the headers indicate this message is a subject delete marker.
+// Either it's a usual marker with JSMarkerReason, or it's a KV Purge marker as the KVOperation.
+func isSubjectDeleteMarker(hdr []byte) bool {
+	return len(sliceHeader(JSMarkerReason, hdr)) == 0 && !bytes.Equal(sliceHeader(KVOperation, hdr), KVOperationValuePurge)
 }
 
 // empty clears all data.
