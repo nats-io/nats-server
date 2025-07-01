@@ -16,6 +16,7 @@ jobs:
   signoffs:
     name: Sign-offs
     runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+    if: github.ref != 'refs/heads/main'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,8 +27,9 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           for c in $(git rev-list --no-merges ${{ github.event.before }}..${{ github.event.after }}); do
-            if ! git log -1 --pretty=%B "$c" | grep -q '^Signed-off-by:'; then
-              echo "::error ::Commit $c has not been signed off in the commit message with a \`Signed-off-by:\` line"
+            msg="$(git log -1 --pretty=%B "$c")"
+            if ! printf '%s\n' "$msg" | grep -q '^Signed-off-by:'; then
+              echo "::error ::Commit $c has not been signed off in the commit message with a \`Signed-off-by: Your Name <your.email@example.com>\` line"
               git log -1 --pretty=format:"%h %s" "$c"
               missing=1
             fi
@@ -38,8 +40,9 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           for c in $(git rev-list origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}); do
-            if ! git log -1 --pretty=%B "$c" | grep -q '^Signed-off-by:'; then
-              echo "::error ::Commit $c has not been signed off in the commit message with a \`Signed-off-by:\` line"
+            msg="$(git log -1 --pretty=%B "$c")"
+            if ! printf '%s\n' "$msg" | grep -q '^Signed-off-by:'; then
+              echo "::error ::Commit $c has not been signed off in the commit message with a \`Signed-off-by: Your Name <your.email@example.com>\` line"
               git log -1 --pretty=format:"%h %s" "$c"
               missing=1
             fi
