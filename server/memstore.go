@@ -1548,7 +1548,6 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 
 // LoadNextMsgMulti will find the next message matching any entry in the sublist.
 func (ms *memStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
-	// TODO(dlc) - for now simple linear walk to get started.
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
@@ -1564,17 +1563,67 @@ func (ms *memStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *S
 	// Initial setup.
 	fseq, lseq := start, ms.state.LastSeq
 
-	for nseq := fseq; nseq <= lseq; nseq++ {
-		sm, ok := ms.msgs[nseq]
-		if !ok {
-			continue
-		}
-		if sl.HasInterest(sm.subj) {
-			if smp == nil {
-				smp = new(StoreMsg)
+	// If the FSS state has fewer entries than sequences in the linear scan,
+	// then use intersection instead as likely going to be cheaper. This will
+	// often be the case with high numbers of deletes, as well as a smaller
+	// number of subjects in the block.
+	if uint64(ms.fss.Size()) < lseq-fseq {
+		var sm *StoreMsg
+		hseq := uint64(math.MaxUint64)
+		gsl.IntersectStree(ms.fss, sl, func(_ []byte, ss *SimpleState) {
+			first := max(start, ss.First)
+			if first > ss.Last || first >= hseq {
+				// The start cutoff is after the last sequence for this subject,
+				// or we think we already know of a subject with an earlier msg
+				// than our first seq for this subject.
+				return
 			}
-			sm.copy(smp)
-			return smp, nseq, nil
+			if first == ss.First {
+				// If the start floor is below where this subject starts then we can
+				// short-circuit, avoiding needing to scan for the next message.
+				if lsm, ok := ms.msgs[first]; ok {
+					hseq = ss.First
+					if sm == nil {
+						sm = new(StoreMsg)
+					}
+					lsm.copy(sm)
+				}
+				return
+			}
+			for seq := first; seq <= ss.Last; seq++ {
+				// Otherwise we have a start floor that intersects where this subject
+				// has messages in the block, so we need to walk up until we find a
+				// message matching the subject.
+				lsm, ok := ms.msgs[seq]
+				if !ok {
+					continue
+				}
+				if sl.HasInterest(lsm.subj) {
+					hseq = seq
+					if sm == nil {
+						sm = new(StoreMsg)
+					}
+					lsm.copy(sm)
+					break
+				}
+			}
+		})
+		if hseq < uint64(math.MaxUint64) && sm != nil {
+			return sm, hseq, nil
+		}
+	} else {
+		for nseq := fseq; nseq <= lseq; nseq++ {
+			sm, ok := ms.msgs[nseq]
+			if !ok {
+				continue
+			}
+			if sl.HasInterest(sm.subj) {
+				if smp == nil {
+					smp = new(StoreMsg)
+				}
+				sm.copy(smp)
+				return smp, nseq, nil
+			}
 		}
 	}
 	return nil, ms.state.LastSeq, ErrStoreEOF
