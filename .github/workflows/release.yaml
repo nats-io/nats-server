@@ -5,12 +5,14 @@ on:
       - v*
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   run:
     name: GitHub Release
     runs-on: ${{ vars.GHA_WORKER_RELEASE || 'ubuntu-latest' }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
