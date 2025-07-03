@@ -411,11 +411,16 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 		clusterSize int              // Single node or cluster
 		replicas    int              // Stream replicas
 		storage     nats.StorageType // Stream storage
+		filters     int              // How many subject filters?
 	}{
-		{1, 1, nats.MemoryStorage},
-		{3, 3, nats.MemoryStorage},
-		{1, 1, nats.FileStorage},
-		{3, 3, nats.FileStorage},
+		{1, 1, nats.MemoryStorage, 1},
+		{1, 1, nats.MemoryStorage, 2},
+		{3, 3, nats.MemoryStorage, 1},
+		{3, 3, nats.MemoryStorage, 2},
+		{1, 1, nats.FileStorage, 1},
+		{1, 1, nats.FileStorage, 2},
+		{3, 3, nats.FileStorage, 1},
+		{3, 3, nats.FileStorage, 2},
 	}
 
 	for _, cs := range clusterSizeCases {
@@ -425,6 +430,9 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 			cs.replicas,
 			cs.storage.String(),
 		)
+		if cs.filters != 2 { // historical default is 2
+			name = name + ",SF"
+		}
 		b.Run(name, func(b *testing.B) {
 			_, _, shutdown, nc, js := startJSClusterAndConnect(b, cs.clusterSize)
 			defer shutdown()
@@ -449,17 +457,23 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 
 			// Subject filters deliberately vary from the stream, ensures that we hit
 			// the right paths in the filestore, rather than detecting 1:1 overlap.
-			_, err = js.AddConsumer("test", &nats.ConsumerConfig{
-				Name:           "test_consumer",
-				FilterSubjects: []string{"foo", "bar"},
-				DeliverPolicy:  nats.DeliverAllPolicy,
-				AckPolicy:      nats.AckNonePolicy,
-				Replicas:       cs.replicas,
-				MemoryStorage:  true,
-			})
+			ocfg := &nats.ConsumerConfig{
+				Name:          "test_consumer",
+				DeliverPolicy: nats.DeliverAllPolicy,
+				AckPolicy:     nats.AckNonePolicy,
+				Replicas:      cs.replicas,
+				MemoryStorage: true,
+			}
+			switch cs.filters {
+			case 1:
+				ocfg.FilterSubject = "foo"
+			case 2:
+				ocfg.FilterSubjects = []string{"foo", "bar"}
+			}
+			_, err = js.AddConsumer("test", ocfg)
 			require_NoError(b, err)
 
-			ps, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test", "test_consumer"))
+			ps, err := js.PullSubscribe("foo", _EMPTY_, nats.Bind("test", "test_consumer"))
 			require_NoError(b, err)
 
 			b.SetBytes(int64(len(payload)))
