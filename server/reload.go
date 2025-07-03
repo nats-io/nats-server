@@ -369,6 +369,19 @@ func (u *tagsOption) IsStatszChange() bool {
 	return true
 }
 
+// metadataOption implements the option interface for the `metadata` setting.
+type metadataOption struct {
+	noopOption // Not authOption because this is a no-op; will be reloaded with options.
+}
+
+func (u *metadataOption) Apply(server *Server) {
+	server.Noticef("Reloaded: metadata")
+}
+
+func (u *metadataOption) IsStatszChange() bool {
+	return true
+}
+
 // usersOption implements the option interface for the authorization `users`
 // setting.
 type usersOption struct {
@@ -1283,6 +1296,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &passwordOption{})
 		case "tags":
 			diffOpts = append(diffOpts, &tagsOption{})
+		case "metadata":
+			diffOpts = append(diffOpts, &metadataOption{})
 		case "authorization":
 			diffOpts = append(diffOpts, &authorizationOption{})
 		case "authtimeout":

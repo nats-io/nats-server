@@ -425,6 +425,9 @@ type Options struct {
 	// and used as a filter criteria for some system requests.
 	Tags jwt.TagList `json:"-"`
 
+	// Metadata describing the server. They will be included in 'Z' responses.
+	Metadata map[string]string `json:"-"`
+
 	// OCSPConfig enables OCSP Stapling in the server.
 	OCSPConfig    *OCSPConfig
 	tlsConfigOpts *TLSConfigOpts
@@ -1643,6 +1646,24 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			}
 		default:
 			err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", v)}
+		}
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+	case "server_metadata":
+		var err error
+		switch v := v.(type) {
+		case map[string]any:
+			for mk, mv := range v {
+				tk, mv = unwrapValue(mv, &lt)
+				if o.Metadata == nil {
+					o.Metadata = make(map[string]string)
+				}
+				o.Metadata[mk] = mv.(string)
+			}
+		default:
+			err = &configErr{tk, fmt.Sprintf("error parsing metadata: unsupported type %T", v)}
 		}
 		if err != nil {
 			*errors = append(*errors, err)

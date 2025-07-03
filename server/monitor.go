@@ -808,8 +808,10 @@ type RouteInfo struct {
 
 // Routez returns a Routez struct containing information about routes.
 func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
-	rs := &Routez{Routes: []*RouteInfo{}}
-	rs.Now = time.Now().UTC()
+	rs := &Routez{
+		Now:    time.Now().UTC(),
+		Routes: []*RouteInfo{},
+	}
 
 	if routezOpts == nil {
 		routezOpts = &RoutezOptions{}
@@ -826,7 +828,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 		rs.Import = perms.Import
 		rs.Export = perms.Export
 	}
-	rs.Name = s.getOpts().ServerName
+	rs.Name = s.info.Name
 
 	addRoute := func(r *client) {
 		r.mu.Lock()
@@ -1003,7 +1005,15 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	slStats := &SublistStats{}
 
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{s.info.ID, time.Now().UTC(), slStats, 0, offset, limit, nil}
+	sz := &Subsz{
+		ID:           s.info.ID,
+		Now:          time.Now().UTC(),
+		SublistStats: slStats,
+		Total:        0,
+		Offset:       offset,
+		Limit:        limit,
+		Subs:         nil,
+	}
 
 	if subdetail {
 		var raw [4096]*subscription
@@ -1100,12 +1110,7 @@ func (s *Server) HandleSubsz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var b []byte
-
-	if len(st.Subs) == 0 {
-		b, err = json.MarshalIndent(st.SublistStats, "", "  ")
-	} else {
-		b, err = json.MarshalIndent(st, "", "  ")
-	}
+	b, err = json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		s.Errorf("Error marshaling response to /subscriptionsz request: %v", err)
 	}
@@ -1242,6 +1247,7 @@ type Varz struct {
 	ConfigLoadTime        time.Time              `json:"config_load_time"`
 	ConfigDigest          string                 `json:"config_digest"`
 	Tags                  jwt.TagList            `json:"tags,omitempty"`
+	Metadata              map[string]string      `json:"metadata,omitempty"`
 	TrustedOperatorsJwt   []string               `json:"trusted_operators_jwt,omitempty"`
 	TrustedOperatorsClaim []*jwt.OperatorClaims  `json:"trusted_operators_claim,omitempty"`
 	SystemAccount         string                 `json:"system_account,omitempty"`
@@ -1612,7 +1618,6 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		MaxSubs:               opts.MaxSubs,
 		Cores:                 runtime.NumCPU(),
 		MaxProcs:              runtime.GOMAXPROCS(0),
-		Tags:                  opts.Tags,
 		TrustedOperatorsJwt:   opts.operatorJWT,
 		TrustedOperatorsClaim: opts.TrustedOperators,
 	}
@@ -1699,6 +1704,8 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.WriteDeadline = opts.WriteDeadline
 	v.ConfigLoadTime = s.configTime.UTC()
 	v.ConfigDigest = opts.configDigest
+	v.Tags = opts.Tags
+	v.Metadata = opts.Metadata
 	// Update route URLs if applicable
 	if s.varzUpdateRouteURLs {
 		v.Cluster.URLs = urlsToStrings(opts.Routes)
@@ -2368,7 +2375,7 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 		s.accounts.Range(func(key, a any) bool {
 			acc := a.(*Account)
 			acc.mu.RLock()
-			if opts.IncludeUnused || acc.numLocalConnections() != 0 {
+			if (opts != nil && opts.IncludeUnused) || acc.numLocalConnections() != 0 {
 				stz.Accounts = append(stz.Accounts, acc.statz())
 			}
 			acc.mu.RUnlock()
