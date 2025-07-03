@@ -7,6 +7,9 @@ on:
   schedule:
     - cron: "30 12 * * *"
 
+permissions:
+  contents: read
+
 concurrency:
   # At most one of these workflow per ref running
   group: ${{ github.workflow }}-${{ github.ref }}
