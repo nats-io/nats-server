@@ -1,6 +1,9 @@
 name: MQTT External Tests
 on: [pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     env:
