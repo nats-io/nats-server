@@ -57,10 +57,10 @@ jobs:
         env:
           PR_DESC: ${{ github.event.pull_request.body }}
         run: |
-          if ! echo "$PR_DESC" | grep -Pq '^Signed-off-by:\s*(?!Your Name|.*<your\.email@example\.com>)'; then
-              echo "::error ::Pull request has not been signed off in the PR description with a \`Signed-off-by:\` line"
-              exit 1
-          fi
+          grep -Pq '^Signed-off-by:\s*(?!Your Name|.*<your\.email@example\.com>)' <<<"$PR_DESC" || {
+          echo "::error ::Pull request has not been signed off in the PR description with a \`Signed-off-by:\` line"
+          exit 1
+          }
 
   lint:
     name: Lint
