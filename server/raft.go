@@ -3156,6 +3156,7 @@ func (n *raft) runAsCandidate() {
 	votes := map[string]struct{}{
 		n.ID(): {},
 	}
+	emptyVotes := map[string]struct{}{}
 
 	for n.State() == Candidate {
 		elect := n.electTimer()
@@ -3183,14 +3184,26 @@ func (n *raft) runAsCandidate() {
 			}
 			n.RLock()
 			nterm := n.term
+			csz := n.csz
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
-				votes[vresp.peer] = struct{}{}
+				if !vresp.empty {
+					votes[vresp.peer] = struct{}{}
+				} else {
+					emptyVotes[vresp.peer] = struct{}{}
+				}
 				if n.wonElection(len(votes)) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
+					n.switchToLeader()
+					return
+				} else if len(votes)+len(emptyVotes) == csz {
+					// Become LEADER if we've got voted in by ALL servers.
+					// We couldn't get quorum based on just our normal votes.
+					// But, we have heard from the full cluster, and some servers came up empty.
+					// We know for sure we have the most up-to-date log.
 					n.switchToLeader()
 					return
 				}
@@ -4142,6 +4155,7 @@ type voteResponse struct {
 	term    uint64
 	peer    string
 	granted bool
+	empty   bool // "Empty vote", whether this peer's log is empty.
 }
 
 const voteResponseLen = 8 + 8 + 1
@@ -4152,9 +4166,10 @@ func (vr *voteResponse) encode() []byte {
 	le.PutUint64(buf[0:], vr.term)
 	copy(buf[8:], vr.peer)
 	if vr.granted {
-		buf[16] = 1
-	} else {
-		buf[16] = 0
+		buf[16] |= 1
+	}
+	if vr.empty {
+		buf[16] |= 2
 	}
 	return buf[:voteResponseLen]
 }
@@ -4165,7 +4180,8 @@ func decodeVoteResponse(msg []byte) *voteResponse {
 	}
 	var le = binary.LittleEndian
 	vr := &voteResponse{term: le.Uint64(msg[0:]), peer: string(msg[8:16])}
-	vr.granted = msg[16] == 1
+	vr.granted = msg[16]&1 != 0
+	vr.empty = msg[16]&2 != 0
 	return vr
 }
 
@@ -4199,7 +4215,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	n.Lock()
 
-	vresp := &voteResponse{n.term, n.id, false}
+	vresp := &voteResponse{n.term, n.id, false, n.pindex == 0}
 	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
 
 	// Ignore if we are newer. This is important so that we don't accidentally process

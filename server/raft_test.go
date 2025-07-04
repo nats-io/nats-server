@@ -2773,6 +2773,29 @@ func TestNRGSnapshotRecovery(t *testing.T) {
 	require_Equal(t, n.applied, 0)
 }
 
+func TestNRGVoteResponseEncoding(t *testing.T) {
+	vr := &voteResponse{term: 1, peer: "S1Nunr6R"}
+	vr.granted, vr.empty = false, false
+	res := vr.encode()
+	require_Equal(t, res[16], 0)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+
+	vr.granted, vr.empty = true, false
+	res = vr.encode()
+	require_Equal(t, res[16], 1)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+
+	vr.granted, vr.empty = false, true
+	res = vr.encode()
+	require_Equal(t, res[16], 2)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+
+	vr.granted, vr.empty = true, true
+	res = vr.encode()
+	require_Equal(t, res[16], 3)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
