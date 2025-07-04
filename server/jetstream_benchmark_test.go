@@ -16,6 +16,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -986,6 +987,262 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 				}
 			},
 		)
+	}
+}
+
+func BenchmarkJetStreamCounters(b *testing.B) {
+	const (
+		verbose    = false
+		seed       = 12345
+		streamName = "S"
+	)
+
+	// We don't actually create real sourcing streams, we just populate
+	// the Nats-Counter-Sources header to make it look like we have some,
+	// so that we can see how the code performs for bringing forward the
+	// latest headers each time.
+	generateSources := func(t testing.TB, count int) string {
+		t.Helper()
+		sources := CounterSources{}
+		for i := range count {
+			streamName := fmt.Sprintf("STREAM_%d", i%10)
+			subjectName := fmt.Sprintf("subject.%d", i)
+			if sources[streamName] == nil {
+				sources[streamName] = map[string]string{}
+			}
+			sources[streamName][subjectName] = "12345"
+		}
+		j, err := json.Marshal(sources)
+		require_NoError(t, err)
+		return string(j)
+	}
+
+	runSyncPublisher := func(b *testing.B, js nats.JetStreamContext, subjects []string, sources int) (int, int) {
+		published, errors := 0, 0
+		msg := &nats.Msg{
+			Header: nats.Header{},
+		}
+		msg.Header.Set(JSMessageIncr, "1")
+		if sources > 0 {
+			msg.Header.Set(JSMessageCounterSources, generateSources(b, sources))
+		}
+		b.ResetTimer()
+
+		for i := 1; i <= b.N; i++ {
+			msg.Subject = subjects[fastrand.Uint32n(uint32(len(subjects)))]
+			if _, pubErr := js.PublishMsg(msg); pubErr != nil {
+				errors++
+			} else {
+				published++
+			}
+
+			if verbose && i%1000 == 0 {
+				b.Logf("Published %d/%d, %d errors", i, b.N, errors)
+			}
+		}
+
+		b.StopTimer()
+		return published, errors
+	}
+
+	runAsyncPublisher := func(b *testing.B, js nats.JetStreamContext, subjects []string, sources int, asyncWindow int) (int, int) {
+		const publishCompleteMaxWait = 30 * time.Second
+		msg := &nats.Msg{
+			Header: nats.Header{},
+		}
+		msg.Header.Set(JSMessageIncr, "1")
+		if sources > 0 {
+			msg.Header.Set(JSMessageCounterSources, generateSources(b, sources))
+		}
+		published, errors := 0, 0
+		b.ResetTimer()
+
+		for published < b.N {
+			// Normally publish a full batch (of size `asyncWindow`)
+			publishBatchSize := min(b.N-published, asyncWindow)
+			pending := make([]nats.PubAckFuture, 0, publishBatchSize)
+
+			for range publishBatchSize {
+				msg.Subject = subjects[fastrand.Uint32n(uint32(len(subjects)))]
+				pubAckFuture, err := js.PublishMsgAsync(msg)
+				if err != nil {
+					errors++
+					continue
+				}
+				pending = append(pending, pubAckFuture)
+			}
+
+			// All in this batch published, wait for completed
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(publishCompleteMaxWait):
+				b.Fatalf("Publish timed out")
+			}
+
+			// Verify one by one if they were published successfully
+			for _, pubAckFuture := range pending {
+				select {
+				case <-pubAckFuture.Ok():
+					published++
+				case <-pubAckFuture.Err():
+					errors++
+				default:
+					b.Fatalf("PubAck is still pending after publish completed")
+				}
+			}
+
+			if verbose {
+				b.Logf("Published %d/%d", published, b.N)
+			}
+		}
+
+		b.StopTimer()
+		return published, errors
+	}
+
+	type PublishType string
+	const (
+		Sync  PublishType = "Sync"
+		Async PublishType = "Async"
+	)
+
+	type benchmarksCase struct {
+		storageType StorageType
+		clusterSize int
+		replicas    int
+		numSubjects int
+		sources     int
+	}
+	var benchmarksCases []benchmarksCase
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		for _, replicas := range []int{1, 3} {
+			for _, numSubjects := range []int{1, 1000} {
+				for _, sources := range []int{0, 10, 25, 250} {
+					benchmarksCases = append(benchmarksCases, benchmarksCase{
+						storageType: storage,
+						clusterSize: 3,
+						replicas:    replicas,
+						numSubjects: numSubjects,
+						sources:     sources,
+					})
+				}
+			}
+		}
+	}
+
+	// All the cases above are run with each of the publisher cases below
+	publisherCases := []struct {
+		pType       PublishType
+		asyncWindow int
+	}{
+		{Sync, -1},
+		{Async, 1000},
+		{Async, 4000},
+		{Async, 8000},
+	}
+
+	for _, bc := range benchmarksCases {
+		name := fmt.Sprintf(
+			"S=%s,N=%d,R=%d,Subjs=%d,Srcs=%d",
+			bc.storageType,
+			bc.clusterSize,
+			bc.replicas,
+			bc.numSubjects,
+			bc.sources,
+		)
+
+		b.Run(name, func(b *testing.B) {
+			for _, pc := range publisherCases {
+				name := fmt.Sprintf("%v", pc.pType)
+				if pc.pType == Async && pc.asyncWindow > 0 {
+					name = fmt.Sprintf("%s[W:%d]", name, pc.asyncWindow)
+				}
+
+				b.Run(name, func(b *testing.B) {
+					subjects := make([]string, bc.numSubjects)
+					for i := range bc.numSubjects {
+						subjects[i] = fmt.Sprintf("s-%d", i+1)
+					}
+
+					if verbose {
+						b.Logf("Running %s with %d ops", name, b.N)
+					}
+
+					if verbose {
+						b.Logf("Setting up %d nodes", bc.clusterSize)
+					}
+
+					cl, _, shutdown, nc, _ := startJSClusterAndConnect(b, bc.clusterSize)
+					defer shutdown()
+					defer nc.Close()
+
+					jsOpts := []nats.JSOpt{
+						nats.MaxWait(10 * time.Second),
+					}
+
+					if pc.asyncWindow > 0 && pc.pType == Async {
+						jsOpts = append(jsOpts, nats.PublishAsyncMaxPending(pc.asyncWindow))
+					}
+
+					js, err := nc.JetStream(jsOpts...)
+					if err != nil {
+						b.Fatalf("Unexpected error getting JetStream context: %v", err)
+					}
+
+					if verbose {
+						b.Logf("Creating stream with R=%d and %d input subjects", bc.replicas, bc.numSubjects)
+					}
+					if _, err := jsStreamCreate(b, nc, &StreamConfig{
+						Name:            streamName,
+						Storage:         bc.storageType,
+						Subjects:        subjects,
+						Replicas:        bc.replicas,
+						AllowMsgCounter: true,
+					}); err != nil {
+						b.Fatalf("Error creating stream: %v", err)
+					}
+
+					// If replicated resource, connect to stream leader for lower variability
+					if bc.replicas > 1 {
+						connectURL := cl.streamLeader("$G", streamName).ClientURL()
+						nc.Close()
+						nc, err = nats.Connect(connectURL)
+						if err != nil {
+							b.Fatalf("Failed to create client connection to stream leader: %v", err)
+						}
+						defer nc.Close()
+						js, err = nc.JetStream(jsOpts...)
+						if err != nil {
+							b.Fatalf("Unexpected error getting JetStream context for stream leader: %v", err)
+						}
+					}
+
+					if verbose {
+						b.Logf("Running %v publisher", pc.pType)
+					}
+
+					// Benchmark starts here
+					b.ResetTimer()
+
+					var published, errors int
+					switch pc.pType {
+					case Sync:
+						published, errors = runSyncPublisher(b, js, subjects, bc.sources)
+					case Async:
+						published, errors = runAsyncPublisher(b, js, subjects, bc.sources, pc.asyncWindow)
+					}
+
+					// Benchmark ends here
+					b.StopTimer()
+
+					if published+errors != b.N {
+						b.Fatalf("Something doesn't add up: %d + %d != %d", published, errors, b.N)
+					}
+
+					b.ReportMetric(float64(errors)*100/float64(b.N), "%error")
+				})
+			}
+		})
 	}
 }
 
