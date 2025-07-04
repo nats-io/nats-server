@@ -1075,7 +1075,7 @@ func (ms *memStore) expireMsgs() {
 			}
 			if sdmEnabled {
 				if last, ok := ms.shouldProcessSdm(seq, sm.subj); ok {
-					sdm := last && len(getHeader(JSMarkerReason, sm.hdr)) == 0
+					sdm := last && isSubjectDeleteMarker(sm.hdr)
 					ms.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
 				}
 			} else {
@@ -1105,7 +1105,7 @@ func (ms *memStore) expireMsgs() {
 					if ttlSdm == nil {
 						ttlSdm = make(map[string][]SDMBySubj, 1)
 					}
-					ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
+					ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, !isSubjectDeleteMarker(sm.hdr)})
 					return false
 				}
 			} else {

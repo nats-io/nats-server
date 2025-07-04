@@ -432,6 +432,12 @@ const (
 	JSMarkerReason            = "Nats-Marker-Reason"
 )
 
+// Headers for published KV messages.
+var (
+	KVOperation           = "KV-Operation"
+	KVOperationValuePurge = []byte("PURGE")
+)
+
 // Headers for republished messages and direct gets.
 const (
 	JSStream       = "Nats-Stream"
