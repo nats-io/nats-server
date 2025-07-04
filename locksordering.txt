@@ -34,3 +34,9 @@ inconsistent observer states.
 The "clsMu" lock protects the consumer list on a stream, used for signalling consumer activity.
 
     stream -> clsMu
+
+The "clMu" and "ddMu" locks protect clustered and dedupe state respectively. The stream lock (`mset.mu`) is optional,
+but if holding "clMu" or "ddMu", locking the stream lock afterward would violate locking order.
+
+    stream -> clMu
+    stream -> ddMu
