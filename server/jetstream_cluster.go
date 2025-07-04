@@ -119,12 +119,11 @@ const (
 // raftGroups are controlled by the metagroup controller.
 // The raftGroups will house streams and consumers.
 type raftGroup struct {
-	Name            string      `json:"name"`
-	Peers           []string    `json:"peers"`
-	Storage         StorageType `json:"store"`
-	Cluster         string      `json:"cluster,omitempty"`
-	Preferred       string      `json:"preferred,omitempty"`
-	NoLogProtection bool        `json:"no_log_protection,omitempty"`
+	Name      string      `json:"name"`
+	Peers     []string    `json:"peers"`
+	Storage   StorageType `json:"store"`
+	Cluster   string      `json:"cluster,omitempty"`
+	Preferred string      `json:"preferred,omitempty"`
 	// Internal
 	node RaftNode
 }
@@ -1624,7 +1623,7 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	sa.responded = true
 	sa.recovering = true
 	sa.Restore = nil
-	if sa.Group != nil && time.Since(sa.Created) > emptyLogTimeout {
+	if sa.Group != nil {
 		sa.Group.Preferred = _EMPTY_
 	}
 }
@@ -1635,7 +1634,7 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	defer js.mu.Unlock()
 	ca.responded = true
 	ca.recovering = true
-	if ca.Group != nil && time.Since(ca.Created) > emptyLogTimeout {
+	if ca.Group != nil {
 		ca.Group.Preferred = _EMPTY_
 	}
 }
@@ -2112,7 +2111,7 @@ retry:
 		store = ms
 	}
 
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Preferred: rg.Preferred, LogProtection: !rg.NoLogProtection, Log: store, Track: true}
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store, Track: true}
 
 	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
@@ -4959,7 +4958,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				cca := ca.copyGroup()
 				cca.Group.Peers = newPeers
 				cca.Group.Cluster = s.cachedClusterName()
-				cca.Group.NoLogProtection = false
 				meta.ForwardProposal(encodeAddConsumerAssignment(cca))
 				s.Noticef("Scaling down '%s > %s > %s' to %+v", ca.Client.serviceAccount(), ca.Stream, ca.Name, s.peerSetToNames(newPeers))
 
@@ -6648,7 +6646,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		if len(rg.Peers) == 1 {
 			rg.Preferred = peerSet[0]
 		}
-		rg.NoLogProtection = true
 		rg.Peers = peerSet
 
 		for _, ca := range osa.consumers {
@@ -6693,7 +6690,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 					cca.Group.Preferred = _EMPTY_
 				}
 			}
-			cca.Group.NoLogProtection = true
 			// We can not propose here before the stream itself so we collect them.
 			consumers = append(consumers, cca)
 		}

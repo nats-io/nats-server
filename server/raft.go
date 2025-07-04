@@ -133,17 +133,15 @@ func (state RaftState) String() string {
 type raft struct {
 	sync.RWMutex
 
-	created   time.Time      // Time that the group was created
-	accName   string         // Account name of the asset this raft group is for
-	acc       *Account       // Account that NRG traffic will be sent/received in
-	group     string         // Raft group
-	preferred string         // Initial preferred leader, ensures the initial leader is guaranteed to be the preferred one.
-	sd        string         // Store directory
-	id        string         // Node ID
-	wg        sync.WaitGroup // Wait for running goroutines to exit on shutdown
+	created time.Time      // Time that the group was created
+	accName string         // Account name of the asset this raft group is for
+	acc     *Account       // Account that NRG traffic will be sent/received in
+	group   string         // Raft group
+	sd      string         // Store directory
+	id      string         // Node ID
+	wg      sync.WaitGroup // Wait for running goroutines to exit on shutdown
 
-	recovered     bool // Indicates whether all replayed entries are processed after recovery.
-	logProtection bool // Enables protections against desync due to empty/reset logs.
+	recovered bool // Indicates whether all replayed entries are processed after recovery.
 
 	wal   WAL         // WAL store (filestore or memstore)
 	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
@@ -260,7 +258,6 @@ const (
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
 	observerModeIntervalDefault    = 48 * time.Hour
 	peerRemoveTimeoutDefault       = 5 * time.Minute
-	emptyLogTimeoutDefault         = 5 * time.Minute
 )
 
 var (
@@ -273,17 +270,14 @@ var (
 	lostQuorumCheck      = lostQuorumCheckIntervalDefault
 	observerModeInterval = observerModeIntervalDefault
 	peerRemoveTimeout    = peerRemoveTimeoutDefault
-	emptyLogTimeout      = emptyLogTimeoutDefault
 )
 
 type RaftConfig struct {
-	Name          string
-	Store         string
-	Preferred     string
-	LogProtection bool
-	Log           WAL
-	Track         bool
-	Observer      bool
+	Name     string
+	Store    string
+	Log      WAL
+	Track    bool
+	Observer bool
 }
 
 var (
@@ -395,33 +389,31 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	qpfx := fmt.Sprintf("[ACC:%s] RAFT '%s' ", accName, cfg.Name)
 	n := &raft{
-		created:       time.Now(),
-		id:            hash[:idLen],
-		group:         cfg.Name,
-		preferred:     cfg.Preferred,
-		logProtection: cfg.LogProtection,
-		sd:            cfg.Store,
-		wal:           cfg.Log,
-		wtype:         cfg.Log.Type(),
-		track:         cfg.Track,
-		csz:           ps.clusterSize,
-		qn:            ps.clusterSize/2 + 1,
-		peers:         make(map[string]*lps),
-		acks:          make(map[uint64]map[string]struct{}),
-		pae:           make(map[uint64]*appendEntry),
-		s:             s,
-		js:            s.getJetStream(),
-		quit:          make(chan struct{}),
-		reqs:          newIPQueue[*voteRequest](s, qpfx+"vreq"),
-		votes:         newIPQueue[*voteResponse](s, qpfx+"vresp"),
-		prop:          newIPQueue[*proposedEntry](s, qpfx+"entry"),
-		entry:         newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
-		resp:          newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
-		apply:         newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
-		accName:       accName,
-		leadc:         make(chan bool, 32),
-		observer:      cfg.Observer,
-		extSt:         ps.domainExt,
+		created:  time.Now(),
+		id:       hash[:idLen],
+		group:    cfg.Name,
+		sd:       cfg.Store,
+		wal:      cfg.Log,
+		wtype:    cfg.Log.Type(),
+		track:    cfg.Track,
+		csz:      ps.clusterSize,
+		qn:       ps.clusterSize/2 + 1,
+		peers:    make(map[string]*lps),
+		acks:     make(map[uint64]map[string]struct{}),
+		pae:      make(map[uint64]*appendEntry),
+		s:        s,
+		js:       s.getJetStream(),
+		quit:     make(chan struct{}),
+		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
+		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
+		prop:     newIPQueue[*proposedEntry](s, qpfx+"entry"),
+		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
+		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
+		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
+		accName:  accName,
+		leadc:    make(chan bool, 32),
+		observer: cfg.Observer,
+		extSt:    ps.domainExt,
 	}
 
 	// Setup our internal subscriptions for proposals, votes and append entries.
@@ -3176,6 +3168,7 @@ func (n *raft) runAsCandidate() {
 	votes := map[string]struct{}{
 		n.ID(): {},
 	}
+	emptyVotes := map[string]struct{}{}
 
 	for n.State() == Candidate {
 		elect := n.electTimer()
@@ -3203,14 +3196,25 @@ func (n *raft) runAsCandidate() {
 			}
 			n.RLock()
 			nterm := n.term
+			csz := n.csz
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
-				votes[vresp.peer] = struct{}{}
+				if !vresp.empty {
+					votes[vresp.peer] = struct{}{}
+				} else {
+					emptyVotes[vresp.peer] = struct{}{}
+				}
 				if n.wonElection(len(votes)) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
+					n.switchToLeader()
+					return
+				} else if len(votes)+len(emptyVotes) == csz {
+					// Become LEADER if we've gotten "empty" votes, and have heard from the full cluster.
+					// We couldn't get quorum based on just our normal votes.
+					// We know for sure we have the most up-to-date log.
 					n.switchToLeader()
 					return
 				}
@@ -4168,6 +4172,7 @@ type voteResponse struct {
 	term    uint64
 	peer    string
 	granted bool
+	empty   bool // "Empty vote", whether this peer's log is empty.
 }
 
 const voteResponseLen = 8 + 8 + 1
@@ -4178,9 +4183,10 @@ func (vr *voteResponse) encode() []byte {
 	le.PutUint64(buf[0:], vr.term)
 	copy(buf[8:], vr.peer)
 	if vr.granted {
-		buf[16] = 1
-	} else {
-		buf[16] = 0
+		buf[16] |= 1
+	}
+	if vr.empty {
+		buf[16] |= 2
 	}
 	return buf[:voteResponseLen]
 }
@@ -4191,7 +4197,8 @@ func decodeVoteResponse(msg []byte) *voteResponse {
 	}
 	var le = binary.LittleEndian
 	vr := &voteResponse{term: le.Uint64(msg[0:]), peer: string(msg[8:16])}
-	vr.granted = msg[16] == 1
+	vr.granted = msg[16]&1 != 0
+	vr.empty = msg[16]&2 != 0
 	return vr
 }
 
@@ -4225,7 +4232,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	n.Lock()
 
-	vresp := &voteResponse{n.term, n.id, false}
+	vresp := &voteResponse{n.term, n.id, false, n.pindex == 0}
 	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
 
 	// Ignore if we are newer. This is important so that we don't accidentally process
@@ -4251,14 +4258,6 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
-
-	// If we've got an empty log, we could vote for anyone.
-	// Protect us from voting for anything.
-	if voteOk && n.rejectOnEmptyLog(vr.candidate) {
-		n.debug("Rejected voteRequest, detected empty log")
-		voteOk = false
-	}
-
 	if voteOk && (vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex) {
 		vresp.granted = true
 		n.term = vr.term
@@ -4438,12 +4437,6 @@ func (n *raft) switchToCandidate() {
 		return
 	}
 
-	// Optionally, we can't switch if we have an entirely empty log.
-	if n.rejectOnEmptyLog(n.id) {
-		n.resetElect(minElectionTimeout / 4)
-		return
-	}
-
 	if n.State() != Candidate {
 		n.debug("Switching to candidate")
 	} else {
@@ -4458,30 +4451,6 @@ func (n *raft) switchToCandidate() {
 	// Clear current Leader.
 	n.updateLeader(noLeader)
 	n.switchState(Candidate)
-}
-
-// rejectOnEmptyLog indicates whether a certain action, like becoming candidate or voting,
-// should be rejected. The id can equal that of this server, or of the one sending
-// the vote request.
-// Lock should be held.
-func (n *raft) rejectOnEmptyLog(id string) bool {
-	// If our log came up empty, we might need to prevent us
-	// from participating in becoming leader, voting, etc. Unless we're preferred.
-	if !n.logProtection || n.pterm > 0 || n.preferred == n.id {
-		return false
-	}
-
-	// If we've got a preferred leader, we must ensure we can't become one if we're not preferred.
-	if n.preferred != _EMPTY_ && n.preferred != id {
-		return true
-	}
-
-	// If there's no preferred leader, and we're empty, ensure we must wait for a timeout.
-	if n.preferred == _EMPTY_ && time.Since(n.created) < emptyLogTimeout {
-		return true
-	}
-
-	return false
 }
 
 func (n *raft) switchToLeader() {
