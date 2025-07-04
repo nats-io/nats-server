@@ -740,45 +740,6 @@ func TestNRGSystemClientCleanupFromAccount(t *testing.T) {
 	require_Equal(t, start, finish)
 }
 
-func TestNRGLeavesObserverAfterPause(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
-	rg.waitOnLeader()
-
-	n := rg.nonLeader().node().(*raft)
-
-	checkState := func(observer, pobserver bool) {
-		t.Helper()
-		n.RLock()
-		defer n.RUnlock()
-		require_Equal(t, n.observer, observer)
-		require_Equal(t, n.pobserver, pobserver)
-	}
-
-	// Assume this has happened because of jetstream_cluster_migrate
-	// or similar.
-	n.SetObserver(true)
-	checkState(true, false)
-
-	// Now something like a catchup has started, but since we were
-	// already in observer mode, pobserver is set to true.
-	n.PauseApply()
-	checkState(true, true)
-
-	// Now jetstream_cluster_migrate is happy that the leafnodes are
-	// back up so it tries to leave observer mode, but the catchup
-	// hasn't finished yet. This will instead set pobserver to false.
-	n.SetObserver(false)
-	checkState(true, false)
-
-	// The catchup finishes, so we should correctly leave the observer
-	// state by setting observer to the pobserver value.
-	n.ResumeApply()
-	checkState(false, false)
-}
-
 func TestNRGCandidateDoesntRevertTermAfterOldAE(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -2800,6 +2761,126 @@ func TestNRGKeepRunningOnServerShutdown(t *testing.T) {
 	msgs = wal.msgs
 	wal.mu.RUnlock()
 	require_True(t, msgs == nil)
+}
+
+func TestNRGVoteResponseEncoding(t *testing.T) {
+	vr := &voteResponse{term: 1, peer: "S1Nunr6R"}
+	vr.granted, vr.empty = false, false
+	res := vr.encode()
+	require_Equal(t, res[16], 0)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+
+	vr.granted, vr.empty = true, false
+	res = vr.encode()
+	require_Equal(t, res[16], 1)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+
+	vr.granted, vr.empty = false, true
+	res = vr.encode()
+	require_Equal(t, res[16], 2)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+
+	vr.granted, vr.empty = true, true
+	res = vr.encode()
+	require_Equal(t, res[16], 3)
+	require_True(t, reflect.DeepEqual(decodeVoteResponse(res), vr))
+}
+
+func TestNRGInitializeAndScaleUp(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 0, pindex: 0, entries: entries})
+
+	require_True(t, n.initializing)
+	n.scaleUp = true
+	n.SetObserver(true)
+	require_Equal(t, n.term, 0)
+
+	voteReply := "$TEST"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(voteReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Votes on a new leader, and resets notion of "empty vote" to ease getting quorum.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, candidate: nats0, reply: voteReply}))
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, nats0)
+	require_True(t, n.initializing)
+	require_True(t, n.scaleUp)
+	require_True(t, n.observer)
+
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	vr := decodeVoteResponse(msg.Data)
+	require_True(t, vr.granted)
+	require_False(t, vr.empty)
+
+	// Processing an append entry resets scale up and puts us out of observer mode.
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_False(t, n.initializing)
+	require_False(t, n.scaleUp)
+	require_False(t, n.observer)
+
+	// Simulate a reset.
+	n.resetWAL()
+	require_Equal(t, n.pindex, 0)
+
+	// Vote after a WAL reset must be an "empty vote".
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, candidate: "_random_", reply: voteReply}))
+	require_Equal(t, n.term, 2)
+	require_Equal(t, n.vote, "_random_")
+
+	// Vote is still granted, but now marked as "empty".
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	vr = decodeVoteResponse(msg.Data)
+	require_True(t, vr.granted)
+	require_True(t, vr.empty)
+
+	// Reset to check if snapshot on catchup can also reset this.
+	n.initializing = true
+	n.scaleUp = true
+	n.SetObserver(true)
+	snapshotEntries := []*Entry{
+		newEntry(EntrySnapshot, nil),
+		newEntry(EntryPeerState, encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})),
+	}
+	aeSnapshot := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: snapshotEntries})
+	n.createCatchup(aeSnapshot)
+	n.processAppendEntry(aeSnapshot, n.catchup.sub)
+	require_False(t, n.initializing)
+	require_False(t, n.scaleUp)
+	require_False(t, n.observer)
+
+	// Simulate a reset.
+	n.resetWAL()
+	require_Equal(t, n.pindex, 0)
+
+	// Vote when initializing but not scaling up, must also NOT be an "empty vote".
+	n.initializing = true
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 3, candidate: "_random_", reply: voteReply}))
+	require_Equal(t, n.term, 3)
+	require_Equal(t, n.vote, "_random_")
+
+	// Vote is still granted, but now marked as "empty".
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	vr = decodeVoteResponse(msg.Data)
+	require_True(t, vr.granted)
+	require_False(t, vr.empty)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before

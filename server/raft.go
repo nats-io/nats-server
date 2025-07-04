@@ -188,7 +188,9 @@ type raft struct {
 	isSysAcc    atomic.Bool // Are we utilizing the system account?
 	maybeLeader bool        // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
 
-	observer bool // The node is observing, i.e. not able to become leader
+	observer     bool // The node is observing, i.e. not able to become leader
+	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
+	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 
 	extSt extensionState // Extension state
 
@@ -208,9 +210,8 @@ type raft struct {
 	catchup  *catchupState               // For when we need to catch up as a follower.
 	progress map[string]*ipQueue[uint64] // For leader or server catching up a follower.
 
-	paused    bool   // Whether or not applies are paused
-	hcommit   uint64 // The commit at the time that applies were paused
-	pobserver bool   // Whether we were an observer at the time that applies were paused
+	paused  bool   // Whether or not applies are paused
+	hcommit uint64 // The commit at the time that applies were paused
 
 	prop  *ipQueue[*proposedEntry]       // Proposals
 	entry *ipQueue[*appendEntry]         // Append entries
@@ -275,6 +276,16 @@ type RaftConfig struct {
 	Log      WAL
 	Track    bool
 	Observer bool
+
+	// Recovering must be set for a Raft group that's recovering after a restart, or if it's
+	// first seen after a catchup from another server. If a server recovers with an empty log,
+	// we know to protect against data loss.
+	Recovering bool
+
+	// ScaleUp identifies the Raft peer set is being scaled up.
+	// We need to protect against losing state due to the new peers starting with an empty log.
+	// Therefore, these empty servers can't try to become leader until they at least have _some_ state.
+	ScaleUp bool
 }
 
 var (
@@ -528,6 +539,17 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.Lock()
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
+
+	// If our log is empty, and we're initializing, relax the "empty log" checks temporarily.
+	if !cfg.Recovering && n.pindex == 0 {
+		n.initializing = true
+		// If we're scaling up and our log is empty, must put ourselves into observer
+		// and wait for data from the leader.
+		if !cfg.Observer && cfg.ScaleUp {
+			n.scaleUp = true
+			n.setObserverLocked(true, extUndetermined)
+		}
+	}
 	n.Unlock()
 
 	// Register the Raft group.
@@ -1005,7 +1027,6 @@ func (n *raft) PauseApply() error {
 	n.paused = true
 	n.hcommit = n.commit
 	// Also prevent us from trying to become a leader while paused and catching up.
-	n.pobserver, n.observer = n.observer, true
 	n.resetElect(observerModeInterval)
 
 	return nil
@@ -1048,8 +1069,7 @@ func (n *raft) ResumeApply() {
 		}
 	}
 
-	// Clear our observer and paused state after we apply.
-	n.observer, n.pobserver = n.pobserver, false
+	// Clear our paused state after we apply.
 	n.paused = false
 	n.hcommit = 0
 
@@ -1652,6 +1672,7 @@ func (n *raft) CampaignImmediately() error {
 	n.Lock()
 	defer n.Unlock()
 	n.maybeLeader = true
+	n.resetInitializing()
 	return n.campaign(minCampaignTimeout / 2)
 }
 
@@ -2047,15 +2068,10 @@ func (n *raft) SetObserver(isObserver bool) {
 func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	n.Lock()
 	defer n.Unlock()
+	n.setObserverLocked(isObserver, extSt)
+}
 
-	if n.paused {
-		// Applies are paused so we're already in observer state.
-		// Resuming the applies will set the state back to whatever
-		// is in "pobserver", so update that instead.
-		n.pobserver = isObserver
-		return
-	}
-
+func (n *raft) setObserverLocked(isObserver bool, extSt extensionState) {
 	wasObserver := n.observer
 	n.observer = isObserver
 	n.extSt = extSt
@@ -3156,6 +3172,7 @@ func (n *raft) runAsCandidate() {
 	votes := map[string]struct{}{
 		n.ID(): {},
 	}
+	emptyVotes := map[string]struct{}{}
 
 	for n.State() == Candidate {
 		elect := n.electTimer()
@@ -3183,14 +3200,26 @@ func (n *raft) runAsCandidate() {
 			}
 			n.RLock()
 			nterm := n.term
+			csz := n.csz
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
-				votes[vresp.peer] = struct{}{}
+				if !vresp.empty {
+					votes[vresp.peer] = struct{}{}
+				} else {
+					emptyVotes[vresp.peer] = struct{}{}
+				}
 				if n.wonElection(len(votes)) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
+					n.switchToLeader()
+					return
+				} else if len(votes)+len(emptyVotes) == csz {
+					// Become LEADER if we've got voted in by ALL servers.
+					// We couldn't get quorum based on just our normal votes.
+					// But, we have heard from the full cluster, and some servers came up empty.
+					// We know for sure we have the most up-to-date log.
 					n.switchToLeader()
 					return
 				}
@@ -3607,6 +3636,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.Unlock()
 				return
 			}
+			n.resetInitializing()
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
 			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
@@ -3651,6 +3681,7 @@ CONTINUE:
 					n.debug("Not saving to append entries pending")
 				}
 			}
+			n.resetInitializing()
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
 			n.pterm = ae.term
@@ -3671,7 +3702,7 @@ CONTINUE:
 					if !n.observer && !n.paused {
 						n.lxfer = true
 						n.xferCampaign()
-					} else if n.paused && !n.pobserver {
+					} else if n.paused {
 						// Here we can become a leader but need to wait for resume of the apply queue.
 						n.lxfer = true
 					}
@@ -3725,6 +3756,17 @@ CONTINUE:
 	if ar != nil {
 		n.sendRPC(aeReply, _EMPTY_, ar.encode(arbuf))
 		arPool.Put(ar)
+	}
+}
+
+// resetInitializing resets the notion of initializing.
+// If we were scaling up, also leaves observer mode.
+// Lock should be held.
+func (n *raft) resetInitializing() {
+	n.initializing = false
+	if n.scaleUp {
+		n.scaleUp = false
+		n.setObserverLocked(false, extUndetermined)
 	}
 }
 
@@ -4142,6 +4184,7 @@ type voteResponse struct {
 	term    uint64
 	peer    string
 	granted bool
+	empty   bool // "Empty vote", whether this peer's log is empty.
 }
 
 const voteResponseLen = 8 + 8 + 1
@@ -4152,9 +4195,10 @@ func (vr *voteResponse) encode() []byte {
 	le.PutUint64(buf[0:], vr.term)
 	copy(buf[8:], vr.peer)
 	if vr.granted {
-		buf[16] = 1
-	} else {
-		buf[16] = 0
+		buf[16] |= 1
+	}
+	if vr.empty {
+		buf[16] |= 2
 	}
 	return buf[:voteResponseLen]
 }
@@ -4165,7 +4209,8 @@ func decodeVoteResponse(msg []byte) *voteResponse {
 	}
 	var le = binary.LittleEndian
 	vr := &voteResponse{term: le.Uint64(msg[0:]), peer: string(msg[8:16])}
-	vr.granted = msg[16] == 1
+	vr.granted = msg[16]&1 != 0
+	vr.empty = msg[16]&2 != 0
 	return vr
 }
 
@@ -4199,7 +4244,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	n.Lock()
 
-	vresp := &voteResponse{n.term, n.id, false}
+	vresp := &voteResponse{n.term, n.id, false, n.pindex == 0}
 	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
 
 	// Ignore if we are newer. This is important so that we don't accidentally process
@@ -4225,6 +4270,15 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
+
+	// If we have an empty log, but are initializing.
+	if voteOk && vresp.empty && n.initializing {
+		// Reset notion of having an empty log if we're voting during initialization/scale up.
+		// Ensures they only need quorum, and not need to hear from all servers.
+		vresp.empty = false
+	}
+
+	// Other server's log needs to be equal or more up-to-date than ours.
 	if voteOk && (vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex) {
 		vresp.granted = true
 		n.term = vr.term

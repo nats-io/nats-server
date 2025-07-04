@@ -5763,7 +5763,7 @@ func TestJetStreamClusterParallelCreateRaftGroup(t *testing.T) {
 		go func() {
 			wg.Done()
 			defer finish.Done()
-			if n, rerr := sjs.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{}); rerr == nil {
+			if n, rerr := sjs.createRaftGroup(acc.GetName(), rg, false, storage, pprofLabels{}); rerr == nil {
 				mu.Lock()
 				nodes = append(nodes, n)
 				mu.Unlock()
