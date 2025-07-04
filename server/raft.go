@@ -43,6 +43,7 @@ type RaftNode interface {
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
+	Recovered()
 	Applied(index uint64) (entries uint64, bytes uint64)
 	State() RaftState
 	Size() (entries, bytes uint64)
@@ -132,13 +133,17 @@ func (state RaftState) String() string {
 type raft struct {
 	sync.RWMutex
 
-	created time.Time      // Time that the group was created
-	accName string         // Account name of the asset this raft group is for
-	acc     *Account       // Account that NRG traffic will be sent/received in
-	group   string         // Raft group
-	sd      string         // Store directory
-	id      string         // Node ID
-	wg      sync.WaitGroup // Wait for running goroutines to exit on shutdown
+	created   time.Time      // Time that the group was created
+	accName   string         // Account name of the asset this raft group is for
+	acc       *Account       // Account that NRG traffic will be sent/received in
+	group     string         // Raft group
+	preferred string         // Initial preferred leader, ensures the initial leader is guaranteed to be the preferred one.
+	sd        string         // Store directory
+	id        string         // Node ID
+	wg        sync.WaitGroup // Wait for running goroutines to exit on shutdown
+
+	recovered     bool // Indicates whether all replayed entries are processed after recovery.
+	logProtection bool // Enables protections against desync due to empty/reset logs.
 
 	wal   WAL         // WAL store (filestore or memstore)
 	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
@@ -255,6 +260,7 @@ const (
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
 	observerModeIntervalDefault    = 48 * time.Hour
 	peerRemoveTimeoutDefault       = 5 * time.Minute
+	emptyLogTimeoutDefault         = 5 * time.Minute
 )
 
 var (
@@ -267,14 +273,17 @@ var (
 	lostQuorumCheck      = lostQuorumCheckIntervalDefault
 	observerModeInterval = observerModeIntervalDefault
 	peerRemoveTimeout    = peerRemoveTimeoutDefault
+	emptyLogTimeout      = emptyLogTimeoutDefault
 )
 
 type RaftConfig struct {
-	Name     string
-	Store    string
-	Log      WAL
-	Track    bool
-	Observer bool
+	Name          string
+	Store         string
+	Preferred     string
+	LogProtection bool
+	Log           WAL
+	Track         bool
+	Observer      bool
 }
 
 var (
@@ -386,31 +395,33 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	qpfx := fmt.Sprintf("[ACC:%s] RAFT '%s' ", accName, cfg.Name)
 	n := &raft{
-		created:  time.Now(),
-		id:       hash[:idLen],
-		group:    cfg.Name,
-		sd:       cfg.Store,
-		wal:      cfg.Log,
-		wtype:    cfg.Log.Type(),
-		track:    cfg.Track,
-		csz:      ps.clusterSize,
-		qn:       ps.clusterSize/2 + 1,
-		peers:    make(map[string]*lps),
-		acks:     make(map[uint64]map[string]struct{}),
-		pae:      make(map[uint64]*appendEntry),
-		s:        s,
-		js:       s.getJetStream(),
-		quit:     make(chan struct{}),
-		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
-		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
-		prop:     newIPQueue[*proposedEntry](s, qpfx+"entry"),
-		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
-		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
-		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
-		accName:  accName,
-		leadc:    make(chan bool, 32),
-		observer: cfg.Observer,
-		extSt:    ps.domainExt,
+		created:       time.Now(),
+		id:            hash[:idLen],
+		group:         cfg.Name,
+		preferred:     cfg.Preferred,
+		logProtection: cfg.LogProtection,
+		sd:            cfg.Store,
+		wal:           cfg.Log,
+		wtype:         cfg.Log.Type(),
+		track:         cfg.Track,
+		csz:           ps.clusterSize,
+		qn:            ps.clusterSize/2 + 1,
+		peers:         make(map[string]*lps),
+		acks:          make(map[uint64]map[string]struct{}),
+		pae:           make(map[uint64]*appendEntry),
+		s:             s,
+		js:            s.getJetStream(),
+		quit:          make(chan struct{}),
+		reqs:          newIPQueue[*voteRequest](s, qpfx+"vreq"),
+		votes:         newIPQueue[*voteResponse](s, qpfx+"vresp"),
+		prop:          newIPQueue[*proposedEntry](s, qpfx+"entry"),
+		entry:         newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
+		resp:          newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
+		apply:         newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
+		accName:       accName,
+		leadc:         make(chan bool, 32),
+		observer:      cfg.Observer,
+		extSt:         ps.domainExt,
 	}
 
 	// Setup our internal subscriptions for proposals, votes and append entries.
@@ -1059,6 +1070,16 @@ func (n *raft) ResumeApply() {
 	} else {
 		n.resetElectionTimeout()
 	}
+}
+
+func (n *raft) Recovered() {
+	n.Lock()
+	defer n.Unlock()
+	n.recoveredLocked()
+}
+
+func (n *raft) recoveredLocked() {
+	n.recovered = true
 }
 
 // Applied is a callback that must be called by the upper layer when it
@@ -4230,6 +4251,14 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
+
+	// If we've got an empty log, we could vote for anyone.
+	// Protect us from voting for anything.
+	if voteOk && n.rejectOnEmptyLog(vr.candidate) {
+		n.debug("Rejected voteRequest, detected empty log")
+		voteOk = false
+	}
+
 	if voteOk && (vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex) {
 		vresp.granted = true
 		n.term = vr.term
@@ -4396,9 +4425,21 @@ func (n *raft) switchToCandidate() {
 	n.Lock()
 	defer n.Unlock()
 
+	// If we're still recovering on startup, we can't become leader yet.
+	if !n.recovered {
+		n.resetElect(minElectionTimeout / 4)
+		return
+	}
+
 	// If we are catching up or are in observer mode we can not switch.
 	// Avoid petitioning to become leader if we're behind on applies.
 	if n.observer || n.paused || n.applied < n.commit {
+		n.resetElect(minElectionTimeout / 4)
+		return
+	}
+
+	// Optionally, we can't switch if we have an entirely empty log.
+	if n.rejectOnEmptyLog(n.id) {
 		n.resetElect(minElectionTimeout / 4)
 		return
 	}
@@ -4417,6 +4458,30 @@ func (n *raft) switchToCandidate() {
 	// Clear current Leader.
 	n.updateLeader(noLeader)
 	n.switchState(Candidate)
+}
+
+// rejectOnEmptyLog indicates whether a certain action, like becoming candidate or voting,
+// should be rejected. The id can equal that of this server, or of the one sending
+// the vote request.
+// Lock should be held.
+func (n *raft) rejectOnEmptyLog(id string) bool {
+	// If our log came up empty, we might need to prevent us
+	// from participating in becoming leader, voting, etc. Unless we're preferred.
+	if !n.logProtection || n.pterm > 0 || n.preferred == n.id {
+		return false
+	}
+
+	// If we've got a preferred leader, we must ensure we can't become one if we're not preferred.
+	if n.preferred != _EMPTY_ && n.preferred != id {
+		return true
+	}
+
+	// If there's no preferred leader, and we're empty, ensure we must wait for a timeout.
+	if n.preferred == _EMPTY_ && time.Since(n.created) < emptyLogTimeout {
+		return true
+	}
+
+	return false
 }
 
 func (n *raft) switchToLeader() {

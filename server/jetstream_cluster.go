@@ -119,11 +119,12 @@ const (
 // raftGroups are controlled by the metagroup controller.
 // The raftGroups will house streams and consumers.
 type raftGroup struct {
-	Name      string      `json:"name"`
-	Peers     []string    `json:"peers"`
-	Storage   StorageType `json:"store"`
-	Cluster   string      `json:"cluster,omitempty"`
-	Preferred string      `json:"preferred,omitempty"`
+	Name            string      `json:"name"`
+	Peers           []string    `json:"peers"`
+	Storage         StorageType `json:"store"`
+	Cluster         string      `json:"cluster,omitempty"`
+	Preferred       string      `json:"preferred,omitempty"`
+	NoLogProtection bool        `json:"no_log_protection,omitempty"`
 	// Internal
 	node RaftNode
 }
@@ -1261,6 +1262,7 @@ func (js *jetStream) monitorCluster() {
 					}
 					// Signals we have replayed all of our metadata.
 					js.clearMetaRecovering()
+					n.Recovered()
 					// Clear.
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
@@ -1622,7 +1624,7 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	sa.responded = true
 	sa.recovering = true
 	sa.Restore = nil
-	if sa.Group != nil {
+	if sa.Group != nil && time.Since(sa.Created) > emptyLogTimeout {
 		sa.Group.Preferred = _EMPTY_
 	}
 }
@@ -1633,7 +1635,7 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	defer js.mu.Unlock()
 	ca.responded = true
 	ca.recovering = true
-	if ca.Group != nil {
+	if ca.Group != nil && time.Since(ca.Created) > emptyLogTimeout {
 		ca.Group.Preferred = _EMPTY_
 	}
 }
@@ -2110,7 +2112,7 @@ retry:
 		store = ms
 	}
 
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store, Track: true}
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Preferred: rg.Preferred, LogProtection: !rg.NoLogProtection, Log: store, Track: true}
 
 	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
@@ -2434,6 +2436,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
 					isRecovering = false
+					n.Recovered()
 					// If we are interest based make sure to check consumers if interest retention policy.
 					// This is to make sure we process any outstanding acks from all consumers.
 					if mset != nil && mset.isInterestRetention() {
@@ -4859,6 +4862,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
 					recovering = false
+					n.Recovered()
 					if n.NeedSnapshot() {
 						doSnapshot(true)
 					}
@@ -4955,6 +4959,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				cca := ca.copyGroup()
 				cca.Group.Peers = newPeers
 				cca.Group.Cluster = s.cachedClusterName()
+				cca.Group.NoLogProtection = false
 				meta.ForwardProposal(encodeAddConsumerAssignment(cca))
 				s.Noticef("Scaling down '%s > %s > %s' to %+v", ca.Client.serviceAccount(), ca.Stream, ca.Name, s.peerSetToNames(newPeers))
 
@@ -6643,6 +6648,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		if len(rg.Peers) == 1 {
 			rg.Preferred = peerSet[0]
 		}
+		rg.NoLogProtection = true
 		rg.Peers = peerSet
 
 		for _, ca := range osa.consumers {
@@ -6687,6 +6693,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 					cca.Group.Preferred = _EMPTY_
 				}
 			}
+			cca.Group.NoLogProtection = true
 			// We can not propose here before the stream itself so we collect them.
 			consumers = append(consumers, cca)
 		}

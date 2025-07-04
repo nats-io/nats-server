@@ -118,6 +118,7 @@ func (sm *RCOBStateMachine) applyEntry(ce *CommittedEntry) {
 		// A nil entry signals that the previous recovery backlog is over
 		sm.logDebug("Recovery complete")
 		sm.ready = true
+		sm.n.Recovered()
 		return
 	}
 	sm.logDebug("Apply entries #%d (%d entries)", ce.Index, len(ce.Entries))

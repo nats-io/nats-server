@@ -227,6 +227,7 @@ func (a *stateAdder) applyEntry(ce *CommittedEntry) {
 	a.Lock()
 	if ce == nil {
 		// This means initial state is done/replayed.
+		a.n.Recovered()
 		a.Unlock()
 		return
 	}
@@ -350,6 +351,7 @@ func newStateAdder(s *Server, cfg *RaftConfig, n RaftNode) stateMachine {
 func initSingleMemRaftNode(t *testing.T) (*raft, func()) {
 	t.Helper()
 	n, c := initSingleMemRaftNodeWithCluster(t)
+	n.Recovered()
 	cleanup := func() {
 		c.shutdown()
 	}

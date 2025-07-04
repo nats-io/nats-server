@@ -2739,6 +2739,96 @@ func TestNRGSnapshotCatchup(t *testing.T) {
 	t.Run("with-restart", func(t *testing.T) { test(t, true) })
 }
 
+func TestNRGLogProtection(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	require_Equal(t, n.pindex, 0)
+	require_Equal(t, n.pterm, 0)
+
+	t.Run("SwitchToCandidate", func(t *testing.T) {
+		n.created = time.Now()
+
+		// Reject becoming candidate when recovering.
+		n.recovered = false
+		n.etlr = time.Time{}
+		n.switchToCandidate()
+		require_Equal(t, n.State(), Follower)
+		require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer.
+		n.Recovered()
+
+		// Become candidate.
+		n.etlr = time.Time{}
+		n.switchToCandidate()
+		require_Equal(t, n.State(), Candidate)
+		require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer.
+		n.switchToFollower(noLeader)
+		require_Equal(t, n.State(), Follower)
+
+		// Reject becoming candidate if we're not preferred.
+		n.preferred = "_prefer_"
+		n.logProtection = true
+		n.etlr = time.Time{}
+		n.switchToCandidate()
+		require_Equal(t, n.State(), Follower)
+		require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer.
+
+		// Reject becoming candidate until timeout if we came back up empty.
+		n.preferred = _EMPTY_
+		n.logProtection = true
+		n.etlr = time.Time{}
+		n.switchToCandidate()
+		require_Equal(t, n.State(), Follower)
+		require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer.
+
+		n.created = time.Now().Add(-emptyLogTimeout)
+		n.logProtection = true
+		n.etlr = time.Time{}
+		n.switchToCandidate()
+		require_Equal(t, n.State(), Candidate)
+		require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer.
+		n.switchToFollower(noLeader)
+		require_Equal(t, n.State(), Follower)
+	})
+
+	t.Run("ProcessVoteRequest", func(t *testing.T) {
+		n.created = time.Now()
+		n.logProtection = true
+		vr := &voteRequest{term: 100, lastTerm: 1, lastIndex: 1}
+
+		// Can only vote on preferred.
+		n.preferred = "_prefer_"
+		require_Equal(t, n.vote, noLeader)
+		vr.candidate = "_random_"
+		require_NotEqual(t, n.term, 100)
+		require_NoError(t, n.processVoteRequest(vr))
+		require_Equal(t, n.term, 100)
+		require_Equal(t, n.vote, noLeader)
+
+		vr.candidate = "_prefer_"
+		vr.term = 101
+		require_NoError(t, n.processVoteRequest(vr))
+		require_Equal(t, n.term, 101)
+		require_Equal(t, n.vote, "_prefer_")
+
+		// Can't vote at all until timeout is reached.
+		n.preferred = _EMPTY_
+		vr.candidate = "_random_"
+		vr.term = 102
+		require_NoError(t, n.processVoteRequest(vr))
+		require_Equal(t, n.term, 102)
+		require_Equal(t, n.vote, noLeader)
+
+		n.created = time.Now().Add(-emptyLogTimeout)
+		n.logProtection = true
+		vr.candidate = "_random_"
+		vr.term = 103
+		require_NoError(t, n.processVoteRequest(vr))
+		require_Equal(t, n.term, 103)
+		require_Equal(t, n.vote, "_random_")
+	})
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
