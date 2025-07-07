@@ -2739,6 +2739,40 @@ func TestNRGSnapshotCatchup(t *testing.T) {
 	t.Run("with-restart", func(t *testing.T) { test(t, true) })
 }
 
+func TestNRGSnapshotRecovery(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 0, pindex: 0, entries: entries})
+
+	// Store one entry.
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.applied, 0)
+
+	// Apply it.
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Install the snapshot.
+	require_NoError(t, n.InstallSnapshot(nil))
+
+	// Restoring the snapshot should not up applied, because the apply queue is async.
+	n.pindex, n.commit, n.applied = 0, 0, 0
+	n.setupLastSnapshot()
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.applied, 0)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
