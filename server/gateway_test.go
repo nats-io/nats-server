@@ -40,6 +40,7 @@ import (
 
 func init() {
 	gatewayConnectDelay = 15 * time.Millisecond
+	gatewayConnectMaxDelay = 15 * time.Millisecond
 	gatewayReconnectDelay = 15 * time.Millisecond
 }
 
@@ -1443,6 +1444,61 @@ func TestGatewayImplicitReconnectHonorConnectRetries(t *testing.T) {
 	waitForInboundGateways(t, sb, 1, 2*time.Second)
 	waitForOutboundGateways(t, sc, 1, 2*time.Second)
 	waitForInboundGateways(t, sc, 1, 2*time.Second)
+}
+
+func TestGatewayReconnectExponentialBackoff(t *testing.T) {
+	oGatewayConnectDelay := gatewayConnectDelay
+	oGatewayConnectMaxDelay := gatewayConnectMaxDelay
+	gatewayConnectDelay = 500 * time.Millisecond
+	gatewayConnectMaxDelay = 2 * time.Second
+	defer func() {
+		gatewayConnectDelay = oGatewayConnectDelay
+		gatewayConnectMaxDelay = oGatewayConnectMaxDelay
+	}()
+
+	ob := testDefaultOptionsForGateway("B")
+	ob.ReconnectErrorReports = 1
+	ob.Gateway.ConnectRetries = 3
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	l := &gwReconnAttemptLogger{errCh: make(chan string, 3)}
+	sb.SetLogger(l, true, false)
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	// Wait for the proper connections
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Remove initial delay before reconnect, and allow for some skew.
+	now := time.Now().Add(gatewayReconnectDelay).Add(-100 * time.Millisecond)
+	var delay time.Duration
+
+	// B will try to reconnect to A 3 times (we stop after attempts > ConnectRetries)
+	sa.Shutdown()
+	for i := 0; i < ob.Gateway.ConnectRetries+1; i++ {
+		select {
+		case <-l.errCh:
+			if since := time.Since(now); since < delay {
+				t.Fatalf("Expected delay to take %v, took %v", delay, since)
+			}
+			if delay == 0 {
+				delay = gatewayConnectDelay
+			} else {
+				delay *= 2
+			}
+			if delay > gatewayConnectMaxDelay {
+				delay = gatewayConnectMaxDelay
+			}
+		case <-time.After(gatewayConnectMaxDelay + time.Second):
+			t.Fatal("Did not attempt to reconnect")
+		}
+	}
 }
 
 func TestGatewayURLsFromClusterSentInINFO(t *testing.T) {
