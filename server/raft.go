@@ -3595,12 +3595,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
 
-			if _, err := n.wal.Compact(n.pindex + 1); err != nil {
-				n.setWriteErrLocked(err)
-				n.Unlock()
-				return
-			}
-
 			snap := &snapshot{
 				lastTerm:  n.pterm,
 				lastIndex: n.pindex,
