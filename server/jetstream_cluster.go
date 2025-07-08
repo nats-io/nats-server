@@ -1225,6 +1225,8 @@ func (js *jetStream) monitorCluster() {
 			doSnapshot()
 			return
 		case <-rqch:
+			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
+			doSnapshot()
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.

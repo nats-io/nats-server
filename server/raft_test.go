@@ -2773,6 +2773,35 @@ func TestNRGSnapshotRecovery(t *testing.T) {
 	require_Equal(t, n.applied, 0)
 }
 
+func TestNRGKeepRunningOnServerShutdown(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.RLock()
+	s := n.s
+	wal := n.wal.(*memStore)
+	n.RUnlock()
+
+	n.wg.Add(1)
+	s.startGoRoutine(n.run, nil)
+
+	s.running.Store(false)
+	time.Sleep(time.Second)
+
+	wal.mu.RLock()
+	msgs := wal.msgs
+	wal.mu.RUnlock()
+	require_NotNil(t, msgs)
+
+	n.Stop()
+	n.WaitForStop()
+
+	wal.mu.RLock()
+	msgs = wal.msgs
+	wal.mu.RUnlock()
+	require_True(t, msgs == nil)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
