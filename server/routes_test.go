@@ -42,6 +42,7 @@ import (
 
 func init() {
 	routeConnectDelay = 15 * time.Millisecond
+	routeConnectMaxDelay = 15 * time.Millisecond
 }
 
 func checkNumRoutes(t *testing.T, s *Server, expected int) {
@@ -1748,6 +1749,63 @@ func TestRouteSolicitedReconnectsEvenIfImplicit(t *testing.T) {
 		t.Fatalf("Unexpected attempt to reconnect: %s", msg)
 	case <-time.After(50 * time.Millisecond):
 		// OK
+	}
+}
+
+func TestRouteReconnectExponentialBackoff(t *testing.T) {
+	oRouteConnectDelay := routeConnectDelay
+	oRouteConnectMaxDelay := routeConnectMaxDelay
+	routeConnectDelay = 500 * time.Millisecond
+	routeConnectMaxDelay = 2 * time.Second
+	defer func() {
+		routeConnectDelay = oRouteConnectDelay
+		routeConnectMaxDelay = oRouteConnectMaxDelay
+	}()
+
+	o1 := DefaultOptions()
+	o1.ServerName = "A"
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	o2 := DefaultOptions()
+	o2.ServerName = "B"
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	o2.Cluster.ConnectRetries = 3
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	// Now shutdown server 1 and make sure that s2 stops trying to reconnect to s1 at one point
+	l := &testRouteReconnectLogger{ch: make(chan string, 10)}
+	s2.SetLogger(l, true, false)
+
+	// Remove initial delay before reconnect, and allow for some skew.
+	now := time.Now().Add(DEFAULT_ROUTE_RECONNECT).Add(-100 * time.Millisecond)
+	var delay time.Duration
+
+	// S2 should retry ConnectRetries+1 times and then stop
+	// Take into account default route pool size and system account dedicated route
+	s1.Shutdown()
+	for i := 0; i < (DEFAULT_ROUTE_POOL_SIZE+1)*(o2.Cluster.ConnectRetries+1); i++ {
+		select {
+		case <-l.ch:
+			if since := time.Since(now); since < delay {
+				t.Fatalf("Expected delay to take %v, took %v", delay, since)
+			}
+			if i > 0 && (i+1)%(DEFAULT_ROUTE_POOL_SIZE+1) == 0 {
+				if delay == 0 {
+					delay = routeConnectDelay
+				} else {
+					delay *= 2
+				}
+				if delay > routeConnectMaxDelay {
+					delay = routeConnectMaxDelay
+				}
+			}
+		case <-time.After(routeConnectMaxDelay + time.Second):
+			t.Fatal("Did not attempt to reconnect")
+		}
 	}
 }
 
