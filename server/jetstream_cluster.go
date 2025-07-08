@@ -5060,8 +5060,20 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				o.ldt = time.Now()
 				// Need to send message to the client, since we have quorum to do so now.
 				if pmsg, ok := o.pendingDeliveries[sseq]; ok {
+					// Copy delivery subject and sequence first, as the send returns it to the pool and clears it.
+					dsubj, seq := pmsg.dsubj, pmsg.seq
 					o.outq.send(pmsg)
 					delete(o.pendingDeliveries, sseq)
+
+					// Might need to send a request timeout after sending the last replicated delivery.
+					if wd, ok := o.waitingDeliveries[dsubj]; ok && wd.seq == seq {
+						if wd.pn > 0 || wd.pb > 0 {
+							hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wd.pn, JSPullRequestPendingBytes, wd.pb)
+							o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+						}
+						wd.recycle()
+						delete(o.waitingDeliveries, dsubj)
+					}
 				}
 				o.mu.Unlock()
 				if err != nil {

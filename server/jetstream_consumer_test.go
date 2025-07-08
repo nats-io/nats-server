@@ -9688,44 +9688,48 @@ func TestJetStreamConsumerStateAlwaysFromStore(t *testing.T) {
 }
 
 func TestJetStreamConsumerPullNoWaitBatchLargerThanPending(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:       "C",
-		AckPolicy:     nats.AckExplicitPolicy,
-		FilterSubject: "foo",
-	})
-	require_NoError(t, err)
-
-	req := JSApiConsumerGetNextRequest{Batch: 10, NoWait: true}
-
-	for range 5 {
-		_, err := js.Publish("foo", []byte("OK"))
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
 		require_NoError(t, err)
-	}
 
-	sub := sendRequest(t, nc, "rply", req)
-	defer sub.Unsubscribe()
-
-	// Should get all 5 messages.
-	// TODO(mvv): Currently bypassing replicating first, need to figure out
-	//  how to send NoWait's request timeout after replication.
-	for range 5 {
-		msg, err := sub.NextMsg(time.Second)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:       "C",
+			AckPolicy:     nats.AckExplicitPolicy,
+			FilterSubject: "foo",
+			Replicas:      replicas,
+		})
 		require_NoError(t, err)
-		if len(msg.Data) == 0 && msg.Header != nil {
-			t.Fatalf("Expected data, got: %s", msg.Header.Get("Description"))
+
+		req := JSApiConsumerGetNextRequest{Batch: 10, NoWait: true}
+
+		for range 5 {
+			_, err := js.Publish("foo", []byte("OK"))
+			require_NoError(t, err)
+		}
+
+		sub := sendRequest(t, nc, "rply", req)
+		defer sub.Unsubscribe()
+
+		// Should get all 5 messages.
+		for range 5 {
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			if len(msg.Data) == 0 && msg.Header != nil {
+				t.Fatalf("Expected data, got: %s", msg.Header.Get("Description"))
+			}
 		}
 	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
