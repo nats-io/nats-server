@@ -1658,5 +1658,65 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMessageIncrDisabledErr",
+    "code": 400,
+    "error_code": 10168,
+    "description": "message counters is disabled",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageIncrMissingErr",
+    "code": 400,
+    "error_code": 10169,
+    "description": "message counter increment is missing",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageIncrPayloadErr",
+    "code": 400,
+    "error_code": 10170,
+    "description": "message counter has payload",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageIncrInvalidErr",
+    "code": 400,
+    "error_code": 10171,
+    "description": "message counter increment is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageCounterBrokenErr",
+    "code": 400,
+    "error_code": 10172,
+    "description": "message counter is broken",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorWithCountersErr",
+    "code": 400,
+    "error_code": 10173,
+    "description": "stream mirrors can not also calculate counters",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

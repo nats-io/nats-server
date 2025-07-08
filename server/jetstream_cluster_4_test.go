@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"math/rand"
 	"os"
 	"path"
@@ -4772,6 +4773,86 @@ func TestJetStreamClusterExpectedPerSubjectConsistency(t *testing.T) {
 	defer mset.clMu.Unlock()
 	require_Len(t, len(mset.expectedPerSubjectSequence), 0)
 	require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+}
+
+func TestJetStreamClusterMsgCounterRunningTotalConsistency(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:            "TEST",
+		Subjects:        []string{"foo"},
+		Storage:         FileStorage,
+		Retention:       LimitsPolicy,
+		Replicas:        3,
+		AllowMsgCounter: true,
+	})
+	require_NoError(t, err)
+
+	s := c.streamLeader(globalAccountName, "TEST")
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Running total should be kept up-to-date.
+	mset.clMu.Lock()
+	mset.clusteredCounterTotal = map[string]*msgCounterRunningTotal{
+		"foo": {total: big.NewInt(10), ops: 1},
+	}
+	mset.clMu.Unlock()
+	m := nats.NewMsg("foo")
+	m.Header.Set("Nats-Incr", "1")
+	pubAck, err := js.PublishMsg(m)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	rsm, err := js.GetLastMsg("TEST", "foo")
+	require_NoError(t, err)
+	require_Equal(t, rsm.Sequence, 1)
+	var count CounterValue
+	require_NoError(t, json.Unmarshal(rsm.Data, &count))
+	require_Equal(t, count.Value, "11")
+
+	// Confirm running total has properly been mutated.
+	total, ops := _EMPTY_, uint64(0)
+	mset.clMu.Lock()
+	if l := len(mset.clusteredCounterTotal); l != 1 {
+		mset.clMu.Unlock()
+		require_Len(t, l, 1)
+	}
+	if counter, ok := mset.clusteredCounterTotal["foo"]; !ok {
+		mset.clMu.Unlock()
+		t.Fatal("counter not found")
+	} else {
+		total = counter.total.String()
+		ops = counter.ops
+	}
+	mset.clMu.Unlock()
+	require_Equal(t, total, "11")
+	require_Equal(t, ops, 1)
+
+	// Reset. Running totals should be removed once all inflight counter operations are applied.
+	mset.clMu.Lock()
+	mset.clusteredCounterTotal = nil
+	mset.clMu.Unlock()
+	pubAck, err = js.PublishMsg(m)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+
+	rsm, err = js.GetLastMsg("TEST", "foo")
+	require_NoError(t, err)
+	require_Equal(t, rsm.Sequence, 2)
+	require_NoError(t, json.Unmarshal(rsm.Data, &count))
+	require_Equal(t, count.Value, "12")
+
+	// Should be cleaned up after publish.
+	mset.clMu.Lock()
+	defer mset.clMu.Unlock()
+	require_Len(t, len(mset.clusteredCounterTotal), 0)
 }
 
 func TestJetStreamClusterConsistencyAfterLeaderChange(t *testing.T) {
