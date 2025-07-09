@@ -2929,10 +2929,12 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 			case <-s.quitCh:
 				return
 			case <-time.After(attemptDelay):
-				// Use exponential backoff for connection attempts.
-				attemptDelay *= 2
-				if attemptDelay > routeConnectMaxDelay {
-					attemptDelay = routeConnectMaxDelay
+				if opts.Cluster.ConnectBackoff {
+					// Use exponential backoff for connection attempts.
+					attemptDelay *= 2
+					if attemptDelay > routeConnectMaxDelay {
+						attemptDelay = routeConnectMaxDelay
+					}
 				}
 				continue
 			}

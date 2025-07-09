@@ -2062,6 +2062,7 @@ func TestParsingGateways(t *testing.T) {
 		}
 		advertise: "me:1"
 		connect_retries: 10
+		connect_backoff: true
 		gateways: [
 			{
 				name: "B"
@@ -2093,6 +2094,7 @@ func TestParsingGateways(t *testing.T) {
 		AuthTimeout:    2.0,
 		Advertise:      "me:1",
 		ConnectRetries: 10,
+		ConnectBackoff: true,
 		TLSTimeout:     3.0,
 		RejectUnknown:  true,
 	}
