@@ -2378,7 +2378,7 @@ func (s *Server) Start() {
 			StoreDir:     opts.StoreDir,
 			SyncInterval: opts.SyncInterval,
 			SyncAlways:   opts.SyncAlways,
-			Strict:       opts.JetStreamStrict,
+			Strict:       !opts.NoJetStreamStrict,
 			MaxMemory:    opts.JetStreamMaxMemory,
 			MaxStore:     opts.JetStreamMaxStore,
 			Domain:       opts.JetStreamDomain,
