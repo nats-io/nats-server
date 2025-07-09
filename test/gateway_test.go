@@ -621,6 +621,7 @@ func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
 					ca_file:   "./configs/certs/ca.pem"
 					timeout: 2
 				}
+				connect_retries: 3
 			}
 			cluster {
 				listen: "127.0.0.1:-1"
@@ -640,6 +641,7 @@ func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
 					ca_file:   "./configs/certs/ca.pem"
 					timeout: 2
 				}
+				connect_retries: 3
 			}
 			cluster {
 				listen: "127.0.0.1:-1"
