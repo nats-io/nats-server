@@ -3957,6 +3957,22 @@ func buildPermissionsFromJwt(uc *jwt.Permissions) *Permissions {
 		return nil
 	}
 	var p *Permissions
+	if len(uc.Semantic.Allow) > 0 || len(uc.Semantic.Deny) > 0 {
+		// TODO(mvv): support deny
+		for _, op := range uc.Semantic.Allow {
+			if strings.EqualFold("js-manage-stream(", op[:17]) && strings.HasSuffix(op, ")") {
+				v := strings.TrimPrefix(op, "js-manage-stream(")
+				v = strings.TrimSuffix(v, ")")
+				uc.Pub.Allow.Add(
+					fmt.Sprintf("$JS.API.STREAM.INFO.%s", v),
+					fmt.Sprintf("$JS.API.STREAM.CREATE.%s", v),
+					fmt.Sprintf("$JS.API.STREAM.UPDATE.%s", v),
+					fmt.Sprintf("$JS.API.STREAM.DELETE.%s", v),
+					fmt.Sprintf("$JS.API.STREAM.PURGE.%s", v),
+				)
+			}
+		}
+	}
 	if len(uc.Pub.Allow) > 0 || len(uc.Pub.Deny) > 0 {
 		p = &Permissions{}
 		p.Publish = &SubjectPermission{}
