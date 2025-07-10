@@ -125,6 +125,7 @@ type raftGroup struct {
 	Storage   StorageType `json:"store"`
 	Cluster   string      `json:"cluster,omitempty"`
 	Preferred string      `json:"preferred,omitempty"`
+	ScaleUp   bool        `json:"scale_up,omitempty"`
 	// Internal
 	node RaftNode
 }
@@ -715,7 +716,7 @@ func (js *jetStream) setupMetaGroup() error {
 		return err
 	}
 
-	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs}
+	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs, Recovering: true}
 
 	// If we are soliciting leafnode connections and we are sharing a system account and do not disable it with a hint,
 	// we want to move to observer mode so that we extend the solicited cluster or supercluster but do not form our own.
@@ -1627,6 +1628,7 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	sa.Restore = nil
 	if sa.Group != nil {
 		sa.Group.Preferred = _EMPTY_
+		sa.Group.ScaleUp = false
 	}
 }
 
@@ -1638,6 +1640,7 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	ca.recovering = true
 	if ca.Group != nil {
 		ca.Group.Preferred = _EMPTY_
+		ca.Group.ScaleUp = false
 	}
 }
 
@@ -2000,7 +2003,7 @@ func (rg *raftGroup) setPreferred() {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage StorageType, labels pprofLabels) (RaftNode, error) {
+func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering bool, storage StorageType, labels pprofLabels) (RaftNode, error) {
 	// Must hold JS lock throughout, otherwise two parallel calls for the same raft group could result
 	// in duplicate instances for the same identifier, if the current Raft node is shutting down.
 	// We can release the lock temporarily while waiting for the Raft node to shut down.
@@ -2113,7 +2116,7 @@ retry:
 		store = ms
 	}
 
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store, Track: true}
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store, Track: true, Recovering: recovering, ScaleUp: rg.ScaleUp}
 
 	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
@@ -3670,7 +3673,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 				mset.startClusterSubs()
 				mset.mu.Unlock()
 
-				js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
+				js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
 					"stream":  mset.name(),
@@ -3781,10 +3784,11 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	alreadyRunning := rg.node != nil
 	storage := sa.Config.Storage
 	restore := sa.Restore
+	recovering := sa.recovering
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	_, err := js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
+	_, err := js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
 		"type":    "stream",
 		"account": acc.Name,
 		"stream":  sa.Config.Name,
@@ -3857,7 +3861,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 					s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 					if osa != nil {
 						// Process the raft group and make sure it's running if needed.
-						js.createRaftGroup(acc.GetName(), osa.Group, storage, pprofLabels{
+						js.createRaftGroup(acc.GetName(), osa.Group, osa.recovering, storage, pprofLabels{
 							"type":    "stream",
 							"account": mset.accName(),
 							"stream":  mset.name(),
@@ -4353,6 +4357,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	rg := ca.Group
 	alreadyRunning := rg != nil && rg.node != nil
 	accName, stream, consumer := ca.Client.serviceAccount(), ca.Stream, ca.Name
+	recovering := ca.recovering
 	js.mu.RUnlock()
 
 	acc, err := s.LookupAccount(accName)
@@ -4390,7 +4395,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		storage = MemoryStorage
 	}
 	// No-op if R1.
-	js.createRaftGroup(accName, rg, storage, pprofLabels{
+	js.createRaftGroup(accName, rg, recovering, storage, pprofLabels{
 		"type":     "consumer",
 		"account":  mset.accName(),
 		"stream":   ca.Stream,
@@ -6494,6 +6499,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		return
 	}
 
+	// Reset notion of scaling up, if this was done in a previous update.
+	rg.ScaleUp = false
 	if isReplicaChange {
 		isScaleUp := newCfg.Replicas > len(rg.Peers)
 		// We are adding new peers here.
@@ -6529,6 +6536,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				// This is scale up from being a singelton, set preferred to that singelton.
 				rg.Preferred = rg.Peers[0]
 			}
+			rg.ScaleUp = true
 			rg.Peers = peers
 		} else {
 			// We are deleting nodes here. We want to do our best to preserve the current leader.
@@ -7645,6 +7653,9 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 		nca := ca.copyGroup()
 
+		// Reset notion of scaling up, if this was done in a previous update.
+		nca.Group.ScaleUp = false
+
 		rBefore := nca.Config.replicas(sa.Config)
 		rAfter := cfg.replicas(sa.Config)
 
@@ -7690,6 +7701,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			}
 			nca.Group.Peers = newPeerSet
 			nca.Group.Preferred = curLeader
+			nca.Group.ScaleUp = true
 		} else if rBefore > rAfter {
 			newPeerSet := nca.Group.Peers
 			// mark leader preferred and move it to end

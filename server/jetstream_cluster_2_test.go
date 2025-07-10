@@ -8098,6 +8098,156 @@ func TestJetStreamClusterSubjectDeleteMarkersTimingWithMaxAge(t *testing.T) {
 }
 
 func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
+	test := func(t *testing.T, noState bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		cfg := &nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: 1,
+		}
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:   "CONSUMER",
+			AckPolicy: nats.AckExplicitPolicy,
+		})
+		require_NoError(t, err)
+
+		// Set up some initial state for the stream and consumer.
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		sub, err := js.PullSubscribe("foo", "CONSUMER")
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		msgs, err := sub.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_NoError(t, msgs[0].AckSync())
+
+		// Scale up the stream and consumer.
+		cfg.Replicas = 3
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+
+		checkStreamAndConsumerState := func() error {
+			t.Helper()
+			sRef := c.streamLeader(globalAccountName, "TEST")
+			cRef := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+			// If all state was removed, the leaders must equal.
+			// Otherwise, the consumer leader may differ because the snapshot contains all required state.
+			if sRef != cRef && noState {
+				return errors.New("stream and consumer leader don't equal")
+			} else if sRef == nil || cRef == nil {
+				return errors.New("stream and/or consumer leader missing")
+			}
+
+			mset, err := sRef.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			streamState := mset.state()
+
+			mset, err = cRef.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
+				return errors.New("consumer not found")
+			}
+			consumerState, err := o.store.State()
+			if err != nil {
+				return err
+			}
+			for _, s := range c.servers {
+				acc := s.globalAccount()
+				mset, err = acc.lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				if state := mset.state(); !reflect.DeepEqual(streamState, state) {
+					return fmt.Errorf("stream states don't equal: %v vs %v", streamState, state)
+				}
+				o = mset.lookupConsumer("CONSUMER")
+				if o == nil {
+					return errors.New("consumer not found")
+				}
+				if state, _ := o.store.State(); !reflect.DeepEqual(consumerState, state) {
+					return fmt.Errorf("consumer states don't equal: %v vs %v", consumerState, state)
+				}
+			}
+			return nil
+		}
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkStreamAndConsumerState()
+		})
+
+		// Install stream and consumer snapshots.
+		sl := c.streamLeader(globalAccountName, "TEST")
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot()))
+		streamGroup := mset.raftNode().Group()
+
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		state, err := o.store.EncodedState()
+		require_NoError(t, err)
+		require_NoError(t, o.raftNode().InstallSnapshot(state))
+		consumerGroup := o.raftNode().Group()
+
+		// Stop stream/consumer leader, and clear state on the followers except for meta.
+		sl.Shutdown()
+		for _, s := range c.servers {
+			if s == sl {
+				continue
+			}
+			sd := s.StoreDir()
+			s.Shutdown()
+			require_NoError(t, os.RemoveAll(filepath.Join(sd, globalAccountName, streamsDir, "TEST")))
+			if noState {
+				require_NoError(t, os.RemoveAll(filepath.Join(sd, DEFAULT_SYSTEM_ACCOUNT, defaultStoreDirName, streamGroup)))
+				require_NoError(t, os.RemoveAll(filepath.Join(sd, DEFAULT_SYSTEM_ACCOUNT, defaultStoreDirName, consumerGroup)))
+			}
+		}
+
+		// Restart all servers except the leader.
+		for _, s := range c.servers {
+			if s == sl {
+				continue
+			}
+			c.restartServer(s)
+		}
+
+		// Allow some time for the restarted servers to try and become leader.
+		time.Sleep(2 * time.Second)
+		require_True(t, c.streamLeader(globalAccountName, "TEST") == nil)
+		if noState {
+			require_True(t, c.consumerLeader(globalAccountName, "TEST", "CONSUMER") == nil)
+		}
+
+		// Restart the old leader, now the state should converge.
+		c.restartServer(sl)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+			return checkStreamAndConsumerState()
+		})
+	}
+
+	t.Run("NoState", func(t *testing.T) { test(t, true) })
+	t.Run("OnlySnapshot", func(t *testing.T) { test(t, false) })
+}
+
+func TestJetStreamClusterScaleUpWithQuorum(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -8109,45 +8259,122 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 		Subjects: []string{"foo"},
 		Replicas: 1,
 	}
-	_, err := js.AddStream(cfg)
+	si, err := js.AddStream(cfg)
 	require_NoError(t, err)
+
+	// Ensure the stream gets scaled up on the meta leader,
+	// so we can pause applies on the other servers.
+	ml := c.leader()
+	if si.Cluster.Leader != ml.Name() {
+		ncSys, err := nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer ncSys.Close()
+
+		jreq, err := json.Marshal(&JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: si.Cluster.Leader}})
+		require_NoError(t, err)
+		resp, err := ncSys.Request(JSApiLeaderStepDown, jreq, time.Second)
+		require_NoError(t, err)
+		var sdr JSApiLeaderStepDownResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &sdr))
+	}
+
+	c.waitOnLeader()
+	ml = c.leader()
+	require_Equal(t, si.Cluster.Leader, ml.Name())
 
 	// Set up some initial state for the stream.
 	pubAck, err := js.Publish("foo", nil)
 	require_NoError(t, err)
 	require_Equal(t, pubAck.Sequence, 1)
 
+	// Pause applies on one server.
+	// The stream must be able to get quorum.
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		n := s.getJetStream().getMetaGroup()
+		require_NotNil(t, n)
+		require_NoError(t, n.PauseApply())
+		break
+	}
+
 	// Scale up the stream.
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	require_Equal(t, ml, c.streamLeader(globalAccountName, "TEST"))
+
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+
+	// Now resume applies.
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		n := s.getJetStream().getMetaGroup()
+		require_NotNil(t, n)
+		n.ResumeApply()
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+}
+
+func TestJetStreamClusterDesyncAfterDiskResetOne(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	outdated := c.randomNonStreamLeader(globalAccountName, "TEST")
+
+	// Reconnect to stream leader.
+	nc.Close()
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		return checkState(t, c, globalAccountName, "TEST")
 	})
 
-	// Stop stream leader, and clear stream state on the followers.
-	sl := c.streamLeader(globalAccountName, "TEST")
-	sl.Shutdown()
+	// Make sure this server misses the next publish.
+	outdated.Shutdown()
+
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+
+	// Fully remove data directory for one server.
+	var reset *Server
 	for _, s := range c.servers {
-		if s == sl {
-			continue
-		}
-		// Install snapshot.
-		mset, err := s.globalAccount().lookupStream("TEST")
-		require_NoError(t, err)
-		require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot()))
 		sd := s.StoreDir()
 		s.Shutdown()
-		require_NoError(t, os.RemoveAll(filepath.Join(sd, globalAccountName, streamsDir, "TEST")))
+		if s != sl && s != outdated {
+			require_NoError(t, os.RemoveAll(sd))
+			reset = s
+		}
 	}
 
-	// Restart all servers except the leader.
-	for _, s := range c.servers {
-		if s == sl {
-			continue
-		}
-		c.restartServer(s)
-	}
+	// Restart only the reset and outdated servers.
+	c.restartServer(reset)
+	c.restartServer(outdated)
 
 	// Allow some time for the restarted servers to try and become leader.
 	time.Sleep(2 * time.Second)
@@ -8155,6 +8382,59 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 
 	// Restart the old leader, now the state should converge.
 	c.restartServer(sl)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+}
+
+func TestJetStreamClusterDesyncAfterDiskResetAllButOne(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	rs := c.randomServer()
+
+	// Fully remove data directory for all but one server.
+	for _, s := range c.servers {
+		sd := s.StoreDir()
+		s.Shutdown()
+		if s != rs {
+			require_NoError(t, os.RemoveAll(sd))
+		}
+	}
+
+	// Restart all servers, except for the one that contains the data.
+	for _, s := range c.servers {
+		if s != rs {
+			c.restartServer(s)
+		}
+	}
+
+	// Allow some time for the restarted servers to try and become leader.
+	time.Sleep(2 * time.Second)
+	require_True(t, c.leader() == nil)
+	require_True(t, c.streamLeader(globalAccountName, "TEST") == nil)
+
+	// Restart the old leader, now the state should converge.
+	c.restartServer(rs)
+	c.waitOnLeader()
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		return checkState(t, c, globalAccountName, "TEST")

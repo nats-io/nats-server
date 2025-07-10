@@ -7011,12 +7011,32 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 	nc, js := jsClientConnect(t, nl)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	cfg := &nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
-	})
+	}
+	si, err := js.AddStream(cfg)
 	require_NoError(t, err)
+
+	// We want to ensure the consumer can be created and be applied.
+	// On the non-meta-leader server we'll pause applies, so need to make
+	// sure the consumer is not created on that server.
+	if si.Cluster.Leader == nl.Name() {
+		ml := c.leader()
+		jreq, err := json.Marshal(&JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: ml.Name()}})
+		require_NoError(t, err)
+		resp, err := nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), jreq, time.Second)
+		require_NoError(t, err)
+		var sdr JSApiLeaderStepDownResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &sdr))
+	}
+
+	// Scale down to ensure the consumer gets created on this server.
+	cfg.Replicas = 1
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_NotEqual(t, si.Cluster.Leader, nl.Name())
 
 	// We pause applies for the server we're connected to.
 	// This is fine for the RAFT log and allowing the consumer to be created,
@@ -7458,7 +7478,7 @@ func TestJetStreamClusterStreamHealthCheckOnlyReportsSkew(t *testing.T) {
 	// Simulate stopping and restarting a new instance.
 	node.Stop()
 	node.WaitForStop()
-	node, err = sjs.createRaftGroup(globalAccountName, group, FileStorage, pprofLabels{})
+	node, err = sjs.createRaftGroup(globalAccountName, group, false, FileStorage, pprofLabels{})
 	require_NoError(t, err)
 	require_NotEqual(t, node.State(), Closed)
 
@@ -7555,7 +7575,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	checkNodeIsClosed(ca)
 
 	// We create a new RAFT group, the health check should detect this skew and restart.
-	_, err = sjs.createRaftGroup(globalAccountName, ca.Group, MemoryStorage, pprofLabels{})
+	_, err = sjs.createRaftGroup(globalAccountName, ca.Group, false, MemoryStorage, pprofLabels{})
 	require_NoError(t, err)
 	sjs.mu.Lock()
 	// We set creating to now, since previously it would delete all data but NOT restart if created within <10s.
@@ -7738,7 +7758,7 @@ func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
 	// Simulate stopping and restarting a new instance.
 	node.Stop()
 	node.WaitForStop()
-	node, err = sjs.createRaftGroup(globalAccountName, group, FileStorage, pprofLabels{})
+	node, err = sjs.createRaftGroup(globalAccountName, group, false, FileStorage, pprofLabels{})
 	require_NoError(t, err)
 	require_NotEqual(t, node.State(), Closed)
 
