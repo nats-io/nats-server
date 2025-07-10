@@ -1753,7 +1753,7 @@
     "constant": "JSAtomicPublishDuplicateErr",
     "code": 400,
     "error_code": 10177,
-    "description": "atomic publish batch contains duplicates",
+    "description": "atomic publish duplicates not allowed",
     "comment": "",
     "help": "",
     "url": "",

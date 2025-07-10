@@ -8190,6 +8190,21 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				return apiErr
 			}
 
+			// Duplicates are fully rejected when using batch.
+			if msgId := getMsgId(bhdr); msgId != _EMPTY_ {
+				// TODO(mvv): reset in-memory expected header maps
+				mset.clseq -= seq - 1
+				mset.clMu.Unlock()
+				cleanup()
+				batches.mu.Unlock()
+				apiErr := NewJSAtomicPublishDuplicateError()
+				if canRespond {
+					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
+					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
+				}
+				return apiErr
+			}
+
 			var apiErr *ApiError
 			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgs, maxBytes); err != nil {
 				// TODO(mvv): reset in-memory expected header maps
@@ -8197,9 +8212,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				mset.clMu.Unlock()
 				cleanup()
 				batches.mu.Unlock()
-				if err == errMsgIdDuplicate && apiErr == nil {
-					apiErr = NewJSAtomicPublishDuplicateError()
-				}
 				if canRespond {
 					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
 					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))

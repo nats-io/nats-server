@@ -21182,7 +21182,7 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 	}
 }
 
-func TestJetStreamAtomicBatchPublishDedupe(t *testing.T) {
+func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 	test := func(
 		t *testing.T,
 		nc *nats.Conn,
@@ -21201,10 +21201,6 @@ func TestJetStreamAtomicBatchPublishDedupe(t *testing.T) {
 		}
 
 		_, err := jsStreamCreate(t, nc, cfg)
-		require_NoError(t, err)
-
-		// Publish one duplicate.
-		_, err = js.Publish("foo", nil, nats.MsgId("pre-existing"))
 		require_NoError(t, err)
 
 		m := nats.NewMsg("foo")

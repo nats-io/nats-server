@@ -11,7 +11,7 @@ const (
 	// JSAtomicPublishDisabledErr atomic publish is disabled
 	JSAtomicPublishDisabledErr ErrorIdentifier = 10174
 
-	// JSAtomicPublishDuplicateErr atomic publish batch contains duplicates
+	// JSAtomicPublishDuplicateErr atomic publish duplicates not allowed
 	JSAtomicPublishDuplicateErr ErrorIdentifier = 10177
 
 	// JSAtomicPublishIncompleteBatchErr atomic publish batch is incomplete
@@ -538,7 +538,7 @@ var (
 	ApiErrors = map[ErrorIdentifier]*ApiError{
 		JSAccountResourcesExceededErr:              {Code: 400, ErrCode: 10002, Description: "resource limits exceeded for account"},
 		JSAtomicPublishDisabledErr:                 {Code: 400, ErrCode: 10174, Description: "atomic publish is disabled"},
-		JSAtomicPublishDuplicateErr:                {Code: 400, ErrCode: 10177, Description: "atomic publish batch contains duplicates"},
+		JSAtomicPublishDuplicateErr:                {Code: 400, ErrCode: 10177, Description: "atomic publish duplicates not allowed"},
 		JSAtomicPublishIncompleteBatchErr:          {Code: 400, ErrCode: 10176, Description: "atomic publish batch is incomplete"},
 		JSAtomicPublishMissingSeqErr:               {Code: 400, ErrCode: 10175, Description: "atomic publish sequence is missing"},
 		JSBadRequestErr:                            {Code: 400, ErrCode: 10003, Description: "bad request"},
@@ -757,7 +757,7 @@ func NewJSAtomicPublishDisabledError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSAtomicPublishDisabledErr]
 }
 
-// NewJSAtomicPublishDuplicateError creates a new JSAtomicPublishDuplicateErr error: "atomic publish batch contains duplicates"
+// NewJSAtomicPublishDuplicateError creates a new JSAtomicPublishDuplicateErr error: "atomic publish duplicates not allowed"
 func NewJSAtomicPublishDuplicateError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
