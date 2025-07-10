@@ -1433,6 +1433,12 @@ func tokenizeSubjectIntoSlice(tts []string, subject string) []string {
 	return tts
 }
 
+// SubjectMatchesFilter returns true if the subject matches the provided
+// filter or false otherwise.
+func SubjectMatchesFilter(subject, filter string) bool {
+	return subjectIsSubsetMatch(subject, filter)
+}
+
 // Calls into the function isSubsetMatch()
 func subjectIsSubsetMatch(subject, test string) bool {
 	tsa := [32]string{}
