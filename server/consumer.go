@@ -820,6 +820,9 @@ func checkConsumerCfg(
 	}
 
 	if config.PriorityPolicy != PriorityNone {
+		if config.DeliverSubject != "" {
+			return NewJSConsumerPushWithPriorityGroupError()
+		}
 		if len(config.PriorityGroups) == 0 {
 			return NewJSConsumerPriorityPolicyWithoutGroupError()
 		}

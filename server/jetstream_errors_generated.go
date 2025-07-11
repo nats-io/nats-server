@@ -197,6 +197,9 @@ const (
 	// JSConsumerPushMaxWaitingErr consumer in push mode can not set max waiting
 	JSConsumerPushMaxWaitingErr ErrorIdentifier = 10080
 
+	// JSConsumerPushWithPriorityGroupErr priority groups can not be used with push consumers
+	JSConsumerPushWithPriorityGroupErr ErrorIdentifier = 10178
+
 	// JSConsumerReplacementWithDifferentNameErr consumer replacement durable config not the same
 	JSConsumerReplacementWithDifferentNameErr ErrorIdentifier = 10106
 
@@ -570,6 +573,7 @@ var (
 		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires explicit ack policy on workqueue stream"},
 		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
 		JSConsumerPushMaxWaitingErr:                {Code: 400, ErrCode: 10080, Description: "consumer in push mode can not set max waiting"},
+		JSConsumerPushWithPriorityGroupErr:         {Code: 400, ErrCode: 10178, Description: "priority groups can not be used with push consumers"},
 		JSConsumerReplacementWithDifferentNameErr:  {Code: 400, ErrCode: 10106, Description: "consumer replacement durable config not the same"},
 		JSConsumerReplicasExceedsStream:            {Code: 400, ErrCode: 10126, Description: "consumer config replica count exceeds parent stream"},
 		JSConsumerReplicasShouldMatchStream:        {Code: 400, ErrCode: 10134, Description: "consumer config replicas must match interest retention stream's replicas"},
@@ -1395,6 +1399,16 @@ func NewJSConsumerPushMaxWaitingError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerPushMaxWaitingErr]
+}
+
+// NewJSConsumerPushWithPriorityGroupError creates a new JSConsumerPushWithPriorityGroupErr error: "priority groups can not be used with push consumers"
+func NewJSConsumerPushWithPriorityGroupError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerPushWithPriorityGroupErr]
 }
 
 // NewJSConsumerReplacementWithDifferentNameError creates a new JSConsumerReplacementWithDifferentNameErr error: "consumer replacement durable config not the same"

@@ -1658,5 +1658,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPushWithPriorityGroupErr",
+    "code": 400,
+    "error_code": 10178,
+    "description": "priority groups can not be used with push consumers",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
