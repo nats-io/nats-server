@@ -4646,10 +4646,11 @@ func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	require_NoError(t, err)
 
 	mset.mu.Lock()
-	mset.ddloaded = false
+	mset.ddMu.Lock()
 	start = time.Now()
 	mset.rebuildDedupe()
 	fmt.Printf("TOOK %v to rebuild dd\n", time.Since(start))
+	mset.ddMu.Unlock()
 	mset.mu.Unlock()
 
 	v, _ = s.Varz(nil)

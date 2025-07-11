@@ -50,6 +50,11 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 		requires(2)
 	}
 
+	// Atomic batch publishing was added in v2.12 and require API level 2.
+	if cfg.AllowAtomicPublish {
+		requires(2)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 

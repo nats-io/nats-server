@@ -7773,13 +7773,17 @@ func (fs *fileStore) Utilization() (total, reported uint64, err error) {
 	return total, reported, nil
 }
 
-func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
-	if len(hdr) == 0 {
+func fileStoreMsgSizeRaw(slen, hlen, mlen int) uint64 {
+	if hlen == 0 {
 		// length of the message record (4bytes) + seq(8) + ts(8) + subj_len(2) + subj + msg + hash(8)
-		return uint64(22 + len(subj) + len(msg) + 8)
+		return uint64(22 + slen + mlen + 8)
 	}
 	// length of the message record (4bytes) + seq(8) + ts(8) + subj_len(2) + subj + hdr_len(4) + hdr + msg + hash(8)
-	return uint64(22 + len(subj) + 4 + len(hdr) + len(msg) + 8)
+	return uint64(22 + slen + 4 + hlen + mlen + 8)
+}
+
+func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
+	return fileStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
 }
 
 func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
