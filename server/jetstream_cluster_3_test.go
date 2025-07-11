@@ -1425,7 +1425,7 @@ func TestJetStreamClusterPullConsumerAcksExtendInactivityThreshold(t *testing.T)
 	}
 
 	// Pull Consumer
-	sub, err := js.PullSubscribe("foo", "d", nats.InactiveThreshold(time.Second))
+	sub, err := js.PullSubscribe("foo", "d", nats.InactiveThreshold(time.Second), nats.AckWait(time.Second))
 	require_NoError(t, err)
 
 	fetchMsgs(t, sub, n/2, time.Second)
@@ -1453,7 +1453,7 @@ func TestJetStreamClusterPullConsumerAcksExtendInactivityThreshold(t *testing.T)
 	require_NoError(t, err)
 
 	// Make sure it gets cleaned up.
-	time.Sleep(2 * time.Second)
+	time.Sleep(3500 * time.Millisecond)
 	_, err = js.ConsumerInfo("TEST", "d")
 	require_Error(t, err, nats.ErrConsumerNotFound)
 }
