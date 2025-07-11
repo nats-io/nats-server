@@ -9733,3 +9733,134 @@ func TestJetStreamConsumerPullNoWaitBatchLargerThanPending(t *testing.T) {
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
+
+func TestJetStreamConsumerNotInactiveDuringAckWait(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:           "CONSUMER",
+			AckPolicy:         nats.AckExplicitPolicy,
+			Replicas:          replicas,
+			InactiveThreshold: 500 * time.Millisecond, // Pull mode adds up to 1 second randomly.
+			AckWait:           time.Minute,
+		})
+		require_NoError(t, err)
+
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_NoError(t, err)
+
+		sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER", nats.BindStream("TEST"))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		msgs, err := sub.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_NoError(t, err)
+
+		// AckWait is still active, so must not delete the consumer while waiting for an ack.
+		time.Sleep(1750 * time.Millisecond)
+
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_NoError(t, err)
+		require_NoError(t, msgs[0].AckSync())
+
+		// Not waiting on AckWait anymore, consumer is deleted after the inactivity threshold.
+		time.Sleep(1750 * time.Millisecond)
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_Error(t, err, nats.ErrConsumerNotFound)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamConsumerNotInactiveDuringAckWaitBackoff(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:           "CONSUMER",
+			AckPolicy:         nats.AckExplicitPolicy,
+			Replicas:          replicas,
+			InactiveThreshold: 500 * time.Millisecond, // Pull mode adds up to 1 second randomly.
+			BackOff: []time.Duration{
+				2 * time.Second,
+				4 * time.Second,
+			},
+		})
+		require_NoError(t, err)
+
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_NoError(t, err)
+
+		sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER", nats.BindStream("TEST"))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		msgs, err := sub.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_NoError(t, err)
+
+		// AckWait is still active, so must not delete the consumer while waiting for an ack.
+		time.Sleep(1750 * time.Millisecond)
+
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_NoError(t, err)
+		require_NoError(t, msgs[0].Nak())
+
+		msgs, err = sub.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+
+		// AckWait is still active, now based on backoff, so must not delete the consumer while waiting for an ack.
+		// We've confirmed can wait 2s AckWait + InactiveThreshold, now check we can also wait for the backoff.
+		time.Sleep(3750 * time.Millisecond)
+
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_NoError(t, err)
+		require_NoError(t, msgs[0].AckSync())
+
+		// Not waiting on AckWait anymore, consumer is deleted after the inactivity threshold.
+		time.Sleep(1750 * time.Millisecond)
+		_, err = js.ConsumerInfo("TEST", "CONSUMER")
+		require_Error(t, err, nats.ErrConsumerNotFound)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
