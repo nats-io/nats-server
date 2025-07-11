@@ -105,9 +105,10 @@ func TestRouteConfig(t *testing.T) {
 			AuthTimeout:    1.0,
 			NoAdvertise:    true,
 			ConnectRetries: 2,
+			ConnectBackoff: true,
 		},
 		PidFile:          "/tmp/nats-server/nats_cluster_test.pid",
-		configDigest:     "sha256:1a95b87d99ff3950ff3eb220ef6ffb5387c95fa606ed6976023ade266329c7b5",
+		configDigest:     "sha256:b2f6d54063e43a85f5a09d198204f044bc154f9f9ccfb84e47d5762091aec487",
 		authBlockDefined: true,
 	}
 
@@ -1771,6 +1772,7 @@ func TestRouteReconnectExponentialBackoff(t *testing.T) {
 	o2.ServerName = "B"
 	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
 	o2.Cluster.ConnectRetries = 3
+	o2.Cluster.ConnectBackoff = true
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
 

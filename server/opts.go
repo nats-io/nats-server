@@ -77,6 +77,7 @@ type ClusterOpts struct {
 	Advertise         string            `json:"-"`
 	NoAdvertise       bool              `json:"-"`
 	ConnectRetries    int               `json:"-"`
+	ConnectBackoff    bool              `json:"-"`
 	PoolSize          int               `json:"-"`
 	PinnedAccounts    []string          `json:"-"`
 	Compression       CompressionOpts   `json:"-"`
@@ -121,6 +122,7 @@ type GatewayOpts struct {
 	TLSPinnedCerts    PinnedCertSet        `json:"-"`
 	Advertise         string               `json:"advertise,omitempty"`
 	ConnectRetries    int                  `json:"connect_retries,omitempty"`
+	ConnectBackoff    bool                 `json:"connect_backoff,omitempty"`
 	Gateways          []*RemoteGatewayOpts `json:"gateways,omitempty"`
 	RejectUnknown     bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
 
@@ -1903,6 +1905,8 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			trackExplicitVal(&opts.inConfig, "Cluster.NoAdvertise", opts.Cluster.NoAdvertise)
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
+		case "connect_backoff":
+			opts.Cluster.ConnectBackoff = mv.(bool)
 		case "permissions":
 			perms, err := parseUserPermissions(mv, errors)
 			if err != nil {
@@ -2111,6 +2115,8 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 			o.Gateway.Advertise = mv.(string)
 		case "connect_retries":
 			o.Gateway.ConnectRetries = int(mv.(int64))
+		case "connect_backoff":
+			o.Gateway.ConnectBackoff = mv.(bool)
 		case "gateways":
 			gateways, err := parseGateways(mv, errors, warnings)
 			if err != nil {

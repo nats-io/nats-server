@@ -1459,6 +1459,7 @@ func TestGatewayReconnectExponentialBackoff(t *testing.T) {
 	ob := testDefaultOptionsForGateway("B")
 	ob.ReconnectErrorReports = 1
 	ob.Gateway.ConnectRetries = 3
+	ob.Gateway.ConnectBackoff = true
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
 
