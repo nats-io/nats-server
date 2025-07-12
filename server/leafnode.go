@@ -36,7 +36,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
@@ -1508,7 +1507,7 @@ func (s *Server) negotiateLeafCompression(c *client, didSolicit bool, infoCompre
 	// Create the compress writer before queueing the INFO protocol for
 	// a route that did not solicit. It will make sure that that proto
 	// is sent with compression on.
-	c.out.cw = s2.NewWriter(nil, s2WriterOptions(cm)...)
+	c.out.cw, c.out.cf = GetS2WriterByOptions(nil, cm)
 	if !didSolicit {
 		c.enqueueProto(infoProto)
 	}

@@ -25,8 +25,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/s2"
-
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nuid"
 )
@@ -454,7 +452,7 @@ func (c *clusterOption) Apply(s *Server) {
 				r.updateS2AutoCompressionLevel(co, &r.route.compression)
 			} else {
 				// Simply change the compression writer
-				r.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
+				r.out.cw, r.out.cf = GetS2WriterByOptions(nil, newMode)
 				r.route.compression = newMode
 			}
 			r.mu.Unlock()
@@ -936,7 +934,7 @@ func (l *leafNodeOption) Apply(s *Server) {
 				l.updateS2AutoCompressionLevel(co, &l.leaf.compression)
 			} else {
 				// Simply change the compression writer
-				l.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
+				l.out.cw, l.out.cf = GetS2WriterByOptions(nil, newMode)
 				l.leaf.compression = newMode
 			}
 			l.mu.Unlock()

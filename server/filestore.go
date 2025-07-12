@@ -9578,8 +9578,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 	defer close(errCh)
 	defer w.Close()
 
-	enc := s2.NewWriter(w)
-	defer enc.Close()
+	enc := Snappy.GetWriter(w)
+	Snappy.PutWriter(enc)
 
 	tw := tar.NewWriter(enc)
 	defer tw.Close()
@@ -11102,7 +11102,8 @@ func (alg StoreCompression) Compress(buf []byte) ([]byte, error) {
 	case NoCompression:
 		return buf, nil
 	case S2Compression:
-		writer = s2.NewWriter(&output)
+		writer = Snappy.GetWriter(&output)
+		Snappy.PutWriterNoClose(writer.(*s2.Writer))
 	default:
 		return nil, fmt.Errorf("compression algorithm not known")
 	}

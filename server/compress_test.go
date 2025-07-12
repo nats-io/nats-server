@@ -39,12 +39,12 @@ func TestSnappyPool_CompressDecompress(t *testing.T) {
 	original := []byte("snappy compression pool test")
 	var buf bytes.Buffer
 
-	writer := Snappy.GetWriter(&buf)
+	writer := SnappyCompact.GetWriter(&buf)
 	if _, err := writer.Write(original); err != nil {
 		t.Fatalf("snappy write failed: %v", err)
 	}
 
-	Snappy.PutWriter(writer)
+	SnappyCompact.PutWriter(writer)
 
 	result, err := s2.Decode(nil, buf.Bytes())
 	if err != nil {

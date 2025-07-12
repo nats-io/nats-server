@@ -325,6 +325,7 @@ type outbound struct {
 	lft time.Duration // Last flush time for Write.
 	stc chan struct{} // Stall chan we create to slow down producers on overrun, e.g. fan-in.
 	cw  *s2.Writer
+	cf  func(*s2.Writer) error // Close function for the s2.Writer, it will also return it to the pool.
 }
 
 const nbMaxVectorSize = 1024 // == IOV_MAX on Linux/Darwin and most other Unices (except Solaris/AIX)
@@ -1631,8 +1632,9 @@ func (c *client) flushOutbound() bool {
 			}
 		}
 		if err == nil {
-			err = cw.Close()
+			err = c.out.cf(cw)
 		}
+
 		if err != nil {
 			c.Errorf("Error compressing data: %v", err)
 			// We need to grab the lock now before marking as closed and exiting
@@ -2588,7 +2590,7 @@ func (c *client) updateS2AutoCompressionLevel(co *CompressionOpts, compression *
 	}
 	if cm := selectS2AutoModeBasedOnRTT(c.rtt, co.RTTThresholds); cm != *compression {
 		*compression = cm
-		c.out.cw = s2.NewWriter(nil, s2WriterOptions(cm)...)
+		c.out.cw, c.out.cf = GetS2WriterByOptions(nil, cm)
 	}
 }
 

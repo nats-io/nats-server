@@ -9,7 +9,21 @@ import (
 )
 
 var Gzip gzipPool
+
 var Snappy snappyPool
+
+var SnappyCompact = snappyPool{
+	opt: []s2.WriterOption{s2.WriterSnappyCompat()},
+}
+var SnappyBetterCompression = snappyPool{
+	opt: []s2.WriterOption{s2.WriterBetterCompression(), s2.WriterConcurrency(1)},
+}
+var SnappyBestCompression = snappyPool{
+	opt: []s2.WriterOption{s2.WriterBestCompression(), s2.WriterConcurrency(1)},
+}
+var SnappyNoCompression = snappyPool{
+	opt: []s2.WriterOption{s2.WriterUncompressed(), s2.WriterConcurrency(1)},
+}
 
 type gzipPool struct {
 	writers sync.Pool
@@ -17,6 +31,7 @@ type gzipPool struct {
 
 type snappyPool struct {
 	writers sync.Pool
+	opt     []s2.WriterOption
 }
 
 func (pool *gzipPool) GetWriter(dst io.Writer) *gzip.Writer {
@@ -42,13 +57,32 @@ func (pool *snappyPool) GetWriter(dst io.Writer) *s2.Writer {
 		writer = w.(*s2.Writer)
 		writer.Reset(dst)
 	} else {
-		writer = s2.NewWriter(dst, s2.WriterSnappyCompat())
+		writer = s2.NewWriter(dst, pool.opt...)
 	}
 
 	return writer
 }
 
-func (pool *snappyPool) PutWriter(writer *s2.Writer) {
-	writer.Close()
+func (pool *snappyPool) PutWriter(writer *s2.Writer) error {
+	err := writer.Close()
 	pool.writers.Put(writer)
+
+	return err
+}
+
+func (pool *snappyPool) PutWriterNoClose(writer *s2.Writer) {
+	pool.writers.Put(writer)
+}
+
+func GetS2WriterByOptions(dst io.Writer, t string) (*s2.Writer, func(writer *s2.Writer) error) {
+	switch t {
+	case CompressionS2Uncompressed:
+		return SnappyNoCompression.GetWriter(dst), SnappyNoCompression.PutWriter
+	case CompressionS2Better:
+		return SnappyBetterCompression.GetWriter(dst), SnappyBetterCompression.PutWriter
+	case CompressionS2Best:
+		return SnappyBestCompression.GetWriter(dst), SnappyBestCompression.PutWriter
+	default:
+		return Snappy.GetWriter(dst), Snappy.PutWriter
+	}
 }

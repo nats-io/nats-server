@@ -583,9 +583,9 @@ RESET:
 						b = bb.Bytes()
 						contentHeader = "gzip"
 					case snappyCompression:
-						sw := Snappy.GetWriter(&bb)
+						sw := SnappyCompact.GetWriter(&bb)
 						sw.Write(b)
-						Snappy.PutWriter(sw)
+						SnappyCompact.PutWriter(sw)
 						b = bb.Bytes()
 						contentHeader = "snappy"
 					case unsupportedCompression:

@@ -28,8 +28,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/klauspost/compress/s2"
 )
 
 // RouteType designates the router type
@@ -925,7 +923,7 @@ func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName, 
 		// Create the compress writer before queueing the INFO protocol for
 		// a route that did not solicit. It will make sure that that proto
 		// is sent with compression on.
-		c.out.cw = s2.NewWriter(nil, s2WriterOptions(cm)...)
+		c.out.cw, c.out.cf = GetS2WriterByOptions(nil, cm)
 		if !didSolicit {
 			c.enqueueProto(infoProto)
 		}
