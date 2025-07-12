@@ -15,7 +15,6 @@ package server
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
@@ -32,7 +31,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/pse"
@@ -579,15 +577,15 @@ RESET:
 				if len(b) > 0 {
 					switch pm.oct {
 					case gzipCompression:
-						zw := gzip.NewWriter(&bb)
+						zw := Gzip.GetWriter(&bb)
 						zw.Write(b)
-						zw.Close()
+						Gzip.PutWriter(zw)
 						b = bb.Bytes()
 						contentHeader = "gzip"
 					case snappyCompression:
-						sw := s2.NewWriter(&bb, s2.WriterSnappyCompat())
+						sw := Snappy.GetWriter(&bb)
 						sw.Write(b)
-						sw.Close()
+						Snappy.PutWriter(sw)
 						b = bb.Bytes()
 						contentHeader = "snappy"
 					case unsupportedCompression:
