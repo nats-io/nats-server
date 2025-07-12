@@ -10087,3 +10087,174 @@ func TestLeafNodePermissionWithGateways(t *testing.T) {
 		t.Fatalf("Should not have received the reply, got %q", msg.Data)
 	}
 }
+
+func TestLeafNodesDisableRemote(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			leaf1 { users: [{user: leaf1, password: pwd}] }
+			leaf2 { users: [{user: leaf2, password: pwd}] }
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	port := ohub.LeafNode.Port
+	leafTmpl := `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			reconnect_interval: "50ms"
+			remotes: [
+				{
+					url: "nats://leaf1:pwd@127.0.0.1:%d"
+					disabled: %v
+				}
+				{
+					url: "nats://leaf2:pwd@127.0.0.1:%d"
+				}
+			]
+		}
+	`
+	// Start with "disabled: true" to make sure that we don't solicit it
+	// when starting the server.
+	leafConf := createConfFile(t, fmt.Appendf(nil, leafTmpl, port, true, port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	// Wait for more than the reconnect interval to make sure that we don't
+	// reconnect the connection that should have been disabled.
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify that we have only 1 leaf
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	reconnectCh := make(chan struct{}, 2)
+	ncl1 := natsConnect(t, hub.ClientURL(), nats.UserInfo("leaf1", "pwd"),
+		nats.ReconnectWait(50*time.Millisecond),
+		nats.ReconnectJitter(time.Millisecond, time.Millisecond),
+		nats.ReconnectHandler(func(_ *nats.Conn) {
+			reconnectCh <- struct{}{}
+		}))
+	defer ncl1.Close()
+	sub1 := natsSubSync(t, ncl1, "foo")
+	natsFlush(t, ncl1)
+
+	ncl2 := natsConnect(t, hub.ClientURL(), nats.UserInfo("leaf2", "pwd"),
+		nats.ReconnectWait(50*time.Millisecond),
+		nats.ReconnectJitter(time.Millisecond, time.Millisecond),
+		nats.ReconnectHandler(func(_ *nats.Conn) {
+			reconnectCh <- struct{}{}
+		}))
+	defer ncl2.Close()
+	sub2 := natsSubSync(t, ncl2, "foo")
+	natsFlush(t, ncl2)
+
+	checkSubInterest(t, leaf, globalAccountName, "foo", time.Second)
+
+	nc := natsConnect(t, leaf.ClientURL())
+	defer nc.Close()
+
+	natsPub(t, nc, "foo", []byte("hello"))
+	natsFlush(t, nc)
+
+	// We should not receive on leaf1
+	_, err := sub1.NextMsg(100 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// But should receive on leaf2.
+	msg := natsNexMsg(t, sub2, time.Second)
+	require_Equal(t, string(msg.Data), "hello")
+
+	// Enable leaf1, which means set "disabled" to false.
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(leafTmpl, port, false, port))
+
+	// Check that we have 2 leaf node connections now.
+	checkLeafNodeConnectedCount(t, hub, 2)
+	checkLeafNodeConnectedCount(t, leaf, 2)
+
+	// Verify connectivity.
+	natsPub(t, nc, "foo", []byte("hello2"))
+
+	msg = natsNexMsg(t, sub1, time.Second)
+	require_Equal(t, string(msg.Data), "hello2")
+
+	msg = natsNexMsg(t, sub2, time.Second)
+	require_Equal(t, string(msg.Data), "hello2")
+
+	// Disable again.
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(leafTmpl, port, true, port))
+
+	// Wait for more than the reconnect interval to make sure that we don't
+	// reconnect the connection that should have been disabled.
+	time.Sleep(100 * time.Millisecond)
+	// Verify that we have only 1 leaf
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	// Now send a message again.
+	natsPub(t, nc, "foo", []byte("hello3"))
+	natsFlush(t, nc)
+	// We should not receive on leaf1
+	_, err = sub1.NextMsg(100 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// We should still receive for leaf2
+	msg = natsNexMsg(t, sub2, time.Second)
+	require_Equal(t, string(msg.Data), "hello3")
+
+	// Enable again.
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(leafTmpl, port, false, port))
+
+	checkLeafNodeConnectedCount(t, hub, 2)
+	checkLeafNodeConnectedCount(t, leaf, 2)
+
+	// Now shutdown hub.
+	hub.Shutdown()
+
+	// Wait to be disconnected
+	checkLeafNodeConnectedCount(t, leaf, 0)
+
+	// Wait at least some reconnect interval.
+	time.Sleep(100 * time.Millisecond)
+
+	// Now disable leaf1 one more time to make sure we stop soliciting when we were
+	// not currently connected.
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(leafTmpl, port, true, port))
+
+	// Restart hub
+	hub = RunServer(ohub)
+	defer hub.Shutdown()
+
+	// Verify that we have only 1 leaf
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	// Wait for clients to reconnect
+	for range 2 {
+		select {
+		case <-reconnectCh:
+		case <-time.After(time.Second):
+			t.Fatal("Client failed to reconnect")
+		}
+	}
+
+	// Wait for subject propagation
+	checkSubInterest(t, leaf, globalAccountName, "foo", time.Second)
+
+	// Now send a message again.
+	natsPub(t, nc, "foo", []byte("hello4"))
+	natsFlush(t, nc)
+	// We should not receive on leaf1
+	_, err = sub1.NextMsg(100 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// We should still receive for leaf2
+	msg = natsNexMsg(t, sub2, time.Second)
+	require_Equal(t, string(msg.Data), "hello4")
+}

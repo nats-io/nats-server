@@ -875,6 +875,7 @@ type leafNodeOption struct {
 	noopOption
 	tlsFirstChanged    bool
 	compressionChanged bool
+	disabledChanged    bool
 }
 
 func (l *leafNodeOption) Apply(s *Server) {
@@ -886,8 +887,9 @@ func (l *leafNodeOption) Apply(s *Server) {
 			s.Noticef("Reloaded: LeafNode Remote to %v TLS HandshakeFirst value is: %v", r.URLs, r.TLSHandshakeFirst)
 		}
 	}
-	if l.compressionChanged {
+	if l.compressionChanged || l.disabledChanged {
 		var leafs []*client
+		var solicit []*leafNodeCfg
 		acceptSideCompOpts := &opts.LeafNode.Compression
 
 		s.mu.RLock()
@@ -900,10 +902,15 @@ func (l *leafNodeOption) Apply(s *Server) {
 		if l := len(s.leafRemoteCfgs); l < max {
 			max = l
 		}
-		for i := 0; i < max; i++ {
+		for i := range max {
 			lr := s.leafRemoteCfgs[i]
+			or := opts.LeafNode.Remotes[i]
 			lr.Lock()
-			lr.Compression = opts.LeafNode.Remotes[i].Compression
+			lr.Compression = or.Compression
+			if lr.Disabled && !or.Disabled {
+				solicit = append(solicit, lr)
+			}
+			lr.Disabled = or.Disabled
 			lr.Unlock()
 		}
 
@@ -912,6 +919,13 @@ func (l *leafNodeOption) Apply(s *Server) {
 
 			l.mu.Lock()
 			if r := l.leaf.remote; r != nil {
+				// If newly marked as disabled, collect and ignore the rest.
+				if r.Disabled {
+					l.flags.set(noReconnect)
+					leafs = append(leafs, l)
+					l.mu.Unlock()
+					continue
+				}
 				co = &r.Compression
 			} else {
 				co = acceptSideCompOpts
@@ -942,11 +956,25 @@ func (l *leafNodeOption) Apply(s *Server) {
 			l.mu.Unlock()
 		}
 		s.mu.RUnlock()
-		// Close the connections for which negotiation is required.
+		// Close the connections for which negotiation is required, or that
+		// have been disabled.
 		for _, l := range leafs {
 			l.closeConnection(ClientClosed)
 		}
-		s.Noticef("Reloaded: LeafNode compression settings")
+		if l.compressionChanged {
+			s.Noticef("Reloaded: LeafNode compression settings")
+		}
+		if l.disabledChanged {
+			if len(leafs) > 0 {
+				s.Noticef("Reloaded: LeafNode(s) disabled")
+			}
+			if len(solicit) > 0 {
+				for _, remote := range solicit {
+					s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
+				}
+				s.Noticef("Reloaded: LeafNode(s) enabled")
+			}
+		}
 	}
 }
 
@@ -1315,7 +1343,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			co := &clusterOption{
 				newValue:        newClusterOpts,
 				permsChanged:    !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
-				compressChanged: !reflect.DeepEqual(oldClusterOpts.Compression, newClusterOpts.Compression),
+				compressChanged: !compressOptsEqual(&oldClusterOpts.Compression, &newClusterOpts.Compression),
 			}
 			co.diffPoolAndAccounts(&oldClusterOpts)
 			// If there are added accounts, first make sure that we can look them up.
@@ -1428,16 +1456,24 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			}
 			// We also support config reload for compression. Check if it changed before
 			// blanking them out for the deep-equal check at the end.
-			compressionChanged := !reflect.DeepEqual(tmpOld.Compression, tmpNew.Compression)
+			compressionChanged := !compressOptsEqual(&tmpOld.Compression, &tmpNew.Compression)
 			if compressionChanged {
 				tmpOld.Compression, tmpNew.Compression = CompressionOpts{}, CompressionOpts{}
 			} else if len(tmpOld.Remotes) == len(tmpNew.Remotes) {
 				// Same that for tls first check, do the remotes now.
-				for i := 0; i < len(tmpOld.Remotes); i++ {
-					if !reflect.DeepEqual(tmpOld.Remotes[i].Compression, tmpNew.Remotes[i].Compression) {
+				for i := range len(tmpOld.Remotes) {
+					if !compressOptsEqual(&tmpOld.Remotes[i].Compression, &tmpNew.Remotes[i].Compression) {
 						compressionChanged = true
 						break
 					}
+				}
+			}
+			// Check if the "disabled" option of each remote has changed.
+			var disabledChanged bool
+			for i := range len(tmpOld.Remotes) {
+				if tmpOld.Remotes[i].Disabled != tmpNew.Remotes[i].Disabled {
+					disabledChanged = true
+					break
 				}
 			}
 
@@ -1532,6 +1568,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &leafNodeOption{
 				tlsFirstChanged:    handshakeFirstChanged,
 				compressionChanged: compressionChanged,
+				disabledChanged:    disabledChanged,
 			})
 		case "jetstream":
 			new := newValue.(bool)
@@ -1744,6 +1781,8 @@ func copyRemoteLNConfigForReloadCompare(current []*RemoteLeafOpts) []*RemoteLeaf
 		cp.DenyImports, cp.DenyExports = nil, nil
 		// Remove compression mode
 		cp.Compression = CompressionOpts{}
+		// Reset disabled status
+		cp.Disabled = false
 		rlns = append(rlns, &cp)
 	}
 	return rlns

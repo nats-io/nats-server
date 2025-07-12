@@ -177,12 +177,20 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 		return remote
 	}
 	for _, r := range remotes {
+		// We need to call this, even if the leaf is disabled. This is so that
+		// the number of internal configuration matches the options' remote leaf
+		// configuration required for configuration reload.
 		remote := addRemote(r, r.LocalAccount == sysAccName)
-		s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
+		if !r.Disabled {
+			s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
+		}
 	}
 }
 
 func (s *Server) remoteLeafNodeStillValid(remote *leafNodeCfg) bool {
+	if remote.Disabled {
+		return false
+	}
 	for _, ri := range s.getOpts().LeafNode.Remotes {
 		// FIXME(dlc) - What about auth changes?
 		if reflect.DeepEqual(ri.URLs, remote.URLs) {

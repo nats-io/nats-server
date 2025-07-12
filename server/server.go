@@ -30,6 +30,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"runtime/pprof"
@@ -622,6 +623,32 @@ func selectS2AutoModeBasedOnRTT(rtt time.Duration, rttThresholds []time.Duration
 		return CompressionS2Better
 	}
 	return CompressionS2Best
+}
+
+func compressOptsEqual(c1, c2 *CompressionOpts) bool {
+	if c1 == c2 {
+		return true
+	}
+	if (c1 == nil && c2 != nil) || (c1 != nil && c2 == nil) {
+		return false
+	}
+	if c1.Mode != c2.Mode {
+		return false
+	}
+	// For s2_auto, if one has an empty RTTThresholds, it is equivalent
+	// to the defaultCompressionS2AutoRTTThresholds array, so compare with that.
+	if c1.Mode == CompressionS2Auto {
+		if len(c1.RTTThresholds) == 0 && !reflect.DeepEqual(c2.RTTThresholds, defaultCompressionS2AutoRTTThresholds) {
+			return false
+		}
+		if len(c2.RTTThresholds) == 0 && !reflect.DeepEqual(c1.RTTThresholds, defaultCompressionS2AutoRTTThresholds) {
+			return false
+		}
+		if !reflect.DeepEqual(c1.RTTThresholds, c2.RTTThresholds) {
+			return false
+		}
+	}
+	return true
 }
 
 // Returns an array of s2 WriterOption based on the route compression mode.
