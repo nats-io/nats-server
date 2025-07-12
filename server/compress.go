@@ -19,7 +19,8 @@ type snappyPool struct {
 	writers sync.Pool
 }
 
-func (pool *gzipPool) GetWriter(dst io.Writer) (writer *gzip.Writer) {
+func (pool *gzipPool) GetWriter(dst io.Writer) *gzip.Writer {
+	var writer *gzip.Writer
 	if w := pool.writers.Get(); w != nil {
 		writer = w.(*gzip.Writer)
 		writer.Reset(dst)
@@ -35,7 +36,8 @@ func (pool *gzipPool) PutWriter(writer *gzip.Writer) {
 	pool.writers.Put(writer)
 }
 
-func (pool *snappyPool) GetWriter(dst io.Writer) (writer *s2.Writer) {
+func (pool *snappyPool) GetWriter(dst io.Writer) *s2.Writer {
+	var writer *s2.Writer
 	if w := pool.writers.Get(); w != nil {
 		writer = w.(*s2.Writer)
 		writer.Reset(dst)
