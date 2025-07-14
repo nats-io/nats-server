@@ -3063,6 +3063,8 @@ func (mset *stream) setupMirrorConsumer() error {
 					if len(hdr) > 0 {
 						// Remove any Nats-Expected- headers as we don't want to validate them.
 						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
+						// Remove any Nats-Batch- headers, batching is not supported when mirroring.
+						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Batch-")
 					}
 					mset.queueInbound(msgs, subject, reply, hdr, msg, nil, nil)
 					mirror.last.Store(time.Now().UnixNano())
@@ -3648,6 +3650,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		hdr = removeHeaderIfPresent(hdr, JSStreamSource)
 		// Remove any Nats-Expected- headers as we don't want to validate them.
 		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
+		// Remove any Nats-Batch- headers, batching is not supported when sourcing.
+		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Batch-")
 	}
 	// Hold onto the origin reply which has all the metadata.
 	hdr = genHeader(hdr, JSStreamSource, si.genSourceHeader(m.rply))
