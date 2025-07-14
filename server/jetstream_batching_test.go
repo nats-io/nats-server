@@ -790,24 +790,24 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			},
 		},
 		{
-			title: "expect-per-subj-single-batch",
+			title: "expect-per-subj-redundant-in-batch",
 			batch: []BatchItem{
-				// Would normally fail the batch, just drops this.
 				{
 					subject: "foo",
-					header:  nats.Header{JSExpectedLastSubjSeq: {"1"}},
-					err:     errors.New("last sequence by subject mismatch: 1 vs 0"),
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}},
 				},
-				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"0"}}},
 				// Would normally fail the batch, recognize in-process.
 				{
 					subject: "foo",
 					header:  nats.Header{JSExpectedLastSubjSeq: {"1"}},
 					err:     errors.New("last sequence by subject mismatch: 1 vs 0"),
 				},
-				// Seems invalid, but is actually a redundant expected check that matches the state prior to the batch.
-				// It's accepted as normal, just like the first message.
-				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"0"}}},
+				// Redundant expected check results in an error. The subject 'foo' is also updated in the batch.
+				{
+					subject: "foo",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}},
+					err:     errors.New("last sequence by subject mismatch"),
+				},
 			},
 			validate: func(mset *stream, commit bool) {
 				if !commit {
@@ -816,12 +816,12 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				} else {
 					require_Len(t, len(mset.expectedPerSubjectSequence), 1)
 					require_Len(t, len(mset.expectedPerSubjectInProcess), 1)
-					require_Equal(t, mset.expectedPerSubjectSequence[3], "foo")
+					require_Equal(t, mset.expectedPerSubjectSequence[0], "foo")
 				}
 			},
 		},
 		{
-			title: "expect-per-subj-change",
+			title: "expect-per-subj-dupe-in-change",
 			batch: []BatchItem{
 				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"0"}, JSExpectedLastSubjSeqSubj: {"baz"}}},
 				{subject: "bar", header: nats.Header{JSExpectedLastSubjSeq: {"0"}, JSExpectedLastSubjSeqSubj: {"baz"}}},
@@ -835,6 +835,24 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 					require_Len(t, len(mset.expectedPerSubjectInProcess), 1)
 					require_Equal(t, mset.expectedPerSubjectSequence[1], "baz")
 				}
+			},
+		},
+		{
+			title: "expect-per-subj-not-first",
+			batch: []BatchItem{
+				{subject: "foo"},
+				// Mismatch because only the first 'foo' can have the expected check.
+				{
+					subject: "foo",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}},
+					err:     errors.New("last sequence by subject mismatch"),
+				},
+				// Mismatch because only the first 'foo' can have the expected check.
+				{
+					subject: "bar",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}, JSExpectedLastSubjSeqSubj: {"foo"}},
+					err:     errors.New("last sequence by subject mismatch"),
+				},
 			},
 		},
 		{
@@ -888,6 +906,8 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			}
 
 			diff := &batchStagedDiff{}
+			mset.clMu.Lock()
+			defer mset.clMu.Unlock()
 			for _, m := range test.batch {
 				var hdr []byte
 				for key, values := range m.header {
@@ -901,11 +921,15 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				} else {
 					require_True(t, err == nil)
 				}
-				test.validate(mset, false)
+				if test.validate != nil {
+					test.validate(mset, false)
+				}
 				mset.clseq++
 			}
-			diff.commit(mset)
-			test.validate(mset, true)
+			if test.validate != nil {
+				diff.commit(mset)
+				test.validate(mset, true)
+			}
 		})
 	}
 }
@@ -953,4 +977,82 @@ func TestJetStreamAtomicBatchPublishHighLevelRollback(t *testing.T) {
 	_, err = js.PublishMsg(m)
 	require_Error(t, err, NewJSStreamWrongLastSequenceError(0))
 	requireEmpty()
+}
+
+func TestJetStreamAtomicBatchPublishExpectedPerSubject(t *testing.T) {
+	type TestKind int
+	const (
+		OnlyFirst TestKind = iota
+		Redundant
+		NotFirst
+	)
+
+	test := func(t *testing.T, kind TestKind) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			Replicas:           3,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+
+		m := nats.NewMsg("foo")
+		if kind != NotFirst {
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
+		}
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		require_NoError(t, nc.PublishMsg(m))
+
+		var pubAck JSPubAckResponse
+
+		// Redundant expected headers are okay, as long as they reflect the state prior to the batch.
+		m = nats.NewMsg("foo")
+		if kind == Redundant || kind == NotFirst {
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
+		}
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "2")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		rmsg, err := nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		if kind == Redundant || kind == NotFirst {
+			require_NotNil(t, pubAck.Error)
+			require_Error(t, pubAck.Error, NewJSStreamWrongLastSequenceConstantError())
+			return
+		}
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, 3)
+		require_Equal(t, pubAck.BatchSize, 2)
+
+		// The first message still contains the expected headers.
+		rsm, err := js.GetMsg("TEST", 2)
+		require_NoError(t, err)
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), "1")
+		require_Equal(t, rsm.Header.Get("Nats-Expected-Last-Subject-Sequence"), "1")
+
+		// The second message doesn't have the expected headers, as the condition was already checked
+		// and seems inconsistent when getting the message afterward.
+		rsm, err = js.GetMsg("TEST", 3)
+		require_NoError(t, err)
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), "2")
+		require_Equal(t, rsm.Header.Get("Nats-Expected-Last-Subject-Sequence"), _EMPTY_)
+	}
+
+	t.Run("single", func(t *testing.T) { test(t, OnlyFirst) })
+	t.Run("redundant", func(t *testing.T) { test(t, Redundant) })
+	t.Run("not-first", func(t *testing.T) { test(t, NotFirst) })
 }

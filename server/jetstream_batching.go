@@ -15,6 +15,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -77,10 +78,12 @@ func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
 	delete(batches.group, batchId)
 }
 
+// batchStagedDiff stages all changes for consistency checks until commit.
 type batchStagedDiff struct {
 	msgIds             map[string]struct{}
 	counter            map[string]*msgCounterRunningTotal
 	inflight           map[uint64]uint64
+	subjectsInBatch    map[string]struct{}
 	expectedPerSubject map[string]*batchExpectedPerSubject
 }
 
@@ -382,9 +385,17 @@ func checkMsgHeadersPreClusteredProposal(
 				seqSubj = optSubj
 			}
 
-			// If subject is already in process, block as otherwise we could have multiple messages inflight with same subject.
+			// The subject is already written to in this batch, we can't allow
+			// expected checks since they would be incorrect.
+			if _, ok := diff.subjectsInBatch[seqSubj]; ok {
+				err := errors.New("last sequence by subject mismatch")
+				return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
+			}
+
+			// If the subject is already in process, block as otherwise we could have
+			// multiple messages inflight with the same subject.
 			if _, found := mset.expectedPerSubjectInProcess[seqSubj]; found {
-				err := fmt.Errorf("last sequence by subject mismatch")
+				err := errors.New("last sequence by subject mismatch")
 				return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
 			}
 
@@ -394,7 +405,6 @@ func checkMsgHeadersPreClusteredProposal(
 					err := fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, e.sseq)
 					return hdr, msg, 0, NewJSStreamWrongLastSequenceError(e.sseq), err
 				}
-				// FIXME(mvv): if subject already exists, need to still update to latest mset.clseq, but strip check from headers
 				e.clseq = mset.clseq
 			} else {
 				var smv StoreMsg
@@ -419,6 +429,14 @@ func checkMsgHeadersPreClusteredProposal(
 				}
 			}
 		}
+	}
+
+	// Store the subject to ensure other messages in this batch using
+	// an expected check on the same subject fail.
+	if diff.subjectsInBatch == nil {
+		diff.subjectsInBatch = map[string]struct{}{subject: {}}
+	} else {
+		diff.subjectsInBatch[subject] = struct{}{}
 	}
 
 	return hdr, msg, 0, nil, nil
