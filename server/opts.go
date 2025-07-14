@@ -247,6 +247,12 @@ type RemoteLeafOpts struct {
 	// If JetStreamClusterMigrate is set to true, this is the time after which the leader
 	// will be migrated away from this server if still disconnected.
 	JetStreamClusterMigrateDelay time.Duration `json:"jetstream_cluster_migrate_delay,omitempty"`
+
+	// If this is set to true, the connection to this remote will not be solicited.
+	// During a configuration reload, if this is changed from `false` to `true`, the
+	// existing connection will be closed and not solicited again (until it is changed
+	// to `false` again.
+	Disabled bool `json:"-"`
 }
 
 type JSLimitOpts struct {
@@ -2887,6 +2893,8 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				}
 			case "first_info_timeout":
 				remote.FirstInfoTimeout = parseDuration(k, tk, v, errors, warnings)
+			case "disabled":
+				remote.Disabled = v.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
