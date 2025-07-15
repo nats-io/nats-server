@@ -416,7 +416,15 @@ type stream struct {
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
-	batches *batching // Inflight batches prior to committing them.
+	// Inflight batches prior to committing them.
+	batches *batching
+
+	// State to check for batch completeness before applying it.
+	batchMu         sync.Mutex
+	batchId         string
+	batchCount      uint64
+	batchEntries    []*CommittedEntry
+	batchEntryStart int
 }
 
 // msgCounterRunningTotal stores a running total and a number of inflight
