@@ -3040,6 +3040,26 @@ func TestSliceHeader(t *testing.T) {
 	require_True(t, bytes.Equal(sliced, copied))
 }
 
+func TestSliceHeaderOrdering(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// These headers share the same prefix, the longer subject
+	// must not invalidate the existence of the shorter one.
+	hdr = genHeader(hdr, JSExpectedLastSubjSeqSubj, "foo")
+	hdr = genHeader(hdr, JSExpectedLastSubjSeq, "24")
+
+	sliced := sliceHeader(JSExpectedLastSubjSeq, hdr)
+	copied := getHeader(JSExpectedLastSubjSeq, hdr)
+
+	require_NotNil(t, sliced)
+	require_Equal(t, cap(sliced), 2)
+
+	require_NotNil(t, copied)
+	require_Equal(t, cap(copied), len(copied))
+
+	require_True(t, bytes.Equal(sliced, copied))
+}
+
 func TestInProcessAllowedConnectionType(t *testing.T) {
 	tmpl := `
 		listen: "127.0.0.1:-1"
