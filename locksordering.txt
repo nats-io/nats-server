@@ -35,10 +35,12 @@ The "clsMu" lock protects the consumer list on a stream, used for signalling con
 
     stream -> clsMu
 
-The "clMu" and "ddMu" locks protect clustered and dedupe state respectively. The stream lock (`mset.mu`) is optional,
-but if holding "clMu" or "ddMu", locking the stream lock afterward would violate locking order.
+The "clMu", "ddMu" and "batchMu" locks protect clustered, dedupe and batch state respectively.
+The stream lock (`mset.mu`) is optional, but if holding "clMu", "ddMu" or "batchMu",
+locking the stream lock afterward would violate locking order.
 
     stream -> clMu
+    stream -> batchMu -> clMu
     stream -> ddMu
 
 The "mset.batches.mu" lock protects the batching state without needing to hold the stream lock.

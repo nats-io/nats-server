@@ -2761,10 +2761,11 @@ func TestNRGSnapshotRecovery(t *testing.T) {
 	require_NoError(t, n.InstallSnapshot(nil))
 
 	// Restoring the snapshot should not up applied, because the apply queue is async.
-	n.pindex, n.commit, n.applied = 0, 0, 0
+	n.pindex, n.commit, n.processed, n.applied = 0, 0, 0, 0
 	n.setupLastSnapshot()
 	require_Equal(t, n.pindex, 1)
 	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.processed, 0)
 	require_Equal(t, n.applied, 0)
 }
 
@@ -3030,6 +3031,7 @@ func TestNRGSizeAndApplied(t *testing.T) {
 		entries uint64
 		bytes   uint64
 	)
+
 	// Initially our WAL is empty.
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 0)
@@ -3089,6 +3091,7 @@ func TestNRGIgnoreEntryAfterCanceledCatchup(t *testing.T) {
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
+
 	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
 
@@ -3391,6 +3394,69 @@ func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	n.processAppendEntry(aeMsg3, csub)
 	require_Equal(t, n.pindex, 3)
 	require_Equal(t, n.pterm, 20)
+}
+
+func TestNRGProcessed(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 2, entries: entries})
+	aeMsg4 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 4, pterm: 1, pindex: 3, entries: entries})
+	aeMsg5 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 4, entries: entries})
+
+	// Store three entries.
+	for i, aeMsg := range []*appendEntry{aeMsg1, aeMsg2, aeMsg3} {
+		n.processAppendEntry(aeMsg, n.aesub)
+		require_Equal(t, n.pindex, uint64(i+1))
+		require_Equal(t, n.commit, uint64(i+1))
+		require_Equal(t, n.processed, 0)
+		require_Equal(t, n.applied, 0)
+	}
+
+	// n.Processed can move both n.processed and n.applied up, with different values.
+	n.Processed(1, 0)
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.processed, 1)
+	require_Equal(t, n.applied, 0)
+
+	n.Processed(2, 1)
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.processed, 2)
+	require_Equal(t, n.applied, 1)
+
+	// n.Applied moves both n.processed and n.applied up to the same value.
+	n.Applied(3)
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.processed, 3)
+	require_Equal(t, n.applied, 3)
+
+	// Store the remaining messages.
+	for i, aeMsg := range []*appendEntry{aeMsg4, aeMsg5} {
+		n.processAppendEntry(aeMsg, n.aesub)
+		require_Equal(t, n.pindex, uint64(i+4))
+		require_Equal(t, n.commit, uint64(i+4))
+		require_Equal(t, n.processed, 3)
+		require_Equal(t, n.applied, 3)
+	}
+
+	// An invalid processed call with a higher applied should be clamped back down to the processed index.
+	n.Processed(4, 5)
+	require_Equal(t, n.pindex, 5)
+	require_Equal(t, n.commit, 5)
+	require_Equal(t, n.processed, 4)
+	require_Equal(t, n.applied, 4)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before

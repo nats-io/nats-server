@@ -194,6 +194,45 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 	}
 }
 
+type batchApply struct {
+	mu         sync.Mutex
+	id         string            // ID of the current batch.
+	count      uint64            // Number of entries in the batch, for consistency checks.
+	entries    []*CommittedEntry // Previous entries that are part of this batch.
+	entryStart int               // The index into an entry indicating the first message of the batch.
+	maxApplied uint64            // Applied value before the entry containing the first message of the batch.
+}
+
+// clearBatchStateLocked clears in-memory apply-batch-related state.
+// batch.mu lock should be held.
+func (batch *batchApply) clearBatchStateLocked() {
+	batch.id = _EMPTY_
+	batch.count = 0
+	batch.entries = nil
+	batch.entryStart = 0
+	batch.maxApplied = 0
+}
+
+// rejectBatchStateLocked rejects the batch and clears in-memory apply-batch-related state.
+// Corrects mset.clfs to take the failed batch into account.
+// batch.mu lock should be held.
+func (batch *batchApply) rejectBatchStateLocked(mset *stream) {
+	mset.clMu.Lock()
+	mset.clfs += batch.count
+	mset.clMu.Unlock()
+	// We're rejecting the batch, so all entries need to be returned to the pool.
+	for _, bce := range batch.entries {
+		bce.ReturnToPool()
+	}
+	batch.clearBatchStateLocked()
+}
+
+func (batch *batchApply) rejectBatchState(mset *stream) {
+	batch.mu.Lock()
+	defer batch.mu.Unlock()
+	batch.rejectBatchStateLocked(mset)
+}
+
 // checkMsgHeadersPreClusteredProposal checks the message for expected/consistency headers.
 // mset.mu lock must NOT be held or used.
 // mset.clMu lock must be held.
