@@ -114,6 +114,9 @@ const (
 	compressedStreamMsgOp
 	// For sending deleted gaps on catchups for replicas.
 	deleteRangeOp
+	// Batch stream ops.
+	batchMsgOp
+	batchCommitMsgOp
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -2452,13 +2455,20 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						sendSnapshot = false
 					}
 					continue
+				} else if len(ce.Entries) == 0 {
+					// Entry could be empty on a restore when mset is nil.
+					ne, nb = n.Applied(ce.Index)
+					ce.ReturnToPool()
+					continue
 				}
 
 				// Apply our entries.
-				if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
+				if applied, err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 					// Update our applied.
-					ne, nb = n.Applied(ce.Index)
-					ce.ReturnToPool()
+					if applied {
+						ne, nb = n.Applied(ce.Index)
+						ce.ReturnToPool()
+					}
 				} else {
 					// Make sure to clean up.
 					ce.ReturnToPool()
@@ -2918,143 +2928,132 @@ func isControlHdr(hdr []byte) bool {
 }
 
 // Apply our stream entries.
-func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
-	for _, e := range ce.Entries {
+// Return whether the ce is applied and error.
+func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) (bool, error) {
+	mset.batchMu.Lock()
+	batchActiveId := mset.batchId
+	mset.batchMu.Unlock()
+
+	for i, e := range ce.Entries {
+		// Check if a batch is abandoned.
+		if e.Type != EntryNormal && batchActiveId != _EMPTY_ {
+			mset.batchMu.Lock()
+			batchActiveId = _EMPTY_
+			mset.rejectBatchStateLocked()
+			mset.batchMu.Unlock()
+		}
+
 		if e.Type == EntryNormal {
 			buf, op := e.Data, entryOp(e.Data[0])
-			switch op {
-			case streamMsgOp, compressedStreamMsgOp:
-				if mset == nil {
+			if op == batchMsgOp {
+				batchId, batchSeq, _, _, err := decodeBatchMsg(buf[1:])
+				if err != nil {
+					panic(err.Error())
+				}
+				mset.batchMu.Lock()
+				// Previous batch (if any) was abandoned.
+				if batchActiveId != _EMPTY_ && batchId != batchActiveId {
+					mset.rejectBatchStateLocked()
+				}
+				mset.batchCount++
+				// If the sequence is not monotonically increasing/we identify gaps, the batch can't be accepted.
+				if batchSeq != mset.batchCount {
+					batchActiveId = _EMPTY_
+					mset.rejectBatchStateLocked()
+					mset.batchMu.Unlock()
 					continue
 				}
-				s := js.srv
-
-				mbuf := buf[1:]
-				if op == compressedStreamMsgOp {
-					var err error
-					mbuf, err = s2.Decode(nil, mbuf)
-					if err != nil {
-						panic(err.Error())
-					}
+				// If this is the first message in the batch, need to mark the start index.
+				// We'll continue to check batch-completeness and try to find the commit.
+				// At that point we'll commit the whole batch.
+				if batchSeq == 1 {
+					mset.batchEntryStart = i
 				}
-
-				subject, reply, hdr, msg, lseq, ts, sourced, err := decodeStreamMsg(mbuf)
+				mset.batchId, batchActiveId = batchId, batchId
+				mset.batchMu.Unlock()
+				continue
+			} else if op == batchCommitMsgOp {
+				batchId, batchSeq, _, _, err := decodeBatchMsg(buf[1:])
 				if err != nil {
-					if node := mset.raftNode(); node != nil {
-						s.Errorf("JetStream cluster could not decode stream msg for '%s > %s' [%s]",
-							mset.account(), mset.name(), node.Group())
-					}
 					panic(err.Error())
 				}
 
-				// Check for flowcontrol here.
-				if len(msg) == 0 && len(hdr) > 0 && reply != _EMPTY_ && isControlHdr(hdr) {
-					if !isRecovering {
-						mset.sendFlowControlReply(reply)
+				mset.batchMu.Lock()
+				// Previous batch (if any) was abandoned.
+				if batchActiveId != _EMPTY_ && batchId != batchActiveId {
+					mset.rejectBatchStateLocked()
+				}
+
+				var entries []*Entry
+				mset.batchCount++
+				// Detected a gap, reject the batch.
+				if batchSeq != mset.batchCount {
+					batchActiveId = _EMPTY_
+					mset.rejectBatchStateLocked()
+					mset.batchMu.Unlock()
+					continue
+				}
+
+				// Process any entries that are part of this batch but prior to the current one.
+				for j, bce := range mset.batchEntries {
+					if j == 0 {
+						// The first needs only the entries when the batch is started.
+						entries = bce.Entries[mset.batchEntryStart:]
+					} else {
+						// Otherwise, all entries are used.
+						entries = bce.Entries
 					}
-					continue
-				}
-
-				// Grab last sequence and CLFS.
-				last, clfs := mset.lastSeqAndCLFS()
-
-				// We can skip if we know this is less than what we already have.
-				if lseq-clfs < last {
-					s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
-						mset.account(), mset.name(), lseq+1-clfs, last)
-					mset.mu.Lock()
-					// Check for any preAcks in case we are interest based.
-					mset.clearAllPreAcks(lseq + 1 - clfs)
-					mset.mu.Unlock()
-					continue
-				}
-
-				// Skip by hand here since first msg special case.
-				// Reason is sequence is unsigned and for lseq being 0
-				// the lseq under stream would have to be -1.
-				if lseq == 0 && last != 0 {
-					continue
-				}
-
-				// Messages to be skipped have no subject or timestamp or msg or hdr.
-				if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
-					// Skip and update our lseq.
-					last := mset.store.SkipMsg()
-					mset.mu.Lock()
-					mset.setLastSeq(last)
-					mset.clearAllPreAcks(last)
-					mset.mu.Unlock()
-					continue
-				}
-
-				var mt *msgTrace
-				// If not recovering, see if we find a message trace object for this
-				// sequence. Only the leader that has proposed this entry will have
-				// stored the trace info.
-				if !isRecovering {
-					mt = mset.getAndDeleteMsgTrace(lseq)
-				}
-				// Process the actual message here.
-				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
-
-				// If we have inflight make sure to clear after processing.
-				// TODO(dlc) - technically check on inflight != nil could cause datarace.
-				// But do not want to acquire lock since tracking this will be rare.
-				if mset.inflight != nil {
-					mset.clMu.Lock()
-					delete(mset.inflight, lseq)
-					mset.clMu.Unlock()
-				}
-
-				// Update running total for counter.
-				if mset.clusteredCounterTotal != nil {
-					mset.clMu.Lock()
-					if counter, found := mset.clusteredCounterTotal[subject]; found {
-						// Decrement from pending operations. Once it reaches zero, it can be deleted.
-						if counter.ops > 0 {
-							counter.ops--
+					for _, entry := range entries {
+						_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
+						if err != nil {
+							mset.batchMu.Unlock()
+							panic(err.Error())
 						}
-						if counter.ops == 0 {
-							delete(mset.clusteredCounterTotal, subject)
+						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
+							mset.batchMu.Unlock()
+							return false, err
 						}
 					}
-					mset.clMu.Unlock()
+					// Return the entry to the pool now.
+					bce.ReturnToPool()
 				}
-
-				// Clear expected per subject state after processing.
-				if mset.expectedPerSubjectSequence != nil {
-					mset.clMu.Lock()
-					if subj, found := mset.expectedPerSubjectSequence[lseq]; found {
-						delete(mset.expectedPerSubjectSequence, lseq)
-						delete(mset.expectedPerSubjectInProcess, subj)
-					}
-					mset.clMu.Unlock()
+				if len(mset.batchEntries) == 0 {
+					// Get within the same entry, but within the range of this batch.
+					entries = ce.Entries[mset.batchEntryStart : i+1]
+				} else {
+					// Get all entries up to and including the current one.
+					entries = ce.Entries[:i+1]
 				}
-
-				if err != nil {
-					if err == errLastSeqMismatch {
-
-						var state StreamState
-						mset.store.FastState(&state)
-
-						// If we have no msgs and the other side is delivering us a sequence past where we
-						// should be reset. This is possible if the other side has a stale snapshot and no longer
-						// has those messages. So compact and retry to reset.
-						if state.Msgs == 0 {
-							mset.store.Compact(lseq + 1)
-							// Retry
-							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
-						}
-						// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
-						// and what we got.
+				// Process remaining entries in the current entry.
+				for _, entry := range entries {
+					_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
+					if err != nil {
+						mset.batchMu.Unlock()
+						panic(err.Error())
 					}
-
-					// Only return in place if we are going to reset our stream or we are out of space, or we are closed.
-					if isClusterResetErr(err) || isOutOfSpaceErr(err) || err == errStreamClosed {
-						return err
+					if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
+						mset.batchMu.Unlock()
+						return false, err
 					}
-					s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
-						mset.account(), mset.name(), err)
+				}
+				// Clear state, batch was successful.
+				batchActiveId = _EMPTY_
+				mset.clearBatchStateLocked()
+				mset.batchMu.Unlock()
+				continue
+			} else if batchActiveId != _EMPTY_ {
+				// If a batch is abandoned without a commit, reject it.
+				mset.batchMu.Lock()
+				batchActiveId = _EMPTY_
+				mset.rejectBatchStateLocked()
+				mset.batchMu.Unlock()
+			}
+
+			switch op {
+			case streamMsgOp, compressedStreamMsgOp:
+				mbuf := buf[1:]
+				if err := js.applyStreamMsgOp(mset, op, mbuf, isRecovering); err != nil {
+					return false, err
 				}
 
 			case deleteMsgOp:
@@ -3078,7 +3077,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Cluster reset error.
 				if err == ErrStoreEOF {
-					return err
+					return false, err
 				}
 
 				if err != nil && !isRecovering {
@@ -3150,10 +3149,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", op))
 			}
 		} else if e.Type == EntrySnapshot {
-			if mset == nil {
-				continue
-			}
-
 			// Everything operates on new replicated state. Will convert legacy snapshots to this for processing.
 			var ss *StreamReplicatedState
 
@@ -3175,13 +3170,13 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				ss, err = DecodeStreamState(e.Data)
 				if err != nil {
 					onBadState(err)
-					return err
+					return false, err
 				}
 			} else {
 				var snap streamSnapshot
 				if err := json.Unmarshal(e.Data, &snap); err != nil {
 					onBadState(err)
-					return err
+					return false, err
 				}
 				// Convert over to StreamReplicatedState
 				ss = &StreamReplicatedState{
@@ -3198,7 +3193,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 			if isRecovering || !mset.IsLeader() {
 				if err := mset.processSnapshot(ss, ce.Index); err != nil {
-					return err
+					return false, err
 				}
 			}
 		} else if e.Type == EntryRemovePeer {
@@ -3222,6 +3217,169 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 			}
 		}
+	}
+
+	// If we're still actively processing a batch, must store the entry in-memory
+	// to come back to it later once we find the commit.
+	if batchActiveId != _EMPTY_ {
+		mset.batchMu.Lock()
+		if mset.batchEntries == nil {
+			mset.batchEntries = []*CommittedEntry{ce}
+		} else {
+			mset.batchEntries = append(mset.batchEntries, ce)
+		}
+		mset.batchMu.Unlock()
+	}
+	return batchActiveId == _EMPTY_, nil
+}
+
+// clearBatchStateLocked clears in-memory apply-batch-related state.
+// mset.batchMu lock should be held.
+func (mset *stream) clearBatchStateLocked() {
+	mset.batchId = _EMPTY_
+	mset.batchCount = 0
+	mset.batchEntries = nil
+	mset.batchEntryStart = 0
+}
+
+// rejectBatchStateLocked rejects the batch and clears in-memory apply-batch-related state.
+// Corrects mset.clfs to take the failed batch into account.
+// mset.batchMu lock should be held.
+func (mset *stream) rejectBatchStateLocked() {
+	mset.clMu.Lock()
+	mset.clfs += mset.batchCount
+	mset.clMu.Unlock()
+	mset.clearBatchStateLocked()
+}
+
+func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isRecovering bool) error {
+	s := js.srv
+
+	if op == compressedStreamMsgOp {
+		var err error
+		mbuf, err = s2.Decode(nil, mbuf)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+
+	subject, reply, hdr, msg, lseq, ts, sourced, err := decodeStreamMsg(mbuf)
+	if err != nil {
+		if node := mset.raftNode(); node != nil {
+			s.Errorf("JetStream cluster could not decode stream msg for '%s > %s' [%s]",
+				mset.account(), mset.name(), node.Group())
+		}
+		panic(err.Error())
+	}
+
+	// Check for flowcontrol here.
+	if len(msg) == 0 && len(hdr) > 0 && reply != _EMPTY_ && isControlHdr(hdr) {
+		if !isRecovering {
+			mset.sendFlowControlReply(reply)
+		}
+		return nil
+	}
+
+	// Grab last sequence and CLFS.
+	last, clfs := mset.lastSeqAndCLFS()
+
+	// We can skip if we know this is less than what we already have.
+	if lseq-clfs < last {
+		s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
+			mset.account(), mset.name(), lseq+1-clfs, last)
+		mset.mu.Lock()
+		// Check for any preAcks in case we are interest based.
+		mset.clearAllPreAcks(lseq + 1 - clfs)
+		mset.mu.Unlock()
+		return nil
+	}
+
+	// Skip by hand here since first msg special case.
+	// Reason is sequence is unsigned and for lseq being 0
+	// the lseq under stream would have to be -1.
+	if lseq == 0 && last != 0 {
+		return nil
+	}
+
+	// Messages to be skipped have no subject or timestamp or msg or hdr.
+	if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
+		// Skip and update our lseq.
+		last := mset.store.SkipMsg()
+		mset.mu.Lock()
+		mset.setLastSeq(last)
+		mset.clearAllPreAcks(last)
+		mset.mu.Unlock()
+		return nil
+	}
+
+	var mt *msgTrace
+	// If not recovering, see if we find a message trace object for this
+	// sequence. Only the leader that has proposed this entry will have
+	// stored the trace info.
+	if !isRecovering {
+		mt = mset.getAndDeleteMsgTrace(lseq)
+	}
+	// Process the actual message here.
+	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+
+	// If we have inflight make sure to clear after processing.
+	// TODO(dlc) - technically check on inflight != nil could cause datarace.
+	// But do not want to acquire lock since tracking this will be rare.
+	if mset.inflight != nil {
+		mset.clMu.Lock()
+		delete(mset.inflight, lseq)
+		mset.clMu.Unlock()
+	}
+
+	// Update running total for counter.
+	if mset.clusteredCounterTotal != nil {
+		mset.clMu.Lock()
+		if counter, found := mset.clusteredCounterTotal[subject]; found {
+			// Decrement from pending operations. Once it reaches zero, it can be deleted.
+			if counter.ops > 0 {
+				counter.ops--
+			}
+			if counter.ops == 0 {
+				delete(mset.clusteredCounterTotal, subject)
+			}
+		}
+		mset.clMu.Unlock()
+	}
+
+	// Clear expected per subject state after processing.
+	if mset.expectedPerSubjectSequence != nil {
+		mset.clMu.Lock()
+		if subj, found := mset.expectedPerSubjectSequence[lseq]; found {
+			delete(mset.expectedPerSubjectSequence, lseq)
+			delete(mset.expectedPerSubjectInProcess, subj)
+		}
+		mset.clMu.Unlock()
+	}
+
+	if err != nil {
+		if err == errLastSeqMismatch {
+
+			var state StreamState
+			mset.store.FastState(&state)
+
+			// If we have no msgs and the other side is delivering us a sequence past where we
+			// should be reset. This is possible if the other side has a stale snapshot and no longer
+			// has those messages. So compact and retry to reset.
+			if state.Msgs == 0 {
+				mset.store.Compact(lseq + 1)
+				// Retry
+				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+			}
+			// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
+			// and what we got.
+		}
+
+		// Only return in place if we are going to reset our stream or we are out of space, or we are closed.
+		if isClusterResetErr(err) || isOutOfSpaceErr(err) || err == errStreamClosed {
+			return err
+		}
+		s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
+			mset.account(), mset.name(), err)
 	}
 	return nil
 }
@@ -7842,6 +8000,29 @@ func decodeStreamMsg(buf []byte) (subject, reply string, hdr, msg []byte, lseq u
 	return subject, reply, hdr, msg, lseq, ts, sourced, nil
 }
 
+func decodeBatchMsg(buf []byte) (batchId string, batchSeq uint64, op entryOp, mbuf []byte, err error) {
+	var le = binary.LittleEndian
+	if len(buf) < 2 {
+		return _EMPTY_, 0, 0, nil, errBadStreamMsg
+	}
+	bl := int(le.Uint16(buf))
+	buf = buf[2:]
+	if len(buf) < bl {
+		return _EMPTY_, 0, 0, nil, errBadStreamMsg
+	}
+	batchId = string(buf[:bl])
+	buf = buf[bl:]
+	var n int
+	batchSeq, n = binary.Uvarint(buf)
+	if n <= 0 {
+		return _EMPTY_, 0, 0, nil, errBadStreamMsg
+	}
+	buf = buf[n:]
+	op = entryOp(buf[0])
+	mbuf = buf[1:]
+	return batchId, batchSeq, op, mbuf, nil
+}
+
 // Flags for encodeStreamMsg/decodeStreamMsg.
 const (
 	msgFlagFromSourceOrMirror uint64 = 1 << iota
@@ -7851,12 +8032,16 @@ func encodeStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int
 	return encodeStreamMsgAllowCompress(subject, reply, hdr, msg, lseq, ts, sourced)
 }
 
+func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, sourced bool) []byte {
+	return encodeStreamMsgAllowCompressAndBatch(subject, reply, hdr, msg, lseq, ts, sourced, _EMPTY_, 0, false)
+}
+
 // Threshold for compression.
 // TODO(dlc) - Eventually make configurable.
 const compressThreshold = 8192 // 8k
 
 // If allowed and contents over the threshold we will compress.
-func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, sourced bool) []byte {
+func encodeStreamMsgAllowCompressAndBatch(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, sourced bool, batchId string, batchSeq uint64, batchCommit bool) []byte {
 	// Clip the subject, reply, header and msgs down. Operate on
 	// uint64 lengths to avoid overflowing.
 	slen := min(uint64(len(subject)), math.MaxUint16)
@@ -7869,15 +8054,34 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 	elen := int(1 + 8 + 8 + total)
 	elen += (2 + 2 + 2 + 4 + 8) // Encoded lengths, 4bytes, flags are up to 8 bytes
 
+	blen := min(uint64(len(batchId)), math.MaxUint16)
+	if batchId != _EMPTY_ {
+		elen += int(2 + blen + 8) // length of batchId, batchId itself, batchSeq (up to 8 bytes)
+	}
+
 	var flags uint64
 	if sourced {
 		flags |= msgFlagFromSourceOrMirror
 	}
 
-	buf := make([]byte, 1, elen)
-	buf[0] = byte(streamMsgOp)
-
 	var le = binary.LittleEndian
+	var opIndex int
+	buf := make([]byte, 1, elen)
+	if batchId != _EMPTY_ {
+		if batchCommit {
+			buf[0] = byte(batchCommitMsgOp)
+		} else {
+			buf[0] = byte(batchMsgOp)
+		}
+		buf = le.AppendUint16(buf, uint16(blen))
+		buf = append(buf, batchId[:blen]...)
+		buf = binary.AppendUvarint(buf, batchSeq)
+		opIndex = len(buf)
+		buf = append(buf, byte(streamMsgOp))
+	} else {
+		buf[opIndex] = byte(streamMsgOp)
+	}
+
 	buf = le.AppendUint64(buf, lseq)
 	buf = le.AppendUint64(buf, uint64(ts))
 	buf = le.AppendUint16(buf, uint16(slen))
@@ -7893,12 +8097,15 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 	// Check if we should compress.
 	if shouldCompress {
 		nbuf := make([]byte, s2.MaxEncodedLen(elen))
-		nbuf[0] = byte(compressedStreamMsgOp)
-		ebuf := s2.Encode(nbuf[1:], buf[1:])
+		if opIndex > 0 {
+			copy(nbuf[:opIndex], buf[:opIndex])
+		}
+		nbuf[opIndex] = byte(compressedStreamMsgOp)
+		ebuf := s2.Encode(nbuf[opIndex+1:], buf[opIndex+1:])
 		// Only pay the cost of decode on the other side if we compressed.
 		// S2 will allow us to try without major penalty for non-compressable data.
 		if len(ebuf) < len(buf) {
-			buf = nbuf[:len(ebuf)+1]
+			buf = nbuf[:len(ebuf)+opIndex+1]
 		}
 	}
 
@@ -8239,14 +8446,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			if seq == batchSeq {
 				_reply = reply
 			}
-			esm := encodeStreamMsgAllowCompress(bsubj, _reply, bhdr, bmsg, mset.clseq, ts, sourced)
+			esm := encodeStreamMsgAllowCompressAndBatch(bsubj, _reply, bhdr, bmsg, mset.clseq, ts, sourced, batchId, seq, seq == batchSeq)
 			entries = append(entries, newEntry(EntryNormal, esm))
 			mset.clseq++
 			sz += len(esm)
 		}
 
-		// Do proposal.
-		// TODO(mvv): replace with individual `node.Propose`?
+		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order
+		// and not interleaved with other proposals.
 		if err := node.ProposeMulti(entries); err == nil {
 			mset.trackReplicationTraffic(node, sz, r)
 		} else {
