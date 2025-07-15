@@ -2252,6 +2252,7 @@ type LeafzOptions struct {
 
 // LeafInfo has detailed information on each remote leafnode connection.
 type LeafInfo struct {
+	ID          uint64   `json:"id"`
 	Name        string   `json:"name"`
 	IsSpoke     bool     `json:"is_spoke"`
 	Account     string   `json:"account"`
@@ -2294,6 +2295,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 		for _, ln := range lconns {
 			ln.mu.Lock()
 			lni := &LeafInfo{
+				ID:          ln.cid,
 				Name:        ln.leaf.remoteServer,
 				IsSpoke:     ln.isSpokeLeafNode(),
 				Account:     ln.acc.Name,
