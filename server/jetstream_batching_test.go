@@ -18,6 +18,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -633,4 +634,105 @@ func TestJetStreamAtomicBatchPublishProposeMultiplePartialBatches(t *testing.T) 
 			require_Equal(t, pubAck.Sequence, uint64(2+batchSize))
 		})
 	}
+}
+
+// Test a continuous flow of batches spanning multiple append entries can still move applied up.
+// Also, test a server can become leader if the previous leader left it with a partial batch.
+func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Replicas:           3,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	n := mset.raftNode().(*raft)
+	index, commit, applied := n.Progress()
+
+	// The first batch spans two append entries, but commits.
+	mset.clMu.Lock()
+	hdr := genHeader(nil, "Nats-Batch-Id", "ID_1")
+	hdr = setHeader("Nats-Batch-Sequence", "1", hdr)
+	esm := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID_1", 1, false)
+	mset.clseq++
+	mset.clMu.Unlock()
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, esm)})
+
+	var entries []*Entry
+	mset.clMu.Lock()
+	hdr = genHeader(nil, "Nats-Batch-Id", "ID_1")
+	hdr = setHeader("Nats-Batch-Sequence", "2", hdr)
+	hdr = setHeader("Nats-Batch-Commit", "1", hdr)
+	esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID_1", 2, true)
+	mset.clseq++
+
+	// The second batch doesn't commit.
+	entries = append(entries, newEntry(EntryNormal, esm))
+	hdr = genHeader(nil, "Nats-Batch-Id", "ID_2")
+	hdr = setHeader("Nats-Batch-Sequence", "1", hdr)
+	esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID_2", 1, false)
+	mset.clseq++
+	entries = append(entries, newEntry(EntryNormal, esm))
+	mset.clMu.Unlock()
+	n.sendAppendEntry(entries)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		n.RLock()
+		nindex, ncommit, processed, napplied := n.pindex, n.commit, n.processed, n.applied
+		n.RUnlock()
+		if nindex == index {
+			return errors.New("index not updated")
+		} else if ncommit == commit {
+			return errors.New("commit not updated")
+		} else if napplied == applied {
+			return errors.New("applied not updated")
+		} else if napplied == ncommit {
+			return errors.New("applied should not be able to equal commit yet")
+		} else if processed != ncommit {
+			return errors.New("must have processed all commits")
+		}
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Followers are now stranded with a partial batch, one needs to become leader
+	// and have the batch be rejected since it was partially proposed.
+	sl.Shutdown()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Confirm the last batch gets rejected, and we are still able to publish with quorum.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 4)
+
+	c.restartServer(sl)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Publish again, now with all servers online.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 5)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
 }
