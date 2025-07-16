@@ -3672,6 +3672,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	hasResponded := sa.responded
 	sa.responded = true
 	recovering := sa.recovering
+	cc := js.cluster
+	meta := cc.meta
 	js.mu.Unlock()
 
 	mset, err := acc.lookupStream(cfg.Name)
@@ -3779,6 +3781,89 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		return
 	}
 
+	// Remap consumers if needed.
+	// We stage consumer updates and do them after the stream update.
+	var consumers []*consumerAssignment
+	js.mu.Lock()
+	isScaleUp := cfg.Replicas > osa.Config.Replicas
+	for _, ca := range osa.consumers {
+		// Legacy ephemerals are R=1 but present as R=0, so only auto-remap named consumers, or if we are downsizing the consumer peers.
+		// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
+		numPeers := len(ca.Group.Peers)
+		isAutoScale := ca.Config.Replicas == 0 && (ca.Config.Durable != _EMPTY_ || ca.Config.Name != _EMPTY_)
+		if isAutoScale || numPeers > len(rg.Peers) || cfg.Retention != LimitsPolicy {
+			cca := ca.copyGroup()
+			// Adjust preferred as needed.
+			if numPeers == 1 && isScaleUp {
+				cca.Group.Preferred = ca.Group.Peers[0]
+			} else {
+				cca.Group.Preferred = _EMPTY_
+			}
+			// Assign new peers.
+			cca.Group.Peers = rg.Peers
+			// If the replicas was not 0 make sure it matches here.
+			if cca.Config.Replicas != 0 {
+				cca.Config.Replicas = len(rg.Peers)
+			}
+			// We can not propose here before the stream itself so we collect them.
+			consumers = append(consumers, cca)
+
+		} else if !isScaleUp {
+			// We decided to leave this consumer's peer group alone but we are also scaling down.
+			// We need to make sure we do not have any peers that are no longer part of the stream.
+			// Note we handle down scaling of a consumer above if its number of peers were > new stream peers.
+			var needReplace []string
+			for _, rp := range ca.Group.Peers {
+				// Check if we have an orphaned peer now for this consumer.
+				if !rg.isMember(rp) {
+					needReplace = append(needReplace, rp)
+				}
+			}
+			if len(needReplace) > 0 {
+				newPeers := copyStrings(rg.Peers)
+				rand.Shuffle(len(newPeers), func(i, j int) { newPeers[i], newPeers[j] = newPeers[j], newPeers[i] })
+				// If we had a small size then the peer set, restrict to the same number.
+				if lp := len(ca.Group.Peers); lp < len(newPeers) {
+					newPeers = newPeers[:lp]
+				}
+				cca := ca.copyGroup()
+				// Assign new peers.
+				cca.Group.Peers = newPeers
+				// If the replicas was not 0 make sure it matches here.
+				if cca.Config.Replicas != 0 {
+					cca.Config.Replicas = len(newPeers)
+				}
+				// Check if all peers are invalid. This can happen with R1 under replicated streams that are being scaled down.
+				if len(needReplace) == len(ca.Group.Peers) {
+					// We have to transfer state to new peers.
+					// we will grab our state and attach to the new assignment.
+					// TODO(dlc) - In practice we would want to make sure the consumer is paused.
+					// Need to release js lock.
+					js.mu.Unlock()
+					if ci, err := sysRequest[ConsumerInfo](s, clusterConsumerInfoT, acc, osa.Config.Name, ca.Name); err != nil {
+						s.Warnf("Did not receive consumer info results for '%s > %s > %s' due to: %s", acc, osa.Config.Name, ca.Name, err)
+					} else if ci != nil {
+						cca.State = &ConsumerState{
+							Delivered: SequencePair{
+								Consumer: ci.Delivered.Consumer,
+								Stream:   ci.Delivered.Stream,
+							},
+							AckFloor: SequencePair{
+								Consumer: ci.AckFloor.Consumer,
+								Stream:   ci.AckFloor.Stream,
+							},
+						}
+					}
+					// Re-acquire here.
+					js.mu.Lock()
+				}
+				// We can not propose here before the stream itself so we collect them.
+				consumers = append(consumers, cca)
+			}
+		}
+	}
+	js.mu.Unlock()
+
 	// Send our response.
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 	msetCfg := mset.config()
@@ -3793,6 +3878,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+
+	// Process any staged consumer updates.
+	for _, ca := range consumers {
+		meta.ForwardProposal(encodeAddConsumerAssignment(ca))
+	}
 }
 
 // processClusterCreateStream is called when we have a stream assignment that
@@ -6631,85 +6721,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 			rg.Peers = selected
 		}
-
-		// Need to remap any consumers.
-		for _, ca := range osa.consumers {
-			// Legacy ephemerals are R=1 but present as R=0, so only auto-remap named consumers, or if we are downsizing the consumer peers.
-			// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
-			numPeers := len(ca.Group.Peers)
-			isAutoScale := ca.Config.Replicas == 0 && (ca.Config.Durable != _EMPTY_ || ca.Config.Name != _EMPTY_)
-			if isAutoScale || numPeers > len(rg.Peers) || cfg.Retention != LimitsPolicy {
-				cca := ca.copyGroup()
-				// Adjust preferred as needed.
-				if numPeers == 1 && isScaleUp {
-					cca.Group.Preferred = ca.Group.Peers[0]
-				} else {
-					cca.Group.Preferred = _EMPTY_
-				}
-				// Assign new peers.
-				cca.Group.Peers = rg.Peers
-				// If the replicas was not 0 make sure it matches here.
-				if cca.Config.Replicas != 0 {
-					cca.Config.Replicas = len(rg.Peers)
-				}
-				// We can not propose here before the stream itself so we collect them.
-				consumers = append(consumers, cca)
-
-			} else if !isScaleUp {
-				// We decided to leave this consumer's peer group alone but we are also scaling down.
-				// We need to make sure we do not have any peers that are no longer part of the stream.
-				// Note we handle down scaling of a consumer above if its number of peers were > new stream peers.
-				var needReplace []string
-				for _, rp := range ca.Group.Peers {
-					// Check if we have an orphaned peer now for this consumer.
-					if !rg.isMember(rp) {
-						needReplace = append(needReplace, rp)
-					}
-				}
-				if len(needReplace) > 0 {
-					newPeers := copyStrings(rg.Peers)
-					rand.Shuffle(len(newPeers), func(i, j int) { newPeers[i], newPeers[j] = newPeers[j], newPeers[i] })
-					// If we had a small size then the peer set, restrict to the same number.
-					if lp := len(ca.Group.Peers); lp < len(newPeers) {
-						newPeers = newPeers[:lp]
-					}
-					cca := ca.copyGroup()
-					// Assign new peers.
-					cca.Group.Peers = newPeers
-					// If the replicas was not 0 make sure it matches here.
-					if cca.Config.Replicas != 0 {
-						cca.Config.Replicas = len(newPeers)
-					}
-					// Check if all peers are invalid. This can happen with R1 under replicated streams that are being scaled down.
-					if len(needReplace) == len(ca.Group.Peers) {
-						// We have to transfer state to new peers.
-						// we will grab our state and attach to the new assignment.
-						// TODO(dlc) - In practice we would want to make sure the consumer is paused.
-						// Need to release js lock.
-						js.mu.Unlock()
-						if ci, err := sysRequest[ConsumerInfo](s, clusterConsumerInfoT, acc, osa.Config.Name, ca.Name); err != nil {
-							s.Warnf("Did not receive consumer info results for '%s > %s > %s' due to: %s", acc, osa.Config.Name, ca.Name, err)
-						} else if ci != nil {
-							cca.State = &ConsumerState{
-								Delivered: SequencePair{
-									Consumer: ci.Delivered.Consumer,
-									Stream:   ci.Delivered.Stream,
-								},
-								AckFloor: SequencePair{
-									Consumer: ci.AckFloor.Consumer,
-									Stream:   ci.AckFloor.Stream,
-								},
-							}
-						}
-						// Re-acquire here.
-						js.mu.Lock()
-					}
-					// We can not propose here before the stream itself so we collect them.
-					consumers = append(consumers, cca)
-				}
-			}
-		}
-
 	} else if isMoveRequest {
 		if len(peerSet) == 0 {
 			nrg, err := js.createGroupForStream(ci, newCfg)
@@ -6720,14 +6731,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 			// filter peers present in both sets
 			for _, peer := range rg.Peers {
-				found := false
-				for _, newPeer := range nrg.Peers {
-					if peer == newPeer {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !slices.Contains(nrg.Peers, peer) {
 					peerSet = append(peerSet, peer)
 				}
 			}
@@ -6769,14 +6773,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 			// make sure it overlaps with peers and remove if not
 			if cca.Group.Preferred != _EMPTY_ {
-				found := false
-				for _, p := range cca.Group.Peers {
-					if p == cca.Group.Preferred {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !slices.Contains(cca.Group.Peers, cca.Group.Preferred) {
 					cca.Group.Preferred = _EMPTY_
 				}
 			}
@@ -6791,9 +6788,9 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	sa := &streamAssignment{Group: rg, Sync: osa.Sync, Created: osa.Created, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
 	meta.Propose(encodeUpdateStreamAssignment(sa))
 
-	// Process any staged consumers.
+	// Process any staged consumers for moves/cancels only.
 	for _, ca := range consumers {
-		meta.Propose(encodeAddConsumerAssignment(ca))
+		meta.ForwardProposal(encodeAddConsumerAssignment(ca))
 	}
 }
 
