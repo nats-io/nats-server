@@ -9726,3 +9726,42 @@ func TestFileStoreFirstMatchingMultiExpiry(t *testing.T) {
 		require_True(t, didLoad) // last message, should expire
 	})
 }
+
+func TestFileStoreNoPanicOnRecoverTTLWithCorruptBlocks(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage, AllowMsgTTL: true}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		hdr := genHeader(nil, JSMessageTTL, "1")
+		for i := range 3 {
+			if i > 0 {
+				_, err = fs.newMsgBlockForWrite()
+				require_NoError(t, err)
+			}
+			_, _, err = fs.StoreMsg("foo", hdr, []byte("A"), 1)
+			require_NoError(t, err)
+		}
+
+		fs.mu.Lock()
+		if blks := len(fs.blks); blks != 3 {
+			fs.mu.Unlock()
+			t.Fatalf("Expected 3 blocks, got %d", blks)
+		}
+
+		// Manually corrupt the blocks by removing the second and changing the
+		// sequence range for the last to that of the first.
+		fmb := fs.blks[0]
+		smb := fs.blks[1]
+		lmb := fs.lmb
+		fseq, lseq := atomic.LoadUint64(&fmb.first.seq), atomic.LoadUint64(&fmb.last.seq)
+		smb.mu.Lock()
+		fs.removeMsgBlock(smb)
+		smb.mu.Unlock()
+		fs.mu.Unlock()
+		atomic.StoreUint64(&lmb.first.seq, fseq)
+		atomic.StoreUint64(&lmb.last.seq, lseq)
+
+		require_NoError(t, fs.recoverTTLState())
+	})
+}
