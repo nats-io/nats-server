@@ -1447,33 +1447,33 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 
 	</div>
 	<br/>
-	<a href=.%s>General</a>
-	<a href=.%s>JetStream</a>
-	<a href=.%s>Connections</a>
-	<a href=.%s>Accounts</a>
-	<a href=.%s>Account Stats</a>
-	<a href=.%s>Subscriptions</a>
-	<a href=.%s>Routes</a>
-	<a href=.%s>LeafNodes</a>
-	<a href=.%s>Gateways</a>
-	<a href=.%s>Raft Groups</a>
-	<a href=.%s class=last>Health Probe</a>
+	<a href=.%s>General (%s)</a>
+	<a href=.%s>JetStream (%s)</a>
+	<a href=.%s>Connections (%s)</a>
+	<a href=.%s>Accounts (%s)</a>
+	<a href=.%s>Account Stats (%s)</a>
+	<a href=.%s>Subscriptions (%s)</a>
+	<a href=.%s>Routes (%s)</a>
+	<a href=.%s>LeafNodes (%s)</a>
+	<a href=.%s>Gateways (%s)</a>
+	<a href=.%s>Raft Groups (%s)</a>
+	<a href=.%s class=last>Health Probe (%s)</a>
     <a href=https://docs.nats.io/running-a-nats-service/nats_admin/monitoring class="help">Help</a>
   </body>
 </html>`,
 		srcUrl,
 		VERSION,
-		s.basePath(VarzPath),
-		s.basePath(JszPath),
-		s.basePath(ConnzPath),
-		s.basePath(AccountzPath),
-		s.basePath(AccountStatzPath),
-		s.basePath(SubszPath),
-		s.basePath(RoutezPath),
-		s.basePath(LeafzPath),
-		s.basePath(GatewayzPath),
-		s.basePath(RaftzPath),
-		s.basePath(HealthzPath),
+		s.basePath(VarzPath), VarzPath,
+		s.basePath(JszPath), JszPath,
+		s.basePath(ConnzPath), ConnzPath,
+		s.basePath(AccountzPath), AccountzPath,
+		s.basePath(AccountStatzPath), AccountStatzPath,
+		s.basePath(SubszPath), SubszPath,
+		s.basePath(RoutezPath), RoutezPath,
+		s.basePath(LeafzPath), LeafzPath,
+		s.basePath(GatewayzPath), GatewayzPath,
+		s.basePath(RaftzPath), RaftzPath,
+		s.basePath(HealthzPath), HealthzPath,
 	)
 }
 
