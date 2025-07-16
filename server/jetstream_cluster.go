@@ -3016,8 +3016,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						}
 						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
 							mset.batchMu.Unlock()
-							// Make sure to return previous entries to the pool on error.
-							bce.ReturnToPool()
+							// Make sure to return remaining entries to the pool on an error.
+							for _, nce := range mset.batchEntries[j:] {
+								nce.ReturnToPool()
+							}
 							return 0, err
 						}
 					}
@@ -3259,6 +3261,10 @@ func (mset *stream) rejectBatchStateLocked() {
 	mset.clMu.Lock()
 	mset.clfs += mset.batchCount
 	mset.clMu.Unlock()
+	// We're rejecting the batch, so all entries need to be returned to the pool.
+	for _, bce := range mset.batchEntries {
+		bce.ReturnToPool()
+	}
 	mset.clearBatchStateLocked()
 }
 
