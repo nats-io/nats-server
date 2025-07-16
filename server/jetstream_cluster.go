@@ -2487,9 +2487,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				}
 
 				// Apply our entries.
-				if applied, err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
+				if maxApplied, err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 					// Update our applied.
-					if applied {
+					if maxApplied > 0 {
+						// Indicate we've processed (but not applied) everything up to this point.
+						ne, nb = n.Processed(ce.Index, min(maxApplied, ce.Index))
+						// Don't return entry to the pool, this is handled by the in-progress batch.
+					} else {
 						ne, nb = n.Applied(ce.Index)
 						ce.ReturnToPool()
 					}
@@ -2952,8 +2956,8 @@ func isControlHdr(hdr []byte) bool {
 }
 
 // Apply our stream entries.
-// Return whether the ce is applied and error.
-func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) (bool, error) {
+// Return maximum allowed applied value, if currently inside a batch, zero otherwise.
+func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) (uint64, error) {
 	mset.batchMu.Lock()
 	batchActiveId := mset.batchId
 	mset.batchMu.Unlock()
@@ -2992,6 +2996,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// At that point we'll commit the whole batch.
 				if batchSeq == 1 {
 					mset.batchEntryStart = i
+					mset.batchMaxApplied = ce.Index - 1
 				}
 				mset.batchId, batchActiveId = batchId, batchId
 				mset.batchMu.Unlock()
@@ -3035,7 +3040,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						}
 						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
 							mset.batchMu.Unlock()
-							return false, err
+							// Make sure to return previous entries to the pool on error.
+							bce.ReturnToPool()
+							return 0, err
 						}
 					}
 					// Return the entry to the pool now.
@@ -3057,7 +3064,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					}
 					if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
 						mset.batchMu.Unlock()
-						return false, err
+						return 0, err
 					}
 				}
 				// Clear state, batch was successful.
@@ -3077,7 +3084,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			case streamMsgOp, compressedStreamMsgOp:
 				mbuf := buf[1:]
 				if err := js.applyStreamMsgOp(mset, op, mbuf, isRecovering); err != nil {
-					return false, err
+					return 0, err
 				}
 
 			case deleteMsgOp:
@@ -3101,7 +3108,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Cluster reset error.
 				if err == ErrStoreEOF {
-					return false, err
+					return 0, err
 				}
 
 				if err != nil && !isRecovering {
@@ -3194,13 +3201,13 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				ss, err = DecodeStreamState(e.Data)
 				if err != nil {
 					onBadState(err)
-					return false, err
+					return 0, err
 				}
 			} else {
 				var snap streamSnapshot
 				if err := json.Unmarshal(e.Data, &snap); err != nil {
 					onBadState(err)
-					return false, err
+					return 0, err
 				}
 				// Convert over to StreamReplicatedState
 				ss = &StreamReplicatedState{
@@ -3217,7 +3224,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 			if isRecovering || !mset.IsLeader() {
 				if err := mset.processSnapshot(ss, ce.Index); err != nil {
-					return false, err
+					return 0, err
 				}
 			}
 		} else if e.Type == EntryRemovePeer {
@@ -3252,9 +3259,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 		} else {
 			mset.batchEntries = append(mset.batchEntries, ce)
 		}
+		maxApplied := mset.batchMaxApplied
 		mset.batchMu.Unlock()
+		return maxApplied, nil
 	}
-	return batchActiveId == _EMPTY_, nil
+	return 0, nil
 }
 
 // clearBatchStateLocked clears in-memory apply-batch-related state.
@@ -3264,6 +3273,7 @@ func (mset *stream) clearBatchStateLocked() {
 	mset.batchCount = 0
 	mset.batchEntries = nil
 	mset.batchEntryStart = 0
+	mset.batchMaxApplied = 0
 }
 
 // rejectBatchStateLocked rejects the batch and clears in-memory apply-batch-related state.
@@ -3487,7 +3497,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		}
 
 		// Clear clseq. If we become leader again, it will be fixed up
-		// automatically on the next processClusteredInboundMsg call.
+		// automatically on the next mset.setLeader call.
 		mset.clMu.Lock()
 		if mset.clseq > 0 {
 			mset.clseq = 0
@@ -8461,9 +8471,18 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Check if we need to set initial value here
 		mset.clMu.Lock()
 		if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
+			// Need to unlock and re-acquire the locks in the proper order.
+			mset.clMu.Unlock()
+			// Locking order is stream -> batchMu -> clMu
+			mset.mu.RLock()
+			mset.batchMu.Lock()
+			mset.clMu.Lock()
 			// Re-capture
-			lseq = mset.lastSeq()
-			mset.clseq = lseq + mset.clfs
+			lseq = mset.lseq
+			mset.clseq = lseq + mset.clfs + mset.batchCount
+			// Keep hold of the mset.clMu, but unlock the others.
+			mset.batchMu.Unlock()
+			mset.mu.RUnlock()
 		}
 
 		// TODO(mvv): support message tracing
@@ -8571,9 +8590,18 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
+		// Need to unlock and re-acquire the locks in the proper order.
+		mset.clMu.Unlock()
+		// Locking order is stream -> batchMu -> clMu
+		mset.mu.RLock()
+		mset.batchMu.Lock()
+		mset.clMu.Lock()
 		// Re-capture
-		lseq = mset.lastSeq()
-		mset.clseq = lseq + mset.clfs
+		lseq = mset.lseq
+		mset.clseq = lseq + mset.clfs + mset.batchCount
+		// Keep hold of the mset.clMu, but unlock the others.
+		mset.batchMu.Unlock()
+		mset.mu.RUnlock()
 	}
 
 	var (
