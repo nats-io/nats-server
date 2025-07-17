@@ -2694,7 +2694,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	var err error
 	if node != nil {
 		if js.limitsExceeded(stype) {
-			s.resourcesExceededError()
+			s.resourcesExceededError(stype)
 			err = ApiErrors[JSInsufficientResourcesErr]
 		} else {
 			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, true))
@@ -5447,7 +5447,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Check to see if we have exceeded our limits.
 	if js.limitsExceeded(stype) {
-		s.resourcesExceededError()
+		s.resourcesExceededError(stype)
 		mset.mu.Unlock()
 		bumpCLFS()
 		if canRespond {
@@ -5537,7 +5537,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if err == nil {
 				err = NewJSAccountResourcesExceededError()
 			}
-			s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
+			s.RateLimitWarnf("JetStream %s resource limits exceeded for account: %q", strings.ToLower(stype.String()), accName)
 			if canRespond {
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = err
