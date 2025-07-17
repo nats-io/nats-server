@@ -8924,6 +8924,53 @@ func TestJetStreamClusterDontReviveRemovedStream(t *testing.T) {
 	require_Error(t, err, ErrJetStreamStreamNotFound)
 }
 
+func TestJetStreamClusterCreateR3StreamWithOfflineNodes(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "FOO", Replicas: 3})
+	require_NoError(t, err)
+
+	// Shutdown one server, we'll still have quorum.
+	rs1 := c.randomNonLeader()
+	rs1.Shutdown()
+	_, err = js.AddStream(&nats.StreamConfig{Name: "BAR", Replicas: 3})
+	require_NoError(t, err)
+
+	// While we still have quorum, publish a few messages to the streams.
+	// The offline server will need to both assign the stream and catchup when it comes back.
+	for _, subj := range []string{"FOO", "BAR"} {
+		_, err = js.Publish(subj, nil)
+		require_NoError(t, err)
+	}
+
+	// Shutdown one more server, only one server left that can't reach quorum on its own.
+	rs2 := c.randomNonLeader()
+	rs2.Shutdown()
+	_, err = js.AddStream(&nats.StreamConfig{Name: "BAZ", Replicas: 3})
+	require_Contains(t, err.Error(), "no suitable peers for placement", "peer offline")
+
+	// Restart offline servers and ensure all comes back up.
+	c.restartServer(rs1)
+	c.restartServer(rs2)
+	c.waitOnLeader()
+	c.waitOnStreamLeader(globalAccountName, "FOO")
+	c.waitOnStreamLeader(globalAccountName, "BAR")
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if err := checkState(t, c, globalAccountName, "FOO"); err != nil {
+			return err
+		}
+		if err := checkState(t, c, globalAccountName, "BAR"); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

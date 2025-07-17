@@ -5853,6 +5853,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	type wn struct {
 		id    string
 		avail uint64
+		off   bool
 		ha    int
 		ns    int
 	}
@@ -5941,6 +5942,8 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	// Which is why we keep taps on how often which one happened.
 	err := selectPeerError{}
 
+	var onlinePeers int
+
 	// Shuffle them up.
 	rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 	for _, p := range peers {
@@ -5956,8 +5959,8 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			continue
 		}
 
-		// If we know its offline or we do not have config or err don't consider.
-		if ni.offline || ni.cfg == nil || ni.stats == nil {
+		// If we've never heard from a server, don't consider.
+		if ni.cfg == nil || ni.stats == nil {
 			s.Debugf("Peer selection: discard %s@%s reason: offline", ni.name, ni.cluster)
 			err.offline = true
 			continue
@@ -6054,20 +6057,35 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			}
 		}
 		// Add to our list of potential nodes.
-		nodes = append(nodes, wn{p.ID, available, peerHA[p.ID], peerStreams[p.ID]})
+		nodes = append(nodes, wn{p.ID, available, ni.offline, peerHA[p.ID], peerStreams[p.ID]})
+		if !ni.offline {
+			onlinePeers++
+		}
 	}
 
 	// If we could not select enough peers, fail.
-	if len(nodes) < (r - len(existing)) {
-		s.Debugf("Peer selection: required %d nodes but found %d (cluster: %s replica: %d existing: %v/%d peers: %d result-peers: %d err: %+v)",
-			(r - len(existing)), len(nodes), cluster, r, existing, replaceFirstExisting, len(peers), len(nodes), err)
+	quorum := r/2 + 1
+	missingQuorum := onlinePeers+len(existing) < quorum
+	if missingNodes := len(nodes) < (r - len(existing)); missingNodes || missingQuorum {
 		if len(peers) == 0 {
 			err.noJsClust = true
+		} else if !missingNodes && missingQuorum {
+			err.offline = true
 		}
+		s.Debugf("Peer selection: required %d nodes but found %d (cluster: %s replica: %d existing: %v/%d peers: %d result-peers: %d err: %+v)",
+			r-len(existing), len(nodes), cluster, r, existing, replaceFirstExisting, len(peers), len(nodes), err)
 		return nil, &err
 	}
 	// Sort based on available from most to least, breaking ties by number of total streams assigned to the peer.
 	slices.SortFunc(nodes, func(i, j wn) int {
+		// Prefer online servers to offline ones.
+		if i.off != j.off {
+			if i.off {
+				return 1
+			} else {
+				return -1
+			}
+		}
 		if i.avail == j.avail {
 			return cmp.Compare(i.ns, j.ns)
 		}
@@ -6075,7 +6093,17 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	})
 	// If we are placing a replicated stream, let's sort based on HAAssets, as that is more important to balance.
 	if cfg.Replicas > 1 {
-		slices.SortStableFunc(nodes, func(i, j wn) int { return cmp.Compare(i.ha, j.ha) })
+		slices.SortStableFunc(nodes, func(i, j wn) int {
+			// Prefer online servers to offline ones.
+			if i.off != j.off {
+				if i.off {
+					return 1
+				} else {
+					return -1
+				}
+			}
+			return cmp.Compare(i.ha, j.ha)
+		})
 	}
 
 	var results []string
