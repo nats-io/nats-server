@@ -602,22 +602,53 @@ func TestConfigReloadRotateTLSMultiCert(t *testing.T) {
 }
 
 func TestConfigReloadDefaultSentinel(t *testing.T) {
-	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/defaultsentinel_1.conf")
-	defer server.Shutdown()
+	var err error
+	preload := make(map[string]string)
 
-	if opts.DefaultSentinel != "one" {
-		t.Fatalf("Expected default sentinel to be 'one', got %s", opts.DefaultSentinel)
+	_, sysPub, sysAC := NewJwtAccountClaim("SYS")
+	preload[sysPub], err = sysAC.Encode(oKp)
+	require_NoError(t, err)
+
+	aKP, aPub, aAC := NewJwtAccountClaim("A")
+	preload[aPub], err = aAC.Encode(oKp)
+	require_NoError(t, err)
+
+	preloadConfig, err := json.MarshalIndent(preload, "", " ")
+	require_NoError(t, err)
+
+	uKP, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	uPub, err := uKP.PublicKey()
+	require_NoError(t, err)
+	uc := jwt.NewUserClaims(uPub)
+	uc.BearerToken = true
+	uc.Name = "sentinel"
+	sentinelToken, err := uc.Encode(aKP)
+	require_NoError(t, err)
+	content := func() []byte {
+		return []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+			default_sentinel: %s
+`, ojwt, sysPub, preloadConfig, sentinelToken))
 	}
 
-	changeCurrentConfigContent(t, config, "./configs/reload/defaultsentinel_2.conf")
+	server, opts, config := runReloadServerWithContent(t, content())
+	defer server.Shutdown()
+	require_Equal(t, opts.DefaultSentinel, sentinelToken)
+
+	uc.Name = "sentinel-updated"
+	sentinelToken, err = uc.Encode(aKP)
+	require_NoError(t, err)
+	changeCurrentConfigContentWithNewContent(t, config, content())
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Error reloading config: %v", err)
 	}
-
 	opts = server.getOpts()
-	if opts.DefaultSentinel != "two" {
-		t.Fatalf("Expected default sentinel to be 'two', got %s", opts.DefaultSentinel)
-	}
+	require_Equal(t, opts.DefaultSentinel, sentinelToken)
 }
 
 // Ensure Reload supports single user authentication config changes. Test this

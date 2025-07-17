@@ -7155,9 +7155,28 @@ func TestDefaultSentinelUser(t *testing.T) {
 	uPub, err := uKP.PublicKey()
 	require_NoError(t, err)
 	uc := jwt.NewUserClaims(uPub)
-	uc.BearerToken = true
+	uc.BearerToken = false
 	uc.Name = "sentinel"
 	sentinelToken, err := uc.Encode(aKP)
+	require_NoError(t, err)
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+			default_sentinel: %s
+`, ojwt, sysPub, preloadConfig, sentinelToken)))
+
+	// test non-bearer sentinel is rejected
+	opts, err := ProcessConfigFile(conf)
+	require_NoError(t, err)
+	_, err = NewServer(opts)
+	require_Error(t, err, fmt.Errorf("default sentinel must be a bearer token"))
+
+	// correct and start server
+	uc.BearerToken = true
+	sentinelToken, err = uc.Encode(aKP)
 	require_NoError(t, err)
 	conf = createConfFile(t, []byte(fmt.Sprintf(`
             listen: 127.0.0.1:4747
