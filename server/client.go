@@ -258,6 +258,7 @@ type client struct {
 	pubKey     string
 	nc         net.Conn
 	ncs        atomic.Value
+	ncsAcc     atomic.Value
 	out        outbound
 	user       *NkeyUser
 	host       string
@@ -2266,12 +2267,12 @@ func (c *client) processConnect(arg []byte) error {
 
 func (c *client) sendErrAndErr(err string) {
 	c.sendErr(err)
-	c.Errorf(err)
+	c.RateLimitErrorf(err)
 }
 
 func (c *client) sendErrAndDebug(err string) {
 	c.sendErr(err)
-	c.Debugf(err)
+	c.RateLimitDebugf(err)
 }
 
 func (c *client) authTimeout() {
@@ -6336,51 +6337,84 @@ func (c *client) isClosed() bool {
 	return c.flags.isSet(closeConnection) || c.flags.isSet(connMarkedClosed) || c.nc == nil
 }
 
+func (c *client) format(format string) string {
+	acc := c.ncsAcc.Load()
+	if acc != nil {
+		return fmt.Sprintf("%s - %s - Account: %s", c, format, acc)
+	} else {
+		return fmt.Sprintf("%s - %s", c, format)
+	}
+}
+
+func (c *client) formatNoClientInfo(format string) string {
+	acc := c.ncsAcc.Load()
+	if acc != nil {
+		return fmt.Sprintf("%s - Account:%s", format, acc)
+	} else {
+		return format
+	}
+}
+
 // Logging functionality scoped to a client or route.
 func (c *client) Error(err error) {
-	c.srv.Errors(c, err)
+	c.srv.Errorf(c.format(err.Error()))
 }
 
 func (c *client) Errorf(format string, v ...any) {
-	format = fmt.Sprintf("%s - %s", c, format)
-	c.srv.Errorf(format, v...)
+	c.srv.Errorf(c.format(format), v...)
 }
 
 func (c *client) Debugf(format string, v ...any) {
-	format = fmt.Sprintf("%s - %s", c, format)
-	c.srv.Debugf(format, v...)
+	c.srv.Debugf(c.format(format), v...)
 }
 
 func (c *client) Noticef(format string, v ...any) {
-	format = fmt.Sprintf("%s - %s", c, format)
-	c.srv.Noticef(format, v...)
+	c.srv.Noticef(c.format(format), v...)
 }
 
 func (c *client) Tracef(format string, v ...any) {
-	format = fmt.Sprintf("%s - %s", c, format)
-	c.srv.Tracef(format, v...)
+	c.srv.Tracef(c.format(format), v...)
 }
 
 func (c *client) Warnf(format string, v ...any) {
-	format = fmt.Sprintf("%s - %s", c, format)
-	c.srv.Warnf(format, v...)
+	c.srv.Warnf(c.format(format), v...)
+}
+
+func (c *client) RateLimitErrorf(format string, v ...any) {
+	// Do the check before adding the client info to the format...
+	statement := fmt.Sprintf(c.formatNoClientInfo(format), v...)
+	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
+		return
+	}
+	c.srv.Errorf("%s - %s", c, statement)
 }
 
 func (c *client) rateLimitFormatWarnf(format string, v ...any) {
+	// Do the check before adding the client info to the format...
+	format = c.formatNoClientInfo(format)
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(format, time.Now()); loaded {
 		return
 	}
 	statement := fmt.Sprintf(format, v...)
-	c.Warnf("%s", statement)
+	c.srv.Warnf("%s - %s", c, statement)
 }
 
 func (c *client) RateLimitWarnf(format string, v ...any) {
 	// Do the check before adding the client info to the format...
-	statement := fmt.Sprintf(format, v...)
+	statement := fmt.Sprintf(c.formatNoClientInfo(format), v...)
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
-	c.Warnf("%s", statement)
+	c.srv.Warnf("%s - %s", c, statement)
+}
+
+func (c *client) RateLimitDebugf(format string, v ...any) {
+	// Do the check before adding the client info to the format...
+	statement := fmt.Sprintf(c.formatNoClientInfo(format), v...)
+	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
+		return
+	}
+	c.srv.Debugf("%s - %s", c, statement)
 }
 
 // Set the very first PING to a lower interval to capture the initial RTT.
