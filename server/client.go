@@ -1868,14 +1868,28 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	// Be consistent with the creation: for routes, gateways and leaf,
 	// we use Noticef on create, so use that too for delete.
 	if c.srv != nil {
-		if c.kind == LEAF {
+		if c.kind == LEAF || c.kind == ROUTER || c.kind == GATEWAY {
+			var tags []string
+			var remoteName string
+			switch {
+			case c.kind == LEAF && c.leaf != nil:
+				remoteName = c.leaf.remoteServer
+			case c.kind == ROUTER && c.route != nil:
+				remoteName = c.route.remoteName
+			case c.kind == GATEWAY && c.gw != nil:
+				remoteName = c.gw.remoteName
+			}
+			if remoteName != _EMPTY_ {
+				tags = append(tags, fmt.Sprintf("Remote: %s", remoteName))
+			}
 			if c.acc != nil {
-				c.Noticef("%s connection closed: %s - Account: %s", c.kindString(), reason, c.acc.traceLabel())
+				tags = append(tags, fmt.Sprintf("Account: %s", c.acc.traceLabel()))
+			}
+			if len(tags) > 0 {
+				c.Noticef("%s connection closed: %s - %s", c.kindString(), reason, strings.Join(tags, ", "))
 			} else {
 				c.Noticef("%s connection closed: %s", c.kindString(), reason)
 			}
-		} else if c.kind == ROUTER || c.kind == GATEWAY {
-			c.Noticef("%s connection closed: %s", c.kindString(), reason)
 		} else { // Client, System, Jetstream, and Account connections.
 			c.Debugf("%s connection closed: %s", c.kindString(), reason)
 		}
