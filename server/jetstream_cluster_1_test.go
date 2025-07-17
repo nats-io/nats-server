@@ -7032,6 +7032,9 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 		require_NoError(t, json.Unmarshal(resp.Data, &sdr))
 	}
 
+	// Wait some time for the leader to settle.
+	time.Sleep(500 * time.Millisecond)
+
 	// Scale down to ensure the consumer gets created on this server.
 	cfg.Replicas = 1
 	si, err = js.UpdateStream(cfg)
