@@ -9315,57 +9315,86 @@ func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
 	}
 }
 
-func TestJetStreamMirrorDirectGetReadAfterWrite(t *testing.T) {
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
+func TestJetStreamClusterMirrorDirectGetReadAfterWrite(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:        "S",
 		Subjects:    []string{"foo"},
 		AllowDirect: true,
+		Replicas:    3,
 	})
 	require_NoError(t, err)
 
 	_, err = js.Publish("foo", nil)
 	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "S")
+	})
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:         "M",
 		AllowDirect:  true,
 		MirrorDirect: true,
 		Mirror:       &nats.StreamSource{Name: "S"},
+		Replicas:     3,
 	})
 	require_NoError(t, err)
 
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		mset, err := s.globalAccount().lookupStream("M")
-		if err != nil {
-			return err
-		}
-		if mset.lastSeq() != 1 {
-			return errors.New("waiting for mirror to catch up")
-		}
-		return nil
-	})
+	mirrorLeader := c.streamLeader(globalAccountName, "M")
+	checkMirrorConsistent := func() {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if err := checkState(t, c, globalAccountName, "M"); err != nil {
+				return err
+			}
+			mset, err := mirrorLeader.globalAccount().lookupStream("M")
+			if err != nil {
+				return err
+			}
+			if mset.lastSeq() != 1 {
+				return errors.New("waiting for mirror to catch up")
+			}
+			return nil
+		})
+	}
+	checkMirrorConsistent()
 
 	// On source, stop responding to direct gets.
-	mset, err := s.globalAccount().lookupStream("S")
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:        "S",
+		Subjects:    []string{"foo"},
+		AllowDirect: false,
+		Replicas:    3,
+	})
 	require_NoError(t, err)
-	mset.unsubscribeToDirect()
 
 	// On mirror, cancel mirroring, truncate store, and subscribe to mirror direct get.
-	mset, err = s.globalAccount().lookupStream("M")
-	require_NoError(t, err)
-	mset.mu.Lock()
-	mset.cancelMirrorConsumer()
-	mset.lseq = 0
-	err = mset.store.Truncate(0)
-	mset.mu.Unlock()
-	require_NoError(t, err)
-	require_NoError(t, mset.subscribeToMirrorDirect())
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("M")
+		require_NoError(t, err)
+		mset.mu.Lock()
+		mset.cancelMirrorConsumer()
+		mset.lseq = 0
+		if err = mset.store.Truncate(0); err != nil {
+			mset.mu.Unlock()
+			require_NoError(t, err)
+		}
+		// Only let mirror followers subscribe to mirror direct.
+		if s != mirrorLeader {
+			if err = mset.subscribeToMirrorDirect(); err != nil {
+				mset.mu.Unlock()
+				require_NoError(t, err)
+			}
+		} else {
+			mset.unsubscribeToMirrorDirect()
+		}
+		mset.mu.Unlock()
+	}
 
 	// Need to wait for subscriptions to be fully propagated.
 	time.Sleep(200 * time.Millisecond)
@@ -9385,13 +9414,10 @@ func TestJetStreamMirrorDirectGetReadAfterWrite(t *testing.T) {
 	require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
 
 	// Restart mirroring.
+	mset, err := c.streamLeader(globalAccountName, "M").globalAccount().lookupStream("M")
+	require_NoError(t, err)
 	require_NoError(t, mset.setupMirrorConsumer())
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		if mset.lastSeq() != 1 {
-			return errors.New("waiting for mirror to catch up")
-		}
-		return nil
-	})
+	checkMirrorConsistent()
 
 	data, err = json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 1})
 	require_NoError(t, err)

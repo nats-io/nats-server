@@ -414,6 +414,8 @@ type stream struct {
 	directLeaderSub *subscription
 	directSub       *subscription
 	lastBySub       *subscription
+	mirrorDirectSub *subscription // Mirrors only.
+	mirrorLastBySub *subscription // Mirrors only.
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
@@ -433,14 +435,6 @@ type sourceInfo struct {
 	iname string        // The unique index name of this particular source.
 	cname string        // The name of the current consumer for this source.
 	sub   *subscription // The subscription to the consumer.
-
-	// (mirrors only) The subscription to the direct get request subject for
-	// the source stream's name on the `_sys_` queue group.
-	dsub *subscription
-
-	// (mirrors only) The subscription to the direct get last per subject request subject for
-	// the source stream's name on the `_sys_` queue group.
-	lbsub *subscription
 
 	msgs  *ipQueue[*inMsg]    // Intra-process queue for incoming messages.
 	sseq  uint64              // Last stream message sequence number seen from the source.
@@ -2165,7 +2159,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 	}
 
-	// Check for a change in allow direct status.
+	// Check for a change in allow direct/mirror status.
 	// These will run on all members, so just update as appropriate here.
 	// We do make sure we are caught up under monitorStream() during initial startup.
 	if cfg.AllowDirect != ocfg.AllowDirect {
@@ -2173,6 +2167,13 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 			mset.subscribeToDirect()
 		} else {
 			mset.unsubscribeToDirect()
+		}
+	}
+	if cfg.MirrorDirect != ocfg.MirrorDirect {
+		if cfg.MirrorDirect {
+			mset.subscribeToMirrorDirect()
+		} else {
+			mset.unsubscribeToMirrorDirect()
 		}
 	}
 
@@ -2697,7 +2698,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 
 	// Check if we allow mirror direct here. If so check they we have mostly caught up.
 	// The reason we do not require 0 is if the source is active we may always be slightly behind.
-	if mset.cfg.MirrorDirect && mset.mirror.dsub == nil && pending < dgetCaughtUpThresh {
+	if mset.cfg.MirrorDirect && mset.mirrorDirectSub == nil && pending < dgetCaughtUpThresh {
 		if err := mset.subscribeToMirrorDirect(); err != nil {
 			// Disable since we had problems above.
 			mset.cfg.MirrorDirect = false
@@ -3195,11 +3196,6 @@ func (mset *stream) cancelSourceInfo(si *sourceInfo) {
 	if si.sub != nil {
 		mset.unsubscribe(si.sub)
 		si.sub = nil
-	}
-	// In case we had a mirror direct subscription.
-	if si.dsub != nil {
-		mset.unsubscribe(si.dsub)
-		si.dsub = nil
 	}
 	mset.removeInternalConsumer(si)
 	if si.qch != nil {
@@ -4073,7 +4069,7 @@ func (mset *stream) subscribeToStream() error {
 	// We spin up followers for clustered streams in monitorStream().
 	if mset.cfg.AllowDirect {
 		// The leader subscribes separately to a non-queue-group sub.
-		if mset.directLeaderSub == nil {
+		if mset.cfg.Mirror == nil && mset.directLeaderSub == nil {
 			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.cfg.Name)
 			if sub, err := mset.subscribeInternal(dsubj, mset.processDirectGetRequest); err == nil {
 				mset.directLeaderSub = sub
@@ -4129,32 +4125,45 @@ func (mset *stream) unsubscribeToDirect() {
 
 // Lock should be held.
 func (mset *stream) subscribeToMirrorDirect() error {
-	if mset.mirror == nil {
+	if mset.cfg.Mirror == nil {
 		return nil
 	}
+	mirrorName := mset.cfg.Mirror.Name
 
 	// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
-	if mset.mirror.dsub == nil {
-		dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.mirror.name)
+	if mset.mirrorDirectSub == nil {
+		dsubj := fmt.Sprintf(JSDirectMsgGetT, mirrorName)
 		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
 		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err == nil {
-			mset.mirror.dsub = sub
+			mset.mirrorDirectSub = sub
 		} else {
 			return err
 		}
 	}
 	// Now the one that will have subject appended past stream name.
-	if mset.mirror.lbsub == nil {
-		dsubj := fmt.Sprintf(JSDirectGetLastBySubjectT, mset.mirror.name, fwcs)
+	if mset.mirrorLastBySub == nil {
+		dsubj := fmt.Sprintf(JSDirectGetLastBySubjectT, mirrorName, fwcs)
 		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
 		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetLastBySubjectRequest); err == nil {
-			mset.mirror.lbsub = sub
+			mset.mirrorLastBySub = sub
 		} else {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// Lock should be held.
+func (mset *stream) unsubscribeToMirrorDirect() {
+	if mset.mirrorDirectSub != nil {
+		mset.unsubscribe(mset.mirrorDirectSub)
+		mset.mirrorDirectSub = nil
+	}
+	if mset.mirrorLastBySub != nil {
+		mset.unsubscribe(mset.mirrorLastBySub)
+		mset.mirrorLastBySub = nil
+	}
 }
 
 // Stop our source consumers.
@@ -4198,6 +4207,7 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 	}
 	if stopping {
 		mset.unsubscribeToDirect()
+		mset.unsubscribeToMirrorDirect()
 	}
 
 	mset.active = false
@@ -4744,7 +4754,8 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		// We are not up-to-date yet, and don't know how long it will take us to be.
 
 		// If we're not the leader, we can redirect to the leader for them to answer.
-		if !mset.isLeaderNodeState() {
+		// But only on the original stream, mirrors only error.
+		if !mset.isMirror() && !mset.isLeaderNodeState() {
 			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.getCfgName())
 			msg, _ = json.Marshal(req)
 			mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, nil, msg, nil, 0))

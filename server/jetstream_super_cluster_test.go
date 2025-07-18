@@ -3293,7 +3293,7 @@ func TestJetStreamSuperClusterStreamDirectGetMirrorQueueGroup(t *testing.T) {
 		sl := sc.clusterForName("C3").streamLeader("$G", "M2")
 		if mset, err := sl.GlobalAccount().lookupStream("M2"); err == nil {
 			mset.mu.RLock()
-			ok := mset.mirror.dsub != nil
+			ok := mset.mirrorDirectSub != nil
 			mset.mu.RUnlock()
 			if ok {
 				return nil
