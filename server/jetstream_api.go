@@ -686,6 +686,8 @@ type JSApiMsgGetRequest struct {
 	UpToSeq uint64 `json:"up_to_seq,omitempty"`
 	// Only return messages up to this time.
 	UpToTime *time.Time `json:"up_to_time,omitempty"`
+	// Only return the message payload, excluding headers if present.
+	NoHeaders bool `json:"no_hdr,omitempty"`
 }
 
 type JSApiMsgGetResponse struct {
@@ -3474,9 +3476,11 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	resp.Message = &StoredMsg{
 		Subject:  sm.subj,
 		Sequence: sm.seq,
-		Header:   sm.hdr,
 		Data:     sm.msg,
 		Time:     time.Unix(0, sm.ts).UTC(),
+	}
+	if !req.NoHeaders {
+		resp.Message.Header = sm.hdr
 	}
 
 	// Don't send response through API layer for this call.

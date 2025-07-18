@@ -4851,32 +4851,34 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 			return
 		}
 
-		hdr := sm.hdr
 		ts := time.Unix(0, sm.ts).UTC()
-
-		if isBatchRequest {
-			if len(hdr) == 0 {
-				hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
+		var hdr []byte
+		if !req.NoHeaders {
+			hdr = sm.hdr
+			if isBatchRequest {
+				if len(hdr) == 0 {
+					hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
+				} else {
+					hdr = copyBytes(hdr)
+					hdr = genHeader(hdr, JSStream, name)
+					hdr = genHeader(hdr, JSSubject, sm.subj)
+					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+					hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
+					hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+				}
+				// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
+				np--
 			} else {
-				hdr = copyBytes(hdr)
-				hdr = genHeader(hdr, JSStream, name)
-				hdr = genHeader(hdr, JSSubject, sm.subj)
-				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-				hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
-				hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
-			}
-			// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
-			np--
-		} else {
-			if len(hdr) == 0 {
-				hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
-			} else {
-				hdr = copyBytes(hdr)
-				hdr = genHeader(hdr, JSStream, name)
-				hdr = genHeader(hdr, JSSubject, sm.subj)
-				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+				if len(hdr) == 0 {
+					hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
+				} else {
+					hdr = copyBytes(hdr)
+					hdr = genHeader(hdr, JSStream, name)
+					hdr = genHeader(hdr, JSSubject, sm.subj)
+					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+				}
 			}
 		}
 		// Track our lseq
