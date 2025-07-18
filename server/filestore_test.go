@@ -344,7 +344,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 
 		numSkips := 10
 		for i := 0; i < numSkips; i++ {
-			fs.SkipMsg()
+			fs.SkipMsg(0)
 		}
 		state := fs.State()
 		if state.Msgs != 0 {
@@ -355,10 +355,10 @@ func TestFileStoreSkipMsg(t *testing.T) {
 		}
 
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
-		fs.SkipMsg()
+		fs.SkipMsg(0)
+		fs.SkipMsg(0)
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 
 		state = fs.State()
 		if state.Msgs != 2 {
@@ -392,7 +392,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 			t.Fatalf("Message did not match")
 		}
 
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 		nseq, _, err := fs.StoreMsg("AAA", nil, []byte("Skip?"), 0)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up seq 11: %v", err)
@@ -5024,7 +5024,7 @@ func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
 
 	fs.StoreMsg(subj, nil, msg, 0)
 	for i := 0; i < numMsgs; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg(subj, nil, msg, 0)
 	require_Equal(t, fs.numMsgBlocks(), 3)
@@ -5873,7 +5873,7 @@ func TestFileStoreMsgBlockHolesAndIndexing(t *testing.T) {
 	mb := fs.getFirstBlock()
 	writeMsg := func(subj string, seq uint64) {
 		rl := fileStoreMsgSize(subj, nil, []byte(subj))
-		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true))
+		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true, 0))
 		fs.rebuildState(nil)
 	}
 	readMsg := func(seq uint64, expectedSubj string) {
@@ -6768,7 +6768,7 @@ func TestFileStoreEraseMsgWithDbitSlots(t *testing.T) {
 
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	// Now grab that first block and compact away the skips which will
@@ -6797,7 +6797,7 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	fs.StoreMsg("foo", nil, []byte("abcdefg"), 0)
 
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	// Now grab that first block and compact away the skips which will
 	// introduce dbits into our idx.
@@ -7144,7 +7144,7 @@ func TestFileStoreReloadAndLoseLastSequence(t *testing.T) {
 	defer fs.Stop()
 
 	for i := 0; i < 22; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 
 	// Restart 5 times.
@@ -8748,7 +8748,7 @@ func TestFileStoreMessageTTLRecoveredOffByOne(t *testing.T) {
 	// the TTL is to look at the original message header, therefore the TTL
 	// must be in the headers for this test to work.
 	hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
-	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl))
+	require_NoError(t, fs.StoreRawMsg("test", hdr, nil, 1, ts, ttl, 0))
 
 	var ss StreamState
 	fs.FastState(&ss)
@@ -8991,7 +8991,7 @@ func TestFileStoreLeftoverSkipMsgInDmap(t *testing.T) {
 	}
 
 	// Only skip a message.
-	fs.SkipMsg()
+	fs.SkipMsg(0)
 
 	// Confirm state.
 	state := fs.State()
@@ -9763,5 +9763,70 @@ func TestFileStoreNoPanicOnRecoverTTLWithCorruptBlocks(t *testing.T) {
 		atomic.StoreUint64(&lmb.last.seq, lseq)
 
 		require_NoError(t, fs.recoverTTLState())
+	})
+}
+
+func TestFileStoreAsyncTruncate(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 8192
+		fcfg.AsyncFlush = true
+
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		require_NotNil(t, lmb)
+
+		// Wait for flusher to be ready.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if !lmb.flusher {
+				return errors.New("flusher not active")
+			}
+			return nil
+		})
+		// Now shutdown flusher and wait for it to be closed.
+		lmb.mu.Lock()
+		if lmb.qch != nil {
+			close(lmb.qch)
+			lmb.qch = nil
+		}
+		lmb.mu.Unlock()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if lmb.flusher {
+				return errors.New("flusher still active")
+			}
+			return nil
+		})
+
+		// Write some messages, none of them will have been flushed asynchronously.
+		subj, msg := "foo", make([]byte, 100)
+		for i := uint64(1); i <= 2; i++ {
+			seq, _, err := fs.StoreMsg(subj, nil, msg, 0)
+			require_NoError(t, err)
+			require_Equal(t, seq, i)
+		}
+		// Truncate needs to flush if the data was not yet flushed asynchronously.
+		require_NoError(t, fs.Truncate(1))
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 1)
+
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			if mb.pendingWriteSize() > 0 {
+				fs.mu.RUnlock()
+				t.Fatalf("Message block %d still has pending writes", mb.index)
+			}
+		}
+		fs.mu.RUnlock()
 	})
 }
