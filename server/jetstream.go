@@ -2921,12 +2921,12 @@ func canonicalName(name string) string {
 }
 
 // To throttle the out of resources errors.
-func (s *Server) resourcesExceededError() {
+func (s *Server) resourcesExceededError(storeType StorageType) {
 	var didAlert bool
 
 	s.rerrMu.Lock()
 	if now := time.Now(); now.Sub(s.rerrLast) > 10*time.Second {
-		s.Errorf("JetStream resource limits exceeded for server")
+		s.Errorf("JetStream %s resource limits exceeded for server", strings.ToLower(storeType.String()))
 		s.rerrLast = now
 		didAlert = true
 	}
