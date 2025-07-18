@@ -43,7 +43,7 @@ type JetStreamConfig struct {
 	MaxMemory    int64         `json:"max_memory"`              // MaxMemory is the maximum size of memory type streams
 	MaxStore     int64         `json:"max_storage"`             // MaxStore is the maximum size of file store type streams
 	StoreDir     string        `json:"store_dir,omitempty"`     // StoreDir is where storage files are stored
-	SyncInterval time.Duration `json:"sync_interval,omitempty"` // SyncInterval is how frequently filesystems as flushed
+	SyncInterval time.Duration `json:"sync_interval,omitempty"` // SyncInterval is how frequently we sync to disk in the background by calling fsync
 	SyncAlways   bool          `json:"sync_always,omitempty"`   // SyncAlways indicates flushes are done after every write
 	Domain       string        `json:"domain,omitempty"`        // Domain is the JetStream domain
 	CompressOK   bool          `json:"compress_ok,omitempty"`   // CompressOK indicates if compression is supported
