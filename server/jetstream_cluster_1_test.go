@@ -9254,8 +9254,9 @@ func TestJetStreamClusterDirectGetReadAfterWriteOutdatedFollower(t *testing.T) {
 	require_NoError(t, err)
 	msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "TEST"), data, time.Second)
 	require_NoError(t, err)
-	require_Equal(t, msg.Header.Get("Status"), "412")
-	require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
 }
 
 func TestJetStreamClusterDirectGetMonotonicRead(t *testing.T) {
@@ -9413,12 +9414,16 @@ func TestJetStreamClusterDirectGetLastBySubjectReadAfterWriteOutdatedFollower(t 
 		require_Equal(t, pubAck.Sequence, seq)
 	}
 
+	// The follower doesn't know it's outdated, but we know it must have a minimum last sequence.
+	// It should redirect the request directly to the leader so it can respond, and we still
+	// get a response and don't need to error and retry.
 	data, err := json.Marshal(JSApiMsgGetRequest{MinLastSeq: 4})
 	require_NoError(t, err)
 	msg, err := nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"), data, time.Second)
 	require_NoError(t, err)
-	require_Equal(t, msg.Header.Get("Status"), "412")
-	require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
 }
 
 func TestJetStreamClusterDirectGetLastBySubjectMonotonicRead(t *testing.T) {
