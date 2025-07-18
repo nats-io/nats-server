@@ -558,7 +558,7 @@ func (s *Server) restartJetStream() error {
 		MaxMemory:    opts.JetStreamMaxMemory,
 		MaxStore:     opts.JetStreamMaxStore,
 		Domain:       opts.JetStreamDomain,
-		Strict:       opts.JetStreamStrict,
+		Strict:       !opts.NoJetStreamStrict,
 	}
 	s.Noticef("Restarting JetStream")
 	err := s.EnableJetStream(&cfg)
@@ -2539,7 +2539,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	opts := s.getOpts()
 
 	// Strict mode.
-	jsc.Strict = opts.JetStreamStrict
+	jsc.Strict = !opts.NoJetStreamStrict
 
 	// Sync options.
 	jsc.SyncInterval = opts.SyncInterval

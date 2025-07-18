@@ -336,7 +336,7 @@ type Options struct {
 	Gateway                    GatewayOpts   `json:"gateway,omitempty"`
 	LeafNode                   LeafNodeOpts  `json:"leaf,omitempty"`
 	JetStream                  bool          `json:"jetstream"`
-	JetStreamStrict            bool          `json:"-"`
+	NoJetStreamStrict          bool          `json:"-"` // Strict by default.
 	JetStreamMaxMemory         int64         `json:"-"`
 	JetStreamMaxStore          int64         `json:"-"`
 	JetStreamDomain            string        `json:"-"`
@@ -2416,7 +2416,7 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 			switch strings.ToLower(mk) {
 			case "strict":
 				if v, ok := mv.(bool); ok {
-					opts.JetStreamStrict = v
+					opts.NoJetStreamStrict = !v
 				} else {
 					return &configErr{tk, fmt.Sprintf("Expected 'true' or 'false' for bool value, got '%s'", mv)}
 				}

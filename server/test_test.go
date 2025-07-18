@@ -35,7 +35,7 @@ var DefaultTestOptions = Options{
 	NoSigs:                true,
 	MaxControlLine:        4096,
 	DisableShortFirstPing: true,
-	JetStreamStrict:       true,
+	NoJetStreamStrict:     false,
 }
 
 func testDefaultClusterOptionsForLeafNodes() *Options {
