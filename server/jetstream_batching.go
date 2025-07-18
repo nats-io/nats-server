@@ -164,8 +164,8 @@ func checkMsgHeadersPreClusteredProposal(
 			fields := strings.Split(string(srchdr), " ")
 			origStream := fields[0]
 			origSubj := subject
-			if len(fields) >= 3 {
-				origSubj = fields[2]
+			if len(fields) >= 5 {
+				origSubj = fields[4]
 			}
 			var val CounterValue
 			if json.Unmarshal(msg, &val) != nil {

@@ -20755,11 +20755,11 @@ func TestJetStreamAllowMsgCounterSourceAggregates(t *testing.T) {
 			Sources: []*StreamSource{
 				{
 					Name:              "O1",
-					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.1", Destination: "foo"}},
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
 				},
 				{
 					Name:              "O2",
-					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.2", Destination: "foo"}},
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
 				},
 			},
 			Storage:         FileStorage,
@@ -20840,11 +20840,11 @@ func TestJetStreamAllowMsgCounterSourceVerbatim(t *testing.T) {
 			Sources: []*StreamSource{
 				{
 					Name:              "O1",
-					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.1", Destination: "foo"}},
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
 				},
 				{
 					Name:              "O2",
-					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.2", Destination: "foo"}},
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
 				},
 			},
 			Storage:         FileStorage,
@@ -20974,11 +20974,11 @@ func TestJetStreamAllowMsgCounterSourceStartingAboveZero(t *testing.T) {
 			Sources: []*StreamSource{
 				{
 					Name:              "O1",
-					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.1", Destination: "foo"}},
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
 				},
 				{
 					Name:              "O2",
-					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.2", Destination: "foo"}},
+					SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
 				},
 			},
 			Storage:         FileStorage,
