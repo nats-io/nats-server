@@ -70,10 +70,19 @@ func wipeSlice(buf []byte) {
 func validateTrustedOperators(o *Options) error {
 	if len(o.TrustedOperators) == 0 {
 		// if we have no operator, default sentinel shouldn't be set
-		if o.DefaultSentinel != "" {
+		if o.DefaultSentinel != _EMPTY_ {
 			return fmt.Errorf("default sentinel requires operators and accounts")
 		}
 		return nil
+	}
+	if o.DefaultSentinel != _EMPTY_ {
+		juc, err := jwt.DecodeUserClaims(o.DefaultSentinel)
+		if err != nil {
+			return fmt.Errorf("default sentinel JWT not valid")
+		}
+		if !juc.BearerToken {
+			return fmt.Errorf("default sentinel must be a bearer token")
+		}
 	}
 	if o.AccountResolver == nil {
 		return fmt.Errorf("operators require an account resolver to be configured")
