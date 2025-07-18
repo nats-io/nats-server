@@ -3654,7 +3654,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Batch-")
 	}
 	// Hold onto the origin reply which has all the metadata.
-	hdr = genHeader(hdr, JSStreamSource, si.genSourceHeader(m.rply))
+	hdr = genHeader(hdr, JSStreamSource, si.genSourceHeader(m.subj, m.rply))
 
 	// Do the subject transform for the source if there's one
 	if len(si.trs) > 0 {
@@ -3723,7 +3723,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 }
 
 // Generate a new (2.10) style source header (stream name, sequence number, source filter, source destination transform).
-func (si *sourceInfo) genSourceHeader(reply string) string {
+func (si *sourceInfo) genSourceHeader(orig, reply string) string {
 	var b strings.Builder
 	iNameParts := strings.Split(si.iname, " ")
 
@@ -3748,6 +3748,8 @@ func (si *sourceInfo) genSourceHeader(reply string) string {
 	b.WriteString(iNameParts[1])
 	b.WriteByte(' ')
 	b.WriteString(iNameParts[2])
+	b.WriteByte(' ')
+	b.WriteString(orig)
 	return b.String()
 }
 
@@ -5352,8 +5354,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			fields := strings.Split(string(srchdr), " ")
 			origStream := fields[0]
 			origSubj := subject
-			if len(fields) >= 3 {
-				origSubj = fields[2]
+			if len(fields) >= 5 {
+				origSubj = fields[4]
 			}
 			var val CounterValue
 			if json.Unmarshal(msg, &val) != nil {

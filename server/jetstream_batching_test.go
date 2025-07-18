@@ -292,12 +292,12 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 		rsm, err = js.GetMsg("S", 1)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 1)
-		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 1 > >")
+		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 1 > > foo")
 
 		rsm, err = js.GetMsg("S", 2)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 1)
-		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 3 > >")
+		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 3 > > foo")
 	}
 
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
