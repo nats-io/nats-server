@@ -9315,6 +9315,101 @@ func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
 	}
 }
 
+func TestJetStreamMirrorDirectGetReadAfterWrite(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "S",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:         "M",
+		AllowDirect:  true,
+		MirrorDirect: true,
+		Mirror:       &nats.StreamSource{Name: "S"},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		mset, err := s.globalAccount().lookupStream("M")
+		if err != nil {
+			return err
+		}
+		if mset.lastSeq() != 1 {
+			return errors.New("waiting for mirror to catch up")
+		}
+		return nil
+	})
+
+	// On source, stop responding to direct gets.
+	mset, err := s.globalAccount().lookupStream("S")
+	require_NoError(t, err)
+	mset.unsubscribeToDirect()
+
+	// On mirror, cancel mirroring, truncate store, and subscribe to mirror direct get.
+	mset, err = s.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	mset.cancelMirrorConsumer()
+	mset.lseq = 0
+	err = mset.store.Truncate(0)
+	mset.mu.Unlock()
+	require_NoError(t, err)
+	require_NoError(t, mset.subscribeToMirrorDirect())
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "S"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+
+	data, err = json.Marshal(JSApiMsgGetRequest{MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "S", "foo"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+
+	// Restart mirroring.
+	require_NoError(t, mset.setupMirrorConsumer())
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if mset.lastSeq() != 1 {
+			return errors.New("waiting for mirror to catch up")
+		}
+		return nil
+	})
+
+	data, err = json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSDirectMsgGetT, "S"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "M")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+
+	data, err = json.Marshal(JSApiMsgGetRequest{MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "S", "foo"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "M")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+}
+
 func TestJetStreamClusterDirectGetReadAfterWriteOutdatedFollower(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
