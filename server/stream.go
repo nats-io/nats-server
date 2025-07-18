@@ -4654,7 +4654,7 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		// We are not up-to-date yet, and don't know how long it will take us to be.
 		// Simply reject the request so the client can retry.
 		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		mset.srv.sendDelayedErrResponse(mset.account(), reply, hdr, _EMPTY_, errRespDelay)
 		return
 	}
 
@@ -4718,7 +4718,7 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		// We are not up-to-date yet, and don't know how long it will take us to be.
 		// Simply reject the request so the client can retry.
 		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		mset.srv.sendDelayedErrResponse(mset.account(), reply, hdr, _EMPTY_, errRespDelay)
 		return
 	}
 
