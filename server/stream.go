@@ -411,8 +411,9 @@ type stream struct {
 	expectedPerSubjectInProcess map[string]struct{}                // Current 'expected per subject' subjects in process.
 
 	// Direct get subscription.
-	directSub *subscription
-	lastBySub *subscription
+	directLeaderSub *subscription
+	directSub       *subscription
+	lastBySub       *subscription
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
@@ -4071,6 +4072,15 @@ func (mset *stream) subscribeToStream() error {
 	// Check for direct get access.
 	// We spin up followers for clustered streams in monitorStream().
 	if mset.cfg.AllowDirect {
+		// The leader subscribes separately to a non-queue-group sub.
+		if mset.directLeaderSub == nil {
+			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.cfg.Name)
+			if sub, err := mset.subscribeInternal(dsubj, mset.processDirectGetRequest); err == nil {
+				mset.directLeaderSub = sub
+			} else {
+				return err
+			}
+		}
 		if err := mset.subscribeToDirect(); err != nil {
 			return err
 		}
@@ -4180,7 +4190,12 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 	// Clear batching state.
 	mset.deleteInflightBatches()
 
-	// In case we had a direct get subscriptions.
+	// In case we had direct get subscriptions.
+	if mset.directLeaderSub == nil {
+		// Always unsubscribe the leader sub.
+		mset.unsubscribe(mset.directLeaderSub)
+		mset.directLeaderSub = nil
+	}
 	if stopping {
 		mset.unsubscribeToDirect()
 	}
@@ -4652,7 +4667,18 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	// Reject request if we can't guarantee the precondition of min last sequence.
 	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
 		// We are not up-to-date yet, and don't know how long it will take us to be.
-		// Simply reject the request so the client can retry.
+
+		// If we're not the leader, we can redirect to the leader for them to answer.
+		// But only on the original stream, mirrors only error.
+		if !mset.isMirror() && !mset.isLeaderNodeState() {
+			// Copy since we're sending the same bytes.
+			msg = copyBytes(msg)
+			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.getCfgName())
+			mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, nil, msg, nil, 0))
+			return
+		}
+
+		// Otherwise, simply reject the request so the client can retry.
 		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
 		mset.srv.sendDelayedErrResponse(mset.account(), reply, hdr, _EMPTY_, errRespDelay)
 		return
@@ -4716,7 +4742,16 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	// Reject request if we can't guarantee the precondition of min last sequence.
 	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
 		// We are not up-to-date yet, and don't know how long it will take us to be.
-		// Simply reject the request so the client can retry.
+
+		// If we're not the leader, we can redirect to the leader for them to answer.
+		if !mset.isLeaderNodeState() {
+			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.getCfgName())
+			msg, _ = json.Marshal(req)
+			mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, nil, msg, nil, 0))
+			return
+		}
+
+		// Otherwise, simply reject the request so the client can retry.
 		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
 		mset.srv.sendDelayedErrResponse(mset.account(), reply, hdr, _EMPTY_, errRespDelay)
 		return
