@@ -1042,9 +1042,11 @@ type delayedAPIResponse struct {
 	subject  string
 	reply    string
 	request  string
+	hdr      []byte
 	response string
 	rg       *raftGroup
 	deadline time.Time
+	noJs     bool
 	next     *delayedAPIResponse
 }
 
@@ -1147,7 +1149,12 @@ func (s *Server) delayedAPIResponder() {
 			next()
 		case <-tm.C:
 			if r != nil {
-				s.sendAPIErrResponse(r.ci, r.acc, r.subject, r.reply, r.request, r.response)
+				// If it's not a JS API error, send it as a raw response without additional API/audit tracking.
+				if r.noJs {
+					s.sendInternalAccountMsgWithReply(r.acc, r.subject, _EMPTY_, r.hdr, r.response, false)
+				} else {
+					s.sendAPIErrResponse(r.ci, r.acc, r.subject, r.reply, r.request, r.response)
+				}
 				pop()
 			}
 			next()
@@ -1157,7 +1164,13 @@ func (s *Server) delayedAPIResponder() {
 
 func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string, rg *raftGroup, duration time.Duration) {
 	s.delayedAPIResponses.push(&delayedAPIResponse{
-		ci, acc, subject, reply, request, response, rg, time.Now().Add(duration), nil,
+		ci, acc, subject, reply, request, nil, response, rg, time.Now().Add(duration), false, nil,
+	})
+}
+
+func (s *Server) sendDelayedErrResponse(acc *Account, subject string, hdr []byte, response string, duration time.Duration) {
+	s.delayedAPIResponses.push(&delayedAPIResponse{
+		nil, acc, subject, _EMPTY_, _EMPTY_, hdr, response, nil, time.Now().Add(duration), true, nil,
 	})
 }
 
