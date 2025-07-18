@@ -1198,7 +1198,7 @@ type Varz struct {
 	TLSOCSPPeerVerify     bool                   `json:"tls_ocsp_peer_verify,omitempty"`    // TLSOCSPPeerVerify indicates if the OCSP protocol will be used to verify peers
 	IP                    string                 `json:"ip,omitempty"`                      // IP is the IP address the server listens on if set
 	ClientConnectURLs     []string               `json:"connect_urls,omitempty"`            // ClientConnectURLs is the list of URLs NATS clients can use to connect to this server
-	WSConnectURLs         []string               `json:"ws_connect_urls,omitempty"`         // WSConnectURLs is the list of urls websocket clients can use to conect to this server
+	WSConnectURLs         []string               `json:"ws_connect_urls,omitempty"`         // WSConnectURLs is the list of URLs websocket clients can use to connect to this server
 	MaxConn               int                    `json:"max_connections"`                   // MaxConn is the maximum amount of connections the server can accept
 	MaxSubs               int                    `json:"max_subscriptions,omitempty"`       // MaxSubs is the maximum amount of subscriptions the server can manage
 	PingInterval          time.Duration          `json:"ping_interval"`                     // PingInterval is the interval the server will send PING messages during periods of inactivity on a connection
@@ -1219,7 +1219,7 @@ type Varz struct {
 	JetStream             JetStreamVarz          `json:"jetstream,omitempty"`               // JetStream is the JetStream state
 	TLSTimeout            float64                `json:"tls_timeout"`                       // TLSTimeout is how long TLS operations have to complete
 	WriteDeadline         time.Duration          `json:"write_deadline"`                    // WriteDeadline is the maximum time writes to sockets have to complete
-	Start                 time.Time              `json:"start"`                             // Start is thw server was started
+	Start                 time.Time              `json:"start"`                             // Start is time when the server was started
 	Now                   time.Time              `json:"now"`                               // Now is the current time of the server
 	Uptime                string                 `json:"uptime"`                            // Uptime is how long the server has been running
 	Mem                   int64                  `json:"mem"`                               // Mem is the resident memory allocation
@@ -1234,7 +1234,7 @@ type Varz struct {
 	Leafs                 int                    `json:"leafnodes"`                         // Leafs is the number connected leafnode clients
 	InMsgs                int64                  `json:"in_msgs"`                           // InMsgs is the number of messages this server received
 	OutMsgs               int64                  `json:"out_msgs"`                          // OutMsgs is the number of message this server sent
-	InBytes               int64                  `json:"in_bytes"`                          //. InBytes is the number of bytes this server received
+	InBytes               int64                  `json:"in_bytes"`                          // InBytes is the number of bytes this server received
 	OutBytes              int64                  `json:"out_bytes"`                         // OutMsgs is the number of bytes this server sent
 	SlowConsumers         int64                  `json:"slow_consumers"`                    // SlowConsumers is the total count of clients that were disconnected since start due to being slow consumers
 	Subscriptions         uint32                 `json:"subscriptions"`                     // Subscriptions is the count of active subscriptions
@@ -1247,15 +1247,15 @@ type Varz struct {
 	TrustedOperatorsClaim []*jwt.OperatorClaims  `json:"trusted_operators_claim,omitempty"` // TrustedOperatorsClaim is the decoded claims for each trusted operator
 	SystemAccount         string                 `json:"system_account,omitempty"`          // SystemAccount is the name of the System account
 	PinnedAccountFail     uint64                 `json:"pinned_account_fails,omitempty"`    // PinnedAccountFail is how often user logon fails due to the issuer account not being pinned.
-	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         //OCSPResponseCache is the state of the OSCAP cache // OCSPResponseCache holds information about
+	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         // OCSPResponseCache is the state of the OSCAP cache // OCSPResponseCache holds information about
 	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`               // SlowConsumersStats is statistics about all detected Slow Consumer
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
 type JetStreamVarz struct {
 	Config *JetStreamConfig `json:"config,omitempty"` // Config is the active JetStream configuration
-	Stats  *JetStreamStats  `json:"stats,omitempty"`  // JetStreamStats is the statistic for the JetStream server
-	Meta   *MetaClusterInfo `json:"meta,omitempty"`   // Meta is information about the JetStream Meta Cluster
+	Stats  *JetStreamStats  `json:"stats,omitempty"`  // Stats is the statistics for the JetStream server
+	Meta   *MetaClusterInfo `json:"meta,omitempty"`   // Meta is information about the JetStream metalayer
 	Limits *JSLimitOpts     `json:"limits,omitempty"` // Limits are the configured JetStream limits
 }
 
@@ -1269,19 +1269,19 @@ type ClusterOptsVarz struct {
 	TLSTimeout  float64  `json:"tls_timeout,omitempty"`  // TLSTimeout is how long TLS operations have to complete
 	TLSRequired bool     `json:"tls_required,omitempty"` // TLSRequired indicates if TLS is required for connections
 	TLSVerify   bool     `json:"tls_verify,omitempty"`   // TLSVerify indicates if full verification of TLS connections is performed
-	PoolSize    int      `json:"pool_size,omitempty"`    // PoolSize is the configures cluster pool size
+	PoolSize    int      `json:"pool_size,omitempty"`    // PoolSize is the configured route connection pool size
 }
 
 // GatewayOptsVarz contains monitoring gateway information
 type GatewayOptsVarz struct {
 	Name           string                  `json:"name,omitempty"`            // Name is the configured cluster name
-	Host           string                  `json:"host,omitempty"`            // Host is the host gateway connections listens on
+	Host           string                  `json:"host,omitempty"`            // Host is the host the gateway listens on for connections
 	Port           int                     `json:"port,omitempty"`            // Port is the post gateway connections listens on
 	AuthTimeout    float64                 `json:"auth_timeout,omitempty"`    // AuthTimeout is the time cluster connections have to complete authentication
 	TLSTimeout     float64                 `json:"tls_timeout,omitempty"`     // TLSTimeout is how long TLS operations have to complete
 	TLSRequired    bool                    `json:"tls_required,omitempty"`    // TLSRequired indicates if TLS is required for connections
 	TLSVerify      bool                    `json:"tls_verify,omitempty"`      // TLSVerify indicates if full verification of TLS connections is performed
-	Advertise      string                  `json:"advertise,omitempty"`       // Advertise is the url advertised to remote gateway clients
+	Advertise      string                  `json:"advertise,omitempty"`       // Advertise is the URL advertised to remote gateway clients
 	ConnectRetries int                     `json:"connect_retries,omitempty"` // ConnectRetries is how many connection attempts the route will make
 	Gateways       []RemoteGatewayOptsVarz `json:"gateways,omitempty"`        // Gateways is state of configured gateway remotes
 	RejectUnknown  bool                    `json:"reject_unknown,omitempty"`  // RejectUnknown indicates if unknown cluster connections will be rejected
@@ -1291,7 +1291,7 @@ type GatewayOptsVarz struct {
 type RemoteGatewayOptsVarz struct {
 	Name       string   `json:"name"`                  // Name is the name of the remote gateway
 	TLSTimeout float64  `json:"tls_timeout,omitempty"` // TLSTimeout is how long TLS operations have to complete
-	URLs       []string `json:"urls,omitempty"`        // URLs is the urls to the remote
+	URLs       []string `json:"urls,omitempty"`        // URLs is the list of Gateway URLs
 }
 
 // LeafNodeOptsVarz contains monitoring leaf node information
@@ -1316,7 +1316,7 @@ type DenyRules struct {
 type RemoteLeafOptsVarz struct {
 	LocalAccount      string     `json:"local_account,omitempty"`        // LocalAccount is the local account this leaf is logged into
 	TLSTimeout        float64    `json:"tls_timeout,omitempty"`          // TLSTimeout is how long TLS operations have to complete
-	URLs              []string   `json:"urls,omitempty"`                 // URLs is the urls for the remote leafnode connection
+	URLs              []string   `json:"urls,omitempty"`                 // URLs is the list of URLs for the remote Leafnode connection
 	Deny              *DenyRules `json:"deny,omitempty"`                 // Deny is the configured import and exports that the Leafnode may not access
 	TLSOCSPPeerVerify bool       `json:"tls_ocsp_peer_verify,omitempty"` // TLSOCSPPeerVerify indicates if OCSP verification will be done
 }
@@ -1340,7 +1340,7 @@ type MQTTOptsVarz struct {
 type WebsocketOptsVarz struct {
 	Host              string        `json:"host,omitempty"`                 // Host is the host the server listens on
 	Port              int           `json:"port,omitempty"`                 // Port is the port the server listens on
-	Advertise         string        `json:"advertise,omitempty"`            // Advertise is the connection URL the server advertise
+	Advertise         string        `json:"advertise,omitempty"`            // Advertise is the connection URL the server advertises
 	NoAuthUser        string        `json:"no_auth_user,omitempty"`         // NoAuthUser is the user that will be used for unauthenticated connections
 	JWTCookie         string        `json:"jwt_cookie,omitempty"`           // JWTCookie is the name of a cookie the server will read for the connection JWT
 	HandshakeTimeout  time.Duration `json:"handshake_timeout,omitempty"`    // HandshakeTimeout is how long the connection has to complete the websocket setup
