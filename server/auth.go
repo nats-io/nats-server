@@ -697,6 +697,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	if !authRequired {
 		// TODO(dlc) - If they send us credentials should we fail?
 		s.mu.Unlock()
+		if c.kind == LEAF {
+			// Auth is not required, register the leaf node with the selected account.
+			// Otherwise, auth needs to match client auth.
+			return s.registerLeafWithAccount(c, opts.LeafNode.Account)
+		}
 		return true
 	}
 	var (
@@ -1094,12 +1099,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			}
 			return comparePasswords(password, c.opts.Password)
 		}
-	} else if c.kind == LEAF {
-		// There is no required username/password to connect and
-		// there was no u/p in the CONNECT or none that matches the
-		// know users. Register the leaf connection with global account
-		// or the one specified in config (if provided).
-		return s.registerLeafWithAccount(c, opts.LeafNode.Account)
 	}
 	return false
 }
