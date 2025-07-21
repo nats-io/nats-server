@@ -1437,6 +1437,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		a.last { padding-bottom: 16px }
 		a.version { font-size: 14; font-weight: 400; width: 312px; text-align: right; margin-top: -2rem }
 		a.version:hover { color: rgb(22 22 32) }
+		.endpoint { font-size: 12px; color: #999; font-family: monospace }
 
 	</style>
 	</head>
@@ -1447,17 +1448,17 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 
 	</div>
 	<br/>
-	<a href=.%s>General (%s)</a>
-	<a href=.%s>JetStream (%s)</a>
-	<a href=.%s>Connections (%s)</a>
-	<a href=.%s>Accounts (%s)</a>
-	<a href=.%s>Account Stats (%s)</a>
-	<a href=.%s>Subscriptions (%s)</a>
-	<a href=.%s>Routes (%s)</a>
-	<a href=.%s>LeafNodes (%s)</a>
-	<a href=.%s>Gateways (%s)</a>
-	<a href=.%s>Raft Groups (%s)</a>
-	<a href=.%s class=last>Health Probe (%s)</a>
+	<a href=.%s>General<span class="endpoint"> %s</span></a>
+	<a href=.%s>JetStream<span class="endpoint"> %s</span></a>
+	<a href=.%s>Connections<span class="endpoint"> %s</span></a>
+	<a href=.%s>Accounts<span class="endpoint"> %s</span></a>
+	<a href=.%s>Account Stats<span class="endpoint"> %s</span></a>
+	<a href=.%s>Subscriptions<span class="endpoint"> %s</span></a>
+	<a href=.%s>Routes<span class="endpoint"> %s</span></a>
+	<a href=.%s>LeafNodes<span class="endpoint"> %s</span></a>
+	<a href=.%s>Gateways<span class="endpoint"> %s</span></a>
+	<a href=.%s>Raft Groups<span class="endpoint"> %s</span></a>
+	<a href=.%s class=last>Health Probe<span class="endpoint"> %s</span></a>
     <a href=https://docs.nats.io/running-a-nats-service/nats_admin/monitoring class="help">Help</a>
   </body>
 </html>`,
