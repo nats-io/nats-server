@@ -488,8 +488,10 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		require_NoError(t, err)
 		mset.mu.RLock()
 		batches := mset.batches
+		batch := mset.batchApply
 		mset.mu.RUnlock()
 		require_True(t, batches == nil)
+		require_True(t, batch == nil)
 
 		// Enabling doesn't need to populate the batching state.
 		cfg.AllowAtomicPublish = true
@@ -497,8 +499,10 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		require_NoError(t, err)
 		mset.mu.RLock()
 		batches = mset.batches
+		batch = mset.batchApply
 		mset.mu.RUnlock()
 		require_True(t, batches == nil)
+		require_True(t, batch == nil)
 
 		// Publish a partial batch that needs to be cleaned up.
 		m := nats.NewMsg("foo")
@@ -514,8 +518,10 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 
 		mset.mu.RLock()
 		batches = mset.batches
+		batch = mset.batchApply
 		mset.mu.RUnlock()
 		require_NotNil(t, batches)
+		require_NotNil(t, batch)
 		batches.mu.Lock()
 		groups := len(batches.group)
 		b := batches.group["uuid"]
@@ -524,6 +530,7 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		require_NotNil(t, b)
 		store := b.store
 		require_Equal(t, store.State().Msgs, 1)
+		clfs := mset.getCLFS()
 
 		// Should fully clean up the in-progress batch.
 		switch mode {
@@ -563,6 +570,15 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 			}
 			return nil
 		})
+		// Should clean up the batch apply state.
+		if mode == Disable || mode == Delete {
+			mset.mu.RLock()
+			batch = mset.batchApply
+			mset.mu.RUnlock()
+			nclfs := mset.getCLFS()
+			require_True(t, batch == nil)
+			require_Equal(t, clfs, nclfs)
+		}
 	}
 
 	t.Run("Disable", func(t *testing.T) { test(t, Disable) })
