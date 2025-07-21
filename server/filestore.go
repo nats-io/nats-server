@@ -6921,11 +6921,13 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	}
 
 	// Signal up about this data being flushed.
-	mb.fs.pcbMu.RLock()
-	pcb := mb.fs.pcb
-	mb.fs.pcbMu.RUnlock()
-	if pcb != nil && mb.applied > 0 {
-		pcb(mb.applied)
+	if mb.applied > 0 {
+		mb.fs.pcbMu.RLock()
+		pcb := mb.fs.pcb
+		mb.fs.pcbMu.RUnlock()
+		if pcb != nil {
+			pcb(mb.applied)
+		}
 	}
 
 	return fsLostData, mb.werr
