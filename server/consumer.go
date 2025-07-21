@@ -1098,10 +1098,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// If we have multiple filter subjects, create a sublist which we will use
 	// in calling store.LoadNextMsgMulti.
-	if len(o.cfg.FilterSubjects) > 0 {
+	if len(o.subjf) > 0 {
 		o.filters = gsl.NewSublist[struct{}]()
-		for _, filter := range o.cfg.FilterSubjects {
-			o.filters.Insert(filter, struct{}{})
+		for _, filter := range o.subjf {
+			o.filters.Insert(filter.subject, struct{}{})
 		}
 	} else {
 		// Make sure this is nil otherwise.
