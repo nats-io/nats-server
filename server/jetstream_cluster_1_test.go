@@ -8974,6 +8974,38 @@ func TestJetStreamClusterCreateR3StreamWithOfflineNodes(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterSetPreferredToOnlineNode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Shutdown one random server.
+	ml := c.leader()
+	rs := c.randomNonLeader()
+	js := rs.getJetStream()
+	cc := js.cluster
+	require_NotNil(t, cc)
+	meta := cc.meta
+	require_NotNil(t, meta)
+	rsid := meta.ID()
+	rs.Shutdown()
+
+	cfg := &StreamConfig{Storage: FileStorage, Replicas: 3}
+	js = ml.getJetStream()
+	cc = js.cluster
+	require_NotNil(t, cc)
+	peers, err := cc.selectPeerGroup(3, "R3S", cfg, nil, 0, nil)
+	// Need explicit nil-check.
+	if err != nil {
+		require_NoError(t, err)
+	}
+	require_Len(t, len(peers), 3)
+
+	// Should prefer online peers when selecting preferred.
+	rg := &raftGroup{Name: groupNameForStream(peers, cfg.Storage), Storage: cfg.Storage, Peers: peers, Cluster: "R3S"}
+	rg.setPreferred(ml)
+	require_NotEqual(t, rg.Preferred, rsid)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
