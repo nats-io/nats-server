@@ -2224,6 +2224,11 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 	}
 
+	// If atomic publish is disabled, delete any in-progress batches.
+	if !cfg.AllowAtomicPublish {
+		mset.deleteInflightBatches()
+	}
+
 	// Now update config and store's version of our config.
 	// Although we are under the stream write lock, we will also assign the new
 	// configuration under mset.cfgMu lock. This is so that in places where
@@ -4152,6 +4157,8 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 	if len(mset.sources) > 0 {
 		mset.stopSourceConsumers()
 	}
+	// Clear batching state.
+	mset.deleteInflightBatches()
 
 	// In case we had a direct get subscriptions.
 	if stopping {
@@ -4160,6 +4167,18 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 
 	mset.active = false
 	return nil
+}
+
+// Lock should be held.
+func (mset *stream) deleteInflightBatches() {
+	if mset.batches != nil {
+		mset.batches.mu.Lock()
+		for _, b := range mset.batches.group {
+			b.store.Delete()
+		}
+		mset.batches.mu.Unlock()
+		mset.batches = nil
+	}
 }
 
 // Lock does NOT need to be held, we set the client on setup and never change it at this point.
