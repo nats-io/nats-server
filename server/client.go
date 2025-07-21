@@ -257,6 +257,7 @@ type client struct {
 	nc         net.Conn
 	ncs        atomic.Value
 	ncsAcc     atomic.Value
+	ncsUser    atomic.Value
 	out        outbound
 	user       *NkeyUser
 	host       string
@@ -1883,9 +1884,6 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 			if remoteName != _EMPTY_ {
 				tags = append(tags, fmt.Sprintf("Remote: %s", remoteName))
 			}
-			if c.acc != nil {
-				tags = append(tags, fmt.Sprintf("Account: %s", c.acc.traceLabel()))
-			}
 			if len(tags) > 0 {
 				c.Noticef("%s connection closed: %s - %s", c.kindString(), reason, strings.Join(tags, ", "))
 			} else {
@@ -2216,6 +2214,19 @@ func (c *client) processConnect(arg []byte) error {
 			// By default register with the global account.
 			c.registerWithAccount(srv.globalAccount())
 		}
+
+		// Initialize user info used in logs.
+		c.mu.Lock()
+		acc := c.acc
+		if c.getRawAuthUser() != _EMPTY_ {
+			c.ncsUser.Store(c.getAuthUser())
+		}
+		c.mu.Unlock()
+		if acc != nil {
+			acc.mu.RLock()
+			c.ncsAcc.Store(acc.traceLabel())
+			acc.mu.RUnlock()
+		}
 	}
 
 	switch kind {
@@ -2279,28 +2290,14 @@ func (c *client) accountAuthExpired() {
 
 func (c *client) authViolation() {
 	var s *Server
-	var hasTrustedNkeys, hasNkeys, hasUsers bool
 	if s = c.srv; s != nil {
-		s.mu.RLock()
-		hasTrustedNkeys = s.trustedKeys != nil
-		hasNkeys = s.nkeys != nil
-		hasUsers = s.users != nil
-		s.mu.RUnlock()
 		defer s.sendAuthErrorEvent(c)
 	}
 
-	if hasTrustedNkeys {
-		c.Errorf("%v", ErrAuthentication)
-	} else if hasNkeys {
-		c.Errorf("%s - Nkey %q",
-			ErrAuthentication.Error(),
-			c.opts.Nkey)
-	} else if hasUsers {
-		c.Errorf("%s - User %q",
-			ErrAuthentication.Error(),
-			c.opts.Username)
-	} else {
-		if c.srv != nil {
+	if s != nil {
+		if c.getRawAuthUser() != _EMPTY_ {
+			c.Errorf("%v - %s", ErrAuthentication, c.getAuthUser())
+		} else {
 			c.Errorf(ErrAuthentication.Error())
 		}
 	}
@@ -5288,18 +5285,16 @@ func (c *client) pubPermissionViolation(subject []byte) {
 		mt.setIngressError(errTxt)
 	}
 	c.sendErr(errTxt)
-	c.Errorf("Publish Violation - %s, Subject %q", c.getAuthUser(), subject)
+	c.Errorf("Publish Violation - Subject %q", subject)
 }
 
 func (c *client) subPermissionViolation(sub *subscription) {
 	errTxt := fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject)
-	logTxt := fmt.Sprintf("Subscription Violation - %s, Subject %q, SID %s",
-		c.getAuthUser(), sub.subject, sub.sid)
+	logTxt := fmt.Sprintf("Subscription Violation - Subject %q, SID %s", sub.subject, sub.sid)
 
 	if sub.queue != nil {
 		errTxt = fmt.Sprintf("Permissions Violation for Subscription to %q using queue %q", sub.subject, sub.queue)
-		logTxt = fmt.Sprintf("Subscription Violation - %s, Subject %q, Queue: %q, SID %s",
-			c.getAuthUser(), sub.subject, sub.queue, sub.sid)
+		logTxt = fmt.Sprintf("Subscription Violation - Subject %q, Queue: %q, SID %s", sub.subject, sub.queue, sub.sid)
 	}
 
 	c.sendErr(errTxt)
@@ -5312,13 +5307,12 @@ func (c *client) replySubjectViolation(reply []byte) {
 		mt.setIngressError(errTxt)
 	}
 	c.sendErr(errTxt)
-	c.Errorf("Publish Violation - %s, Reply %q", c.getAuthUser(), reply)
+	c.Errorf("Publish Violation - Reply %q", reply)
 }
 
 func (c *client) maxTokensViolation(sub *subscription) {
 	errTxt := fmt.Sprintf("Permissions Violation for Subscription to %q, too many tokens", sub.subject)
-	logTxt := fmt.Sprintf("Subscription Violation Too Many Tokens - %s, Subject %q, SID %s",
-		c.getAuthUser(), sub.subject, sub.sid)
+	logTxt := fmt.Sprintf("Subscription Violation Too Many Tokens - Subject %q, SID %s", sub.subject, sub.sid)
 	c.sendErr(errTxt)
 	c.Errorf(logTxt)
 }
@@ -5637,10 +5631,8 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	// Unsubscribe all that need to be removed and report back to client and logs.
 	for _, sub := range removed {
 		c.unsubscribe(acc, sub, true, true)
-		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)",
-			sub.subject, sub.sid))
-		srv.Noticef("Removed sub %q (sid %q) for %s - not authorized",
-			sub.subject, sub.sid, c.getAuthUser())
+		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)", sub.subject, sub.sid))
+		srv.Noticef("Removed sub %q (sid %q) for %s - not authorized", sub.subject, sub.sid, c.getAuthUser())
 	}
 }
 
@@ -6317,9 +6309,15 @@ func (c *client) isClosed() bool {
 }
 
 func (c *client) format(format string) string {
-	acc := c.ncsAcc.Load()
-	if acc != nil {
-		return fmt.Sprintf("%s - %s - Account: %s", c, format, acc)
+	var tags []string
+	if acc := c.ncsAcc.Load(); acc != nil {
+		tags = append(tags, fmt.Sprintf("- Account: %s", acc))
+	}
+	if user := c.ncsUser.Load(); user != nil && user.(string) != _EMPTY_ {
+		tags = append(tags, fmt.Sprintf("- %s", user))
+	}
+	if len(tags) > 0 {
+		return fmt.Sprintf("%s - %s %s", c, format, strings.Join(tags, " "))
 	} else {
 		return fmt.Sprintf("%s - %s", c, format)
 	}
@@ -6332,6 +6330,14 @@ func (c *client) formatNoClientInfo(format string) string {
 	} else {
 		return format
 	}
+}
+
+func (c *client) formatClientSuffix() string {
+	user := c.ncsUser.Load()
+	if user == nil || user.(string) == _EMPTY_ {
+		return _EMPTY_
+	}
+	return fmt.Sprintf(" - %s", user)
 }
 
 // Logging functionality scoped to a client or route.
@@ -6365,7 +6371,7 @@ func (c *client) RateLimitErrorf(format string, v ...any) {
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
-	c.srv.Errorf("%s - %s", c, statement)
+	c.srv.Errorf("%s - %s%s", c, statement, c.formatClientSuffix())
 }
 
 func (c *client) rateLimitFormatWarnf(format string, v ...any) {
@@ -6375,7 +6381,7 @@ func (c *client) rateLimitFormatWarnf(format string, v ...any) {
 		return
 	}
 	statement := fmt.Sprintf(format, v...)
-	c.srv.Warnf("%s - %s", c, statement)
+	c.srv.Warnf("%s - %s%s", c, statement, c.formatClientSuffix())
 }
 
 func (c *client) RateLimitWarnf(format string, v ...any) {
@@ -6384,7 +6390,7 @@ func (c *client) RateLimitWarnf(format string, v ...any) {
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
-	c.srv.Warnf("%s - %s", c, statement)
+	c.srv.Warnf("%s - %s%s", c, statement, c.formatClientSuffix())
 }
 
 func (c *client) RateLimitDebugf(format string, v ...any) {
@@ -6393,7 +6399,7 @@ func (c *client) RateLimitDebugf(format string, v ...any) {
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
-	c.srv.Debugf("%s - %s", c, statement)
+	c.srv.Debugf("%s - %s%s", c, statement, c.formatClientSuffix())
 }
 
 // Set the very first PING to a lower interval to capture the initial RTT.
