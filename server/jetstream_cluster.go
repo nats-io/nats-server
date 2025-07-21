@@ -1988,16 +1988,38 @@ func (rg *raftGroup) isMember(id string) bool {
 	return false
 }
 
-func (rg *raftGroup) setPreferred() {
+func (rg *raftGroup) setPreferred(s *Server) {
 	if rg == nil || len(rg.Peers) == 0 {
 		return
 	}
 	if len(rg.Peers) == 1 {
 		rg.Preferred = rg.Peers[0]
 	} else {
-		// For now just randomly select a peer for the preferred.
-		pi := rand.Int31n(int32(len(rg.Peers)))
-		rg.Preferred = rg.Peers[pi]
+		var online []string
+		for _, p := range rg.Peers {
+			si, ok := s.nodeToInfo.Load(p)
+			if !ok || si == nil {
+				continue
+			}
+			ni := si.(nodeInfo)
+			if ni.offline {
+				continue
+			}
+			online = append(online, p)
+		}
+
+		if len(online) == 0 {
+			// No online servers, just randomly select a peer for the preferred.
+			pi := rand.Int31n(int32(len(rg.Peers)))
+			rg.Preferred = rg.Peers[pi]
+		} else if len(online) == 1 {
+			// Only one online server.
+			rg.Preferred = online[0]
+		} else {
+			// Randomly select an online peer.
+			pi := rand.Int31n(int32(len(online)))
+			rg.Preferred = online[pi]
+		}
 	}
 }
 
@@ -2748,7 +2770,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					name, cfg := o.String(), o.config()
 					rg := cc.createGroupForConsumer(&cfg, sa)
 					// Pick a preferred leader.
-					rg.setPreferred()
+					rg.setPreferred(s)
 
 					// Place our initial state here as well for assignment distribution.
 					state, _ := o.store.State()
@@ -5458,7 +5480,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 							s.Warnf("Retrying cluster placement for stream '%s > %s' due to insufficient resources", result.Account, result.Stream)
 						}
 						// Pick a new preferred leader.
-						rg.setPreferred()
+						rg.setPreferred(s)
 						// Get rid of previous attempt.
 						cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 						// Propose new.
@@ -6325,7 +6347,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		}
 		rg = nrg
 		// Pick a preferred leader.
-		rg.setPreferred()
+		rg.setPreferred(s)
 	}
 
 	if syncSubject == _EMPTY_ {
@@ -6888,7 +6910,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 		return
 	}
 	// Pick a preferred leader.
-	rg.setPreferred()
+	rg.setPreferred(s)
 	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
@@ -7588,7 +7610,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			return
 		}
 		// Pick a preferred leader.
-		rg.setPreferred()
+		rg.setPreferred(s)
 
 		// Inherit cluster from stream.
 		rg.Cluster = sa.Group.Cluster
