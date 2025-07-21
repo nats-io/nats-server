@@ -303,3 +303,99 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
+
+func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
+	const (
+		Disable = iota
+		StepDown
+		Delete
+	)
+
+	test := func(t *testing.T, mode int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		cfg := &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			AllowAtomicPublish: false,
+			Replicas:           3,
+		}
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		sl := c.streamLeader(globalAccountName, "TEST")
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		mset.mu.RLock()
+		batches := mset.batches
+		mset.mu.RUnlock()
+		require_True(t, batches == nil)
+
+		// Enabling doesn't need to populate the batching state.
+		cfg.AllowAtomicPublish = true
+		_, err = jsStreamUpdate(t, nc, cfg)
+		require_NoError(t, err)
+		mset.mu.RLock()
+		batches = mset.batches
+		mset.mu.RUnlock()
+		require_True(t, batches == nil)
+
+		// Publish a partial batch that needs to be cleaned up.
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		require_NoError(t, nc.PublishMsg(m))
+
+		// Publish another batch that commits, state should be cleaned up by default.
+		m.Header.Set("Nats-Batch-Id", "commit")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+
+		mset.mu.RLock()
+		batches = mset.batches
+		mset.mu.RUnlock()
+		require_NotNil(t, batches)
+		batches.mu.Lock()
+		groups := len(batches.group)
+		b := batches.group["uuid"]
+		batches.mu.Unlock()
+		require_Len(t, groups, 1)
+		require_NotNil(t, b)
+		store := b.store
+		require_Equal(t, store.State().Msgs, 1)
+
+		// Should fully clean up the in-progress batch.
+		switch mode {
+		case Disable:
+			cfg.AllowAtomicPublish = false
+			_, err = jsStreamUpdate(t, nc, cfg)
+			require_NoError(t, err)
+		case StepDown:
+			require_NoError(t, sl.JetStreamStepdownStream(globalAccountName, "TEST"))
+		case Delete:
+			require_NoError(t, mset.delete())
+		}
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset.mu.RLock()
+			batches = mset.batches
+			mset.mu.RUnlock()
+			if batches != nil {
+				return fmt.Errorf("expected no batches")
+			}
+			if msgs := store.State().Msgs; msgs != 0 {
+				return fmt.Errorf("expected 0 messages, got %d", msgs)
+			}
+			return nil
+		})
+	}
+
+	t.Run("Disable", func(t *testing.T) { test(t, Disable) })
+	t.Run("StepDown", func(t *testing.T) { test(t, StepDown) })
+	t.Run("Delete", func(t *testing.T) { test(t, Delete) })
+}
