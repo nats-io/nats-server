@@ -1768,5 +1768,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishInvalidBatchIDErr",
+    "code": 400,
+    "error_code": 10179,
+    "description": "atomic publish batch ID is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
