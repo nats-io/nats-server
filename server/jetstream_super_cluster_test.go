@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3672,14 +3673,7 @@ func TestJetStreamSuperClusterDoubleStreamMove(t *testing.T) {
 				js.mu.Unlock()
 				return fmt.Errorf("durable not found in stream")
 			} else {
-				found := false
-				for _, peer := range ca.Group.Peers {
-					if peer == sExpHash {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !slices.Contains(ca.Group.Peers, sExpHash) {
 					js.mu.Unlock()
 					return fmt.Errorf("consumer expected peer %s/%s bud didn't find in %+v",
 						sExpHash, sExpected, ca.Group.Peers)
@@ -3707,8 +3701,8 @@ func TestJetStreamSuperClusterDoubleStreamMove(t *testing.T) {
 			if si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second)); err != nil {
 				return fmt.Errorf("could not fetch stream info: %v", err)
 			} else if len(si.Cluster.Replicas)+1 != si.Config.Replicas {
-				return fmt.Errorf("not yet downsized replica should be empty has: %d %s",
-					len(si.Cluster.Replicas), si.Cluster.Leader)
+				return fmt.Errorf("not yet downsized replica should be empty has: %d != %d (%s)",
+					len(si.Cluster.Replicas)+1, si.Config.Replicas, si.Cluster.Leader)
 			} else if si.Cluster.Leader == _EMPTY_ {
 				return fmt.Errorf("leader not found")
 			} else if len(expectedSet) > 0 {

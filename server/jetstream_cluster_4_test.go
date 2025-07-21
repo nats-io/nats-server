@@ -3201,24 +3201,34 @@ func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 
+	checkConsumerReplicas := func(t *testing.T, stream, consumer string, cor, clr int) {
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			if ci, err = js.ConsumerInfo(stream, consumer); err != nil {
+				return err
+			}
+			if ci.Config.Replicas != cor {
+				return fmt.Errorf("config replicas %d != %d", ci.Config.Replicas, cor)
+			}
+			if ci.Cluster == nil {
+				return fmt.Errorf("cluster nil")
+			}
+			if len(ci.Cluster.Replicas) != clr {
+				return fmt.Errorf("cluster replicas %d != %d", len(ci.Cluster.Replicas), cor)
+			}
+			return nil
+		})
+	}
+
 	// Now check each.
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "dur")
-	ci, err = js.ConsumerInfo("TEST", "dur")
-	require_NoError(t, err)
-	require_Equal(t, ci.Config.Replicas, 0)
-	require_Equal(t, len(ci.Cluster.Replicas), 2)
+	checkConsumerReplicas(t, "TEST", "dur", 0, 2)
 
 	c.waitOnConsumerLeader(globalAccountName, "TEST", eName)
-	ci, err = js.ConsumerInfo("TEST", eName)
-	require_NoError(t, err)
-	require_Equal(t, ci.Config.Replicas, 0)
-	require_Equal(t, len(ci.Cluster.Replicas), 0)
+	checkConsumerReplicas(t, "TEST", eName, 0, 0)
 
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "r1")
-	ci, err = js.ConsumerInfo("TEST", "r1")
-	require_NoError(t, err)
-	require_Equal(t, ci.Config.Replicas, 1)
-	require_Equal(t, len(ci.Cluster.Replicas), 0)
+	checkConsumerReplicas(t, "TEST", "r1", 1, 0)
+
 	// Now check that state transferred correctly.
 	ci.Delivered.Last, ci.AckFloor.Last = nil, nil
 	if ci.Delivered != r1ci.Delivered {
@@ -3231,10 +3241,8 @@ func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 	}
 
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "r3")
-	ci, err = js.ConsumerInfo("TEST", "r3")
-	require_NoError(t, err)
-	require_Equal(t, ci.Config.Replicas, 3)
-	require_Equal(t, len(ci.Cluster.Replicas), 2)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "r1")
+	checkConsumerReplicas(t, "TEST", "r3", 3, 2)
 }
 
 func TestJetStreamClusterDesyncAfterQuitDuringCatchup(t *testing.T) {
