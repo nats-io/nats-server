@@ -2958,17 +2958,14 @@ func isControlHdr(hdr []byte) bool {
 // Apply our stream entries.
 // Return maximum allowed applied value, if currently inside a batch, zero otherwise.
 func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) (uint64, error) {
-	mset.batchMu.Lock()
-	batchActiveId := mset.batchId
-	mset.batchMu.Unlock()
+	mset.mu.RLock()
+	batch := mset.batchApply
+	mset.mu.RUnlock()
 
 	for i, e := range ce.Entries {
 		// Check if a batch is abandoned.
-		if e.Type != EntryNormal && batchActiveId != _EMPTY_ {
-			mset.batchMu.Lock()
-			batchActiveId = _EMPTY_
-			mset.rejectBatchStateLocked()
-			mset.batchMu.Unlock()
+		if e.Type != EntryNormal && batch != nil && batch.id != _EMPTY_ {
+			batch.rejectBatchState(mset)
 		}
 
 		if e.Type == EntryNormal {
@@ -2978,56 +2975,69 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err != nil {
 					panic(err.Error())
 				}
-				mset.batchMu.Lock()
-				// Previous batch (if any) was abandoned.
-				if batchActiveId != _EMPTY_ && batchId != batchActiveId {
-					mset.rejectBatchStateLocked()
+				// Initialize if unset.
+				if batch == nil {
+					batch = &batchApply{}
+					mset.mu.Lock()
+					mset.batchApply = batch
+					mset.mu.Unlock()
 				}
-				mset.batchCount++
+
+				batch.mu.Lock()
+				// Previous batch (if any) was abandoned.
+				if batch.id != _EMPTY_ && batchId != batch.id {
+					batch.rejectBatchStateLocked(mset)
+				}
+				batch.count++
 				// If the sequence is not monotonically increasing/we identify gaps, the batch can't be accepted.
-				if batchSeq != mset.batchCount {
-					batchActiveId = _EMPTY_
-					mset.rejectBatchStateLocked()
-					mset.batchMu.Unlock()
+				if batchSeq != batch.count {
+					batch.rejectBatchStateLocked(mset)
+					batch.mu.Unlock()
 					continue
 				}
 				// If this is the first message in the batch, need to mark the start index.
 				// We'll continue to check batch-completeness and try to find the commit.
 				// At that point we'll commit the whole batch.
 				if batchSeq == 1 {
-					mset.batchEntryStart = i
-					mset.batchMaxApplied = ce.Index - 1
+					batch.entryStart = i
+					batch.maxApplied = ce.Index - 1
 				}
-				mset.batchId, batchActiveId = batchId, batchId
-				mset.batchMu.Unlock()
+				batch.id = batchId
+				batch.mu.Unlock()
 				continue
 			} else if op == batchCommitMsgOp {
 				batchId, batchSeq, _, _, err := decodeBatchMsg(buf[1:])
 				if err != nil {
 					panic(err.Error())
 				}
+				// Initialize if unset.
+				if batch == nil {
+					batch = &batchApply{}
+					mset.mu.Lock()
+					mset.batchApply = batch
+					mset.mu.Unlock()
+				}
 
-				mset.batchMu.Lock()
+				batch.mu.Lock()
 				// Previous batch (if any) was abandoned.
-				if batchActiveId != _EMPTY_ && batchId != batchActiveId {
-					mset.rejectBatchStateLocked()
+				if batch.id != _EMPTY_ && batchId != batch.id {
+					batch.rejectBatchStateLocked(mset)
 				}
 
 				var entries []*Entry
-				mset.batchCount++
+				batch.count++
 				// Detected a gap, reject the batch.
-				if batchSeq != mset.batchCount {
-					batchActiveId = _EMPTY_
-					mset.rejectBatchStateLocked()
-					mset.batchMu.Unlock()
+				if batchSeq != batch.count {
+					batch.rejectBatchStateLocked(mset)
+					batch.mu.Unlock()
 					continue
 				}
 
 				// Process any entries that are part of this batch but prior to the current one.
-				for j, bce := range mset.batchEntries {
+				for j, bce := range batch.entries {
 					if j == 0 {
 						// The first needs only the entries when the batch is started.
-						entries = bce.Entries[mset.batchEntryStart:]
+						entries = bce.Entries[batch.entryStart:]
 					} else {
 						// Otherwise, all entries are used.
 						entries = bce.Entries
@@ -3035,13 +3045,13 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					for _, entry := range entries {
 						_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
 						if err != nil {
-							mset.batchMu.Unlock()
+							batch.mu.Unlock()
 							panic(err.Error())
 						}
 						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
-							mset.batchMu.Unlock()
+							batch.mu.Unlock()
 							// Make sure to return remaining entries to the pool on an error.
-							for _, nce := range mset.batchEntries[j:] {
+							for _, nce := range batch.entries[j:] {
 								nce.ReturnToPool()
 							}
 							return 0, err
@@ -3050,9 +3060,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					// Return the entry to the pool now.
 					bce.ReturnToPool()
 				}
-				if len(mset.batchEntries) == 0 {
+				if len(batch.entries) == 0 {
 					// Get within the same entry, but within the range of this batch.
-					entries = ce.Entries[mset.batchEntryStart : i+1]
+					entries = ce.Entries[batch.entryStart : i+1]
 				} else {
 					// Get all entries up to and including the current one.
 					entries = ce.Entries[:i+1]
@@ -3061,25 +3071,21 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				for _, entry := range entries {
 					_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
 					if err != nil {
-						mset.batchMu.Unlock()
+						batch.mu.Unlock()
 						panic(err.Error())
 					}
 					if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
-						mset.batchMu.Unlock()
+						batch.mu.Unlock()
 						return 0, err
 					}
 				}
 				// Clear state, batch was successful.
-				batchActiveId = _EMPTY_
-				mset.clearBatchStateLocked()
-				mset.batchMu.Unlock()
+				batch.clearBatchStateLocked()
+				batch.mu.Unlock()
 				continue
-			} else if batchActiveId != _EMPTY_ {
+			} else if batch != nil && batch.id != _EMPTY_ {
 				// If a batch is abandoned without a commit, reject it.
-				mset.batchMu.Lock()
-				batchActiveId = _EMPTY_
-				mset.rejectBatchStateLocked()
-				mset.batchMu.Unlock()
+				batch.rejectBatchState(mset)
 			}
 
 			switch op {
@@ -3254,42 +3260,18 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 	// If we're still actively processing a batch, must store the entry in-memory
 	// to come back to it later once we find the commit.
-	if batchActiveId != _EMPTY_ {
-		mset.batchMu.Lock()
-		if mset.batchEntries == nil {
-			mset.batchEntries = []*CommittedEntry{ce}
+	if batch != nil && batch.id != _EMPTY_ {
+		batch.mu.Lock()
+		if batch.entries == nil {
+			batch.entries = []*CommittedEntry{ce}
 		} else {
-			mset.batchEntries = append(mset.batchEntries, ce)
+			batch.entries = append(batch.entries, ce)
 		}
-		maxApplied := mset.batchMaxApplied
-		mset.batchMu.Unlock()
+		maxApplied := batch.maxApplied
+		batch.mu.Unlock()
 		return maxApplied, nil
 	}
 	return 0, nil
-}
-
-// clearBatchStateLocked clears in-memory apply-batch-related state.
-// mset.batchMu lock should be held.
-func (mset *stream) clearBatchStateLocked() {
-	mset.batchId = _EMPTY_
-	mset.batchCount = 0
-	mset.batchEntries = nil
-	mset.batchEntryStart = 0
-	mset.batchMaxApplied = 0
-}
-
-// rejectBatchStateLocked rejects the batch and clears in-memory apply-batch-related state.
-// Corrects mset.clfs to take the failed batch into account.
-// mset.batchMu lock should be held.
-func (mset *stream) rejectBatchStateLocked() {
-	mset.clMu.Lock()
-	mset.clfs += mset.batchCount
-	mset.clMu.Unlock()
-	// We're rejecting the batch, so all entries need to be returned to the pool.
-	for _, bce := range mset.batchEntries {
-		bce.ReturnToPool()
-	}
-	mset.clearBatchStateLocked()
 }
 
 func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isRecovering bool) error {
@@ -8479,15 +8461,22 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
 			// Need to unlock and re-acquire the locks in the proper order.
 			mset.clMu.Unlock()
-			// Locking order is stream -> batchMu -> clMu
+			// Locking order is stream -> mu -> clMu
 			mset.mu.RLock()
-			mset.batchMu.Lock()
+			batch := mset.batchApply
+			var batchCount uint64
+			if batch != nil {
+				batch.mu.Lock()
+				batchCount = batch.count
+			}
 			mset.clMu.Lock()
 			// Re-capture
 			lseq = mset.lseq
-			mset.clseq = lseq + mset.clfs + mset.batchCount
+			mset.clseq = lseq + mset.clfs + batchCount
 			// Keep hold of the mset.clMu, but unlock the others.
-			mset.batchMu.Unlock()
+			if batch != nil {
+				batch.mu.Unlock()
+			}
 			mset.mu.RUnlock()
 		}
 
@@ -8598,15 +8587,22 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
 		// Need to unlock and re-acquire the locks in the proper order.
 		mset.clMu.Unlock()
-		// Locking order is stream -> batchMu -> clMu
+		// Locking order is stream -> mu -> clMu
 		mset.mu.RLock()
-		mset.batchMu.Lock()
+		batch := mset.batchApply
+		var batchCount uint64
+		if batch != nil {
+			batch.mu.Lock()
+			batchCount = batch.count
+		}
 		mset.clMu.Lock()
 		// Re-capture
 		lseq = mset.lseq
-		mset.clseq = lseq + mset.clfs + mset.batchCount
+		mset.clseq = lseq + mset.clfs + batchCount
 		// Keep hold of the mset.clMu, but unlock the others.
-		mset.batchMu.Unlock()
+		if batch != nil {
+			batch.mu.Unlock()
+		}
 		mset.mu.RUnlock()
 	}
 
