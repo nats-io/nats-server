@@ -2578,6 +2578,96 @@ func TestClientAuthRequiredNoAuthUser(t *testing.T) {
 	}
 }
 
+func TestClusterClientUserInfoReq(t *testing.T) {
+
+	jsClusterAccountsTempl := `
+	listen: 127.0.0.1:-1
+
+	server_name: %s
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	websocket {
+		listen: 127.0.0.1:-1
+		compression: true
+		handshake_timeout: "5s"
+		no_tls: true
+	}
+
+	no_auth_user: dlc
+
+	
+		PERMS = {
+			publish = { allow: "$SYS.REQ.>", deny: "$SYS.REQ.ACCOUNT.>" }
+			subscribe = "_INBOX.>"
+			allow_responses: true
+		}
+	
+	accounts {
+		A: { users: [ { user: dlc, password: pass, permissions: $PERMS } ] }
+		ONE { users = [ { user: "one", pass: "p" }  ]; jetstream: enabled }
+		TWO { users = [ { user: "two", pass: "p" } ]; jetstream: enabled }
+		NOJS { users = [ { user: "nojs", pass: "p", permissions: $PERMS } ] }
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+`
+
+	// cluster := createJetStreamClusterExplicit(t, "test", 3)
+	cluster := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "test", 3)
+	defer cluster.shutdown()
+	cluster.waitOnClusterReady()
+
+	var i int
+	for {
+
+		s := cluster.randomServer()
+		nc, _ := jsClientConnect(t, s)
+		t.Logf("%d: Connected to %+v", i, nc.ConnectedServerName())
+		defer nc.Close()
+		resp, err := nc.Request("$SYS.REQ.USER.INFO", nil, time.Second)
+		require_NoError(t, err)
+
+		response := ServerAPIResponse{Data: &UserInfo{}}
+		err = json.Unmarshal(resp.Data, &response)
+		require_NoError(t, err)
+
+		userInfo := response.Data.(*UserInfo)
+
+		dlc := &UserInfo{
+			UserID:  "dlc",
+			Account: "A",
+			Permissions: &Permissions{
+				Publish: &SubjectPermission{
+					Allow: []string{"$SYS.REQ.>"},
+					Deny:  []string{"$SYS.REQ.ACCOUNT.>"},
+				},
+				Subscribe: &SubjectPermission{
+					Allow: []string{"_INBOX.>"},
+				},
+				Response: &ResponsePermission{
+					MaxMsgs: DEFAULT_ALLOW_RESPONSE_MAX_MSGS,
+					Expires: DEFAULT_ALLOW_RESPONSE_EXPIRATION,
+				},
+			},
+		}
+		if !reflect.DeepEqual(dlc, userInfo) {
+			t.Fatalf("User info for %q did not match. Got response: %+v from %s", "dlc", userInfo, response.Server.Name)
+		}
+		t.Logf("Got expected response %+v from %s", userInfo, response.Server.Name)
+		i++
+	}
+
+}
+
 func TestClientUserInfoReq(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
