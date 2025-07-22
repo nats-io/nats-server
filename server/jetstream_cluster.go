@@ -8233,6 +8233,21 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			sm    *StoreMsg
 			sz    int
 		)
+
+		errorOnUnsupported := func(seq uint64, header string) *ApiError {
+			apiErr := NewJSAtomicPublishUnsupportedHeaderBatchError(header)
+			// TODO(mvv): reset in-memory expected header maps
+			mset.clseq -= seq - 1
+			mset.clMu.Unlock()
+			cleanup()
+			batches.mu.Unlock()
+			if canRespond {
+				buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
+			}
+			return apiErr
+		}
+
 		for seq := uint64(1); seq <= batchSeq; seq++ {
 			if seq == batchSeq {
 				bsubj, bhdr, bmsg = subject, hdr, msg
@@ -8251,19 +8266,15 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				return apiErr
 			}
 
-			// Duplicates are fully rejected when using batch.
+			// Reject unsupported headers.
 			if msgId := getMsgId(bhdr); msgId != _EMPTY_ {
-				// TODO(mvv): reset in-memory expected header maps
-				mset.clseq -= seq - 1
-				mset.clMu.Unlock()
-				cleanup()
-				batches.mu.Unlock()
-				apiErr := NewJSAtomicPublishDuplicateError()
-				if canRespond {
-					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
-					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-				}
-				return apiErr
+				return errorOnUnsupported(seq, JSMsgId)
+			}
+			if _, ok = getExpectedLastSeq(hdr); ok {
+				return errorOnUnsupported(seq, JSExpectedLastSeq)
+			}
+			if getExpectedLastMsgId(hdr) != _EMPTY_ {
+				return errorOnUnsupported(seq, JSExpectedLastMsgId)
 			}
 
 			var apiErr *ApiError

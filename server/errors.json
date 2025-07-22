@@ -1750,10 +1750,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSAtomicPublishDuplicateErr",
+    "constant": "JSAtomicPublishUnsupportedHeaderBatchErr",
     "code": 400,
     "error_code": 10177,
-    "description": "atomic publish duplicates not allowed",
+    "description": "atomic publish unsupported header used: {header}",
     "comment": "",
     "help": "",
     "url": "",

@@ -194,7 +194,7 @@ func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 		require_NoError(t, err)
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 		require_NotNil(t, pubAck.Error)
-		require_Error(t, pubAck.Error, NewJSAtomicPublishDuplicateError())
+		require_Error(t, pubAck.Error, NewJSAtomicPublishUnsupportedHeaderBatchError("Nats-Msg-Id"))
 	}
 
 	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
@@ -398,4 +398,43 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 	t.Run("Disable", func(t *testing.T) { test(t, Disable) })
 	t.Run("StepDown", func(t *testing.T) { test(t, StepDown) })
 	t.Run("Delete", func(t *testing.T) { test(t, Delete) })
+}
+
+func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		cfg := &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			AllowAtomicPublish: true,
+			Replicas:           replicas,
+		}
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		// We might support these headers later on, but for now error.
+		for key, value := range map[string]string{
+			"Nats-Msg-Id":                 "msgId",
+			"Nats-Expected-Last-Sequence": "0",
+			"Nats-Expected-Last-Msg-Id":   "msgId",
+		} {
+			t.Run(key, func(t *testing.T) {
+				m := nats.NewMsg("foo")
+				m.Header.Set("Nats-Batch-Id", "uuid")
+				m.Header.Set("Nats-Batch-Sequence", "1")
+				m.Header.Set("Nats-Batch-Commit", "1")
+				m.Header.Set(key, value)
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSAtomicPublishUnsupportedHeaderBatchError(key))
+			})
+		}
+	}
+
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
