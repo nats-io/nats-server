@@ -685,6 +685,9 @@ func New(opts *Options) *Server {
 // The provided Options type should not be re-used afterwards.
 // Either use Options.Clone() to pass a copy, or make a new one.
 func NewServer(opts *Options) (*Server, error) {
+	if opts.ConfigFile != _EMPTY_ {
+		opts.ProcessConfigFile(opts.ConfigFile)
+	}
 	setBaselineOptions(opts)
 
 	// Process TLS options, including whether we require client certificates.
