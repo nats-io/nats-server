@@ -1401,10 +1401,9 @@ func (s *Server) initEventTracking() {
 		}
 	}
 
-	// User info.
-	// TODO(dlc) - Can be internal and not forwarded since bound server for the client connection
-	// is only one that will answer. This breaks tests since we still forward on remote server connect.
-	if _, err := s.sysSubscribe(fmt.Sprintf(userDirectReqSubj, "*"), s.userInfoReq); err != nil {
+	// User info. Do not propagate interest so that we know the local server to the connection
+	// is the only one that will answer the requests.
+	if _, err := s.sysSubscribeInternal(fmt.Sprintf(userDirectReqSubj, "*"), s.userInfoReq); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 		return
 	}
