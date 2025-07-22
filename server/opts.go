@@ -256,10 +256,14 @@ type RemoteLeafOpts struct {
 }
 
 type JSLimitOpts struct {
-	MaxRequestBatch int           `json:"max_request_batch,omitempty"`
-	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
-	MaxHAAssets     int           `json:"max_ha_assets,omitempty"`
-	Duplicates      time.Duration `json:"max_duplicate_window,omitempty"`
+	MaxRequestBatch           int           `json:"max_request_batch,omitempty"`
+	MaxAckPending             int           `json:"max_ack_pending,omitempty"`
+	MaxHAAssets               int           `json:"max_ha_assets,omitempty"`
+	Duplicates                time.Duration `json:"max_duplicate_window,omitempty"`
+	MaxBatchInflightPerStream int           `json:"max_batch_inflight_per_stream,omitempty"`
+	MaxBatchInflightTotal     int           `json:"max_batch_inflight_total,omitempty"`
+	MaxBatchSize              int           `json:"max_batch_size,omitempty"`
+	MaxBatchTimeout           time.Duration `json:"max_batch_timeout,omitempty"`
 }
 
 type JSTpmOpts struct {
@@ -2297,7 +2301,7 @@ func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 	var lt token
 	tk, v := unwrapValue(v, &lt)
 
-	lim := JSLimitOpts{}
+	opts.JetStreamLimits = JSLimitOpts{}
 
 	vv, ok := v.(map[string]any)
 	if !ok {
@@ -2307,14 +2311,57 @@ func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "max_ack_pending":
-			lim.MaxAckPending = int(mv.(int64))
+			opts.JetStreamLimits.MaxAckPending = int(mv.(int64))
 		case "max_ha_assets":
-			lim.MaxHAAssets = int(mv.(int64))
+			opts.JetStreamLimits.MaxHAAssets = int(mv.(int64))
 		case "max_request_batch":
-			lim.MaxRequestBatch = int(mv.(int64))
+			opts.JetStreamLimits.MaxRequestBatch = int(mv.(int64))
 		case "duplicate_window":
 			var err error
-			lim.Duplicates, err = time.ParseDuration(mv.(string))
+			opts.JetStreamLimits.Duplicates, err = time.ParseDuration(mv.(string))
+			if err != nil {
+				*errors = append(*errors, err)
+			}
+		case "batch":
+			if err := parseJetStreamLimitsBatch(tk, opts, errors); err != nil {
+				return err
+			}
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+				continue
+			}
+		}
+	}
+	return nil
+}
+
+func parseJetStreamLimitsBatch(v any, opts *Options, errors *[]error) error {
+	var lt token
+	tk, v := unwrapValue(v, &lt)
+
+	vv, ok := v.(map[string]any)
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected a map to define batch limits, got %T", v)}
+	}
+	for mk, mv := range vv {
+		tk, mv = unwrapValue(mv, &lt)
+		switch strings.ToLower(mk) {
+		case "max_inflight_per_stream":
+			opts.JetStreamLimits.MaxBatchInflightPerStream = int(mv.(int64))
+		case "max_inflight_total":
+			opts.JetStreamLimits.MaxBatchInflightTotal = int(mv.(int64))
+		case "max_msgs":
+			opts.JetStreamLimits.MaxBatchSize = int(mv.(int64))
+		case "timeout":
+			var err error
+			opts.JetStreamLimits.MaxBatchTimeout, err = time.ParseDuration(mv.(string))
 			if err != nil {
 				*errors = append(*errors, err)
 			}
@@ -2331,7 +2378,6 @@ func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 			}
 		}
 	}
-	opts.JetStreamLimits = lim
 	return nil
 }
 
@@ -2340,7 +2386,7 @@ func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
 	var lt token
 	tk, v := unwrapValue(v, &lt)
 
-	tpm := JSTpmOpts{}
+	opts.JetStreamTpm = JSTpmOpts{}
 
 	vv, ok := v.(map[string]interface{})
 	if !ok {
@@ -2350,13 +2396,13 @@ func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "keys_file":
-			tpm.KeysFile = mv.(string)
+			opts.JetStreamTpm.KeysFile = mv.(string)
 		case "encryption_password":
-			tpm.KeyPassword = mv.(string)
+			opts.JetStreamTpm.KeyPassword = mv.(string)
 		case "srk_password":
-			tpm.SrkPassword = mv.(string)
+			opts.JetStreamTpm.SrkPassword = mv.(string)
 		case "pcr":
-			tpm.Pcr = int(mv.(int64))
+			opts.JetStreamTpm.Pcr = int(mv.(int64))
 		case "cipher":
 			if err := setJetStreamEkCipher(opts, mv, tk); err != nil {
 				return err
@@ -2374,7 +2420,6 @@ func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
 			}
 		}
 	}
-	opts.JetStreamTpm = tpm
 	return nil
 }
 

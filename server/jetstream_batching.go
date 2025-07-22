@@ -20,7 +20,13 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+)
+
+var (
+	// Tracks the total inflight batches, across all streams and accounts that enable batching.
+	globalInflightBatches atomic.Int32
 )
 
 type batching struct {
@@ -31,6 +37,44 @@ type batching struct {
 type batchGroup struct {
 	lseq  uint64
 	store StreamStore
+	timer *time.Timer
+}
+
+func newBatchGroup(s *Server, batchId string, batches *batching, store StreamStore) *batchGroup {
+	b := &batchGroup{store: store}
+
+	// Create a timer to clean up after timeout.
+	timeout := streamMaxBatchTimeout
+	if maxBatchTimeout := s.getOpts().JetStreamLimits.MaxBatchTimeout; maxBatchTimeout > 0 {
+		timeout = maxBatchTimeout
+	}
+	b.timer = time.AfterFunc(timeout, func() {
+		b.cleanup(batchId, batches)
+	})
+	return b
+}
+
+// stopCleanupTimerLocked indicates the batch is ready to be committed.
+// If the timer has already cleaned up the batch, we can't commit.
+// Otherwise, we ensure the timer does not clean up the batch in the meantime.
+// Lock should be held.
+func (b *batchGroup) stopCleanupTimerLocked() bool {
+	return b.timer.Stop()
+}
+
+// cleanup deletes underlying resources associated with the batch and unregisters it from the stream's batches.
+func (b *batchGroup) cleanup(batchId string, batches *batching) {
+	batches.mu.Lock()
+	defer batches.mu.Unlock()
+	b.cleanupLocked(batchId, batches)
+}
+
+// Lock should be held.
+func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
+	globalInflightBatches.Add(-1)
+	b.timer.Stop()
+	b.store.Delete()
+	delete(batches.group, batchId)
 }
 
 // checkMsgHeadersPreClusteredProposal checks the message for expected/consistency headers.
