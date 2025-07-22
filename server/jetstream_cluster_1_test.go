@@ -9006,6 +9006,177 @@ func TestJetStreamClusterSetPreferredToOnlineNode(t *testing.T) {
 	require_NotEqual(t, rg.Preferred, rsid)
 }
 
+func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		supportsAsync := replicas > 1
+
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		var s *Server
+		checkStoreIsAsync := func(expectAsync bool) {
+			t.Helper()
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			fs := mset.Store().(*fileStore)
+			fs.mu.RLock()
+			lmb := fs.lmb
+			asyncFlush := fs.fcfg.AsyncFlush
+			fip := fs.fip
+			fs.mu.RUnlock()
+			require_Equal(t, asyncFlush, expectAsync)
+			require_Equal(t, fip, !expectAsync)
+			require_NotNil(t, lmb)
+			lmb.mu.RLock()
+			flusher := lmb.flusher
+			lmb.mu.RUnlock()
+			if expectAsync {
+				if !flusher {
+					t.Fatal("flusher not initialized")
+				} else if !asyncFlush {
+					t.Fatal("async flush config not set")
+				}
+			} else {
+				if flusher {
+					t.Fatal("flusher still initialized")
+				} else if asyncFlush {
+					t.Fatal("async flush config not reset")
+				}
+			}
+		}
+
+		cfg := &StreamConfig{
+			Name:            "TEST",
+			Subjects:        []string{"foo"},
+			Storage:         FileStorage,
+			Replicas:        replicas,
+			AllowAsyncFlush: false,
+		}
+		// Test disabled async flush on create.
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+		s = c.streamLeader(globalAccountName, "TEST")
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		checkStoreIsAsync(false)
+
+		// Enabling async flush.
+		cfg.AllowAsyncFlush = true
+		_, err = jsStreamUpdate(t, nc, cfg)
+		require_NoError(t, err)
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		checkStoreIsAsync(supportsAsync)
+
+		// Disabling async flush.
+		cfg.AllowAsyncFlush = false
+		_, err = jsStreamUpdate(t, nc, cfg)
+		require_NoError(t, err)
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		checkStoreIsAsync(false)
+
+		// Test async flush on create.
+		require_NoError(t, js.DeleteStream("TEST"))
+		cfg.AllowAsyncFlush = true
+		_, err = jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+		s = c.streamLeader(globalAccountName, "TEST")
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		checkStoreIsAsync(supportsAsync)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:            "TEST",
+		Subjects:        []string{"foo"},
+		Storage:         FileStorage,
+		Replicas:        3,
+		AllowAsyncFlush: true,
+	})
+	require_NoError(t, err)
+
+	// Now shutdown flusher and wait for it to be closed,
+	// we'll not flush published messages automatically anymore.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.Store().(*fileStore)
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_NotNil(t, lmb)
+
+	lmb.mu.Lock()
+	if lmb.qch != nil {
+		close(lmb.qch)
+		lmb.qch = nil
+	}
+	lmb.mu.Unlock()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		lmb.mu.RLock()
+		defer lmb.mu.RUnlock()
+		if lmb.flusher {
+			return errors.New("flusher still active")
+		}
+		return nil
+	})
+
+	// Get the highest applied count from snapshot before below publish.
+	n := mset.raftNode().(*raft)
+	_, _, previousApplied := n.Progress()
+
+	// Confirm no pending writes.
+	require_Equal(t, lmb.pendingWriteSize(), 0)
+
+	// Publishing a message will still work, because writes are async.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Confirm above write is pending.
+	require_Equal(t, lmb.pendingWriteSize(), 33)
+
+	// Stop stream monitor routine, which will install a snapshot on shutdown.
+	mset.mu.Lock()
+	if mset.mqch != nil {
+		close(mset.mqch)
+		mset.mqch = nil
+	}
+	mset.mu.Unlock()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		n.Lock()
+		snap, err := n.loadLastSnapshot()
+		n.Unlock()
+		if err != nil {
+			return err
+		}
+		if snap.lastIndex <= previousApplied {
+			return fmt.Errorf("snapshot still at lastIndex=%d, expected=%d", snap.lastIndex, previousApplied)
+		}
+		return nil
+	})
+
+	// Confirm the write is flushed as a result of the snapshot.
+	require_Equal(t, lmb.pendingWriteSize(), 0)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

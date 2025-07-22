@@ -116,6 +116,10 @@ type StreamConfig struct {
 	// AllowAtomicPublish allows atomic batch publishing into the stream.
 	AllowAtomicPublish bool `json:"allow_atomic"`
 
+	// AllowAsyncFlush allows replicated streams to asynchronously flush
+	// to the stream, improving throughput.
+	AllowAsyncFlush bool `json:"allow_async_flush"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -778,7 +782,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 	fsCfg.StoreDir = storeDir
-	fsCfg.AsyncFlush = false
+	// Async flushing is only allowed if the stream has a sync log backing it.
+	fsCfg.AsyncFlush = config.AllowAsyncFlush && config.Replicas > 1
 	// Grab configured sync interval.
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways

@@ -2361,6 +2361,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		}
 
+		// Make sure all pending data is flushed before allowing snapshots.
+		mset.flushAllPending()
 		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
 			lastState = curState
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
@@ -8783,6 +8785,9 @@ RETRY:
 					lseq := mset.lseq
 					mset.mu.RUnlock()
 					if lseq >= snap.LastSeq {
+						// We MUST ensure all data is flushed up to this point, if the store hadn't already.
+						// Because the snapshot needs to represent what has been persisted.
+						mset.flushAllPending()
 						return nil
 					}
 
@@ -8952,6 +8957,11 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	}
 
 	return seq, nil
+}
+
+// flushAllPending will flush any pending writes as a result of installing a snapshot or performing catchup.
+func (mset *stream) flushAllPending() {
+	mset.store.FlushAllPending()
 }
 
 func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {

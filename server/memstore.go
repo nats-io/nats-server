@@ -331,6 +331,11 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 	return nil
 }
 
+// FlushAllPending flushes all data that was still pending to be written.
+func (ms *memStore) FlushAllPending() {
+	// Noop, in-memory store doesn't use async applying.
+}
+
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.
