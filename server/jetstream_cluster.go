@@ -8225,14 +8225,16 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		var entries []*Entry
 
 		var (
-			bsubj string
-			bhdr  []byte
-			bmsg  []byte
-			err   error
-			smv   StoreMsg
-			sm    *StoreMsg
-			sz    int
+			bsubj  string
+			bhdr   []byte
+			bmsg   []byte
+			apiErr *ApiError
+			err    error
+			smv    StoreMsg
+			sm     *StoreMsg
+			sz     int
 		)
+		diff := &batchStagedDiff{}
 		for seq := uint64(1); seq <= batchSeq; seq++ {
 			if seq == batchSeq {
 				bsubj, bhdr, bmsg = subject, hdr, msg
@@ -8266,8 +8268,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				return apiErr
 			}
 
-			var apiErr *ApiError
-			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgs, maxBytes); err != nil {
+			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgs, maxBytes); err != nil {
 				// TODO(mvv): reset in-memory expected header maps
 				mset.clseq -= seq - 1
 				mset.clMu.Unlock()
@@ -8291,6 +8292,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 
 		// Do proposal.
+		diff.commit(mset)
 		// TODO(mvv): replace with individual `node.Propose`?
 		if err := node.ProposeMulti(entries); err == nil {
 			mset.trackReplicationTraffic(node, sz, r)
@@ -8327,7 +8329,8 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		apiErr *ApiError
 		err    error
 	)
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(mset, subject, hdr, msg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgs, maxBytes); err != nil {
+	diff := &batchStagedDiff{}
+	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgs, maxBytes); err != nil {
 		// TODO(mvv): reset in-memory expected header maps
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {
@@ -8347,6 +8350,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		return err
 	}
 
+	diff.commit(mset)
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), sourced)
 	var mtKey uint64
 	if mt != nil {
