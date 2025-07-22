@@ -96,6 +96,7 @@ type StreamStore interface {
 	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64) error
 	SkipMsg() uint64
 	SkipMsgs(seq uint64, num uint64) error
+	FlushAllPending()
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
 	LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
@@ -122,7 +123,7 @@ type StreamStore interface {
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
-	RegisterStorageRemoveMsg(handler StorageRemoveMsgHandler)
+	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
 	RegisterSubjectDeleteMarkerUpdates(SubjectDeleteMarkerUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error
