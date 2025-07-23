@@ -2802,6 +2802,98 @@ func TestNRGKeepRunningOnServerShutdown(t *testing.T) {
 	require_True(t, msgs == nil)
 }
 
+func TestNRGReplayOnSnapshotSameTerm(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 2, entries: entries})
+
+	// Process the first append entry.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+
+	// Commit and apply.
+	require_NoError(t, n.applyCommit(1))
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Install snapshot.
+	require_NoError(t, n.InstallSnapshot(nil))
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_Equal(t, snap.lastIndex, 1)
+
+	// Process other messages.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_Equal(t, n.pindex, 3)
+
+	// Replay the append entry that matches our snapshot.
+	// This can happen as a repeated entry, or a delayed append entry after having already received it in a catchup.
+	// Should be recognized as a replay with the same term, marked as success, and not truncate.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 3)
+}
+
+func TestNRGReplayOnSnapshotDifferentTerm(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 0, pindex: 0, entries: entries, lterm: 2})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: entries, lterm: 2})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 2, pindex: 2, entries: entries, lterm: 2})
+
+	// Process the first append entry.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+
+	// Commit and apply.
+	require_NoError(t, n.applyCommit(1))
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Install snapshot.
+	require_NoError(t, n.InstallSnapshot(nil))
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_Equal(t, snap.lastIndex, 1)
+
+	// Reset applied to simulate having received the snapshot from
+	// another leader, and we didn't apply yet since it's async.
+	n.applied = 0
+
+	// Process other messages.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_Equal(t, n.pindex, 3)
+
+	// Replay the append entry that matches our snapshot.
+	// This can happen as a repeated entry, or a delayed append entry after having already received it in a catchup.
+	// Should be recognized as truncating back to the installed snapshot, not reset the WAL fully.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 1)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
