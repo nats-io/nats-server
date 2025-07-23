@@ -1204,7 +1204,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errNoSnapAvailable
 	}
 
-	n.debug("Installing snapshot of %d bytes", len(data))
+	n.debug("Installing snapshot of %d bytes [%d:%d]", len(data), term, n.applied)
 
 	return n.installSnapshot(&snapshot{
 		lastTerm:  term,
@@ -2708,7 +2708,7 @@ func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
 func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64]) {
 	n.RLock()
 	s, reply := n.s, n.areply
-	peer, subj, term, last := ar.peer, ar.reply, n.term, n.pindex
+	peer, subj, term, pterm, last := ar.peer, ar.reply, n.term, n.pterm, n.pindex
 	n.RUnlock()
 
 	defer s.grWG.Done()
@@ -2730,7 +2730,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		indexUpdatesQ.unregister()
 	}()
 
-	n.debug("Running catchup for %q", peer)
+	n.debug("Running catchup for %q [%d:%d] to [%d:%d]", peer, ar.term, ar.index, pterm, last)
 
 	const maxOutstanding = 2 * 1024 * 1024 // 2MB for now.
 	next, total, om := uint64(0), 0, make(map[uint64]int)
@@ -3545,18 +3545,20 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
-			n.debug("AppendEntry detected pindex less than/equal to ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+			n.debug("AppendEntry detected pindex less than/equal to ours: [%d:%d] vs [%d:%d]", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 			var success bool
 
 			if ae.pindex < n.commit {
 				// If we have already committed this entry, just mark success.
 				success = true
+				n.debug("AppendEntry pindex %d below commit %d, marking success", ae.pindex, n.commit)
 			} else if eae, _ := n.loadEntry(ae.pindex); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
 				if ae.pterm == n.pterm && !catchingUp {
 					success = true
+					n.debug("AppendEntry pindex %d already processed, marking success", ae.pindex, n.commit)
 				} else if ae.pindex == n.pindex {
 					// Check if only our terms do not match here.
 					// Make sure pterms match and we take on the leader's.
@@ -3645,7 +3647,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 
 		// Setup our state for catching up.
-		n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+		n.debug("AppendEntry did not match [%d:%d] with [%d:%d]", ae.pterm, ae.pindex, n.pterm, n.pindex)
 		inbox := n.createCatchup(ae)
 		ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
 		n.Unlock()
