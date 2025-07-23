@@ -11,14 +11,14 @@ const (
 	// JSAtomicPublishDisabledErr atomic publish is disabled
 	JSAtomicPublishDisabledErr ErrorIdentifier = 10174
 
-	// JSAtomicPublishDuplicateErr atomic publish duplicates not allowed
-	JSAtomicPublishDuplicateErr ErrorIdentifier = 10177
-
 	// JSAtomicPublishIncompleteBatchErr atomic publish batch is incomplete
 	JSAtomicPublishIncompleteBatchErr ErrorIdentifier = 10176
 
 	// JSAtomicPublishMissingSeqErr atomic publish sequence is missing
 	JSAtomicPublishMissingSeqErr ErrorIdentifier = 10175
+
+	// JSAtomicPublishUnsupportedHeaderBatchErr atomic publish unsupported header used: {header}
+	JSAtomicPublishUnsupportedHeaderBatchErr ErrorIdentifier = 10177
 
 	// JSBadRequestErr bad request
 	JSBadRequestErr ErrorIdentifier = 10003
@@ -541,9 +541,9 @@ var (
 	ApiErrors = map[ErrorIdentifier]*ApiError{
 		JSAccountResourcesExceededErr:              {Code: 400, ErrCode: 10002, Description: "resource limits exceeded for account"},
 		JSAtomicPublishDisabledErr:                 {Code: 400, ErrCode: 10174, Description: "atomic publish is disabled"},
-		JSAtomicPublishDuplicateErr:                {Code: 400, ErrCode: 10177, Description: "atomic publish duplicates not allowed"},
 		JSAtomicPublishIncompleteBatchErr:          {Code: 400, ErrCode: 10176, Description: "atomic publish batch is incomplete"},
 		JSAtomicPublishMissingSeqErr:               {Code: 400, ErrCode: 10175, Description: "atomic publish sequence is missing"},
+		JSAtomicPublishUnsupportedHeaderBatchErr:   {Code: 400, ErrCode: 10177, Description: "atomic publish unsupported header used: {header}"},
 		JSBadRequestErr:                            {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSClusterIncompleteErr:                     {Code: 503, ErrCode: 10004, Description: "incomplete results"},
 		JSClusterNoPeersErrF:                       {Code: 400, ErrCode: 10005, Description: "{err}"},
@@ -761,16 +761,6 @@ func NewJSAtomicPublishDisabledError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSAtomicPublishDisabledErr]
 }
 
-// NewJSAtomicPublishDuplicateError creates a new JSAtomicPublishDuplicateErr error: "atomic publish duplicates not allowed"
-func NewJSAtomicPublishDuplicateError(opts ...ErrorOption) *ApiError {
-	eopts := parseOpts(opts)
-	if ae, ok := eopts.err.(*ApiError); ok {
-		return ae
-	}
-
-	return ApiErrors[JSAtomicPublishDuplicateErr]
-}
-
 // NewJSAtomicPublishIncompleteBatchError creates a new JSAtomicPublishIncompleteBatchErr error: "atomic publish batch is incomplete"
 func NewJSAtomicPublishIncompleteBatchError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -789,6 +779,22 @@ func NewJSAtomicPublishMissingSeqError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSAtomicPublishMissingSeqErr]
+}
+
+// NewJSAtomicPublishUnsupportedHeaderBatchError creates a new JSAtomicPublishUnsupportedHeaderBatchErr error: "atomic publish unsupported header used: {header}"
+func NewJSAtomicPublishUnsupportedHeaderBatchError(header interface{}, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSAtomicPublishUnsupportedHeaderBatchErr]
+	args := e.toReplacerArgs([]interface{}{"{header}", header})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSBadRequestError creates a new JSBadRequestErr error: "bad request"
