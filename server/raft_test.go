@@ -2971,8 +2971,13 @@ func TestNRGReplayOnSnapshotDifferentTerm(t *testing.T) {
 	// Replay the append entry that matches our snapshot.
 	// This can happen as a repeated entry, or a delayed append entry after having already received it in a catchup.
 	// Should be recognized as truncating back to the installed snapshot, not reset the WAL fully.
+	// Since all is aligned after truncation, should also be able to apply the entry.
 	n.processAppendEntry(aeMsg2, n.aesub)
-	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.pindex, 2)
+
+	// Should now also be able to apply the third entry.
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_Equal(t, n.pindex, 3)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
