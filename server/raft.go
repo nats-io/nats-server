@@ -3564,12 +3564,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					// Make sure pterms match and we take on the leader's.
 					// This prevents constant spinning.
 					n.truncateWAL(ae.pterm, ae.pindex)
-				} else if ae.pindex == n.applied {
-					// Entry can't be found, this is normal because we have a snapshot at this index.
-					// Truncate back to where we've created the snapshot.
-					n.truncateWAL(ae.pterm, ae.pindex)
 				} else {
-					n.resetWAL()
+					snap, err := n.loadLastSnapshot()
+					if err == nil && snap.lastIndex == ae.pindex && snap.lastTerm == ae.pterm {
+						// Entry can't be found, this is normal because we have a snapshot at this index.
+						// Truncate back to where we've created the snapshot.
+						n.truncateWAL(snap.lastTerm, snap.lastIndex)
+					} else {
+						// Otherwise, something has gone very wrong and we need to reset.
+						n.resetWAL()
+					}
 				}
 			} else if eae.term == ae.pterm {
 				// If terms match we can delete all entries past this one, and then continue storing the current entry.
