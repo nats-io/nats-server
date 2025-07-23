@@ -3541,6 +3541,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 						// Entry can't be found, this is normal because we have a snapshot at this index.
 						// Truncate back to where we've created the snapshot.
 						n.truncateWAL(snap.lastTerm, snap.lastIndex)
+						// Only continue if truncation was successful, and we ended up such that we can safely continue.
+						if ae.pterm == n.pterm && ae.pindex == n.pindex {
+							goto CONTINUE
+						}
 					} else {
 						// Otherwise, something has gone very wrong and we need to reset.
 						n.resetWAL()
