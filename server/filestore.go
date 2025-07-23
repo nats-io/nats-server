@@ -331,7 +331,8 @@ const (
 	JetStreamMetaFileKey = "meta.key"
 
 	// This is the full snapshotted state for the stream.
-	streamStreamStateFile = "index.db"
+	streamStreamStateFile    = "index.db"
+	streamStreamStateTmpFile = "index.tmp"
 
 	// This is the encoded time hash wheel for TTLs.
 	ttlStreamStateFile = "thw.db"
@@ -1213,6 +1214,21 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 	}
 }
 
+// Lock should be held.
+func (fs *fileStore) rebuildAllStateLocked() {
+	// Clear any global subject state.
+	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	for _, mb := range fs.blks {
+		ld, _, err := mb.rebuildState()
+		if err != nil && ld != nil {
+			fs.addLostData(ld)
+		}
+		fs.populateGlobalPerSubjectInfo(mb)
+	}
+	// Rebuild fs state too.
+	fs.rebuildStateLocked(nil)
+}
+
 // Attempt to convert the cipher used for this message block.
 func (mb *msgBlock) convertCipher() error {
 	fs := mb.fs
@@ -1350,6 +1366,9 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	defer recycleMsgBlockBuf(buf)
 
 	if err != nil || len(buf) == 0 {
+		if len(buf) == 0 {
+			err = errNoBlkData
+		}
 		var ld *LostStreamData
 		// No data to rebuild from here.
 		if mb.msgs > 0 {
@@ -1599,6 +1618,9 @@ func (fs *fileStore) debug(format string, args ...any) {
 
 // Track local state but ignore timestamps here.
 func updateTrackingState(state *StreamState, mb *msgBlock) {
+	if mb == nil {
+		return
+	}
 	if state.FirstSeq == 0 {
 		state.FirstSeq = mb.first.seq
 	} else if mb.first.seq < state.FirstSeq && mb.first.ts != 0 {
@@ -1765,6 +1787,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	// Track the state as represented by the blocks themselves.
 	var mstate StreamState
 
+	var lmb *msgBlock
 	if numBlocks := readU64(); numBlocks > 0 {
 		lastIndex := int(numBlocks - 1)
 		fs.blks = make([]*msgBlock, 0, numBlocks)
@@ -1799,8 +1822,14 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				}
 				bi += n
 			}
-			// Only add in if not empty or the lmb.
-			if mb.msgs > 0 || i == lastIndex {
+			// Mark block closed by default, we'll scan for all active blocks and remove if it's gone.
+			mb.closed = true
+
+			if i == lastIndex {
+				// lmb is not added yet, we'll recover it later.
+				lmb = mb
+			} else if mb.msgs > 0 {
+				// Only add in if not empty.
 				fs.addMsgBlock(mb)
 				updateTrackingState(&mstate, mb)
 			} else {
@@ -1811,7 +1840,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 
 	// Pull in last block index for the block that had last checksum when we wrote the full state.
-	blkIndex := uint32(readU64())
+	blkIndex := int(readU64())
 	var lchk [8]byte
 	if bi+len(lchk) > len(buf) {
 		bi = -1
@@ -1831,28 +1860,46 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 	// First let's check the happy path, open the blk file that was the lmb when we created the full state.
 	// See if we have the last block available.
-	var matched bool
-	mb := fs.lmb
-	if mb == nil || mb.index != blkIndex {
+	if lmb == nil || lmb.index != uint32(blkIndex) {
 		os.Remove(fn)
 		fs.warn("Stream state block does not exist or index mismatch")
 		return errCorruptState
 	}
-	if _, err := os.Stat(mb.mfn); err != nil && os.IsNotExist(err) {
+	if _, err := os.Stat(lmb.mfn); err != nil && os.IsNotExist(err) {
 		// If our saved state is past what we see on disk, fallback and rebuild.
-		if ld, _, _ := mb.rebuildState(); ld != nil {
+		if ld, _, _ := lmb.rebuildState(); ld != nil {
 			fs.addLostData(ld)
 		}
 		fs.warn("Stream state detected prior state, could not locate msg block %d", blkIndex)
 		return errPriorState
 	}
-	if matched = bytes.Equal(mb.lastChecksum(), lchk[:]); !matched {
-		// Detected a stale index.db, we didn't write it upon shutdown so can't rely on it being correct.
-		fs.warn("Stream state outdated, last block has additional entries, will rebuild")
-		return errPriorState
+	// Check if the last message block has additional writes.
+	// If no, simply add the block.
+	// If yes, recover the block fully.
+	if bytes.Equal(lmb.lastChecksum(), lchk[:]) {
+		fs.addMsgBlock(lmb)
+	} else {
+		// Ensure we don't double-account after recovering.
+		// FIXME(mvv): must also remove subject state counts if we're doing this..
+		//  need to do better subject state tracking to enable incremental recovery like this.
+		fs.state.Msgs -= lmb.msgs
+		fs.state.Bytes -= lmb.bytes
+		// Recover block.
+		if lmb, err = fs.recoverMsgBlockAndUpdateState(int(lmb.index)); err != nil {
+			return err
+		} else if lmb == nil {
+			fs.warn("Stream state detected prior state, could not recover msg block %d", blkIndex)
+			return errPriorState
+		}
+	}
+	updateTrackingState(&mstate, lmb)
+	if !trackingStatesEqual(&fs.state, &mstate) {
+		os.Remove(fn)
+		fs.warn("Stream state encountered internal inconsistency on recover")
+		return errCorruptState
 	}
 
-	// We need to see if any blocks exist after our last one even though we matched the last record exactly.
+	// We need to see if any blocks exist after our last one even though we recovered what we think is the last block.
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	var dirs []os.DirEntry
 
@@ -1863,7 +1910,8 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 	dios <- struct{}{}
 
-	var index uint32
+	indices := make(sort.IntSlice, 0)
+	var index int
 	for _, fi := range dirs {
 		// Ensure it's actually a block file, otherwise fmt.Sscanf also matches %d.blk.tmp
 		if !strings.HasSuffix(fi.Name(), blkSuffix) {
@@ -1871,20 +1919,56 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		}
 		if n, err := fmt.Sscanf(fi.Name(), blkScan, &index); err == nil && n == 1 {
 			if index > blkIndex {
-				fs.warn("Stream state outdated, found extra blocks, will rebuild")
-				return errPriorState
+				indices = append(indices, index)
+			} else if mb, ok := fs.bim[uint32(index)]; ok {
+				// Block is seen, it shouldn't be removed.
+				mb.mu.Lock()
+				mb.closed = false
+				mb.mu.Unlock()
 			}
 		}
 	}
+	indices.Sort()
 
-	// We check first and last seq and number of msgs and bytes. If there is a difference,
-	// return and error so we rebuild from the message block state on disk.
-	if !trackingStatesEqual(&fs.state, &mstate) {
-		os.Remove(fn)
-		fs.warn("Stream state encountered internal inconsistency on recover")
-		return errCorruptState
+	// Any blocks that haven't been seen have been deleted in the meantime.
+	var removeIndices []uint32
+	for _, lmb = range fs.blks {
+		lmb.mu.RLock()
+		closed := lmb.closed
+		lmb.mu.RUnlock()
+		if closed {
+			// Need to collect and remove separately,
+			// as we can't loop over the fs.blks while removing.
+			removeIndices = append(removeIndices, lmb.index)
+		}
+	}
+	if len(removeIndices) > 0 {
+		// TODO(mvv): the removed message block doesn't contain any subject data, and since the block is gone we can't
+		//  easily remove it from the subject state stored in the index.db. This means we have to degrade into scanning
+		//  over all remaining blocks to restore to the correct subject state. This can potentially be improved by
+		//  storing subject state per block separately from the data itself to speed up loading.
+		for _, index := range removeIndices {
+			if mb, ok := fs.bim[index]; ok {
+				fs.removeMsgBlock(mb)
+			}
+		}
+		fs.rebuildAllStateLocked()
+		mstate = fs.state
 	}
 
+	// Recover all the remaining msg blocks.
+	// We now guarantee they are coming in order.
+	for _, index = range indices {
+		if lmb, err = fs.recoverMsgBlockAndUpdateState(index); err != nil {
+			return err
+		}
+		updateTrackingState(&mstate, lmb)
+		if !trackingStatesEqual(&fs.state, &mstate) {
+			os.Remove(fn)
+			fs.warn("Stream state encountered internal inconsistency on recover")
+			return errCorruptState
+		}
+	}
 	return nil
 }
 
@@ -2068,34 +2152,7 @@ func (fs *fileStore) recoverMsgs() error {
 	// Recover all of the msg blocks.
 	// We now guarantee they are coming in order.
 	for _, index := range indices {
-		if mb, err := fs.recoverMsgBlock(uint32(index)); err == nil && mb != nil {
-			// This is a truncate block with possibly no index. If the OS got shutdown
-			// out from underneath of us this is possible.
-			if mb.first.seq == 0 {
-				mb.dirtyCloseWithRemove(true)
-				fs.removeMsgBlockFromList(mb)
-				continue
-			}
-			fseq := atomic.LoadUint64(&mb.first.seq)
-			if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
-				fs.state.FirstSeq = fseq
-				if mb.first.ts == 0 {
-					fs.state.FirstTime = time.Time{}
-				} else {
-					fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
-				}
-			}
-			if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq {
-				fs.state.LastSeq = lseq
-				if mb.last.ts == 0 {
-					fs.state.LastTime = time.Time{}
-				} else {
-					fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
-				}
-			}
-			fs.state.Msgs += mb.msgs
-			fs.state.Bytes += mb.bytes
-		} else {
+		if _, err = fs.recoverMsgBlockAndUpdateState(index); err != nil {
 			return err
 		}
 	}
@@ -2145,6 +2202,40 @@ func (fs *fileStore) recoverMsgs() error {
 	}
 
 	return nil
+}
+
+func (fs *fileStore) recoverMsgBlockAndUpdateState(index int) (mb *msgBlock, err error) {
+	mb, err = fs.recoverMsgBlock(uint32(index))
+	if err != nil || mb == nil {
+		return nil, err
+	}
+	// This is a truncate block with possibly no index. If the OS got shutdown
+	// out from underneath of us this is possible.
+	if mb.first.seq == 0 {
+		mb.dirtyCloseWithRemove(true)
+		fs.removeMsgBlockFromList(mb)
+		return nil, nil
+	}
+	fseq := atomic.LoadUint64(&mb.first.seq)
+	if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
+		fs.state.FirstSeq = fseq
+		if mb.first.ts == 0 {
+			fs.state.FirstTime = time.Time{}
+		} else {
+			fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+		}
+	}
+	if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq {
+		fs.state.LastSeq = lseq
+		if mb.last.ts == 0 {
+			fs.state.LastTime = time.Time{}
+		} else {
+			fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
+		}
+	}
+	fs.state.Msgs += mb.msgs
+	fs.state.Bytes += mb.bytes
+	return mb, nil
 }
 
 // Will expire msgs that have aged out on restart.
@@ -4517,17 +4608,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	// So do a quick sanity check here. If we detect a skew do a rebuild then re-check.
 	if numMsgs != fs.state.Msgs {
 		fs.warn("Detected skew in subject-based total (%d) vs raw total (%d), rebuilding", numMsgs, fs.state.Msgs)
-		// Clear any global subject state.
-		fs.psim, fs.tsl = fs.psim.Empty(), 0
-		for _, mb := range fs.blks {
-			ld, _, err := mb.rebuildState()
-			if err != nil && ld != nil {
-				fs.addLostData(ld)
-			}
-			fs.populateGlobalPerSubjectInfo(mb)
-		}
-		// Rebuild fs state too.
-		fs.rebuildStateLocked(nil)
+		fs.rebuildAllStateLocked()
 		// Need to redo blocks that need attention.
 		needAttention.Empty()
 		fblk, lblk = uint32(math.MaxUint32), uint32(0)
@@ -6996,7 +7077,10 @@ checkCache:
 	// Load in the whole block.
 	// We want to hold the mb lock here to avoid any changes to state.
 	buf, err := mb.loadBlock(nil)
-	if err != nil {
+	if err != nil || len(buf) == 0 {
+		if len(buf) == 0 {
+			err = errNoBlkData
+		}
 		mb.fs.warn("loadBlock error: %v", err)
 		if err == errNoBlkData {
 			if ld, _, err := mb.rebuildStateLocked(); err != nil && ld != nil {
@@ -9433,6 +9517,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	}
 
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
+	tmpFn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateTmpFile)
 
 	fs.hh.Reset()
 	fs.hh.Write(buf)
@@ -9462,14 +9547,19 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		fs.warn("WriteFullState took %v (%d bytes)", took.Round(time.Millisecond), len(buf))
 	}
 
-	// Write our update index.db
+	// Write our update index.db to a temporary file first, then swap the files.
 	// Protect with dios.
 	<-dios
-	err := os.WriteFile(fn, buf, defaultFilePerms)
+	err := os.WriteFile(tmpFn, buf, defaultFilePerms)
 	// if file system is not writable isPermissionError is set to true
 	dios <- struct{}{}
 	if isPermissionError(err) {
 		return err
+	}
+	if err != nil {
+		os.Remove(tmpFn)
+	} else if err = os.Rename(tmpFn, fn); err != nil {
+		os.Remove(tmpFn)
 	}
 
 	// Update dirty if successful.

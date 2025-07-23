@@ -4660,7 +4660,7 @@ func TestFileStoreMsgBlkFailOnKernelFaultLostDataReporting(t *testing.T) {
 		fs.mu.RUnlock()
 
 		require_NoError(t, fs.Stop())
-		require_NoError(t, os.Remove(mfn))
+		require_NoError(t, os.WriteFile(mfn, nil, defaultFilePerms))
 
 		// Restart.
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
@@ -4712,7 +4712,7 @@ func TestFileStoreMsgBlkFailOnKernelFaultLostDataReporting(t *testing.T) {
 		fs.mu.RUnlock()
 
 		require_NoError(t, fs.Stop())
-		require_NoError(t, os.Remove(mfn))
+		require_NoError(t, os.WriteFile(mfn, nil, defaultFilePerms))
 
 		// Restart.
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
@@ -9764,4 +9764,81 @@ func TestFileStoreNoPanicOnRecoverTTLWithCorruptBlocks(t *testing.T) {
 
 		require_NoError(t, fs.recoverTTLState())
 	})
+}
+
+func TestFileStoreIncrementalIndex(t *testing.T) {
+	for _, aligned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("Aligned=%t", aligned), func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				// 1.blk
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				lblks := len(fs.blks)
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				require_Len(t, lblks, 2)
+
+				// 2.blk
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+
+				// Write and capture index.db.
+				require_NoError(t, fs.forceWriteFullState())
+				fn := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+				buf, err := os.ReadFile(fn)
+				require_NoError(t, err)
+
+				// The index.db is aligned if it encompasses the whole last message block.
+				// Otherwise, it should be able to incrementally recover even if
+				// the index is made half-way through the block.
+				if aligned {
+					fs.mu.Lock()
+					_, err = fs.newMsgBlockForWrite()
+					fs.mu.Unlock()
+					require_NoError(t, err)
+				}
+
+				// Either in 2.blk or 3.blk.
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+
+				// Always in the last block, either 3.blk or 4.blk.
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+
+				// Capture state, stop filestore, and roll back index.db
+				before := fs.State()
+				require_NoError(t, fs.Stop())
+				require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state of %+v, got %+v", before, state)
+				}
+
+				var smv StoreMsg
+				for i := range 4 {
+					seq := uint64(i + 1)
+					sm, err := fs.LoadMsg(seq, &smv)
+					require_NoError(t, err)
+					require_Equal(t, sm.seq, seq)
+					require_Equal(t, sm.subj, "foo")
+				}
+			})
+		})
+	}
 }
