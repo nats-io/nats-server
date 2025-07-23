@@ -1437,7 +1437,8 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		a.last { padding-bottom: 16px }
 		a.version { font-size: 14; font-weight: 400; width: 312px; text-align: right; margin-top: -2rem }
 		a.version:hover { color: rgb(22 22 32) }
-		.endpoint { font-size: 12px; color: #999; font-family: monospace }
+		.endpoint { font-size: 12px; color: #999; font-family: monospace; display: none }
+		a:hover .endpoint { display: inline }
 
 	</style>
 	</head>
