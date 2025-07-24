@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server/ats"
+
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/stree"
@@ -70,6 +72,9 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 			return nil, err
 		}
 	}
+
+	// Register with access time service.
+	ats.Register()
 
 	return ms, nil
 }
@@ -286,7 +291,7 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, i
 // SkipMsg will use the next sequence number but not store anything.
 func (ms *memStore) SkipMsg() uint64 {
 	// Grab time.
-	now := time.Now().UTC()
+	now := time.Unix(0, ats.AccessTime()).UTC()
 
 	ms.mu.Lock()
 	seq := ms.state.LastSeq + 1
@@ -305,7 +310,7 @@ func (ms *memStore) SkipMsg() uint64 {
 // Skip multiple msgs.
 func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 	// Grab time.
-	now := time.Now().UTC()
+	now := time.Unix(0, ats.AccessTime()).UTC()
 
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
@@ -1292,7 +1297,9 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.state.FirstTime = time.Time{}
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
-	ms.msgs = make(map[uint64]*StoreMsg)
+	if ms.msgs != nil {
+		ms.msgs = make(map[uint64]*StoreMsg)
+	}
 	ms.fss = stree.NewSubjectTree[SimpleState]()
 	ms.dmap.Empty()
 	ms.sdm.empty()
@@ -1927,15 +1934,24 @@ func (ms *memStore) Delete() error {
 }
 
 func (ms *memStore) Stop() error {
-	// These can't come back, so stop is same as Delete.
-	ms.Purge()
 	ms.mu.Lock()
+	if ms.msgs == nil {
+		ms.mu.Unlock()
+		return nil
+	}
 	if ms.ageChk != nil {
 		ms.ageChk.Stop()
 		ms.ageChk = nil
 	}
 	ms.msgs = nil
 	ms.mu.Unlock()
+
+	// These can't come back, so stop is same as Delete.
+	ms.Purge()
+
+	// Unregister from the access time service.
+	ats.Unregister()
+
 	return nil
 }
 
