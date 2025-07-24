@@ -487,7 +487,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 
 		// Check if our prior state remembers a last sequence past where we can see.
-		if prior.LastSeq > fs.state.LastSeq {
+		// Unless we're async flushing, in which case this can happen if some blocks weren't flushed.
+		if prior.LastSeq > fs.state.LastSeq && !fs.fcfg.AsyncFlush {
 			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
 			if fs.state.Msgs == 0 {
 				fs.state.FirstSeq = fs.state.LastSeq + 1
@@ -671,6 +672,27 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 
 	if fs.cfg.MaxMsgsPer > 0 && (old_cfg.MaxMsgsPer == 0 || fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer) {
 		fs.enforceMsgPerSubjectLimit(true)
+	}
+
+	if lmb := fs.lmb; lmb != nil {
+		// Enable/disable async flush depending on if it's supported and already initialized.
+		supportsAsyncFlush := cfg.AllowAsyncFlush && cfg.Replicas > 1
+		if supportsAsyncFlush && !fs.fcfg.AsyncFlush {
+			fs.fcfg.AsyncFlush = true
+			lmb.spinUpFlushLoop()
+		} else if !supportsAsyncFlush && fs.fcfg.AsyncFlush {
+			fs.fcfg.AsyncFlush = false
+			lmb.mu.Lock()
+			// Quit the flush loop.
+			if lmb.qch != nil {
+				close(lmb.qch)
+				lmb.qch = nil
+			}
+			lmb.flushPendingMsgsLocked()
+			lmb.mu.Unlock()
+		}
+		// Set flush in place to AsyncFlush which by default is false.
+		fs.fip = !fs.fcfg.AsyncFlush
 	}
 	fs.mu.Unlock()
 
@@ -3938,16 +3960,28 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	var rbuf []byte
 
 	if lmb := fs.lmb; lmb != nil {
+		lmb.mu.Lock()
 		index = lmb.index + 1
+
+		// Quit our loops.
+		if lmb.qch != nil {
+			close(lmb.qch)
+			lmb.qch = nil
+		}
+		// Flush any pending messages.
+		lmb.flushPendingMsgsLocked()
 		// Determine if we can reclaim any resources here.
-		if fs.fip {
-			lmb.mu.Lock()
-			lmb.closeFDsLocked()
-			if lmb.cache != nil {
-				// Reset write timestamp and see if we can expire this cache.
-				rbuf = lmb.tryExpireWriteCache()
-			}
-			lmb.mu.Unlock()
+		lmb.closeFDsLocked()
+		if lmb.cache != nil {
+			// Reset write timestamp and see if we can expire this cache.
+			rbuf = lmb.tryExpireWriteCache()
+		}
+		lmb.mu.Unlock()
+
+		if fs.fcfg.Compression != NoCompression {
+			// We've now reached the end of this message block, if we want
+			// to compress blocks then now's the time to do it.
+			go lmb.recompressOnDiskIfNeeded()
 		}
 	}
 
@@ -4216,7 +4250,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 		return
 	}
 	var needsRecord bool
-	nowts := ats.AccessTime()
+	nowts := now.UnixNano()
 
 	mb.mu.Lock()
 	// If we are empty can just do meta.
@@ -4302,11 +4336,6 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 		numDeletes += mb.dmap.Size()
 	}
 	if mb == nil || numDeletes > maxDeletes && mb.msgs > 0 || mb.msgs > 0 && mb.blkSize()+emptyRecordLen > fs.fcfg.BlockSize {
-		if mb != nil && fs.fcfg.Compression != NoCompression {
-			// We've now reached the end of this message block, if we want
-			// to compress blocks then now's the time to do it.
-			go mb.recompressOnDiskIfNeeded()
-		}
 		var err error
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
 			return err
@@ -4346,6 +4375,13 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	fs.dirty++
 
 	return nil
+}
+
+// FlushAllPending flushes all data that was still pending to be written.
+func (fs *fileStore) FlushAllPending() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.checkAndFlushLastBlock()
 }
 
 // Lock should be held.
@@ -5104,6 +5140,14 @@ func (mb *msgBlock) setInFlusher() {
 func (mb *msgBlock) clearInFlusher() {
 	mb.mu.Lock()
 	mb.flusher = false
+	if mb.qch != nil {
+		close(mb.qch)
+		mb.qch = nil
+	}
+	if mb.fch != nil {
+		close(mb.fch)
+		mb.fch = nil
+	}
 	mb.mu.Unlock()
 }
 
@@ -5134,16 +5178,19 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 					waiting = newWaiting
 					ts *= 2
 				}
+
 				mb.flushPendingMsgs()
-				// Check if we are no longer the last message block. If we are
-				// not we can close FDs and exit.
-				mb.fs.mu.RLock()
-				notLast := mb != mb.fs.lmb
-				mb.fs.mu.RUnlock()
-				if notLast {
-					if err := mb.closeFDs(); err == nil {
-						return
-					}
+			}
+
+			// Check if we are no longer the last message block. If we are
+			// not we can close FDs and exit.
+			mb.fs.mu.RLock()
+			notLast := mb != mb.fs.lmb
+			mb.fs.mu.RUnlock()
+
+			if notLast {
+				if err := mb.closeFDs(); err == nil {
+					return
 				}
 			}
 		case <-qch:
@@ -5229,6 +5276,19 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 	}
 	// Calculate new eof.
 	eof := int64(ri + rl)
+
+	// FIXME(dlc) - We could be smarter here.
+	if buf, _ := mb.bytesPending(); len(buf) > 0 {
+		ld, err := mb.flushPendingMsgsLocked()
+		if ld != nil && mb.fs != nil {
+			// We do not know if fs is locked or not at this point.
+			// This should be an exceptional condition so do so in Go routine.
+			go mb.fs.rebuildState(ld)
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+	}
 
 	var purged, bytes uint64
 
@@ -5802,16 +5862,18 @@ func (fs *fileStore) handleRemovalOrSdm(seq uint64, subj string, sdm bool, sdmTT
 }
 
 // Lock should be held.
-func (fs *fileStore) checkAndFlushAllBlocks() {
-	for _, mb := range fs.blks {
-		if mb.pendingWriteSize() > 0 {
-			// Since fs lock is held need to pull this apart in case we need to rebuild state.
-			mb.mu.Lock()
-			ld, _ := mb.flushPendingMsgsLocked()
-			mb.mu.Unlock()
-			if ld != nil {
-				fs.rebuildStateLocked(ld)
-			}
+func (fs *fileStore) checkAndFlushLastBlock() {
+	lmb := fs.lmb
+	if lmb == nil {
+		return
+	}
+	if lmb.pendingWriteSize() > 0 {
+		// Since fs lock is held need to pull this apart in case we need to rebuild state.
+		lmb.mu.Lock()
+		ld, _ := lmb.flushPendingMsgsLocked()
+		lmb.mu.Unlock()
+		if ld != nil {
+			fs.rebuildStateLocked(ld)
 		}
 	}
 }
@@ -5821,7 +5883,7 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	fs.checkAndFlushAllBlocks()
+	fs.checkAndFlushLastBlock()
 
 	// Clear any global subject state.
 	fs.psim, fs.tsl = fs.psim.Empty(), 0
@@ -5994,9 +6056,9 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	fch, werr := mb.fch, mb.werr
 
 	// If we should be flushing, or had a write error, do so here.
-	if flush || werr != nil {
+	if (flush && mb.fs.fip) || werr != nil {
 		ld, err := mb.flushPendingMsgsLocked()
-		if ld != nil && mb.fs != nil {
+		if ld != nil {
 			// We have the mb lock here, this needs the mb locks so do in its own go routine.
 			go mb.fs.rebuildState(ld)
 		}
@@ -6116,14 +6178,6 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 	lmb = fs.lmb
 	rbytes := lmb.blkSize()
 	if lmb == nil || (rbytes > 0 && rbytes+rl > fs.fcfg.BlockSize) {
-		if lmb != nil {
-			lmb.flushPendingMsgs()
-			if fs.fcfg.Compression != NoCompression {
-				// We've now reached the end of this message block, if we want
-				// to compress blocks then now's the time to do it.
-				go lmb.recompressOnDiskIfNeeded()
-			}
-		}
 		if lmb, err = fs.newMsgBlockForWrite(); err != nil {
 			return nil, err
 		}
@@ -8150,7 +8204,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				return purged, err
 			}
 		}
-		// Flush any pending. If we change blocks the checkLastBlock() will flush any pending for us.
+		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
 		if lmb := fs.lmb; lmb != nil {
 			lmb.flushPendingMsgs()
 		}
@@ -9518,7 +9572,7 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 	fs.closing = true
 
 	if writeState {
-		fs.checkAndFlushAllBlocks()
+		fs.checkAndFlushLastBlock()
 	}
 	fs.closeAllMsgBlocks(false)
 

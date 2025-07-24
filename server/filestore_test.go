@@ -888,7 +888,7 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 		// The performance of this test is quite terrible with compression
 		// if we have AsyncFlush = false, so we'll batch flushes instead.
 		fs.mu.Lock()
-		fs.checkAndFlushAllBlocks()
+		fs.checkAndFlushLastBlock()
 		fs.mu.Unlock()
 
 		if state := fs.State(); state.Msgs != 10_000 {
@@ -1327,7 +1327,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	if sm2, _ := fs.msgForSeq(1, nil); sm2 != nil {
 		t.Fatalf("Expected msg to be erased")
 	}
-	fs.checkAndFlushAllBlocks()
+	fs.checkAndFlushLastBlock()
 
 	// Now look on disk as well.
 	rl := fileStoreMsgSize(subj, nil, msg)
@@ -9764,4 +9764,147 @@ func TestFileStoreNoPanicOnRecoverTTLWithCorruptBlocks(t *testing.T) {
 
 		require_NoError(t, fs.recoverTTLState())
 	})
+}
+
+func TestFileStoreAsyncTruncate(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 8192
+		fcfg.AsyncFlush = true
+
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		require_NotNil(t, lmb)
+
+		// Wait for flusher to be ready.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if !lmb.flusher {
+				return errors.New("flusher not active")
+			}
+			return nil
+		})
+		// Now shutdown flusher and wait for it to be closed.
+		lmb.mu.Lock()
+		if lmb.qch != nil {
+			close(lmb.qch)
+			lmb.qch = nil
+		}
+		lmb.mu.Unlock()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if lmb.flusher {
+				return errors.New("flusher still active")
+			}
+			return nil
+		})
+
+		// Write some messages, none of them will have been flushed asynchronously.
+		subj, msg := "foo", make([]byte, 100)
+		for i := uint64(1); i <= 2; i++ {
+			seq, _, err := fs.StoreMsg(subj, nil, msg, 0)
+			require_NoError(t, err)
+			require_Equal(t, seq, i)
+		}
+		// Truncate needs to flush if the data was not yet flushed asynchronously.
+		require_NoError(t, fs.Truncate(1))
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 1)
+
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			if mb.pendingWriteSize() > 0 {
+				fs.mu.RUnlock()
+				t.Fatalf("Message block %d still has pending writes", mb.index)
+			}
+		}
+		fs.mu.RUnlock()
+	})
+}
+
+func TestFileStoreAsyncFlushOnSkipMsgs(t *testing.T) {
+	for _, noFlushLoop := range []bool{false, true} {
+		t.Run(fmt.Sprintf("NoFlushLoop=%v", noFlushLoop), func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				fcfg.BlockSize = 8192
+				fcfg.AsyncFlush = true
+
+				fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				fs.mu.RLock()
+				fmb := fs.lmb
+				fs.mu.RUnlock()
+				require_NotNil(t, fmb)
+
+				if noFlushLoop {
+					// Wait for flusher to be ready.
+					checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+						fmb.mu.RLock()
+						defer fmb.mu.RUnlock()
+						if !fmb.flusher {
+							return errors.New("flusher not active")
+						}
+						return nil
+					})
+					// Now shutdown flusher and wait for it to be closed.
+					fmb.mu.Lock()
+					if fmb.qch != nil {
+						close(fmb.qch)
+						fmb.qch = nil
+					}
+					fmb.mu.Unlock()
+					checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+						fmb.mu.RLock()
+						defer fmb.mu.RUnlock()
+						if fmb.flusher {
+							return errors.New("flusher still active")
+						}
+						return nil
+					})
+				}
+
+				// Confirm no pending writes.
+				require_Equal(t, fmb.pendingWriteSize(), 0)
+
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+
+				if noFlushLoop {
+					// Confirm above write is pending.
+					require_Equal(t, fmb.pendingWriteSize(), 33)
+				}
+
+				require_NoError(t, fs.SkipMsgs(2, 100_000))
+				fs.mu.RLock()
+				if blks := len(fs.blks); blks != 2 {
+					fs.mu.RUnlock()
+					t.Fatalf("Expected 2 blocks, got %d", blks)
+				}
+				lmb := fs.blks[1]
+				fs.mu.RUnlock()
+
+				// Should have immediately flushed the previous block.
+				require_Equal(t, fmb.pendingWriteSize(), 0)
+
+				// Should eventually flush the last block.
+				checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+					if p := lmb.pendingWriteSize(); p > 0 {
+						return fmt.Errorf("expected no pending writes, got %d", p)
+					}
+					return nil
+				})
+			})
+		})
+	}
 }
