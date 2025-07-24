@@ -294,7 +294,7 @@ func (ms *memStore) SkipMsg() uint64 {
 	ms.state.LastTime = now
 	if ms.state.Msgs == 0 {
 		ms.state.FirstSeq = seq + 1
-		ms.state.FirstTime = now
+		ms.state.FirstTime = time.Time{}
 	} else {
 		ms.dmap.Insert(seq)
 	}
@@ -322,7 +322,7 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 	ms.state.LastSeq = lseq
 	ms.state.LastTime = now
 	if ms.state.Msgs == 0 {
-		ms.state.FirstSeq, ms.state.FirstTime = lseq+1, now
+		ms.state.FirstSeq, ms.state.FirstTime = lseq+1, time.Time{}
 	} else {
 		for ; seq <= lseq; seq++ {
 			ms.dmap.Insert(seq)
@@ -1421,9 +1421,9 @@ func (ms *memStore) Truncate(seq uint64) error {
 
 	ms.mu.Lock()
 	lsm, ok := ms.msgs[seq]
-	if !ok {
-		ms.mu.Unlock()
-		return ErrInvalidSequence
+	lastTime := ms.state.LastTime
+	if ok && lsm != nil {
+		lastTime = time.Unix(0, lsm.ts).UTC()
 	}
 
 	for i := ms.state.LastSeq; i > seq; i-- {
@@ -1438,8 +1438,8 @@ func (ms *memStore) Truncate(seq uint64) error {
 		}
 	}
 	// Reset last.
-	ms.state.LastSeq = lsm.seq
-	ms.state.LastTime = time.Unix(0, lsm.ts).UTC()
+	ms.state.LastSeq = seq
+	ms.state.LastTime = lastTime
 	// Update msgs and bytes.
 	if purged > ms.state.Msgs {
 		purged = ms.state.Msgs
