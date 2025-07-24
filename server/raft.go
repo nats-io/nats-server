@@ -3339,21 +3339,9 @@ func (n *raft) truncateWAL(term, index uint64) {
 	}()
 
 	if err := n.wal.Truncate(index); err != nil {
-		// If we get an invalid sequence, reset our wal all together.
-		// We will not have holes, so this means we do not have this message stored anymore.
-		// This is normal when truncating back to applied/snapshot.
-		if err == ErrInvalidSequence {
-			n.debug("Clearing WAL")
-			n.wal.Truncate(0)
-			// If our index is non-zero use PurgeEx to set us to the correct next index.
-			if index > 0 {
-				n.wal.PurgeEx(fwcs, index+1, 0)
-			}
-		} else {
-			n.warn("Error truncating WAL: %v", err)
-			n.setWriteErrLocked(err)
-			return
-		}
+		n.warn("Error truncating WAL: %v", err)
+		n.setWriteErrLocked(err)
+		return
 	}
 	// Set after we know we have truncated properly.
 	n.pterm, n.pindex = term, index
@@ -4130,7 +4118,6 @@ func (n *raft) setWriteErrLocked(err error) {
 	// Ignore non-write errors.
 	if err == ErrStoreClosed ||
 		err == ErrStoreEOF ||
-		err == ErrInvalidSequence ||
 		err == ErrStoreMsgNotFound ||
 		err == errNoPending ||
 		err == errPartialCache {

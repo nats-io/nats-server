@@ -1331,6 +1331,10 @@ func (mb *msgBlock) convertToEncrypted() error {
 	if err != nil {
 		return err
 	}
+	// Check for compression.
+	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+		return err
+	}
 	if err := mb.indexCacheBuf(buf); err != nil {
 		// This likely indicates this was already encrypted or corrupt.
 		mb.cache = nil
@@ -4261,7 +4265,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 		atomic.StoreUint64(&mb.last.seq, seq)
 		mb.last.ts = nowts
 		atomic.StoreUint64(&mb.first.seq, seq+1)
-		mb.first.ts = nowts
+		mb.first.ts = 0
 		needsRecord = mb == mb.fs.lmb
 		if needsRecord && mb.rbytes > 0 {
 			// We want to make sure since we have no messages
@@ -4298,7 +4302,7 @@ func (fs *fileStore) SkipMsg() uint64 {
 	}
 
 	// Grab time and last seq.
-	now, seq := time.Now(), fs.state.LastSeq+1
+	now, seq := time.Now().UTC(), fs.state.LastSeq+1
 
 	// Write skip msg.
 	mb.skipMsg(seq, now)
@@ -4306,10 +4310,10 @@ func (fs *fileStore) SkipMsg() uint64 {
 	// Update fs state.
 	fs.state.LastSeq, fs.state.LastTime = seq, now
 	if fs.state.Msgs == 0 {
-		fs.state.FirstSeq, fs.state.FirstTime = seq, now
+		fs.state.FirstSeq, fs.state.FirstTime = seq, time.Time{}
 	}
 	if seq == fs.state.FirstSeq {
-		fs.state.FirstSeq, fs.state.FirstTime = seq+1, now
+		fs.state.FirstSeq, fs.state.FirstTime = seq+1, time.Time{}
 	}
 	// Mark as dirty for stream state.
 	fs.dirty++
@@ -4346,7 +4350,7 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	}
 
 	// Insert into dmap all entries and place last as marker.
-	now := time.Now()
+	now := time.Now().UTC()
 	nowts := now.UnixNano()
 	lseq := seq + num - 1
 
@@ -4356,7 +4360,7 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 		atomic.StoreUint64(&mb.last.seq, lseq)
 		mb.last.ts = nowts
 		atomic.StoreUint64(&mb.first.seq, lseq+1)
-		mb.first.ts = nowts
+		mb.first.ts = 0
 	} else {
 		for ; seq <= lseq; seq++ {
 			mb.dmap.Insert(seq)
@@ -4371,7 +4375,7 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	// Update fs state.
 	fs.state.LastSeq, fs.state.LastTime = lseq, now
 	if fs.state.Msgs == 0 {
-		fs.state.FirstSeq, fs.state.FirstTime = lseq+1, now
+		fs.state.FirstSeq, fs.state.FirstTime = lseq+1, time.Time{}
 	}
 
 	// Mark as dirty for stream state.
@@ -5262,18 +5266,16 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 	return nil
 }
 
-// Truncate this message block to the storedMsg.
-func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-
+// Truncate this message block to the tseq and ts.
+// Lock should be held.
+func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err error) {
 	// Make sure we are loaded to process messages etc.
 	if err := mb.loadMsgsWithLock(); err != nil {
 		return 0, 0, err
 	}
 
 	// Calculate new eof using slot info from our new last sm.
-	ri, rl, _, err := mb.slotInfo(int(sm.seq - mb.cache.fseq))
+	ri, rl, _, err := mb.slotInfo(int(tseq - mb.cache.fseq))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -5298,7 +5300,7 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 	checkDmap := mb.dmap.Size() > 0
 	var smv StoreMsg
 
-	for seq := atomic.LoadUint64(&mb.last.seq); seq > sm.seq; seq-- {
+	for seq := atomic.LoadUint64(&mb.last.seq); seq > tseq; seq-- {
 		if checkDmap {
 			if mb.dmap.Exists(seq) {
 				// Delete and skip to next.
@@ -5384,8 +5386,8 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 	}
 
 	// Update our last msg.
-	atomic.StoreUint64(&mb.last.seq, sm.seq)
-	mb.last.ts = sm.ts
+	atomic.StoreUint64(&mb.last.seq, tseq)
+	mb.last.ts = ts
 
 	// Clear our cache.
 	mb.clearCacheAndOffset()
@@ -5449,7 +5451,11 @@ func (fs *fileStore) selectNextFirst() {
 		mb := fs.blks[0]
 		mb.mu.RLock()
 		fs.state.FirstSeq = atomic.LoadUint64(&mb.first.seq)
-		fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+		if mb.first.ts == 0 {
+			fs.state.FirstTime = time.Time{}
+		} else {
+			fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+		}
 		mb.mu.RUnlock()
 	} else {
 		// Could not find anything, so treat like purge
@@ -8158,7 +8164,11 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 						firstSeqNeedsUpdate = firstSeqNeedsUpdate || seq == fs.state.FirstSeq
 					} else if seq == fs.state.FirstSeq {
 						fs.state.FirstSeq = atomic.LoadUint64(&mb.first.seq) // new one.
-						fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+						if mb.first.ts == 0 {
+							fs.state.FirstTime = time.Time{}
+						} else {
+							fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+						}
 					}
 				} else {
 					// Out of order delete.
@@ -8665,55 +8675,105 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		return ErrStoreSnapshotInProgress
 	}
 
-	nlmb := fs.selectMsgBlock(seq)
-	if nlmb == nil {
-		fs.mu.Unlock()
-		return ErrInvalidSequence
-	}
-	lsm, _, _ := nlmb.fetchMsgNoCopy(seq, nil)
-	if lsm == nil {
-		fs.mu.Unlock()
-		return ErrInvalidSequence
+	var lsm *StoreMsg
+	smb := fs.selectMsgBlock(seq)
+	if smb != nil {
+		lsm, _, _ = smb.fetchMsgNoCopy(seq, nil)
 	}
 
-	// Set lmb to nlmb and make sure writeable.
-	fs.lmb = nlmb
-	if err := nlmb.enableForWriting(fs.fip); err != nil {
-		fs.mu.Unlock()
+	// Reset last so new block doesn't contain truncated sequences/timestamps.
+	var lastTime int64
+	if lsm != nil {
+		lastTime = lsm.ts
+	} else if smb != nil {
+		lastTime = smb.last.ts
+	} else {
+		lastTime = fs.state.LastTime.UnixNano()
+	}
+	fs.state.LastSeq = seq
+	fs.state.LastTime = time.Unix(0, lastTime).UTC()
+
+	// Always create a new write block for any tombstones.
+	// We'll truncate the selected message block as the last step, so can't write tombstones to it.
+	// If we end up not needing to write tombstones, this block will be cleaned up at the end.
+	tmb, err := fs.newMsgBlockForWrite()
+	if err != nil {
 		return err
 	}
-	// Collect all tombstones, we want to put these back so we can survive
-	// a restore without index.db properly.
-	var tombs []msgId
-	tombs = append(tombs, nlmb.tombs()...)
+
+	// If there's no selected block, we'll need to write a tombstone at the truncated sequence
+	// so we don't roll backward on our last sequence.
+	if smb == nil {
+		fs.writeTombstone(seq, lastTime)
+	}
 
 	var purged, bytes uint64
 
-	// Truncate our new last message block.
-	nmsgs, nbytes, err := nlmb.truncate(lsm)
-	if err != nil {
-		fs.mu.Unlock()
-		return fmt.Errorf("nlmb.truncate: %w", err)
-	}
-	// Account for the truncated msgs and bytes.
-	purged += nmsgs
-	bytes += nbytes
-
 	// Remove any left over msg blocks.
-	getLastMsgBlock := func() *msgBlock { return fs.blks[len(fs.blks)-1] }
-	for mb := getLastMsgBlock(); mb != nlmb; mb = getLastMsgBlock() {
+	getLastMsgBlock := func() *msgBlock {
+		// Start at one before last, tmb will be the last most of the time
+		// unless a new block gets added for tombstones.
+		for i := len(fs.blks) - 2; i >= 0; i-- {
+			if mb := fs.blks[i]; mb.index < tmb.index {
+				return mb
+			}
+		}
+		return nil
+	}
+	for mb := getLastMsgBlock(); mb != nil && mb != smb; mb = getLastMsgBlock() {
 		mb.mu.Lock()
-		// We do this to load tombs.
-		tombs = append(tombs, mb.tombsLocked()...)
 		purged += mb.msgs
 		bytes += mb.bytes
+
+		// We could have tombstones for messages before the truncated sequence.
+		// Need to store those for blocks we're about to remove.
+		if tombs := mb.tombsLocked(); len(tombs) > 0 {
+			// Temporarily unlock while we write tombstones.
+			mb.mu.Unlock()
+			for _, tomb := range tombs {
+				if tomb.seq <= seq {
+					fs.writeTombstone(tomb.seq, tomb.ts)
+				}
+			}
+			mb.mu.Lock()
+		}
 		fs.removeMsgBlock(mb)
 		mb.mu.Unlock()
 	}
 
+	if smb != nil {
+		// Make sure writeable.
+		smb.mu.Lock()
+		if err := smb.enableForWriting(fs.fip); err != nil {
+			smb.mu.Unlock()
+			fs.mu.Unlock()
+			return err
+		}
+
+		// Truncate our selected message block.
+		nmsgs, nbytes, err := smb.truncate(seq, lastTime)
+		smb.mu.Unlock()
+		if err != nil {
+			fs.mu.Unlock()
+			return fmt.Errorf("smb.truncate: %w", err)
+		}
+		// Account for the truncated msgs and bytes.
+		purged += nmsgs
+		bytes += nbytes
+	}
+
+	// If no tombstones were written, we can remove the block and
+	// purely rely on the selected block as the last block.
+	if fs.lmb == tmb && len(tmb.tombs()) == 0 {
+		fs.lmb = smb
+		tmb.mu.Lock()
+		fs.removeMsgBlock(tmb)
+		tmb.mu.Unlock()
+	}
+
 	// Reset last.
-	fs.state.LastSeq = lsm.seq
-	fs.state.LastTime = time.Unix(0, lsm.ts).UTC()
+	fs.state.LastSeq = seq
+	fs.state.LastTime = time.Unix(0, lastTime).UTC()
 	// Update msgs and bytes.
 	if purged > fs.state.Msgs {
 		purged = fs.state.Msgs
@@ -8726,16 +8786,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 
 	// Reset our subject lookup info.
 	fs.resetGlobalPerSubjectInfo()
-
-	// Always create new write block.
-	fs.newMsgBlockForWrite()
-
-	// Write any tombstones as needed.
-	for _, tomb := range tombs {
-		if tomb.seq <= lsm.seq {
-			fs.writeTombstone(tomb.seq, tomb.ts)
-		}
-	}
 
 	// Any existing state file no longer applicable. We will force write a new one
 	// after we release the lock.
