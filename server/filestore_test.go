@@ -888,7 +888,7 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 		// The performance of this test is quite terrible with compression
 		// if we have AsyncFlush = false, so we'll batch flushes instead.
 		fs.mu.Lock()
-		fs.checkAndFlushAllBlocks()
+		fs.checkAndFlushLastBlock()
 		fs.mu.Unlock()
 
 		if state := fs.State(); state.Msgs != 10_000 {
@@ -1327,7 +1327,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	if sm2, _ := fs.msgForSeq(1, nil); sm2 != nil {
 		t.Fatalf("Expected msg to be erased")
 	}
-	fs.checkAndFlushAllBlocks()
+	fs.checkAndFlushLastBlock()
 
 	// Now look on disk as well.
 	rl := fileStoreMsgSize(subj, nil, msg)
