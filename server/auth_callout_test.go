@@ -231,10 +231,14 @@ func TestAuthCalloutBasics(t *testing.T) {
 		require_True(t, si.Name == "A")
 		require_True(t, ci.Host == "127.0.0.1")
 		// Allow dlc user.
-		if opts.Username == "dlc" && opts.Password == "zzz" {
+		if (opts.Username == "dlc" && opts.Password == "zzz") || opts.Token == "SECRET_TOKEN" {
 			var j jwt.UserPermissionLimits
 			j.Pub.Allow.Add("$SYS.>")
 			j.Payload = 1024
+			if opts.Token == "SECRET_TOKEN" {
+				// Token MUST NOT be exposed in user info.
+				require_Equal(t, ci.User, "[REDACTED]")
+			}
 			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
@@ -272,6 +276,39 @@ func TestAuthCalloutBasics(t *testing.T) {
 		},
 	}
 	expires := userInfo.Expires
+	userInfo.Expires = 0
+	if !reflect.DeepEqual(dlc, userInfo) {
+		t.Fatalf("User info for %q did not match", "dlc")
+	}
+	if expires > 10*time.Minute || expires < (10*time.Minute-5*time.Second) {
+		t.Fatalf("Expected expires of ~%v, got %v", 10*time.Minute, expires)
+	}
+
+	// Callout with a token should also work, regardless of it being redacted in the user info.
+	nc.Close()
+	nc = at.Connect(nats.Token("SECRET_TOKEN"))
+	defer nc.Close()
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+	dlc = &UserInfo{
+		// Token MUST NOT be exposed in user info.
+		UserID:  "[REDACTED]",
+		Account: globalAccountName,
+		Permissions: &Permissions{
+			Publish: &SubjectPermission{
+				Allow: []string{"$SYS.>"},
+				Deny:  []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
+			},
+			Subscribe: &SubjectPermission{},
+		},
+	}
+	expires = userInfo.Expires
 	userInfo.Expires = 0
 	if !reflect.DeepEqual(dlc, userInfo) {
 		t.Fatalf("User info for %q did not match", "dlc")
