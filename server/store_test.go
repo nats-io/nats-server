@@ -607,6 +607,18 @@ func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
 			},
 		},
 		{
+			title: "TruncateWithErase",
+			action: func(s StreamStore, lseq uint64) {
+				seq, _, err := s.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				require_Equal(t, seq, lseq)
+				removed, err := s.EraseMsg(lseq)
+				require_NoError(t, err)
+				require_True(t, removed)
+				require_NoError(t, s.Truncate(lseq))
+			},
+		},
+		{
 			title: "TruncateWithTombstone",
 			action: func(s StreamStore, lseq uint64) {
 				seq, _, err := s.StoreMsg("foo", nil, nil, 0)
