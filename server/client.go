@@ -4360,7 +4360,7 @@ func sliceHeader(key string, hdr []byte) []byte {
 	if len(hdr) == 0 {
 		return nil
 	}
-	index := bytes.Index(hdr, stringToBytes(key))
+	index := bytes.Index(hdr, stringToBytes(key+":"))
 	hdrLen := len(hdr)
 	// Check that we have enough characters, this will handle the -1 case of the key not
 	// being found and will also handle not having enough characters for trailing CRLF.

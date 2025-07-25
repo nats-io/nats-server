@@ -1271,10 +1271,13 @@ func (mb *msgBlock) convertCipher() error {
 
 		buf, _ := mb.loadBlock(nil)
 		bek.XORKeyStream(buf, buf)
-		// Make sure we can parse with old cipher and key file.
-		if err = mb.indexCacheBuf(buf); err != nil {
+		// Check for compression, and make sure we can parse with old cipher and key file.
+		if nbuf, err := mb.decompressIfNeeded(buf); err != nil {
+			return err
+		} else if err = mb.indexCacheBuf(nbuf); err != nil {
 			return err
 		}
+
 		// Reset the cache since we just read everything in.
 		mb.cache = nil
 
@@ -1917,31 +1920,34 @@ func (fs *fileStore) recoverTTLState() error {
 	defer fs.resetAgeChk(0)
 	if fs.state.Msgs > 0 && ttlseq <= fs.state.LastSeq {
 		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", ttlseq, fs.state.LastSeq)
-		var sm StoreMsg
-		mb := fs.selectMsgBlock(ttlseq)
-		if mb == nil {
-			return nil
-		}
-		mblseq := atomic.LoadUint64(&mb.last.seq)
+		var (
+			mb     *msgBlock
+			sm     StoreMsg
+			mblseq uint64
+		)
 		for seq := ttlseq; seq <= fs.state.LastSeq; seq++ {
 		retry:
+			if mb == nil {
+				if mb = fs.selectMsgBlock(seq); mb == nil {
+					// Selecting the message block should return a block that contains this sequence,
+					// or a later block if it can't be found.
+					// It's an error if we can't find any block within the bounds of first and last seq.
+					fs.warn("Error loading msg block with seq %d for recovering TTL: %s", seq)
+					continue
+				}
+				seq = atomic.LoadUint64(&mb.first.seq)
+				mblseq = atomic.LoadUint64(&mb.last.seq)
+			}
 			if mb.ttls == 0 {
 				// None of the messages in the block have message TTLs so don't
 				// bother doing anything further with this block, skip to the end.
 				seq = atomic.LoadUint64(&mb.last.seq) + 1
 			}
 			if seq > mblseq {
-				// We've reached the end of the loaded block, see if we can continue
-				// by loading the next one.
+				// We've reached the end of the loaded block, so let's go back to the
+				// beginning and process the next block.
 				mb.tryForceExpireCache()
-				if mb = fs.selectMsgBlock(seq); mb == nil {
-					// TODO(nat): Deal with gaps properly. Right now this will be
-					// probably expensive on CPU.
-					continue
-				}
-				mblseq = atomic.LoadUint64(&mb.last.seq)
-				// At this point we've loaded another block, so let's go back to the
-				// beginning and see if we need to skip this one too.
+				mb = nil
 				goto retry
 			}
 			msg, _, err := mb.fetchMsgNoCopy(seq, &sm)
@@ -5649,7 +5655,7 @@ func (fs *fileStore) expireMsgs() {
 			// if it was the last message of that particular subject that we just deleted.
 			if sdmEnabled {
 				if last, ok := fs.shouldProcessSdm(seq, sm.subj); ok {
-					sdm := last && len(getHeader(JSMarkerReason, sm.hdr)) == 0
+					sdm := last && isSubjectDeleteMarker(sm.hdr)
 					fs.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
 				}
 			} else {
@@ -5682,7 +5688,7 @@ func (fs *fileStore) expireMsgs() {
 				if ttlSdm == nil {
 					ttlSdm = make(map[string][]SDMBySubj, 1)
 				}
-				ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, len(getHeader(JSMarkerReason, sm.hdr)) != 0})
+				ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, !isSubjectDeleteMarker(sm.hdr)})
 			} else {
 				// Collect sequences to remove. Don't remove messages inline here,
 				// as that releases the lock and THW is not thread-safe.

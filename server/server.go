@@ -2704,7 +2704,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// Setup state that can enable shutdown
 	s.mu.Lock()
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
-	l, e := natsListen("tcp", hp)
+	l, e := s.getServerListener(hp)
 	s.listenerErr = e
 	if e != nil {
 		s.mu.Unlock()
@@ -2758,6 +2758,18 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// Let the caller know that we are ready
 	close(clr)
 	clr = nil
+}
+
+// getServerListener returns a network listener for the given host-port address.
+// If the Server already has an active listener (s.listener), it returns that listener
+// along with any previous error (s.listenerErr). Otherwise, it creates and returns
+// a new TCP listener on the specified address using natsListen.
+func (s *Server) getServerListener(hp string) (net.Listener, error) {
+	if s.listener != nil {
+		return s.listener, s.listenerErr
+	}
+
+	return natsListen("tcp", hp)
 }
 
 // InProcessConn returns an in-process connection to the server,

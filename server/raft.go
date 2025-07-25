@@ -1184,7 +1184,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errNoSnapAvailable
 	}
 
-	n.debug("Installing snapshot of %d bytes", len(data))
+	n.debug("Installing snapshot of %d bytes [%d:%d]", len(data), term, n.applied)
 
 	return n.installSnapshot(&snapshot{
 		lastTerm:  term,
@@ -1314,8 +1314,9 @@ func (n *raft) setupLastSnapshot() {
 	// Compact the WAL when we're done if needed.
 	n.pindex = snap.lastIndex
 	n.pterm = snap.lastTerm
+	// Explicitly only set commit, and not applied.
+	// Applied will move up when the snapshot is actually applied.
 	n.commit = snap.lastIndex
-	n.applied = snap.lastIndex
 	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
@@ -1957,7 +1958,7 @@ func (n *raft) run() {
 	n.apply.push(nil)
 
 runner:
-	for s.isRunning() {
+	for {
 		switch n.State() {
 		case Follower:
 			n.runAsFollower()
@@ -2691,7 +2692,7 @@ func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
 func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64]) {
 	n.RLock()
 	s, reply := n.s, n.areply
-	peer, subj, term, last := ar.peer, ar.reply, n.term, n.pindex
+	peer, subj, term, pterm, last := ar.peer, ar.reply, n.term, n.pterm, n.pindex
 	n.RUnlock()
 
 	defer s.grWG.Done()
@@ -2713,7 +2714,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		indexUpdatesQ.unregister()
 	}()
 
-	n.debug("Running catchup for %q", peer)
+	n.debug("Running catchup for %q [%d:%d] to [%d:%d]", peer, ar.term, ar.index, pterm, last)
 
 	const maxOutstanding = 2 * 1024 * 1024 // 2MB for now.
 	next, total, om := uint64(0), 0, make(map[uint64]int)
@@ -3515,29 +3516,39 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
-			n.debug("AppendEntry detected pindex less than/equal to ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+			n.debug("AppendEntry detected pindex less than/equal to ours: [%d:%d] vs [%d:%d]", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 			var success bool
 
 			if ae.pindex < n.commit {
 				// If we have already committed this entry, just mark success.
 				success = true
+				n.debug("AppendEntry pindex %d below commit %d, marking success", ae.pindex, n.commit)
 			} else if eae, _ := n.loadEntry(ae.pindex); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
 				if ae.pterm == n.pterm && !catchingUp {
 					success = true
+					n.debug("AppendEntry pindex %d already processed, marking success", ae.pindex, n.commit)
 				} else if ae.pindex == n.pindex {
 					// Check if only our terms do not match here.
 					// Make sure pterms match and we take on the leader's.
 					// This prevents constant spinning.
 					n.truncateWAL(ae.pterm, ae.pindex)
-				} else if ae.pindex == n.applied {
-					// Entry can't be found, this is normal because we have a snapshot at this index.
-					// Truncate back to where we've created the snapshot.
-					n.truncateWAL(ae.pterm, ae.pindex)
 				} else {
-					n.resetWAL()
+					snap, err := n.loadLastSnapshot()
+					if err == nil && snap.lastIndex == ae.pindex && snap.lastTerm == ae.pterm {
+						// Entry can't be found, this is normal because we have a snapshot at this index.
+						// Truncate back to where we've created the snapshot.
+						n.truncateWAL(snap.lastTerm, snap.lastIndex)
+						// Only continue if truncation was successful, and we ended up such that we can safely continue.
+						if ae.pterm == n.pterm && ae.pindex == n.pindex {
+							goto CONTINUE
+						}
+					} else {
+						// Otherwise, something has gone very wrong and we need to reset.
+						n.resetWAL()
+					}
 				}
 			} else if eae.term == ae.pterm {
 				// If terms match we can delete all entries past this one, and then continue storing the current entry.
@@ -3594,12 +3605,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
 
-			if _, err := n.wal.Compact(n.pindex + 1); err != nil {
-				n.setWriteErrLocked(err)
-				n.Unlock()
-				return
-			}
-
 			snap := &snapshot{
 				lastTerm:  n.pterm,
 				lastIndex: n.pindex,
@@ -3620,7 +3625,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 
 		// Setup our state for catching up.
-		n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+		n.debug("AppendEntry did not match [%d:%d] with [%d:%d]", ae.pterm, ae.pindex, n.pterm, n.pindex)
 		inbox := n.createCatchup(ae)
 		ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
 		n.Unlock()

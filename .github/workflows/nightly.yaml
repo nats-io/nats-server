@@ -10,9 +10,14 @@ on:
   schedule:
     - cron: "40 4 * * *"
 
+permissions:
+  contents: read
+
 jobs:
   run:
     runs-on: ${{ vars.GHA_WORKER_RELEASE || 'ubuntu-latest' }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

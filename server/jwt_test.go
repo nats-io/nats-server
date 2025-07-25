@@ -7155,9 +7155,28 @@ func TestDefaultSentinelUser(t *testing.T) {
 	uPub, err := uKP.PublicKey()
 	require_NoError(t, err)
 	uc := jwt.NewUserClaims(uPub)
-	uc.BearerToken = true
+	uc.BearerToken = false
 	uc.Name = "sentinel"
 	sentinelToken, err := uc.Encode(aKP)
+	require_NoError(t, err)
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+			default_sentinel: %s
+`, ojwt, sysPub, preloadConfig, sentinelToken)))
+
+	// test non-bearer sentinel is rejected
+	opts, err := ProcessConfigFile(conf)
+	require_NoError(t, err)
+	_, err = NewServer(opts)
+	require_Error(t, err, fmt.Errorf("default sentinel must be a bearer token"))
+
+	// correct and start server
+	uc.BearerToken = true
+	sentinelToken, err = uc.Encode(aKP)
 	require_NoError(t, err)
 	conf = createConfFile(t, []byte(fmt.Sprintf(`
             listen: 127.0.0.1:4747
@@ -7346,4 +7365,61 @@ func TestJWTJetStreamClientsExcludedForMaxConnsUpdate(t *testing.T) {
 
 	_, err = js.Publish("foo", nil)
 	require_NoError(t, err)
+}
+
+func TestJWTClusterUserInfoContainsPermissions(t *testing.T) {
+	tmpl := `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+	`
+	opFrag := `
+			operator: %s
+			system_account: %s
+			resolver: { type: MEM }
+			resolver_preload = {
+				%s : %s
+				%s : %s
+			}
+		`
+
+	_, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.DefaultPermissions.Sub = jwt.Permission{
+		Deny: []string{"foo"},
+	}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+
+	template := tmpl + fmt.Sprintf(opFrag, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+	c := createJetStreamClusterWithTemplate(t, template, "R3S", 3)
+	defer c.shutdown()
+
+	// Since it's a bit of a race whether the local server responds via the
+	// service import before a remote server does, we need to keep trying.
+	// In 1000 attempts it is quite easy to reproduce the problem.
+	test := func() {
+		nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+		defer nc.Close()
+
+		resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+		require_NoError(t, err)
+
+		response := ServerAPIResponse{Data: &UserInfo{}}
+		require_NoError(t, json.Unmarshal(resp.Data, &response))
+
+		userInfo := response.Data.(*UserInfo)
+		require_NotNil(t, userInfo.Permissions)
+	}
+	for range 1000 {
+		test()
+	}
 }

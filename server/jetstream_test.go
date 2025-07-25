@@ -43,6 +43,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -16094,7 +16095,8 @@ func TestJetStreamLastSequenceBySubjectConcurrent(t *testing.T) {
 func TestJetStreamServerReencryption(t *testing.T) {
 	storeDir := t.TempDir()
 
-	for i, algo := range []struct {
+	var i int
+	for _, algo := range []struct {
 		from string
 		to   string
 	}{
@@ -16103,40 +16105,42 @@ func TestJetStreamServerReencryption(t *testing.T) {
 		{"chacha", "chacha"},
 		{"chacha", "aes"},
 	} {
-		t.Run(fmt.Sprintf("%s_to_%s", algo.from, algo.to), func(t *testing.T) {
-			streamName := fmt.Sprintf("TEST_%d", i)
-			subjectName := fmt.Sprintf("foo_%d", i)
-			expected := 30
+		for _, compression := range []StoreCompression{NoCompression, S2Compression} {
+			t.Run(fmt.Sprintf("%s_to_%s/%s", algo.from, algo.to, compression), func(t *testing.T) {
+				i++
+				streamName := fmt.Sprintf("TEST_%d", i)
+				subjectName := fmt.Sprintf("foo_%d", i)
+				expected := 30
 
-			checkStream := func(js nats.JetStreamContext) {
-				si, err := js.StreamInfo(streamName)
-				if err != nil {
-					t.Fatal(err)
+				checkStream := func(js nats.JetStreamContext) {
+					si, err := js.StreamInfo(streamName)
+					if err != nil {
+						t.Fatal(err)
+					}
+
+					if si.State.Msgs != uint64(expected) {
+						t.Fatalf("Should be %d messages but got %d messages", expected, si.State.Msgs)
+					}
+
+					sub, err := js.PullSubscribe(subjectName, "")
+					if err != nil {
+						t.Fatalf("Unexpected error: %v", err)
+					}
+
+					c := 0
+					for _, m := range fetchMsgs(t, sub, expected, 5*time.Second) {
+						m.AckSync()
+						c++
+					}
+					if c != expected {
+						t.Fatalf("Should have read back %d messages but got %d messages", expected, c)
+					}
 				}
 
-				if si.State.Msgs != uint64(expected) {
-					t.Fatalf("Should be %d messages but got %d messages", expected, si.State.Msgs)
-				}
-
-				sub, err := js.PullSubscribe(subjectName, "")
-				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-
-				c := 0
-				for _, m := range fetchMsgs(t, sub, expected, 5*time.Second) {
-					m.AckSync()
-					c++
-				}
-				if c != expected {
-					t.Fatalf("Should have read back %d messages but got %d messages", expected, c)
-				}
-			}
-
-			// First off, we start up using the original encryption key and algorithm.
-			// We'll create a stream and populate it with some messages.
-			t.Run("setup", func(t *testing.T) {
-				conf := createConfFile(t, []byte(fmt.Sprintf(`
+				// First off, we start up using the original encryption key and algorithm.
+				// We'll create a stream and populate it with some messages.
+				t.Run("setup", func(t *testing.T) {
+					conf := createConfFile(t, []byte(fmt.Sprintf(`
 					server_name: S22
 					listen: 127.0.0.1:-1
 					jetstream: {
@@ -16146,34 +16150,37 @@ func TestJetStreamServerReencryption(t *testing.T) {
 					}
 				`, "firstencryptionkey", algo.from, storeDir)))
 
-				s, _ := RunServerWithConfig(conf)
-				defer s.Shutdown()
+					s, _ := RunServerWithConfig(conf)
+					defer s.Shutdown()
 
-				nc, js := jsClientConnect(t, s)
-				defer nc.Close()
+					nc, js := jsClientConnect(t, s)
+					defer nc.Close()
 
-				cfg := &nats.StreamConfig{
-					Name:     streamName,
-					Subjects: []string{subjectName},
-				}
-				if _, err := js.AddStream(cfg); err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-
-				for i := 0; i < expected; i++ {
-					if _, err := js.Publish(subjectName, []byte("ENCRYPTED PAYLOAD!!")); err != nil {
-						t.Fatalf("Unexpected publish error: %v", err)
+					cfg := &StreamConfig{
+						Name:        streamName,
+						Subjects:    []string{subjectName},
+						Storage:     FileStorage,
+						Compression: compression,
 					}
-				}
+					if _, err := jsStreamCreate(t, nc, cfg); err != nil {
+						t.Fatalf("Unexpected error: %v", err)
+					}
 
-				checkStream(js)
-			})
+					payload := strings.Repeat("A", 512*1024)
+					for i := 0; i < expected; i++ {
+						if _, err := js.Publish(subjectName, []byte(payload)); err != nil {
+							t.Fatalf("Unexpected publish error: %v", err)
+						}
+					}
 
-			// Next up, we will restart the server, this time with both the new key
-			// and algorithm and also the old key. At startup, the server will detect
-			// the change in encryption key and/or algorithm and re-encrypt the stream.
-			t.Run("reencrypt", func(t *testing.T) {
-				conf := createConfFile(t, []byte(fmt.Sprintf(`
+					checkStream(js)
+				})
+
+				// Next up, we will restart the server, this time with both the new key
+				// and algorithm and also the old key. At startup, the server will detect
+				// the change in encryption key and/or algorithm and re-encrypt the stream.
+				t.Run("reencrypt", func(t *testing.T) {
+					conf := createConfFile(t, []byte(fmt.Sprintf(`
 					server_name: S22
 					listen: 127.0.0.1:-1
 					jetstream: {
@@ -16184,20 +16191,20 @@ func TestJetStreamServerReencryption(t *testing.T) {
 					}
 				`, "secondencryptionkey", algo.to, "firstencryptionkey", storeDir)))
 
-				s, _ := RunServerWithConfig(conf)
-				defer s.Shutdown()
+					s, _ := RunServerWithConfig(conf)
+					defer s.Shutdown()
 
-				nc, js := jsClientConnect(t, s)
-				defer nc.Close()
+					nc, js := jsClientConnect(t, s)
+					defer nc.Close()
 
-				checkStream(js)
-			})
+					checkStream(js)
+				})
 
-			// Finally, we'll restart the server using only the new key and algorithm.
-			// At this point everything should have been re-encrypted, so we should still
-			// be able to access the stream.
-			t.Run("restart", func(t *testing.T) {
-				conf := createConfFile(t, []byte(fmt.Sprintf(`
+				// Finally, we'll restart the server using only the new key and algorithm.
+				// At this point everything should have been re-encrypted, so we should still
+				// be able to access the stream.
+				t.Run("restart", func(t *testing.T) {
+					conf := createConfFile(t, []byte(fmt.Sprintf(`
 					server_name: S22
 					listen: 127.0.0.1:-1
 					jetstream: {
@@ -16207,15 +16214,16 @@ func TestJetStreamServerReencryption(t *testing.T) {
 					}
 				`, "secondencryptionkey", algo.to, storeDir)))
 
-				s, _ := RunServerWithConfig(conf)
-				defer s.Shutdown()
+					s, _ := RunServerWithConfig(conf)
+					defer s.Shutdown()
 
-				nc, js := jsClientConnect(t, s)
-				defer nc.Close()
+					nc, js := jsClientConnect(t, s)
+					defer nc.Close()
 
-				checkStream(js)
+					checkStream(js)
+				})
 			})
-		})
+		}
 	}
 }
 
@@ -20419,4 +20427,64 @@ func TestJetStreamMaxMsgsPerSubjectAndDeliverLastPerSubject(t *testing.T) {
 	sseq := o.sseq
 	o.mu.RUnlock()
 	require_Equal(t, sseq, resume+1)
+}
+
+func TestJetStreamKVNoSubjectDeleteMarkerOnPurgeMarker(t *testing.T) {
+	for _, storage := range []jetstream.StorageType{jetstream.FileStorage, jetstream.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnectNewAPI(t, s)
+			defer nc.Close()
+
+			ctx := context.Background()
+			kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+				Bucket:         "bucket",
+				History:        1,
+				Storage:        storage,
+				TTL:            2 * time.Second,
+				LimitMarkerTTL: time.Minute,
+			})
+			require_NoError(t, err)
+
+			stream, err := js.Stream(ctx, "KV_bucket")
+			require_NoError(t, err)
+
+			// Purge such that the bucket TTL expires this message.
+			require_NoError(t, kv.Purge(ctx, "key"))
+			rsm, err := stream.GetMsg(ctx, 1)
+			require_NoError(t, err)
+			require_Equal(t, rsm.Header.Get("KV-Operation"), "PURGE")
+
+			// The bucket TTL should have removed the message by now.
+			time.Sleep(2500 * time.Millisecond)
+
+			// Confirm the purge marker is gone.
+			_, err = stream.GetMsg(ctx, 1)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+			require_Equal(t, rsm.Header.Get("KV-Operation"), "PURGE")
+
+			// Confirm we don't get a redundant subject delete marker.
+			_, err = stream.GetMsg(ctx, 2)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+
+			// Purge with a TTL so it expires this message.
+			require_NoError(t, kv.Purge(ctx, "key", jetstream.PurgeTTL(time.Second)))
+			rsm, err = stream.GetMsg(ctx, 2)
+			require_NoError(t, err)
+			require_Equal(t, rsm.Header.Get("KV-Operation"), "PURGE")
+
+			// The purge TTL should have removed the message by now.
+			time.Sleep(1500 * time.Millisecond)
+
+			// Confirm the purge marker is gone.
+			_, err = stream.GetMsg(ctx, 2)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+
+			// Confirm we don't get a redundant subject delete marker.
+			_, err = stream.GetMsg(ctx, 3)
+			require_Error(t, err, jetstream.ErrMsgNotFound)
+		})
+	}
 }

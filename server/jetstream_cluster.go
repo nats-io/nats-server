@@ -1225,6 +1225,8 @@ func (js *jetStream) monitorCluster() {
 			doSnapshot()
 			return
 		case <-rqch:
+			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
+			doSnapshot()
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
@@ -1280,10 +1282,10 @@ func (js *jetStream) monitorCluster() {
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
 						doSnapshot()
 					}
-					ce.ReturnToPool()
 				} else {
 					s.Warnf("Error applying JetStream cluster entries: %v", err)
 				}
+				ce.ReturnToPool()
 			}
 			aq.recycle(&ces)
 
@@ -2455,6 +2457,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					ne, nb = n.Applied(ce.Index)
 					ce.ReturnToPool()
 				} else {
+					// Make sure to clean up.
+					ce.ReturnToPool()
 					// Our stream was closed out from underneath of us, simply return here.
 					if err == errStreamClosed || err == errCatchupStreamStopped || err == ErrServerNotRunning {
 						aq.recycle(&ces)
@@ -4862,13 +4866,14 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					if n.NeedSnapshot() {
 						doSnapshot(true)
 					}
-				} else if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
+					continue
+				}
+				if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 					var ne, nb uint64
 					// We can't guarantee writes are flushed while we're shutting down. Just rely on replay during recovery.
 					if !js.isShuttingDown() {
 						ne, nb = n.Applied(ce.Index)
 					}
-					ce.ReturnToPool()
 					// If we have at least min entries to compact, go ahead and snapshot/compact.
 					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
 						doSnapshot(false)
@@ -4876,6 +4881,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				} else if err != errConsumerClosed {
 					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 				}
+				ce.ReturnToPool()
 			}
 			aq.recycle(&ces)
 
@@ -5058,8 +5064,20 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				o.ldt = time.Now()
 				// Need to send message to the client, since we have quorum to do so now.
 				if pmsg, ok := o.pendingDeliveries[sseq]; ok {
+					// Copy delivery subject and sequence first, as the send returns it to the pool and clears it.
+					dsubj, seq := pmsg.dsubj, pmsg.seq
 					o.outq.send(pmsg)
 					delete(o.pendingDeliveries, sseq)
+
+					// Might need to send a request timeout after sending the last replicated delivery.
+					if wd, ok := o.waitingDeliveries[dsubj]; ok && wd.seq == seq {
+						if wd.pn > 0 || wd.pb > 0 {
+							hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wd.pn, JSPullRequestPendingBytes, wd.pb)
+							o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+						}
+						wd.recycle()
+						delete(o.waitingDeliveries, dsubj)
+					}
 				}
 				o.mu.Unlock()
 				if err != nil {

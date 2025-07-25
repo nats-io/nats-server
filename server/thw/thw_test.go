@@ -140,6 +140,34 @@ func TestHashWheelManualExpiration(t *testing.T) {
 	require_Equal(t, hw.count, 0)
 }
 
+func TestHashWheelExpirationLargerThanWheel(t *testing.T) {
+	hw := NewHashWheel()
+
+	// Add sequences such that they can be expired immediately.
+	seqs := map[uint64]int64{
+		1: 0,
+		2: int64(time.Second),
+	}
+	for seq, expires := range seqs {
+		require_NoError(t, hw.Add(seq, expires))
+	}
+	require_Equal(t, hw.count, 2)
+
+	// Pick a timestamp such that the expiration needs to wrap around the whole wheel.
+	now := int64(time.Second) * wheelMask
+
+	// Process expired tasks.
+	expired := make(map[uint64]bool)
+	hw.expireTasks(now, func(seq uint64, expires int64) bool {
+		expired[seq] = true
+		return true
+	})
+
+	// Verify both sequences are expired.
+	require_Equal(t, len(expired), 2)
+	require_Equal(t, hw.count, 0)
+}
+
 func TestHashWheelNextExpiration(t *testing.T) {
 	hw := NewHashWheel()
 	now := time.Now()

@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   RACE: ${{ (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') && github.event_name != 'pull_request') && '-race' || '' }}
 
@@ -51,11 +54,13 @@ jobs:
 
       - name: Check PR description is signed off
         if: github.event_name == 'pull_request'
+        env:
+          PR_DESC: ${{ github.event.pull_request.body }}
         run: |
-          if ! echo "${{ github.event.pull_request.body }}" | grep -Pq '^Signed-off-by:\s*(?!Your Name|.*<your\.email@example\.com>)'; then
-              echo "::error ::Pull request has not been signed off in the PR description with a \`Signed-off-by:\` line"
-              exit 1
-          fi
+          grep -Pq '^Signed-off-by:\s*(?!Your Name|.*<your\.email@example\.com>)' <<<"$PR_DESC" || {
+          echo "::error ::Pull request has not been signed off in the PR description with a \`Signed-off-by:\` line"
+          exit 1
+          }
 
   lint:
     name: Lint
