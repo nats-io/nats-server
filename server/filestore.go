@@ -306,8 +306,8 @@ const (
 	consumerDir = "obs"
 	// Index file for a consumer.
 	consumerState = "o.dat"
-	// The suffix that will be given to a new temporary block during compression.
-	compressTmpSuffix = ".tmp"
+	// The suffix that will be given to a new temporary block for compression or when rewriting the full file.
+	blkTmpSuffix = ".tmp"
 	// This is where we keep state on templates.
 	tmplsDir = "templates"
 	// Maximum size of a write buffer we may consider for re-use.
@@ -1201,7 +1201,9 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 				fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
 			}
 		}
-		if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq {
+		// Preserve last time, could have erased the last message in one block, and then
+		// have a tombstone with the proper timestamp afterward in another block
+		if lseq := atomic.LoadUint64(&mb.last.seq); lseq >= fs.state.LastSeq {
 			fs.state.LastSeq = lseq
 			if mb.last.ts == 0 {
 				fs.state.LastTime = time.Time{}
@@ -2083,7 +2085,9 @@ func (fs *fileStore) recoverMsgs() error {
 					fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
 				}
 			}
-			if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq {
+			// Preserve last time, could have erased the last message in one block, and then
+			// have a tombstone with the proper timestamp afterward in another block
+			if lseq := atomic.LoadUint64(&mb.last.seq); lseq >= fs.state.LastSeq {
 				fs.state.LastSeq = lseq
 				if mb.last.ts == 0 {
 					fs.state.LastTime = time.Time{}
@@ -3936,16 +3940,24 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	var rbuf []byte
 
 	if lmb := fs.lmb; lmb != nil {
+		lmb.mu.Lock()
 		index = lmb.index + 1
 		// Determine if we can reclaim any resources here.
-		if fs.fip {
-			lmb.mu.Lock()
-			lmb.closeFDsLocked()
-			if lmb.cache != nil {
-				// Reset write timestamp and see if we can expire this cache.
-				rbuf = lmb.tryExpireWriteCache()
-			}
-			lmb.mu.Unlock()
+		lmb.closeFDsLockedNoCheck()
+		if lmb.cache != nil {
+			// Reset write timestamp and see if we can expire this cache.
+			rbuf = lmb.tryExpireWriteCache()
+		}
+		lmb.mu.Unlock()
+
+		if fs.fcfg.Compression != NoCompression {
+			// We've now reached the end of this message block, if we want
+			// to compress blocks then now's the time to do it.
+			go func() {
+				lmb.mu.Lock()
+				defer lmb.mu.Unlock()
+				lmb.recompressOnDiskIfNeeded()
+			}()
 		}
 	}
 
@@ -4758,17 +4770,18 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	mb.removeSeqPerSubject(sm.subj, seq)
 	fs.removePerSubject(sm.subj)
 
-	if secure {
-		// Grab record info.
-		ri, rl, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
-		if err := mb.eraseMsg(seq, int(ri), int(rl)); err != nil {
-			return false, err
-		}
-	}
-
 	fifo := seq == atomic.LoadUint64(&mb.first.seq)
 	isLastBlock := mb == fs.lmb
 	isEmpty := mb.msgs == 0
+
+	// If erase but block is empty, we can simply remove the block later.
+	if secure && !isEmpty {
+		// Grab record info.
+		ri, rl, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
+		if err := mb.eraseMsg(seq, int(ri), int(rl), isLastBlock); err != nil {
+			return false, err
+		}
+	}
 
 	if fifo {
 		mb.selectNextFirst()
@@ -5149,7 +5162,7 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 }
 
 // Lock should be held.
-func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
+func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	var le = binary.LittleEndian
 	var hdr [msgHdrSize]byte
 
@@ -5191,17 +5204,7 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 
 	// Disk
 	if mb.cache.off+mb.cache.wp > ri {
-		<-dios
-		mfd, err := os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-		dios <- struct{}{}
-		if err != nil {
-			return err
-		}
-		defer mfd.Close()
-		if _, err = mfd.WriteAt(nbytes, int64(ri)); err == nil {
-			mfd.Sync()
-		}
-		if err != nil {
+		if err := mb.atomicOverwriteFile(mb.cache.buf, !isLastBlock); err != nil {
 			return err
 		}
 	}
@@ -5271,27 +5274,11 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 		}
 		buf = buf[:eof]
 		copy(mb.lchk[0:], buf[:len(buf)-checksumSize])
-		buf, err = mb.cmp.Compress(buf)
-		if err != nil {
-			return 0, 0, fmt.Errorf("failed to recompress block: %w", err)
-		}
-		meta := &CompressionInfo{
-			Algorithm:    mb.cmp,
-			OriginalSize: uint64(eof),
-		}
-		buf = append(meta.MarshalMetadata(), buf...)
-		if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
+		// We did decompress but don't recompress the truncated buffer here since we're the last block
+		// and would otherwise have compressed data and allow to write uncompressed data in the same block.
+		if err = mb.atomicOverwriteFile(buf, false); err != nil {
 			return 0, 0, err
 		}
-		n, err := mb.writeAt(buf, 0)
-		if err != nil {
-			return 0, 0, fmt.Errorf("failed to rewrite compressed block: %w", err)
-		}
-		if n != len(buf) {
-			return 0, 0, fmt.Errorf("short write (%d != %d)", n, len(buf))
-		}
-		mb.mfd.Truncate(int64(len(buf)))
-		mb.mfd.Sync()
 	} else if mb.mfd != nil {
 		mb.mfd.Truncate(eof)
 		mb.mfd.Sync()
@@ -6163,13 +6150,9 @@ func (fs *fileStore) writeTombstoneNoFlush(seq uint64, ts int64) error {
 	return lmb.writeTombstoneNoFlush(seq, ts)
 }
 
+// Lock should be held.
 func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	alg := mb.fs.fcfg.Compression
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-
-	origFN := mb.mfn                    // The original message block on disk.
-	tmpFN := mb.mfn + compressTmpSuffix // The compressed block will be written here.
 
 	// Open up the file block and read in the entire contents into memory.
 	// One of two things will happen:
@@ -6178,7 +6161,7 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	// 2. The block will be uncompressed, in which case we will compress it
 	//    and then write it back out to disk, re-encrypting if necessary.
 	<-dios
-	origBuf, err := os.ReadFile(origFN)
+	origBuf, err := os.ReadFile(mb.mfn)
 	dios <- struct{}{}
 
 	if err != nil {
@@ -6216,6 +6199,19 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 		}
 	}
 
+	return mb.atomicOverwriteFile(origBuf, true)
+}
+
+// Lock should be held.
+func (mb *msgBlock) atomicOverwriteFile(buf []byte, allowCompress bool) error {
+	if mb.mfd != nil {
+		mb.closeFDsLockedNoCheck()
+		defer mb.enableForWriting(mb.fs.fip)
+	}
+
+	origFN := mb.mfn               // The original message block on disk.
+	tmpFN := mb.mfn + blkTmpSuffix // The new block will be written here.
+
 	// Rather than modifying the existing block on disk (which is a dangerous
 	// operation if something goes wrong), create a new temporary file. We will
 	// write out the new block here and then swap the files around afterwards
@@ -6234,36 +6230,37 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 		return err
 	}
 
-	// The original buffer at this point is uncompressed, so we will now compress
-	// it if needed. Note that if the selected algorithm is NoCompression, the
-	// Compress function will just return the input buffer unmodified.
-	cmpBuf, err := alg.Compress(origBuf)
-	if err != nil {
-		return errorCleanup(fmt.Errorf("failed to compress block: %w", err))
-	}
+	alg := NoCompression
+	if calg := mb.fs.fcfg.Compression; calg != NoCompression && allowCompress {
+		alg = calg
+		// The original buffer at this point is uncompressed, so we will now compress
+		// it if needed. Note that if the selected algorithm is NoCompression, the
+		// Compress function will just return the input buffer unmodified.
+		if buf, err = alg.Compress(buf); err != nil {
+			return errorCleanup(fmt.Errorf("failed to compress block: %w", err))
+		}
 
-	// We only need to write out the metadata header if compression is enabled.
-	// If we're trying to uncompress the file on disk at this point, don't bother
-	// writing metadata.
-	if alg != NoCompression {
+		// We only need to write out the metadata header if compression is enabled.
+		// If we're trying to uncompress the file on disk at this point, don't bother
+		// writing metadata.
 		meta := &CompressionInfo{
 			Algorithm:    alg,
-			OriginalSize: uint64(len(origBuf)),
+			OriginalSize: uint64(len(buf)),
 		}
-		cmpBuf = append(meta.MarshalMetadata(), cmpBuf...)
+		buf = append(meta.MarshalMetadata(), buf...)
 	}
 
 	// Re-encrypt the block if necessary.
-	if err = mb.encryptOrDecryptIfNeeded(cmpBuf); err != nil {
+	if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
 		return errorCleanup(err)
 	}
 
 	// Write the new block data (which might be compressed or encrypted) to the
 	// temporary file.
-	if n, err := tmpFD.Write(cmpBuf); err != nil {
+	if n, err := tmpFD.Write(buf); err != nil {
 		return errorCleanup(fmt.Errorf("failed to write to temporary file: %w", err))
-	} else if n != len(cmpBuf) {
-		return errorCleanup(fmt.Errorf("short write to temporary file (%d != %d)", n, len(cmpBuf)))
+	} else if n != len(buf) {
+		return errorCleanup(fmt.Errorf("short write to temporary file (%d != %d)", n, len(buf)))
 	}
 	if err := tmpFD.Sync(); err != nil {
 		return errorCleanup(fmt.Errorf("failed to sync temporary file: %w", err))
@@ -6283,7 +6280,7 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	mb.cmp = alg
 
 	// Also update rbytes
-	mb.rbytes = uint64(len(cmpBuf))
+	mb.rbytes = uint64(len(buf))
 
 	return nil
 }
@@ -6625,7 +6622,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 				// If we have a hole fill it.
 				for dseq := mbFirstSeq + uint64(len(idx)); dseq < seq; dseq++ {
 					idx = append(idx, dbit)
-					if dms == 0 {
+					if dms == 0 && dseq != 0 {
 						mb.dmap.Insert(dseq)
 					}
 				}
@@ -6639,7 +6636,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			}
 
 			// Make sure our dmap has this entry if it was erased.
-			if erased && dms == 0 {
+			if erased && dms == 0 && seq != 0 {
 				mb.dmap.Insert(seq)
 			}
 
@@ -8619,9 +8616,9 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		return err
 	}
 
-	// If there's no selected block, we'll need to write a tombstone at the truncated sequence
-	// so we don't roll backward on our last sequence.
-	if smb == nil {
+	// If the selected block is not found or the message was deleted, we'll need to write a tombstone
+	// at the truncated sequence so we don't roll backward on our last sequence and timestamp.
+	if lsm == nil {
 		fs.writeTombstone(seq, lastTime)
 	}
 
@@ -8649,7 +8646,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			// Temporarily unlock while we write tombstones.
 			mb.mu.Unlock()
 			for _, tomb := range tombs {
-				if tomb.seq <= seq {
+				if tomb.seq < seq {
 					fs.writeTombstone(tomb.seq, tomb.ts)
 				}
 			}
@@ -8659,6 +8656,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		mb.mu.Unlock()
 	}
 
+	hasWrittenTombstones := len(tmb.tombs()) > 0
 	if smb != nil {
 		// Make sure writeable.
 		smb.mu.Lock()
@@ -8670,19 +8668,31 @@ func (fs *fileStore) Truncate(seq uint64) error {
 
 		// Truncate our selected message block.
 		nmsgs, nbytes, err := smb.truncate(seq, lastTime)
-		smb.mu.Unlock()
 		if err != nil {
+			smb.mu.Unlock()
 			fs.mu.Unlock()
 			return fmt.Errorf("smb.truncate: %w", err)
 		}
 		// Account for the truncated msgs and bytes.
 		purged += nmsgs
 		bytes += nbytes
+
+		// The selected message block is not the last anymore, need to close down resources.
+		if hasWrittenTombstones {
+			// Quit our loops.
+			if smb.qch != nil {
+				close(smb.qch)
+				smb.qch = nil
+			}
+			smb.closeFDsLockedNoCheck()
+			smb.recompressOnDiskIfNeeded()
+		}
+		smb.mu.Unlock()
 	}
 
 	// If no tombstones were written, we can remove the block and
 	// purely rely on the selected block as the last block.
-	if fs.lmb == tmb && len(tmb.tombs()) == 0 {
+	if !hasWrittenTombstones {
 		fs.lmb = smb
 		tmb.mu.Lock()
 		fs.removeMsgBlock(tmb)

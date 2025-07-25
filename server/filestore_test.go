@@ -9053,7 +9053,7 @@ func TestFileStoreRecoverOnlyBlkFiles(t *testing.T) {
 		// Stop and write some random files, but containing ".blk", should be ignored.
 		require_NoError(t, fs.Stop())
 		require_NoError(t, os.WriteFile(filepath.Join(fs.fcfg.StoreDir, msgDir, "10.blk.random"), nil, defaultFilePerms))
-		require_NoError(t, os.WriteFile(filepath.Join(fs.fcfg.StoreDir, msgDir, fmt.Sprintf("10.blk.%s", compressTmpSuffix)), nil, defaultFilePerms))
+		require_NoError(t, os.WriteFile(filepath.Join(fs.fcfg.StoreDir, msgDir, fmt.Sprintf("10.blk.%s", blkTmpSuffix)), nil, defaultFilePerms))
 
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
