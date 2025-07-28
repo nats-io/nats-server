@@ -5679,13 +5679,10 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 
 			// Check if this failed.
 			// TODO(dlc) - Could have mixed results, should track per peer.
-			// Make sure this is recent response, do not delete existing consumers.
+			// Make sure this is recent response.
 			if result.Response.Error != nil && result.Response.Error != NewJSConsumerNameExistError() && time.Since(ca.Created) < 2*time.Second {
-				// So while we are deleting we will not respond to list/names requests.
+				// Do not list in consumer names/lists.
 				ca.err = NewJSClusterNotAssignedError()
-				cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
-				s.Warnf("Proposing to delete consumer `%s > %s > %s' due to assignment response error: %v",
-					result.Account, result.Stream, result.Consumer, result.Response.Error)
 			}
 		}
 	}
