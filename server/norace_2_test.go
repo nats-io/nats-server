@@ -439,7 +439,7 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 	mset, err := s.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
-	snap, err := mset.store.EncodedStreamState(0)
+	snap, err := mset.store.EncodedStreamState(0, nil)
 	require_NoError(t, err)
 
 	// Now decode the snapshot.
@@ -473,7 +473,7 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	}
 	fs.StoreMsg(subj, nil, msg, 0)
 
-	snap, err := fs.EncodedStreamState(0)
+	snap, err := fs.EncodedStreamState(0, nil)
 	require_NoError(t, err)
 	require_True(t, len(snap) < 512)
 
@@ -617,7 +617,7 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 					continue
 				}
 				start := time.Now()
-				snap, err := gs.EncodedStreamState(0)
+				snap, err := gs.EncodedStreamState(0, nil)
 				require_NoError(t, err)
 				elapsed := time.Since(start)
 				// Should take <1ms without race but if CI/CD is slow we will give it a bit of room.
