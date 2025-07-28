@@ -1182,6 +1182,7 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	return false
 }
 
+// Read lock should be held.
 func (cc *jetStreamCluster) nodeForConsumerProposals(sa *streamAssignment) RaftNode {
 	if sa.Config.ManagesConsumers {
 		if sa.Group == nil || sa.Group.node == nil {
@@ -4896,11 +4897,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 									js.mu.RUnlock()
 									if ca == nil {
 										s.Warnf("Consumer assignment has not been assigned, retrying")
-										if cnode != nil {
-											cnode.ForwardProposal(addEntry)
-										} else {
-											return
-										}
+										cnode.ForwardProposal(addEntry)
 									} else {
 										return
 									}
@@ -8504,7 +8501,6 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	node := cc.nodeForConsumerProposals(sa)
 	if node == nil {
-		// TODO(nat): is this the right thing to do?
 		resp.Error = NewJSStreamOfflineError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -9114,10 +9110,26 @@ func (mset *stream) stateSnapshot() []byte {
 // Grab a snapshot of a stream for clustered mode.
 // Lock should be held.
 func (mset *stream) stateSnapshotLocked() []byte {
+	var consumers []*consumerAssignment
+	if mset.cfg.ManagesConsumers {
+		consumers = make([]*consumerAssignment, 0, len(mset.consumers))
+		for _, o := range mset.consumers {
+			// Skip if the consumer is pending, we can't include it in our snapshot.
+			// If the proposal fails after we marked it pending, it would result in a ghost consumer.
+			if o.ca == nil || o.ca.pending {
+				continue
+			}
+			cca := *o.ca
+			cca.Stream = mset.cfg.Name // Needed for safe roll-backs.
+			cca.Client = cca.Client.forAssignmentSnap()
+			cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
+			consumers = append(consumers, &cca)
+		}
+	}
+
 	// Decide if we can support the new style of stream snapshots.
-	// TODO(nat): Fix this once we have added the consumers into the binary snap format.
-	if mset.supportsBinarySnapshotLocked() && !mset.cfg.ManagesConsumers {
-		snap, err := mset.store.EncodedStreamState(mset.getCLFS())
+	if mset.supportsBinarySnapshotLocked() {
+		snap, err := mset.store.EncodedStreamState(mset.getCLFS(), consumers)
 		if err != nil {
 			return nil
 		}
@@ -9140,19 +9152,7 @@ func (mset *stream) stateSnapshotLocked() []byte {
 		LastSeq:   state.LastSeq,
 		Failed:    mset.getCLFS(),
 		Deleted:   state.Deleted,
-		Consumers: make([]*consumerAssignment, 0, len(mset.consumers)),
-	}
-	for _, o := range mset.consumers {
-		// Skip if the consumer is pending, we can't include it in our snapshot.
-		// If the proposal fails after we marked it pending, it would result in a ghost consumer.
-		if o.ca == nil || o.ca.pending {
-			continue
-		}
-		cca := *o.ca
-		cca.Stream = mset.cfg.Name // Needed for safe roll-backs.
-		cca.Client = cca.Client.forAssignmentSnap()
-		cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
-		snap.Consumers = append(snap.Consumers, &cca)
+		Consumers: consumers,
 	}
 	b, _ := json.Marshal(snap)
 	return b

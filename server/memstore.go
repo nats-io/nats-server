@@ -14,8 +14,10 @@
 package server
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
@@ -2206,7 +2208,7 @@ func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
+func (ms *memStore) EncodedStreamState(failed uint64, consumers []*consumerAssignment) ([]byte, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
@@ -2235,6 +2237,13 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 			return nil, err
 		}
 		b = append(b, buf...)
+	}
+
+	if ms.cfg.ManagesConsumers {
+		bw := bytes.NewBuffer(b)
+		bw.Truncate(len(b)) // Reset the write pointer but preserve data
+		json.NewEncoder(bw).Encode(consumers)
+		b = bw.Bytes()
 	}
 
 	return b, nil

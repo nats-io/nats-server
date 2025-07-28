@@ -10943,7 +10943,7 @@ func (fs *fileStore) readUnlockAllMsgBlocks() {
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
+func (fs *fileStore) EncodedStreamState(failed uint64, consumers []*consumerAssignment) ([]byte, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -10994,6 +10994,13 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 				return nil, errors.New("no impl")
 			}
 		}
+	}
+
+	if fs.cfg.ManagesConsumers {
+		bw := bytes.NewBuffer(b)
+		bw.Truncate(len(b)) // Reset the write pointer but preserve data
+		json.NewEncoder(bw).Encode(consumers)
+		b = bw.Bytes()
 	}
 
 	return b, nil
