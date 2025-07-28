@@ -4465,16 +4465,19 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 	for {
 		select {
 		case <-o.ackMsgs.ch:
+			// If we have an inactiveThreshold set, mark our activity.
+			// Do this before processing acks, otherwise we might race if there are no pending messages
+			// anymore and the inactivity threshold kicks in before we're able to mark activity.
+			if hasInactiveThresh {
+				o.suppressDeletion()
+			}
+
 			acks := o.ackMsgs.pop()
 			for _, ack := range acks {
 				o.processAck(ack.subject, ack.reply, ack.hdr, ack.msg)
 				ack.returnToPool()
 			}
 			o.ackMsgs.recycle(&acks)
-			// If we have an inactiveThreshold set, mark our activity.
-			if hasInactiveThresh {
-				o.suppressDeletion()
-			}
 		case <-ticker.C:
 			o.checkAckFloor()
 		case <-qch:
