@@ -943,7 +943,8 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 								Subjects:        subjects,
 								Replicas:        bc.replicas,
 								Storage:         FileStorage,
-								AllowAsyncFlush: bc.asyncFlush,
+								//AllowAsyncFlush: bc.asyncFlush,
+								AllowAsyncFlush: true,
 							})
 							if err != nil {
 								b.Fatalf("Error creating stream: %v", err)
