@@ -17,6 +17,9 @@ package server
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -584,4 +587,135 @@ func TestStoreUpdateConfigTTLState(t *testing.T) {
 			require_NoError(t, err)
 		},
 	)
+}
+
+func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
+	tests := []struct {
+		title  string
+		action func(s StreamStore, lseq uint64)
+	}{
+		{
+			title: "TruncateWithRemove",
+			action: func(s StreamStore, lseq uint64) {
+				seq, _, err := s.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				require_Equal(t, seq, lseq)
+				removed, err := s.RemoveMsg(lseq)
+				require_NoError(t, err)
+				require_True(t, removed)
+				require_NoError(t, s.Truncate(lseq))
+			},
+		},
+		{
+			title: "TruncateWithErase",
+			action: func(s StreamStore, lseq uint64) {
+				seq, _, err := s.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				require_Equal(t, seq, lseq)
+				removed, err := s.EraseMsg(lseq)
+				require_NoError(t, err)
+				require_True(t, removed)
+				require_NoError(t, s.Truncate(lseq))
+			},
+		},
+		{
+			title: "TruncateWithTombstone",
+			action: func(s StreamStore, lseq uint64) {
+				seq, _, err := s.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				require_Equal(t, seq, lseq)
+				if fs, ok := s.(*fileStore); ok {
+					removed, err := fs.removeMsg(lseq, false, false, true)
+					require_NoError(t, err)
+					require_True(t, removed)
+				} else {
+					removed, err := s.RemoveMsg(lseq)
+					require_NoError(t, err)
+					require_True(t, removed)
+				}
+				require_NoError(t, s.Truncate(lseq))
+			},
+		},
+		{
+			title: "SkipMsg",
+			action: func(s StreamStore, lseq uint64) {
+				s.SkipMsg()
+			},
+		},
+		{
+			title: "SkipMsgs",
+			action: func(s StreamStore, lseq uint64) {
+				require_NoError(t, s.SkipMsgs(lseq, 1))
+			},
+		},
+	}
+	for _, empty := range []bool{false, true} {
+		for _, test := range tests {
+			t.Run(fmt.Sprintf("Empty=%v/%s", empty, test.title), func(t *testing.T) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}}
+				testAllStoreAllPermutations(t, true, cfg, func(t *testing.T, s StreamStore) {
+					var err error
+					var lseq uint64
+					if !empty {
+						lseq, _, err = s.StoreMsg("foo", nil, nil, 0)
+						require_NoError(t, err)
+						require_Equal(t, lseq, 1)
+					}
+					lseq++
+
+					test.action(s, lseq)
+
+					// Confirm state as baseline.
+					before := s.State()
+					if empty {
+						require_Equal(t, before.Msgs, 0)
+						require_Equal(t, before.FirstSeq, 2)
+						require_Equal(t, before.LastSeq, 1)
+					} else {
+						require_Equal(t, before.Msgs, 1)
+						require_Equal(t, before.FirstSeq, 1)
+						require_Equal(t, before.LastSeq, 2)
+					}
+
+					var fs *fileStore
+					var ok bool
+					if fs, ok = s.(*fileStore); !ok {
+						return
+					}
+					cfg.Storage = FileStorage
+					fcfg := fs.fcfg
+					created := time.Time{}
+
+					// Restart should equal state.
+					require_NoError(t, fs.Stop())
+					fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+					require_NoError(t, err)
+					defer fs.Stop()
+
+					if state := fs.State(); !reflect.DeepEqual(state, before) {
+						t.Fatalf("Expected state of:\n%+v, got:\n%+v", before, state)
+					}
+
+					// Stop and remove stream state file.
+					require_NoError(t, fs.Stop())
+					require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+					// Recovering based on blocks should result in the same state.
+					fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+					require_NoError(t, err)
+					defer fs.Stop()
+
+					if state := fs.State(); !reflect.DeepEqual(state, before) {
+						t.Fatalf("Expected state of:\n%+v, got:\n%+v", before, state)
+					}
+
+					// Rebuilding state must also result in the same state.
+					fs.rebuildState(nil)
+					if state := fs.State(); !reflect.DeepEqual(state, before) {
+						t.Fatalf("Expected state of:\n%+v, got:\n%+v", before, state)
+					}
+				})
+			})
+		}
+	}
 }

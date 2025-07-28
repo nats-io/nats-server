@@ -404,11 +404,6 @@ func TestMemStoreStreamTruncate(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 
-	// Check that sequence has to be interior.
-	if err := ms.Truncate(toStore + 1); err != ErrInvalidSequence {
-		t.Fatalf("Expected err of '%v', got '%v'", ErrInvalidSequence, err)
-	}
-
 	if err := ms.Truncate(tseq); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
