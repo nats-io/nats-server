@@ -2175,6 +2175,11 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change persist mode"))
 	}
 
+	// Can't change the consumer assignments setting.
+	if cfg.ManagesConsumers != old.ManagesConsumers {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change consumer management"))
+	}
+
 	// Do some adjustments for being sealed.
 	// Pedantic mode will allow those changes to be made, as they are deterministic and important to get a sealed stream.
 	if cfg.Sealed {

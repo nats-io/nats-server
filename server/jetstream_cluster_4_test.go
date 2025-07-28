@@ -7491,7 +7491,6 @@ func TestJetStreamClusterManagedConsumerStreamScaleUp(t *testing.T) {
 	require_NoError(t, err)
 
 	c.waitOnStreamLeader(globalAccountName, "TEST")
-	_ = js
 
 	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
 		Name:      "TestConsumer",
@@ -7591,4 +7590,36 @@ func TestJetStreamClusterManagedConsumerStreamScaleMove(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterManagedConsumerPreventsStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        InterestPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: true,
+	})
+	require_NoError(t, err)
+
+	_, err = jsStreamUpdate(t, nc, &StreamConfig{
+		Name:             "TEST",
+		Retention:        InterestPolicy,
+		Subjects:         []string{"foo"},
+		Storage:          FileStorage,
+		Replicas:         3,
+		ManagesConsumers: false,
+	})
+	require_Error(t, err) // 10052
+	jserr, ok := err.(*ApiError)
+	require_True(t, ok)
+	require_Equal(t, jserr.Code, 500)
+	require_Equal(t, jserr.ErrCode, 10052)
 }

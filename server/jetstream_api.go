@@ -2852,7 +2852,7 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 		for _, oca := range osa.consumers {
 			oca.deleted = true
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client, Created: oca.Created}
-			node.Propose(encodeDeleteConsumerAssignment(ca))
+			node.ForwardProposal(encodeDeleteConsumerAssignment(ca))
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client, Created: osa.Created}
