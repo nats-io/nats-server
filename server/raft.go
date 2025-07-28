@@ -170,6 +170,9 @@ type raft struct {
 	commit  uint64 // Index of the most recent commit
 	applied uint64 // Index of the most recently applied commit
 
+	papplied uint64 // Index of the applied commit from the last snapshot.
+	bytes    uint64 // Amount of bytes currently in the WAL.
+
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
 	leader string // The ID of the leader
@@ -473,6 +476,10 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	// we will try to replay them and process them here.
 	var state StreamState
 	n.wal.FastState(&state)
+
+	n.papplied = n.commit
+	n.bytes = state.Bytes
+
 	if state.Msgs > 0 {
 		n.debug("Replaying state of %d entries", state.Msgs)
 		if first, err := n.loadFirstEntry(); err == nil {
@@ -1112,13 +1119,11 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 
 	// Calculate the number of entries and estimate the byte size that
 	// we can now remove with a compaction/snapshot.
-	var state StreamState
-	n.wal.FastState(&state)
-	if n.applied > state.FirstSeq {
-		entries = n.applied - state.FirstSeq
+	if n.applied > n.papplied {
+		entries = n.applied - n.papplied
 	}
-	if state.Msgs > 0 {
-		bytes = entries * state.Bytes / state.Msgs
+	if msgs := n.pindex - n.papplied; msgs > 0 {
+		bytes = entries * n.bytes / msgs
 	}
 	return entries, bytes
 }
@@ -1237,6 +1242,12 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 		n.setWriteErrLocked(err)
 		return err
 	}
+
+	// Update the amount of bytes in the WAL after compaction.
+	var state StreamState
+	n.wal.FastState(&state)
+	n.bytes = state.Bytes
+	n.papplied = snap.lastIndex
 
 	return nil
 }
@@ -1720,10 +1731,8 @@ func (n *raft) Progress() (index, commit, applied uint64) {
 // Size returns number of entries and total bytes for our WAL.
 func (n *raft) Size() (uint64, uint64) {
 	n.RLock()
-	var state StreamState
-	n.wal.FastState(&state)
-	n.RUnlock()
-	return state.Msgs, state.Bytes
+	defer n.RUnlock()
+	return n.pindex - n.papplied, n.bytes
 }
 
 func (n *raft) ID() string {
@@ -2936,9 +2945,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 	ae := n.pae[index]
 	if ae == nil {
-		var state StreamState
-		n.wal.FastState(&state)
-		if index < state.FirstSeq {
+		if index < n.papplied {
 			return nil
 		}
 		var err error
@@ -3873,6 +3880,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	n.pterm = ae.term
 	n.pindex = seq
+	n.bytes += uint64(len(ae.buf))
 	return nil
 }
 
@@ -4474,11 +4482,8 @@ func (n *raft) switchToLeader() {
 
 	n.debug("Switching to leader")
 
-	var state StreamState
-	n.wal.FastState(&state)
-
 	// Check if we have items pending as we are taking over.
-	sendHB := state.LastSeq > n.commit
+	sendHB := n.pindex > n.commit
 
 	n.lxfer = false
 	n.updateLeader(n.id)
