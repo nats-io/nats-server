@@ -652,7 +652,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 
 	// Create or delete the THW if needed.
 	if cfg.AllowMsgTTL && fs.ttls == nil {
-		fs.ttls = thw.NewHashWheel()
+		fs.recoverTTLState()
 	} else if !cfg.AllowMsgTTL && fs.ttls != nil {
 		fs.ttls = nil
 	}
@@ -1913,6 +1913,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	return nil
 }
 
+// Lock should be held.
 func (fs *fileStore) recoverTTLState() error {
 	// See if we have a timed hash wheel for TTLs.
 	<-dios
