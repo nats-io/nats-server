@@ -255,15 +255,16 @@ type RemoteLeafOpts struct {
 	Disabled bool `json:"-"`
 }
 
+// JSLimitOpts are active limits for the meta cluster
 type JSLimitOpts struct {
-	MaxRequestBatch           int           `json:"max_request_batch,omitempty"`
-	MaxAckPending             int           `json:"max_ack_pending,omitempty"`
-	MaxHAAssets               int           `json:"max_ha_assets,omitempty"`
-	Duplicates                time.Duration `json:"max_duplicate_window,omitempty"`
-	MaxBatchInflightPerStream int           `json:"max_batch_inflight_per_stream,omitempty"`
-	MaxBatchInflightTotal     int           `json:"max_batch_inflight_total,omitempty"`
-	MaxBatchSize              int           `json:"max_batch_size,omitempty"`
-	MaxBatchTimeout           time.Duration `json:"max_batch_timeout,omitempty"`
+	MaxRequestBatch           int           `json:"max_request_batch,omitempty"`             // MaxRequestBatch is the maximum amount of updates that can be sent in a batch
+	MaxAckPending             int           `json:"max_ack_pending,omitempty"`               // MaxAckPending is the server limit for maximum amount of outstanding Acks
+	MaxHAAssets               int           `json:"max_ha_assets,omitempty"`                 // MaxHAAssets is the maximum of Streams and Consumers that may have more than 1 replica
+	Duplicates                time.Duration `json:"max_duplicate_window,omitempty"`          // Duplicates is the maximum value for duplicate tracking on Streams
+	MaxBatchInflightPerStream int           `json:"max_batch_inflight_per_stream,omitempty"` // MaxBatchInflightPerStream is the maximum amount of open batches per stream
+	MaxBatchInflightTotal     int           `json:"max_batch_inflight_total,omitempty"`      // MaxBatchInflightTotal is the maximum amount of total open batches per server
+	MaxBatchSize              int           `json:"max_batch_size,omitempty"`                // MaxBatchSize is the maximum amount of messages allowed in a batch publish to a Stream
+	MaxBatchTimeout           time.Duration `json:"max_batch_timeout,omitempty"`             // MaxBatchTimeout is the maximum time to receive the commit message after receiving the first message of a batch
 }
 
 type JSTpmOpts struct {
