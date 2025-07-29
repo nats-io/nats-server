@@ -142,7 +142,7 @@ type raft struct {
 
 	wal   WAL         // WAL store (filestore or memstore)
 	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
-	track bool        //
+	bytes uint64      // Total amount of bytes stored in the WAL. (Saves us from needing to call wal.FastState very often)
 	werr  error       // Last write error
 
 	state       atomic.Int32 // RaftState
@@ -164,33 +164,30 @@ type raft struct {
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
 
-	term    uint64 // The current vote term
-	pterm   uint64 // Previous term from the last snapshot
-	pindex  uint64 // Previous index from the last snapshot
-	commit  uint64 // Index of the most recent commit
-	applied uint64 // Index of the most recently applied commit
+	term     uint64 // The current vote term
+	pterm    uint64 // Previous term from the last snapshot
+	pindex   uint64 // Previous index from the last snapshot
+	commit   uint64 // Index of the most recent commit
+	applied  uint64 // Index of the most recently applied commit
+	papplied uint64 // First sequence of our log, matches when we last installed a snapshot.
 
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
 	leader string // The ID of the leader
 	vote   string // Our current vote state
-	lxfer  bool   // Are we doing a leadership transfer?
-
-	hcbehind bool // Were we falling behind at the last health check? (see: isCurrent)
 
 	s  *Server    // Reference to top-level server
 	c  *client    // Internal client for subscriptions
 	js *jetStream // JetStream, if running, to see if we are out of resources
 
-	dflag       bool        // Debug flag
-	hasleader   atomic.Bool // Is there a group leader right now?
-	pleader     atomic.Bool // Has the group ever had a leader?
-	isSysAcc    atomic.Bool // Are we utilizing the system account?
-	maybeLeader bool        // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
-
-	observer bool // The node is observing, i.e. not able to become leader
+	hasleader atomic.Bool // Is there a group leader right now?
+	pleader   atomic.Bool // Has the group ever had a leader?
+	isSysAcc  atomic.Bool // Are we utilizing the system account?
 
 	extSt extensionState // Extension state
+
+	track bool // Whether out of resources checking is enabled.
+	dflag bool // Debug flag
 
 	psubj  string // Proposals subject
 	rpsubj string // Remove peers subject
@@ -208,9 +205,7 @@ type raft struct {
 	catchup  *catchupState               // For when we need to catch up as a follower.
 	progress map[string]*ipQueue[uint64] // For leader or server catching up a follower.
 
-	paused    bool   // Whether or not applies are paused
-	hcommit   uint64 // The commit at the time that applies were paused
-	pobserver bool   // Whether we were an observer at the time that applies were paused
+	hcommit uint64 // The commit at the time that applies were paused
 
 	prop  *ipQueue[*proposedEntry]       // Proposals
 	entry *ipQueue[*appendEntry]         // Append entries
@@ -220,6 +215,13 @@ type raft struct {
 	votes *ipQueue[*voteResponse]        // Vote responses
 	leadc chan bool                      // Leader changes
 	quit  chan struct{}                  // Raft group shutdown
+
+	lxfer       bool // Are we doing a leadership transfer?
+	hcbehind    bool // Were we falling behind at the last health check? (see: isCurrent)
+	maybeLeader bool // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
+	paused      bool // Whether or not applies are paused
+	observer    bool // The node is observing, i.e. not able to become leader
+	pobserver   bool // Were we previously an observer?
 }
 
 type proposedEntry struct {
@@ -439,6 +441,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	// Can't recover snapshots if memory based since wal will be reset.
 	// We will inherit from the current leader.
+	n.papplied = 0
 	if _, ok := n.wal.(*memStore); ok {
 		_ = os.RemoveAll(filepath.Join(n.sd, snapshotsDir))
 	} else {
@@ -462,6 +465,8 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	// we will try to replay them and process them here.
 	var state StreamState
 	n.wal.FastState(&state)
+	n.bytes = state.Bytes
+
 	if state.Msgs > 0 {
 		n.debug("Replaying state of %d entries", state.Msgs)
 		if first, err := n.loadFirstEntry(); err == nil {
@@ -1092,13 +1097,11 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 
 	// Calculate the number of entries and estimate the byte size that
 	// we can now remove with a compaction/snapshot.
-	var state StreamState
-	n.wal.FastState(&state)
-	if n.applied > state.FirstSeq {
-		entries = n.applied - state.FirstSeq
+	if n.applied > n.papplied {
+		entries = n.applied - n.papplied
 	}
-	if state.Msgs > 0 {
-		bytes = entries * state.Bytes / state.Msgs
+	if n.bytes > 0 {
+		bytes = entries * n.bytes / (n.pindex - n.papplied)
 	}
 	return entries, bytes
 }
@@ -1218,6 +1221,10 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 		return err
 	}
 
+	var state StreamState
+	n.wal.FastState(&state)
+	n.papplied = snap.lastIndex
+	n.bytes = state.Bytes
 	return nil
 }
 
@@ -1317,6 +1324,7 @@ func (n *raft) setupLastSnapshot() {
 	// Explicitly only set commit, and not applied.
 	// Applied will move up when the snapshot is actually applied.
 	n.commit = snap.lastIndex
+	n.papplied = snap.lastIndex
 	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
@@ -1697,12 +1705,12 @@ func (n *raft) Progress() (index, commit, applied uint64) {
 }
 
 // Size returns number of entries and total bytes for our WAL.
-func (n *raft) Size() (uint64, uint64) {
+func (n *raft) Size() (entries uint64, bytes uint64) {
 	n.RLock()
-	var state StreamState
-	n.wal.FastState(&state)
+	entries = n.pindex - n.papplied
+	bytes = n.bytes
 	n.RUnlock()
-	return state.Msgs, state.Bytes
+	return entries, bytes
 }
 
 func (n *raft) ID() string {
@@ -2920,9 +2928,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 	ae := n.pae[index]
 	if ae == nil {
-		var state StreamState
-		n.wal.FastState(&state)
-		if index < state.FirstSeq {
+		if index < n.papplied {
 			return nil
 		}
 		var err error
@@ -3307,24 +3313,15 @@ func (n *raft) truncateWAL(term, index uint64) {
 		if n.applied > n.commit {
 			n.applied = n.commit
 		}
+		if n.papplied > n.applied {
+			n.papplied = n.applied
+		}
 	}()
 
 	if err := n.wal.Truncate(index); err != nil {
-		// If we get an invalid sequence, reset our wal all together.
-		// We will not have holes, so this means we do not have this message stored anymore.
-		// This is normal when truncating back to applied/snapshot.
-		if err == ErrInvalidSequence {
-			n.debug("Clearing WAL")
-			n.wal.Truncate(0)
-			// If our index is non-zero use PurgeEx to set us to the correct next index.
-			if index > 0 {
-				n.wal.PurgeEx(fwcs, index+1, 0)
-			}
-		} else {
-			n.warn("Error truncating WAL: %v", err)
-			n.setWriteErrLocked(err)
-			return
-		}
+		n.warn("Error truncating WAL: %v", err)
+		n.setWriteErrLocked(err)
+		return
 	}
 	// Set after we know we have truncated properly.
 	n.pterm, n.pindex = term, index
@@ -3841,6 +3838,13 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		return errEntryStoreFailed
 	}
 
+	var sz uint64
+	if n.wtype == FileStorage {
+		sz = fileStoreMsgSize(_EMPTY_, nil, ae.buf)
+	} else {
+		sz = memStoreMsgSize(_EMPTY_, nil, ae.buf)
+	}
+	n.bytes += sz
 	n.pterm = ae.term
 	n.pindex = seq
 	return nil
@@ -4088,7 +4092,6 @@ func (n *raft) setWriteErrLocked(err error) {
 	// Ignore non-write errors.
 	if err == ErrStoreClosed ||
 		err == ErrStoreEOF ||
-		err == ErrInvalidSequence ||
 		err == ErrStoreMsgNotFound ||
 		err == errNoPending ||
 		err == errPartialCache {
@@ -4433,11 +4436,8 @@ func (n *raft) switchToLeader() {
 
 	n.debug("Switching to leader")
 
-	var state StreamState
-	n.wal.FastState(&state)
-
 	// Check if we have items pending as we are taking over.
-	sendHB := state.LastSeq > n.commit
+	sendHB := n.pindex > n.commit
 
 	n.lxfer = false
 	n.updateLeader(n.id)

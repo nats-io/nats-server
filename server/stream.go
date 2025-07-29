@@ -223,12 +223,12 @@ type ClusterInfo struct {
 // PeerInfo shows information about all the peers in the cluster that
 // are supporting the stream or consumer.
 type PeerInfo struct {
-	Name    string        `json:"name"`
-	Current bool          `json:"current"`
-	Offline bool          `json:"offline,omitempty"`
-	Active  time.Duration `json:"active"`
-	Lag     uint64        `json:"lag,omitempty"`
-	Peer    string        `json:"peer"`
+	Name    string        `json:"name"`              // Name is the unique name for the peer
+	Current bool          `json:"current"`           // Current indicates if it was seen recently and fully caught up
+	Offline bool          `json:"offline,omitempty"` // Offline indicates if it has not been seen recently
+	Active  time.Duration `json:"active"`            // Active is the timestamp it was last active
+	Lag     uint64        `json:"lag,omitempty"`     // Lag is how many operations behind it is
+	Peer    string        `json:"peer"`              // Peer is the unique ID for the peer
 	// For migrations.
 	cluster string
 }
