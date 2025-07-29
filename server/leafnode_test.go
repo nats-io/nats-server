@@ -630,9 +630,9 @@ func TestLeafNodeBasicAuthSingleton(t *testing.T) {
 		lnURLCreds string
 		shouldFail bool
 	}{
-		{"no user creds required and no user so binds to ACC1", "", "", false},
-		{"no user creds required and pick user2 associated to ACC2", "", "user2:user2@", false},
-		{"no user creds required and unknown user should fail", "", "unknown:user@", true},
+		{"user creds required and no user so fails", "", "", true},
+		{"user creds required and pick user2 associated to ACC2", "", "user2:user2@", false},
+		{"user creds required and unknown user should fail", "", "unknown:user@", true},
 		{"user creds required so binds to ACC1", "user: \"ln\"\npass: \"pwd\"", "ln:pwd@", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {

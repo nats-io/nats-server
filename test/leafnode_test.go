@@ -2755,7 +2755,7 @@ func TestLeafNodeServiceImportLikeNGS(t *testing.T) {
 
 	// Now create a leafnode server on B.
 	opts = cb.opts[1]
-	sl, slOpts := runSolicitLeafServer(opts)
+	sl, slOpts := runSolicitLeafServerToURL(fmt.Sprintf("nats-leaf://dlc:pass@%s:%d", opts.LeafNode.Host, opts.LeafNode.Port))
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, sl)
@@ -2952,7 +2952,8 @@ func TestLeafNodeDistributedQueueAcrossGWs(t *testing.T) {
 	createLNS := func(c *cluster) (*server.Server, *server.Options) {
 		t.Helper()
 		// Pick one at random.
-		s, opts := runSolicitLeafServer(c.opts[rand.Intn(len(c.servers))])
+		copts := c.opts[rand.Intn(len(c.servers))]
+		s, opts := runSolicitLeafServerToURL(fmt.Sprintf("nats-leaf://dlc:pass@%s:%d", copts.LeafNode.Host, copts.LeafNode.Port))
 		checkLeafNodeConnected(t, s)
 		return s, opts
 	}
@@ -3032,7 +3033,7 @@ func TestLeafNodeDistributedQueueEvenly(t *testing.T) {
 		t.Helper()
 		// Pick one at random.
 		copts := c.opts[rand.Intn(len(c.servers))]
-		s, opts := runSolicitLeafServer(copts)
+		s, opts := runSolicitLeafServerToURL(fmt.Sprintf("nats-leaf://dlc:pass@%s:%d", copts.LeafNode.Host, copts.LeafNode.Port))
 		checkLeafNodeConnected(t, s)
 		return s, opts
 	}
@@ -3753,7 +3754,11 @@ func TestServiceExportWithLeafnodeRestart(t *testing.T) {
 		listen: 127.0.0.1:-1
 		leafnodes {
 			listen: "127.0.0.1:-1"
-			authorization { account:"EXTERNAL" }
+			authorization {
+				account:"EXTERNAL"
+				user: ln
+				password: pass
+			}
 		}
 
 		accounts: {
@@ -3798,7 +3803,7 @@ func TestServiceExportWithLeafnodeRestart(t *testing.T) {
 			listen: "127.0.0.1:-1"
 			remotes = [
 			{
-				url:"nats://127.0.0.1:%d"
+				url:"nats://ln:pass@127.0.0.1:%d"
 				account:"EXTERNAL_GOOD"
 			}
 			]
