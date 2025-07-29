@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"testing"
@@ -641,4 +642,417 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 	}
 
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
+	type BatchItem struct {
+		subject string
+		header  nats.Header
+		err     error
+	}
+
+	type BatchTest struct {
+		title              string
+		allowTTL           bool
+		allowMsgCounter    bool
+		interestDiscardNew bool
+		init               func(mset *stream)
+		batch              []BatchItem
+		validate           func(mset *stream, commit bool)
+	}
+
+	tests := []BatchTest{
+		{
+			title: "dedupe-distinct",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgId: {"foo"}}},
+				{subject: "bar", header: nats.Header{JSMsgId: {"bar"}}},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Equal(t, mset.checkMsgId("foo") != nil, commit)
+				require_Equal(t, mset.checkMsgId("bar") != nil, commit)
+			},
+		},
+		{
+			title: "dedupe",
+			init: func(mset *stream) {
+				mset.storeMsgId(&ddentry{id: "foo", seq: 0, ts: time.Now().UnixNano()})
+			},
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgId: {"foo"}}, err: errMsgIdDuplicate},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_NotNil(t, mset.checkMsgId("foo"))
+			},
+		},
+		{
+			title: "dedupe-staged",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgId: {"foo"}}},
+				{subject: "foo", header: nats.Header{JSMsgId: {"foo"}}, err: errMsgIdDuplicate},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Equal(t, mset.checkMsgId("foo") != nil, commit)
+			},
+		},
+		{
+			title:           "counter-single",
+			allowMsgCounter: true,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMessageIncr: {"1"}}},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_True(t, mset.clusteredCounterTotal["foo"] == nil)
+				} else {
+					counter := mset.clusteredCounterTotal["foo"]
+					require_NotNil(t, counter)
+					require_Equal(t, counter.ops, 1)
+					require_Equal(t, counter.total.String(), "1")
+				}
+			},
+		},
+		{
+			title:           "counter-multiple",
+			allowMsgCounter: true,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMessageIncr: {"1"}}},
+				{subject: "foo", header: nats.Header{JSMessageIncr: {"2"}}},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_True(t, mset.clusteredCounterTotal["foo"] == nil)
+				} else {
+					counter := mset.clusteredCounterTotal["foo"]
+					require_NotNil(t, counter)
+					require_Equal(t, counter.ops, 2)
+					require_Equal(t, counter.total.String(), "3")
+				}
+			},
+		},
+		{
+			title:           "counter-pre-init",
+			allowMsgCounter: true,
+			init: func(mset *stream) {
+				mset.clusteredCounterTotal = map[string]*msgCounterRunningTotal{
+					"foo": {total: big.NewInt(1), ops: 1},
+				}
+			},
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMessageIncr: {"2"}}},
+			},
+			validate: func(mset *stream, commit bool) {
+				counter := mset.clusteredCounterTotal["foo"]
+				require_NotNil(t, counter)
+				if !commit {
+					require_Equal(t, counter.ops, 1)
+					require_Equal(t, counter.total.String(), "1")
+				} else {
+					require_Equal(t, counter.ops, 2)
+					require_Equal(t, counter.total.String(), "3")
+				}
+			},
+		},
+		{
+			title:              "interest-discard-new",
+			interestDiscardNew: true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "foo_2"},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 2)
+					require_Equal(t, mset.inflight[0], 19)
+					require_Equal(t, mset.inflight[1], 21)
+				}
+			},
+		},
+		// TODO(mvv): expected-last-sequence header
+		{
+			title: "expect-per-subj-simple",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"0"}}},
+				{subject: "bar", header: nats.Header{JSExpectedLastSubjSeq: {"0"}}},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.expectedPerSubjectSequence), 0)
+					require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+				} else {
+					require_Len(t, len(mset.expectedPerSubjectSequence), 2)
+					require_Len(t, len(mset.expectedPerSubjectInProcess), 2)
+					require_Equal(t, mset.expectedPerSubjectSequence[0], "foo")
+					require_Equal(t, mset.expectedPerSubjectSequence[1], "bar")
+				}
+			},
+		},
+		{
+			title: "expect-per-subj-redundant-in-batch",
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}},
+				},
+				// Would normally fail the batch, recognize in-process.
+				{
+					subject: "foo",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"1"}},
+					err:     errors.New("last sequence by subject mismatch: 1 vs 0"),
+				},
+				// Redundant expected check results in an error. The subject 'foo' is also updated in the batch.
+				{
+					subject: "foo",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}},
+					err:     errors.New("last sequence by subject mismatch"),
+				},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.expectedPerSubjectSequence), 0)
+					require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+				} else {
+					require_Len(t, len(mset.expectedPerSubjectSequence), 1)
+					require_Len(t, len(mset.expectedPerSubjectInProcess), 1)
+					require_Equal(t, mset.expectedPerSubjectSequence[0], "foo")
+				}
+			},
+		},
+		{
+			title: "expect-per-subj-dupe-in-change",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"0"}, JSExpectedLastSubjSeqSubj: {"baz"}}},
+				{subject: "bar", header: nats.Header{JSExpectedLastSubjSeq: {"0"}, JSExpectedLastSubjSeqSubj: {"baz"}}},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.expectedPerSubjectSequence), 0)
+					require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+				} else {
+					require_Len(t, len(mset.expectedPerSubjectSequence), 1)
+					require_Len(t, len(mset.expectedPerSubjectInProcess), 1)
+					require_Equal(t, mset.expectedPerSubjectSequence[1], "baz")
+				}
+			},
+		},
+		{
+			title: "expect-per-subj-not-first",
+			batch: []BatchItem{
+				{subject: "foo"},
+				// Mismatch because only the first 'foo' can have the expected check.
+				{
+					subject: "foo",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}},
+					err:     errors.New("last sequence by subject mismatch"),
+				},
+				// Mismatch because only the first 'foo' can have the expected check.
+				{
+					subject: "bar",
+					header:  nats.Header{JSExpectedLastSubjSeq: {"0"}, JSExpectedLastSubjSeqSubj: {"foo"}},
+					err:     errors.New("last sequence by subject mismatch"),
+				},
+			},
+		},
+		{
+			title: "expect-per-subj-in-process",
+			init: func(mset *stream) {
+				mset.expectedPerSubjectInProcess = map[string]struct{}{"foo": {}}
+			},
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"10"}}, err: errors.New("last sequence by subject mismatch")},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Len(t, len(mset.expectedPerSubjectSequence), 0)
+				require_Len(t, len(mset.expectedPerSubjectInProcess), 1)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.title, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:               "TEST",
+				Storage:            MemoryStorage,
+				AllowAtomicPublish: true,
+			})
+			require_NoError(t, err)
+
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			store := mset.store
+			require_NotNil(t, store)
+
+			if test.init != nil {
+				test.init(mset)
+			}
+
+			var (
+				interestPolicy bool
+				discard        DiscardPolicy
+				maxMsgs        int64
+				maxBytes       int64
+			)
+			if test.interestDiscardNew {
+				interestPolicy, discard = true, DiscardNew
+				maxMsgs, maxBytes = 10, 1024
+			}
+
+			diff := &batchStagedDiff{}
+			mset.clMu.Lock()
+			defer mset.clMu.Unlock()
+			for _, m := range test.batch {
+				var hdr []byte
+				for key, values := range m.header {
+					for _, value := range values {
+						hdr = genHeader(hdr, key, value)
+					}
+				}
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, interestPolicy, discard, maxMsgs, maxBytes)
+				if m.err != nil {
+					require_Error(t, err, m.err)
+				} else {
+					require_True(t, err == nil)
+				}
+				if test.validate != nil {
+					test.validate(mset, false)
+				}
+				mset.clseq++
+			}
+			if test.validate != nil {
+				diff.commit(mset)
+				test.validate(mset, true)
+			}
+		})
+	}
+}
+
+func TestJetStreamAtomicBatchPublishHighLevelRollback(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Storage:   FileStorage,
+		Retention: InterestPolicy,
+		MaxMsgs:   1,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	requireEmpty := func() {
+		mset.ddMu.Lock()
+		ddarr, ddmap := len(mset.ddarr), len(mset.ddmap)
+		mset.ddMu.Unlock()
+		require_Len(t, ddarr, 0)
+		require_Len(t, ddmap, 0)
+
+		mset.clMu.Lock()
+		inflight, subjSeq, subjInProcess := len(mset.inflight), len(mset.expectedPerSubjectSequence), len(mset.expectedPerSubjectInProcess)
+		mset.clMu.Unlock()
+		require_Len(t, inflight, 0)
+		require_Len(t, subjSeq, 0)
+		require_Len(t, subjInProcess, 0)
+	}
+	requireEmpty()
+
+	m := nats.NewMsg("foo")
+	m.Header.Set("Nats-Msg-Id", "dedupe")
+	m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
+	_, err = js.PublishMsg(m)
+	require_Error(t, err, NewJSStreamWrongLastSequenceError(0))
+	requireEmpty()
+}
+
+func TestJetStreamAtomicBatchPublishExpectedPerSubject(t *testing.T) {
+	type TestKind int
+	const (
+		OnlyFirst TestKind = iota
+		Redundant
+		NotFirst
+	)
+
+	test := func(t *testing.T, kind TestKind) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			Replicas:           3,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+
+		m := nats.NewMsg("foo")
+		if kind != NotFirst {
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
+		}
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		require_NoError(t, nc.PublishMsg(m))
+
+		var pubAck JSPubAckResponse
+
+		// Redundant expected headers are okay, as long as they reflect the state prior to the batch.
+		m = nats.NewMsg("foo")
+		if kind == Redundant || kind == NotFirst {
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
+		}
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "2")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		rmsg, err := nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		if kind == Redundant || kind == NotFirst {
+			require_NotNil(t, pubAck.Error)
+			require_Error(t, pubAck.Error, NewJSStreamWrongLastSequenceConstantError())
+			return
+		}
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, 3)
+		require_Equal(t, pubAck.BatchSize, 2)
+
+		// The first message still contains the expected headers.
+		rsm, err := js.GetMsg("TEST", 2)
+		require_NoError(t, err)
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), "1")
+		require_Equal(t, rsm.Header.Get("Nats-Expected-Last-Subject-Sequence"), "1")
+
+		// The second message doesn't have the expected headers, as the condition was already checked
+		// and seems inconsistent when getting the message afterward.
+		rsm, err = js.GetMsg("TEST", 3)
+		require_NoError(t, err)
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
+		require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), "2")
+		require_Equal(t, rsm.Header.Get("Nats-Expected-Last-Subject-Sequence"), _EMPTY_)
+	}
+
+	t.Run("single", func(t *testing.T) { test(t, OnlyFirst) })
+	t.Run("redundant", func(t *testing.T) { test(t, Redundant) })
+	t.Run("not-first", func(t *testing.T) { test(t, NotFirst) })
 }

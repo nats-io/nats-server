@@ -15,6 +15,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -77,11 +78,71 @@ func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
 	delete(batches.group, batchId)
 }
 
+// batchStagedDiff stages all changes for consistency checks until commit.
+type batchStagedDiff struct {
+	msgIds             map[string]struct{}
+	counter            map[string]*msgCounterRunningTotal
+	inflight           map[uint64]uint64
+	subjectsInBatch    map[string]struct{}
+	expectedPerSubject map[string]*batchExpectedPerSubject
+}
+
+type batchExpectedPerSubject struct {
+	sseq  uint64 // Stream sequence.
+	clseq uint64 // Clustered proposal sequence.
+}
+
+func (diff *batchStagedDiff) commit(mset *stream) {
+	if len(diff.msgIds) > 0 {
+		ts := time.Now().UnixNano()
+		mset.ddMu.Lock()
+		for msgId := range diff.msgIds {
+			// We stage with zero, and will update in processJetStreamMsg once we know the sequence.
+			mset.storeMsgIdLocked(&ddentry{msgId, 0, ts})
+		}
+		mset.ddMu.Unlock()
+	}
+
+	// Store running totals for counters, we could have multiple counter increments proposed, but not applied yet.
+	if len(diff.counter) > 0 {
+		if mset.clusteredCounterTotal == nil {
+			mset.clusteredCounterTotal = make(map[string]*msgCounterRunningTotal, len(diff.counter))
+		}
+		for k, c := range diff.counter {
+			mset.clusteredCounterTotal[k] = c
+		}
+	}
+
+	// Track inflight.
+	if len(diff.inflight) > 0 {
+		if mset.inflight == nil {
+			mset.inflight = make(map[uint64]uint64, len(diff.inflight))
+		}
+		for clseq, size := range diff.inflight {
+			mset.inflight[clseq] = size
+		}
+	}
+
+	// Track sequence and subject.
+	if len(diff.expectedPerSubject) > 0 {
+		if mset.expectedPerSubjectSequence == nil {
+			mset.expectedPerSubjectSequence = make(map[uint64]string, len(diff.expectedPerSubject))
+		}
+		if mset.expectedPerSubjectInProcess == nil {
+			mset.expectedPerSubjectInProcess = make(map[string]struct{}, len(diff.expectedPerSubject))
+		}
+		for subj, e := range diff.expectedPerSubject {
+			mset.expectedPerSubjectSequence[e.clseq] = subj
+			mset.expectedPerSubjectInProcess[subj] = struct{}{}
+		}
+	}
+}
+
 // checkMsgHeadersPreClusteredProposal checks the message for expected/consistency headers.
 // mset.mu lock must NOT be held or used.
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
-	mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
+	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
 	jsa *jsAccount, allowTTL bool, allowMsgCounter bool, stype StorageType, store StreamStore,
 	interestPolicy bool, discard DiscardPolicy, maxMsgs int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
@@ -117,9 +178,9 @@ func checkMsgHeadersPreClusteredProposal(
 					getExpectedLastMsgId(hdr) != _EMPTY_ ||
 					getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
 					doErr = true
-				} else if _, ok := getExpectedLastSeq(hdr); ok {
+				} else if _, ok = getExpectedLastSeq(hdr); ok {
 					doErr = true
-				} else if _, ok := getExpectedLastSeqPerSubject(hdr); ok {
+				} else if _, ok = getExpectedLastSeqPerSubject(hdr); ok {
 					doErr = true
 				}
 
@@ -144,6 +205,10 @@ func checkMsgHeadersPreClusteredProposal(
 		// Check for MsgIds here at the cluster level to avoid excessive CLFS accounting.
 		// Will help during restarts.
 		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
+			// Dedupe if staged.
+			if _, ok = diff.msgIds[msgId]; ok {
+				return hdr, msg, 0, nil, errMsgIdDuplicate
+			}
 			mset.ddMu.Lock()
 			if dde := mset.checkMsgId(msgId); dde != nil {
 				seq := dde.seq
@@ -155,8 +220,11 @@ func checkMsgHeadersPreClusteredProposal(
 					return hdr, msg, 0, NewJSStreamDuplicateMessageConflictError(), errMsgIdDuplicate
 				}
 			}
-			// We stage with zero, and will update in processJetStreamMsg once we know the sequence.
-			mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano()})
+			if diff.msgIds == nil {
+				diff.msgIds = map[string]struct{}{msgId: {}}
+			} else {
+				diff.msgIds[msgId] = struct{}{}
+			}
 			mset.ddMu.Unlock()
 		}
 	}
@@ -170,17 +238,19 @@ func checkMsgHeadersPreClusteredProposal(
 	if incr != nil && allowMsgCounter && store != nil {
 		var initial big.Int
 		var sources CounterSources
-		// Store running totals for counters, we could have multiple counter increments proposed, but not applied yet.
-		if mset.clusteredCounterTotal == nil {
-			mset.clusteredCounterTotal = make(map[string]*msgCounterRunningTotal, 1)
-		}
 
 		// If we've got a running total, update that, since we have inflight proposals updating the same counter.
 		var ok bool
 		var counter *msgCounterRunningTotal
-		if counter, ok = mset.clusteredCounterTotal[subject]; ok {
+		if counter, ok = diff.counter[subject]; ok {
 			initial = *counter.total
 			sources = counter.sources
+		} else if counter, ok = mset.clusteredCounterTotal[subject]; ok {
+			initial = *counter.total
+			sources = counter.sources
+			// Make an explicit copy to separate the staged data from what's committed.
+			// Don't need to initialize all values, they'll be overwritten later.
+			counter = &msgCounterRunningTotal{ops: counter.ops}
 		} else {
 			// Load last message, and store as inflight running total.
 			var smv StoreMsg
@@ -221,7 +291,7 @@ func checkMsgHeadersPreClusteredProposal(
 			if sources == nil {
 				sources = map[string]map[string]string{}
 			}
-			if _, ok := sources[origStream]; !ok {
+			if _, ok = sources[origStream]; !ok {
 				sources[origStream] = map[string]string{}
 			}
 			prevVal := sources[origStream][origSubj]
@@ -248,6 +318,11 @@ func checkMsgHeadersPreClusteredProposal(
 			hdr = setHeader(JSMessageCounterSources, string(nhdr), hdr)
 		}
 
+		// Check to see if we are over the max msg size.
+		if int32(len(hdr)+len(msg)) > mset.srv.getOpts().MaxPayload {
+			return hdr, msg, 0, NewJSStreamMessageExceedsMaximumError(), ErrMaxPayload
+		}
+
 		// Keep the in-memory counters up-to-date.
 		if counter == nil {
 			counter = &msgCounterRunningTotal{}
@@ -255,18 +330,10 @@ func checkMsgHeadersPreClusteredProposal(
 		counter.total = &initial
 		counter.sources = sources
 		counter.ops++
-		mset.clusteredCounterTotal[subject] = counter
-
-		// Check to see if we are over the max msg size.
-		if int32(len(hdr)+len(msg)) > mset.srv.getOpts().MaxPayload {
-			// Undo staged counter changes.
-			counter.ops--
-			if counter.ops == 0 {
-				delete(mset.clusteredCounterTotal, subject)
-			} else {
-				counter.total.Sub(counter.total, incr)
-			}
-			return hdr, msg, 0, NewJSStreamMessageExceedsMaximumError(), ErrMaxPayload
+		if diff.counter == nil {
+			diff.counter = map[string]*msgCounterRunningTotal{subject: counter}
+		} else {
+			diff.counter[subject] = counter
 		}
 	}
 
@@ -276,20 +343,20 @@ func checkMsgHeadersPreClusteredProposal(
 	// it would succeed on every peer.
 	if interestPolicy && discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
 		// Track inflight.
-		if mset.inflight == nil {
-			mset.inflight = make(map[uint64]uint64)
+		if diff.inflight == nil {
+			diff.inflight = make(map[uint64]uint64)
 		}
 		if stype == FileStorage {
-			mset.inflight[mset.clseq] = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+			diff.inflight[mset.clseq] = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
 		} else {
-			mset.inflight[mset.clseq] = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+			diff.inflight[mset.clseq] = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
 		}
 
 		var state StreamState
 		mset.store.FastState(&state)
 
 		var err error
-		if maxMsgs > 0 && state.Msgs+uint64(len(mset.inflight)) > uint64(maxMsgs) {
+		if maxMsgs > 0 && state.Msgs+uint64(len(mset.inflight)+len(diff.inflight)) > uint64(maxMsgs) {
 			err = ErrMaxMsgs
 		} else if maxBytes > 0 {
 			// TODO(dlc) - Could track this rollup independently.
@@ -297,12 +364,14 @@ func checkMsgHeadersPreClusteredProposal(
 			for _, nb := range mset.inflight {
 				bytesPending += nb
 			}
+			for _, nb := range diff.inflight {
+				bytesPending += nb
+			}
 			if state.Bytes+bytesPending > uint64(maxBytes) {
 				err = ErrMaxBytes
 			}
 		}
 		if err != nil {
-			delete(mset.inflight, mset.clseq)
 			return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
 		}
 	}
@@ -316,40 +385,58 @@ func checkMsgHeadersPreClusteredProposal(
 				seqSubj = optSubj
 			}
 
-			// If subject is already in process, block as otherwise we could have multiple messages inflight with same subject.
-			if _, found := mset.expectedPerSubjectInProcess[seqSubj]; found {
-				// Could have set inflight above, cleanup here.
-				delete(mset.inflight, mset.clseq)
-				err := fmt.Errorf("last sequence by subject mismatch")
+			// The subject is already written to in this batch, we can't allow
+			// expected checks since they would be incorrect.
+			if _, ok := diff.subjectsInBatch[seqSubj]; ok {
+				err := errors.New("last sequence by subject mismatch")
 				return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
 			}
 
-			var smv StoreMsg
-			var fseq uint64
-			sm, err := store.LoadLastMsg(seqSubj, &smv)
-			if sm != nil {
-				fseq = sm.seq
-			}
-			if err == ErrStoreMsgNotFound && seq == 0 {
-				fseq, err = 0, nil
-			}
-			if err != nil || fseq != seq {
-				// Could have set inflight above, cleanup here.
-				delete(mset.inflight, mset.clseq)
-				err = fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
-				return hdr, msg, 0, NewJSStreamWrongLastSequenceError(fseq), err
+			// If the subject is already in process, block as otherwise we could have
+			// multiple messages inflight with the same subject.
+			if _, found := mset.expectedPerSubjectInProcess[seqSubj]; found {
+				err := errors.New("last sequence by subject mismatch")
+				return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
 			}
 
-			// Track sequence and subject.
-			if mset.expectedPerSubjectSequence == nil {
-				mset.expectedPerSubjectSequence = make(map[uint64]string)
+			// If we've already done an expected-check on this subject, use the cached result.
+			if e, ok := diff.expectedPerSubject[seqSubj]; ok {
+				if e.sseq != seq {
+					err := fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, e.sseq)
+					return hdr, msg, 0, NewJSStreamWrongLastSequenceError(e.sseq), err
+				}
+				e.clseq = mset.clseq
+			} else {
+				var smv StoreMsg
+				var fseq uint64
+				sm, err := store.LoadLastMsg(seqSubj, &smv)
+				if sm != nil {
+					fseq = sm.seq
+				}
+				if err == ErrStoreMsgNotFound && seq == 0 {
+					fseq, err = 0, nil
+				}
+				if err != nil || fseq != seq {
+					err = fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
+					return hdr, msg, 0, NewJSStreamWrongLastSequenceError(fseq), err
+				}
+
+				e = &batchExpectedPerSubject{sseq: fseq, clseq: mset.clseq}
+				if diff.expectedPerSubject == nil {
+					diff.expectedPerSubject = map[string]*batchExpectedPerSubject{seqSubj: e}
+				} else {
+					diff.expectedPerSubject[seqSubj] = e
+				}
 			}
-			if mset.expectedPerSubjectInProcess == nil {
-				mset.expectedPerSubjectInProcess = make(map[string]struct{})
-			}
-			mset.expectedPerSubjectSequence[mset.clseq] = seqSubj
-			mset.expectedPerSubjectInProcess[seqSubj] = struct{}{}
 		}
+	}
+
+	// Store the subject to ensure other messages in this batch using
+	// an expected check on the same subject fail.
+	if diff.subjectsInBatch == nil {
+		diff.subjectsInBatch = map[string]struct{}{subject: {}}
+	} else {
+		diff.subjectsInBatch[subject] = struct{}{}
 	}
 
 	return hdr, msg, 0, nil, nil
