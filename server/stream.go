@@ -301,6 +301,21 @@ const (
 	streamDefaultMaxQueueBytes = 1024 * 1024 * 128
 )
 
+// For managing stream batches.
+const (
+	streamDefaultMaxBatchInflightPerStream = 50
+	streamDefaultMaxBatchInflightTotal     = 1000
+	streamDefaultMaxBatchSize              = 1000
+	streamDefaultMaxBatchTimeout           = 10 * time.Second
+)
+
+var (
+	streamMaxBatchInflightPerStream = streamDefaultMaxBatchInflightPerStream
+	streamMaxBatchInflightTotal     = streamDefaultMaxBatchInflightTotal
+	streamMaxBatchSize              = streamDefaultMaxBatchSize
+	streamMaxBatchTimeout           = streamDefaultMaxBatchTimeout
+)
+
 // Stream is a jetstream stream of messages. When we receive a message internally destined
 // for a Stream we will direct link from the client to this structure.
 type stream struct {

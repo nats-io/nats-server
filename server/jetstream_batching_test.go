@@ -17,8 +17,10 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,12 +30,16 @@ import (
 func TestJetStreamAtomicBatchPublish(t *testing.T) {
 	test := func(
 		t *testing.T,
-		nc *nats.Conn,
-		js nats.JetStreamContext,
 		storage StorageType,
 		retention RetentionPolicy,
 		replicas int,
 	) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
 		var pubAck JSPubAckResponse
 
 		cfg := &StreamConfig{
@@ -136,24 +142,169 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 				require_Equal(t, string(rsm.Data), subj)
 			}
 		}
-
-		// TODO(mvv): implement timeout
 	}
 
 	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
 		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
 			replicas := 3
 			t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
-				c := createJetStreamClusterExplicit(t, "R3S", 3)
-				defer c.shutdown()
-
-				nc, js := jsClientConnect(t, c.randomServer())
-				defer nc.Close()
-
-				test(t, nc, js, storage, retention, replicas)
+				test(t, storage, retention, replicas)
 			})
 		}
 	}
+}
+
+func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
+	streamMaxBatchInflightPerStream = 1
+	streamMaxBatchInflightTotal = 1
+	streamMaxBatchSize = 2
+	streamMaxBatchTimeout = 500 * time.Millisecond
+	defer func() {
+		streamMaxBatchInflightPerStream = streamDefaultMaxBatchInflightPerStream
+		streamMaxBatchInflightTotal = streamDefaultMaxBatchInflightTotal
+		streamMaxBatchSize = streamDefaultMaxBatchSize
+		streamMaxBatchTimeout = streamDefaultMaxBatchTimeout
+	}()
+
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var pubAck JSPubAckResponse
+
+		cfg := &StreamConfig{
+			Name:               "FOO",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			Retention:          LimitsPolicy,
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
+		}
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		// For testing total server-wide maximum inflight batches.
+		cfg = &StreamConfig{
+			Name:               "BAR",
+			Subjects:           []string{"bar"},
+			Storage:            FileStorage,
+			Retention:          LimitsPolicy,
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
+		}
+		_, err = jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		// A batch ID must not exceed the maximum length.
+		for _, length := range []int{64, 65} {
+			longBatchId := strings.Repeat("A", length)
+			m := nats.NewMsg("foo")
+			m.Header.Set("Nats-Batch-Id", longBatchId)
+			m.Header.Set("Nats-Batch-Sequence", "1")
+			m.Header.Set("Nats-Batch-Commit", "1")
+			rmsg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			pubAck = JSPubAckResponse{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			if length <= 64 {
+				require_True(t, pubAck.Error == nil)
+			} else {
+				require_NotNil(t, pubAck.Error)
+				require_Error(t, pubAck.Error, NewJSAtomicPublishInvalidBatchIDError())
+			}
+		}
+
+		// One batch is inflight.
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		require_NoError(t, nc.PublishMsg(m))
+
+		// Another batch moves over the threshold and batch is denied.
+		m = nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "exceeds_threshold")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		rmsg, err := nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+
+		// Another batch on a different stream moves over the server-wide threshold and batch is denied.
+		m = nats.NewMsg("bar")
+		m.Header.Set("Nats-Batch-Id", "bar")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		rmsg, err = nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+
+		// The first batch should now time out.
+		sl := c.streamLeader(globalAccountName, "FOO")
+		mset, err := sl.globalAccount().lookupStream("FOO")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset.mu.RLock()
+			batches := mset.batches
+			mset.mu.RUnlock()
+			if batches == nil {
+				return errors.New("batches not found")
+			}
+			batches.mu.Lock()
+			groups := len(batches.group)
+			batches.mu.Unlock()
+			if groups != 0 {
+				return fmt.Errorf("expected 0 groups, got %d", groups)
+			}
+			return nil
+		})
+
+		// Publishing to the batch should also error since it timed out.
+		m = nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "2")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		rmsg, err = nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+
+		// Batch should be rejected if going over the max batch size.
+		for _, size := range []int{streamMaxBatchSize, streamMaxBatchSize + 1} {
+			for i := range size {
+				seq := i + 1
+				m = nats.NewMsg("foo")
+				m.Header.Set("Nats-Batch-Id", "exceeds_threshold")
+				m.Header.Set("Nats-Batch-Sequence", strconv.Itoa(seq))
+				commit := seq == size
+				if !commit {
+					require_NoError(t, nc.PublishMsg(m))
+					continue
+				}
+
+				m.Header.Set("Nats-Batch-Commit", "1")
+				rmsg, err = nc.RequestMsg(m, time.Second)
+				require_NoError(t, err)
+				pubAck = JSPubAckResponse{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+				if size <= streamMaxBatchSize {
+					require_True(t, pubAck.Error == nil)
+					require_Equal(t, pubAck.BatchSize, size)
+				} else {
+					require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+				}
+			}
+		}
+	}
+
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
 func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
@@ -309,6 +460,7 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		Disable = iota
 		StepDown
 		Delete
+		Commit
 	)
 
 	test := func(t *testing.T, mode int) {
@@ -380,13 +532,28 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 			require_NoError(t, sl.JetStreamStepdownStream(globalAccountName, "TEST"))
 		case Delete:
 			require_NoError(t, mset.delete())
+		case Commit:
+			m = nats.NewMsg("foo")
+			m.Header.Set("Nats-Batch-Id", "uuid")
+			m.Header.Set("Nats-Batch-Sequence", "2")
+			m.Header.Set("Nats-Batch-Commit", "1")
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
 		}
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			mset.mu.RLock()
 			batches = mset.batches
 			mset.mu.RUnlock()
 			if batches != nil {
-				return fmt.Errorf("expected no batches")
+				if mode != Commit {
+					return fmt.Errorf("expected no batches")
+				}
+				batches.mu.Lock()
+				groups = len(batches.group)
+				batches.mu.Unlock()
+				if groups > 0 {
+					return fmt.Errorf("expected 0 groups, got %d", groups)
+				}
 			}
 			if msgs := store.State().Msgs; msgs != 0 {
 				return fmt.Errorf("expected 0 messages, got %d", msgs)
@@ -398,6 +565,43 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 	t.Run("Disable", func(t *testing.T) { test(t, Disable) })
 	t.Run("StepDown", func(t *testing.T) { test(t, StepDown) })
 	t.Run("Delete", func(t *testing.T) { test(t, Delete) })
+	t.Run("Commit", func(t *testing.T) { test(t, Commit) })
+}
+
+func TestJetStreamAtomicBatchPublishConfigOpts(t *testing.T) {
+	// Defaults.
+	require_Equal(t, streamMaxBatchInflightPerStream, 50)
+	require_Equal(t, streamMaxBatchInflightTotal, 1000)
+	require_Equal(t, streamMaxBatchSize, 1000)
+	require_Equal(t, streamMaxBatchTimeout, 10*time.Second)
+
+	batchingConf := `
+	listen: 127.0.0.1:-1
+	jetstream {
+		store_dir: %q
+		limits {
+			batch {
+				max_inflight_per_stream: %d
+				max_inflight_total: %d
+				max_msgs: %d
+				timeout: %s
+			}
+		}
+	}`
+
+	cf := createConfFile(t, []byte(fmt.Sprintf(batchingConf, t.TempDir(), 10, 20, 100, "5s")))
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	require_Equal(t, opts.JetStreamLimits.MaxBatchInflightPerStream, 10)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchInflightTotal, 20)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchSize, 100)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchTimeout, 5*time.Second)
+
+	// Reloading is not supported, that would potentially mean dropping random batches when lowering limits.
+	changeCurrentConfigContentWithNewContent(t, cf, []byte(fmt.Sprintf(batchingConf, t.TempDir(), 20, 40, 200, "10s")))
+	require_Error(t, s.Reload(), fmt.Errorf("config reload not supported for JetStreamLimits"))
 }
 
 func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {

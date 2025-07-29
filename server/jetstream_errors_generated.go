@@ -14,6 +14,9 @@ const (
 	// JSAtomicPublishIncompleteBatchErr atomic publish batch is incomplete
 	JSAtomicPublishIncompleteBatchErr ErrorIdentifier = 10176
 
+	// JSAtomicPublishInvalidBatchIDErr atomic publish batch ID is invalid
+	JSAtomicPublishInvalidBatchIDErr ErrorIdentifier = 10179
+
 	// JSAtomicPublishMissingSeqErr atomic publish sequence is missing
 	JSAtomicPublishMissingSeqErr ErrorIdentifier = 10175
 
@@ -542,6 +545,7 @@ var (
 		JSAccountResourcesExceededErr:              {Code: 400, ErrCode: 10002, Description: "resource limits exceeded for account"},
 		JSAtomicPublishDisabledErr:                 {Code: 400, ErrCode: 10174, Description: "atomic publish is disabled"},
 		JSAtomicPublishIncompleteBatchErr:          {Code: 400, ErrCode: 10176, Description: "atomic publish batch is incomplete"},
+		JSAtomicPublishInvalidBatchIDErr:           {Code: 400, ErrCode: 10179, Description: "atomic publish batch ID is invalid"},
 		JSAtomicPublishMissingSeqErr:               {Code: 400, ErrCode: 10175, Description: "atomic publish sequence is missing"},
 		JSAtomicPublishUnsupportedHeaderBatchErr:   {Code: 400, ErrCode: 10177, Description: "atomic publish unsupported header used: {header}"},
 		JSBadRequestErr:                            {Code: 400, ErrCode: 10003, Description: "bad request"},
@@ -769,6 +773,16 @@ func NewJSAtomicPublishIncompleteBatchError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSAtomicPublishIncompleteBatchErr]
+}
+
+// NewJSAtomicPublishInvalidBatchIDError creates a new JSAtomicPublishInvalidBatchIDErr error: "atomic publish batch ID is invalid"
+func NewJSAtomicPublishInvalidBatchIDError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAtomicPublishInvalidBatchIDErr]
 }
 
 // NewJSAtomicPublishMissingSeqError creates a new JSAtomicPublishMissingSeqErr error: "atomic publish sequence is missing"

@@ -8127,6 +8127,16 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			return err
 		}
 
+		// Batch ID is too long.
+		if len(batchId) > 64 {
+			err := NewJSAtomicPublishInvalidBatchIDError()
+			if canRespond {
+				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
+			}
+			return err
+		}
+
 		batchSeq, exists := getBatchSequence(hdr)
 		if !exists {
 			err := NewJSAtomicPublishMissingSeqError()
@@ -8147,45 +8157,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		batches := mset.batches
 		mset.mu.Unlock()
 
-		// Get batch.
-		batches.mu.Lock()
-		b, ok := batches.group[batchId]
-		if !ok {
-			if batchSeq != 1 {
-				batches.mu.Unlock()
-				err := NewJSAtomicPublishIncompleteBatchError()
-				if canRespond {
-					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-				}
-				return err
-			}
-
-			ms, err := newMemStore(&StreamConfig{Name: _EMPTY_, Storage: MemoryStorage})
-			if err != nil {
-				batches.mu.Unlock()
-				err := NewJSAtomicPublishIncompleteBatchError()
-				if canRespond {
-					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-				}
-				return err
-			}
-
-			b = &batchGroup{store: ms}
-			batches.group[batchId] = b
-		}
-
-		cleanup := func() {
-			b.store.Delete()
-			delete(batches.group, batchId)
-		}
-
-		// Detect gaps.
-		b.lseq++
-		if b.lseq != batchSeq {
-			cleanup()
-			batches.mu.Unlock()
+		respondIncompleteBatch := func() error {
 			err := NewJSAtomicPublishIncompleteBatchError()
 			if canRespond {
 				buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
@@ -8194,21 +8166,86 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			return err
 		}
 
+		// Get batch.
+		batches.mu.Lock()
+		b, ok := batches.group[batchId]
+		if !ok {
+			if batchSeq != 1 {
+				batches.mu.Unlock()
+				return respondIncompleteBatch()
+			}
+
+			// Limits.
+			maxInflightPerStream := streamMaxBatchInflightPerStream
+			maxInflightTotal := streamMaxBatchInflightTotal
+			opts := s.getOpts()
+			if opts.JetStreamLimits.MaxBatchInflightPerStream > 0 {
+				maxInflightPerStream = opts.JetStreamLimits.MaxBatchInflightPerStream
+			}
+			if opts.JetStreamLimits.MaxBatchInflightTotal > 0 {
+				maxInflightTotal = opts.JetStreamLimits.MaxBatchInflightTotal
+			}
+
+			// Confirm we can facilitate an additional batch.
+			if len(batches.group)+1 > maxInflightPerStream {
+				batches.mu.Unlock()
+				return respondIncompleteBatch()
+			}
+
+			// Confirm we'll not exceed the server limit.
+			if globalInflightBatches.Add(1) > int32(maxInflightTotal) {
+				globalInflightBatches.Add(-1)
+				batches.mu.Unlock()
+				return respondIncompleteBatch()
+			}
+
+			ms, err := newMemStore(&StreamConfig{Name: _EMPTY_, Storage: MemoryStorage})
+			if err != nil {
+				globalInflightBatches.Add(-1)
+				batches.mu.Unlock()
+				return respondIncompleteBatch()
+			}
+
+			b = newBatchGroup(s, batchId, batches, ms)
+			batches.group[batchId] = b
+		}
+
+		// Detect gaps.
+		b.lseq++
+		if b.lseq != batchSeq {
+			b.cleanupLocked(batchId, batches)
+			batches.mu.Unlock()
+			return respondIncompleteBatch()
+		}
+
+		// Confirm the batch doesn't exceed the allowed size.
+		maxSize := streamMaxBatchSize
+		if maxBatchSize := s.getOpts().JetStreamLimits.MaxBatchSize; maxBatchSize > 0 {
+			maxSize = maxBatchSize
+		}
+		if batchSeq > uint64(maxSize) {
+			b.cleanupLocked(batchId, batches)
+			batches.mu.Unlock()
+			return respondIncompleteBatch()
+		}
+
 		// Persist, but optimize if we're committing because we already know last.
 		if !commit {
 			seq, _, err := b.store.StoreMsg(subject, hdr, msg, 0)
 			if err != nil || seq != batchSeq {
-				cleanup()
+				b.cleanupLocked(batchId, batches)
 				batches.mu.Unlock()
-				err := NewJSAtomicPublishIncompleteBatchError()
-				if canRespond {
-					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-				}
-				return err
+				return respondIncompleteBatch()
 			}
 			batches.mu.Unlock()
 			return nil
+		}
+
+		// Ensure the batch is prepared for the commit and will not be cleaned up while committing.
+		if !b.stopCleanupTimerLocked() {
+			// Don't do cleanup, this is already done.
+			batches.mu.Unlock()
+			return respondIncompleteBatch()
 		}
 
 		// Proceed with proposing the batch.
@@ -8241,7 +8278,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			// TODO(mvv): reset in-memory expected header maps
 			mset.clseq -= seq - 1
 			mset.clMu.Unlock()
-			cleanup()
+			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			if canRespond {
 				buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
@@ -8258,14 +8295,9 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			} else {
 				mset.clseq -= seq - 1
 				mset.clMu.Unlock()
-				cleanup()
+				b.cleanupLocked(batchId, batches)
 				batches.mu.Unlock()
-				apiErr := NewJSAtomicPublishIncompleteBatchError()
-				if canRespond {
-					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
-					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-				}
-				return apiErr
+				return respondIncompleteBatch()
 			}
 
 			// Reject unsupported headers.
@@ -8284,7 +8316,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				// TODO(mvv): reset in-memory expected header maps
 				mset.clseq -= seq - 1
 				mset.clMu.Unlock()
-				cleanup()
+				b.cleanupLocked(batchId, batches)
 				batches.mu.Unlock()
 				if canRespond {
 					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
@@ -8319,7 +8351,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			s.RateLimitWarnf("%s", lerr.Error())
 		}
 		mset.clMu.Unlock()
-		cleanup()
+		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
 		return nil
 	}
