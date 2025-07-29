@@ -91,11 +91,12 @@ type JetStreamAccountStats struct {
 	Tiers         map[string]JetStreamTier `json:"tiers,omitempty"` // indexed by tier name
 }
 
+// JetStreamAPIStats holds stats about the API usage for this server
 type JetStreamAPIStats struct {
-	Level    int    `json:"level"`
-	Total    uint64 `json:"total"`
-	Errors   uint64 `json:"errors"`
-	Inflight uint64 `json:"inflight,omitempty"`
+	Level    int    `json:"level"`              // Level is the active API level this server implements
+	Total    uint64 `json:"total"`              // Total is the total API requests received since start
+	Errors   uint64 `json:"errors"`             // Errors is the total API requests that resulted in error responses
+	Inflight uint64 `json:"inflight,omitempty"` // Inflight are the number of API requests currently being served
 }
 
 // This is for internal accounting for JetStream for this server.
