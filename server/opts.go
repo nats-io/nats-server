@@ -247,11 +247,12 @@ type RemoteLeafOpts struct {
 	JetStreamClusterMigrateDelay time.Duration `json:"jetstream_cluster_migrate_delay,omitempty"`
 }
 
+// JSLimitOpts are active limits for the meta cluster
 type JSLimitOpts struct {
-	MaxRequestBatch int           `json:"max_request_batch,omitempty"`
-	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
-	MaxHAAssets     int           `json:"max_ha_assets,omitempty"`
-	Duplicates      time.Duration `json:"max_duplicate_window,omitempty"`
+	MaxRequestBatch int           `json:"max_request_batch,omitempty"`    // MaxRequestBatch is the maximum amount of updates that can be sent in a batch
+	MaxAckPending   int           `json:"max_ack_pending,omitempty"`      // MaxAckPending is the server limit for maximum amount of outstanding Acks
+	MaxHAAssets     int           `json:"max_ha_assets,omitempty"`        // MaxHAAssets is the maximum of Streams and Consumers that may have more than 1 replica
+	Duplicates      time.Duration `json:"max_duplicate_window,omitempty"` // Duplicates is the maximum value for duplicate tracking on Streams
 }
 
 type JSTpmOpts struct {
