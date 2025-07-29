@@ -3942,6 +3942,9 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	if lmb := fs.lmb; lmb != nil {
 		index = lmb.index + 1
+
+		// Flush any pending messages.
+		lmb.flushPendingMsgsLocked()
 		// Determine if we can reclaim any resources here.
 		if fs.fip {
 			lmb.mu.Lock()
@@ -4305,11 +4308,6 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 		numDeletes += mb.dmap.Size()
 	}
 	if mb == nil || numDeletes > maxDeletes && mb.msgs > 0 || mb.msgs > 0 && mb.blkSize()+emptyRecordLen > fs.fcfg.BlockSize {
-		if mb != nil && fs.fcfg.Compression != NoCompression {
-			// We've now reached the end of this message block, if we want
-			// to compress blocks then now's the time to do it.
-			go mb.recompressOnDiskIfNeeded()
-		}
 		var err error
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
 			return err
@@ -6119,14 +6117,6 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 	lmb = fs.lmb
 	rbytes := lmb.blkSize()
 	if lmb == nil || (rbytes > 0 && rbytes+rl > fs.fcfg.BlockSize) {
-		if lmb != nil {
-			lmb.flushPendingMsgs()
-			if fs.fcfg.Compression != NoCompression {
-				// We've now reached the end of this message block, if we want
-				// to compress blocks then now's the time to do it.
-				go lmb.recompressOnDiskIfNeeded()
-			}
-		}
 		if lmb, err = fs.newMsgBlockForWrite(); err != nil {
 			return nil, err
 		}
@@ -8149,7 +8139,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				return purged, err
 			}
 		}
-		// Flush any pending. If we change blocks the checkLastBlock() will flush any pending for us.
+		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
 		if lmb := fs.lmb; lmb != nil {
 			lmb.flushPendingMsgs()
 		}
