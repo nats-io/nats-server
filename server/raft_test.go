@@ -2980,6 +2980,71 @@ func TestNRGReplayOnSnapshotDifferentTerm(t *testing.T) {
 	require_Equal(t, n.pindex, 3)
 }
 
+func TestNRGSizeAndApplied(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: []*Entry{newEntry(EntryNormal, esm)}})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{newEntry(EntryNormal, esm)}})
+
+	var (
+		entries uint64
+		bytes   uint64
+	)
+	// Initially our WAL is empty.
+	entries, bytes = n.Size()
+	require_Equal(t, entries, 0)
+	require_Equal(t, bytes, 0)
+
+	// Store the first append entry.
+	require_NoError(t, n.storeToWAL(aeMsg1))
+	entries, bytes = n.Size()
+	require_Equal(t, entries, 1)
+	require_Equal(t, bytes, 105)
+
+	// Store the second append entry.
+	require_NoError(t, n.storeToWAL(aeMsg2))
+	entries, bytes = n.Size()
+	require_Equal(t, entries, 2)
+	require_Equal(t, bytes, 210)
+
+	// Applying should return what part of the WAL can be compacted.
+	n.commit = 1
+	entries, bytes = n.Applied(1)
+	require_Equal(t, entries, 1)
+	require_Equal(t, bytes, 105)
+
+	// After applying all should return our whole WAL can be compacted.
+	n.commit = 2
+	entries, bytes = n.Applied(2)
+	require_Equal(t, entries, 2)
+	require_Equal(t, bytes, 210)
+
+	// Installing a snapshot should properly correct n.papplied and n.bytes
+	n.applied = 1 // Reset just for testing.
+	require_NoError(t, n.InstallSnapshot(nil))
+	require_Equal(t, n.papplied, 1)
+	require_Equal(t, n.bytes, 105)
+	entries, bytes = n.Size()
+	require_Equal(t, entries, 1)
+	require_Equal(t, bytes, 105)
+
+	entries, bytes = n.Applied(2)
+	require_Equal(t, entries, 1)
+	require_Equal(t, bytes, 105)
+
+	require_NoError(t, n.InstallSnapshot(nil))
+	require_Equal(t, n.papplied, 2)
+	require_Equal(t, n.bytes, 0)
+	entries, bytes = n.Size()
+	require_Equal(t, entries, 0)
+	require_Equal(t, bytes, 0)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
