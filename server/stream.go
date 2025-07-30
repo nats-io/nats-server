@@ -401,14 +401,14 @@ type stream struct {
 	clMu      sync.Mutex        // The mutex for clseq and clfs.
 	clseq     uint64            // The current last seq being proposed to the NRG layer.
 	clfs      uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	inflight  map[uint64]uint64 // Inflight message sizes per clseq.
 	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
 	uch       chan struct{}     // The channel to signal updates to the monitor routine.
 	inMonitor bool              // True if the monitor routine has been started.
 
-	clusteredCounterTotal       map[string]*msgCounterRunningTotal // Inflight counter totals.
-	expectedPerSubjectSequence  map[uint64]string                  // Inflight 'expected per subject' subjects per clseq.
-	expectedPerSubjectInProcess map[string]struct{}                // Current 'expected per subject' subjects in process.
+	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
+	clusteredCounterTotal       map[string]*msgCounterRunningTotal      // Inflight counter totals.
+	expectedPerSubjectSequence  map[uint64]string                       // Inflight 'expected per subject' subjects per clseq.
+	expectedPerSubjectInProcess map[string]struct{}                     // Current 'expected per subject' subjects in process.
 
 	// Direct get subscription.
 	directLeaderSub *subscription
@@ -420,6 +420,12 @@ type stream struct {
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
 	batches *batching // Inflight batches prior to committing them.
+}
+
+// inflightSubjectRunningTotal stores a running total of inflight messages for a specific subject.
+type inflightSubjectRunningTotal struct {
+	bytes uint64 // Running total of inflight bytes for inflight messages.
+	ops   uint64 // Inflight operations, i.e. inflight messages for this subject. If this reaches zero, we can remove the running total.
 }
 
 // msgCounterRunningTotal stores a running total and a number of inflight

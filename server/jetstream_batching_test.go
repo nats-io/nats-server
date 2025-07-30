@@ -16,6 +16,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -647,19 +648,21 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	type BatchItem struct {
 		subject string
 		header  nats.Header
+		msg     []byte
 		err     error
 	}
 
 	type BatchTest struct {
-		title           string
-		allowRollup     bool
-		denyPurge       bool
-		allowTTL        bool
-		allowMsgCounter bool
-		discardNew      bool
-		init            func(mset *stream)
-		batch           []BatchItem
-		validate        func(mset *stream, commit bool)
+		title             string
+		allowRollup       bool
+		denyPurge         bool
+		allowTTL          bool
+		allowMsgCounter   bool
+		discardNew        bool
+		discardNewPerSubj bool
+		init              func(mset *stream)
+		batch             []BatchItem
+		validate          func(mset *stream, commit bool)
 	}
 
 	tests := []BatchTest{
@@ -758,16 +761,67 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			title:      "discard-new",
 			discardNew: true,
 			batch: []BatchItem{
-				{subject: "foo"},
-				{subject: "foo_2"},
+				{subject: "foo1"},
+				{subject: "foo2"},
 			},
 			validate: func(mset *stream, commit bool) {
 				if !commit {
 					require_Len(t, len(mset.inflight), 0)
 				} else {
 					require_Len(t, len(mset.inflight), 2)
-					require_Equal(t, mset.inflight[0], 19)
-					require_Equal(t, mset.inflight[1], 21)
+					require_Equal(t, *mset.inflight["foo1"], inflightSubjectRunningTotal{bytes: 20, ops: 1})
+					require_Equal(t, *mset.inflight["foo2"], inflightSubjectRunningTotal{bytes: 20, ops: 1})
+				}
+			},
+		},
+		{
+			title:      "discard-new-max-msgs",
+			discardNew: true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "foo"},
+				{subject: "foo", err: ErrMaxMsgs},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 1)
+					require_Equal(t, *mset.inflight["foo"], inflightSubjectRunningTotal{bytes: 19 * 3, ops: 3})
+				}
+			},
+		},
+		{
+			title:      "discard-new-max-bytes",
+			discardNew: true,
+			batch: []BatchItem{
+				{subject: "foo1", msg: bytes.Repeat([]byte("A"), 10)},
+				{subject: "foo2", msg: bytes.Repeat([]byte("A"), 11), err: ErrMaxBytes},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 2)
+					require_Equal(t, *mset.inflight["foo1"], inflightSubjectRunningTotal{bytes: 30, ops: 1})
+					require_Equal(t, *mset.inflight["foo2"], inflightSubjectRunningTotal{bytes: 31, ops: 1})
+				}
+			},
+		},
+		{
+			title:             "discard-new-max-msgs-per-subj",
+			discardNew:        true,
+			discardNewPerSubj: true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "foo", err: ErrMaxMsgsPerSubject},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 1)
+					require_Equal(t, *mset.inflight["foo"], inflightSubjectRunningTotal{bytes: 19 * 2, ops: 2})
 				}
 			},
 		},
@@ -958,20 +1012,24 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 
 			mset, err := s.globalAccount().lookupStream("TEST")
 			require_NoError(t, err)
-			store := mset.store
-			require_NotNil(t, store)
 
 			if test.init != nil {
 				test.init(mset)
 			}
 
 			var (
-				discard  DiscardPolicy
-				maxMsgs  int64
-				maxBytes int64
+				discard       DiscardPolicy
+				discardNewPer bool
+				maxMsgs       int64 = -1
+				maxMsgsPer    int64 = -1
+				maxBytes      int64 = -1
 			)
 			if test.discardNew {
-				discard, maxMsgs, maxBytes = DiscardNew, 10, 1024
+				discard, maxMsgs, maxBytes = DiscardNew, 2, 60
+			}
+			if test.discardNewPerSubj {
+				require_True(t, test.discardNew)
+				discardNewPer, maxMsgs, maxMsgsPer = true, -1, 1
 			}
 
 			diff := &batchStagedDiff{}
@@ -984,7 +1042,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, discard, -1, maxMsgs, maxBytes)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else {
