@@ -1824,6 +1824,11 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				}
 				bi += n
 			}
+
+			// Pre-emptively mark block as closed, we'll confirm this block
+			// still exists on disk and report it as lost if not.
+			mb.closed = true
+
 			// Only add in if not empty or the lmb.
 			if mb.msgs > 0 || i == lastIndex {
 				fs.addMsgBlock(mb)
@@ -1898,8 +1903,24 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			if index > blkIndex {
 				fs.warn("Stream state outdated, found extra blocks, will rebuild")
 				return errPriorState
+			} else if mb, ok := fs.bim[index]; ok {
+				mb.closed = false
 			}
 		}
+	}
+
+	var rebuild bool
+	for _, mb := range fs.blks {
+		if mb.closed {
+			rebuild = true
+			if ld, _, _ := mb.rebuildState(); ld != nil {
+				fs.addLostData(ld)
+			}
+			fs.warn("Stream state detected prior state, could not locate msg block %d", mb.index)
+		}
+	}
+	if rebuild {
+		return errPriorState
 	}
 
 	// We check first and last seq and number of msgs and bytes. If there is a difference,
