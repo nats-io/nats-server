@@ -144,7 +144,7 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 func checkMsgHeadersPreClusteredProposal(
 	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
 	jsa *jsAccount, allowTTL bool, allowMsgCounter bool, stype StorageType, store StreamStore,
-	interestPolicy bool, discard DiscardPolicy, maxMsgSize int, maxMsgs int64, maxBytes int64,
+	discard DiscardPolicy, maxMsgSize int, maxMsgs int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
 
@@ -343,11 +343,11 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 	}
 
-	// Check if we have an interest policy and discard new with max msgs or bytes.
-	// We need to deny here otherwise it could succeed on some peers and not others
-	// depending on consumer ack state. So we deny here, if we allow that means we know
-	// it would succeed on every peer.
-	if interestPolicy && discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
+	// Check if we have discard new with max msgs or bytes.
+	// We need to deny here otherwise we'd need to bump CLFS, and it could succeed on some
+	// peers and not others depending on consumer ack state (if interest policy).
+	// So we deny here, if we allow that means we know it would succeed on every peer.
+	if discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
 		// Track inflight.
 		if diff.inflight == nil {
 			diff.inflight = make(map[uint64]uint64)

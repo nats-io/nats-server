@@ -8033,7 +8033,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
-	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
+	discard, maxMsgs, maxBytes := mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	isLeader, isSealed, allowTTL, allowMsgCounter, allowAtomicPublish := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowAtomicPublish
@@ -8311,7 +8311,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				return errorOnUnsupported(seq, JSExpectedLastMsgId)
 			}
 
-			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
+			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
 				// TODO(mvv): reset in-memory expected header maps
 				mset.clseq -= seq - 1
 				mset.clMu.Unlock()
@@ -8373,7 +8373,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
+	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
 		// TODO(mvv): reset in-memory expected header maps
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {

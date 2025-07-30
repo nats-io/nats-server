@@ -652,13 +652,13 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	}
 
 	type BatchTest struct {
-		title              string
-		allowTTL           bool
-		allowMsgCounter    bool
-		interestDiscardNew bool
-		init               func(mset *stream)
-		batch              []BatchItem
-		validate           func(mset *stream, commit bool)
+		title           string
+		allowTTL        bool
+		allowMsgCounter bool
+		discardNew      bool
+		init            func(mset *stream)
+		batch           []BatchItem
+		validate        func(mset *stream, commit bool)
 	}
 
 	tests := []BatchTest{
@@ -754,8 +754,8 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			},
 		},
 		{
-			title:              "interest-discard-new",
-			interestDiscardNew: true,
+			title:      "discard-new",
+			discardNew: true,
 			batch: []BatchItem{
 				{subject: "foo"},
 				{subject: "foo_2"},
@@ -895,14 +895,12 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			}
 
 			var (
-				interestPolicy bool
-				discard        DiscardPolicy
-				maxMsgs        int64
-				maxBytes       int64
+				discard  DiscardPolicy
+				maxMsgs  int64
+				maxBytes int64
 			)
-			if test.interestDiscardNew {
-				interestPolicy, discard = true, DiscardNew
-				maxMsgs, maxBytes = 10, 1024
+			if test.discardNew {
+				discard, maxMsgs, maxBytes = DiscardNew, 10, 1024
 			}
 
 			diff := &batchStagedDiff{}
@@ -915,7 +913,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, interestPolicy, discard, -1, maxMsgs, maxBytes)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, discard, -1, maxMsgs, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else {
