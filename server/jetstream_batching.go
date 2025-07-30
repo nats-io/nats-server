@@ -82,7 +82,7 @@ func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
 type batchStagedDiff struct {
 	msgIds             map[string]struct{}
 	counter            map[string]*msgCounterRunningTotal
-	inflight           map[uint64]uint64
+	inflight           map[string]*inflightSubjectRunningTotal
 	subjectsInBatch    map[string]struct{}
 	expectedPerSubject map[string]*batchExpectedPerSubject
 }
@@ -116,10 +116,15 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 	// Track inflight.
 	if len(diff.inflight) > 0 {
 		if mset.inflight == nil {
-			mset.inflight = make(map[uint64]uint64, len(diff.inflight))
+			mset.inflight = make(map[string]*inflightSubjectRunningTotal, len(diff.inflight))
 		}
-		for clseq, size := range diff.inflight {
-			mset.inflight[clseq] = size
+		for subj, i := range diff.inflight {
+			if c, ok := mset.inflight[subj]; ok {
+				c.bytes += i.bytes
+				c.ops += i.ops
+			} else {
+				mset.inflight[subj] = i
+			}
 		}
 	}
 
@@ -143,8 +148,8 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
 	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
-	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter bool, stype StorageType, store StreamStore,
-	discard DiscardPolicy, maxMsgSize int, maxMsgs int64, maxBytes int64,
+	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter bool,
+	discard DiscardPolicy, discardNewPer bool, maxMsgSize int, maxMsgs int64, maxMsgsPer int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
 
@@ -235,7 +240,7 @@ func checkMsgHeadersPreClusteredProposal(
 		apiErr := NewJSMessageIncrMissingError()
 		return hdr, msg, 0, apiErr, apiErr
 	}
-	if incr != nil && allowMsgCounter && store != nil {
+	if incr != nil && allowMsgCounter {
 		var initial big.Int
 		var sources CounterSources
 
@@ -254,7 +259,7 @@ func checkMsgHeadersPreClusteredProposal(
 		} else {
 			// Load last message, and store as inflight running total.
 			var smv StoreMsg
-			sm, err := store.LoadLastMsg(subject, &smv)
+			sm, err := mset.store.LoadLastMsg(subject, &smv)
 			if err == nil && sm != nil {
 				var val CounterValue
 				// Return an error if the counter is broken somehow.
@@ -350,32 +355,58 @@ func checkMsgHeadersPreClusteredProposal(
 	if discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
 		// Track inflight.
 		if diff.inflight == nil {
-			diff.inflight = make(map[uint64]uint64)
+			diff.inflight = make(map[string]*inflightSubjectRunningTotal, 1)
 		}
-		if stype == FileStorage {
-			diff.inflight[mset.clseq] = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+		var sz uint64
+		if mset.store.Type() == FileStorage {
+			sz = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
 		} else {
-			diff.inflight[mset.clseq] = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+			sz = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+		}
+		var (
+			i   *inflightSubjectRunningTotal
+			ok  bool
+			err error
+		)
+		if i, ok = diff.inflight[subject]; ok {
+			i.bytes += sz
+			i.ops++
+		} else {
+			i = &inflightSubjectRunningTotal{bytes: sz, ops: 1}
+			diff.inflight[subject] = i
 		}
 
+		// Error if over DiscardNew per subject threshold.
+		if discardNewPer {
+			totalMsgsForSubject := i.ops
+			if i, ok = mset.inflight[subject]; ok {
+				totalMsgsForSubject += i.ops
+			}
+			if maxMsgsPer > 0 && totalMsgsForSubject > uint64(maxMsgsPer) {
+				err = ErrMaxMsgsPerSubject
+				return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
+			}
+		}
+
+		// Track usual max msgs/bytes thresholds for DiscardNew.
 		var state StreamState
 		mset.store.FastState(&state)
 
-		var err error
-		if maxMsgs > 0 && state.Msgs+uint64(len(mset.inflight)+len(diff.inflight)) > uint64(maxMsgs) {
+		totalMsgs := state.Msgs
+		totalBytes := state.Bytes
+		for _, i = range mset.inflight {
+			totalMsgs += i.ops
+			totalBytes += i.bytes
+		}
+		for _, i = range diff.inflight {
+			totalMsgs += i.ops
+			totalBytes += i.bytes
+		}
+
+		if maxMsgs > 0 && totalMsgs > uint64(maxMsgs) {
 			err = ErrMaxMsgs
-		} else if maxBytes > 0 {
-			// TODO(dlc) - Could track this rollup independently.
-			var bytesPending uint64
-			for _, nb := range mset.inflight {
-				bytesPending += nb
-			}
-			for _, nb := range diff.inflight {
-				bytesPending += nb
-			}
-			if state.Bytes+bytesPending > uint64(maxBytes) {
-				err = ErrMaxBytes
-			}
+		} else if maxBytes > 0 && totalBytes > uint64(maxBytes) {
+			err = ErrMaxBytes
 		}
 		if err != nil {
 			return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
@@ -391,7 +422,7 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 
 		// Expected last sequence per subject.
-		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil {
+		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
 			// Allow override of the subject used for the check.
 			seqSubj := subject
 			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
@@ -422,7 +453,7 @@ func checkMsgHeadersPreClusteredProposal(
 			} else {
 				var smv StoreMsg
 				var fseq uint64
-				sm, err := store.LoadLastMsg(seqSubj, &smv)
+				sm, err := mset.store.LoadLastMsg(seqSubj, &smv)
 				if sm != nil {
 					fseq = sm.seq
 				}
