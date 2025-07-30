@@ -653,6 +653,8 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 
 	type BatchTest struct {
 		title           string
+		allowRollup     bool
+		denyPurge       bool
 		allowTTL        bool
 		allowMsgCounter bool
 		discardNew      bool
@@ -868,6 +870,57 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				require_Len(t, len(mset.expectedPerSubjectInProcess), 1)
 			},
 		},
+		{
+			title:       "rollup-deny-purge",
+			allowRollup: true,
+			denyPurge:   true,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}, err: errors.New("rollup not permitted")},
+			},
+		},
+		{
+			title:       "rollup-invalid",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {"invalid"}}, err: fmt.Errorf("rollup value invalid: %q", "invalid")},
+			},
+		},
+		{
+			title:       "rollup-all-first",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupAll}}},
+			},
+		},
+		{
+			title:       "rollup-all-not-first",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "bar", header: nats.Header{JSMsgRollup: {JSMsgRollupAll}}, err: errors.New("batch rollup all invalid")},
+			},
+		},
+		{
+			title:       "rollup-sub-unique",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}},
+				{subject: "bar", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}},
+			},
+		},
+		{
+			title:       "rollup-sub-overlap",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}},
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}, err: errors.New("batch rollup sub invalid")},
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -913,7 +966,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, discard, -1, maxMsgs, maxBytes)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, discard, -1, maxMsgs, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else {
