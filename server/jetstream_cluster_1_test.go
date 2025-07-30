@@ -9437,56 +9437,106 @@ func TestJetStreamClusterMirrorDirectGetReadAfterWrite(t *testing.T) {
 }
 
 func TestJetStreamClusterDirectGetReadAfterWriteOutdatedFollower(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
+	test := func(t *testing.T, templ string, accName string, authenticated bool) {
+		c := createJetStreamClusterWithTemplate(t, templ, "R3S", 3)
+		defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:        "TEST",
-		Subjects:    []string{"foo"},
-		Replicas:    3,
-		AllowDirect: true,
-	})
-	require_NoError(t, err)
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		return checkState(t, c, globalAccountName, "TEST")
-	})
-
-	// Ensure only followers respond to direct gets AND aren't able to apply anything.
-	sl := c.streamLeader(globalAccountName, "TEST")
-	for _, s := range c.servers {
-		mset, err := s.globalAccount().lookupStream("TEST")
-		require_NoError(t, err)
-		if s == sl {
-			mset.unsubscribeToDirect()
-			continue
+		var opts []nats.Option
+		if authenticated {
+			opts = append(opts, nats.UserInfo("user", "pwd"))
 		}
-		require_NoError(t, mset.subscribeToDirect())
-		require_NoError(t, mset.raftNode().PauseApply())
-	}
+		nc, js := jsClientConnect(t, c.randomServer(), opts...)
+		defer nc.Close()
 
-	// Need to wait for subscriptions to be fully propagated.
-	time.Sleep(200 * time.Millisecond)
-
-	// Publish a couple messages.
-	for seq := uint64(1); seq <= 4; seq++ {
-		pubAck, err := js.Publish("foo", nil)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:        "TEST",
+			Subjects:    []string{"foo"},
+			Replicas:    3,
+			AllowDirect: true,
+		})
 		require_NoError(t, err)
-		require_Equal(t, pubAck.Sequence, seq)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, accName, "TEST")
+		})
+
+		// Ensure only followers respond to direct gets AND aren't able to apply anything.
+		sl := c.streamLeader(accName, "TEST")
+		for _, s := range c.servers {
+			acc, err := s.lookupAccount(accName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			if s == sl {
+				mset.unsubscribeToDirect()
+				continue
+			}
+			require_NoError(t, mset.subscribeToDirect())
+			require_NoError(t, mset.raftNode().PauseApply())
+		}
+
+		// Need to wait for subscriptions to be fully propagated.
+		time.Sleep(200 * time.Millisecond)
+
+		// Publish a couple messages.
+		for seq := uint64(1); seq <= 4; seq++ {
+			pubAck, err := js.Publish("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, seq)
+		}
+
+		// The follower doesn't know it's outdated, but we know it must have a minimum last sequence.
+		// It should redirect the request directly to the leader so it can respond, and we still
+		// get a response and don't need to error and retry.
+		data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 4})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "TEST"), data, time.Second)
+		require_NoError(t, err)
+		require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+		require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+		require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
 	}
 
-	// The follower doesn't know it's outdated, but we know it must have a minimum last sequence.
-	// It should redirect the request directly to the leader so it can respond, and we still
-	// get a response and don't need to error and retry.
-	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 4})
-	require_NoError(t, err)
-	msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "TEST"), data, time.Second)
-	require_NoError(t, err)
-	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
-	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
-	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+	t.Run("GlobalAccount", func(t *testing.T) { test(t, jsClusterTempl, globalAccountName, false) })
+	t.Run("RestrictedPermissions", func(t *testing.T) {
+		clusterTempl := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+    # User can only create, publish, and direct get to/from one specific stream.
+	PERMS = {
+		publish = {
+			allow = [
+				"foo",
+				"$JS.API.STREAM.CREATE.TEST",
+				"$JS.API.DIRECT.GET.TEST"
+			]
+		}
+	}
+
+	# For access to system account.
+	accounts {
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		A: {
+			jetstream: enabled
+			users: [
+				{ user: user, password: pwd, permissions: $PERMS},
+			]
+		},
+	}
+`
+		test(t, clusterTempl, "A", true)
+	})
 }
 
 func TestJetStreamClusterDirectGetMonotonicRead(t *testing.T) {
