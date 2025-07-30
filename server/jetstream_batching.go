@@ -383,6 +383,13 @@ func checkMsgHeadersPreClusteredProposal(
 	}
 
 	if len(hdr) > 0 {
+		// Expected last sequence.
+		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.clseq-mset.clfs {
+			mlseq := mset.clseq - mset.clfs
+			err := fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
+			return hdr, msg, 0, NewJSStreamWrongLastSequenceError(mlseq), err
+		}
+
 		// Expected last sequence per subject.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil {
 			// Allow override of the subject used for the check.

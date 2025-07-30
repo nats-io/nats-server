@@ -8304,9 +8304,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			if msgId := getMsgId(bhdr); msgId != _EMPTY_ {
 				return errorOnUnsupported(seq, JSMsgId)
 			}
-			if _, ok = getExpectedLastSeq(hdr); ok {
-				return errorOnUnsupported(seq, JSExpectedLastSeq)
-			}
 			if getExpectedLastMsgId(hdr) != _EMPTY_ {
 				return errorOnUnsupported(seq, JSExpectedLastMsgId)
 			}
