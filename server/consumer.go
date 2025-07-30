@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"regexp"
@@ -218,18 +219,22 @@ const (
 	PriorityOverflow
 	// Single client takes over handling of the messages, while others are on standby.
 	PriorityPinnedClient
+	// Clients with lowest priority will be selected first.
+	PriorityPrioritized
 )
 
 const (
 	PriorityNoneJSONString         = `"none"`
 	PriorityOverflowJSONString     = `"overflow"`
 	PriorityPinnedClientJSONString = `"pinned_client"`
+	PriorityPrioritizedJSONString  = `"prioritized"`
 )
 
 var (
 	PriorityNoneJSONBytes         = []byte(PriorityNoneJSONString)
 	PriorityOverflowJSONBytes     = []byte(PriorityOverflowJSONString)
 	PriorityPinnedClientJSONBytes = []byte(PriorityPinnedClientJSONString)
+	PriorityPrioritizedJSONBytes  = []byte(PriorityPrioritizedJSONString)
 )
 
 func (pp PriorityPolicy) String() string {
@@ -238,6 +243,8 @@ func (pp PriorityPolicy) String() string {
 		return PriorityOverflowJSONString
 	case PriorityPinnedClient:
 		return PriorityPinnedClientJSONString
+	case PriorityPrioritized:
+		return PriorityPrioritizedJSONString
 	default:
 		return PriorityNoneJSONString
 	}
@@ -249,6 +256,8 @@ func (pp PriorityPolicy) MarshalJSON() ([]byte, error) {
 		return PriorityOverflowJSONBytes, nil
 	case PriorityPinnedClient:
 		return PriorityPinnedClientJSONBytes, nil
+	case PriorityPrioritized:
+		return PriorityPrioritizedJSONBytes, nil
 	case PriorityNone:
 		return PriorityNoneJSONBytes, nil
 	default:
@@ -262,6 +271,8 @@ func (pp *PriorityPolicy) UnmarshalJSON(data []byte) error {
 		*pp = PriorityOverflow
 	case PriorityPinnedClientJSONString:
 		*pp = PriorityPinnedClient
+	case PriorityPrioritizedJSONString:
+		*pp = PriorityPrioritized
 	case PriorityNoneJSONString:
 		*pp = PriorityNone
 	default:
@@ -3410,6 +3421,7 @@ type PriorityGroup struct {
 	MinPending    int64  `json:"min_pending,omitempty"`
 	MinAckPending int64  `json:"min_ack_pending,omitempty"`
 	Id            string `json:"id,omitempty"`
+	Priority      int    `json:"priority"`
 }
 
 // Used in nextReqFromMsg, since the json.Unmarshal causes the request
@@ -3539,6 +3551,14 @@ var (
 	errWaitQueueNil  = errors.New("wait queue is nil")
 )
 
+func (wq *waitQueue) addPrioritized(wr *waitingRequest) error {
+	if err := wq.add(wr); err != nil {
+		return err
+	}
+	wq.sortByPriority()
+	return nil
+}
+
 // Adds in a new request.
 func (wq *waitQueue) add(wr *waitingRequest) error {
 	if wq == nil {
@@ -3602,6 +3622,17 @@ func (wq *waitQueue) cycle() {
 	}
 }
 
+func (wq *waitQueue) popOrPopAndRequeue(priority PriorityPolicy) *waitingRequest {
+	if wq == nil || wq.head == nil {
+		return nil
+	}
+
+	if priority == PriorityPrioritized {
+		return wq.popAndRequeue()
+	}
+	return wq.pop()
+}
+
 // pop will return the next request and move the read cursor.
 // This will now place a request that still has pending items at the ends of the list.
 func (wq *waitQueue) pop() *waitingRequest {
@@ -3619,6 +3650,130 @@ func (wq *waitQueue) pop() *waitingRequest {
 		}
 	}
 	return wr
+}
+
+// popAndRequeue pops the head element and requeues it at the end of its priority group.
+// This maintains FIFO order within the same priority level.
+func (wq *waitQueue) popAndRequeue() *waitingRequest {
+	if wq == nil || wq.head == nil {
+		return nil
+	}
+
+	// Save the head
+	wr := wq.head
+
+	if wr == nil {
+		return wr
+	}
+
+	wr.d++
+	wr.n--
+
+	if wr.n > 0 && wq.n > 1 {
+		if wq.head.next == nil {
+			return wr
+		}
+
+		priority := math.MaxInt32
+		if wr.priorityGroup != nil {
+			priority = wr.priorityGroup.Priority
+		}
+
+		wq.head = wq.head.next
+		wr.next = nil
+
+		var prev *waitingRequest
+		current := wq.head
+		for current != nil {
+			currentPriority := math.MaxInt32
+			if current.priorityGroup != nil {
+				currentPriority = current.priorityGroup.Priority
+			}
+			if currentPriority > priority {
+				break
+			}
+			prev = current
+			current = current.next
+		}
+
+		if prev == nil {
+			// All remaining elements have higher priority
+			wr.next = wq.head
+			wq.head = wr
+		} else {
+			wr.next = prev.next
+			prev.next = wr
+			if wr.next == nil {
+				wq.tail = wr
+			}
+		}
+
+	} else if wr.n <= 0 {
+		wq.removeCurrent()
+		return wr
+
+	}
+
+	return wr
+
+}
+
+func (wq *waitQueue) sortByPriority() {
+	if wq == nil || wq.head == nil || wq.head.next == nil {
+		return
+	}
+
+	current := wq.head
+	wq.head = nil
+	wq.tail = nil
+
+	for current != nil {
+		next := current.next
+		current.next = nil
+
+		currentPriority := math.MaxInt32
+		if current.priorityGroup != nil {
+			currentPriority = current.priorityGroup.Priority
+		}
+
+		// Find the correct insertion point
+		var prev *waitingRequest
+		insertPoint := wq.head
+
+		for insertPoint != nil {
+			insertPriority := math.MaxInt32
+			if insertPoint.priorityGroup != nil {
+				insertPriority = insertPoint.priorityGroup.Priority
+			}
+
+			// Insert before the first element with higher priority
+			// This maintains stable sort.
+			if insertPriority > currentPriority {
+				break
+			}
+
+			prev = insertPoint
+			insertPoint = insertPoint.next
+		}
+
+		// Insert the element
+		if prev == nil {
+			// Insert at the beginning
+			current.next = wq.head
+			wq.head = current
+			if wq.tail == nil {
+				wq.tail = current
+			}
+		} else {
+			// Insert after prev
+			current.next = prev.next
+			prev.next = current
+			if current.next == nil {
+				wq.tail = current
+			}
+		}
+		current = next
+	}
 }
 
 // Removes the current read pointer (head FIFO) entry.
@@ -3782,17 +3937,17 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				if needNewPin {
 					o.sendPinnedAdvisoryLocked(priorityGroup)
 				}
-				return o.waiting.pop()
+				return o.waiting.popOrPopAndRequeue(o.cfg.PriorityPolicy)
 			} else if time.Since(wr.received) < defaultGatewayRecentSubExpiration && (o.srv.leafNodeEnabled || o.srv.gateway.enabled) {
 				if needNewPin {
 					o.sendPinnedAdvisoryLocked(priorityGroup)
 				}
-				return o.waiting.pop()
+				return o.waiting.popOrPopAndRequeue(o.cfg.PriorityPolicy)
 			} else if o.srv.gateway.enabled && o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) {
 				if needNewPin {
 					o.sendPinnedAdvisoryLocked(priorityGroup)
 				}
-				return o.waiting.pop()
+				return o.waiting.popOrPopAndRequeue(o.cfg.PriorityPolicy)
 			}
 		} else {
 			// We do check for expiration in `processWaiting`, but it is possible to hit the expiry here, and not there.
@@ -4003,15 +4158,25 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	wr.b = maxBytes
 	wr.received = time.Now()
 
-	if err := o.waiting.add(wr); err != nil {
-		// If the client has a heartbeat interval set, don't bother responding with a 409,
-		// otherwise we can end up in a hot loop with the client re-requesting instead of
-		// waiting for the missing heartbeats instead and retrying.
-		if hb == 0 {
-			sendErr(409, "Exceeded MaxWaiting")
+	if o.cfg.PriorityPolicy == PriorityPrioritized {
+		if err := o.waiting.addPrioritized(wr); err != nil {
+			if hb == 0 {
+				sendErr(409, "Exceeded MaxWaiting")
+			}
+			wr.recycle()
+			return
 		}
-		wr.recycle()
-		return
+	} else {
+		if err := o.waiting.add(wr); err != nil {
+			// If the client has a heartbeat interval set, don't bother responding with a 409,
+			// otherwise we can end up in a hot loop with the client re-requesting instead of
+			// waiting for the missing heartbeats instead and retrying.
+			if hb == 0 {
+				sendErr(409, "Exceeded MaxWaiting")
+			}
+			wr.recycle()
+			return
+		}
 	}
 	o.signalNewMessages()
 	// If we are clustered update our followers about this request.
