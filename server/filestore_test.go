@@ -4663,7 +4663,7 @@ func TestFileStoreMsgBlkFailOnKernelFaultLostDataReporting(t *testing.T) {
 		defer fs.Stop()
 
 		_, err = fs.LoadMsg(1, nil)
-		require_Error(t, err, errNoBlkData)
+		require_Error(t, err, ErrStoreMsgNotFound)
 
 		// Load will rebuild fs itself async..
 		checkFor(t, time.Second, 50*time.Millisecond, func() error {
@@ -10052,4 +10052,47 @@ func TestFileStoreAtomicEraseMsg(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestFileStoreRemoveBlockWithStaleStreamState(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 3 {
+			if i > 0 {
+				_, err = fs.newMsgBlockForWrite()
+				require_NoError(t, err)
+			}
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		// Get middle block.
+		fs.mu.RLock()
+		require_Len(t, len(fs.blks), 3)
+		midfn := fs.blks[1].mfn
+		fs.mu.RUnlock()
+
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(midfn))
+
+		// Restart.
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 3 {
+			seq := uint64(i + 1)
+			_, err = fs.LoadMsg(seq, nil)
+			if seq == 2 {
+				require_Error(t, err, ErrStoreMsgNotFound)
+			} else {
+				require_NoError(t, err)
+			}
+		}
+	})
 }
