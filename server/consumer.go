@@ -3551,11 +3551,65 @@ var (
 	errWaitQueueNil  = errors.New("wait queue is nil")
 )
 
-func (wq *waitQueue) addPrioritized(wr *waitingRequest) error {
-	if err := wq.add(wr); err != nil {
-		return err
+// insertSorted inserts wr at the correct position based on priority
+func (wq *waitQueue) insertSorted(wr *waitingRequest) {
+	priority := math.MaxInt32
+	if wr.priorityGroup != nil {
+		priority = wr.priorityGroup.Priority
 	}
-	wq.sortByPriority()
+
+	// Handle empty queue
+	if wq.head == nil {
+		wq.head = wr
+		wq.tail = wr
+		wr.next = nil
+		return
+	}
+
+	// Find insertion point - insert before first element with higher priority
+	var prev *waitingRequest
+	current := wq.head
+
+	for current != nil {
+		currentPriority := math.MaxInt32
+		if current.priorityGroup != nil {
+			currentPriority = current.priorityGroup.Priority
+		}
+		// Insert before the first element with higher priority (stable sort)
+		if currentPriority > priority {
+			break
+		}
+		prev = current
+		current = current.next
+	}
+
+	// Insert at found position
+	if prev == nil {
+		// Insert at head (lowest priority so far)
+		wr.next = wq.head
+		wq.head = wr
+	} else {
+		// Insert after prev
+		wr.next = prev.next
+		prev.next = wr
+		if wr.next == nil {
+			// We're the new tail
+			wq.tail = wr
+		}
+	}
+}
+
+func (wq *waitQueue) addPrioritized(wr *waitingRequest) error {
+	if wq == nil {
+		return errWaitQueueNil
+	}
+	if wq.isFull() {
+		return errWaitQueueFull
+	}
+
+	wq.insertSorted(wr)
+	wq.n++
+	wq.last = wr.received
 	return nil
 }
 
@@ -3723,55 +3777,16 @@ func (wq *waitQueue) sortByPriority() {
 		return
 	}
 
+	// Save the current list
 	current := wq.head
 	wq.head = nil
 	wq.tail = nil
 
+	// Re-insert each element in sorted order
 	for current != nil {
 		next := current.next
 		current.next = nil
-
-		currentPriority := math.MaxInt32
-		if current.priorityGroup != nil {
-			currentPriority = current.priorityGroup.Priority
-		}
-
-		// Find the correct insertion point
-		var prev *waitingRequest
-		insertPoint := wq.head
-
-		for insertPoint != nil {
-			insertPriority := math.MaxInt32
-			if insertPoint.priorityGroup != nil {
-				insertPriority = insertPoint.priorityGroup.Priority
-			}
-
-			// Insert before the first element with higher priority
-			// This maintains stable sort.
-			if insertPriority > currentPriority {
-				break
-			}
-
-			prev = insertPoint
-			insertPoint = insertPoint.next
-		}
-
-		// Insert the element
-		if prev == nil {
-			// Insert at the beginning
-			current.next = wq.head
-			wq.head = current
-			if wq.tail == nil {
-				wq.tail = current
-			}
-		} else {
-			// Insert after prev
-			current.next = prev.next
-			prev.next = current
-			if current.next == nil {
-				wq.tail = current
-			}
-		}
+		wq.insertSorted(current)
 		current = next
 	}
 }

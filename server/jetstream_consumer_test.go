@@ -9918,15 +9918,13 @@ func TestSortingConsumerPullRequests(t *testing.T) {
 			wq := newWaitQueue(100)
 
 			for _, r := range test.requests {
-				err := wq.add(&r)
+				err := wq.addPrioritized(&r)
 				require_NoError(t, err)
 			}
 
 			if wq.n != len(test.expected) {
 				t.Fatalf("Expected %d requests, got %d", len(test.expected), wq.n)
 			}
-
-			wq.sortByPriority()
 
 			// Verify order
 			for i, expected := range test.expected {
@@ -9966,11 +9964,9 @@ func TestWaitQueuePopAndRequeue(t *testing.T) {
 		}
 
 		for i := range reqs {
-			err := wq.add(&reqs[i])
+			err := wq.addPrioritized(&reqs[i])
 			require_NoError(t, err)
 		}
-
-		wq.sortByPriority()
 
 		i := 0
 		j := 0
@@ -10003,11 +9999,9 @@ func TestWaitQueuePopAndRequeue(t *testing.T) {
 		}
 
 		for i := range reqs {
-			err := wq.add(&reqs[i])
+			err := wq.addPrioritized(&reqs[i])
 			require_NoError(t, err)
 		}
-
-		wq.sortByPriority()
 		initialCount := wq.n
 
 		// Pop 1a first time (n=2 -> n=1, should requeue)
