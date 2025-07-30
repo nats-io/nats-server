@@ -143,7 +143,7 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
 	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
-	jsa *jsAccount, allowTTL bool, allowMsgCounter bool, stype StorageType, store StreamStore,
+	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter bool, stype StorageType, store StreamStore,
 	discard DiscardPolicy, maxMsgSize int, maxMsgs int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
@@ -435,10 +435,35 @@ func checkMsgHeadersPreClusteredProposal(
 				}
 			}
 		}
+
+		// Check for any rollups.
+		if rollup := getRollup(hdr); rollup != _EMPTY_ {
+			if !allowRollup || denyPurge {
+				err := errors.New("rollup not permitted")
+				return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
+			}
+			switch rollup {
+			case JSMsgRollupSubject:
+				// Rolling up the subject is only allowed if the first occurrence of this subject in the batch.
+				if _, ok := diff.subjectsInBatch[subject]; ok {
+					err := errors.New("batch rollup sub invalid")
+					return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
+				}
+			case JSMsgRollupAll:
+				// Rolling up the whole stream is only allowed if this is the first message of the batch.
+				if len(diff.subjectsInBatch) > 0 {
+					err := errors.New("batch rollup all invalid")
+					return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
+				}
+			default:
+				err := fmt.Errorf("rollup value invalid: %q", rollup)
+				return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
+			}
+		}
 	}
 
 	// Store the subject to ensure other messages in this batch using
-	// an expected check on the same subject fail.
+	// an expected check or rollup on the same subject fail.
 	if diff.subjectsInBatch == nil {
 		diff.subjectsInBatch = map[string]struct{}{subject: {}}
 	} else {
