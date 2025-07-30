@@ -625,9 +625,8 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 
 		// We might support these headers later on, but for now error.
 		for key, value := range map[string]string{
-			"Nats-Msg-Id":                 "msgId",
-			"Nats-Expected-Last-Sequence": "0",
-			"Nats-Expected-Last-Msg-Id":   "msgId",
+			"Nats-Msg-Id":               "msgId",
+			"Nats-Expected-Last-Msg-Id": "msgId",
 		} {
 			t.Run(key, func(t *testing.T) {
 				m := nats.NewMsg("foo")
@@ -772,7 +771,26 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				}
 			},
 		},
-		// TODO(mvv): expected-last-sequence header
+		{
+			title: "expect-last-seq",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSeq: {"0"}}},
+				{subject: "bar", header: nats.Header{JSExpectedLastSeq: {"1"}}},
+			},
+		},
+		{
+			title: "expect-last-seq-invalid-first",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSeq: {"1"}}, err: errors.New("last sequence mismatch: 1 vs 0")},
+			},
+		},
+		{
+			title: "expect-last-seq-invalid",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSeq: {"0"}}},
+				{subject: "bar", header: nats.Header{JSExpectedLastSeq: {"0"}}, err: errors.New("last sequence mismatch: 0 vs 1")},
+			},
+		},
 		{
 			title: "expect-per-subj-simple",
 			batch: []BatchItem{
