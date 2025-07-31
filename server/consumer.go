@@ -3772,25 +3772,6 @@ func (wq *waitQueue) popAndRequeue() *waitingRequest {
 
 }
 
-func (wq *waitQueue) sortByPriority() {
-	if wq == nil || wq.head == nil || wq.head.next == nil {
-		return
-	}
-
-	// Save the current list
-	current := wq.head
-	wq.head = nil
-	wq.tail = nil
-
-	// Re-insert each element in sorted order
-	for current != nil {
-		next := current.next
-		current.next = nil
-		wq.insertSorted(current)
-		current = next
-	}
-}
-
 // Removes the current read pointer (head FIFO) entry.
 func (wq *waitQueue) removeCurrent() {
 	wq.remove(nil, wq.head)
