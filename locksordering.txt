@@ -42,3 +42,8 @@ locking the stream lock afterward would violate locking order.
     stream -> clMu
     stream -> batchMu -> clMu
     stream -> ddMu
+
+The "isolateMu" lock ensures atomic reads/writes over an arbitrary boundary.
+The stream lock (`mset.mu`) and consumer lock (`o.mu`) are optional.
+
+    mset.isolateMu -> stream -> consumer -> store
