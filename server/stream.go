@@ -416,7 +416,8 @@ type stream struct {
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
-	batches *batching // Inflight batches prior to committing them.
+	batches    *batching   // Inflight batches prior to committing them.
+	batchApply *batchApply // State to check for batch completeness before applying it.
 }
 
 // msgCounterRunningTotal stores a running total and a number of inflight
@@ -2247,6 +2248,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	// If atomic publish is disabled, delete any in-progress batches.
 	if !cfg.AllowAtomicPublish {
 		mset.deleteInflightBatches()
+		mset.deleteBatchApplyState()
 	}
 
 	// Now update config and store's version of our config.
@@ -4180,8 +4182,10 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 	// Clear batching state.
 	mset.deleteInflightBatches()
 
-	// In case we had a direct get subscriptions.
 	if stopping {
+		mset.deleteBatchApplyState()
+
+		// In case we had a direct get subscriptions.
 		mset.unsubscribeToDirect()
 	}
 
@@ -4198,6 +4202,17 @@ func (mset *stream) deleteInflightBatches() {
 		}
 		mset.batches.mu.Unlock()
 		mset.batches = nil
+	}
+}
+
+// Lock should be held.
+func (mset *stream) deleteBatchApplyState() {
+	if batch := mset.batchApply; batch != nil {
+		// Need to return entries (if any) to the pool.
+		for _, bce := range batch.entries {
+			bce.ReturnToPool()
+		}
+		mset.batchApply = nil
 	}
 }
 
