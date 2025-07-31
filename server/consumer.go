@@ -4416,9 +4416,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		return pmsg, 1, err
 	}
 
-	// Hold onto this since we release the lock.
-	store := o.mset.store
-
 	var sseq uint64
 	var err error
 	var sm *StoreMsg
@@ -4428,13 +4425,13 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	filters, subjf, fseq := o.filters, o.subjf, o.sseq
 	// Check if we are multi-filtered or not.
 	if filters != nil {
-		sm, sseq, err = store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
+		sm, sseq, err = o.mset.store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
 	} else if len(subjf) > 0 { // Means single filtered subject since o.filters means > 1.
 		filter, wc := subjf[0].subject, subjf[0].hasWildcard
-		sm, sseq, err = store.LoadNextMsg(filter, wc, fseq, &pmsg.StoreMsg)
+		sm, sseq, err = o.mset.store.LoadNextMsg(filter, wc, fseq, &pmsg.StoreMsg)
 	} else {
 		// No filter here.
-		sm, sseq, err = store.LoadNextMsg(_EMPTY_, false, fseq, &pmsg.StoreMsg)
+		sm, sseq, err = o.mset.store.LoadNextMsg(_EMPTY_, false, fseq, &pmsg.StoreMsg)
 	}
 	if sm == nil {
 		pmsg.returnToPool()
@@ -4798,11 +4795,14 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			wrn, wrb int
 		)
 
+		// Need to grab the isolation lock before the consumer lock.
+		mset.isolateMu.RLock()
 		o.mu.Lock()
 
 		// consumer is closed when mset is set to nil.
 		if o.closed || o.mset == nil {
 			o.mu.Unlock()
+			mset.isolateMu.RUnlock()
 			return
 		}
 
@@ -4813,21 +4813,25 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		if o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
 			// If the consumer is paused and we haven't reached the deadline yet then
 			// go back to waiting.
+			mset.isolateMu.RUnlock()
 			goto waitForMsgs
 		}
 
 		// If we are in push mode and not active or under flowcontrol let's stop sending.
 		if o.isPushMode() {
 			if !o.active || (o.maxpb > 0 && o.pbytes > o.maxpb) {
+				o.mset.isolateMu.RUnlock()
 				goto waitForMsgs
 			}
 		} else if o.waiting.isEmpty() {
 			// If we are in pull mode and no one is waiting already break and wait.
+			mset.isolateMu.RUnlock()
 			goto waitForMsgs
 		}
 
 		// Grab our next msg.
 		pmsg, dc, err = o.getNextMsg()
+		mset.isolateMu.RUnlock()
 
 		// We can release the lock now under getNextMsg so need to check this condition again here.
 		if o.closed || o.mset == nil {
