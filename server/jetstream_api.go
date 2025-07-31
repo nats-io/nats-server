@@ -129,6 +129,10 @@ const (
 	JSDirectMsgGet  = "$JS.API.DIRECT.GET.*"
 	JSDirectMsgGetT = "$JS.API.DIRECT.GET.%s"
 
+	// JSDirectLeaderMsgGet is JSDirectLeaderMsgGetT but only answered by the current stream leader.
+	JSDirectLeaderMsgGet  = "$JS.API.DIRECT_LEADER.GET.*"
+	JSDirectLeaderMsgGetT = "$JS.API.DIRECT_LEADER.GET.%s"
+
 	// This is a direct version of get last by subject, which will be the dominant pattern for KV access once 2.9 is released.
 	// The stream and the key will be part of the subject to allow for no-marshal payloads and subject based security permissions.
 	JSDirectGetLastBySubject  = "$JS.API.DIRECT.GET.*.>"
@@ -675,7 +679,10 @@ type JSApiMsgGetRequest struct {
 	LastFor string `json:"last_by_subj,omitempty"`
 	NextFor string `json:"next_by_subj,omitempty"`
 
-	// Batch support. Used to request more then one msg at a time.
+	// Force the server to only deliver messages if the stream has at minimum this specified last sequence.
+	MinLastSeq uint64 `json:"min_last_seq,omitempty"`
+
+	// Batch support. Used to request more than one msg at a time.
 	// Can be used with simple starting seq, but also NextFor with wildcards.
 	Batch int `json:"batch,omitempty"`
 	// This will make sure we limit how much data we blast out. If not set we will
@@ -1057,9 +1064,11 @@ type delayedAPIResponse struct {
 	subject  string
 	reply    string
 	request  string
+	hdr      []byte
 	response string
 	rg       *raftGroup
 	deadline time.Time
+	noJs     bool
 	next     *delayedAPIResponse
 }
 
@@ -1162,7 +1171,12 @@ func (s *Server) delayedAPIResponder() {
 			next()
 		case <-tm.C:
 			if r != nil {
-				s.sendAPIErrResponse(r.ci, r.acc, r.subject, r.reply, r.request, r.response)
+				// If it's not a JS API error, send it as a raw response without additional API/audit tracking.
+				if r.noJs {
+					s.sendInternalAccountMsgWithReply(r.acc, r.subject, _EMPTY_, r.hdr, r.response, false)
+				} else {
+					s.sendAPIErrResponse(r.ci, r.acc, r.subject, r.reply, r.request, r.response)
+				}
 				pop()
 			}
 			next()
@@ -1172,7 +1186,13 @@ func (s *Server) delayedAPIResponder() {
 
 func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string, rg *raftGroup, duration time.Duration) {
 	s.delayedAPIResponses.push(&delayedAPIResponse{
-		ci, acc, subject, reply, request, response, rg, time.Now().Add(duration), nil,
+		ci, acc, subject, reply, request, nil, response, rg, time.Now().Add(duration), false, nil,
+	})
+}
+
+func (s *Server) sendDelayedErrResponse(acc *Account, subject string, hdr []byte, response string, duration time.Duration) {
+	s.delayedAPIResponses.push(&delayedAPIResponse{
+		nil, acc, subject, _EMPTY_, _EMPTY_, hdr, response, nil, time.Now().Add(duration), true, nil,
 	})
 }
 
@@ -3464,6 +3484,16 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	if err != nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Reject request if we can't guarantee the precondition of min last sequence.
+	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
+		// Even though only the leader is subscribed and will respond, we must delay the error.
+		// An old leader could think it's still leader, and it must not
+		// error sooner than the real leader can answer.
+		resp.Error = NewJSStreamMinLastSeqError()
+		s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 		return
 	}
 

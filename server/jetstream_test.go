@@ -18408,7 +18408,7 @@ func TestJetStreamDelayedAPIResponses(t *testing.T) {
 
 	acc := s.GlobalAccount()
 
-	// Send B, A, D, C and exected to receive A, B, C, D
+	// Send B, A, D, C and expected to receive A, B, C, D
 	s.sendDelayedAPIErrResponse(nil, acc, "B", _EMPTY_, "request2", "response2", nil, 500*time.Millisecond)
 	time.Sleep(50 * time.Millisecond)
 	s.sendDelayedAPIErrResponse(nil, acc, "A", _EMPTY_, "request1", "response1", nil, 200*time.Millisecond)

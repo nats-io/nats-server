@@ -114,6 +114,8 @@ type ConsumerConfig struct {
 	Replicas int `json:"num_replicas"`
 	// Force memory storage.
 	MemoryStorage bool `json:"mem_storage,omitempty"`
+	// Force the consumer to only deliver messages if the stream has at minimum this specified last sequence.
+	MinLastSeq uint64 `json:"min_last_seq,omitempty"`
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
@@ -4643,6 +4645,20 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			} else {
 				s.Errorf("Received an error looking up message for consumer '%s > %s > %s': %v",
 					o.mset.acc, stream, o.cfg.Name, err)
+				goto waitForMsgs
+			}
+		}
+
+		// If a minimum last sequence was specified, we need to check if the
+		// underlying stream has sufficient data. As an optimization, we only
+		// do this if what we want to deliver is below this floor.
+		if o.cfg.MinLastSeq > 0 && pmsg.seq < o.cfg.MinLastSeq {
+			var state StreamState
+			o.mset.store.FastState(&state)
+			if state.LastSeq < o.cfg.MinLastSeq {
+				// We only block deliveries at the start until we reach min last seq,
+				// so simply put back our pointer to account for the o.getNextMsg advancing it.
+				o.sseq--
 				goto waitForMsgs
 			}
 		}

@@ -9178,6 +9178,677 @@ func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	require_Equal(t, lmb.pendingWriteSize(), 0)
 }
 
+func TestJetStreamClusterMsgGetReadAfterWrite(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Test precondition handling of min last sequence.
+	// All requests will fail until the last sequence is available.
+	for seq := uint64(0); seq <= 4; seq++ {
+		if seq > 0 {
+			pubAck, err := js.Publish("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, seq)
+		}
+
+		data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 4})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSApiMsgGetT, "TEST"), data, time.Second)
+		require_NoError(t, err)
+
+		var resp JSApiMsgGetResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		if seq < 4 {
+			require_NotNil(t, resp.ApiResponse.Error)
+			require_Error(t, resp.ApiResponse.Error, NewJSStreamMinLastSeqError())
+		} else {
+			require_True(t, resp.ApiResponse.Error == nil)
+			require_Equal(t, resp.Message.Sequence, 1)
+		}
+	}
+}
+
+func TestJetStreamClusterMsgGetMonotonicRead(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	// Assuming this process didn't do any writes and this is the very first read.
+	// We'll need to return the currently known last sequence, so it can be used
+	// in subsequent requests to guarantee monotonic reads.
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 4})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSApiMsgGetT, "TEST"), data, time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiMsgGetResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.ApiResponse.Error == nil)
+	// The sequence can be used for monotonic reads.
+	require_Equal(t, resp.Message.Sequence, 1)
+}
+
+func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure only followers respond to direct gets.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if s == sl {
+			mset.unsubscribeToDirect()
+			continue
+		}
+		require_NoError(t, mset.subscribeToDirect())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Test precondition handling of min last sequence.
+	// All requests will fail until the last sequence is available.
+	for seq := uint64(0); seq <= 4; seq++ {
+		if seq > 0 {
+			pubAck, err := js.Publish("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, seq)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+		}
+
+		data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 4})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "TEST"), data, time.Second)
+		require_NoError(t, err)
+
+		if seq < 4 {
+			require_Equal(t, msg.Header.Get("Status"), "412")
+			require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+		} else {
+			require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+			require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+			require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+		}
+	}
+}
+
+func TestJetStreamClusterMirrorDirectGetReadAfterWrite(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "S",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+		Replicas:    3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "S")
+	})
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:         "M",
+		AllowDirect:  true,
+		MirrorDirect: true,
+		Mirror:       &nats.StreamSource{Name: "S"},
+		Replicas:     3,
+	})
+	require_NoError(t, err)
+
+	mirrorLeader := c.streamLeader(globalAccountName, "M")
+	checkMirrorConsistent := func() {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if err := checkState(t, c, globalAccountName, "M"); err != nil {
+				return err
+			}
+			mset, err := mirrorLeader.globalAccount().lookupStream("M")
+			if err != nil {
+				return err
+			}
+			if mset.lastSeq() != 1 {
+				return errors.New("waiting for mirror to catch up")
+			}
+			return nil
+		})
+	}
+	checkMirrorConsistent()
+
+	// On source, stop responding to direct gets.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:        "S",
+		Subjects:    []string{"foo"},
+		AllowDirect: false,
+		Replicas:    3,
+	})
+	require_NoError(t, err)
+
+	// On mirror, cancel mirroring, truncate store, and subscribe to mirror direct get.
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("M")
+		require_NoError(t, err)
+		mset.mu.Lock()
+		mset.cancelMirrorConsumer()
+		mset.lseq = 0
+		if err = mset.store.Truncate(0); err != nil {
+			mset.mu.Unlock()
+			require_NoError(t, err)
+		}
+		// Only let mirror followers subscribe to mirror direct.
+		if s != mirrorLeader {
+			if err = mset.subscribeToMirrorDirect(); err != nil {
+				mset.mu.Unlock()
+				require_NoError(t, err)
+			}
+		} else {
+			mset.unsubscribeToMirrorDirect()
+		}
+		mset.mu.Unlock()
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "S"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+
+	data, err = json.Marshal(JSApiMsgGetRequest{MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "S", "foo"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+
+	// Restart mirroring.
+	mset, err := c.streamLeader(globalAccountName, "M").globalAccount().lookupStream("M")
+	require_NoError(t, err)
+	require_NoError(t, mset.setupMirrorConsumer())
+	checkMirrorConsistent()
+
+	data, err = json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSDirectMsgGetT, "S"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "M")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+
+	data, err = json.Marshal(JSApiMsgGetRequest{MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "S", "foo"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "M")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+}
+
+func TestJetStreamClusterDirectGetReadAfterWriteOutdatedFollower(t *testing.T) {
+	test := func(t *testing.T, templ string, accName string, authenticated bool) {
+		c := createJetStreamClusterWithTemplate(t, templ, "R3S", 3)
+		defer c.shutdown()
+
+		var opts []nats.Option
+		if authenticated {
+			opts = append(opts, nats.UserInfo("user", "pwd"))
+		}
+		nc, js := jsClientConnect(t, c.randomServer(), opts...)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:        "TEST",
+			Subjects:    []string{"foo"},
+			Replicas:    3,
+			AllowDirect: true,
+		})
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, accName, "TEST")
+		})
+
+		// Ensure only followers respond to direct gets AND aren't able to apply anything.
+		sl := c.streamLeader(accName, "TEST")
+		for _, s := range c.servers {
+			acc, err := s.lookupAccount(accName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			if s == sl {
+				mset.unsubscribeToDirect()
+				continue
+			}
+			require_NoError(t, mset.subscribeToDirect())
+			require_NoError(t, mset.raftNode().PauseApply())
+		}
+
+		// Need to wait for subscriptions to be fully propagated.
+		time.Sleep(200 * time.Millisecond)
+
+		// Publish a couple messages.
+		for seq := uint64(1); seq <= 4; seq++ {
+			pubAck, err := js.Publish("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, seq)
+		}
+
+		// The follower doesn't know it's outdated, but we know it must have a minimum last sequence.
+		// It should redirect the request directly to the leader so it can respond, and we still
+		// get a response and don't need to error and retry.
+		data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 4})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "TEST"), data, time.Second)
+		require_NoError(t, err)
+		require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+		require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+		require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+	}
+
+	t.Run("GlobalAccount", func(t *testing.T) { test(t, jsClusterTempl, globalAccountName, false) })
+	t.Run("RestrictedPermissions", func(t *testing.T) {
+		clusterTempl := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+    # User can only create, publish, and direct get to/from one specific stream.
+	PERMS = {
+		publish = {
+			allow = [
+				"foo",
+				"$JS.API.STREAM.CREATE.TEST",
+				"$JS.API.DIRECT.GET.TEST"
+			]
+		}
+	}
+
+	# For access to system account.
+	accounts {
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		A: {
+			jetstream: enabled
+			users: [
+				{ user: user, password: pwd, permissions: $PERMS},
+			]
+		},
+	}
+`
+		test(t, clusterTempl, "A", true)
+	})
+}
+
+func TestJetStreamClusterDirectGetMonotonicRead(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure followers can also start responding to direct gets immediately.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.subscribeToDirect())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	// Assuming this process didn't do any writes and this is the very first read.
+	// We'll need to return the currently known last sequence, so it can be used
+	// in subsequent requests to guarantee monotonic reads.
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, MinLastSeq: 4})
+	require_NoError(t, err)
+	directMsgGet := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+	msg, err := nc.Request(directMsgGet, data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	// The sequence can be used for monotonic reads.
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "1")
+}
+
+func TestJetStreamClusterDirectGetLastBySubjectReadAfterWrite(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure only followers respond to direct gets.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if s == sl {
+			mset.unsubscribeToDirect()
+			continue
+		}
+		require_NoError(t, mset.subscribeToDirect())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Test precondition handling of min last sequence.
+	// All requests will fail until the last sequence is available.
+	for seq := uint64(0); seq <= 4; seq++ {
+		if seq > 0 {
+			pubAck, err := js.Publish("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, seq)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+		}
+
+		data, err := json.Marshal(JSApiMsgGetRequest{MinLastSeq: 4})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"), data, time.Second)
+		require_NoError(t, err)
+
+		if seq < 4 {
+			require_Equal(t, msg.Header.Get("Status"), "412")
+			require_Equal(t, msg.Header.Get("Description"), "Min Last Sequence")
+		} else {
+			require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+			require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+			require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
+		}
+	}
+}
+
+func TestJetStreamClusterDirectGetLastBySubjectReadAfterWriteOutdatedFollower(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure only followers respond to direct gets AND aren't able to apply anything.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if s == sl {
+			mset.unsubscribeToDirect()
+			continue
+		}
+		require_NoError(t, mset.subscribeToDirect())
+		require_NoError(t, mset.raftNode().PauseApply())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	// The follower doesn't know it's outdated, but we know it must have a minimum last sequence.
+	// It should redirect the request directly to the leader so it can respond, and we still
+	// get a response and don't need to error and retry.
+	data, err := json.Marshal(JSApiMsgGetRequest{MinLastSeq: 4})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
+}
+
+func TestJetStreamClusterDirectGetLastBySubjectMonotonicRead(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Ensure followers can also start responding to direct gets immediately.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.subscribeToDirect())
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a couple messages.
+	for seq := uint64(1); seq <= 4; seq++ {
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, seq)
+	}
+
+	data, err := json.Marshal(JSApiMsgGetRequest{MinLastSeq: 4})
+	require_NoError(t, err)
+	directMsgGetLast := fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo")
+	msg, err := nc.Request(directMsgGetLast, data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Nats-Stream"), "TEST")
+	require_Equal(t, msg.Header.Get("Nats-Subject"), "foo")
+	// The sequence can be used for monotonic reads.
+	require_Equal(t, msg.Header.Get("Nats-Sequence"), "4")
+}
+
+func TestJetStreamClusterConsumerReadAfterWrite(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Ensure the streams on all servers have at least one message.
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.raftNode().PauseApply())
+	}
+
+	// Publish a message that only the leader applies.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+
+	var observedTimeout bool
+	testConsumer := func(durable string) {
+		cr := createConsumer(t, nc, "TEST", ConsumerConfig{
+			Durable:    durable,
+			Replicas:   1,
+			MinLastSeq: 2,
+		})
+		require_True(t, cr.Error == nil)
+
+		sub, err := js.PullSubscribe(_EMPTY_, durable, nats.BindStream("TEST"))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		msgs, err := sub.Fetch(2, nats.MaxWait(time.Second))
+		if err != nil {
+			require_Error(t, err, nats.ErrTimeout)
+			observedTimeout = true
+
+			// Resume applies on the followers, and ensure all is up-to-date.
+			for _, s := range c.servers {
+				if s == sl {
+					continue
+				}
+				mset, err := s.globalAccount().lookupStream("TEST")
+				require_NoError(t, err)
+				mset.raftNode().ResumeApply()
+			}
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			// Now we should be able to get all messages.
+			msgs, err = sub.Fetch(2, nats.MaxWait(time.Second))
+		}
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 2)
+		meta, err := msgs[1].Metadata()
+		require_NoError(t, err)
+		require_Equal(t, meta.NumPending, 0)
+	}
+
+	// Create a consumer that expects both messages to be available. This will succeed if
+	// the consumer is created on the leader, but should fail if created on a follower.
+	// The loop will stop once the consumer is created on a follower, but this ensures
+	// we don't have an infinite loop for a failure condition.
+	for i := 0; i < 10; i++ {
+		durable := fmt.Sprintf("CONSUMER-%d", i)
+		testConsumer(durable)
+		if observedTimeout {
+			break
+		}
+	}
+	require_True(t, observedTimeout)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
