@@ -309,6 +309,7 @@ const (
 	// The suffix that will be given to a new temporary block for compression or when rewriting the full file.
 	blkTmpSuffix = ".tmp"
 	// This is where we keep state on templates.
+	// Deprecated: stream templates are deprecated and will be removed in a future version.
 	tmplsDir = "templates"
 	// Maximum size of a write buffer we may consider for re-use.
 	maxBufReuse = 2 * 1024 * 1024
@@ -11110,11 +11111,13 @@ func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
 // Templates
 ////////////////////////////////////////////////////////////////////////////////
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type templateFileStore struct {
 	dir string
 	hh  hash.Hash64
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func newTemplateFileStore(storeDir string) *templateFileStore {
 	tdir := filepath.Join(storeDir, tmplsDir)
 	key := sha256.Sum256([]byte("templates"))
@@ -11125,6 +11128,7 @@ func newTemplateFileStore(storeDir string) *templateFileStore {
 	return &templateFileStore{dir: tdir, hh: hh}
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (ts *templateFileStore) Store(t *streamTemplate) error {
 	dir := filepath.Join(ts.dir, t.Name)
 	if err := os.MkdirAll(dir, defaultDirPerms); err != nil {
@@ -11154,6 +11158,7 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 	return nil
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (ts *templateFileStore) Delete(t *streamTemplate) error {
 	return os.RemoveAll(filepath.Join(ts.dir, t.Name))
 }

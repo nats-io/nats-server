@@ -155,8 +155,8 @@ type jsAccount struct {
 	storeDir  string
 	inflight  sync.Map
 	streams   map[string]*stream
-	templates map[string]*streamTemplate
-	store     TemplateStore
+	templates map[string]*streamTemplate // Deprecated: stream templates are deprecated and will be removed in a future version.
+	store     TemplateStore              // Deprecated: stream templates are deprecated and will be removed in a future version.
 
 	// From server
 	sendq *ipQueue[*pubMsg]
@@ -2587,6 +2587,7 @@ func (a *Account) checkForJetStream() (*Server, *jsAccount, error) {
 
 // StreamTemplateConfig allows a configuration to auto-create streams based on this template when a message
 // is received that matches. Each new stream will use the config as the template config to create them.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type StreamTemplateConfig struct {
 	Name       string        `json:"name"`
 	Config     *StreamConfig `json:"config"`
@@ -2594,12 +2595,14 @@ type StreamTemplateConfig struct {
 }
 
 // StreamTemplateInfo
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type StreamTemplateInfo struct {
 	Config  *StreamTemplateConfig `json:"config"`
 	Streams []string              `json:"streams"`
 }
 
 // streamTemplate
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type streamTemplate struct {
 	mu  sync.Mutex
 	tc  *client
@@ -2608,6 +2611,7 @@ type streamTemplate struct {
 	streams []string
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (t *StreamTemplateConfig) deepCopy() *StreamTemplateConfig {
 	copy := *t
 	cfg := *t.Config
@@ -2616,6 +2620,7 @@ func (t *StreamTemplateConfig) deepCopy() *StreamTemplateConfig {
 }
 
 // addStreamTemplate will add a stream template to this account that allows auto-creation of streams.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (a *Account) addStreamTemplate(tc *StreamTemplateConfig) (*streamTemplate, error) {
 	s, jsa, err := a.checkForJetStream()
 	if err != nil {
@@ -2672,6 +2677,7 @@ func (a *Account) addStreamTemplate(tc *StreamTemplateConfig) (*streamTemplate, 
 	return t, nil
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (t *streamTemplate) createTemplateSubscriptions() error {
 	if t == nil {
 		return fmt.Errorf("no template")
@@ -2695,6 +2701,7 @@ func (t *streamTemplate) createTemplateSubscriptions() error {
 	return nil
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, acc *Account, subject, reply string, msg []byte) {
 	if t == nil || t.jsa == nil {
 		return
@@ -2742,6 +2749,7 @@ func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, 
 }
 
 // lookupStreamTemplate looks up the names stream template.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (a *Account) lookupStreamTemplate(name string) (*streamTemplate, error) {
 	_, jsa, err := a.checkForJetStream()
 	if err != nil {
@@ -2760,6 +2768,7 @@ func (a *Account) lookupStreamTemplate(name string) (*streamTemplate, error) {
 }
 
 // This function will check all named streams and make sure they are valid.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (a *Account) validateStreams(t *streamTemplate) {
 	t.mu.Lock()
 	var vstreams []string
@@ -2772,6 +2781,7 @@ func (a *Account) validateStreams(t *streamTemplate) {
 	t.mu.Unlock()
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (t *streamTemplate) delete() error {
 	if t == nil {
 		return fmt.Errorf("nil stream template")
@@ -2830,6 +2840,7 @@ func (t *streamTemplate) delete() error {
 	return lastErr
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (a *Account) deleteStreamTemplate(name string) error {
 	t, err := a.lookupStreamTemplate(name)
 	if err != nil {
@@ -2838,6 +2849,7 @@ func (a *Account) deleteStreamTemplate(name string) error {
 	return t.delete()
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (a *Account) templates() []*streamTemplate {
 	var ts []*streamTemplate
 	_, jsa, err := a.checkForJetStream()
@@ -2856,6 +2868,7 @@ func (a *Account) templates() []*streamTemplate {
 }
 
 // Will add a stream to a template, this is for recovery.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (jsa *jsAccount) addStreamNameToTemplate(tname, mname string) error {
 	if jsa.templates == nil {
 		return fmt.Errorf("template not found")
@@ -2873,6 +2886,7 @@ func (jsa *jsAccount) addStreamNameToTemplate(tname, mname string) error {
 
 // This will check if a template owns this stream.
 // jsAccount lock should be held
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (jsa *jsAccount) checkTemplateOwnership(tname, sname string) bool {
 	if jsa.templates == nil {
 		return false
