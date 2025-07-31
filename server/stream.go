@@ -4956,9 +4956,10 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// TODO(dlc) - Make configurable?
 	const maxAllowedResponses = 1024
 
-	// We hold the lock here to try to avoid changes out from underneath of us.
+	// Ensure this read request is isolated and doesn't interleave with writes.
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
+
 	// Grab store and name.
 	store, name, s := mset.store, mset.cfg.Name, mset.srv
 
@@ -5008,7 +5009,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		return
 	}
 
-	np, lseq, sentBytes, sent := uint64(len(seqs)-1), uint64(0), 0, 0
+	np, lseq, sentBytes, sent := uint64(len(seqs)), uint64(0), 0, 0
 	for _, seq := range seqs {
 		if seq < req.Seq {
 			if np > 0 {
@@ -5027,6 +5028,10 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		hdr := sm.hdr
 		ts := time.Unix(0, sm.ts).UTC()
 
+		// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
+		if np > 0 {
+			np--
+		}
 		if len(hdr) == 0 {
 			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 		} else {
@@ -5037,10 +5042,6 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
 			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
-		}
-		// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
-		if np > 0 {
-			np--
 		}
 		// Track our lseq
 		lseq = sm.seq
@@ -5071,9 +5072,11 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		return
 	}
 
+	// Ensure this read request is isolated and doesn't interleave with writes.
 	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+
 	store, name, s := mset.store, mset.cfg.Name, mset.srv
-	mset.mu.RUnlock()
 
 	var seq uint64
 	// Lookup start seq if AsOfTime is set.
@@ -5144,6 +5147,10 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		if !req.NoHeaders {
 			hdr = sm.hdr
 			if isBatchRequest {
+				// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
+				if np > 0 {
+					np--
+				}
 				if len(hdr) == 0 {
 					hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 				} else {
@@ -5155,8 +5162,6 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 					hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 					hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
 				}
-				// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
-				np--
 			} else {
 				if len(hdr) == 0 {
 					hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
@@ -5232,6 +5237,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if mset.closed.Load() {
 		return errStreamClosed
 	}
+
+	// Hold isolation lock while storing message, and potentially purging as part of a rollup.
 
 	mset.mu.Lock()
 	s, store := mset.srv, mset.store

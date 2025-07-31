@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1854,4 +1855,135 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		return checkState(t, c, globalAccountName, "TEST")
 	})
+}
+
+func TestJetStreamRollupIsolatedRead(t *testing.T) {
+	const (
+		DirectGet = iota
+		DirectBatchGet
+		DirectMultiGet
+		Consumer
+	)
+
+	test := func(t *testing.T, mode int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:        "TEST",
+			Subjects:    []string{"foo.*"},
+			AllowRollup: true,
+			Replicas:    3,
+		})
+		require_NoError(t, err)
+
+		rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+		mset, err := rs.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+
+		// Reconnect to the selected server.
+		nc.Close()
+		nc, js = jsClientConnect(t, rs)
+		defer nc.Close()
+
+		m := nats.NewMsg("foo.0")
+		pubAck, err := js.PublishMsg(m)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		// mset.processJetStreamMsg will first store the new message, then update dedupe state, and then do the rollup.
+		// We block the replica such that it can store the new message but can't do the rollup yet.
+		// A read should wait for the rollup to complete.
+		mset.ddMu.Lock()
+		m.Subject = "foo.1"
+		m.Header.Set(JSMsgRollup, JSMsgRollupAll)
+		m.Header.Set(JSMsgId, "msgId")
+		_, _ = js.PublishMsg(m)
+		err = checkForErr(2*time.Second, 200*time.Millisecond, func() error {
+			var state StreamState
+			mset.store.FastState(&state)
+			if state.LastSeq != 2 {
+				return fmt.Errorf("expected last seq 2, got: %d", state.LastSeq)
+			}
+			return nil
+		})
+		if err != nil {
+			mset.ddMu.Unlock()
+			require_NoError(t, err)
+		}
+
+		// We're now subscribing and going to do a request, while the write is still halfway.
+		sub, err := nc.SubscribeSync("reply")
+		if err != nil {
+			mset.ddMu.Unlock()
+			require_NoError(t, err)
+		}
+		defer sub.Drain()
+		if err = nc.Flush(); err != nil {
+			mset.ddMu.Unlock()
+			require_NoError(t, err)
+		}
+
+		// Run two goroutines, one will unblock the first write after a short sleep,
+		// the second will do the read/consumer request.
+		var (
+			ready   sync.WaitGroup
+			run     sync.WaitGroup
+			cleanup sync.WaitGroup
+		)
+		ready.Add(2)
+		run.Add(1)
+		cleanup.Add(1)
+		go func() {
+			ready.Done()
+			defer cleanup.Done()
+			run.Wait()
+			time.Sleep(250 * time.Millisecond)
+			mset.ddMu.Unlock()
+		}()
+		go func() {
+			ready.Done()
+			run.Wait()
+			switch mode {
+			case DirectGet:
+				mset.getDirectRequest(&JSApiMsgGetRequest{LastFor: "foo.0"}, "reply")
+			case DirectBatchGet:
+				mset.getDirectRequest(&JSApiMsgGetRequest{NextFor: "foo.*", Batch: 2}, "reply")
+			case DirectMultiGet:
+				mset.getDirectRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}, Batch: 2}, "reply")
+			case Consumer:
+				mset.addConsumer(&ConsumerConfig{DeliverSubject: "reply", Direct: true})
+			}
+		}()
+
+		// Wait for both to be ready, then run both of them.
+		ready.Wait()
+		run.Done()
+
+		msg, err := sub.NextMsg(time.Second)
+		// Make sure cleanup has happened before validating.
+		cleanup.Wait()
+		require_NoError(t, err)
+		if mode == DirectGet {
+			require_Equal(t, msg.Header.Get("Status"), "404")
+		} else if mode != Consumer {
+			require_Equal(t, msg.Header.Get(JSNumPending), "0")
+			require_Equal(t, msg.Header.Get(JSSequence), "2")
+		} else {
+			// $JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<tm>.<pending>
+			require_True(t, strings.HasPrefix(msg.Reply, jsAckPre))
+			tokens := strings.Split(msg.Reply, ".")
+			require_Len(t, len(tokens), 9)
+			require_Equal(t, tokens[8], "0") // pending
+			require_Equal(t, tokens[5], "2") // sseq
+		}
+	}
+
+	t.Run("DirectGet", func(t *testing.T) { test(t, DirectGet) })
+	t.Run("DirectBatchGet", func(t *testing.T) { test(t, DirectBatchGet) })
+	t.Run("DirectMultiGet", func(t *testing.T) { test(t, DirectMultiGet) })
+	t.Run("Consumer", func(t *testing.T) { test(t, Consumer) })
 }
