@@ -49,20 +49,24 @@ const (
 
 	// JSApiTemplateCreate is the endpoint to create new stream templates.
 	// Will return JSON response.
+	// Deprecated: stream templates are deprecated and will be removed in a future version.
 	JSApiTemplateCreate  = "$JS.API.STREAM.TEMPLATE.CREATE.*"
 	JSApiTemplateCreateT = "$JS.API.STREAM.TEMPLATE.CREATE.%s"
 
 	// JSApiTemplates is the endpoint to list all stream template names for this account.
 	// Will return JSON response.
+	// Deprecated: stream templates are deprecated and will be removed in a future version.
 	JSApiTemplates = "$JS.API.STREAM.TEMPLATE.NAMES"
 
 	// JSApiTemplateInfo is for obtaining general information about a named stream template.
 	// Will return JSON response.
+	// Deprecated: stream templates are deprecated and will be removed in a future version.
 	JSApiTemplateInfo  = "$JS.API.STREAM.TEMPLATE.INFO.*"
 	JSApiTemplateInfoT = "$JS.API.STREAM.TEMPLATE.INFO.%s"
 
 	// JSApiTemplateDelete is the endpoint to delete stream templates.
 	// Will return JSON response.
+	// Deprecated: stream templates are deprecated and will be removed in a future version.
 	JSApiTemplateDelete  = "$JS.API.STREAM.TEMPLATE.DELETE.*"
 	JSApiTemplateDeleteT = "$JS.API.STREAM.TEMPLATE.DELETE.%s"
 
@@ -766,39 +770,48 @@ type JSApiConsumerGetNextRequest struct {
 }
 
 // JSApiStreamTemplateCreateResponse for creating templates.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type JSApiStreamTemplateCreateResponse struct {
 	ApiResponse
 	*StreamTemplateInfo
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 const JSApiStreamTemplateCreateResponseType = "io.nats.jetstream.api.v1.stream_template_create_response"
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type JSApiStreamTemplateDeleteResponse struct {
 	ApiResponse
 	Success bool `json:"success,omitempty"`
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 const JSApiStreamTemplateDeleteResponseType = "io.nats.jetstream.api.v1.stream_template_delete_response"
 
 // JSApiStreamTemplateInfoResponse for information about stream templates.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type JSApiStreamTemplateInfoResponse struct {
 	ApiResponse
 	*StreamTemplateInfo
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 const JSApiStreamTemplateInfoResponseType = "io.nats.jetstream.api.v1.stream_template_info_response"
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type JSApiStreamTemplatesRequest struct {
 	ApiPagedRequest
 }
 
 // JSApiStreamTemplateNamesResponse list of templates
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type JSApiStreamTemplateNamesResponse struct {
 	ApiResponse
 	ApiPaged
 	Templates []string `json:"streams"`
 }
 
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
 // Structure that holds state for a JetStream API request that is processed
@@ -1320,6 +1333,7 @@ func consumerNameFromSubject(subject string) string {
 }
 
 // Request to create a new template.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil {
 		return
@@ -1375,6 +1389,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, _ *Accoun
 }
 
 // Request for the list of all template names.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil {
 		return
@@ -1439,6 +1454,7 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, _ *Account
 }
 
 // Request for information about a stream template.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil {
 		return
@@ -1480,6 +1496,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, _ *Account,
 }
 
 // Request to delete a stream template.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil {
 		return

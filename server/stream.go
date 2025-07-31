@@ -63,7 +63,7 @@ type StreamConfig struct {
 	Storage      StorageType      `json:"storage"`
 	Replicas     int              `json:"num_replicas"`
 	NoAck        bool             `json:"no_ack,omitempty"`
-	Template     string           `json:"template_owner,omitempty"`
+	Template     string           `json:"template_owner,omitempty"` // Deprecated: stream templates are deprecated and will be removed in a future version.
 	Duplicates   time.Duration    `json:"duplicate_window,omitempty"`
 	Placement    *Placement       `json:"placement,omitempty"`
 	Mirror       *StreamSource    `json:"mirror,omitempty"`

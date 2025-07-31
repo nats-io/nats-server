@@ -462,6 +462,7 @@ type Pending struct {
 }
 
 // TemplateStore stores templates.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 type TemplateStore interface {
 	Store(*streamTemplate) error
 	Delete(*streamTemplate) error

@@ -73,7 +73,7 @@ type JSStreamActionAdvisory struct {
 	TypedEvent
 	Stream   string             `json:"stream"`
 	Action   ActionAdvisoryType `json:"action"`
-	Template string             `json:"template,omitempty"`
+	Template string             `json:"template,omitempty"` // Deprecated: stream templates are deprecated and will be removed in a future version.
 	Domain   string             `json:"domain,omitempty"`
 }
 

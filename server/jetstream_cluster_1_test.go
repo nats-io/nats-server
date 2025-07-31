@@ -3384,6 +3384,7 @@ func TestJetStreamClusterStreamInterestOnlyPolicy(t *testing.T) {
 }
 
 // These are disabled for now.
+// Deprecated: stream templates are deprecated and will be removed in a future version.
 func TestJetStreamClusterStreamTemplates(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
