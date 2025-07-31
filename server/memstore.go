@@ -91,7 +91,7 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	ms.cfg = *cfg
 	// Create or delete the THW if needed.
 	if cfg.AllowMsgTTL && ms.ttls == nil {
-		ms.ttls = thw.NewHashWheel()
+		ms.recoverTTLState()
 	} else if !cfg.AllowMsgTTL && ms.ttls != nil {
 		ms.ttls = nil
 	}
@@ -128,6 +128,30 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 		ms.expireMsgs()
 	}
 	return nil
+}
+
+// Lock should be held.
+func (ms *memStore) recoverTTLState() {
+	ms.ttls = thw.NewHashWheel()
+	if ms.state.Msgs == 0 {
+		return
+	}
+
+	var (
+		seq uint64
+		smv StoreMsg
+		sm  *StoreMsg
+	)
+	defer ms.resetAgeChk(0)
+	for sm, seq, _ = ms.loadNextMsgLocked(fwcs, true, 0, &smv); sm != nil; sm, seq, _ = ms.loadNextMsgLocked(fwcs, true, seq+1, &smv) {
+		if len(sm.hdr) == 0 {
+			continue
+		}
+		if ttl, _ := getMessageTTL(sm.hdr); ttl > 0 {
+			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
+			ms.ttls.Add(seq, int64(expires))
+		}
+	}
 }
 
 // Stores a raw message with expected sequence number and timestamp.
@@ -1592,7 +1616,11 @@ func (ms *memStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *S
 func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
+	return ms.loadNextMsgLocked(filter, wc, start, smp)
+}
 
+// Lock should be held.
+func (ms *memStore) loadNextMsgLocked(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
 	if start < ms.state.FirstSeq {
 		start = ms.state.FirstSeq
 	}
