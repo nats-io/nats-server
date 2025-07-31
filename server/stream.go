@@ -5456,7 +5456,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 
 		// Check to see if we are over the max msg size.
-		if int32(len(hdr)+len(msg)) > mset.srv.getOpts().MaxPayload {
+		// Subtract to prevent against overflows.
+		maxPayload := int64(mset.srv.getOpts().MaxPayload)
+		hdrLen, msgLen := int64(len(hdr)), int64(len(msg))
+		if hdrLen > maxPayload || msgLen > maxPayload-hdrLen {
 			mset.mu.Unlock()
 			bumpCLFS()
 			if canRespond {
@@ -5470,7 +5473,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// Check to see if we are over the max msg size.
-	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
+	// Subtract to prevent against overflows.
+	if maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
 		mset.mu.Unlock()
 		bumpCLFS()
 		if canRespond {

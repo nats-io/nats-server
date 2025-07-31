@@ -915,7 +915,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, interestPolicy, discard, maxMsgs, maxBytes)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, interestPolicy, discard, -1, maxMsgs, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else {

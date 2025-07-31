@@ -20472,19 +20472,11 @@ func TestJetStreamAllowMsgCounter(t *testing.T) {
 		if replicas == 1 {
 			s = RunBasicJetStreamServer(t)
 			servers = []*Server{s}
-			s.optsMu.Lock()
-			s.opts.MaxPayload = 1024
-			s.optsMu.Unlock()
 			defer s.Shutdown()
 		} else {
 			c := createJetStreamClusterExplicit(t, "R3S", 3)
 			defer c.shutdown()
 			servers = c.servers
-			for _, cs := range c.servers {
-				cs.optsMu.Lock()
-				cs.opts.MaxPayload = 1024
-				cs.optsMu.Unlock()
-			}
 			s = c.randomServer()
 		}
 
@@ -20581,20 +20573,8 @@ func TestJetStreamAllowMsgCounter(t *testing.T) {
 		increment("-3", 3, big.NewInt(0))
 		increment("1", 4, big.NewInt(1))
 
-		// Check payload exceeded, positive bound.
-		tooLargeIncrement := strings.Repeat("1", 500)
-		m = nats.NewMsg("foo")
-		m.Header.Set("Nats-Incr", tooLargeIncrement)
-		_, err = js.PublishMsg(m)
-		require_Error(t, err, NewJSStreamMessageExceedsMaximumError())
-		validateTotal(4, big.NewInt(1))
-
-		// Check payload exceeded, negative bound.
-		increment("-2", 5, big.NewInt(-1))
-		m.Header.Set("Nats-Incr", fmt.Sprintf("-%s", tooLargeIncrement))
-		_, err = js.PublishMsg(m)
-		require_Error(t, err, NewJSStreamMessageExceedsMaximumError())
-		validateTotal(5, big.NewInt(-1))
+		// Reset back to zero.
+		increment("-1", 5, big.NewInt(0))
 
 		// Check de-duplication.
 		m = nats.NewMsg("foo")
@@ -20606,8 +20586,8 @@ func TestJetStreamAllowMsgCounter(t *testing.T) {
 		require_NoError(t, json.Unmarshal(msg.Data, &pubAck1))
 		require_False(t, pubAck1.Duplicate)
 		require_Equal(t, pubAck1.Sequence, 6)
-		require_Equal(t, pubAck1.Value, "0")
-		validateTotal(6, big.NewInt(0))
+		require_Equal(t, pubAck1.Value, "1")
+		validateTotal(6, big.NewInt(1))
 
 		// Re-send should not up counter, but also not return current value.
 		// When clustered this state can't be guaranteed.
@@ -20618,7 +20598,7 @@ func TestJetStreamAllowMsgCounter(t *testing.T) {
 		require_True(t, pubAck2.Duplicate)
 		require_Equal(t, pubAck2.Sequence, 6)
 		require_Equal(t, pubAck2.Value, _EMPTY_)
-		validateTotal(6, big.NewInt(0))
+		validateTotal(6, big.NewInt(1))
 
 		// Check rejected headers.
 		for _, header := range []string{JSMsgRollup, JSExpectedLastSeq, JSExpectedLastSubjSeq, JSExpectedLastSubjSeqSubj, JSExpectedLastMsgId} {
@@ -20643,6 +20623,99 @@ func TestJetStreamAllowMsgCounter(t *testing.T) {
 		m.Header.Set("Nats-Incr", "1")
 		_, err = js.PublishMsg(m)
 		require_Error(t, err, NewJSMessageCounterBrokenError())
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamAllowMsgCounterMaxPayloadAndSize(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			s.optsMu.Lock()
+			s.opts.MaxPayload = 1024
+			s.optsMu.Unlock()
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			for _, cs := range c.servers {
+				cs.optsMu.Lock()
+				cs.opts.MaxPayload = 1024
+				cs.optsMu.Unlock()
+			}
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		cfg := &StreamConfig{
+			Name:            "TEST",
+			Subjects:        []string{"foo"},
+			Storage:         FileStorage,
+			AllowMsgCounter: true,
+			Replicas:        replicas,
+		}
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		validateTotal := func(seq uint64, total *big.Int) {
+			t.Helper()
+			rsm, err := js.GetLastMsg("TEST", "foo")
+			require_NoError(t, err)
+			require_Equal(t, rsm.Sequence, seq)
+
+			var val CounterValue
+			require_NoError(t, json.Unmarshal(rsm.Data, &val))
+			var res big.Int
+			res.SetString(val.Value, 10)
+			require_Equal(t, res.Int64(), total.Int64())
+		}
+
+		increment := func(incr string, seq uint64, total *big.Int) {
+			t.Helper()
+			m := nats.NewMsg("foo")
+			m.Header.Set("Nats-Incr", incr)
+
+			msg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			var pubAck PubAck
+			require_NoError(t, json.Unmarshal(msg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, seq)
+			require_Equal(t, pubAck.Value, total.String())
+			validateTotal(seq, total)
+		}
+
+		// Check payload exceeded, positive bound.
+		increment("1", 1, big.NewInt(1))
+		tooLargeIncrement := strings.Repeat("1", 500)
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Incr", tooLargeIncrement)
+		_, err = js.PublishMsg(m)
+		require_Error(t, err, NewJSStreamMessageExceedsMaximumError())
+
+		// Check payload exceeded, negative bound.
+		increment("-2", 2, big.NewInt(-1))
+		m.Header.Set("Nats-Incr", fmt.Sprintf("-%s", tooLargeIncrement))
+		_, err = js.PublishMsg(m)
+		require_Error(t, err, NewJSStreamMessageExceedsMaximumError())
+
+		// Reset back to zero.
+		increment("1", 3, big.NewInt(0))
+
+		// Exactly equals the size of the message for the first message.
+		cfg.MaxMsgSize = 37
+		_, err = jsStreamUpdate(t, nc, cfg)
+		require_NoError(t, err)
+		increment("1", 4, big.NewInt(1))
+
+		// Next increment bumps over MaxMsgSize limit defined above.
+		m.Header.Set("Nats-Incr", "10")
+		_, err = js.PublishMsg(m)
+		require_Error(t, err, NewJSStreamMessageExceedsMaximumError())
 	}
 
 	t.Run("R1", func(t *testing.T) { test(t, 1) })

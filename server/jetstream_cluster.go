@@ -8102,7 +8102,8 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
-	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
+	// Subtract to prevent against overflows.
+	if maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
 		s.RateLimitWarnf("%s", err.Error())
 		if canRespond {
@@ -8310,7 +8311,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				return errorOnUnsupported(seq, JSExpectedLastMsgId)
 			}
 
-			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgs, maxBytes); err != nil {
+			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
 				// TODO(mvv): reset in-memory expected header maps
 				mset.clseq -= seq - 1
 				mset.clMu.Unlock()
@@ -8372,7 +8373,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgs, maxBytes); err != nil {
+	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
 		// TODO(mvv): reset in-memory expected header maps
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {

@@ -144,7 +144,7 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 func checkMsgHeadersPreClusteredProposal(
 	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
 	jsa *jsAccount, allowTTL bool, allowMsgCounter bool, stype StorageType, store StreamStore,
-	interestPolicy bool, discard DiscardPolicy, maxMsgs int64, maxBytes int64,
+	interestPolicy bool, discard DiscardPolicy, maxMsgSize int, maxMsgs int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
 
@@ -319,7 +319,13 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 
 		// Check to see if we are over the max msg size.
-		if int32(len(hdr)+len(msg)) > mset.srv.getOpts().MaxPayload {
+		maxSize := int64(mset.srv.getOpts().MaxPayload)
+		if maxMsgSize >= 0 && int64(maxMsgSize) < maxSize {
+			maxSize = int64(maxMsgSize)
+		}
+		hdrLen, msgLen := int64(len(hdr)), int64(len(msg))
+		// Subtract to prevent against overflows.
+		if hdrLen > maxSize || msgLen > maxSize-hdrLen {
 			return hdr, msg, 0, NewJSStreamMessageExceedsMaximumError(), ErrMaxPayload
 		}
 
