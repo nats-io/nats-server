@@ -1945,7 +1945,7 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 	// Check limits. We need some extra handling to allow updating MaxBytes.
 
 	// First, let's calculate the difference between the new and old MaxBytes.
-	maxBytesDiff := cfg.MaxBytes - old.MaxBytes
+	maxBytesDiff := max(cfg.MaxBytes, 0) - max(old.MaxBytes, 0)
 	if maxBytesDiff < 0 {
 		// If we're updating to a lower MaxBytes (maxBytesDiff is negative),
 		// then set to zero so checkBytesLimits doesn't set addBytes to 1.
@@ -2291,7 +2291,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	mset.mu.Unlock()
 
 	if js != nil {
-		maxBytesDiff := cfg.MaxBytes - ocfg.MaxBytes
+		maxBytesDiff := max(cfg.MaxBytes, 0) - max(ocfg.MaxBytes, 0)
 		if maxBytesDiff > 0 {
 			// Reserve the difference
 			js.reserveStreamResources(&StreamConfig{
