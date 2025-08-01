@@ -156,8 +156,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh store_tests
+        run: ./scripts/runTestsOnTravis.sh store_tests 2>&1 | go-junit-report -set-exit-code > junit-store.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: store
+          report_path: junit-store.xml
 
   js-no-cluster:
     name: Test JetStream
@@ -173,8 +184,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh js_tests
+        run: ./scripts/runTestsOnTravis.sh js_tests 2>&1 | go-junit-report -set-exit-code > junit-js.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-no-cluster
+          report_path: junit-js.xml
 
   raft:
     name: Test Raft
@@ -190,8 +212,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh raft_tests
+        run: ./scripts/runTestsOnTravis.sh raft_tests 2>&1 | go-junit-report -set-exit-code > junit-raft.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: raft
+          report_path: junit-raft.xml
 
   js-consumers:
     name: Test JetStream Consumers
@@ -207,8 +240,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh js_consumer_tests
+        run: ./scripts/runTestsOnTravis.sh js_consumer_tests 2>&1 | go-junit-report -set-exit-code > junit-js-consumers.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-consumers
+          report_path: junit-js-consumers.xml
 
   js-cluster-1:
     name: Test JetStream Cluster 1
@@ -224,8 +268,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_1
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_1 2>&1 | go-junit-report -set-exit-code > junit-js-cluster-1.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-cluster-1
+          report_path: junit-js-cluster-1.xml
 
   js-cluster-2:
     name: Test JetStream Cluster 2
@@ -241,8 +296,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_2
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_2 2>&1 | go-junit-report -set-exit-code > junit-js-cluster-2.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-cluster-2
+          report_path: junit-js-cluster-2.xml
 
   js-cluster-3:
     name: Test JetStream Cluster 3
@@ -258,8 +324,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_3
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_3 2>&1 | go-junit-report -set-exit-code > junit-js-cluster-3.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-cluster-3
+          report_path: junit-js-cluster-3.xml
 
   js-cluster-4:
     name: Test JetStream Cluster 4
@@ -275,8 +352,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_4
+        run: ./scripts/runTestsOnTravis.sh js_cluster_tests_4 2>&1 | go-junit-report -set-exit-code > junit-js-cluster-4.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-cluster-4
+          report_path: junit-js-cluster-4.xml
 
   js-supercluster:
     name: Test JetStream Supercluster
@@ -292,8 +380,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh js_super_cluster_tests
+        run: ./scripts/runTestsOnTravis.sh js_super_cluster_tests 2>&1 | go-junit-report -set-exit-code > junit-js-supercluster.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-supercluster
+          report_path: junit-js-supercluster.xml
 
   no-race-1:
     name: Test No-Race 1
@@ -309,8 +408,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh no_race_1_tests
+        run: ./scripts/runTestsOnTravis.sh no_race_1_tests 2>&1 | go-junit-report -set-exit-code > junit-no-race-1.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: no-race-1
+          report_path: junit-no-race-1.xml
 
   no-race-2:
     name: Test No-Race 2
@@ -326,8 +436,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh no_race_2_tests
+        run: ./scripts/runTestsOnTravis.sh no_race_2_tests 2>&1 | go-junit-report -set-exit-code > junit-no-race-2.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: no-race-2
+          report_path: junit-no-race-2.xml
 
   mqtt:
     name: Test MQTT
@@ -343,8 +464,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh mqtt_tests
+        run: ./scripts/runTestsOnTravis.sh mqtt_tests 2>&1 | go-junit-report -set-exit-code > junit-mqtt.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: mqtt
+          report_path: junit-mqtt.xml
 
   msgtrace:
     name: Test Message Tracing
@@ -360,8 +492,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh msgtrace_tests
+        run: ./scripts/runTestsOnTravis.sh msgtrace_tests 2>&1 | go-junit-report -set-exit-code > junit-msgtrace.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: msgtrace
+          report_path: junit-msgtrace.xml
 
   jwt:
     name: Test JWT
@@ -377,8 +520,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh jwt_tests
+        run: ./scripts/runTestsOnTravis.sh jwt_tests 2>&1 | go-junit-report -set-exit-code > junit-jwt.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: jwt
+          report_path: junit-jwt.xml
 
   server-pkg-non-js:
     name: Test Remaining Server Tests
@@ -394,8 +548,19 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh srv_pkg_non_js_tests
+        run: ./scripts/runTestsOnTravis.sh srv_pkg_non_js_tests 2>&1 | go-junit-report -set-exit-code > junit-server-pkg-non-js.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: server-pkg-non-js
+          report_path: junit-server-pkg-non-js.xml
 
   non-server-pkg:
     name: Test Other Packages
@@ -411,5 +576,16 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run unit tests
-        run: ./scripts/runTestsOnTravis.sh non_srv_pkg_tests
+        run: ./scripts/runTestsOnTravis.sh non_srv_pkg_tests 2>&1 | go-junit-report -set-exit-code > junit-non-server-pkg.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: non-server-pkg
+          report_path: junit-non-server-pkg.xml

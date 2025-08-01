@@ -29,23 +29,32 @@ jobs:
           wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
           sudo apt install ./mqtt-cli-4.20.0.deb
           go install github.com/ConnectEverything/mqtt-test@v0.1.0
+          go install github.com/jstemmer/go-junit-report/v2@latest
 
       - name: Run tests (3 times to detect flappers)
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           cd src/github.com/nats-io/nats-server
-          go test -v --count=3 --run='TestXMQTT' ./server
+          go test -v --count=3 --run='TestXMQTT' ./server 2>&1 | go-junit-report -set-exit-code > junit-mqtt-flappers.xml
+
+      - name: Upload flapper test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: test (flappers)
+          report_path: junit-mqtt-flappers.xml
 
       - name: Run tests with --race
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           cd src/github.com/nats-io/nats-server
-          go test -v --race --failfast --run='TestXMQTT' ./server
+          go test -v --race --failfast --run='TestXMQTT' ./server 2>&1 | go-junit-report -set-exit-code > junit-mqtt-race.xml
 
-      - name: Run benchmarks
-        shell: bash --noprofile --norc -eo pipefail {0}
-        run: |
-          cd src/github.com/nats-io/nats-server
-          go test --run='-' --count=3 --bench 'BenchmarkXMQTT' --benchtime=100x ./server
-
-      # TODO: compare benchmarks
+      - name: Upload race test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: test (race)
+          report_path: junit-mqtt-race.xml

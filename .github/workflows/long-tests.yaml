@@ -29,5 +29,16 @@ jobs:
         with:
           go-version: stable
 
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run tests
-        run: go test -race -v -run='^TestLong.*' ./server -tags=include_js_long_tests -count=1 -vet=off -timeout=60m -shuffle on -p 1 -failfast
+        run: go test -race -v -run='^TestLong.*' ./server -tags=include_js_long_tests -count=1 -vet=off -timeout=60m -shuffle on -p 1 -failfast 2>&1 | go-junit-report -set-exit-code > junit-long-tests.xml
+
+      - name: Upload test results to CI Insights
+        if: success() || failure()
+        uses: mergifyio/gha-mergify-ci@v6
+        with:
+          token: ${{ secrets.MERGIFY_TOKEN }}
+          job_name: js-long
+          report_path: junit-long-tests.xml
