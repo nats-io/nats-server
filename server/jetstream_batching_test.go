@@ -943,6 +943,20 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			},
 		},
 		{
+			title: "expect-per-subj-inflight",
+			init: func(mset *stream) {
+				mset.inflight = map[string]*inflightSubjectRunningTotal{"bar": {bytes: 33, ops: 1}}
+			},
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"10"}, JSExpectedLastSubjSeqSubj: {"bar"}}, err: errors.New("last sequence by subject mismatch")},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Len(t, len(mset.expectedPerSubjectSequence), 0)
+				require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+				require_Len(t, len(mset.inflight), 1)
+			},
+		},
+		{
 			title:       "rollup-deny-purge",
 			allowRollup: true,
 			denyPurge:   true,

@@ -83,7 +83,6 @@ type batchStagedDiff struct {
 	msgIds             map[string]struct{}
 	counter            map[string]*msgCounterRunningTotal
 	inflight           map[string]*inflightSubjectRunningTotal
-	subjectsInBatch    map[string]struct{}
 	expectedPerSubject map[string]*batchExpectedPerSubject
 }
 
@@ -348,71 +347,6 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 	}
 
-	// Check if we have discard new with max msgs or bytes.
-	// We need to deny here otherwise we'd need to bump CLFS, and it could succeed on some
-	// peers and not others depending on consumer ack state (if interest policy).
-	// So we deny here, if we allow that means we know it would succeed on every peer.
-	if discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
-		// Track inflight.
-		if diff.inflight == nil {
-			diff.inflight = make(map[string]*inflightSubjectRunningTotal, 1)
-		}
-		var sz uint64
-		if mset.store.Type() == FileStorage {
-			sz = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
-		} else {
-			sz = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
-		}
-		var (
-			i   *inflightSubjectRunningTotal
-			ok  bool
-			err error
-		)
-		if i, ok = diff.inflight[subject]; ok {
-			i.bytes += sz
-			i.ops++
-		} else {
-			i = &inflightSubjectRunningTotal{bytes: sz, ops: 1}
-			diff.inflight[subject] = i
-		}
-
-		// Error if over DiscardNew per subject threshold.
-		if discardNewPer {
-			totalMsgsForSubject := i.ops
-			if i, ok = mset.inflight[subject]; ok {
-				totalMsgsForSubject += i.ops
-			}
-			if maxMsgsPer > 0 && totalMsgsForSubject > uint64(maxMsgsPer) {
-				err = ErrMaxMsgsPerSubject
-				return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
-			}
-		}
-
-		// Track usual max msgs/bytes thresholds for DiscardNew.
-		var state StreamState
-		mset.store.FastState(&state)
-
-		totalMsgs := state.Msgs
-		totalBytes := state.Bytes
-		for _, i = range mset.inflight {
-			totalMsgs += i.ops
-			totalBytes += i.bytes
-		}
-		for _, i = range diff.inflight {
-			totalMsgs += i.ops
-			totalBytes += i.bytes
-		}
-
-		if maxMsgs > 0 && totalMsgs > uint64(maxMsgs) {
-			err = ErrMaxMsgs
-		} else if maxBytes > 0 && totalBytes > uint64(maxBytes) {
-			err = ErrMaxBytes
-		}
-		if err != nil {
-			return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
-		}
-	}
-
 	if len(hdr) > 0 {
 		// Expected last sequence.
 		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.clseq-mset.clfs {
@@ -431,7 +365,7 @@ func checkMsgHeadersPreClusteredProposal(
 
 			// The subject is already written to in this batch, we can't allow
 			// expected checks since they would be incorrect.
-			if _, ok := diff.subjectsInBatch[seqSubj]; ok {
+			if _, ok := diff.inflight[seqSubj]; ok {
 				err := errors.New("last sequence by subject mismatch")
 				return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
 			}
@@ -439,6 +373,13 @@ func checkMsgHeadersPreClusteredProposal(
 			// If the subject is already in process, block as otherwise we could have
 			// multiple messages inflight with the same subject.
 			if _, found := mset.expectedPerSubjectInProcess[seqSubj]; found {
+				err := errors.New("last sequence by subject mismatch")
+				return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
+			}
+
+			// If the subject is already in process but without expected headers, block as we would have
+			// multiple messages inflight with the same subject.
+			if _, ok := mset.inflight[seqSubj]; ok {
 				err := errors.New("last sequence by subject mismatch")
 				return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
 			}
@@ -483,13 +424,13 @@ func checkMsgHeadersPreClusteredProposal(
 			switch rollup {
 			case JSMsgRollupSubject:
 				// Rolling up the subject is only allowed if the first occurrence of this subject in the batch.
-				if _, ok := diff.subjectsInBatch[subject]; ok {
+				if _, ok := diff.inflight[subject]; ok {
 					err := errors.New("batch rollup sub invalid")
 					return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
 				}
 			case JSMsgRollupAll:
 				// Rolling up the whole stream is only allowed if this is the first message of the batch.
-				if len(diff.subjectsInBatch) > 0 {
+				if len(diff.inflight) > 0 {
 					err := errors.New("batch rollup all invalid")
 					return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
 				}
@@ -500,12 +441,71 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 	}
 
+	// Track inflight.
 	// Store the subject to ensure other messages in this batch using
 	// an expected check or rollup on the same subject fail.
-	if diff.subjectsInBatch == nil {
-		diff.subjectsInBatch = map[string]struct{}{subject: {}}
+	if diff.inflight == nil {
+		diff.inflight = make(map[string]*inflightSubjectRunningTotal, 1)
+	}
+	var sz uint64
+	if mset.store.Type() == FileStorage {
+		sz = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
 	} else {
-		diff.subjectsInBatch[subject] = struct{}{}
+		sz = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+	}
+	var (
+		i   *inflightSubjectRunningTotal
+		ok  bool
+		err error
+	)
+	if i, ok = diff.inflight[subject]; ok {
+		i.bytes += sz
+		i.ops++
+	} else {
+		i = &inflightSubjectRunningTotal{bytes: sz, ops: 1}
+		diff.inflight[subject] = i
+	}
+
+	// Check if we have discard new with max msgs or bytes.
+	// We need to deny here otherwise we'd need to bump CLFS, and it could succeed on some
+	// peers and not others depending on consumer ack state (if interest policy).
+	// So we deny here, if we allow that means we know it would succeed on every peer.
+	if discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
+		// Error if over DiscardNew per subject threshold.
+		if discardNewPer {
+			totalMsgsForSubject := i.ops
+			if i, ok = mset.inflight[subject]; ok {
+				totalMsgsForSubject += i.ops
+			}
+			if maxMsgsPer > 0 && totalMsgsForSubject > uint64(maxMsgsPer) {
+				err = ErrMaxMsgsPerSubject
+				return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
+			}
+		}
+
+		// Track usual max msgs/bytes thresholds for DiscardNew.
+		var state StreamState
+		mset.store.FastState(&state)
+
+		totalMsgs := state.Msgs
+		totalBytes := state.Bytes
+		for _, i = range mset.inflight {
+			totalMsgs += i.ops
+			totalBytes += i.bytes
+		}
+		for _, i = range diff.inflight {
+			totalMsgs += i.ops
+			totalBytes += i.bytes
+		}
+
+		if maxMsgs > 0 && totalMsgs > uint64(maxMsgs) {
+			err = ErrMaxMsgs
+		} else if maxBytes > 0 && totalBytes > uint64(maxBytes) {
+			err = ErrMaxBytes
+		}
+		if err != nil {
+			return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
+		}
 	}
 
 	return hdr, msg, 0, nil, nil
