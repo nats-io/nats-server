@@ -3016,6 +3016,88 @@ func TestJetStreamUsageNoReservation(t *testing.T) {
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
+func TestJetStreamUsageReservationNegativeMaxBytes(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", replicas)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		fileCfg := &nats.StreamConfig{Name: "FILE", Storage: nats.FileStorage, Replicas: replicas, MaxBytes: 1024}
+		memCfg := &nats.StreamConfig{Name: "MEM", Storage: nats.MemoryStorage, Replicas: replicas, MaxBytes: 1024}
+
+		_, err := js.AddStream(fileCfg)
+		require_NoError(t, err)
+		_, err = js.AddStream(memCfg)
+		require_NoError(t, err)
+
+		acc := s.globalAccount()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if streams := acc.numStreams(); streams != 2 {
+				return fmt.Errorf("not at 2 streams yet, got %d", streams)
+			}
+			return nil
+		})
+
+		validateReserved := func(total uint64) {
+			t.Helper()
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				stats := acc.JetStreamUsage()
+				if stats.ReservedMemory != total {
+					return fmt.Errorf("acc stats: expected %d, got %d", total, stats.ReservedMemory)
+				}
+				if stats.ReservedStore != total {
+					return fmt.Errorf("acc stats: expected %d, got %d", total, stats.ReservedStore)
+				}
+				jstats := s.getJetStream().usageStats()
+				if jstats.ReservedMemory != total {
+					return fmt.Errorf("server stats: expected %d, got %d", total, jstats.ReservedMemory)
+				}
+				if jstats.ReservedStore != total {
+					return fmt.Errorf("server stats: expected %d, got %d", total, jstats.ReservedStore)
+				}
+				return nil
+			})
+		}
+		validateReserved(1024)
+
+		// Resetting back to zero.
+		fileCfg.MaxBytes, memCfg.MaxBytes = 0, 0
+		_, err = js.UpdateStream(fileCfg)
+		require_NoError(t, err)
+		_, err = js.UpdateStream(memCfg)
+		require_NoError(t, err)
+		validateReserved(0)
+
+		// Update to reset back again.
+		fileCfg.MaxBytes, memCfg.MaxBytes = 512, 512
+		_, err = js.UpdateStream(fileCfg)
+		require_NoError(t, err)
+		_, err = js.UpdateStream(memCfg)
+		require_NoError(t, err)
+		validateReserved(512)
+
+		// Resetting back to -1 should mean zero as well, and should do proper accounting.
+		fileCfg.MaxBytes, memCfg.MaxBytes = -1, -1
+		_, err = js.UpdateStream(fileCfg)
+		require_NoError(t, err)
+		_, err = js.UpdateStream(memCfg)
+		require_NoError(t, err)
+		validateReserved(0)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
 func TestJetStreamSnapshots(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
