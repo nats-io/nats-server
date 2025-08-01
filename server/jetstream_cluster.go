@@ -3033,6 +3033,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					continue
 				}
 
+				// Ensure the whole batch is fully isolated, and reads
+				// can only happen after the full batch is committed.
+				mset.isolateMu.Lock()
+
 				// Process any entries that are part of this batch but prior to the current one.
 				for j, bce := range batch.entries {
 					if j == 0 {
@@ -3045,10 +3049,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					for _, entry := range entries {
 						_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
 						if err != nil {
+							mset.isolateMu.Unlock()
 							batch.mu.Unlock()
 							panic(err.Error())
 						}
-						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
+						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering, false); err != nil {
+							mset.isolateMu.Unlock()
 							batch.mu.Unlock()
 							// Make sure to return remaining entries to the pool on an error.
 							for _, nce := range batch.entries[j:] {
@@ -3071,15 +3077,18 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				for _, entry := range entries {
 					_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
 					if err != nil {
+						mset.isolateMu.Unlock()
 						batch.mu.Unlock()
 						panic(err.Error())
 					}
-					if err = js.applyStreamMsgOp(mset, op, buf, isRecovering); err != nil {
+					if err = js.applyStreamMsgOp(mset, op, buf, isRecovering, false); err != nil {
+						mset.isolateMu.Unlock()
 						batch.mu.Unlock()
 						return 0, err
 					}
 				}
 				// Clear state, batch was successful.
+				mset.isolateMu.Unlock()
 				batch.clearBatchStateLocked()
 				batch.mu.Unlock()
 				continue
@@ -3091,7 +3100,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			switch op {
 			case streamMsgOp, compressedStreamMsgOp:
 				mbuf := buf[1:]
-				if err := js.applyStreamMsgOp(mset, op, mbuf, isRecovering); err != nil {
+				if err := js.applyStreamMsgOp(mset, op, mbuf, isRecovering, true); err != nil {
 					return 0, err
 				}
 
@@ -3274,7 +3283,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 	return 0, nil
 }
 
-func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isRecovering bool) error {
+func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isRecovering bool, needIsolation bool) error {
 	s := js.srv
 
 	if op == compressedStreamMsgOp {
@@ -3342,7 +3351,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		mt = mset.getAndDeleteMsgTrace(lseq)
 	}
 	// Process the actual message here.
-	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation)
 
 	// If we have inflight make sure to clear after processing.
 	// TODO(dlc) - technically check on inflight != nil could cause datarace.
@@ -3390,7 +3399,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			if state.Msgs == 0 {
 				mset.store.Compact(lseq + 1)
 				// Retry
-				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced)
+				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation)
 			}
 			// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
 			// and what we got.
@@ -8252,7 +8261,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We also invoke this in clustering mode for message tracing when not
 	// performing message delivery.
 	if node == nil || mt.traceOnly() {
-		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced)
+		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced, true)
 	}
 
 	// If message tracing (with message delivery), we will need to send the
