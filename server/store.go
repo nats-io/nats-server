@@ -14,7 +14,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"io"
@@ -117,7 +119,7 @@ type StreamStore interface {
 	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
 	FastState(*StreamState)
-	EncodedStreamState(failed uint64) (enc []byte, err error)
+	EncodedStreamState(failed uint64, consumers []*consumerAssignment) (enc []byte, err error)
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
@@ -224,12 +226,13 @@ type DeleteBlocks []DeleteBlock
 // StreamReplicatedState represents what is encoded in a binary stream snapshot used
 // for stream replication in an NRG.
 type StreamReplicatedState struct {
-	Msgs     uint64
-	Bytes    uint64
-	FirstSeq uint64
-	LastSeq  uint64
-	Failed   uint64
-	Deleted  DeleteBlocks
+	Msgs      uint64
+	Bytes     uint64
+	FirstSeq  uint64
+	LastSeq   uint64
+	Failed    uint64
+	Deleted   DeleteBlocks
+	Consumers []*consumerAssignment
 }
 
 // Determine if this is an encoded stream state.
@@ -298,6 +301,12 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 				return nil, ErrCorruptStreamState
 			}
 		}
+	}
+
+	if len(buf)-bi > 0 {
+		br := bytes.NewReader(buf[bi:])
+		enc := gob.NewDecoder(br)
+		enc.Decode(&ss.Consumers)
 	}
 
 	return ss, nil
