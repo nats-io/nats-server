@@ -1116,10 +1116,6 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 			if _, err := mset.addConsumer(cfg); err == nil {
 				t.Fatalf("Expected an error with MaxWaiting set on non-pull based consumer")
 			}
-			cfg = &ConsumerConfig{Durable: "foo", AckPolicy: AckExplicit, MaxWaiting: -1}
-			if _, err := mset.addConsumer(cfg); err == nil {
-				t.Fatalf("Expected an error with MaxWaiting being negative")
-			}
 
 			// Create basic work queue mode consumer.
 			wcfg := workerModeConfig("MAXWQ")
@@ -11083,7 +11079,7 @@ func TestJetStreamNegativeDupeWindow(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	// we incorrectly set MaxAge to -1 which then as a side effect sets dupe window to -1 which should fail
+	// we incorrectly set Duplicates to -1 which should fail
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:              "TEST",
 		Subjects:          nil,
@@ -11092,7 +11088,8 @@ func TestJetStreamNegativeDupeWindow(t *testing.T) {
 		MaxMsgs:           -1,
 		MaxBytes:          -1,
 		Discard:           nats.DiscardNew,
-		MaxAge:            -1,
+		MaxAge:            0,
+		Duplicates:        -1,
 		MaxMsgsPerSubject: -1,
 		MaxMsgSize:        -1,
 		Storage:           nats.FileStorage,
@@ -21379,4 +21376,91 @@ func TestJetStreamKVNoSubjectDeleteMarkerOnPurgeMarker(t *testing.T) {
 			require_Error(t, err, jetstream.ErrMsgNotFound)
 		})
 	}
+}
+
+func TestJetStreamInvalidConfigValues(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	acc := s.globalAccount()
+
+	_, err := s.checkStreamCfg(&StreamConfig{Name: "TEST", Retention: -1}, acc, true)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid retention")))
+
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Discard: -1}, acc, true)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid discard policy")))
+
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Storage: -1}, acc, true)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid storage type")))
+
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Compression: 255}, acc, true)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid compression")))
+
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", MaxAge: -time.Second}, acc, true)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms")))
+
+	scfg, err := s.checkStreamCfg(&StreamConfig{
+		Name:         "TEST",
+		MaxConsumers: -10,
+		MaxMsgs:      -10,
+		MaxBytes:     -10,
+		MaxMsgsPer:   -10,
+		MaxMsgSize:   -10,
+	}, acc, true)
+	if err != nil {
+		require_NoError(t, err)
+	}
+	require_Equal(t, scfg.MaxConsumers, -1)
+	require_Equal(t, scfg.MaxMsgs, -1)
+	require_Equal(t, scfg.MaxBytes, -1)
+	require_Equal(t, scfg.MaxMsgsPer, -1)
+	require_Equal(t, scfg.MaxMsgSize, -1)
+
+	ccfg := &ConsumerConfig{AckPolicy: -1}
+	err = checkConsumerCfg(ccfg, &JSLimitOpts{}, &scfg, nil, &JetStreamAccountLimits{}, false)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSConsumerAckPolicyInvalidError())
+
+	ccfg = &ConsumerConfig{ReplayPolicy: -1}
+	err = checkConsumerCfg(ccfg, &JSLimitOpts{}, &scfg, nil, &JetStreamAccountLimits{}, false)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSConsumerReplayPolicyInvalidError())
+
+	ccfg = &ConsumerConfig{AckWait: -time.Second}
+	err = checkConsumerCfg(ccfg, &JSLimitOpts{}, &scfg, nil, &JetStreamAccountLimits{}, false)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSConsumerAckWaitNegativeError())
+
+	ccfg = &ConsumerConfig{BackOff: []time.Duration{-time.Second}}
+	err = checkConsumerCfg(ccfg, &JSLimitOpts{}, &scfg, nil, &JetStreamAccountLimits{}, false)
+	require_True(t, err != nil)
+	require_Error(t, err, NewJSConsumerBackOffNegativeError())
+
+	ccfg = &ConsumerConfig{
+		MaxDeliver:         -10,
+		MaxWaiting:         -10,
+		MaxAckPending:      -10,
+		MaxRequestBatch:    -10,
+		MaxRequestExpires:  -time.Second,
+		MaxRequestMaxBytes: -10,
+		Heartbeat:          -time.Second,
+		InactiveThreshold:  -time.Second,
+		PinnedTTL:          -time.Second,
+	}
+	err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, false)
+	require_True(t, err == nil)
+	require_Equal(t, ccfg.MaxDeliver, -1)
+	require_Equal(t, ccfg.MaxWaiting, JSWaitQueueDefaultMax)
+	require_Equal(t, ccfg.MaxAckPending, 0)
+	require_Equal(t, ccfg.MaxRequestBatch, 0)
+	require_Equal(t, ccfg.MaxRequestExpires, 0)
+	require_Equal(t, ccfg.MaxRequestMaxBytes, 0)
+	require_Equal(t, ccfg.Heartbeat, 0)
+	require_Equal(t, ccfg.InactiveThreshold, 0)
+	require_Equal(t, ccfg.PinnedTTL, 0)
 }

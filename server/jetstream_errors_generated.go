@@ -59,8 +59,17 @@ const (
 	// JSClusterUnSupportFeatureErr not currently supported in clustered mode
 	JSClusterUnSupportFeatureErr ErrorIdentifier = 10036
 
+	// JSConsumerAckPolicyInvalidErr consumer ack policy invalid
+	JSConsumerAckPolicyInvalidErr ErrorIdentifier = 10181
+
+	// JSConsumerAckWaitNegativeErr consumer ack wait needs to be positive
+	JSConsumerAckWaitNegativeErr ErrorIdentifier = 10183
+
 	// JSConsumerAlreadyExists action CREATE is used for a existing consumer with a different config (consumer already exists)
 	JSConsumerAlreadyExists ErrorIdentifier = 10148
+
+	// JSConsumerBackOffNegativeErr consumer backoff needs to be positive
+	JSConsumerBackOffNegativeErr ErrorIdentifier = 10184
 
 	// JSConsumerBadDurableNameErr durable name can not contain '.', '*', '>'
 	JSConsumerBadDurableNameErr ErrorIdentifier = 10103
@@ -164,8 +173,8 @@ const (
 	// JSConsumerMaxRequestBatchNegativeErr consumer max request batch needs to be > 0
 	JSConsumerMaxRequestBatchNegativeErr ErrorIdentifier = 10114
 
-	// JSConsumerMaxRequestExpiresToSmall consumer max request expires needs to be >= 1ms
-	JSConsumerMaxRequestExpiresToSmall ErrorIdentifier = 10115
+	// JSConsumerMaxRequestExpiresTooSmall consumer max request expires needs to be >= 1ms
+	JSConsumerMaxRequestExpiresTooSmall ErrorIdentifier = 10115
 
 	// JSConsumerMaxWaitingNegativeErr consumer max waiting needs to be positive
 	JSConsumerMaxWaitingNegativeErr ErrorIdentifier = 10087
@@ -217,6 +226,9 @@ const (
 
 	// JSConsumerReplacementWithDifferentNameErr consumer replacement durable config not the same
 	JSConsumerReplacementWithDifferentNameErr ErrorIdentifier = 10106
+
+	// JSConsumerReplayPolicyInvalidErr consumer replay policy invalid
+	JSConsumerReplayPolicyInvalidErr ErrorIdentifier = 10182
 
 	// JSConsumerReplicasExceedsStream consumer config replica count exceeds parent stream
 	JSConsumerReplicasExceedsStream ErrorIdentifier = 10126
@@ -563,7 +575,10 @@ var (
 		JSClusterServerNotMemberErr:                {Code: 400, ErrCode: 10044, Description: "server is not a member of the cluster"},
 		JSClusterTagsErr:                           {Code: 400, ErrCode: 10011, Description: "tags placement not supported for operation"},
 		JSClusterUnSupportFeatureErr:               {Code: 503, ErrCode: 10036, Description: "not currently supported in clustered mode"},
+		JSConsumerAckPolicyInvalidErr:              {Code: 400, ErrCode: 10181, Description: "consumer ack policy invalid"},
+		JSConsumerAckWaitNegativeErr:               {Code: 400, ErrCode: 10183, Description: "consumer ack wait needs to be positive"},
 		JSConsumerAlreadyExists:                    {Code: 400, ErrCode: 10148, Description: "consumer already exists"},
+		JSConsumerBackOffNegativeErr:               {Code: 400, ErrCode: 10184, Description: "consumer backoff needs to be positive"},
 		JSConsumerBadDurableNameErr:                {Code: 400, ErrCode: 10103, Description: "durable name can not contain '.', '*', '>'"},
 		JSConsumerConfigRequiredErr:                {Code: 400, ErrCode: 10078, Description: "consumer config required"},
 		JSConsumerCreateDurableAndNameMismatch:     {Code: 400, ErrCode: 10132, Description: "Consumer Durable and Name have to be equal if both are provided"},
@@ -598,7 +613,7 @@ var (
 		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
 		JSConsumerMaxRequestBatchExceededF:         {Code: 400, ErrCode: 10125, Description: "consumer max request batch exceeds server limit of {limit}"},
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
-		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
+		JSConsumerMaxRequestExpiresTooSmall:        {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerMetadataLengthErrF:               {Code: 400, ErrCode: 10135, Description: "consumer metadata exceeds maximum size of {limit}"},
 		JSConsumerMultipleFiltersNotAllowed:        {Code: 400, ErrCode: 10137, Description: "consumer with multiple subject filters cannot use subject based API"},
@@ -616,6 +631,7 @@ var (
 		JSConsumerPushMaxWaitingErr:                {Code: 400, ErrCode: 10080, Description: "consumer in push mode can not set max waiting"},
 		JSConsumerPushWithPriorityGroupErr:         {Code: 400, ErrCode: 10178, Description: "priority groups can not be used with push consumers"},
 		JSConsumerReplacementWithDifferentNameErr:  {Code: 400, ErrCode: 10106, Description: "consumer replacement durable config not the same"},
+		JSConsumerReplayPolicyInvalidErr:           {Code: 400, ErrCode: 10182, Description: "consumer replay policy invalid"},
 		JSConsumerReplicasExceedsStream:            {Code: 400, ErrCode: 10126, Description: "consumer config replica count exceeds parent stream"},
 		JSConsumerReplicasShouldMatchStream:        {Code: 400, ErrCode: 10134, Description: "consumer config replicas must match interest retention stream's replicas"},
 		JSConsumerSmallHeartbeatErr:                {Code: 400, ErrCode: 10083, Description: "consumer idle heartbeat needs to be >= 100ms"},
@@ -941,6 +957,26 @@ func NewJSClusterUnSupportFeatureError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSClusterUnSupportFeatureErr]
 }
 
+// NewJSConsumerAckPolicyInvalidError creates a new JSConsumerAckPolicyInvalidErr error: "consumer ack policy invalid"
+func NewJSConsumerAckPolicyInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAckPolicyInvalidErr]
+}
+
+// NewJSConsumerAckWaitNegativeError creates a new JSConsumerAckWaitNegativeErr error: "consumer ack wait needs to be positive"
+func NewJSConsumerAckWaitNegativeError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAckWaitNegativeErr]
+}
+
 // NewJSConsumerAlreadyExistsError creates a new JSConsumerAlreadyExists error: "consumer already exists"
 func NewJSConsumerAlreadyExistsError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -949,6 +985,16 @@ func NewJSConsumerAlreadyExistsError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerAlreadyExists]
+}
+
+// NewJSConsumerBackOffNegativeError creates a new JSConsumerBackOffNegativeErr error: "consumer backoff needs to be positive"
+func NewJSConsumerBackOffNegativeError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerBackOffNegativeErr]
 }
 
 // NewJSConsumerBadDurableNameError creates a new JSConsumerBadDurableNameErr error: "durable name can not contain '.', '*', '>'"
@@ -1333,14 +1379,14 @@ func NewJSConsumerMaxRequestBatchNegativeError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerMaxRequestBatchNegativeErr]
 }
 
-// NewJSConsumerMaxRequestExpiresToSmallError creates a new JSConsumerMaxRequestExpiresToSmall error: "consumer max request expires needs to be >= 1ms"
-func NewJSConsumerMaxRequestExpiresToSmallError(opts ...ErrorOption) *ApiError {
+// NewJSConsumerMaxRequestExpiresTooSmallError creates a new JSConsumerMaxRequestExpiresTooSmall error: "consumer max request expires needs to be >= 1ms"
+func NewJSConsumerMaxRequestExpiresTooSmallError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSConsumerMaxRequestExpiresToSmall]
+	return ApiErrors[JSConsumerMaxRequestExpiresTooSmall]
 }
 
 // NewJSConsumerMaxWaitingNegativeError creates a new JSConsumerMaxWaitingNegativeErr error: "consumer max waiting needs to be positive"
@@ -1523,6 +1569,16 @@ func NewJSConsumerReplacementWithDifferentNameError(opts ...ErrorOption) *ApiErr
 	}
 
 	return ApiErrors[JSConsumerReplacementWithDifferentNameErr]
+}
+
+// NewJSConsumerReplayPolicyInvalidError creates a new JSConsumerReplayPolicyInvalidErr error: "consumer replay policy invalid"
+func NewJSConsumerReplayPolicyInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerReplayPolicyInvalidErr]
 }
 
 // NewJSConsumerReplicasExceedsStreamError creates a new JSConsumerReplicasExceedsStream error: "consumer config replica count exceeds parent stream"

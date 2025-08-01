@@ -542,6 +542,36 @@ const (
 
 // Helper function to set consumer config defaults from above.
 func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, lim *JSLimitOpts, accLim *JetStreamAccountLimits, pedantic bool) *ApiError {
+	// Setup default of -1, meaning no limit for MaxDeliver.
+	if config.MaxDeliver <= 0 {
+		config.MaxDeliver = -1
+	}
+	// Setup zero defaults.
+	if config.MaxWaiting < 0 {
+		config.MaxWaiting = 0
+	}
+	if config.MaxAckPending < 0 {
+		config.MaxAckPending = 0
+	}
+	if config.MaxRequestBatch < 0 {
+		config.MaxRequestBatch = 0
+	}
+	if config.MaxRequestExpires < 0 {
+		config.MaxRequestExpires = 0
+	}
+	if config.MaxRequestMaxBytes < 0 {
+		config.MaxRequestMaxBytes = 0
+	}
+	if config.Heartbeat < 0 {
+		config.Heartbeat = 0
+	}
+	if config.InactiveThreshold < 0 {
+		config.InactiveThreshold = 0
+	}
+	if config.PinnedTTL < 0 {
+		config.PinnedTTL = 0
+	}
+
 	// Set to default if not specified.
 	if config.DeliverSubject == _EMPTY_ && config.MaxWaiting == 0 {
 		config.MaxWaiting = JSWaitQueueDefaultMax
@@ -549,10 +579,6 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	// Setup proper default for ack wait if we are in explicit ack mode.
 	if config.AckWait == 0 && (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) {
 		config.AckWait = JsAckWaitDefault
-	}
-	// Setup default of -1, meaning no limit for MaxDeliver.
-	if config.MaxDeliver == 0 {
-		config.MaxDeliver = -1
 	}
 	// If BackOff was specified that will override the AckWait and the MaxDeliver.
 	if len(config.BackOff) > 0 {
@@ -575,14 +601,14 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
 	if (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) && config.MaxAckPending == 0 {
-		accPending := JsDefaultMaxAckPending
-		if lim.MaxAckPending > 0 && lim.MaxAckPending < accPending {
-			accPending = lim.MaxAckPending
+		ackPending := JsDefaultMaxAckPending
+		if lim.MaxAckPending > 0 && lim.MaxAckPending < ackPending {
+			ackPending = lim.MaxAckPending
 		}
-		if accLim.MaxAckPending > 0 && accLim.MaxAckPending < accPending {
-			accPending = accLim.MaxAckPending
+		if accLim.MaxAckPending > 0 && accLim.MaxAckPending < ackPending {
+			ackPending = accLim.MaxAckPending
 		}
-		config.MaxAckPending = accPending
+		config.MaxAckPending = ackPending
 	}
 	// if applicable set max request batch size
 	if config.DeliverSubject == _EMPTY_ && config.MaxRequestBatch == 0 && lim.MaxRequestBatch > 0 {
@@ -626,6 +652,23 @@ func checkConsumerCfg(
 		if !isRecovering && config.Replicas != 0 && config.Replicas != cfg.Replicas {
 			return NewJSConsumerReplicasShouldMatchStreamError()
 		}
+	}
+
+	if _, err := config.AckPolicy.MarshalJSON(); err != nil {
+		return NewJSConsumerAckPolicyInvalidError()
+	}
+	if _, err := config.ReplayPolicy.MarshalJSON(); err != nil {
+		return NewJSConsumerReplayPolicyInvalidError()
+	}
+
+	// Check not negative AckWait/BackOff
+	for _, backoff := range config.BackOff {
+		if backoff < 0 {
+			return NewJSConsumerBackOffNegativeError()
+		}
+	}
+	if config.AckWait < 0 {
+		return NewJSConsumerAckWaitNegativeError()
 	}
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
@@ -678,7 +721,7 @@ func checkConsumerCfg(
 			return NewJSConsumerMaxRequestBatchNegativeError()
 		}
 		if config.MaxRequestExpires != 0 && config.MaxRequestExpires < time.Millisecond {
-			return NewJSConsumerMaxRequestExpiresToSmallError()
+			return NewJSConsumerMaxRequestExpiresTooSmallError()
 		}
 		if srvLim.MaxRequestBatch > 0 && config.MaxRequestBatch > srvLim.MaxRequestBatch {
 			return NewJSConsumerMaxRequestBatchExceededError(srvLim.MaxRequestBatch)
