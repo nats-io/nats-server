@@ -4767,10 +4767,20 @@ func TestJetStreamClusterExpectedPerSubjectConsistency(t *testing.T) {
 	_, err = js.Publish("foo", nil, nats.ExpectLastSequencePerSubject(0))
 	require_Error(t, err, NewJSStreamWrongLastSequenceConstantError())
 
+	// Block updates when subject already inflight without expected headers.
+	mset.clMu.Lock()
+	mset.expectedPerSubjectSequence = nil
+	mset.expectedPerSubjectInProcess = nil
+	mset.inflight = map[string]*inflightSubjectRunningTotal{"foo": {bytes: 33, ops: 1}}
+	mset.clMu.Unlock()
+	_, err = js.Publish("foo", nil, nats.ExpectLastSequencePerSubject(0))
+	require_Error(t, err, NewJSStreamWrongLastSequenceConstantError())
+
 	// Allow updates when ready and subject not already in process.
 	mset.clMu.Lock()
 	mset.expectedPerSubjectSequence = nil
 	mset.expectedPerSubjectInProcess = nil
+	mset.inflight = nil
 	mset.clMu.Unlock()
 	pa, err := js.Publish("foo", nil, nats.ExpectLastSequencePerSubject(0))
 	require_NoError(t, err)
