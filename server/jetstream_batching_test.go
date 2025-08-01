@@ -1272,7 +1272,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	require_True(t, commitReady)
 
 	// Simulate the first message of the batch is committed.
-	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false)
+	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false, false)
 	require_NoError(t, err)
 
 	// Simulate a hard kill, upon recovery the rest of the batch should be applied.

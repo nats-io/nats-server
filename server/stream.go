@@ -2771,7 +2771,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, true))
 		}
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true, true)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -3742,7 +3742,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	if node != nil {
 		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil, true)
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true, true)
 	}
 
 	if err != nil {
@@ -4393,7 +4393,7 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 			}
 		} else {
-			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false)
+			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, true)
 		}
 	})
 	mset.mu.Unlock()
@@ -5132,7 +5132,7 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
-func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool) (retErr error) {
+func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool) (retErr error) {
 	if mt != nil {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
 		// message trace event.
@@ -5145,9 +5145,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return errStreamClosed
 	}
 
-	// Hold isolation lock while storing message, and potentially purging as part of a rollup.
-	mset.isolateMu.Lock()
-	defer mset.isolateMu.Unlock()
+	// Hold isolation lock while storing the message, and potentially purging as part of a rollup.
+	// If we're writing an atomic batch of multiple messages, the isolation lock is already held.
+	if needIsolation {
+		mset.isolateMu.Lock()
+		defer mset.isolateMu.Unlock()
+	}
 
 	mset.mu.Lock()
 	s, store := mset.srv, mset.store
@@ -6214,6 +6217,11 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 
 	// Commit batch.
 	if !isClustered {
+		mset.clMu.Unlock()
+
+		// Ensure the whole batch is fully isolated, and reads
+		// can only happen after the full batch is committed.
+		mset.isolateMu.Lock()
 		for seq := uint64(1); seq <= batchSeq; seq++ {
 			if seq == batchSeq && b.store.Type() != FileStorage {
 				bsubj, bhdr, bmsg = subject, hdr, msg
@@ -6229,8 +6237,9 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			if seq == batchSeq {
 				_reply = reply
 			}
-			mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false)
+			mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false)
 		}
+		mset.isolateMu.Unlock()
 	} else {
 		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order
 		// and not interleaved with other proposals.
@@ -6248,8 +6257,8 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
 			s.RateLimitWarnf("%s", lerr.Error())
 		}
+		mset.clMu.Unlock()
 	}
-	mset.clMu.Unlock()
 	b.cleanupLocked(batchId, batches)
 	batches.mu.Unlock()
 	return nil
@@ -6557,7 +6566,7 @@ func (mset *stream) internalLoop() {
 				} else if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 				} else {
-					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false)
+					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, true)
 				}
 				im.returnToPool()
 			}
