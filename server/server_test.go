@@ -319,63 +319,25 @@ func TestTLSMinVersionConfig(t *testing.T) {
 }
 
 func TestTLSCipher(t *testing.T) {
-	if strings.Compare(tlsCipher(0x0005), "TLS_RSA_WITH_RC4_128_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x000a), "TLS_RSA_WITH_3DES_EDE_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x002f), "TLS_RSA_WITH_AES_128_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x0035), "TLS_RSA_WITH_AES_256_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc007), "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc009), "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc00a), "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc011), "TLS_ECDHE_RSA_WITH_RC4_128_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc012), "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc013), "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc014), "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA") != 0 {
-		t.Fatalf("IUnknownnvalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc02f), "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc02b), "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc030), "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc02c), "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x1301), "TLS_AES_128_GCM_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x1302), "TLS_AES_256_GCM_SHA384") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x1303), "TLS_CHACHA20_POLY1305_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x9999), "Unknown [0x9999]") != 0 {
-		t.Fatalf("Expected an unknown cipher")
-	}
+	require_Equal(t, tls.CipherSuiteName(0x0005), "TLS_RSA_WITH_RC4_128_SHA")
+	require_Equal(t, tls.CipherSuiteName(0x000a), "TLS_RSA_WITH_3DES_EDE_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0x002f), "TLS_RSA_WITH_AES_128_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0x0035), "TLS_RSA_WITH_AES_256_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc007), "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc009), "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc00a), "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc011), "TLS_ECDHE_RSA_WITH_RC4_128_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc012), "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc013), "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc014), "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc02f), "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0xc02b), "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0xc030), "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
+	require_Equal(t, tls.CipherSuiteName(0xc02c), "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")
+	require_Equal(t, tls.CipherSuiteName(0x1301), "TLS_AES_128_GCM_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0x1302), "TLS_AES_256_GCM_SHA384")
+	require_Equal(t, tls.CipherSuiteName(0x1303), "TLS_CHACHA20_POLY1305_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0x9999), "0x9999")
 }
 
 func TestGetConnectURLs(t *testing.T) {

@@ -369,7 +369,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		conn := c.nc.(*tls.Conn)
 		cs := conn.ConnectionState()
 		ct.Version = tlsVersion(cs.Version)
-		ct.Cipher = tlsCipher(cs.CipherSuite)
+		ct.Cipher = tls.CipherSuiteName(cs.CipherSuite)
 		// Check verified chains.
 		for _, vs := range cs.VerifiedChains {
 			var certs []string

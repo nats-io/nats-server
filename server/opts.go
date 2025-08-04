@@ -752,6 +752,7 @@ type TLSConfigOpts struct {
 	FallbackDelay        time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
 	Timeout              float64
 	RateLimit            int64
+	AllowInsecureCiphers bool
 	Ciphers              []uint16
 	CurvePreferences     []tls.CurveID
 	PinnedCerts          PinnedCertSet
@@ -4719,12 +4720,11 @@ func PrintTLSHelpAndDie() {
 	os.Exit(0)
 }
 
-func parseCipher(cipherName string) (uint16, error) {
+func parseCipher(cipherName string) (*tls.CipherSuite, error) {
 	cipher, exists := cipherMap[cipherName]
 	if !exists {
-		return 0, fmt.Errorf("unrecognized cipher %s", cipherName)
+		return nil, fmt.Errorf("unrecognized cipher %s", cipherName)
 	}
-
 	return cipher, nil
 }
 
@@ -4760,6 +4760,7 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		tlsm map[string]any
 		tc   = TLSConfigOpts{}
 		lt   token
+		ics  []*tls.CipherSuite // Insecure ciphers found
 	)
 	defer convertPanicToError(&lt, &retErr)
 
@@ -4819,6 +4820,12 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 				tc.Verify = verify
 			}
 			tc.TLSCheckKnownURLs = verify
+		case "allow_insecure_cipher_suites":
+			allow, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, "error parsing tls config, expected 'allow_insecure_cipher_suites' to be a boolean"}
+			}
+			tc.AllowInsecureCiphers = allow
 		case "cipher_suites":
 			ra := mv.([]any)
 			if len(ra) == 0 {
@@ -4831,7 +4838,10 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 				if err != nil {
 					return nil, &configErr{tk, err.Error()}
 				}
-				tc.Ciphers = append(tc.Ciphers, cipher)
+				tc.Ciphers = append(tc.Ciphers, cipher.ID)
+				if cipher.Insecure {
+					ics = append(ics, cipher)
+				}
 			}
 		case "curve_preferences":
 			ra := mv.([]any)
@@ -5047,6 +5057,16 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 	// If curve preferences were not specified, then use the defaults
 	if tc.CurvePreferences == nil {
 		tc.CurvePreferences = defaultCurvePreferences()
+	}
+
+	// If we don't allow insecure ciphers, and yet some were configured, then we
+	// should error.
+	if !tc.AllowInsecureCiphers && len(ics) > 0 {
+		names := make([]string, 0, len(ics))
+		for _, ic := range ics {
+			names = append(names, ic.Name)
+		}
+		return nil, &configErr{tk, fmt.Sprintf("insecure cipher suites configured without 'allow_insecure_cipher_suites' option set: %s", strings.Join(names, ", "))}
 	}
 
 	return &tc, nil
