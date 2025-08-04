@@ -3422,7 +3422,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")
 		cs := c.nc.(*tls.Conn).ConnectionState()
-		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
+		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tls.CipherSuiteName(cs.CipherSuite))
 	}
 
 	c.mu.Unlock()
@@ -3576,15 +3576,6 @@ func tlsVersionFromString(ver string) (uint16, error) {
 		return tls.VersionTLS13, nil
 	}
 	return 0, fmt.Errorf("unknown version: %v", ver)
-}
-
-// We use hex here so we don't need multiple versions
-func tlsCipher(cs uint16) string {
-	name, present := cipherMapByID[cs]
-	if present {
-		return name
-	}
-	return fmt.Sprintf("Unknown [0x%x]", cs)
 }
 
 // Remove a client or route from our internal accounting.

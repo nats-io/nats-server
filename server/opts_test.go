@@ -181,6 +181,16 @@ func TestTLSConfigFile(t *testing.T) {
 		t.Fatalf("Could not verify hostname in certificate: %v", err)
 	}
 
+	// First make sure that we can't add insecure cipher suites accidentally.
+	_, err = ProcessConfigFile("./configs/tls_insecure_ciphers.conf")
+	if err == nil || !strings.Contains(err.Error(), "insecure") {
+		t.Fatalf("Expected to receive insecure cipher error reading configuration file but didn't")
+	}
+	_, err = ProcessConfigFile("./configs/tls_insecure_ciphers_allowed.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+
 	// Now test adding cipher suites.
 	opts, err = ProcessConfigFile("./configs/tls_ciphers.conf")
 	if err != nil {
@@ -193,15 +203,8 @@ func TestTLSConfigFile(t *testing.T) {
 
 	// CipherSuites listed in the config - test all of them.
 	ciphers = []uint16{
-		tls.TLS_RSA_WITH_RC4_128_SHA,
-		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
-		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
 		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
 		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
 		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
