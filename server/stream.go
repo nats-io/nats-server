@@ -1373,10 +1373,24 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 
 	cfg := *config
 
+	if _, err := cfg.Retention.MarshalJSON(); err != nil {
+		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("invalid retention"))
+	}
+	if _, err := cfg.Discard.MarshalJSON(); err != nil {
+		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("invalid discard policy"))
+	}
+	if _, err := cfg.Compression.MarshalJSON(); err != nil {
+		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("invalid compression"))
+	}
+
 	// Make file the default.
 	if cfg.Storage == 0 {
 		cfg.Storage = FileStorage
 	}
+	if _, err := cfg.Storage.MarshalJSON(); err != nil {
+		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("invalid storage type"))
+	}
+
 	if cfg.Replicas == 0 {
 		cfg.Replicas = 1
 	}
@@ -1386,20 +1400,23 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	if cfg.Replicas < 0 {
 		return cfg, NewJSReplicasCountCannotBeNegativeError()
 	}
-	if cfg.MaxMsgs == 0 {
+	if cfg.MaxMsgs <= 0 {
 		cfg.MaxMsgs = -1
 	}
-	if cfg.MaxMsgsPer == 0 {
+	if cfg.MaxMsgsPer <= 0 {
 		cfg.MaxMsgsPer = -1
 	}
-	if cfg.MaxBytes == 0 {
+	if cfg.MaxBytes <= 0 {
 		cfg.MaxBytes = -1
 	}
-	if cfg.MaxMsgSize == 0 {
+	if cfg.MaxMsgSize <= 0 {
 		cfg.MaxMsgSize = -1
 	}
-	if cfg.MaxConsumers == 0 {
+	if cfg.MaxConsumers <= 0 {
 		cfg.MaxConsumers = -1
+	}
+	if cfg.MaxAge != 0 && cfg.MaxAge < 100*time.Millisecond {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms"))
 	}
 	if cfg.Duplicates == 0 && cfg.Mirror == nil {
 		maxWindow := StreamDefaultDuplicatesWindow
@@ -1417,9 +1434,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		} else {
 			cfg.Duplicates = maxWindow
 		}
-	}
-	if cfg.MaxAge > 0 && cfg.MaxAge < 100*time.Millisecond {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms"))
 	}
 	if cfg.Duplicates < 0 {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be negative"))

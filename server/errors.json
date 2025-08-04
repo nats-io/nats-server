@@ -1140,7 +1140,7 @@
     "deprecates": ""
   },
   {
-    "constant": "JSConsumerMaxRequestExpiresToSmall",
+    "constant": "JSConsumerMaxRequestExpiresTooSmall",
     "code": 400,
     "error_code": 10115,
     "description": "consumer max request expires needs to be \u003e= 1ms",
@@ -1784,6 +1784,46 @@
     "code": 412,
     "error_code": 10180,
     "description": "min last sequence",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAckPolicyInvalidErr",
+    "code": 400,
+    "error_code": 10181,
+    "description": "consumer ack policy invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerReplayPolicyInvalidErr",
+    "code": 400,
+    "error_code": 10182,
+    "description": "consumer replay policy invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAckWaitNegativeErr",
+    "code": 400,
+    "error_code": 10183,
+    "description": "consumer ack wait needs to be positive",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerBackOffNegativeErr",
+    "code": 400,
+    "error_code": 10184,
+    "description": "consumer backoff needs to be positive",
     "comment": "",
     "help": "",
     "url": "",

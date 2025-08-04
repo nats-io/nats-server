@@ -35,8 +35,6 @@ const (
 	FileStorage = StorageType(22)
 	// MemoryStorage specifies in memory only.
 	MemoryStorage = StorageType(33)
-	// Any is for internals.
-	AnyStorage = StorageType(44)
 )
 
 var (
@@ -557,13 +555,11 @@ func (dp *DiscardPolicy) UnmarshalJSON(data []byte) error {
 const (
 	memoryStorageJSONString = `"memory"`
 	fileStorageJSONString   = `"file"`
-	anyStorageJSONString    = `"any"`
 )
 
 var (
 	memoryStorageJSONBytes = []byte(memoryStorageJSONString)
 	fileStorageJSONBytes   = []byte(fileStorageJSONString)
-	anyStorageJSONBytes    = []byte(anyStorageJSONString)
 )
 
 func (st StorageType) String() string {
@@ -572,8 +568,6 @@ func (st StorageType) String() string {
 		return "Memory"
 	case FileStorage:
 		return "File"
-	case AnyStorage:
-		return "Any"
 	default:
 		return "Unknown Storage Type"
 	}
@@ -585,8 +579,6 @@ func (st StorageType) MarshalJSON() ([]byte, error) {
 		return memoryStorageJSONBytes, nil
 	case FileStorage:
 		return fileStorageJSONBytes, nil
-	case AnyStorage:
-		return anyStorageJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", st)
 	}
@@ -598,8 +590,6 @@ func (st *StorageType) UnmarshalJSON(data []byte) error {
 		*st = MemoryStorage
 	case fileStorageJSONString:
 		*st = FileStorage
-	case anyStorageJSONString:
-		*st = AnyStorage
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
 	}
