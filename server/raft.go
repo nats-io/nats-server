@@ -2318,8 +2318,8 @@ type Entry struct {
 }
 
 func (ae *appendEntry) String() string {
-	return fmt.Sprintf("&{leader:%s term:%d commit:%d pterm:%d pindex:%d entries: %d}",
-		ae.leader, ae.term, ae.commit, ae.pterm, ae.pindex, len(ae.entries))
+	return fmt.Sprintf("&{leader:%s lterm: %d term:%d commit:%d pterm:%d pindex:%d entries: %d}",
+		ae.leader, ae.lterm, ae.term, ae.commit, ae.pterm, ae.pindex, len(ae.entries))
 }
 
 const appendEntryBaseLen = idLen + 4*8 + 2
@@ -3450,6 +3450,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// Is this a new entry? New entries will be delivered on the append entry
 	// sub, rather than a catch-up sub.
 	isNew := sub != nil && sub == n.aesub
+
+	n.debug("processAppendEntry: %v, catchingUp=%v, isNew=%v", ae, catchingUp, isNew)
 
 	// Track leader directly
 	if isNew && ae.leader != noLeader {
