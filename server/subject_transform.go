@@ -222,7 +222,7 @@ func transformIndexIntArgsHelper(token string, args []string, transformType int1
 	if err != nil {
 		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
 	}
-	mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
+	mappingFunctionIntArg, err := strconv.ParseInt(strings.Trim(args[1], " "), 10, 32)
 	if err != nil {
 		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
 	}
