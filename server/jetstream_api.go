@@ -680,7 +680,10 @@ type JSApiMsgGetRequest struct {
 	NextFor string `json:"next_by_subj,omitempty"`
 
 	// Force the server to only deliver messages if the stream has at minimum this specified last sequence.
+	// Can be used to guarantee read-after-write and monotonic reads.
 	MinLastSeq uint64 `json:"min_last_seq,omitempty"`
+	// Force the server to guarantee a linearizable read response.
+	Linearizable bool `json:"linearizable,omitempty"`
 
 	// Batch support. Used to request more than one msg at a time.
 	// Can be used with simple starting seq, but also NextFor with wildcards.
@@ -3461,7 +3464,8 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		(req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && req.StartTime == nil) ||
 		(req.Seq > 0 && req.StartTime != nil) ||
 		(req.StartTime != nil && req.LastFor != _EMPTY_) ||
-		(req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_) {
+		(req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_) ||
+		(req.Linearizable && req.MinLastSeq > 0) {
 		resp.Error = NewJSBadRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -3484,6 +3488,28 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		return
 	}
 
+	// A linearizable read can be answered immediately if R1, but needs to be replicated otherwise.
+	if req.Linearizable {
+		mset.mu.Lock()
+		if mset.isClustered() {
+			if mset.inflightLinearizableMsgGet == nil {
+				mset.inflightLinearizableMsgGet = make(map[string]linearizableMsgGet, 1)
+			}
+			mset.inflightLinearizableMsgGet[reply] = linearizableMsgGet{ci, acc, subject, copyBytes(msg), req}
+			if err := mset.node.Propose(encodeLinearizableMsgGet(reply)); err != nil {
+				mset.inflightLinearizableMsgGet = nil
+			}
+			mset.mu.Unlock()
+			return
+		}
+		mset.mu.Unlock()
+	}
+
+	s.jsMsgGetRespond(mset, ci, acc, subject, reply, msg, &req)
+}
+
+func (s *Server) jsMsgGetRespond(mset *stream, ci *ClientInfo, acc *Account, subject string, reply string, msg []byte, req *JSApiMsgGetRequest) {
+	var resp = JSApiMsgGetResponse{ApiResponse: ApiResponse{Type: JSApiMsgGetResponseType}}
 	var svp StoreMsg
 	var sm *StoreMsg
 
@@ -3495,6 +3521,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		seq = req.Seq
 	}
 
+	var err error
 	if seq > 0 && req.NextFor == _EMPTY_ {
 		sm, err = mset.store.LoadMsg(seq, &svp)
 	} else if req.NextFor != _EMPTY_ {

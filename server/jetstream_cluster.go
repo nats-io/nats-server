@@ -114,6 +114,8 @@ const (
 	compressedStreamMsgOp
 	// For sending deleted gaps on catchups for replicas.
 	deleteRangeOp
+	// Linearizable read for message GET request.
+	linearizableMsgGetOp
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -3170,6 +3172,24 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						s.sendAPIResponse(sp.Client, mset.account(), sp.Subject, sp.Reply, _EMPTY_, s.jsonResponse(resp))
 					}
 				}
+			case linearizableMsgGetOp:
+				var le = binary.LittleEndian
+				buf = buf[1:]
+				if len(buf) < 2 {
+					continue
+				}
+				rl := int(le.Uint16(buf))
+				buf = buf[2:]
+				if len(buf) < rl {
+					continue
+				}
+				reply := string(buf[:rl])
+				mset.mu.Lock()
+				if msgGet, ok := mset.inflightLinearizableMsgGet[reply]; ok {
+					mset.srv.jsMsgGetRespond(mset, msgGet.ci, msgGet.acc, msgGet.subject, reply, msgGet.msg, &msgGet.req)
+				}
+				delete(mset.inflightLinearizableMsgGet, reply)
+				mset.mu.Unlock()
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", op))
 			}
@@ -3308,6 +3328,10 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	mset.expectedPerSubjectSequence = nil
 	mset.expectedPerSubjectInProcess = nil
 	mset.clMu.Unlock()
+
+	mset.mu.Lock()
+	mset.inflightLinearizableMsgGet = nil
+	mset.mu.Unlock()
 
 	js.mu.Lock()
 	s, account, err := js.srv, sa.Client.serviceAccount(), sa.err
@@ -7946,6 +7970,22 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 		}
 	}
 
+	return buf
+}
+
+func encodeLinearizableMsgGet(reply string) []byte {
+	// Clip the reply down. Operate on uint64 lengths to avoid overflowing.
+	rlen := min(uint64(len(reply)), math.MaxUint16)
+	total := rlen
+
+	elen := int(1 + 2 + total)
+
+	buf := make([]byte, 1, elen)
+	buf[0] = byte(linearizableMsgGetOp)
+
+	var le = binary.LittleEndian
+	buf = le.AppendUint16(buf, uint16(rlen))
+	buf = append(buf, reply[:rlen]...)
 	return buf
 }
 

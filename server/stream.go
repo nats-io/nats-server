@@ -410,6 +410,8 @@ type stream struct {
 	expectedPerSubjectSequence  map[uint64]string                  // Inflight 'expected per subject' subjects per clseq.
 	expectedPerSubjectInProcess map[string]struct{}                // Current 'expected per subject' subjects in process.
 
+	inflightLinearizableMsgGet map[string]linearizableMsgGet // Inflight message get requests that require linearizability.
+
 	// Direct get subscription.
 	directLeaderSub *subscription
 	directSub       *subscription
@@ -420,6 +422,14 @@ type stream struct {
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
 	batches *batching // Inflight batches prior to committing them.
+}
+
+type linearizableMsgGet struct {
+	ci      *ClientInfo
+	acc     *Account
+	subject string
+	msg     []byte
+	req     JSApiMsgGetRequest
 }
 
 // msgCounterRunningTotal stores a running total and a number of inflight
@@ -4688,6 +4698,12 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 
+	if req.Linearizable {
+		hdr := []byte("NATS/1.0 408 Linearizable Not Supported\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+
 	// Reject request if we can't guarantee the precondition of min last sequence.
 	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
 		// We are not up-to-date yet, and don't know how long it will take us to be.
@@ -4734,7 +4750,11 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			return
 		}
-
+		if req.Linearizable {
+			hdr := []byte("NATS/1.0 408 Linearizable Not Supported\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
 		if req.MinLastSeq == 0 {
 			hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))

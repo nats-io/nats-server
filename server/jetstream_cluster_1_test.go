@@ -9254,6 +9254,209 @@ func TestJetStreamClusterMsgGetMonotonicRead(t *testing.T) {
 	require_Equal(t, resp.Message.Sequence, 1)
 }
 
+func TestJetStreamClusterMsgGetLinearizable(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Can't use linearizable and min last sequence together.
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, Linearizable: true, MinLastSeq: 1})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSApiMsgGetT, "TEST"), data, time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiMsgGetResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.ApiResponse.Error != nil)
+	require_Error(t, resp.ApiResponse.Error, NewJSBadRequestError())
+
+	// Linearizable read returns no message.
+	data, err = json.Marshal(JSApiMsgGetRequest{Seq: 1, Linearizable: true})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSApiMsgGetT, "TEST"), data, time.Second)
+	require_NoError(t, err)
+
+	resp = JSApiMsgGetResponse{}
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.ApiResponse.Error != nil)
+	require_Error(t, resp.ApiResponse.Error, NewJSNoMessageFoundError())
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	// Linearizable read returns the published message.
+	data, err = json.Marshal(JSApiMsgGetRequest{Seq: 1, Linearizable: true})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSApiMsgGetT, "TEST"), data, time.Second)
+	require_NoError(t, err)
+
+	resp = JSApiMsgGetResponse{}
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.ApiResponse.Error == nil)
+	require_Equal(t, resp.Message.Sequence, 1)
+}
+
+func TestJetStreamClusterDirectGetLinearizableRejected(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, Linearizable: true})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "TEST"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "408")
+	require_Equal(t, msg.Header.Get("Description"), "Linearizable Not Supported")
+}
+
+func TestJetStreamClusterDirectGetLastBySubjectLinearizableRejected(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	data, err := json.Marshal(JSApiMsgGetRequest{Linearizable: true})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "408")
+	require_Equal(t, msg.Header.Get("Description"), "Linearizable Not Supported")
+}
+
+func TestJetStreamClusterMirrorDirectGetLinearizableRejected(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "S",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+		Replicas:    3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "S")
+	})
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:         "M",
+		AllowDirect:  true,
+		MirrorDirect: true,
+		Mirror:       &nats.StreamSource{Name: "S"},
+		Replicas:     3,
+	})
+	require_NoError(t, err)
+
+	mirrorLeader := c.streamLeader(globalAccountName, "M")
+	checkMirrorConsistent := func() {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if err := checkState(t, c, globalAccountName, "M"); err != nil {
+				return err
+			}
+			mset, err := mirrorLeader.globalAccount().lookupStream("M")
+			if err != nil {
+				return err
+			}
+			if mset.lastSeq() != 1 {
+				return errors.New("waiting for mirror to catch up")
+			}
+			return nil
+		})
+	}
+	checkMirrorConsistent()
+
+	// On source, stop responding to direct gets.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:        "S",
+		Subjects:    []string{"foo"},
+		AllowDirect: false,
+		Replicas:    3,
+	})
+	require_NoError(t, err)
+
+	// On mirror, cancel mirroring, truncate store, and subscribe to mirror direct get.
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("M")
+		require_NoError(t, err)
+		mset.mu.Lock()
+		mset.cancelMirrorConsumer()
+		mset.lseq = 0
+		if err = mset.store.Truncate(0); err != nil {
+			mset.mu.Unlock()
+			require_NoError(t, err)
+		}
+		// Only let mirror followers subscribe to mirror direct.
+		if s != mirrorLeader {
+			if err = mset.subscribeToMirrorDirect(); err != nil {
+				mset.mu.Unlock()
+				require_NoError(t, err)
+			}
+		} else {
+			mset.unsubscribeToMirrorDirect()
+		}
+		mset.mu.Unlock()
+	}
+
+	// Need to wait for subscriptions to be fully propagated.
+	time.Sleep(200 * time.Millisecond)
+
+	data, err := json.Marshal(JSApiMsgGetRequest{Seq: 1, Linearizable: true})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "S"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "408")
+	require_Equal(t, msg.Header.Get("Description"), "Linearizable Not Supported")
+
+	data, err = json.Marshal(JSApiMsgGetRequest{Linearizable: true})
+	require_NoError(t, err)
+	msg, err = nc.Request(fmt.Sprintf(JSDirectGetLastBySubjectT, "S", "foo"), data, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "408")
+	require_Equal(t, msg.Header.Get("Description"), "Linearizable Not Supported")
+}
+
 func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
