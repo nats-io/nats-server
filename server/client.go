@@ -704,7 +704,7 @@ func (c *client) initClient() {
 		if addr := c.nc.RemoteAddr(); addr != nil {
 			if conn = addr.String(); conn != _EMPTY_ {
 				host, port, _ := net.SplitHostPort(conn)
-				iPort, _ := strconv.Atoi(port)
+				iPort, _ := strconv.ParseUint(port, 10, 16)
 				c.host, c.port = host, uint16(iPort)
 				if c.isWebsocket() && c.ws.clientIP != _EMPTY_ {
 					cip := c.ws.clientIP
