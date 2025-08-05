@@ -4374,7 +4374,7 @@ func TestFileStoreFilteredFirstMatchingBug(t *testing.T) {
 			mb.fss = nil
 		}
 		// Now load info back in.
-		mb.generatePerSubjectInfo()
+		mb.generatePerSubjectInfo(mb.cache.Value())
 		mb.mu.Unlock()
 
 		// Now add in a different subject.
@@ -5106,7 +5106,7 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	mb.clearCacheAndOffset(mb.cache.Value())
 	// Now call with start sequence of 1, the old one
 	// This will panic without the fix.
-	mb.recalculateForSubj("foo", ss)
+	mb.recalculateForSubj(mb.cache.Value(), "foo", ss)
 	// Make sure it was update properly.
 	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
 }
@@ -6510,7 +6510,7 @@ func TestFileStorePurgeExBufPool(t *testing.T) {
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
-		if mb.cacheAlreadyLoaded() {
+		if mb.cacheAlreadyLoaded(mb.cache.Value()) {
 			loaded++
 		}
 		mb.mu.RUnlock()
@@ -6549,7 +6549,7 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
-		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded(mb.cache.Value())
 		mb.mu.RUnlock()
 	}
 	fs.mu.RUnlock()
@@ -6597,7 +6597,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 		var stillHasCache bool
 		for _, mb := range fs.blks {
 			mb.mu.RLock()
-			stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+			stillHasCache = stillHasCache || mb.cacheAlreadyLoaded(mb.cache.Value())
 			mb.mu.RUnlock()
 		}
 		fs.mu.RUnlock()
@@ -10046,7 +10046,7 @@ func TestFileStoreCompressionAfterTruncate(t *testing.T) {
 					smb.clearCacheAndOffset(smb.cache.Value())
 					smb.mu.Unlock()
 
-					require_NoError(t, smb.loadMsgsWithLock())
+					require_NoError(t, smb.loadMsgs())
 					compressed, err = checkCompressed(smb)
 					require_NoError(t, err)
 					if smb == lmb {
