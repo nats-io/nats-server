@@ -4777,13 +4777,13 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
 retry:
 	mbcache := mb.cache.Value()
-	if mb.cacheNotLoaded() {
+	if mbcache == nil || mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
 			fsUnlock()
 			return false, err
 		}
-		if mbcache == nil {
+		if mbcache = mb.cache.Value(); mbcache == nil {
 			goto retry
 		}
 	}
@@ -4970,7 +4970,7 @@ func (mb *msgBlock) compact() {
 func (mb *msgBlock) compactWithFloor(floor uint64) {
 retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil || len(mbcache.buf) == 0 {
+	if mbcache == nil || mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return
 		}
@@ -5306,10 +5306,16 @@ func (mb *msgBlock) eraseMsg(mbcache *cache, seq uint64, ri, rl int, isLastBlock
 
 // Truncate this message block to the tseq and ts.
 // Lock should be held.
-func (mb *msgBlock) truncate(mbcache *cache, tseq uint64, ts int64) (nmsgs, nbytes uint64, err error) {
-	// Make sure we are loaded to process messages etc.
-	if err := mb.loadMsgsWithLock(); err != nil {
-		return 0, 0, err
+func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err error) {
+retry:
+	mbcache := mb.cache.Value()
+	if mbcache == nil || mb.cacheNotLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return 0, 0, err
+		}
+		if mbcache = mb.cache.Value(); mbcache == nil {
+			goto retry
+		}
 	}
 
 	// Calculate new eof using slot info from our new last sm.
@@ -7203,11 +7209,11 @@ func (mb *msgBlock) fetchMsgEx(seq uint64, sm *StoreMsg, doCopy bool) (*StoreMsg
 
 retry:
 	mbcache := mb.cache.Value()
-	if mb.cacheNotLoaded() {
+	if mbcache == nil || mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return nil, false, err
 		}
-		if mbcache == nil {
+		if mbcache = mb.cache.Value(); mbcache == nil {
 			goto retry
 		}
 	}
@@ -7291,11 +7297,13 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	// Detect no cache loaded.
 retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil {
+	if mbcache == nil || mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return nil, err
 		}
-		goto retry
+		if mbcache = mb.cache.Value(); mbcache == nil {
+			goto retry
+		}
 	}
 	if mbcache.fseq == 0 || len(mbcache.idx) == 0 || len(mbcache.buf) == 0 {
 		var reason string
@@ -8469,7 +8477,7 @@ retry:
 		if err = smb.loadMsgsWithLock(); err != nil {
 			goto SKIP
 		}
-		if smbcache == nil {
+		if smbcache = smb.cache.Value(); smbcache == nil {
 			goto retry
 		}
 	}
@@ -8704,11 +8712,13 @@ func (mb *msgBlock) tombs() []msgId {
 func (mb *msgBlock) tombsLocked() []msgId {
 retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil {
+	if mbcache == nil || mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return nil
 		}
-		goto retry
+		if mbcache = mb.cache.Value(); mbcache == nil {
+			goto retry
+		}
 	}
 
 	var tombs []msgId
@@ -8859,19 +8869,8 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			return err
 		}
 
-	retry:
-		smbcache := smb.cache.Value()
-		if smbcache == nil {
-			if err := smb.loadMsgsWithLock(); err != nil {
-				smb.mu.Unlock()
-				fs.mu.Unlock()
-				return fmt.Errorf("smb.loadMsgsWithLock: %w", err)
-			}
-			goto retry
-		}
-
 		// Truncate our selected message block.
-		nmsgs, nbytes, err := smb.truncate(smbcache, seq, lastTime)
+		nmsgs, nbytes, err := smb.truncate(seq, lastTime)
 		if err != nil {
 			smb.mu.Unlock()
 			fs.mu.Unlock()
@@ -9092,11 +9091,11 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 	// Need to make sure messages are loaded.
 retry:
 	mbcache := mb.cache.Value()
-	if mb.cacheNotLoaded() {
+	if mbcache == nil || mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return
 		}
-		if mbcache == nil {
+		if mbcache = mb.cache.Value(); mbcache == nil {
 			goto retry
 		}
 	}
