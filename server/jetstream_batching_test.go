@@ -148,10 +148,11 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 
 	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
 		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
-			replicas := 3
-			t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
-				test(t, storage, retention, replicas)
-			})
+			for _, replicas := range []int{1, 3} {
+				t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
+					test(t, storage, retention, replicas)
+				})
+			}
 		}
 	}
 }
@@ -306,6 +307,7 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 		}
 	}
 
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
@@ -352,16 +354,17 @@ func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 
 	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
 		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
-			replicas := 3
-			t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
-				c := createJetStreamClusterExplicit(t, "R3S", 3)
-				defer c.shutdown()
+			for _, replicas := range []int{1, 3} {
+				t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
+					c := createJetStreamClusterExplicit(t, "R3S", 3)
+					defer c.shutdown()
 
-				nc, js := jsClientConnect(t, c.randomServer())
-				defer nc.Close()
+					nc, js := jsClientConnect(t, c.randomServer())
+					defer nc.Close()
 
-				test(t, nc, js, storage, retention, replicas)
-			})
+					test(t, nc, js, storage, retention, replicas)
+				})
+			}
 		}
 	}
 }
@@ -641,6 +644,7 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 		}
 	}
 
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
@@ -1196,4 +1200,75 @@ func TestJetStreamAtomicBatchPublishExpectedPerSubject(t *testing.T) {
 	t.Run("single", func(t *testing.T) { test(t, OnlyFirst) })
 	t.Run("redundant", func(t *testing.T) { test(t, Redundant) })
 	t.Run("not-first", func(t *testing.T) { test(t, NotFirst) })
+}
+
+func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Retention:          LimitsPolicy,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	// Manually construct and store a batch, so it doesn't immediately commit.
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	batches := &batching{}
+	mset.batches = batches
+	mset.mu.Unlock()
+	batches.mu.Lock()
+	b, err := batches.newBatchGroup(mset, "uuid")
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+	hdr1 := genHeader(nil, "Nats-Batch-Id", "uuid")
+	hdr1 = genHeader(hdr1, "Nats-Batch-Sequence", "1")
+	_, _, err = b.store.StoreMsg("foo", hdr1, nil, 0)
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+
+	hdr2 := genHeader(nil, "Nats-Batch-Id", "uuid")
+	hdr2 = genHeader(hdr2, "Nats-Batch-Sequence", "2")
+	hdr2 = genHeader(hdr2, "Nats-Batch-Commit", "1")
+	_, _, err = b.store.StoreMsg("foo", hdr2, nil, 0)
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+	commitReady := b.readyForCommit()
+	batches.mu.Unlock()
+	require_True(t, commitReady)
+
+	// Simulate the first message of the batch is committed.
+	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false)
+	require_NoError(t, err)
+
+	// Simulate a hard kill, upon recovery the rest of the batch should be applied.
+	port := s.opts.Port
+	sd := s.StoreDir()
+	nc.Close()
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(port, sd)
+	defer s.Shutdown()
+
+	mset, err = s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	state := mset.state()
+	require_Equal(t, state.Msgs, 2)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 2)
 }
