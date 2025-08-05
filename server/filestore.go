@@ -247,7 +247,6 @@ type msgBlock struct {
 	fch        chan struct{}
 	qch        chan struct{}
 	lchk       [8]byte
-	loading    bool
 	flusher    bool
 	noTrack    bool
 	needSync   bool
@@ -1302,7 +1301,7 @@ func (mb *msgBlock) convertCipher() error {
 		// Check for compression, and make sure we can parse with old cipher and key file.
 		if nbuf, err := mb.decompressIfNeeded(buf); err != nil {
 			return err
-		} else if err = mb.indexCacheBuf(nbuf); err != nil {
+		} else if _, err = mb.indexCacheBuf(nbuf); err != nil {
 			return err
 		}
 
@@ -1341,7 +1340,7 @@ func (mb *msgBlock) convertToEncrypted() error {
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
 		return err
 	}
-	if err := mb.indexCacheBuf(buf); err != nil {
+	if _, err := mb.indexCacheBuf(buf); err != nil {
 		// This likely indicates this was already encrypted or corrupt.
 		mb.cache = nil
 		return err
@@ -2270,7 +2269,9 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 
 		// If we are here we have to process the interior messages of this blk.
 		// This will load fss as well.
-		if err := mb.loadMsgsWithLock(); err != nil {
+		var mbcache *cache
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
 			break
 		}
@@ -2281,7 +2282,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		// Walk messages and remove if expired.
 		fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
 		for seq := fseq; seq <= lseq; seq++ {
-			sm, err := mb.cacheLookupNoCopy(seq, &smv)
+			sm, err := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 			// Process interior deleted msgs.
 			if err == errDeletedMsg {
 				// Update dmap.
@@ -2447,8 +2448,10 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 	}()
 
 	// Need messages loaded from here on out.
-	if mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
+	mbcache := mb.cache.Value()
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			return nil, false, err
 		}
 		didLoad = true
@@ -2474,7 +2477,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 		gsl.IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				// mb is already loaded into the cache so should be fast-ish.
-				mb.recalculateForSubj(bytesToString(subj), ss)
+				mbcache = mb.recalculateForSubj(mbcache, bytesToString(subj), ss)
 			}
 			first := max(start, ss.First)
 			if first > ss.Last || first >= hseq {
@@ -2486,7 +2489,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 			if first == ss.First {
 				// If the start floor is below where this subject starts then we can
 				// short-circuit, avoiding needing to scan for the next message.
-				if fsm, err := mb.cacheLookup(ss.First, sm); err == nil {
+				if fsm, err := mb.cacheLookup(mbcache, ss.First, sm); err == nil {
 					sm = fsm
 					hseq = ss.First
 				}
@@ -2503,7 +2506,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 					continue
 				}
 				llseq := mb.llseq
-				fsm, err := mb.cacheLookup(seq, sm)
+				fsm, err := mb.cacheLookup(mbcache, seq, sm)
 				if err != nil {
 					continue
 				}
@@ -2529,7 +2532,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 				continue
 			}
 			llseq := mb.llseq
-			fsm, err := mb.cacheLookup(seq, sm)
+			fsm, err := mb.cacheLookup(mbcache, seq, sm)
 			if err != nil {
 				continue
 			}
@@ -2559,11 +2562,12 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	}()
 
 	fseq, isAll := start, filter == _EMPTY_ || filter == fwcs
+	mbcache := mb.cache.Value()
 
 	var didLoad bool
 	if mb.fssNotLoaded() {
 		// Make sure we have fss loaded.
-		mb.loadMsgsWithLock()
+		mbcache, _ = mb.loadMsgsWithLock()
 		didLoad = true
 	}
 	// Mark fss activity.
@@ -2608,7 +2612,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	// would need to scan vs the full range of the linear walk. Optimize for
 	// 25th quantile of a match in a linear walk. Filter should be a wildcard.
 	// We should consult fss if our cache is not loaded and we only have fss loaded.
-	if !doLinearScan && wc && mb.cacheAlreadyLoaded() {
+	if !doLinearScan && wc && mb.cacheAlreadyLoaded(mbcache) {
 		doLinearScan = mb.fss.Size()*4 > int(lseq-fseq)
 	}
 
@@ -2618,7 +2622,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		if bfilter := stringToBytes(filter); wc {
 			mb.fss.Match(bfilter, func(bsubj []byte, ss *SimpleState) {
 				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					mb.recalculateForSubj(bytesToString(bsubj), ss)
+					mbcache = mb.recalculateForSubj(mbcache, bytesToString(bsubj), ss)
 				}
 				if start <= ss.Last {
 					fseq = min(fseq, max(start, ss.First))
@@ -2626,7 +2630,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			})
 		} else if ss, _ := mb.fss.Find(bfilter); ss != nil {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				mb.recalculateForSubj(filter, ss)
+				mbcache = mb.recalculateForSubj(mbcache, filter, ss)
 			}
 			if start <= ss.Last {
 				fseq = min(fseq, max(start, ss.First))
@@ -2639,8 +2643,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	}
 
 	// Need messages loaded from here on out.
-	if mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			return nil, false, err
 		}
 		didLoad = true
@@ -2658,7 +2663,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			continue
 		}
 		llseq := mb.llseq
-		fsm, err := mb.cacheLookup(seq, sm)
+		fsm, err := mb.cacheLookup(mbcache, seq, sm)
 		if err != nil {
 			if err == errPartialCache || err == errNoCache {
 				return nil, false, err
@@ -2718,6 +2723,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	// Make sure we have fss loaded.
 	mb.ensurePerSubjectInfoLoaded()
+	mbcache := mb.cache.Value()
 
 	var havePartial bool
 
@@ -2725,7 +2731,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 	if !wc {
 		if ss, ok := mb.fss.Find(stringToBytes(filter)); ok && ss != nil {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				mb.recalculateForSubj(filter, ss)
+				mbcache = mb.recalculateForSubj(mbcache, filter, ss)
 			}
 			if sseq <= ss.First {
 				update(ss)
@@ -2741,7 +2747,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 				return
 			}
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				mb.recalculateForSubj(bytesToString(bsubj), ss)
+				mbcache = mb.recalculateForSubj(mbcache, bytesToString(bsubj), ss)
 			}
 			if sseq <= ss.First {
 				update(ss)
@@ -2763,8 +2769,8 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	// If we load the cache for a linear scan we want to expire that cache upon exit.
 	var shouldExpire bool
-	if mb.cacheNotLoaded() {
-		mb.loadMsgsWithLock()
+	if mb.cacheNotLoaded(mbcache) {
+		mbcache, _ = mb.loadMsgsWithLock()
 		shouldExpire = true
 	}
 
@@ -2788,7 +2794,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	var smv StoreMsg
 	for seq, lseq := sseq, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-		sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+		sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 		if sm == nil {
 			continue
 		}
@@ -3049,10 +3055,11 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		}
 
 		mb.mu.Lock()
+		mbcache := mb.cache.Value()
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
-			mb.loadMsgsWithLock()
+			mbcache, _ = mb.loadMsgsWithLock()
 			shouldExpire = true
 		}
 		// Mark fss activity.
@@ -3060,7 +3067,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		mb.fss.Match(stringToBytes(subject), func(bsubj []byte, ss *SimpleState) {
 			subj := string(bsubj)
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				mb.recalculateForSubj(subj, ss)
+				mbcache = mb.recalculateForSubj(mbcache, subj, ss)
 			}
 			oss := fss[subj]
 			if oss.First == 0 { // New
@@ -3226,6 +3233,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 		// We can start properly looking here.
 		mb.mu.Lock()
 		mb.ensurePerSubjectInfoLoaded()
+		mbcache := mb.cache.Value()
 
 		// Iterate the fss and check against our subs. We will delete from subs as we add.
 		// Once len(subs) == 0 we are done.
@@ -3237,7 +3245,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 			// Check if we need to recalculate. We only care about the last sequence.
 			if ss.lastNeedsUpdate {
 				// mb is already loaded into the cache so should be fast-ish.
-				mb.recalculateForSubj(bytesToString(bsubj), ss)
+				mbcache = mb.recalculateForSubj(mbcache, bytesToString(bsubj), ss)
 			}
 			// If we are equal or below just add to seqs slice.
 			if ss.Last <= maxSeq {
@@ -3245,15 +3253,15 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 				delete(subs, bytesToString(bsubj))
 			} else {
 				// Need to search for the real last since recorded last is > maxSeq.
-				if mb.cacheNotLoaded() {
-					mb.loadMsgsWithLock()
+				if mb.cacheNotLoaded(mbcache) {
+					mbcache, _ = mb.loadMsgsWithLock()
 				}
 				var smv StoreMsg
 				fseq := atomic.LoadUint64(&mb.first.seq)
 				lseq := min(atomic.LoadUint64(&mb.last.seq), maxSeq)
 				ssubj := bytesToString(bsubj)
 				for seq := lseq; seq >= fseq; seq-- {
-					sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+					sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 					if sm == nil || sm.subj != ssubj {
 						continue
 					}
@@ -3380,8 +3388,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			seen := make(map[string]bool)
 			// We need to discount the total by subjects seen before sseq, but also add them right back in if they are >= sseq for this blk.
 			// This only should be subjects we know have the last blk in this block.
-			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+			mbcache := mb.cache.Value()
+			if mb.cacheNotLoaded(mbcache) {
+				mbcache, _ = mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
 			var smv StoreMsg
@@ -3391,7 +3400,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					updateLLTS = true
 					continue
 				}
-				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+				sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ || !lbm[sm.subj] {
 					continue
 				}
@@ -3438,8 +3447,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			}
 			// If we are here we need to at least scan the subject fss.
 			// Make sure we have fss loaded.
+			mbcache := mb.cache.Value()
 			if mb.fssNotLoaded() {
-				mb.loadMsgsWithLock()
+				mbcache, _ = mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
 			// Mark fss activity.
@@ -3454,7 +3464,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				}
 				subj := bytesToString(bsubj)
 				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					mb.recalculateForSubj(subj, ss)
+					mbcache = mb.recalculateForSubj(mbcache, subj, ss)
 				}
 				if sseq <= ss.First {
 					t += ss.Msgs
@@ -3467,8 +3477,8 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			// See if we need to scan msgs here.
 			if havePartial {
 				// Make sure we have the cache loaded.
-				if mb.cacheNotLoaded() {
-					mb.loadMsgsWithLock()
+				if mb.cacheNotLoaded(mbcache) {
+					mbcache, _ = mb.loadMsgsWithLock()
 					shouldExpire = true
 				}
 				// Clear on partial.
@@ -3479,7 +3489,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				}
 				var smv StoreMsg
 				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
+					if sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv); sm != nil && isMatch(sm.subj) {
 						t++
 					}
 				}
@@ -3551,8 +3561,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			}
 		} else {
 			// This is the last block. We need to scan per message here.
-			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+			mbcache := mb.cache.Value()
+			if mb.cacheNotLoaded(mbcache) {
+				mbcache, _ = mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
 			var last = atomic.LoadUint64(&mb.last.seq)
@@ -3567,7 +3578,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					updateLLTS = true
 					continue
 				}
-				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+				sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ {
 					continue
 				}
@@ -3685,8 +3696,9 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			seen := make(map[string]bool)
 			// We need to discount the total by subjects seen before sseq, but also add them right back in if they are >= sseq for this blk.
 			// This only should be subjects we know have the last blk in this block.
-			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+			mbcache := mb.cache.Value()
+			if mb.cacheNotLoaded(mbcache) {
+				mbcache, _ = mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
 			var smv StoreMsg
@@ -3696,7 +3708,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 					updateLLTS = true
 					continue
 				}
-				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+				sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ || !lbm[sm.subj] {
 					continue
 				}
@@ -3742,8 +3754,9 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			}
 			// If we are here we need to at least scan the subject fss.
 			// Make sure we have fss loaded.
+			mbcache := mb.cache.Value()
 			if mb.fssNotLoaded() {
-				mb.loadMsgsWithLock()
+				mbcache, _ = mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
 			// Mark fss activity.
@@ -3759,7 +3772,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 					return
 				}
 				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					mb.recalculateForSubj(subj, ss)
+					mbcache = mb.recalculateForSubj(mbcache, subj, ss)
 				}
 				if sseq <= ss.First {
 					t += ss.Msgs
@@ -3772,8 +3785,8 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			// See if we need to scan msgs here.
 			if havePartial {
 				// Make sure we have the cache loaded.
-				if mb.cacheNotLoaded() {
-					mb.loadMsgsWithLock()
+				if mb.cacheNotLoaded(mbcache) {
+					mbcache, _ = mb.loadMsgsWithLock()
 					shouldExpire = true
 				}
 				// Clear on partial.
@@ -3789,7 +3802,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 						updateLLTS = true
 						continue
 					}
-					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
+					if sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv); sm != nil && isMatch(sm.subj) {
 						t++
 						updateLLTS = false // cacheLookup already updated it.
 					}
@@ -3864,8 +3877,9 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			}
 		} else {
 			// This is the last block. We need to scan per message here.
-			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+			mbcache := mb.cache.Value()
+			if mb.cacheNotLoaded(mbcache) {
+				mbcache, _ = mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
 			var last = atomic.LoadUint64(&mb.last.seq)
@@ -3880,7 +3894,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 					updateLLTS = true
 					continue
 				}
-				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+				sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ {
 					continue
 				}
@@ -3963,10 +3977,10 @@ func (fs *fileStore) hashKeyForBlock(index uint32) []byte {
 	return []byte(fmt.Sprintf("%s-%d", fs.cfg.Name, index))
 }
 
-func (mb *msgBlock) setupWriteCache(buf []byte) {
+func (mb *msgBlock) setupWriteCache(buf []byte) *cache {
 	// Make sure we have a cache setup.
-	if mb.cache.Value() != nil {
-		return
+	if mbcache := mb.cache.Value(); mbcache != nil {
+		return mbcache
 	}
 
 	// Setup simple cache.
@@ -3984,6 +3998,7 @@ func (mb *msgBlock) setupWriteCache(buf []byte) {
 	}
 	mb.llts = ats.AccessTime()
 	mb.startCacheExpireTimer()
+	return mbcache
 }
 
 // This rolls to a new append msg block.
@@ -4467,10 +4482,12 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 		fs.mu.Unlock()
 
 		mb.mu.Lock()
+		mbcache := mb.cache.Value()
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
-			if err := mb.loadMsgsWithLock(); err != nil {
+			var err error
+			if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 				mb.mu.Unlock()
 				// Re-acquire fs lock
 				fs.mu.Lock()
@@ -4490,7 +4507,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 				}
 			}
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				mb.recalculateForSubj(subj, ss)
+				mb.recalculateForSubj(mbcache, subj, ss)
 			}
 			mb.mu.Unlock()
 			// Re-acquire fs lock
@@ -4650,7 +4667,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 			ss := *ssptr
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				mb.mu.Lock()
-				mb.recalculateForSubj(bytesToString(subj), ss)
+				mb.recalculateForSubj(mb.cache.Value(), bytesToString(subj), ss)
 				mb.mu.Unlock()
 			}
 			for first := ss.First; *total > maxMsgsPer && first <= ss.Last; {
@@ -4775,21 +4792,18 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
 	// Now just load regardless.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
-retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil || mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
 			fsUnlock()
 			return false, err
 		}
-		if mbcache = mb.cache.Value(); mbcache == nil {
-			goto retry
-		}
 	}
 
 	var smv StoreMsg
-	sm, err := mb.cacheLookupNoCopy(seq, &smv)
+	sm, err := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 	if err != nil {
 		mb.mu.Unlock()
 		fsUnlock()
@@ -4968,14 +4982,11 @@ func (mb *msgBlock) compact() {
 // if fseq > 0 we will attempt to cleanup stale tombstones.
 // Write lock needs to be held.
 func (mb *msgBlock) compactWithFloor(floor uint64) {
-retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil || mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			return
-		}
-		if mbcache = mb.cache.Value(); mbcache == nil {
-			goto retry
 		}
 		if len(mbcache.buf) == 0 {
 			return
@@ -5307,14 +5318,10 @@ func (mb *msgBlock) eraseMsg(mbcache *cache, seq uint64, ri, rl int, isLastBlock
 // Truncate this message block to the tseq and ts.
 // Lock should be held.
 func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err error) {
-retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil || mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
+	if mb.cacheNotLoaded(mbcache) {
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			return 0, 0, err
-		}
-		if mbcache = mb.cache.Value(); mbcache == nil {
-			goto retry
 		}
 	}
 
@@ -5354,7 +5361,7 @@ retry:
 			}
 		}
 		// We should have a valid msg to calculate removal stats.
-		if m, err := mb.cacheLookupNoCopy(seq, &smv); err == nil {
+		if m, err := mb.cacheLookupNoCopy(mbcache, seq, &smv); err == nil {
 			if mb.msgs > 0 {
 				rl := fileStoreMsgSize(m.subj, m.hdr, m.msg)
 				mb.msgs--
@@ -5447,7 +5454,7 @@ func (mb *msgBlock) selectNextFirst() {
 	// Need to get the timestamp.
 	// We will try the cache direct and fallback if needed.
 	var smv StoreMsg
-	sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+	sm, _ := mb.cacheLookupNoCopy(mb.cache.Value(), seq, &smv)
 	if sm == nil {
 		// Slow path, need to unlock.
 		mb.mu.Unlock()
@@ -5990,10 +5997,8 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	// GC might clean up our unflushed writes.
 retry:
 	mbcache := mb.cache.Strengthen()
-
 	if mbcache == nil {
-		mb.setupWriteCache(nil)
-		goto retry
+		mbcache = mb.setupWriteCache(nil)
 	}
 
 	// Check if we are tracking per subject for our simple state.
@@ -6655,7 +6660,7 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 
 // Index a raw msg buffer.
 // Lock should be held.
-func (mb *msgBlock) indexCacheBuf(buf []byte) error {
+func (mb *msgBlock) indexCacheBuf(buf []byte) (*cache, error) {
 	var le = binary.LittleEndian
 
 	var fseq uint64
@@ -6669,7 +6674,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	if mbFirstSeq > (mbLastSeq + 1) { // Purged state first == last + 1
 		mb.fs.warn("indexCacheBuf corrupt state: mb.first %d mb.last %d", mbFirstSeq, mbLastSeq)
 		// This would cause idxSz to wrap.
-		return errCorruptState
+		return nil, errCorruptState
 	}
 
 	// Capture beginning size of dmap.
@@ -6711,7 +6716,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
-			return errCorruptState
+			return nil, errCorruptState
 		}
 		hdr := buf[index : index+msgHdrSize]
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
@@ -6727,7 +6732,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			mb.fs.warn("indexCacheBuf corrupt record state: dlen %d slen %d index %d rl %d lbuf %d", dlen, slen, index, rl, lbuf)
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
-			return errCorruptState
+			return nil, errCorruptState
 		}
 
 		// Check for tombstones which we can skip in terms of indexing.
@@ -6815,7 +6820,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mbcache.wp += int(lbuf)
 	mb.ttls = ttls
 
-	return nil
+	return mbcache, nil
 }
 
 // flushPendingMsgs writes out any messages for this message block.
@@ -6969,22 +6974,17 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	return fsLostData, mb.werr
 }
 
-// Lock should be held.
-func (mb *msgBlock) clearLoading() {
-	mb.loading = false
-}
-
 // Will load msgs from disk.
 func (mb *msgBlock) loadMsgs() error {
 	// We hold the lock here the whole time by design.
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	return mb.loadMsgsWithLock()
+	_, err := mb.loadMsgsWithLock()
+	return err
 }
 
 // Lock should be held.
-func (mb *msgBlock) cacheAlreadyLoaded() bool {
-	mbcache := mb.cache.Value()
+func (mb *msgBlock) cacheAlreadyLoaded(mbcache *cache) bool {
 	if mbcache == nil || mbcache.off != 0 || mbcache.fseq == 0 || len(mbcache.buf) == 0 {
 		return false
 	}
@@ -6993,8 +6993,8 @@ func (mb *msgBlock) cacheAlreadyLoaded() bool {
 }
 
 // Lock should be held.
-func (mb *msgBlock) cacheNotLoaded() bool {
-	return !mb.cacheAlreadyLoaded()
+func (mb *msgBlock) cacheNotLoaded(mbcache *cache) bool {
+	return !mb.cacheAlreadyLoaded(mbcache)
 }
 
 // Report if our fss is not loaded.
@@ -7073,32 +7073,23 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 }
 
 // Lock should be held.
-func (mb *msgBlock) loadMsgsWithLock() error {
+func (mb *msgBlock) loadMsgsWithLock() (*cache, error) {
 	if err := mb.checkAndLoadEncryption(); err != nil {
-		return err
+		return nil, err
 	}
-
-	// Check to see if we are loading already.
-	if mb.loading {
-		return nil
-	}
-
-	// Set loading status.
-	mb.loading = true
-	defer mb.clearLoading()
 
 	var nchecks int
 
 checkCache:
 	nchecks++
 	if nchecks > 8 {
-		return errCorruptState
+		return nil, errCorruptState
 	}
 
 	// Check to see if we have a full cache.
 	mbcache := mb.cache.Value()
-	if mb.cacheAlreadyLoaded() {
-		return nil
+	if mb.cacheAlreadyLoaded(mbcache) {
+		return mbcache, nil
 	}
 
 	mb.llts = ats.AccessTime()
@@ -7112,7 +7103,7 @@ checkCache:
 			go mb.fs.rebuildState(ld)
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		goto checkCache
 	}
@@ -7128,7 +7119,7 @@ checkCache:
 				go mb.fs.rebuildState(ld)
 			}
 		}
-		return err
+		return nil, err
 	}
 
 	// Reset the cache since we just read everything in.
@@ -7137,14 +7128,14 @@ checkCache:
 
 	// Check if we need to decrypt.
 	if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
-		return err
+		return nil, err
 	}
 	// Check for compression.
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := mb.indexCacheBuf(buf); err != nil {
+	if mbcache, err = mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
 			var ld *LostStreamData
 			if ld, _, err = mb.rebuildStateLocked(); ld != nil {
@@ -7154,7 +7145,7 @@ checkCache:
 			}
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		goto checkCache
 	}
@@ -7165,7 +7156,7 @@ checkCache:
 	}
 
 	// Optionally, you could log or trace here if needed in the future.
-	return nil
+	return mbcache, nil
 }
 
 // Fetch a message from this block, possibly reading in and caching the messages.
@@ -7207,19 +7198,16 @@ func (mb *msgBlock) fetchMsgEx(seq uint64, sm *StoreMsg, doCopy bool) (*StoreMsg
 		return nil, expireOk, errDeletedMsg
 	}
 
-retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil || mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			return nil, false, err
-		}
-		if mbcache = mb.cache.Value(); mbcache == nil {
-			goto retry
 		}
 	}
 	llseq := mb.llseq
 
-	fsm, err := mb.cacheLookupEx(seq, sm, doCopy)
+	fsm, err := mb.cacheLookupEx(mbcache, seq, sm, doCopy)
 	if err != nil {
 		return nil, false, err
 	}
@@ -7263,20 +7251,20 @@ const (
 // Will do a lookup from cache.
 // This will copy the msg from the cache.
 // Lock should be held.
-func (mb *msgBlock) cacheLookup(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
-	return mb.cacheLookupEx(seq, sm, true)
+func (mb *msgBlock) cacheLookup(mbcache *cache, seq uint64, sm *StoreMsg) (*StoreMsg, error) {
+	return mb.cacheLookupEx(mbcache, seq, sm, true)
 }
 
 // Will do a lookup from cache.
 // This will NOT copy the msg from the cache.
 // Lock should be held.
-func (mb *msgBlock) cacheLookupNoCopy(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
-	return mb.cacheLookupEx(seq, sm, false)
+func (mb *msgBlock) cacheLookupNoCopy(mbcache *cache, seq uint64, sm *StoreMsg) (*StoreMsg, error) {
+	return mb.cacheLookupEx(mbcache, seq, sm, false)
 }
 
 // Will do a lookup from cache.
 // Lock should be held.
-func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*StoreMsg, error) {
+func (mb *msgBlock) cacheLookupEx(mbcache *cache, seq uint64, sm *StoreMsg, doCopy bool) (*StoreMsg, error) {
 	if seq < atomic.LoadUint64(&mb.first.seq) || seq > atomic.LoadUint64(&mb.last.seq) {
 		return nil, ErrStoreMsgNotFound
 	}
@@ -7295,16 +7283,6 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	}
 
 	// Detect no cache loaded.
-retry:
-	mbcache := mb.cache.Value()
-	if mbcache == nil || mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
-			return nil, err
-		}
-		if mbcache = mb.cache.Value(); mbcache == nil {
-			goto retry
-		}
-	}
 	if mbcache.fseq == 0 || len(mbcache.idx) == 0 || len(mbcache.buf) == 0 {
 		var reason string
 		if mbcache.fseq == 0 {
@@ -7621,13 +7599,14 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 			_, _, l = mb.filteredPendingLocked(subj, wc, atomic.LoadUint64(&mb.first.seq))
 		}
 		if l > 0 {
-			if mb.cacheNotLoaded() {
-				if err := mb.loadMsgsWithLock(); err != nil {
+			mbcache := mb.cache.Value()
+			if mb.cacheNotLoaded(mbcache) {
+				if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 					mb.mu.Unlock()
 					return nil, err
 				}
 			}
-			lsm, err = mb.cacheLookup(l, sm)
+			lsm, err = mb.cacheLookup(mbcache, l, sm)
 		}
 		mb.mu.Unlock()
 		if l > 0 {
@@ -7783,8 +7762,9 @@ func (fs *fileStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err
 			mb := fs.blks[i]
 			mb.mu.Lock()
 			// Need messages loaded from here on out.
-			if mb.cacheNotLoaded() {
-				if err := mb.loadMsgsWithLock(); err != nil {
+			mbcache := mb.cache.Value()
+			if mb.cacheNotLoaded(mbcache) {
+				if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 					mb.mu.Unlock()
 					return nil, err
 				}
@@ -7798,7 +7778,7 @@ func (fs *fileStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err
 				if mb.dmap.Exists(seq) {
 					continue
 				}
-				if sm, err := mb.cacheLookup(seq, smp); err == nil {
+				if sm, err := mb.cacheLookup(mbcache, seq, smp); err == nil {
 					mb.mu.Unlock()
 					return sm, nil
 				}
@@ -8182,15 +8162,16 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 			l = sequence - 1
 		}
 
-		if mb.cacheNotLoaded() {
-			mb.loadMsgsWithLock()
+		mbcache := mb.cache.Value()
+		if mb.cacheNotLoaded(mbcache) {
+			mbcache, _ = mb.loadMsgsWithLock()
 			shouldExpire = true
 		}
 
 		var nrg uint64 // Number of remaining messages globally after removal from psim.
 
 		for seq, te := f, len(tombs); seq <= l; seq++ {
-			if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && eq(sm.subj, subject) {
+			if sm, _ := mb.cacheLookupNoCopy(mbcache, seq, &smv); sm != nil && eq(sm.subj, subject) {
 				rl := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				// Do fast in place remove.
 				// Stats
@@ -8464,7 +8445,6 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	var tombs []msgId
 
 	smb.mu.Lock()
-retry:
 	smbcache := smb.cache.Value()
 	if atomic.LoadUint64(&smb.first.seq) == seq {
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.first.seq)
@@ -8473,16 +8453,13 @@ retry:
 	}
 
 	// Make sure we have the messages loaded.
-	if smbcache == nil || smb.cacheNotLoaded() {
-		if err = smb.loadMsgsWithLock(); err != nil {
+	if smb.cacheNotLoaded(smbcache) {
+		if smbcache, err = smb.loadMsgsWithLock(); err != nil {
 			goto SKIP
-		}
-		if smbcache = smb.cache.Value(); smbcache == nil {
-			goto retry
 		}
 	}
 	for mseq := atomic.LoadUint64(&smb.first.seq); mseq < seq; mseq++ {
-		sm, err := smb.cacheLookupNoCopy(mseq, &smv)
+		sm, err := smb.cacheLookupNoCopy(smbcache, mseq, &smv)
 		if err == errDeletedMsg {
 			// Update dmap.
 			if !smb.dmap.IsEmpty() {
@@ -8710,14 +8687,11 @@ func (mb *msgBlock) tombs() []msgId {
 // Return all active tombstones in this msgBlock.
 // Write lock should be held.
 func (mb *msgBlock) tombsLocked() []msgId {
-retry:
 	mbcache := mb.cache.Value()
-	if mbcache == nil || mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
 			return nil
-		}
-		if mbcache = mb.cache.Value(); mbcache == nil {
-			goto retry
 		}
 	}
 
@@ -9087,16 +9061,12 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) uint64 {
 
 // Will recalculate the first and/or last sequence for this subject in this block.
 // Will avoid slower path message lookups and scan the cache directly instead.
-func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
+func (mb *msgBlock) recalculateForSubj(mbcache *cache, subj string, ss *SimpleState) *cache {
 	// Need to make sure messages are loaded.
-retry:
-	mbcache := mb.cache.Value()
-	if mbcache == nil || mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
-			return
-		}
-		if mbcache = mb.cache.Value(); mbcache == nil {
-			goto retry
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
+			return mbcache
 		}
 	}
 
@@ -9108,7 +9078,7 @@ retry:
 		ss.First = ss.Last
 		ss.firstNeedsUpdate = false
 		ss.lastNeedsUpdate = false
-		return
+		return mbcache
 	}
 
 	endSlot := int(ss.Last - mbcache.fseq)
@@ -9116,7 +9086,7 @@ retry:
 		endSlot = 0
 	}
 	if endSlot >= len(mbcache.idx) || startSlot > endSlot {
-		return
+		return mbcache
 	}
 
 	var le = binary.LittleEndian
@@ -9139,7 +9109,7 @@ retry:
 				ss.First = ss.Last
 				// Only need to reset ss.lastNeedsUpdate, ss.firstNeedsUpdate is already reset above.
 				ss.lastNeedsUpdate = false
-				return
+				return mbcache
 			}
 			buf := mbcache.buf[li:]
 			hdr := buf[:msgHdrSize]
@@ -9153,7 +9123,7 @@ retry:
 				if ss.Msgs == 1 {
 					ss.Last = seq
 					ss.lastNeedsUpdate = false
-					return
+					return mbcache
 				}
 				// Skip the start slot ahead, if we need to recalculate last we can stop early.
 				startSlot = slot
@@ -9178,7 +9148,7 @@ retry:
 			li := int(bi) - mbcache.off
 			if li >= len(mbcache.buf) {
 				// Can't overwrite ss.Last, just skip.
-				return
+				return mbcache
 			}
 			buf := mbcache.buf[li:]
 			hdr := buf[:msgHdrSize]
@@ -9197,10 +9167,11 @@ retry:
 					ss.First = seq
 					ss.firstNeedsUpdate = false
 				}
-				return
+				return mbcache
 			}
 		}
 	}
+	return mbcache
 }
 
 // Lock should be held.
@@ -9215,24 +9186,26 @@ func (fs *fileStore) resetGlobalPerSubjectInfo() {
 // Lock should be held.
 func (mb *msgBlock) resetPerSubjectInfo() error {
 	mb.fss = nil
-	return mb.generatePerSubjectInfo()
+	_, err := mb.generatePerSubjectInfo(mb.cache.Value())
+	return err
 }
 
 // generatePerSubjectInfo will generate the per subject info via the raw msg block.
 // Lock should be held.
-func (mb *msgBlock) generatePerSubjectInfo() error {
+func (mb *msgBlock) generatePerSubjectInfo(mbcache *cache) (*cache, error) {
 	// Check if this mb is empty. This can happen when its the last one and we are holding onto it for seq and timestamp info.
 	if mb.msgs == 0 {
-		return nil
+		return mbcache, nil
 	}
 
-	if mb.cacheNotLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
-			return err
+	if mb.cacheNotLoaded(mbcache) {
+		var err error
+		if mbcache, err = mb.loadMsgsWithLock(); err != nil {
+			return nil, err
 		}
 		// indexCacheBuf can produce fss now, so if non-nil we are good.
 		if mb.fss != nil {
-			return nil
+			return mbcache, nil
 		}
 	}
 
@@ -9247,16 +9220,16 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			// It gets set later on if the fss is non-empty anyway.
 			continue
 		}
-		sm, err := mb.cacheLookupNoCopy(seq, &smv)
+		sm, err := mb.cacheLookupNoCopy(mbcache, seq, &smv)
 		if err != nil {
 			// Since we are walking by sequence we can ignore some errors that are benign to rebuilding our state.
 			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
 				continue
 			}
 			if err == errNoCache {
-				return nil
+				return mbcache, nil
 			}
-			return err
+			return nil, err
 		}
 		if sm != nil && len(sm.subj) > 0 {
 			if ss, ok := mb.fss.Find(stringToBytes(sm.subj)); ok && ss != nil {
@@ -9276,7 +9249,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 		mb.lsts = mb.llts
 		mb.startCacheExpireTimer()
 	}
-	return nil
+	return mbcache, nil
 }
 
 // Helper to make sure fss loaded if we are tracking.
@@ -9293,7 +9266,8 @@ func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
 		mb.fss = stree.NewSubjectTree[SimpleState]()
 		return nil
 	}
-	return mb.generatePerSubjectInfo()
+	_, err := mb.generatePerSubjectInfo(mb.cache.Value())
+	return err
 }
 
 // Called on recovery to populate the global psim state.
