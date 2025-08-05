@@ -401,14 +401,14 @@ type stream struct {
 	clMu      sync.Mutex        // The mutex for clseq and clfs.
 	clseq     uint64            // The current last seq being proposed to the NRG layer.
 	clfs      uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	inflight  map[uint64]uint64 // Inflight message sizes per clseq.
 	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
 	uch       chan struct{}     // The channel to signal updates to the monitor routine.
 	inMonitor bool              // True if the monitor routine has been started.
 
-	clusteredCounterTotal       map[string]*msgCounterRunningTotal // Inflight counter totals.
-	expectedPerSubjectSequence  map[uint64]string                  // Inflight 'expected per subject' subjects per clseq.
-	expectedPerSubjectInProcess map[string]struct{}                // Current 'expected per subject' subjects in process.
+	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
+	clusteredCounterTotal       map[string]*msgCounterRunningTotal      // Inflight counter totals.
+	expectedPerSubjectSequence  map[uint64]string                       // Inflight 'expected per subject' subjects per clseq.
+	expectedPerSubjectInProcess map[string]struct{}                     // Current 'expected per subject' subjects in process.
 
 	// Direct get subscription.
 	directLeaderSub *subscription
@@ -420,6 +420,12 @@ type stream struct {
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
 	batches *batching // Inflight batches prior to committing them.
+}
+
+// inflightSubjectRunningTotal stores a running total of inflight messages for a specific subject.
+type inflightSubjectRunningTotal struct {
+	bytes uint64 // Running total of inflight bytes for inflight messages.
+	ops   uint64 // Inflight operations, i.e. inflight messages for this subject. If this reaches zero, we can remove the running total.
 }
 
 // msgCounterRunningTotal stores a running total and a number of inflight
@@ -5118,15 +5124,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	allowMsgCounter := mset.cfg.AllowMsgCounter
 	// Snapshot if we are the leader and if we can respond.
 	isLeader, isSealed := mset.isLeaderNodeState(), mset.cfg.Sealed
+	isClustered := mset.isClustered()
+	canConsistencyCheck := !isClustered || traceOnly
 	canRespond := doAck && len(reply) > 0 && isLeader
 	outq := mset.outq
 
 	var resp = &JSPubAckResponse{}
 
 	// Bail here if sealed.
-	if isSealed {
+	if canConsistencyCheck && isSealed {
 		mset.mu.Unlock()
-		bumpCLFS()
 		if canRespond && outq != nil {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = ApiErrors[JSStreamSealedErr]
@@ -5188,7 +5195,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	var batchId string
 	var batchSeq uint64
 	var rollupSub, rollupAll bool
-	isClustered := mset.isClustered()
 
 	if len(hdr) > 0 {
 
@@ -5200,13 +5206,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
 		// to do this check here since it was not done in processClusteredInboundMsg().
-		if !isClustered || traceOnly {
+		if canConsistencyCheck {
 			// Counter increments.
 			// Only supported on counter streams, and payload must be empty (if not coming from a source).
 			var ok bool
 			if incr, ok = getMessageIncr(hdr); !ok {
 				mset.mu.Unlock()
-				bumpCLFS()
 				apiErr := NewJSMessageIncrInvalidError()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -5219,7 +5224,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				// Only do checks if the message isn't sourced. Otherwise, we need to store verbatim.
 				if !allowMsgCounter {
 					mset.mu.Unlock()
-					bumpCLFS()
 					apiErr := NewJSMessageIncrDisabledError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
@@ -5230,7 +5234,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					return apiErr
 				} else if len(msg) > 0 {
 					mset.mu.Unlock()
-					bumpCLFS()
 					apiErr := NewJSMessageIncrPayloadError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
@@ -5255,7 +5258,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 					if doErr {
 						mset.mu.Unlock()
-						bumpCLFS()
 						apiErr := NewJSMessageIncrInvalidError()
 						if canRespond {
 							resp.PubAck = &PubAck{Stream: name}
@@ -5271,7 +5273,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			// Expected stream.
 			if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 				mset.mu.Unlock()
-				bumpCLFS()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamNotMatchError()
@@ -5280,28 +5281,70 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				}
 				return errStreamMismatch
 			}
-		}
 
-		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
-		// Shouldn't happen in clustered mode since we should have already caught this
-		// in processClusteredInboundMsg, but needed here for non-clustered etc.
-		if ttl, _ := getMessageTTL(hdr); !sourced && ttl != 0 && !mset.cfg.AllowMsgTTL {
-			mset.mu.Unlock()
-			bumpCLFS()
-			if canRespond {
-				resp.PubAck = &PubAck{Stream: name}
-				resp.Error = NewJSMessageTTLDisabledError()
-				b, _ := json.Marshal(resp)
-				outq.sendMsg(reply, b)
+			// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
+			// Shouldn't happen in clustered mode since we should have already caught this
+			// in processClusteredInboundMsg, but needed here for non-clustered etc.
+			if ttl, _ := getMessageTTL(hdr); !sourced && ttl != 0 && !mset.cfg.AllowMsgTTL {
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSMessageTTLDisabledError()
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return errMsgTTLDisabled
 			}
-			return errMsgTTLDisabled
+
+			// Expected last sequence per subject.
+			if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
+				// Allow override of the subject used for the check.
+				seqSubj := subject
+				if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
+					seqSubj = optSubj
+				}
+
+				// TODO(dlc) - We could make a new store func that does this all in one.
+				var smv StoreMsg
+				var fseq uint64
+				sm, err := store.LoadLastMsg(seqSubj, &smv)
+				if sm != nil {
+					fseq = sm.seq
+				}
+				if err == ErrStoreMsgNotFound && seq == 0 {
+					fseq, err = 0, nil
+				}
+				if err != nil || fseq != seq {
+					mset.mu.Unlock()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = NewJSStreamWrongLastSequenceError(fseq)
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
+				}
+			}
+
+			// Expected last sequence.
+			if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.lseq {
+				mlseq := mset.lseq
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamWrongLastSequenceError(mlseq)
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
+			}
 		}
 
 		// Dedupe detection. This is done at the cluster level for dedupe detection above the
 		// lower layers. But we still need to pull out the msgId.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 			// Do real check only if not clustered or traceOnly flag is set.
-			if !isClustered || traceOnly {
+			if canConsistencyCheck {
 				var seq uint64
 				mset.ddMu.Lock()
 				dde := mset.checkMsgId(msgId)
@@ -5311,7 +5354,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				mset.ddMu.Unlock()
 				if seq > 0 {
 					mset.mu.Unlock()
-					bumpCLFS()
 					if canRespond {
 						response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
 						response = append(response, ",\"duplicate\": true}"...)
@@ -5322,59 +5364,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 		}
 
-		// Expected last sequence per subject.
-		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
-			// Allow override of the subject used for the check.
-			seqSubj := subject
-			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
-				seqSubj = optSubj
-			}
-
-			// TODO(dlc) - We could make a new store func that does this all in one.
-			var smv StoreMsg
-			var fseq uint64
-			sm, err := store.LoadLastMsg(seqSubj, &smv)
-			if sm != nil {
-				fseq = sm.seq
-			}
-			if err == ErrStoreMsgNotFound {
-				if seq == 0 {
-					fseq, err = 0, nil
-				} else if mset.isClustered() {
-					// Do not bump clfs in case message was not found and could have been deleted.
-					var ss StreamState
-					store.FastState(&ss)
-					if seq <= ss.LastSeq {
-						fseq, err = seq, nil
-					}
-				}
-			}
-			if err != nil || fseq != seq {
-				mset.mu.Unlock()
-				bumpCLFS()
-				if canRespond {
-					resp.PubAck = &PubAck{Stream: name}
-					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
-					b, _ := json.Marshal(resp)
-					outq.sendMsg(reply, b)
-				}
-				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
-			}
-		}
-
-		// Expected last sequence.
-		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.lseq {
-			mlseq := mset.lseq
-			mset.mu.Unlock()
-			bumpCLFS()
-			if canRespond {
-				resp.PubAck = &PubAck{Stream: name}
-				resp.Error = NewJSStreamWrongLastSequenceError(mlseq)
-				b, _ := json.Marshal(resp)
-				outq.sendMsg(reply, b)
-			}
-			return fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
-		}
 		// Expected last msgId.
 		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ {
 			if lmsgId != mset.lmsgId {
@@ -5392,9 +5381,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
-			if !mset.cfg.AllowRollup || mset.cfg.DenyPurge {
+			if canConsistencyCheck && (!mset.cfg.AllowRollup || mset.cfg.DenyPurge) {
 				mset.mu.Unlock()
-				bumpCLFS()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamRollupFailedError(errors.New("rollup not permitted"))
@@ -5410,23 +5398,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				rollupAll = true
 			default:
 				mset.mu.Unlock()
-				bumpCLFS()
-				err := fmt.Errorf("rollup value invalid: %q", rollup)
-				if canRespond {
-					resp.PubAck = &PubAck{Stream: name}
-					resp.Error = NewJSStreamRollupFailedError(err)
-					b, _ := json.Marshal(resp)
-					outq.sendMsg(reply, b)
+				if canConsistencyCheck {
+					err := fmt.Errorf("rollup value invalid: %q", rollup)
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = NewJSStreamRollupFailedError(err)
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return err
 				}
-				return err
 			}
 		}
 	}
 
-	if !isClustered && incr == nil && allowMsgCounter {
+	if canConsistencyCheck && incr == nil && allowMsgCounter {
 		mset.mu.Unlock()
-		// FIXME(mvv): we're not clustered, does bumping CLFS result in issues?
-		bumpCLFS()
 		apiErr := NewJSMessageIncrMissingError()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
@@ -5446,7 +5433,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Apply increment for counter.
 	// But only if it's allowed for this stream. This can happen when we store verbatim for a sourced stream.
-	if !isClustered && incr != nil && allowMsgCounter {
+	if canConsistencyCheck && incr != nil && allowMsgCounter {
 		var initial big.Int
 		var sources CounterSources
 		var smv StoreMsg
@@ -5456,7 +5443,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			// Return an error if the counter is broken somehow.
 			if json.Unmarshal(sm.msg, &val) != nil {
 				mset.mu.Unlock()
-				bumpCLFS()
 				apiErr := NewJSMessageCounterBrokenError()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -5469,7 +5455,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if ncs := sliceHeader(JSMessageCounterSources, sm.hdr); len(ncs) > 0 {
 				if err := json.Unmarshal(ncs, &sources); err != nil {
 					mset.mu.Unlock()
-					bumpCLFS()
 					apiErr := NewJSMessageCounterBrokenError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
@@ -5495,7 +5480,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			var val CounterValue
 			if json.Unmarshal(msg, &val) != nil {
 				mset.mu.Unlock()
-				bumpCLFS()
 				apiErr := NewJSMessageCounterBrokenError()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -5533,7 +5517,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			nhdr, err := json.Marshal(sources)
 			if err != nil {
 				mset.mu.Unlock()
-				bumpCLFS()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSMessageCounterBrokenError()
@@ -5551,7 +5534,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		hdrLen, msgLen := int64(len(hdr)), int64(len(msg))
 		if hdrLen > maxPayload || msgLen > maxPayload-hdrLen {
 			mset.mu.Unlock()
-			bumpCLFS()
 			if canRespond {
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = NewJSStreamMessageExceedsMaximumError()
@@ -5564,9 +5546,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Check to see if we are over the max msg size.
 	// Subtract to prevent against overflows.
-	if maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
+	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
 		mset.mu.Unlock()
-		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
@@ -5576,9 +5557,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return ErrMaxPayload
 	}
 
-	if len(hdr) > math.MaxUint16 {
+	if canConsistencyCheck && len(hdr) > math.MaxUint16 {
 		mset.mu.Unlock()
-		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSStreamHeaderExceedsMaximumError()
@@ -5589,10 +5569,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// Check to see if we have exceeded our limits.
-	if js.limitsExceeded(stype) {
+	// Don't error and log/stepdown if we're tracing when clustered.
+	if !isClustered && js.limitsExceeded(stype) {
 		s.resourcesExceededError(stype)
 		mset.mu.Unlock()
-		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSInsufficientResourcesError()
@@ -5675,6 +5655,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// If clustered this was already checked and we do not want to check here and possibly introduce skew.
+	// Don't error and log if we're tracing when clustered.
 	if !isClustered {
 		if exceeded, err := jsa.wouldExceedLimits(stype, tierName, mset.cfg.Replicas, subject, hdr, msg); exceeded {
 			if err == nil {

@@ -16,6 +16,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -625,9 +626,8 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 
 		// We might support these headers later on, but for now error.
 		for key, value := range map[string]string{
-			"Nats-Msg-Id":                 "msgId",
-			"Nats-Expected-Last-Sequence": "0",
-			"Nats-Expected-Last-Msg-Id":   "msgId",
+			"Nats-Msg-Id":               "msgId",
+			"Nats-Expected-Last-Msg-Id": "msgId",
 		} {
 			t.Run(key, func(t *testing.T) {
 				m := nats.NewMsg("foo")
@@ -648,17 +648,21 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	type BatchItem struct {
 		subject string
 		header  nats.Header
+		msg     []byte
 		err     error
 	}
 
 	type BatchTest struct {
-		title              string
-		allowTTL           bool
-		allowMsgCounter    bool
-		interestDiscardNew bool
-		init               func(mset *stream)
-		batch              []BatchItem
-		validate           func(mset *stream, commit bool)
+		title             string
+		allowRollup       bool
+		denyPurge         bool
+		allowTTL          bool
+		allowMsgCounter   bool
+		discardNew        bool
+		discardNewPerSubj bool
+		init              func(mset *stream)
+		batch             []BatchItem
+		validate          func(mset *stream, commit bool)
 	}
 
 	tests := []BatchTest{
@@ -754,23 +758,93 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			},
 		},
 		{
-			title:              "interest-discard-new",
-			interestDiscardNew: true,
+			title:      "discard-new",
+			discardNew: true,
 			batch: []BatchItem{
-				{subject: "foo"},
-				{subject: "foo_2"},
+				{subject: "foo1"},
+				{subject: "foo2"},
 			},
 			validate: func(mset *stream, commit bool) {
 				if !commit {
 					require_Len(t, len(mset.inflight), 0)
 				} else {
 					require_Len(t, len(mset.inflight), 2)
-					require_Equal(t, mset.inflight[0], 19)
-					require_Equal(t, mset.inflight[1], 21)
+					require_Equal(t, *mset.inflight["foo1"], inflightSubjectRunningTotal{bytes: 20, ops: 1})
+					require_Equal(t, *mset.inflight["foo2"], inflightSubjectRunningTotal{bytes: 20, ops: 1})
 				}
 			},
 		},
-		// TODO(mvv): expected-last-sequence header
+		{
+			title:      "discard-new-max-msgs",
+			discardNew: true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "foo"},
+				{subject: "foo", err: ErrMaxMsgs},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 1)
+					require_Equal(t, *mset.inflight["foo"], inflightSubjectRunningTotal{bytes: 19 * 3, ops: 3})
+				}
+			},
+		},
+		{
+			title:      "discard-new-max-bytes",
+			discardNew: true,
+			batch: []BatchItem{
+				{subject: "foo1", msg: bytes.Repeat([]byte("A"), 10)},
+				{subject: "foo2", msg: bytes.Repeat([]byte("A"), 11), err: ErrMaxBytes},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 2)
+					require_Equal(t, *mset.inflight["foo1"], inflightSubjectRunningTotal{bytes: 30, ops: 1})
+					require_Equal(t, *mset.inflight["foo2"], inflightSubjectRunningTotal{bytes: 31, ops: 1})
+				}
+			},
+		},
+		{
+			title:             "discard-new-max-msgs-per-subj",
+			discardNew:        true,
+			discardNewPerSubj: true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "foo", err: ErrMaxMsgsPerSubject},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 1)
+					require_Equal(t, *mset.inflight["foo"], inflightSubjectRunningTotal{bytes: 19 * 2, ops: 2})
+				}
+			},
+		},
+		{
+			title: "expect-last-seq",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSeq: {"0"}}},
+				{subject: "bar", header: nats.Header{JSExpectedLastSeq: {"1"}}},
+			},
+		},
+		{
+			title: "expect-last-seq-invalid-first",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSeq: {"1"}}, err: errors.New("last sequence mismatch: 1 vs 0")},
+			},
+		},
+		{
+			title: "expect-last-seq-invalid",
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSeq: {"0"}}},
+				{subject: "bar", header: nats.Header{JSExpectedLastSeq: {"0"}}, err: errors.New("last sequence mismatch: 0 vs 1")},
+			},
+		},
 		{
 			title: "expect-per-subj-simple",
 			batch: []BatchItem{
@@ -868,6 +942,71 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				require_Len(t, len(mset.expectedPerSubjectInProcess), 1)
 			},
 		},
+		{
+			title: "expect-per-subj-inflight",
+			init: func(mset *stream) {
+				mset.inflight = map[string]*inflightSubjectRunningTotal{"bar": {bytes: 33, ops: 1}}
+			},
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSExpectedLastSubjSeq: {"10"}, JSExpectedLastSubjSeqSubj: {"bar"}}, err: errors.New("last sequence by subject mismatch")},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Len(t, len(mset.expectedPerSubjectSequence), 0)
+				require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+				require_Len(t, len(mset.inflight), 1)
+			},
+		},
+		{
+			title:       "rollup-deny-purge",
+			allowRollup: true,
+			denyPurge:   true,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}, err: errors.New("rollup not permitted")},
+			},
+		},
+		{
+			title:       "rollup-invalid",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {"invalid"}}, err: fmt.Errorf("rollup value invalid: %q", "invalid")},
+			},
+		},
+		{
+			title:       "rollup-all-first",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupAll}}},
+			},
+		},
+		{
+			title:       "rollup-all-not-first",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "bar", header: nats.Header{JSMsgRollup: {JSMsgRollupAll}}, err: errors.New("batch rollup all invalid")},
+			},
+		},
+		{
+			title:       "rollup-sub-unique",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}},
+				{subject: "bar", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}},
+			},
+		},
+		{
+			title:       "rollup-sub-overlap",
+			allowRollup: true,
+			denyPurge:   false,
+			batch: []BatchItem{
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}},
+				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}, err: errors.New("batch rollup sub invalid")},
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -887,22 +1026,24 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 
 			mset, err := s.globalAccount().lookupStream("TEST")
 			require_NoError(t, err)
-			store := mset.store
-			require_NotNil(t, store)
 
 			if test.init != nil {
 				test.init(mset)
 			}
 
 			var (
-				interestPolicy bool
-				discard        DiscardPolicy
-				maxMsgs        int64
-				maxBytes       int64
+				discard       DiscardPolicy
+				discardNewPer bool
+				maxMsgs       int64 = -1
+				maxMsgsPer    int64 = -1
+				maxBytes      int64 = -1
 			)
-			if test.interestDiscardNew {
-				interestPolicy, discard = true, DiscardNew
-				maxMsgs, maxBytes = 10, 1024
+			if test.discardNew {
+				discard, maxMsgs, maxBytes = DiscardNew, 2, 60
+			}
+			if test.discardNewPerSubj {
+				require_True(t, test.discardNew)
+				discardNewPer, maxMsgs, maxMsgsPer = true, -1, 1
 			}
 
 			diff := &batchStagedDiff{}
@@ -915,7 +1056,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, nil, false, "TEST", nil, test.allowTTL, test.allowMsgCounter, MemoryStorage, store, interestPolicy, discard, -1, maxMsgs, maxBytes)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else {

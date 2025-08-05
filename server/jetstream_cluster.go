@@ -3026,7 +3026,26 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// But do not want to acquire lock since tracking this will be rare.
 				if mset.inflight != nil {
 					mset.clMu.Lock()
-					delete(mset.inflight, lseq)
+					if i, found := mset.inflight[subject]; found {
+						// Decrement from pending operations. Once it reaches zero, it can be deleted.
+						if i.ops > 0 {
+							var sz uint64
+							if mset.store.Type() == FileStorage {
+								sz = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+							} else {
+								sz = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+							}
+							if i.bytes >= sz {
+								i.bytes -= sz
+							} else {
+								i.bytes = 0
+							}
+							i.ops--
+						}
+						if i.ops == 0 {
+							delete(mset.inflight, subject)
+						}
+					}
 					mset.clMu.Unlock()
 				}
 
@@ -8032,11 +8051,11 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
-	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
-	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
+	name, stype := mset.cfg.Name, mset.cfg.Storage
+	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
-	isLeader, isSealed, allowTTL, allowMsgCounter, allowAtomicPublish := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowAtomicPublish
+	isLeader, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowAtomicPublish := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowAtomicPublish
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -8304,14 +8323,11 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			if msgId := getMsgId(bhdr); msgId != _EMPTY_ {
 				return errorOnUnsupported(seq, JSMsgId)
 			}
-			if _, ok = getExpectedLastSeq(hdr); ok {
-				return errorOnUnsupported(seq, JSExpectedLastSeq)
-			}
 			if getExpectedLastMsgId(hdr) != _EMPTY_ {
 				return errorOnUnsupported(seq, JSExpectedLastMsgId)
 			}
 
-			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
+			if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 				// TODO(mvv): reset in-memory expected header maps
 				mset.clseq -= seq - 1
 				mset.clMu.Unlock()
@@ -8373,7 +8389,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowTTL, allowMsgCounter, stype, store, interestPolicy, discard, maxMsgSize, maxMsgs, maxBytes); err != nil {
+	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 		// TODO(mvv): reset in-memory expected header maps
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {
