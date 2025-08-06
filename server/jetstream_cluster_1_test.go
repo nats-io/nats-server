@@ -7750,6 +7750,57 @@ func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
 	require_NotEqual(t, node.State(), Closed)
 }
 
+// https://github.com/nats-io/nats-server/issues/7149
+func TestJetStreamClusterConsumerHealthCheckDeleted(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	sjs := cl.getJetStream()
+	sjs.mu.Lock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	if ca == nil {
+		sjs.mu.Unlock()
+		t.Fatal("ca not found")
+	}
+	// Reset created time, simulating the consumer existed already for a while.
+	ca.Created = time.Time{}
+	sjs.mu.Unlock()
+
+	// The health check gathers all assignments and does checking after.
+	// If the consumer was deleted in the meantime, it should not report an error.
+	require_NoError(t, js.DeleteConsumer("TEST", "CONSUMER"))
+	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+
+	// The health check could run earlier than we're able to create the consumer.
+	// In that case, wait before erroring.
+	sjs.mu.Lock()
+	if !ca.deleted {
+		sjs.mu.Unlock()
+		t.Fatal("ca.deleted not set")
+	}
+	ca.deleted = false
+	ca.Created = time.Now()
+	sjs.mu.Unlock()
+	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+}
+
 func TestJetStreamClusterRespectConsumerStartSeq(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
