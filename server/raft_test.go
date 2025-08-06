@@ -2347,6 +2347,7 @@ func TestNRGCatchupDontCountTowardQuorum(t *testing.T) {
 	sub, err := nc.SubscribeSync(aeReply)
 	require_NoError(t, err)
 	defer sub.Drain()
+	require_NoError(t, nc.Flush())
 
 	// Timeline
 	aeMissedMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: aeReply})
@@ -2812,6 +2813,7 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	sub, err := nc.SubscribeSync(voteReply)
 	require_NoError(t, err)
 	defer sub.Drain()
+	require_NoError(t, nc.Flush())
 
 	// Votes on a new leader, and resets notion of "empty vote" to ease getting quorum.
 	require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, candidate: nats0, reply: voteReply}))
@@ -3043,6 +3045,91 @@ func TestNRGSizeAndApplied(t *testing.T) {
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 0)
 	require_Equal(t, bytes, 0)
+}
+
+func TestNRGIgnoreEntryAfterCanceledCatchup(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_True(t, n.catchup != nil)
+
+	csub := n.catchup.sub
+	n.cancelCatchup()
+
+	// Catchup was canceled, a message on this canceled catchup should not be stored.
+	n.processAppendEntry(aeMsg1, csub)
+	require_Equal(t, n.pindex, 0)
+}
+
+func TestNRGDelayedMessagesAfterCatchupDontCountTowardQuorum(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	aeReply := "$TEST"
+	nats0 := "S1Nunr6R" // "nats-0"
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: aeReply})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries, reply: aeReply})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 2, entries: entries, reply: aeReply})
+
+	// Triggers catchup.
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_True(t, n.catchup != nil)
+
+	// Catchup runs partially.
+	n.processAppendEntry(aeMsg1, n.catchup.sub)
+	n.processAppendEntry(aeMsg2, n.catchup.sub)
+	require_Equal(t, n.pindex, 2)
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+	require_NoError(t, n.InstallSnapshot(nil))
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(aeReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// We now receive delayed "real-time" messages.
+	// The first message needs to be a copy, because we've committed it before and returned it to the pool.
+	aeMsg1Copy := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: aeReply})
+	n.processAppendEntry(aeMsg1Copy, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	// Should NOT reply "success", otherwise we would wrongfully provide quorum while not having an up-to-date log.
+	_, err = sub.NextMsg(500 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	// Should NOT reply "success", otherwise we would wrongfully provide quorum while not having an up-to-date log.
+	_, err = sub.NextMsg(500 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_Equal(t, n.pindex, 3)
+	// Should reply "success", this is the latest message.
+	msg, err := sub.NextMsg(500 * time.Millisecond)
+	require_NoError(t, err)
+	ar := n.decodeAppendEntryResponse(msg.Data)
+	require_Equal(t, ar.index, 3)
+	require_True(t, ar.success)
+	require_Equal(t, msg.Reply, _EMPTY_)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
