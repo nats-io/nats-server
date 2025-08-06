@@ -1100,8 +1100,8 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	if n.applied > n.papplied {
 		entries = n.applied - n.papplied
 	}
-	if n.bytes > 0 {
-		bytes = entries * n.bytes / (n.pindex - n.papplied)
+	if msgs := n.pindex - n.papplied; msgs > 0 {
+		bytes = entries * n.bytes / msgs
 	}
 	return entries, bytes
 }
@@ -3316,6 +3316,10 @@ func (n *raft) truncateWAL(term, index uint64) {
 		if n.papplied > n.applied {
 			n.papplied = n.applied
 		}
+		// Refresh bytes count after truncate.
+		var state StreamState
+		n.wal.FastState(&state)
+		n.bytes = state.Bytes
 	}()
 
 	if err := n.wal.Truncate(index); err != nil {
@@ -3431,9 +3435,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
-	// If we are catching up ignore old catchup subs.
+	// If we are/were catching up ignore old catchup subs.
 	// This could happen when we stall or cancel a catchup.
-	if !isNew && catchingUp && sub != n.catchup.sub {
+	if !isNew && sub != nil && (!catchingUp || sub != n.catchup.sub) {
 		n.Unlock()
 		n.debug("AppendEntry ignoring old entry from previous catchup")
 		return
@@ -3514,7 +3518,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
 			n.debug("AppendEntry detected pindex less than/equal to ours: [%d:%d] vs [%d:%d]", ae.pterm, ae.pindex, n.pterm, n.pindex)
-			var ar *appendEntryResponse
 			var success bool
 
 			if ae.pindex < n.commit {
@@ -3523,10 +3526,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.debug("AppendEntry pindex %d below commit %d, marking success", ae.pindex, n.commit)
 			} else if eae, _ := n.loadEntry(ae.pindex); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
-				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
-				if ae.pterm == n.pterm && !catchingUp {
+				// This can happen on server restarts based on timings of snapshots.
+				if ae.pterm == n.pterm && isNew {
 					success = true
-					n.debug("AppendEntry pindex %d already processed, marking success", ae.pindex, n.commit)
+					n.debug("AppendEntry pindex %d already processed, marking success", ae.pindex)
 				} else if ae.pindex == n.pindex {
 					// Check if only our terms do not match here.
 					// Make sure pterms match and we take on the leader's.
@@ -3564,12 +3567,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if !success {
 				n.cancelCatchup()
 			}
-
-			// Create response.
-			ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, success)
+			// Intentionally not responding. Otherwise, we could erroneously report "success". Reporting
+			// non-success is not needed either, and would only be wasting messages.
+			// For example, if we got partial catchup, and then the "real-time" messages came in very delayed.
+			// If we reported "success" on those "real-time" messages, we'd wrongfully be providing
+			// quorum while not having an up-to-date log.
 			n.Unlock()
-			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
-			arPool.Put(ar)
 			return
 		}
 
@@ -3722,6 +3725,7 @@ CONTINUE:
 
 	// Only ever respond to new entries.
 	// Never respond to catchup messages, because providing quorum based on this is unsafe.
+	// The only way for the leader to receive "success" MUST be through this path.
 	var ar *appendEntryResponse
 	if sub != nil && isNew {
 		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
