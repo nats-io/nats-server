@@ -151,6 +151,7 @@ type LeafNodeOpts struct {
 	Port           int           `json:"port,omitempty"`
 	Username       string        `json:"-"`
 	Password       string        `json:"-"`
+	ProxyRequired  bool          `json:"-"`
 	Nkey           string        `json:"-"`
 	Account        string        `json:"-"`
 	Users          []*User       `json:"-"`
@@ -324,6 +325,7 @@ type Options struct {
 	NoSystemAccount            bool          `json:"-"`
 	Username                   string        `json:"-"`
 	Password                   string        `json:"-"`
+	ProxyRequired              bool          `json:"-"`
 	Authorization              string        `json:"-"`
 	AuthCallout                *AuthCallout  `json:"-"`
 	PingInterval               time.Duration `json:"ping_interval"`
@@ -444,6 +446,9 @@ type Options struct {
 	// OCSPConfig enables OCSP Stapling in the server.
 	OCSPConfig    *OCSPConfig
 	tlsConfigOpts *TLSConfigOpts
+
+	// Proxies configuration.
+	Proxies *ProxiesConfig
 
 	// private fields, used to know if bool options are explicitly
 	// defined in config and/or command line params.
@@ -729,6 +734,8 @@ type authorization struct {
 	token string
 	nkey  string
 	acc   string
+	// If connection must come through proxy
+	proxyRequired bool
 	// Multiple Nkeys/Users
 	nkeys              []*NkeyUser
 	users              []*User
@@ -779,6 +786,17 @@ type OCSPConfig struct {
 
 	// OverrideURLs is the http URL endpoint used to get OCSP staples.
 	OverrideURLs []string
+}
+
+// ProxiesConfig represents the options of Proxies.
+type ProxiesConfig struct {
+	Trusted []*ProxyConfig
+}
+
+// ProxyConfig represents the options of Proxy.
+type ProxyConfig struct {
+	// Public key.
+	Key string
 }
 
 var tlsUsage = `
@@ -1063,6 +1081,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.authBlockDefined = true
 		o.Username = auth.user
 		o.Password = auth.pass
+		o.ProxyRequired = auth.proxyRequired
 		o.Authorization = auth.token
 		o.AuthTimeout = auth.timeout
 		o.AuthCallout = auth.callout
@@ -1727,6 +1746,13 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.NoFastProducerStall = v.(bool)
 	case "max_closed_clients":
 		o.MaxClosedClients = int(v.(int64))
+	case "proxies":
+		proxies, err := parseProxies(tk, errors)
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+		o.Proxies = proxies
 	default:
 		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 			err := &unknownConfigFieldErr{
@@ -2600,6 +2626,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 			}
 			opts.LeafNode.Username = auth.user
 			opts.LeafNode.Password = auth.pass
+			opts.LeafNode.ProxyRequired = auth.proxyRequired
 			opts.LeafNode.AuthTimeout = auth.timeout
 			opts.LeafNode.Account = auth.acc
 			opts.LeafNode.Users = auth.users
@@ -2726,6 +2753,8 @@ func parseLeafAuthorization(v any, errors, warnings *[]error) (*authorization, e
 			auth.users = users
 		case "account":
 			auth.acc = mv.(string)
+		case "proxy_required":
+			auth.proxyRequired = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2784,6 +2813,8 @@ func parseLeafUsers(mv any, errors *[]error) ([]*User, error) {
 				// we need to create internal objects to store u/p and account
 				// name and have a server structure to hold that.
 				user.Account = NewAccount(v.(string))
+			case "proxy_required":
+				user.ProxyRequired = v.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -4273,6 +4304,8 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 				continue
 			}
 			auth.callout = ac
+		case "proxy_required":
+			auth.proxyRequired = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -4345,6 +4378,9 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 				cts := parseAllowedConnectionTypes(tk, &lt, v, errors)
 				nkey.AllowedConnectionTypes = cts
 				user.AllowedConnectionTypes = cts
+			case "proxy_required":
+				nkey.ProxyRequired = v.(bool)
+				user.ProxyRequired = v.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -5356,6 +5392,94 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 		}
 	}
 	return nil
+}
+
+func parseProxies(mv any, errors *[]error) (*ProxiesConfig, error) {
+	var (
+		tk      token
+		lt      token
+		proxies = &ProxiesConfig{}
+	)
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, mv = unwrapValue(mv, &lt)
+	pm, ok := mv.(map[string]any)
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("expected proxies to be a map/struct, got %T", mv)}
+	}
+	for mk, mv := range pm {
+		tk, _ = unwrapValue(mv, &lt)
+
+		switch strings.ToLower(mk) {
+		case "trusted":
+			trusted, err := parseProxiesTrusted(tk, errors)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			proxies.Trusted = trusted
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+			}
+		}
+	}
+	return proxies, nil
+}
+
+func parseProxiesTrusted(mv any, errors *[]error) ([]*ProxyConfig, error) {
+	var (
+		tk      token
+		lt      token
+		trusted []*ProxyConfig
+	)
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, mv = unwrapValue(mv, &lt)
+	ta, ok := mv.([]any)
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("expected proxies' trusted field to be an array, got %T", mv)}
+	}
+	for _, t := range ta {
+		tk, t = unwrapValue(t, &lt)
+		// Check its a map/struct
+		tm, ok := t.(map[string]any)
+		if !ok {
+			err := &configErr{tk, fmt.Sprintf("expected proxies' trusted entry to be a map/struct, got %T", t)}
+			*errors = append(*errors, err)
+			continue
+		}
+		proxy := &ProxyConfig{}
+		for k, v := range tm {
+			tk, v = unwrapValue(v, &lt)
+			switch strings.ToLower(k) {
+			case "key", "public_key":
+				proxy.Key = v.(string)
+				if !nkeys.IsValidPublicKey(proxy.Key) {
+					*errors = append(*errors, &configErr{tk, fmt.Sprintf("invalid proxy key %q", proxy.Key)})
+				}
+			default:
+				if !tk.IsUsedVariable() {
+					err := &unknownConfigFieldErr{
+						field: k,
+						configErr: configErr{
+							token: tk,
+						},
+					}
+					*errors = append(*errors, err)
+					continue
+				}
+			}
+		}
+		trusted = append(trusted, proxy)
+	}
+	return trusted, nil
 }
 
 // GenTLSConfig loads TLS related configuration parameters.

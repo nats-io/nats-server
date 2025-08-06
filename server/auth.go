@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -65,6 +66,7 @@ type NkeyUser struct {
 	Account                *Account            `json:"account,omitempty"`
 	SigningKey             string              `json:"signing_key,omitempty"`
 	AllowedConnectionTypes map[string]struct{} `json:"connection_types,omitempty"`
+	ProxyRequired          bool                `json:"proxy_required,omitempty"`
 }
 
 // User is for multiple accounts/users.
@@ -75,6 +77,7 @@ type User struct {
 	Account                *Account            `json:"account,omitempty"`
 	ConnectionDeadline     time.Time           `json:"connection_deadline,omitempty"`
 	AllowedConnectionTypes map[string]struct{} `json:"connection_types,omitempty"`
+	ProxyRequired          bool                `json:"proxy_required,omitempty"`
 }
 
 // clone performs a deep copy of the User struct, returning a new clone with
@@ -593,10 +596,30 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		ao   bool // auth override
 	)
 
+	// Little helper that will log the error as a debug statement, set the auth error in
+	// the connection and return false to indicate authentication failure.
+	setProxyAuthError := func(err error) bool {
+		c.Debugf(err.Error())
+		c.setAuthError(err)
+		return false
+	}
+
+	// Indicate if this connection came from a trusted proxy. Note that if
+	// trustedProxy could be false even if the connection is proxied, but it
+	// means that there was no trusted proxy configured.
+	trustedProxy, ok := s.proxyCheck(c, opts)
+	if trustedProxy && !ok {
+		return setProxyAuthError(ErrAuthProxyNotTrusted)
+	}
+
+	var proxyRequired bool
 	// Check if we have auth callouts enabled at the server level or in the bound account.
 	defer func() {
-		// Default reason
-		reason := AuthenticationViolation.String()
+		authErr := c.getAuthError()
+		if authErr == nil {
+			authErr = ErrAuthentication
+		}
+		reason := getAuthErrClosedState(authErr).String()
 		// No-op
 		if juc == nil && opts.AuthCallout == nil {
 			if !authorized {
@@ -656,7 +679,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		// If we are here we have an auth callout defined and we have failed auth so far
 		// so we will callout to our auth backend for processing.
 		if !skip {
-			authorized, reason = s.processClientOrLeafCallout(c, opts)
+			authorized, reason = s.processClientOrLeafCallout(c, opts, proxyRequired, trustedProxy)
 		}
 		// Check if we are authorized and in the auth callout account, and if so add in deny publish permissions for the auth subject.
 		if authorized {
@@ -773,6 +796,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			s.mu.Unlock()
 			c.Debugf("User JWT not valid: %v", err)
 			return false
+		}
+		if proxyRequired = juc.ProxyRequired; proxyRequired && !trustedProxy {
+			s.mu.Unlock()
+			return setProxyAuthError(ErrAuthProxyRequired)
 		}
 		vr := jwt.CreateValidationResults()
 		juc.Validate(vr)
@@ -1050,6 +1077,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	}
 
 	if nkey != nil {
+		if proxyRequired = nkey.ProxyRequired; proxyRequired && !trustedProxy {
+			return setProxyAuthError(ErrAuthProxyRequired)
+		}
 		// If we did not match noAuthUser check signature which is required.
 		if nkey.Nkey != noAuthUser {
 			if c.opts.Sig == _EMPTY_ {
@@ -1081,6 +1111,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		return true
 	}
 	if user != nil {
+		if proxyRequired = user.ProxyRequired; proxyRequired && !trustedProxy {
+			return setProxyAuthError(ErrAuthProxyRequired)
+		}
 		ok = comparePasswords(user.Password, c.opts.Password)
 		// If we are authorized, register the user which will properly setup any permissions
 		// for pub/sub authorizations.
@@ -1091,6 +1124,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	}
 
 	if c.kind == CLIENT {
+		if proxyRequired = opts.ProxyRequired; proxyRequired && !trustedProxy {
+			return setProxyAuthError(ErrAuthProxyRequired)
+		}
 		if token != _EMPTY_ {
 			return comparePasswords(token, c.opts.Token)
 		} else if username != _EMPTY_ {
@@ -1101,6 +1137,61 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		}
 	}
 	return false
+}
+
+// If there are configured trusted proxies and this connection comes
+// from a proxy whose signature can be verified by one of the known
+// trusted key, this function will return `true, true`. If the signature
+// cannot be verified by any, it will return `true, false`.
+// If the connectio is not proxied, or there are no configured trusted
+// proxies, then this function returns `false, false`.
+//
+// Server lock MUST NOT be held on entry since this function will grab
+// the read lock to extract the list of proxy trusted keys. The signature
+// verification process will be done outside of the lock.
+func (s *Server) proxyCheck(c *client, opts *Options) (bool, bool) {
+	// If there is no signature or no configured trusted proxy, return false.
+	psig := c.opts.ProxySig
+	if psig == _EMPTY_ || opts.Proxies == nil || len(opts.Proxies.Trusted) == 0 {
+		return false, false
+	}
+	// Decode the signature.
+	sig, err := base64.RawURLEncoding.DecodeString(psig)
+	if err != nil {
+		c.Debugf("Proxy signature not valid base64")
+		return true, false
+	}
+	// Go through the trusted keys and verify the signature.
+	s.mu.RLock()
+	keys := slices.Clone(s.proxiesKeyPairs)
+	s.mu.RUnlock()
+	for _, kp := range keys {
+		// We stop at the first that is valid.
+		if err := kp.Verify(c.nonce, sig); err == nil {
+			pub, _ := kp.PublicKey()
+			// Track which proxy public key is used by this connection.
+			c.mu.Lock()
+			c.proxyKey = pub
+			cid := c.cid
+			c.mu.Unlock()
+			// Track this proxied connection so that it can be closed
+			// if the trusted key is removed on configuration reload.
+			s.mu.Lock()
+			if s.proxiedConns == nil {
+				s.proxiedConns = make(map[string]map[uint64]*client)
+			}
+			clients := s.proxiedConns[pub]
+			if clients == nil {
+				clients = make(map[uint64]*client)
+			}
+			clients[cid] = c
+			s.proxiedConns[pub] = clients
+			s.mu.Unlock()
+			return true, true
+		}
+	}
+	// We could not verify the signature, so indicate failure.
+	return true, false
 }
 
 func getTLSAuthDCs(rdns *pkix.RDNSequence) string {
@@ -1351,7 +1442,25 @@ func (s *Server) registerLeafWithAccount(c *client, account string) bool {
 func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	opts := s.getOpts()
 
-	isAuthorized := func(username, password, account string) bool {
+	setProxyAuthError := func(err error) bool {
+		c.Debugf(err.Error())
+		c.setAuthError(err)
+		return false
+	}
+
+	isAuthorized := func(username, password, account string, proxyRequired bool) bool {
+		trustedProxy, ok := s.proxyCheck(c, opts)
+		if trustedProxy && !ok {
+			return setProxyAuthError(ErrAuthProxyNotTrusted)
+		}
+		// A given user may not be required, but if the boolean is set at the
+		// authorization top-level, then override.
+		if !proxyRequired && opts.LeafNode.ProxyRequired {
+			proxyRequired = true
+		}
+		if proxyRequired && !trustedProxy {
+			return setProxyAuthError(ErrAuthProxyRequired)
+		}
 		if username != c.opts.Username {
 			return false
 		}
@@ -1365,8 +1474,16 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	// The user in CONNECT must match. We will bind to the account associated
 	// with that user (from the leafnode's authorization{} config).
 	if opts.LeafNode.Username != _EMPTY_ {
-		return isAuthorized(opts.LeafNode.Username, opts.LeafNode.Password, opts.LeafNode.Account)
+		return isAuthorized(opts.LeafNode.Username, opts.LeafNode.Password, opts.LeafNode.Account,
+			opts.LeafNode.ProxyRequired)
 	} else if opts.LeafNode.Nkey != _EMPTY_ {
+		trustedProxy, ok := s.proxyCheck(c, opts)
+		if trustedProxy && !ok {
+			return false
+		}
+		if opts.LeafNode.ProxyRequired && !trustedProxy {
+			return setProxyAuthError(ErrAuthProxyRequired)
+		}
 		if c.opts.Nkey != opts.LeafNode.Nkey {
 			return false
 		}
@@ -1420,7 +1537,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 			}
 			// This will authorize since are using an existing user,
 			// but it will also register with proper account.
-			return isAuthorized(user.Username, user.Password, accName)
+			return isAuthorized(user.Username, user.Password, accName, user.ProxyRequired)
 		}
 
 		// This is expected to be a very small array.
@@ -1430,7 +1547,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 				if u.Account != nil {
 					accName = u.Account.Name
 				}
-				return isAuthorized(u.Username, u.Password, accName)
+				return isAuthorized(u.Username, u.Password, accName, u.ProxyRequired)
 			}
 		}
 		return false
@@ -1534,4 +1651,46 @@ func validateNoAuthUser(o *Options, noAuthUser string) error {
 	return fmt.Errorf(
 		`no_auth_user: "%s" not present as user or nkey in authorization block or account configuration`,
 		noAuthUser)
+}
+
+func validateProxies(o *Options) error {
+	if o.Proxies == nil {
+		return nil
+	}
+	for _, p := range o.Proxies.Trusted {
+		if !nkeys.IsValidPublicKey(p.Key) {
+			return fmt.Errorf("proxy trusted key %q is invalid", p.Key)
+		}
+	}
+	return nil
+}
+
+// Create a list of nkeys.KeyPair corresponding to the public keys
+// of the Proxies.TrustedKeys list.
+// Server lock must be held on entry.
+func (s *Server) processProxiesTrustedKeys() {
+	// We could be here on reload.
+	if s.proxiesKeyPairs != nil {
+		s.proxiesKeyPairs = s.proxiesKeyPairs[:0]
+	}
+	if opts := s.getOpts(); opts.Proxies == nil {
+		return
+	}
+	for _, p := range s.getOpts().Proxies.Trusted {
+		// Can't fail since we have already checked that it was a valid key.
+		kp, _ := nkeys.FromPublicKey(p.Key)
+		s.proxiesKeyPairs = append(s.proxiesKeyPairs, kp)
+	}
+}
+
+// Returns the connection's `ClosedState` for the given authenication error.
+func getAuthErrClosedState(authErr error) ClosedState {
+	switch authErr {
+	case ErrAuthProxyNotTrusted:
+		return ProxyNotTrusted
+	case ErrAuthProxyRequired:
+		return ProxyRequired
+	default:
+		return AuthenticationViolation
+	}
 }

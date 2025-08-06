@@ -133,6 +133,7 @@ type Info struct {
 	ConnectInfo       bool     `json:"connect_info,omitempty"`   // When true this is the server INFO response to CONNECT
 	RemoteAccount     string   `json:"remote_account,omitempty"` // Lets the client or leafnode side know the remote account that they bind to.
 	IsSystemAccount   bool     `json:"acc_is_sys,omitempty"`     // Indicates if the account is a system account.
+	JSApiLevel        int      `json:"api_lvl,omitempty"`
 
 	// Route Specific
 	Import        *SubjectPermission `json:"import,omitempty"`
@@ -371,6 +372,11 @@ type Server struct {
 	// Controls whether or not the account NRG capability is set in statsz.
 	// Currently used by unit tests to simulate nodes not supporting account NRG.
 	accountNRGAllowed atomic.Bool
+
+	// List of proxies trusted keys in `KeyPair` form so we can do signature
+	// verification when processing incoming proxy connections.
+	proxiesKeyPairs []nkeys.KeyPair
+	proxiedConns    map[string]map[uint64]*client
 }
 
 // For tracking JS nodes.
@@ -732,6 +738,7 @@ func NewServer(opts *Options) (*Server, error) {
 		Headers:      !opts.NoHeaderSupport,
 		Cluster:      opts.Cluster.Name,
 		Domain:       opts.JetStreamDomain,
+		JSApiLevel:   JSApiLevel,
 	}
 
 	if tlsReq && !info.TLSRequired {
@@ -799,6 +806,11 @@ func NewServer(opts *Options) (*Server, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// If there are proxies trusted public keys in the configuration
+	// this will fill create the corresponding list of nkeys.KeyPair
+	// that we can use for signature verification.
+	s.processProxiesTrustedKeys()
 
 	// Place ourselves in the JetStream nodeInfo if needed.
 	if opts.JetStream {
@@ -1123,6 +1135,10 @@ func validateOptions(o *Options) error {
 	}
 	// Check that authentication is properly configured.
 	if err := validateAuth(o); err != nil {
+		return err
+	}
+	// Check that proxies is properly configured.
+	if err := validateProxies(o); err != nil {
 		return err
 	}
 	// Check that gateway is properly configured. Returns no error
@@ -3589,12 +3605,16 @@ func (s *Server) removeClient(c *client) {
 		if c.kind == CLIENT && c.opts.Protocol >= ClientProtoInfo {
 			updateProtoInfoCount = true
 		}
+		proxyKey := c.proxyKey
 		c.mu.Unlock()
 
 		s.mu.Lock()
 		delete(s.clients, cid)
 		if updateProtoInfoCount {
 			s.cproto--
+		}
+		if proxyKey != _EMPTY_ {
+			s.removeProxiedConn(proxyKey, cid)
 		}
 		s.mu.Unlock()
 	case ROUTER:
@@ -3603,6 +3623,18 @@ func (s *Server) removeClient(c *client) {
 		s.removeRemoteGatewayConnection(c)
 	case LEAF:
 		s.removeLeafNodeConnection(c)
+	}
+}
+
+// Remove the connection with id `cid` from the map of connections
+// under the public key `key` of the trusted proxies.
+//
+// Server lock must be held on entry.
+func (s *Server) removeProxiedConn(key string, cid uint64) {
+	conns := s.proxiedConns[key]
+	delete(conns, cid)
+	if len(conns) == 0 {
+		delete(s.proxiedConns, key)
 	}
 }
 

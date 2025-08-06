@@ -756,6 +756,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Domain:        opts.JetStreamDomain,
 		Proto:         s.getServerProto(),
 		InfoOnConnect: true,
+		JSApiLevel:    JSApiLevel,
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -1065,6 +1066,8 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		if cm := opts.LeafNode.Compression.Mode; cm != CompressionNotSupported {
 			info.Compression = cm
 		}
+		// We always send a nonce for LEAF connections. Do not change that without
+		// taking into account presence of proxy trusted keys.
 		s.generateNonce(nonce[:])
 		s.mu.Unlock()
 	}
@@ -1804,9 +1807,13 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 			c.leaf.gwSub = nil
 		}
 	}
+	proxyKey := c.proxyKey
 	c.mu.Unlock()
 	s.mu.Lock()
 	delete(s.leafs, cid)
+	if proxyKey != _EMPTY_ {
+		s.removeProxiedConn(proxyKey, cid)
+	}
 	s.mu.Unlock()
 	s.removeFromTempClients(cid)
 }

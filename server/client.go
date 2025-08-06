@@ -223,6 +223,8 @@ const (
 	MinimumVersionRequired
 	ClusterNamesIdentical
 	Kicked
+	ProxyNotTrusted
+	ProxyRequired
 )
 
 // Some flags passed to processMsgResults
@@ -271,6 +273,7 @@ type client struct {
 	msgb       [msgScratchSize]byte
 	last       time.Time
 	lastIn     time.Time
+	proxyKey   string
 
 	repliesSincePrune uint16
 	lastReplyPrune    time.Time
@@ -299,6 +302,13 @@ type client struct {
 	nameTag string
 
 	tlsTo *time.Timer
+
+	// Authentication error override. This is used because the authentication
+	// stack is simply returning a boolean, and the only authentication error
+	// reported is the generic `ErrAuthentication`. In the authentication code,
+	// if we want to report a different error, we can now set this field
+	// and `authViolation()` will use that one.
+	authErr error
 }
 
 type rrTracking struct {
@@ -653,6 +663,9 @@ type ClientOpts struct {
 
 	// Leafnodes
 	RemoteAccount string `json:"remote_account,omitempty"`
+
+	// Proxy would include its own nonce signature.
+	ProxySig string `json:"proxy_sig,omitempty"`
 }
 
 var defaultOpts = ClientOpts{Verbose: true, Pedantic: true, Echo: true}
@@ -2277,6 +2290,12 @@ func (c *client) accountAuthExpired() {
 }
 
 func (c *client) authViolation() {
+	authErr := c.getAuthError()
+	if authErr == nil {
+		authErr = ErrAuthentication
+	}
+	reason := getAuthErrClosedState(authErr)
+
 	var s *Server
 	var hasTrustedNkeys, hasNkeys, hasUsers bool
 	if s = c.srv; s != nil {
@@ -2285,30 +2304,31 @@ func (c *client) authViolation() {
 		hasNkeys = s.nkeys != nil
 		hasUsers = s.users != nil
 		s.mu.RUnlock()
-		defer s.sendAuthErrorEvent(c)
+		defer s.sendAuthErrorEvent(c, reason.String())
 	}
 
 	if hasTrustedNkeys {
-		c.Errorf("%v", ErrAuthentication)
+		c.Errorf("%v", authErr)
 	} else if hasNkeys {
 		c.Errorf("%s - Nkey %q",
-			ErrAuthentication.Error(),
+			authErr.Error(),
 			c.opts.Nkey)
 	} else if hasUsers {
 		c.Errorf("%s - User %q",
-			ErrAuthentication.Error(),
+			authErr.Error(),
 			c.opts.Username)
 	} else {
 		if c.srv != nil {
-			c.Errorf(ErrAuthentication.Error())
+			c.Errorf(authErr.Error())
 		}
 	}
 	if c.isMqtt() {
 		c.mqttEnqueueConnAck(mqttConnAckRCNotAuthorized, false)
 	} else {
+		// Send this to client, regardless of the authErr override.
 		c.sendErr("Authorization Violation")
 	}
-	c.closeConnection(AuthenticationViolation)
+	c.closeConnection(reason)
 }
 
 func (c *client) maxAccountConnExceeded() {
@@ -6397,4 +6417,19 @@ func (c *client) setFirstPingTimer() {
 		c.ping.tmr.Stop()
 	}
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
+}
+
+// Sets this error as the authentication error. To be used in authViolation()
+// to report an error different of `ErrAuthentication`.
+func (c *client) setAuthError(err error) {
+	c.mu.Lock()
+	c.authErr = err
+	c.mu.Unlock()
+}
+
+// Returns the authentication error set in the connection, possibly nil.
+func (c *client) getAuthError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.authErr
 }

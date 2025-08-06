@@ -146,9 +146,15 @@ type ConnInfo struct {
 	NameTag        string         `json:"name_tag,omitempty"`
 	Tags           jwt.TagList    `json:"tags,omitempty"`
 	MQTTClient     string         `json:"mqtt_client,omitempty"` // This is the MQTT client id
+	Proxy          *ProxyInfo     `json:"proxy,omitempty"`
 
 	// Internal
 	rtt int64 // For fast sorting
+}
+
+// ProxyInfo represents the information about this proxied connection.
+type ProxyInfo struct {
+	Key string `json:"key"`
 }
 
 // TLSPeerCert contains basic information about a TLS peer certificate
@@ -571,6 +577,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	// we need to use atomic here.
 	ci.InMsgs = atomic.LoadInt64(&client.inMsgs)
 	ci.InBytes = atomic.LoadInt64(&client.inBytes)
+	ci.Proxy = createProxyInfo(client)
 
 	// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
 	// Exclude clients that are still doing handshake so we don't block in
@@ -591,6 +598,17 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 		ci.Port = int(client.port)
 		ci.IP = client.host
 	}
+}
+
+// If this client came from a trusted proxy, this will return a ProxyInfo
+// to be used in ConnInfo or LeafInfo.
+//
+// Client lock must be held on entry.
+func createProxyInfo(c *client) *ProxyInfo {
+	if c.proxyKey == _EMPTY_ {
+		return nil
+	}
+	return &ProxyInfo{Key: c.proxyKey}
 }
 
 func makePeerCerts(pc []*x509.Certificate) []*TLSPeerCert {
@@ -1254,6 +1272,7 @@ type Varz struct {
 	PinnedAccountFail     uint64                 `json:"pinned_account_fails,omitempty"`    // PinnedAccountFail is how often user logon fails due to the issuer account not being pinned.
 	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         // OCSPResponseCache is the state of the OCSP cache // OCSPResponseCache holds information about
 	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`               // SlowConsumersStats is statistics about all detected Slow Consumer
+	Proxies               *ProxiesOptsVarz       `json:"proxies,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1368,6 +1387,16 @@ type OCSPResponseCacheVarz struct {
 	Revokes   int64  `json:"cached_revoked_responses,omitempty"` // Revokes is how many of the stored cache entries are revokes
 	Goods     int64  `json:"cached_good_responses,omitempty"`    // Goods is how many of the stored cache entries are good responses
 	Unknowns  int64  `json:"cached_unknown_responses,omitempty"` // Unknowns  is how many of the stored cache entries are unknown responses
+}
+
+// ProxiesOptsVarz contains monitoring proxies information
+type ProxiesOptsVarz struct {
+	Trusted []*ProxyOptsVarz `json:"trusted,omitempty"`
+}
+
+// ProxyOptsVarz contains monitoring proxy information
+type ProxyOptsVarz struct {
+	Key string `json:"key"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1720,6 +1749,19 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.Websocket.TLSPinnedCerts = getPinnedCertsAsSlice(opts.Websocket.TLSPinnedCerts)
 
 	v.TLSOCSPPeerVerify = s.ocspPeerVerify && v.TLSRequired && s.opts.tlsConfigOpts != nil && s.opts.tlsConfigOpts.OCSPPeerConfig != nil && s.opts.tlsConfigOpts.OCSPPeerConfig.Verify
+
+	if opts.Proxies != nil {
+		if v.Proxies == nil {
+			v.Proxies = &ProxiesOptsVarz{}
+		}
+		trusted := make([]*ProxyOptsVarz, 0, len(opts.Proxies.Trusted))
+		for _, t := range opts.Proxies.Trusted {
+			trusted = append(trusted, &ProxyOptsVarz{Key: t.Key})
+		}
+		v.Proxies.Trusted = trusted
+	} else {
+		v.Proxies = nil
+	}
 }
 
 func getPinnedCertsAsSlice(certs PinnedCertSet) []string {
@@ -2254,20 +2296,21 @@ type LeafzOptions struct {
 
 // LeafInfo has detailed information on each remote leafnode connection.
 type LeafInfo struct {
-	ID          uint64   `json:"id"`
-	Name        string   `json:"name"`
-	IsSpoke     bool     `json:"is_spoke"`
-	Account     string   `json:"account"`
-	IP          string   `json:"ip"`
-	Port        int      `json:"port"`
-	RTT         string   `json:"rtt,omitempty"`
-	InMsgs      int64    `json:"in_msgs"`
-	OutMsgs     int64    `json:"out_msgs"`
-	InBytes     int64    `json:"in_bytes"`
-	OutBytes    int64    `json:"out_bytes"`
-	NumSubs     uint32   `json:"subscriptions"`
-	Subs        []string `json:"subscriptions_list,omitempty"`
-	Compression string   `json:"compression,omitempty"`
+	ID          uint64     `json:"id"`
+	Name        string     `json:"name"`
+	IsSpoke     bool       `json:"is_spoke"`
+	Account     string     `json:"account"`
+	IP          string     `json:"ip"`
+	Port        int        `json:"port"`
+	RTT         string     `json:"rtt,omitempty"`
+	InMsgs      int64      `json:"in_msgs"`
+	OutMsgs     int64      `json:"out_msgs"`
+	InBytes     int64      `json:"in_bytes"`
+	OutBytes    int64      `json:"out_bytes"`
+	NumSubs     uint32     `json:"subscriptions"`
+	Subs        []string   `json:"subscriptions_list,omitempty"`
+	Compression string     `json:"compression,omitempty"`
+	Proxy       *ProxyInfo `json:"proxy,omitempty"`
 }
 
 // Leafz returns a Leafz structure containing information about leafnodes.
@@ -2310,6 +2353,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 				OutBytes:    ln.outBytes,
 				NumSubs:     uint32(len(ln.subs)),
 				Compression: ln.leaf.compression,
+				Proxy:       createProxyInfo(ln),
 			}
 			if opts != nil && opts.Subscriptions {
 				lni.Subs = make([]string, 0, len(ln.subs))
@@ -2522,6 +2566,10 @@ func (reason ClosedState) String() string {
 		return "Cluster Names Identical"
 	case Kicked:
 		return "Kicked"
+	case ProxyNotTrusted:
+		return "Proxy Not Trusted"
+	case ProxyRequired:
+		return "Proxy Required"
 	}
 
 	return "Unknown State"

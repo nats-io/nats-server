@@ -2610,7 +2610,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 }
 
 // This is the system level event sent to the system account for operators.
-func (s *Server) sendAuthErrorEvent(c *client) {
+func (s *Server) sendAuthErrorEvent(c *client, reason string) {
 	s.mu.Lock()
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
@@ -2658,7 +2658,7 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 				Bytes: c.outBytes,
 			},
 		},
-		Reason: AuthenticationViolation.String(),
+		Reason: reason,
 	}
 	c.mu.Unlock()
 

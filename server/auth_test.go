@@ -16,6 +16,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 func TestUserCloneNilPermissions(t *testing.T) {
@@ -387,4 +389,374 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 
 	time.Sleep(1200 * time.Millisecond)
 	checkClientsCount(t, s, 0)
+}
+
+type captureProxyRequiredLogger struct {
+	DummyLogger
+	ch chan string
+}
+
+func (l *captureProxyRequiredLogger) Debugf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, ErrAuthProxyRequired.Error()) {
+		select {
+		case l.ch <- msg:
+		default:
+		}
+	}
+}
+
+func TestAuthProxyRequired(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		authorization {
+			user: user
+			password: pwd
+			proxy_required: true
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	l := &captureProxyRequiredLogger{ch: make(chan string, 1)}
+	s.SetLogger(l, true, false)
+
+	_, err := nats.Connect(s.ClientURL(), nats.UserInfo("user", "pwd"))
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+
+	checkLog := func() {
+		t.Helper()
+		select {
+		case <-l.ch:
+			return
+		case <-time.After(time.Second):
+			t.Fatal("Did not get log statement")
+		}
+	}
+	checkLog()
+
+	drainLog := func() {
+		for {
+			select {
+			case <-l.ch:
+			default:
+				return
+			}
+		}
+	}
+	s.Shutdown()
+	drainLog()
+
+	nkUsr1, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	nkPub1, err := nkUsr1.PublicKey()
+	require_NoError(t, err)
+
+	nkUsr2, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	nkPub2, err := nkUsr2.PublicKey()
+	require_NoError(t, err)
+
+	conf = createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		authorization {
+			users: [
+				{user: user1, password: pwd1}
+				{user: user2, password: pwd2, proxy_required: true}
+				{user: user3, password: pwd3, proxy_required: false}
+				{nkey: "%s", proxy_required: true}
+				{nkey: "%s", proxy_required: false}
+			]
+		}
+	`, nkPub1, nkPub2))
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.SetLogger(l, true, false)
+
+	checkClients := func() {
+		t.Helper()
+		// Should connect ok.
+		nc := natsConnect(t, s.ClientURL(), nats.UserInfo("user1", "pwd1"))
+		nc.Close()
+
+		// Should not, since it requires going through proxy.
+		_, err = nats.Connect(s.ClientURL(), nats.UserInfo("user2", "pwd2"))
+		require_True(t, errors.Is(err, nats.ErrAuthorization))
+		checkLog()
+
+		// Should connect ok.
+		nc = natsConnect(t, s.ClientURL(), nats.UserInfo("user3", "pwd3"))
+		nc.Close()
+
+		// Should not, since it requires going through proxy.
+		_, err = nats.Connect(s.ClientURL(), nats.Nkey(nkPub1, func(nonce []byte) ([]byte, error) {
+			return nkUsr1.Sign(nonce)
+		}))
+		require_True(t, errors.Is(err, nats.ErrAuthorization))
+		checkLog()
+
+		// Should connect ok.
+		nc = natsConnect(t, s.ClientURL(), nats.Nkey(nkPub2, func(nonce []byte) ([]byte, error) {
+			return nkUsr2.Sign(nonce)
+		}))
+		nc.Close()
+	}
+	checkClients()
+	s.Shutdown()
+	drainLog()
+
+	conf = createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		accounts {
+			A {
+				users: [
+					{user: user1, password: pwd1}
+					{user: user2, password: pwd2, proxy_required: true}
+					{user: user3, password: pwd3, proxy_required: false}
+					{nkey: "%s", proxy_required: true}
+					{nkey: "%s", proxy_required: false}
+				]
+			}
+			SYS { users: [ {user:sys, password: pwd} ] }
+		}
+		system_account: SYS
+	`, nkPub1, nkPub2))
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.SetLogger(l, true, false)
+
+	snc := natsConnect(t, s.ClientURL(), nats.UserInfo("sys", "pwd"))
+	defer snc.Close()
+	sub := natsSubSync(t, snc, "$SYS.SERVER.*.CLIENT.AUTH.ERR")
+	sub2 := natsSubSync(t, snc, "$SYS.ACCOUNT.A.DISCONNECT")
+	natsFlush(t, snc)
+
+	checkClients()
+
+	// We should get 2 authentication error messages, saying that
+	// the reason is "ProxyRequired".
+	for range 2 {
+		var de DisconnectEventMsg
+		msg := natsNexMsg(t, sub, time.Second)
+		err = json.Unmarshal(msg.Data, &de)
+		require_NoError(t, err)
+		require_Equal(t, de.Reason, ProxyRequired.String())
+	}
+
+	// We should get 3 disconnect events since only 3 have connected
+	// ok and then just closed.
+	for range 3 {
+		var de DisconnectEventMsg
+		msg := natsNexMsg(t, sub2, time.Second)
+		err = json.Unmarshal(msg.Data, &de)
+		require_NoError(t, err)
+		require_Equal(t, de.Reason, ClientClosed.String())
+	}
+	// Make sure there is no more.
+	if msg, err := sub2.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Should have received only 3 disconnect messages, got another: %s", msg.Data)
+	}
+
+	s.Shutdown()
+	drainLog()
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		leafnodes: {
+			port: -1
+			authorization {
+				user: user
+				password: pwd
+				proxy_required: true
+			}
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.SetLogger(l, true, false)
+
+	lconf := createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		leafnodes {
+			reconnect_interval: "50ms"
+			remotes [ {url: "nats://user:pwd@127.0.0.1:%d"} ]
+		}
+	`, o.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(lconf)
+	defer leaf.Shutdown()
+
+	time.Sleep(125 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, leaf, 0)
+	checkLog()
+	leaf.Shutdown()
+	s.Shutdown()
+	drainLog()
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		leafnodes: {
+			port: -1
+			reconnect_interval: "50ms"
+			authorization {
+				users: [
+					{user: user1, password: pwd1}
+					{user: user2, password: pwd2, proxy_required: true}
+					{user: user3, password: pwd3, proxy_required: false}
+				]
+			}
+		}
+	`))
+	s, o = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.SetLogger(l, true, false)
+
+	lconf = createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		leafnodes {
+			reconnect_interval: "50ms"
+			remotes [ {url: "nats://user2:pwd@127.0.0.1:%d"} ]
+		}
+	`, o.LeafNode.Port))
+	leaf, _ = RunServerWithConfig(lconf)
+	defer leaf.Shutdown()
+
+	time.Sleep(125 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, leaf, 0)
+	checkLog()
+	leaf.Shutdown()
+	s.Shutdown()
+	drainLog()
+
+	conf = createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		leafnodes: {
+			port: -1
+			authorization {
+				nkey: %s
+				proxy_required: true
+			}
+		}
+	`, nkPub1))
+	s, o = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.SetLogger(l, true, false)
+
+	nkSeed1, err := nkUsr1.Seed()
+	require_NoError(t, err)
+
+	lconf = createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		leafnodes {
+			reconnect_interval: "50ms"
+			remotes [
+				{
+					url: "nats://127.0.0.1:%d"
+					nkey: "%s"
+				}
+			]
+		}
+	`, o.LeafNode.Port, nkSeed1))
+	leaf, _ = RunServerWithConfig(lconf)
+	defer leaf.Shutdown()
+
+	time.Sleep(125 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, leaf, 0)
+	checkLog()
+	leaf.Shutdown()
+	s.Shutdown()
+	drainLog()
+
+	// Check with operator mode.
+	conf = createConfFile(t, []byte(`
+		port: -1
+		server_name: OP
+		operator = "../test/configs/nkeys/op.jwt"
+		resolver = MEMORY
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	s, o = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.SetLogger(l, true, false)
+
+	_, akp := createAccount(s)
+	kp, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	pub, err := kp.PublicKey()
+	require_NoError(t, err)
+	nuc := jwt.NewUserClaims(pub)
+	nuc.ProxyRequired = true
+	ujwt, err := nuc.Encode(akp)
+	require_NoError(t, err)
+
+	lopts := &DefaultTestOptions
+	u, err := url.Parse(fmt.Sprintf("nats://%s:%d", o.LeafNode.Host, o.LeafNode.Port))
+	require_NoError(t, err)
+	remote := &RemoteLeafOpts{URLs: []*url.URL{u}}
+	remote.SignatureCB = func(nonce []byte) (string, []byte, error) {
+		sig, err := kp.Sign(nonce)
+		return ujwt, sig, err
+	}
+	lopts.LeafNode.Remotes = []*RemoteLeafOpts{remote}
+	lopts.LeafNode.ReconnectInterval = 100 * time.Millisecond
+	leaf = RunServer(lopts)
+	defer leaf.Shutdown()
+
+	time.Sleep(125 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, leaf, 0)
+	checkLog()
+	leaf.Shutdown()
+
+	// Try with an user.
+	drainLog()
+
+	_, err = nats.Connect(s.ClientURL(), createUserCredsEx(t, nuc, akp))
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+	checkLog()
+
+	drainLog()
+
+	// Try with creds file.
+	kp, err = nkeys.CreateUser()
+	require_NoError(t, err)
+	useed, err := kp.Seed()
+	require_NoError(t, err)
+	pub, err = kp.PublicKey()
+	require_NoError(t, err)
+	nuc = jwt.NewUserClaims(pub)
+	nuc.ProxyRequired = true
+	ujwt, err = nuc.Encode(akp)
+	require_NoError(t, err)
+	credsFile := genCredsFile(t, ujwt, useed)
+
+	lconf = createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		leafnodes {
+			reconnect_interval: "50ms"
+			remotes [
+				{
+					url: "nats://127.0.0.1:%d"
+					credentials: '%s'
+				}
+			]
+		}
+	`, o.LeafNode.Port, credsFile))
+	leaf, _ = RunServerWithConfig(lconf)
+	defer leaf.Shutdown()
+
+	time.Sleep(125 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, leaf, 0)
+	checkLog()
+	leaf.Shutdown()
+
+	s.Shutdown()
+	drainLog()
 }
