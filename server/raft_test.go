@@ -3132,6 +3132,32 @@ func TestNRGDelayedMessagesAfterCatchupDontCountTowardQuorum(t *testing.T) {
 	require_Equal(t, msg.Reply, _EMPTY_)
 }
 
+func TestNRGStepdownWithHighestTermDuringCatchup(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, lterm: 10, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, lterm: 20, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+
+	// Need to store the message, stepdown, and up term.
+	n.switchToCandidate()
+	require_Equal(t, n.term, 1)
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.term, 10)
+	require_Equal(t, n.pindex, 1)
+
+	// Need to store the message, stepdown, and up term.
+	n.switchToLeader()
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.term, 20)
+	require_Equal(t, n.pindex, 2)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
