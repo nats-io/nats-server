@@ -3376,14 +3376,22 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	var scratch [appendEntryResponseLen]byte
 	arbuf := scratch[:]
 
+	// Grab term from append entry. But if leader explicitly defined its term, use that instead.
+	// This is required during catchup if the leader catches us up on older items from previous terms.
+	// While still allowing us to confirm they're matching our highest known term.
+	lterm := ae.term
+	if ae.lterm != 0 {
+		lterm = ae.lterm
+	}
+
 	// Are we receiving from another leader.
 	if n.State() == Leader {
 		// If we are the same we should step down to break the tie.
-		if ae.term >= n.term {
+		if lterm >= n.term {
 			// If the append entry term is newer than the current term, erase our
 			// vote.
-			if ae.term > n.term {
-				n.term = ae.term
+			if lterm > n.term {
+				n.term = lterm
 				n.vote = noVote
 				n.writeTermVote()
 			}
@@ -3395,10 +3403,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.debug("AppendEntry ignoring old term from another leader")
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 			arPool.Put(ar)
+			n.Unlock()
+			return
 		}
-		// Always return here from processing.
-		n.Unlock()
-		return
 	}
 
 	// If we received an append entry as a candidate then it would appear that
@@ -3407,11 +3414,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if n.State() == Candidate {
 		// If we have a leader in the current term or higher, we should stepdown,
 		// write the term and vote if the term of the request is higher.
-		if ae.term >= n.term {
+		if lterm >= n.term {
 			// If the append entry term is newer than the current term, erase our
 			// vote.
-			if ae.term > n.term {
-				n.term = ae.term
+			if lterm > n.term {
+				n.term = lterm
 				n.vote = noVote
 				n.writeTermVote()
 			}
@@ -3468,14 +3475,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// Ignore new while catching up or replaying.
 			return
 		}
-	}
-
-	// Grab term from append entry. But if leader explicitly defined its term, use that instead.
-	// This is required during catchup if the leader catches us up on older items from previous terms.
-	// While still allowing us to confirm they're matching our highest known term.
-	lterm := ae.term
-	if ae.lterm != 0 {
-		lterm = ae.lterm
 	}
 
 	// If this term is greater than ours.
