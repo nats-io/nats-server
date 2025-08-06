@@ -118,8 +118,7 @@ func (b *batchGroup) cleanup(batchId string, batches *batching) {
 func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
 	globalInflightBatches.Add(-1)
 	b.timer.Stop()
-	// FIXME(mvv): what happens if a batch ID is reused with filestore, does it break the next batch?
-	b.store.Delete()
+	b.store.Delete(true)
 	delete(batches.group, batchId)
 }
 

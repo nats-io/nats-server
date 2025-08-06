@@ -6683,7 +6683,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	if deleteFlag {
 		if store != nil {
 			// Ignore errors.
-			store.Delete()
+			store.Delete(false)
 		}
 		// Release any resources.
 		js.releaseStreamResources(&mset.cfg)

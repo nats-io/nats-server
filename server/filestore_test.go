@@ -2783,7 +2783,7 @@ func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
 		}()
 
 		<-ready
-		if err := fs.Delete(); err != nil {
+		if err := fs.Delete(true); err != nil {
 			t.Fatalf("Delete returned an error: %v", err)
 		}
 	})

@@ -1454,7 +1454,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				}
 				mset.processJetStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, 0, 0, nil, false)
 			}
-			store.Delete()
+			store.Delete(true)
 		SKIP:
 			os.RemoveAll(filepath.Join(sdir, fi.Name(), batchesDir))
 		}
