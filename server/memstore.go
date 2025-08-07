@@ -2242,7 +2242,9 @@ func (ms *memStore) EncodedStreamState(failed uint64, consumers []*consumerAssig
 	if ms.cfg.ManagesConsumers {
 		bw := bytes.NewBuffer(b)
 		bw.Truncate(len(b)) // Reset the write pointer but preserve data
-		json.NewEncoder(bw).Encode(consumers)
+		if err := json.NewEncoder(bw).Encode(consumers); err != nil {
+			return nil, err
+		}
 		b = bw.Bytes()
 	}
 
