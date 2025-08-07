@@ -516,12 +516,22 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		js.mu.RUnlock()
 		return errors.New("consumer assignment or group missing")
 	}
+	if ca.deleted {
+		js.mu.RUnlock()
+		return nil // No further checks, consumer was deleted in the meantime.
+	}
+	created := ca.Created
 	node := ca.Group.node
 	js.mu.RUnlock()
 
 	// Check if not running at all.
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
+		if time.Since(created) < 5*time.Second {
+			// No further checks, consumer is not available yet but should be soon.
+			// We'll start erroring once we're sure this consumer is actually broken.
+			return nil
+		}
 		return errors.New("consumer not found")
 	}
 
