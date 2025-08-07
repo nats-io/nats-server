@@ -2,7 +2,7 @@ module github.com/nats-io/nats-server/v2
 
 go 1.23.0
 
-toolchain go1.23.11
+toolchain go1.23.12
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.4.3-default-no-op
@@ -10,7 +10,7 @@ require (
 	github.com/klauspost/compress v1.18.0
 	github.com/minio/highwayhash v1.0.3
 	github.com/nats-io/jwt/v2 v2.7.4
-	github.com/nats-io/nats.go v1.43.0
+	github.com/nats-io/nats.go v1.44.0
 	github.com/nats-io/nkeys v0.4.11
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.6.0
