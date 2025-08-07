@@ -7432,6 +7432,62 @@ func TestJetStreamClusterManagedConsumers(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterManagedConsumersEncodedStreamState(t *testing.T) {
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:             "TEST",
+				Retention:        LimitsPolicy,
+				Subjects:         []string{"foo.*"},
+				Storage:          storage,
+				Replicas:         3,
+				ManagesConsumers: true,
+			})
+			require_NoError(t, err)
+
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+
+			// Publish messages and ensure there's an interior delete.
+			// This tests we can read an undefined amount of deletes, and the managed consumers afterward.
+			_, err = js.Publish("foo.0", nil)
+			require_NoError(t, err)
+			_, err = js.Publish("foo.1", nil)
+			require_NoError(t, err)
+			_, err = js.Publish("foo.0", nil)
+			require_NoError(t, err)
+			require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "foo.1"}))
+
+			// Add consumer to be included in the snapshot.
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "CONSUMER"})
+			require_NoError(t, err)
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+			sjs := sl.getJetStream()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+			require_NotNil(t, ca)
+			mset, err := sl.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+
+			// Encode and decode state.
+			snap, err := mset.store.EncodedStreamState(0, []*consumerAssignment{ca})
+			require_NoError(t, err)
+			state, err := DecodeStreamState(snap)
+			require_NoError(t, err)
+
+			require_Equal(t, state.Msgs, 2)
+			require_Equal(t, state.FirstSeq, 1)
+			require_Equal(t, state.LastSeq, 3)
+			require_Len(t, len(state.Consumers), 1)
+		})
+	}
+}
+
 func TestJetStreamClusterManagedConsumerStreamScaleDown(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
