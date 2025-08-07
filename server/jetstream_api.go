@@ -4494,20 +4494,32 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 	var numConsumers int
 
 	if s.JetStreamIsClustered() {
+		// Determine if we should proceed here when we are in clustered mode.
 		js, cc := s.getJetStreamCluster()
 		if js == nil || cc == nil {
-			// TODO(dlc) - Debug or Warn?
 			return
 		}
 		js.mu.RLock()
-		sas := cc.streams[acc.Name]
-		if sas == nil {
-			js.mu.RUnlock()
-			resp.Error = NewJSStreamNotFoundError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
+		sa := js.streamAssignment(acc.Name, streamName)
+		managesConsumers := sa != nil && sa.Config != nil && sa.Config.ManagesConsumers
+		js.mu.RUnlock()
+		if managesConsumers {
+			if !acc.JetStreamIsStreamLeader(streamName) {
+				return
+			}
+		} else {
+			if js.isLeaderless() {
+				resp.Error = NewJSClusterNotAvailError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// Make sure we are meta leader.
+			if !s.JetStreamIsLeader() {
+				return
+			}
 		}
-		sa := sas[streamName]
+
+		js.mu.RLock()
 		if sa == nil || sa.err != nil {
 			js.mu.RUnlock()
 			resp.Error = NewJSStreamNotFoundError()
@@ -4605,6 +4617,31 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
+		// Determine if we should proceed here when we are in clustered mode.
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		js.mu.RLock()
+		sa := js.streamAssignment(acc.Name, streamName)
+		managesConsumers := sa != nil && sa.Config != nil && sa.Config.ManagesConsumers
+		js.mu.RUnlock()
+		if managesConsumers {
+			if !acc.JetStreamIsStreamLeader(streamName) {
+				return
+			}
+		} else {
+			if js.isLeaderless() {
+				resp.Error = NewJSClusterNotAvailError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// Make sure we are meta leader.
+			if !s.JetStreamIsLeader() {
+				return
+			}
+		}
+
 		// Need to copy these off before sending.. don't move this inside startGoRoutine!!!
 		msg = copyBytes(msg)
 		s.startGoRoutine(func() {
