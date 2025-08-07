@@ -3911,7 +3911,7 @@ func (nmr *nextMsgReq) returnToPool() {
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
 // a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
 // batch of messages without requiring another request to this endpoint, or an ACK.
-func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, reply string, msg []byte) {
+func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, reply string, rmsg []byte) {
 	if reply == _EMPTY_ {
 		return
 	}
@@ -3923,7 +3923,12 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		return
 	}
 
-	_, msg = c.msgParts(msg)
+	hdr, msg := c.msgParts(rmsg)
+	if errorOnRequiredApiLevel(hdr) {
+		hdr = []byte("NATS/1.0 412 Required Api Level\r\n\r\n")
+		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
 	o.nextMsgReqs.push(newNextMsgReq(reply, copyBytes(msg)))
 }
 
