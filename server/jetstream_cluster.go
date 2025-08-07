@@ -1334,6 +1334,13 @@ func (js *jetStream) checkForOrphans() {
 				streams = append(streams, mset)
 			} else {
 				// This one is good, check consumers now.
+				mset.cfgMu.RLock()
+				managesConsumers := mset.cfg.ManagesConsumers
+				mset.cfgMu.RUnlock()
+				// Don't mark as orphaned if the stream itself manages its own consumers.
+				if managesConsumers {
+					continue
+				}
 				for _, o := range mset.getConsumers() {
 					if sa.consumers[o.String()] == nil {
 						consumers = append(consumers, o)
