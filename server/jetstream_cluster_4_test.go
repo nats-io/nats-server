@@ -3444,7 +3444,7 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				var snap StreamReplicatedState
 				snap.LastSeq = 1_000      // ensure we can catchup based on the snapshot
 				appliedIndex := uint64(0) // incorrect index, but doesn't matter for this test
-				err := mset.processSnapshot(&snap, appliedIndex)
+				err := mset.processSnapshot(mset.srv.getJetStream(), &snap, appliedIndex)
 				require_True(t, errors.Is(err, errCatchupAbortedNoLeader))
 				require_True(t, isClusterResetErr(err))
 				mset.resetClusteredState(err)

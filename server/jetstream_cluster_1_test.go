@@ -10495,7 +10495,7 @@ func TestJetStreamClusterCatchupSkipMsgDesync(t *testing.T) {
 			defer sub.Drain()
 			require_NoError(t, sysNc.Flush()) // Must flush, otherwise our subscription could be too late.
 
-			err = mset.processSnapshot(&StreamReplicatedState{FirstSeq: 1, LastSeq: 1}, 1)
+			err = mset.processSnapshot(sjs, &StreamReplicatedState{FirstSeq: 1, LastSeq: 1}, 1)
 			require_Error(t, err, errCatchupTooManyRetries)
 			c.waitOnStreamLeader(globalAccountName, "TEST")
 

@@ -1808,6 +1808,10 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	// Now walk the ones to check and process consumers.
 	var caAdd, caDel []*consumerAssignment
 	for _, sa := range saChk {
+		// Skip if the stream manages its own consumers.
+		if sa.Config.ManagesConsumers {
+			continue
+		}
 		// Make sure to add in all the new ones from sa.
 		for _, ca := range sa.consumers {
 			caAdd = append(caAdd, ca)
@@ -3645,7 +3649,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 
 			if isRecovering || !mset.IsLeader() {
-				if err := mset.processSnapshot(ss, ce.Index); err != nil {
+				if err := mset.processSnapshot(js, ss, ce.Index); err != nil {
 					return 0, err
 				}
 			}
@@ -9525,10 +9529,20 @@ var (
 )
 
 // Process a stream snapshot.
-func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
+func (mset *stream) processSnapshot(js *jetStream, snap *StreamReplicatedState, index uint64) (e error) {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
 	mset.setCLFS(snap.Failed)
+
+	mset.cfgMu.RLock()
+	managesConsumers := mset.cfg.ManagesConsumers
+	mset.cfgMu.RUnlock()
+	if managesConsumers {
+		// Revive the consumer assignments from the snapshot.
+		for _, ca := range snap.Consumers {
+			js.processConsumerAssignment(ca)
+		}
+	}
 
 	mset.mu.Lock()
 	var state StreamState
