@@ -277,14 +277,26 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 
 	if numDeleted := readU64(); numDeleted > 0 {
 		// If we have some deleted blocks.
-		for l := len(buf); l > bi; {
-			switch buf[bi] {
+		// Keep track of remaining deletes, to know when to stop and read data after the deletes.
+		remaining := numDeleted
+		for l := len(buf); l > bi && remaining > 0; {
+			c := buf[bi]
+			switch c {
 			case seqSetMagic:
 				dmap, n, err := avl.Decode(buf[bi:])
 				if err != nil {
 					return nil, ErrCorruptStreamState
 				}
 				bi += n
+				size := dmap.Size()
+				if size < 0 {
+					return nil, ErrCorruptStreamState
+				}
+				usize := uint64(size)
+				if remaining < usize {
+					return nil, ErrCorruptStreamState
+				}
+				remaining -= usize
 				ss.Deleted = append(ss.Deleted, dmap)
 			case runLengthMagic:
 				bi++
@@ -294,6 +306,10 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 				if parserFailed() {
 					return nil, ErrCorruptStreamState
 				}
+				if remaining < rl.Num {
+					return nil, ErrCorruptStreamState
+				}
+				remaining -= rl.Num
 				ss.Deleted = append(ss.Deleted, &rl)
 			default:
 				return nil, ErrCorruptStreamState
@@ -303,7 +319,9 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 
 	if len(buf)-bi > 0 {
 		br := bytes.NewReader(buf[bi:])
-		json.NewDecoder(br).Decode(&ss.Consumers)
+		if err := json.NewDecoder(br).Decode(&ss.Consumers); err != nil {
+			return nil, ErrCorruptStreamState
+		}
 	}
 
 	return ss, nil
