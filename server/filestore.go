@@ -1977,7 +1977,7 @@ func (fs *fileStore) recoverTTLState() error {
 					// Selecting the message block should return a block that contains this sequence,
 					// or a later block if it can't be found.
 					// It's an error if we can't find any block within the bounds of first and last seq.
-					fs.warn("Error loading msg block with seq %d for recovering TTL: %s", seq)
+					fs.warn("Error loading msg block with seq %d for recovering TTL", seq)
 					continue
 				}
 				seq = atomic.LoadUint64(&mb.first.seq)
@@ -1993,7 +1993,11 @@ func (fs *fileStore) recoverTTLState() error {
 				// beginning and process the next block.
 				mb.tryForceExpireCache()
 				mb = nil
-				goto retry
+				if seq <= fs.state.LastSeq {
+					goto retry
+				}
+				// Done.
+				break
 			}
 			msg, _, err := mb.fetchMsgNoCopy(seq, &sm)
 			if err != nil {
