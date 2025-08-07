@@ -6505,6 +6505,7 @@ func TestJetStreamClusterProcessSnapshotPanicAfterStreamDelete(t *testing.T) {
 	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
 	require_NoError(t, err)
 
+	sjs := s.getJetStream()
 	mset, err := s.globalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	mset.mu.RLock()
@@ -6512,7 +6513,7 @@ func TestJetStreamClusterProcessSnapshotPanicAfterStreamDelete(t *testing.T) {
 	mset.mu.RUnlock()
 	require_True(t, sa == nil)
 	require_True(t, node == nil)
-	require_Error(t, mset.processSnapshot(&StreamReplicatedState{}, 0), errCatchupStreamStopped)
+	require_Error(t, mset.processSnapshot(sjs, &StreamReplicatedState{}, 0), errCatchupStreamStopped)
 
 	mset.setStreamAssignment(&streamAssignment{}) // If the stream assignment is set, but the node is nil.
 	mset.mu.RLock()
@@ -6520,7 +6521,7 @@ func TestJetStreamClusterProcessSnapshotPanicAfterStreamDelete(t *testing.T) {
 	mset.mu.RUnlock()
 	require_True(t, sa != nil)
 	require_True(t, node == nil)
-	require_Error(t, mset.processSnapshot(&StreamReplicatedState{}, 0), errCatchupStreamStopped)
+	require_Error(t, mset.processSnapshot(sjs, &StreamReplicatedState{}, 0), errCatchupStreamStopped)
 }
 
 func TestJetStreamClusterDiscardNewPerSubjectRejectsWithoutCLFSBump(t *testing.T) {
