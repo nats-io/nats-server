@@ -8259,10 +8259,12 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, acc *Account, 
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
-	if sa.Config != nil && sa.Config.ManagesConsumers && !cc.isStreamLeader(acc.Name, stream) {
-		// Only the stream leader must make this proposal when the stream manages
-		// its own consumers.
-		return
+	if sa.Config != nil && sa.Config.ManagesConsumers {
+		if !cc.isStreamLeader(acc.Name, stream) {
+			// Only the stream leader must make this proposal when the stream manages
+			// its own consumers.
+			return
+		}
 	} else if cc.meta.Leaderless() {
 		resp.Error = NewJSClusterNotAvailError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
