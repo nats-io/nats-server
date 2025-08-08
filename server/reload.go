@@ -1052,6 +1052,38 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	}
 }
 
+type proxiesReload struct {
+	noopOption
+	add []string
+	del []string
+}
+
+func (p *proxiesReload) Apply(s *Server) {
+	var clients []*client
+	s.mu.Lock()
+	for _, k := range p.del {
+		cc := s.proxiedConns[k]
+		delete(s.proxiedConns, k)
+		if len(cc) > 0 {
+			for _, c := range cc {
+				clients = append(clients, c)
+			}
+		}
+	}
+	s.processProxiesTrustedKeys()
+	s.mu.Unlock()
+	if len(p.del) > 0 {
+		for _, c := range clients {
+			c.setAuthError(ErrAuthProxyNotTrusted)
+			c.authViolation()
+		}
+		s.Noticef("Reloaded: proxies trusted keys %q were removed", p.add)
+	}
+	if len(p.add) > 0 {
+		s.Noticef("Reloaded: proxies trusted keys %q were added", p.add)
+	}
+}
+
 // Reload reads the current configuration file and calls out to ReloadOptions
 // to apply the changes. This returns an error if the server was not started
 // with a config file or an option which doesn't support hot-swapping was changed.
@@ -1227,7 +1259,7 @@ func imposeOrder(value any) error {
 		slices.Sort(value.AllowedOrigins)
 	case string, bool, uint8, uint16, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
-		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig:
+		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig, *ProxiesConfig:
 		// explicitly skipped types
 	case *AuthCallout:
 	case JSTpmOpts:
@@ -1722,6 +1754,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			continue
 		case "nofastproducerstall":
 			diffOpts = append(diffOpts, &noFastProdStallReload{noStall: newValue.(bool)})
+		case "proxies":
+			new := newValue.(*ProxiesConfig)
+			old := oldValue.(*ProxiesConfig)
+			if add, del := diffProxiesTrustedKeys(old.Trusted, new.Trusted); len(add) > 0 || len(del) > 0 {
+				diffOpts = append(diffOpts, &proxiesReload{add: add, del: del})
+			}
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
@@ -2588,4 +2626,25 @@ addLoop:
 	}
 
 	return add, remove
+}
+
+func diffProxiesTrustedKeys(old, new []*ProxyConfig) ([]string, []string) {
+	var add []string
+	var del []string
+	// Both "old" and "new" lists should be small...
+	for _, op := range old {
+		if !slices.ContainsFunc(new, func(pc *ProxyConfig) bool {
+			return pc.Key == op.Key
+		}) {
+			del = append(del, op.Key)
+		}
+	}
+	for _, np := range new {
+		if !slices.ContainsFunc(old, func(pc *ProxyConfig) bool {
+			return pc.Key == np.Key
+		}) {
+			add = append(add, np.Key)
+		}
+	}
+	return add, del
 }

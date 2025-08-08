@@ -241,6 +241,11 @@ func TestAuthCalloutBasics(t *testing.T) {
 			}
 			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Username == "proxy" {
+			var j jwt.UserPermissionLimits
+			j.ProxyRequired = true
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
@@ -251,6 +256,9 @@ func TestAuthCalloutBasics(t *testing.T) {
 
 	// This one should fail since bad password.
 	at.RequireConnectError(nats.UserInfo("dlc", "xxx"))
+
+	// This one should fail because it will require to be proxied and it is not.
+	at.RequireConnectError(nats.UserInfo("proxy", "xxx"))
 
 	// This one will use callout since not defined in server config.
 	nc := at.Connect(nats.UserInfo("dlc", "zzz"))
@@ -1355,8 +1363,13 @@ func TestAuthCalloutAuthErrEvents(t *testing.T) {
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else if opts.Username == "dlc" {
 			m.Respond(serviceResponse(t, user, si.ID, "", "WRONG PASSWORD", 0))
-		} else {
+		} else if opts.Username == "rip" {
 			m.Respond(serviceResponse(t, user, si.ID, "", "BAD CREDS", 0))
+		} else if opts.Username == "proxy" {
+			var j jwt.UserPermissionLimits
+			j.ProxyRequired = true
+			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, &j)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		}
 	}
 
@@ -1382,13 +1395,19 @@ func TestAuthCalloutAuthErrEvents(t *testing.T) {
 		err = json.Unmarshal(m.Data, &dm)
 		require_NoError(t, err)
 
-		if !strings.Contains(dm.Reason, reason) {
-			t.Fatalf("Expected %q reason, but got %q", reason, dm.Reason)
+		// Convert both reasons to lower case to do the comparison.
+		dmr := strings.ToLower(dm.Reason)
+		r := strings.ToLower(reason)
+
+		if !strings.Contains(dmr, r) {
+			t.Fatalf("Expected %q reason, but got %q", r, dmr)
 		}
 	}
 
 	checkAuthErrEvent("dlc", "xxx", "WRONG PASSWORD")
 	checkAuthErrEvent("rip", "abc", "BAD CREDS")
+	// The auth callout uses as the reason the error string, not a closed state.
+	checkAuthErrEvent("proxy", "proxy", ErrAuthProxyRequired.Error())
 }
 
 func TestAuthCalloutConnectEvents(t *testing.T) {
@@ -2401,4 +2420,75 @@ func TestAuthCalloutLeafNodeAndConfigMode(t *testing.T) {
 		})
 	}
 
+}
+
+func TestAuthCalloutProxyRequiredInUserNotInAuthJWT(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		accounts {
+			AUTH: {
+				users: [ { user: auth, password: auth } ]
+			}
+			APP: {
+				users: [
+					{ user: user, password: pwd }
+					{ user: proxy, password: pwd, proxy_required: true }
+				]
+			}
+			SYS: {}
+		}
+		system_account: SYS
+
+		authorization {
+			timeout: 1s
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+				account: AUTH
+			}
+		}
+	`
+	var invoked atomic.Int32
+	handler := func(m *nats.Msg) {
+		invoked.Add(1)
+		user, si, ci, opts, _ := decodeAuthRequest(t, m.Data)
+		require_True(t, si.Name == "A")
+		require_True(t, ci.Host == "127.0.0.1")
+		if opts.Username == "proxy" {
+			// If we don't set a ProxyRequired property explicitly here, but the
+			// user has it, so it should still be rejected.
+			ujwt := createAuthUser(t, user, _EMPTY_, "APP", _EMPTY_, nil, 10*time.Minute, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "auth"))
+	defer at.Cleanup()
+
+	sub, err := at.authClient.SubscribeSync(authErrorAccountEventSubj)
+	require_NoError(t, err)
+
+	// It should fail, even if the auth callout does not require proxy in its JWT.
+	// In other words, we reject if not proxied and the user config or the auth JWT
+	// requires proxy connection.
+	at.RequireConnectError(nats.UserInfo("proxy", "pwd"))
+
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	var dm DisconnectEventMsg
+	err = json.Unmarshal(m.Data, &dm)
+	require_NoError(t, err)
+
+	// Convert both reasons to lower case to do the comparison.
+	dmr := strings.ToLower(dm.Reason)
+	r := strings.ToLower(ErrAuthProxyRequired.Error())
+	if !strings.Contains(dmr, r) {
+		t.Fatalf("Expected %q reason, but got %q", r, dmr)
+	}
+
+	// Auth callout should have been invoked once.
+	require_Equal(t, 1, int(invoked.Load()))
 }

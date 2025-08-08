@@ -2153,6 +2153,251 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 3,
 			errorPos:  5,
 		},
+		{
+			name: "Proxies wrong type",
+			config: `
+				port: -1
+				proxies: 123
+			`,
+			err:       errors.New("expected proxies to be a map/struct, got int64"),
+			errorLine: 3,
+			errorPos:  5,
+		},
+		{
+			name: "Proxies unknown field",
+			config: `
+				port: -1
+				proxies: {
+					field1: 123
+				}
+			`,
+			err:       errors.New("unknown field"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "Proxies trusted wrong type",
+			config: `
+				port: -1
+				proxies: {
+					trusted: 123
+				}
+			`,
+			err:       errors.New("expected proxies' trusted field to be an array, got int64"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "Proxies trusted key wrong type",
+			config: `
+				port: -1
+				proxies: {
+					trusted: [
+						"abc",
+						"def"
+					]
+				}
+			`,
+			err:       errors.New("expected proxies' trusted entry to be a map/struct, got string"),
+			errorLine: 5,
+			errorPos:  8,
+		},
+		{
+			name: "Proxies trusted unknown field",
+			config: `
+				port: -1
+				proxies: {
+					trusted: [
+						{
+							key: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+							field1: 123
+						}
+					]
+				}
+			`,
+			err:       errors.New("unknown field"),
+			errorLine: 7,
+			errorPos:  8,
+		},
+		{
+			name: "Proxies trusted key invalid",
+			config: `
+				port: -1
+				proxies: {
+					trusted: [
+						{key: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"}
+						{key: "bad1"}
+						{key: "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"}
+						{key: "bad2"}
+					]
+				}
+			`,
+			err:       errors.New("invalid proxy key"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "Auth user require proxied wrong type",
+			config: `
+				port: -1
+				authorization {
+					user: user
+					password: pwd
+					proxy_required: 123
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 6,
+			errorPos:  6,
+		},
+		{
+			name: "Auth users require proxied wrong type",
+			config: `
+				port: -1
+				authorization {
+					users: [
+						{
+							user: user
+							password: pwd
+							proxy_required: 123
+						}
+					]
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 8,
+			errorPos:  8,
+		},
+		{
+			name: "Auth nkey users require proxied wrong type",
+			config: `
+				port: -1
+				authorization {
+					users: [
+						{
+							nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+							proxy_required: 123
+						}
+					]
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 7,
+			errorPos:  8,
+		},
+		{
+			name: "Account users require proxied wrong type",
+			config: `
+				port: -1
+				accounts {
+					A: {
+						users: [
+							{
+								user: user
+								password: pwd
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 9,
+			errorPos:  9,
+		},
+		{
+			name: "Account nkey users require proxied wrong type",
+			config: `
+				port: -1
+				accounts {
+					A: {
+						users: [
+							{
+								nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 8,
+			errorPos:  9,
+		},
+		{
+			name: "Leafnode user require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						user: user
+						password: pwd
+						proxy_required: 123
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 8,
+			errorPos:  7,
+		},
+		{
+			name: "Leafnode neky user require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+						proxy_required: 123
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 7,
+			errorPos:  7,
+		},
+		{
+			name: "Leafnode users require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						users: [
+							{
+								user: user
+								password: pwd
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 10,
+			errorPos:  9,
+		},
+		{
+			name: "Leafnode nkey users require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						users: [
+							{
+								nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 9,
+			errorPos:  9,
+		},
 	}
 
 	checkConfig := func(config string) error {
