@@ -5463,6 +5463,7 @@ func parseProxiesTrusted(mv any, errors *[]error) ([]*ProxyConfig, error) {
 				proxy.Key = v.(string)
 				if !nkeys.IsValidPublicKey(proxy.Key) {
 					*errors = append(*errors, &configErr{tk, fmt.Sprintf("invalid proxy key %q", proxy.Key)})
+					continue
 				}
 			default:
 				if !tk.IsUsedVariable() {

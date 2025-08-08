@@ -2633,26 +2633,16 @@ func diffProxiesTrustedKeys(old, new []*ProxyConfig) ([]string, []string) {
 	var del []string
 	// Both "old" and "new" lists should be small...
 	for _, op := range old {
-		var found bool
-		for _, np := range new {
-			if op.Key == np.Key {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.ContainsFunc(new, func(pc *ProxyConfig) bool {
+			return pc.Key == op.Key
+		}) {
 			del = append(del, op.Key)
 		}
 	}
 	for _, np := range new {
-		var found bool
-		for _, op := range old {
-			if np.Key == op.Key {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.ContainsFunc(old, func(pc *ProxyConfig) bool {
+			return pc.Key == np.Key
+		}) {
 			add = append(add, np.Key)
 		}
 	}
