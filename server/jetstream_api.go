@@ -1841,6 +1841,9 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 		}
 		js.mu.RLock()
 		for stream, sa := range cc.streams[acc.Name] {
+			if sa.unsupportedJson != nil {
+				continue
+			}
 			if IsNatsErr(sa.err, JSClusterNotAssignedErr) {
 				continue
 			}
@@ -2041,6 +2044,10 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		if sa != nil {
 			clusterWideConsCount = len(sa.consumers)
 			offline = s.allPeersOffline(sa.Group)
+			if sa.unsupportedJson != nil {
+				// If we know about the stream, and it's not supported, report it as offline.
+				isLeader, offline = true, true
+			}
 		}
 		js.mu.RUnlock()
 
@@ -4574,7 +4581,10 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		for consumer := range sa.consumers {
+		for consumer, ca := range sa.consumers {
+			if ca.unsupportedJson != nil {
+				continue
+			}
 			resp.Consumers = append(resp.Consumers, consumer)
 		}
 		if len(resp.Consumers) > 1 {
@@ -4760,6 +4770,10 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			if rg = ca.Group; rg != nil {
 				offline = s.allPeersOffline(rg)
 				isMember = rg.isMember(ourID)
+			}
+			if ca.unsupportedJson != nil {
+				// If we know about the consumer, and it's not supported, report it as offline.
+				isLeader, offline = true, true
 			}
 		}
 		// Capture consumer leader here.

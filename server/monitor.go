@@ -3842,6 +3842,15 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		}
 
 		for stream, sa := range asa {
+			if sa != nil && sa.unsupportedJson != nil {
+				js.mu.RLock()
+				streamName := sa.Config.Name
+				apiLevel := getRequiredApiLevel(sa.Config.Metadata)
+				js.mu.RUnlock()
+				s.Warnf("Detected unsupported stream '%s > %s', delete the stream or upgrade the server to API level %s", acc.GetName(), streamName, apiLevel)
+				continue
+			}
+
 			// Make sure we can look up
 			if err := js.isStreamHealthy(acc, sa); err != nil {
 				if !details {
@@ -3860,6 +3869,14 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			mset, _ := acc.lookupStream(stream)
 			// Now check consumers.
 			for consumer, ca := range sa.consumers {
+				if ca != nil && ca.unsupportedJson != nil {
+					js.mu.RLock()
+					streamName := ca.Stream
+					apiLevel := getRequiredApiLevel(ca.Config.Metadata)
+					js.mu.RUnlock()
+					s.Warnf("Detected unsupported consumer '%s > %s > %s', delete the consumer or upgrade the server to API level %s", accName, streamName, consumer, apiLevel)
+					continue
+				}
 				if err := js.isConsumerHealthy(mset, consumer, ca); err != nil {
 					if !details {
 						health.Status = na
