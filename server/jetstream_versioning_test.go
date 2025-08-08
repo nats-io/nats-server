@@ -30,6 +30,19 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func TestGetAndSupportsRequiredApiLevel(t *testing.T) {
+	require_Equal(t, getRequiredApiLevel(nil), _EMPTY_)
+	require_Equal(t, getRequiredApiLevel(map[string]string{}), _EMPTY_)
+	require_Equal(t, getRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "1"}), "1")
+	require_Equal(t, getRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "text"}), "text")
+
+	require_True(t, supportsRequiredApiLevel(nil))
+	require_True(t, supportsRequiredApiLevel(map[string]string{}))
+	require_True(t, supportsRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "1"}))
+	require_True(t, supportsRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: strconv.Itoa(JSApiLevel)}))
+	require_False(t, supportsRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "text"}))
+}
+
 func metadataAtLevel(featureLevel string) map[string]string {
 	return map[string]string{
 		JSRequiredLevelMetadataKey: featureLevel,

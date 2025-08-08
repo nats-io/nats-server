@@ -3842,6 +3842,9 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		}
 
 		for stream, sa := range asa {
+			if sa != nil && sa.unsupported != nil {
+				continue
+			}
 			// Make sure we can look up
 			if err := js.isStreamHealthy(acc, sa); err != nil {
 				if !details {
