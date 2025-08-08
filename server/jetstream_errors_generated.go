@@ -362,6 +362,9 @@ const (
 	// JSReplicasCountCannotBeNegative replicas count cannot be negative
 	JSReplicasCountCannotBeNegative ErrorIdentifier = 10133
 
+	// JSRequiredApiLevelErr JetStream minimum api level required
+	JSRequiredApiLevelErr ErrorIdentifier = 10185
+
 	// JSRestoreSubscribeFailedErrF JetStream unable to subscribe to restore snapshot {subject}: {err}
 	JSRestoreSubscribeFailedErrF ErrorIdentifier = 10042
 
@@ -676,6 +679,7 @@ var (
 		JSPeerRemapErr:                             {Code: 503, ErrCode: 10075, Description: "peer remap failed"},
 		JSRaftGeneralErrF:                          {Code: 500, ErrCode: 10041, Description: "{err}"},
 		JSReplicasCountCannotBeNegative:            {Code: 400, ErrCode: 10133, Description: "replicas count cannot be negative"},
+		JSRequiredApiLevelErr:                      {Code: 412, ErrCode: 10185, Description: "JetStream minimum api level required"},
 		JSRestoreSubscribeFailedErrF:               {Code: 500, ErrCode: 10042, Description: "JetStream unable to subscribe to restore snapshot {subject}: {err}"},
 		JSSequenceNotFoundErrF:                     {Code: 400, ErrCode: 10043, Description: "sequence {seq} not found"},
 		JSSnapshotDeliverSubjectInvalidErr:         {Code: 400, ErrCode: 10015, Description: "deliver subject not valid"},
@@ -2061,6 +2065,16 @@ func NewJSReplicasCountCannotBeNegativeError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSReplicasCountCannotBeNegative]
+}
+
+// NewJSRequiredApiLevelError creates a new JSRequiredApiLevelErr error: "JetStream minimum api level required"
+func NewJSRequiredApiLevelError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSRequiredApiLevelErr]
 }
 
 // NewJSRestoreSubscribeFailedError creates a new JSRestoreSubscribeFailedErrF error: "JetStream unable to subscribe to restore snapshot {subject}: {err}"

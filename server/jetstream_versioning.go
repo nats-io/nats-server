@@ -197,3 +197,13 @@ func deleteDynamicMetadata(metadata map[string]string) {
 	delete(metadata, JSServerVersionMetadataKey)
 	delete(metadata, JSServerLevelMetadataKey)
 }
+
+// errorOnRequiredApiLevel returns whether a request should be rejected based on the JSRequiredApiLevel header.
+func errorOnRequiredApiLevel(hdr []byte) bool {
+	reqApiLevel := sliceHeader(JSRequiredApiLevel, hdr)
+	if len(reqApiLevel) == 0 {
+		return false
+	}
+	minLevel, err := strconv.Atoi(string(reqApiLevel))
+	return err != nil || JSApiLevel < minLevel
+}

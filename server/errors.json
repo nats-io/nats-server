@@ -1828,5 +1828,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSRequiredApiLevelErr",
+    "code": 412,
+    "error_code": 10185,
+    "description": "JetStream minimum api level required",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

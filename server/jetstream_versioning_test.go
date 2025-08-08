@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"testing"
@@ -622,4 +623,81 @@ func restoreEmptyStream(t *testing.T, nc *nats.Conn, replicas int) {
 	err = json.Unmarshal(msg.Data, &cresp)
 	require_NoError(t, err)
 	require_True(t, reflect.DeepEqual(cresp.Config.Metadata, expectedMetadata))
+}
+
+func TestJetStreamApiErrorOnRequiredApiLevel(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	var subs []*subscription
+	s.getJetStream().apiSubs.All(&subs)
+	require_True(t, len(subs) > 0)
+	for _, sub := range subs {
+		apiSubject := string(sub.subject)
+		t.Run(apiSubject, func(t *testing.T) {
+			req := nats.NewMsg(apiSubject)
+			req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+			msg, err := nc.RequestMsg(req, time.Second)
+			require_NoError(t, err)
+
+			var resp ApiResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_True(t, resp.Error != nil)
+			require_Error(t, resp.Error, NewJSRequiredApiLevelError())
+		})
+	}
+}
+
+func TestJetStreamApiErrorOnRequiredApiLevelDirectGet(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	req := nats.NewMsg(fmt.Sprintf(JSDirectMsgGetT, "TEST"))
+	req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+	msg, err := nc.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Required Api Level")
+
+	req = nats.NewMsg(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"))
+	req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+	msg, err = nc.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Required Api Level")
+}
+
+func TestJetStreamApiErrorOnRequiredApiLevelPullConsumerNextMsg(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	req := nats.NewMsg(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"))
+	req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+	msg, err := nc.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Required Api Level")
 }
