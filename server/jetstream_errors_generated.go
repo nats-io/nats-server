@@ -176,6 +176,9 @@ const (
 	// JSConsumerOfflineErr consumer is offline
 	JSConsumerOfflineErr ErrorIdentifier = 10119
 
+	// JSConsumerOfflineReasonErrF consumer is offline: {err}
+	JSConsumerOfflineReasonErrF ErrorIdentifier = 10195
+
 	// JSConsumerOnMappedErr consumer direct on a mapped consumer
 	JSConsumerOnMappedErr ErrorIdentifier = 10092
 
@@ -440,6 +443,9 @@ const (
 	// JSStreamOfflineErr stream is offline
 	JSStreamOfflineErr ErrorIdentifier = 10118
 
+	// JSStreamOfflineReasonErrF stream is offline: {err}
+	JSStreamOfflineReasonErrF ErrorIdentifier = 10194
+
 	// JSStreamPurgeFailedF Generic stream purge failure error string ({err})
 	JSStreamPurgeFailedF ErrorIdentifier = 10110
 
@@ -566,6 +572,7 @@ var (
 		JSConsumerNameTooLongErrF:                  {Code: 400, ErrCode: 10102, Description: "consumer name is too long, maximum allowed is {max}"},
 		JSConsumerNotFoundErr:                      {Code: 404, ErrCode: 10014, Description: "consumer not found"},
 		JSConsumerOfflineErr:                       {Code: 500, ErrCode: 10119, Description: "consumer is offline"},
+		JSConsumerOfflineReasonErrF:                {Code: 500, ErrCode: 10195, Description: "consumer is offline: {err}"},
 		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
 		JSConsumerOverlappingSubjectFilters:        {Code: 400, ErrCode: 10138, Description: "consumer subject filters cannot overlap"},
 		JSConsumerPriorityPolicyWithoutGroup:       {Code: 400, ErrCode: 10159, Description: "Setting PriorityPolicy requires at least one PriorityGroup to be set"},
@@ -654,6 +661,7 @@ var (
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
 		JSStreamNotMatchErr:                        {Code: 400, ErrCode: 10060, Description: "expected stream does not match"},
 		JSStreamOfflineErr:                         {Code: 500, ErrCode: 10118, Description: "stream is offline"},
+		JSStreamOfflineReasonErrF:                  {Code: 500, ErrCode: 10194, Description: "stream is offline: {err}"},
 		JSStreamPurgeFailedF:                       {Code: 500, ErrCode: 10110, Description: "{err}"},
 		JSStreamReplicasNotSupportedErr:            {Code: 500, ErrCode: 10074, Description: "replicas > 1 not supported in non-clustered mode"},
 		JSStreamReplicasNotUpdatableErr:            {Code: 400, ErrCode: 10061, Description: "Replicas configuration can not be updated"},
@@ -1329,6 +1337,22 @@ func NewJSConsumerOfflineError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerOfflineErr]
+}
+
+// NewJSConsumerOfflineReasonError creates a new JSConsumerOfflineReasonErrF error: "consumer is offline: {err}"
+func NewJSConsumerOfflineReasonError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSConsumerOfflineReasonErrF]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSConsumerOnMappedError creates a new JSConsumerOnMappedErr error: "consumer direct on a mapped consumer"
@@ -2347,6 +2371,22 @@ func NewJSStreamOfflineError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamOfflineErr]
+}
+
+// NewJSStreamOfflineReasonError creates a new JSStreamOfflineReasonErrF error: "stream is offline: {err}"
+func NewJSStreamOfflineReasonError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSStreamOfflineReasonErrF]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSStreamPurgeFailedError creates a new JSStreamPurgeFailedF error: "{err}"

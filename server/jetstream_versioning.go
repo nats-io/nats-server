@@ -24,6 +24,23 @@ const (
 	JSServerLevelMetadataKey   = "_nats.level"
 )
 
+// getRequiredApiLevel returns the required API level for the JetStream asset.
+func getRequiredApiLevel(metadata map[string]string) string {
+	if l, ok := metadata[JSRequiredLevelMetadataKey]; ok && l != _EMPTY_ {
+		return l
+	}
+	return _EMPTY_
+}
+
+// supportsRequiredApiLevel returns whether the required API level for the JetStream asset is supported.
+func supportsRequiredApiLevel(metadata map[string]string) bool {
+	if l := getRequiredApiLevel(metadata); l != _EMPTY_ {
+		li, err := strconv.Atoi(l)
+		return err == nil && li <= JSApiLevel
+	}
+	return true
+}
+
 // setStaticStreamMetadata sets JetStream stream metadata, like the server version and API level.
 // Any dynamic metadata is removed, it must not be stored and only be added for responses.
 func setStaticStreamMetadata(cfg *StreamConfig) {
@@ -50,10 +67,15 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 
 // setDynamicStreamMetadata adds dynamic fields into the (copied) metadata.
 func setDynamicStreamMetadata(cfg *StreamConfig) *StreamConfig {
-	newCfg := *cfg
+	var newCfg StreamConfig
+	if cfg != nil {
+		newCfg = *cfg
+	}
 	newCfg.Metadata = make(map[string]string)
-	for key, value := range cfg.Metadata {
-		newCfg.Metadata[key] = value
+	if cfg != nil {
+		for key, value := range cfg.Metadata {
+			newCfg.Metadata[key] = value
+		}
 	}
 	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
 	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
@@ -121,10 +143,15 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig) {
 
 // setDynamicConsumerMetadata adds dynamic fields into the (copied) metadata.
 func setDynamicConsumerMetadata(cfg *ConsumerConfig) *ConsumerConfig {
-	newCfg := *cfg
+	var newCfg ConsumerConfig
+	if cfg != nil {
+		newCfg = *cfg
+	}
 	newCfg.Metadata = make(map[string]string)
-	for key, value := range cfg.Metadata {
-		newCfg.Metadata[key] = value
+	if cfg != nil {
+		for key, value := range cfg.Metadata {
+			newCfg.Metadata[key] = value
+		}
 	}
 	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
 	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
