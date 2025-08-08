@@ -9867,3 +9867,377 @@ func TestJetStreamConsumerNotInactiveDuringAckWaitBackoff(t *testing.T) {
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
+
+func TestSortingConsumerPullRequests(t *testing.T) {
+
+	for _, test := range []struct {
+		name     string
+		requests []waitingRequest
+		expected []waitingRequest
+	}{
+		{
+			name: "sort",
+			requests: []waitingRequest{
+				{priorityGroup: &PriorityGroup{Priority: 1}},
+				{priorityGroup: &PriorityGroup{Priority: 2}},
+				{priorityGroup: &PriorityGroup{Priority: 1}},
+				{priorityGroup: &PriorityGroup{Priority: 3}},
+			},
+			expected: []waitingRequest{
+				{priorityGroup: &PriorityGroup{Priority: 1}},
+				{priorityGroup: &PriorityGroup{Priority: 1}},
+				{priorityGroup: &PriorityGroup{Priority: 2}},
+				{priorityGroup: &PriorityGroup{Priority: 3}},
+			},
+		},
+		{
+			name: "test if sort is stable",
+			requests: []waitingRequest{
+				{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1a"},
+				{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2a"},
+				{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1b"},
+				{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2b"},
+				{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1c"},
+				{priorityGroup: &PriorityGroup{Priority: 3}, reply: "3a"},
+				{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2c"},
+			},
+			expected: []waitingRequest{
+				{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1a"},
+				{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1b"},
+				{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1c"},
+				{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2a"},
+				{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2b"},
+				{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2c"},
+				{priorityGroup: &PriorityGroup{Priority: 3}, reply: "3a"},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Helper()
+
+			wq := newWaitQueue(100)
+
+			for _, r := range test.requests {
+				err := wq.addPrioritized(&r)
+				require_NoError(t, err)
+			}
+
+			if wq.n != len(test.expected) {
+				t.Fatalf("Expected %d requests, got %d", len(test.expected), wq.n)
+			}
+
+			// Verify order
+			for i, expected := range test.expected {
+				current := wq.peek()
+				if current == nil {
+					t.Fatalf("Expected request at position %d, but queue was empty", i)
+				}
+				if current.priorityGroup.Priority != expected.priorityGroup.Priority {
+					t.Fatalf("At position %d: expected priority %d, got %d",
+						i, expected.priorityGroup.Priority, current.priorityGroup.Priority)
+				}
+				if current.reply != expected.reply {
+					t.Fatalf("At position %d: expected reply %q, got %q", i, expected.reply, current.reply)
+				}
+				wq.removeCurrent()
+			}
+
+		})
+	}
+}
+
+func TestWaitQueuePopAndRequeue(t *testing.T) {
+	t.Run("basic requeue with batches", func(t *testing.T) {
+		wq := newWaitQueue(100)
+
+		// Add elements with different priorities
+		reqs := []waitingRequest{
+			{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1a", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1b", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1c", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2a", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2b", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2c", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 3}, reply: "3a", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 3}, reply: "3b", n: 3},
+			{priorityGroup: &PriorityGroup{Priority: 3}, reply: "3c", n: 3},
+		}
+
+		for i := range reqs {
+			err := wq.addPrioritized(&reqs[i])
+			require_NoError(t, err)
+		}
+
+		i := 0
+		j := 0
+		for {
+			wr := wq.popAndRequeue()
+			require_Equal(t, wr.reply, fmt.Sprintf("%da", j+1))
+			wr = wq.popAndRequeue()
+			require_Equal(t, wr.reply, fmt.Sprintf("%db", j+1))
+			wr = wq.popAndRequeue()
+			require_Equal(t, wr.reply, fmt.Sprintf("%dc", j+1))
+
+			i++
+			if i%3 == 0 {
+				j++
+			}
+			require_Equal(t, wq.n, 9-(j*3))
+			if j == 2 {
+				break
+			}
+		}
+	})
+
+	t.Run("request removal when fully served", func(t *testing.T) {
+		wq := newWaitQueue(100)
+
+		reqs := []waitingRequest{
+			{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1a", n: 2}, // Will be removed after 2 pops
+			{priorityGroup: &PriorityGroup{Priority: 1}, reply: "1b", n: 1}, // Will be removed after 1 pop
+			{priorityGroup: &PriorityGroup{Priority: 2}, reply: "2a", n: 3}, // Will remain
+		}
+
+		for i := range reqs {
+			err := wq.addPrioritized(&reqs[i])
+			require_NoError(t, err)
+		}
+		initialCount := wq.n
+
+		// Pop 1a first time (n=2 -> n=1, should requeue)
+		wr := wq.popAndRequeue()
+		if wr == nil || wr.reply != "1a" || wr.n != 1 {
+			t.Fatalf("Expected 1a with n=1, got %v with n=%d", wr, wr.n)
+		}
+		if wq.n != initialCount {
+			t.Fatalf("Queue size should remain %d, got %d", initialCount, wq.n)
+		}
+
+		// Pop 1b (n=1 -> n=0, should be removed)
+		wr = wq.popAndRequeue()
+		if wr == nil || wr.reply != "1b" || wr.n != 0 {
+			t.Fatalf("Expected 1b with n=0, got %v with n=%d", wr, wr.n)
+		}
+		if wq.n != initialCount-1 {
+			t.Fatalf("Queue size should be %d after 1b removal, got %d", initialCount-1, wq.n)
+		}
+
+		// Pop 1a second time (n=1 -> n=0, should be removed)
+		wr = wq.popAndRequeue()
+		if wr == nil || wr.reply != "1a" || wr.n != 0 {
+			t.Fatalf("Expected 1a with n=0, got %v with n=%d", wr, wr.n)
+		}
+		if wq.n != initialCount-2 {
+			t.Fatalf("Queue size should be %d after 1a removal, got %d", initialCount-2, wq.n)
+		}
+
+		// Only 2a should remain
+		next := wq.peek()
+		if next == nil || next.reply != "2a" || next.n != 3 {
+			t.Fatalf("Expected only 2a with n=3 to remain, got %v with n=%d", next, next.n)
+		}
+	})
+
+	t.Run("single element lifecycle", func(t *testing.T) {
+		wq := newWaitQueue(10)
+		req := waitingRequest{priorityGroup: &PriorityGroup{Priority: 1}, reply: "single", n: 2}
+		wq.add(&req)
+
+		// First pop (n=2 -> n=1, should stay)
+		result := wq.popAndRequeue()
+		if result == nil || result.reply != "single" || result.n != 1 {
+			t.Fatalf("Expected single with n=1, got %v with n=%d", result, result.n)
+		}
+		if wq.n != 1 {
+			t.Fatalf("Queue should still have 1 element, got %d", wq.n)
+		}
+
+		// Second pop (n=1 -> n=0, should be removed)
+		result = wq.popAndRequeue()
+		if result == nil || result.reply != "single" || result.n != 0 {
+			t.Fatalf("Expected single with n=0, got %v with n=%d", result, result.n)
+		}
+		if wq.n != 0 {
+			t.Fatalf("Queue should be empty after removal, got %d elements", wq.n)
+		}
+		if wq.head != nil {
+			t.Fatalf("Queue head should be nil after removal, got %v", wq.head)
+		}
+	})
+}
+
+func TestJetStreamConsumerPrioritized(t *testing.T) {
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "CONSUMER",
+		AckPolicy:      AckNone,
+		FilterSubject:  "foo",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPrioritized,
+	})
+	require_NoError(t, err)
+
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Helper function to send pull request and get response
+	sendPullRequest := func(t *testing.T, inbox string, priority int, batch int) *nats.Subscription {
+		sub, err := nc.SubscribeSync(inbox)
+		require_NoError(t, err)
+
+		req := JSApiConsumerGetNextRequest{
+			Batch:   batch,
+			Expires: 10 * time.Second,
+			PriorityGroup: PriorityGroup{
+				Group:    "A",
+				Priority: priority,
+			},
+		}
+		reqb, _ := json.Marshal(req)
+		err = nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.CONSUMER", inbox, reqb)
+		require_NoError(t, err)
+
+		return sub
+	}
+
+	t.Run("invalid priority number", func(t *testing.T) {
+
+		sub := sendPullRequest(t, "invalid_priority", 10, 1)
+
+		msg, err := sub.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_Equal(t, msg.Header.Get("Status"), "400")
+
+		sub2 := sendPullRequest(t, "invalid_priority", -5, 1)
+		require_Equal(t, msg.Header.Get("Status"), "400")
+
+		msg, err = sub2.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_Equal(t, msg.Header.Get("Status"), "400")
+
+	})
+
+	t.Run("priority ordering", func(t *testing.T) {
+		priority3 := sendPullRequest(t, "priority3", 3, 1) // Priority 3
+		priority1 := sendPullRequest(t, "priority1", 1, 1) // Priority 1 (should be served first)
+		priority2 := sendPullRequest(t, "priority2", 2, 2) // Priority 2
+
+		// Small delay to ensure requests are processed
+		time.Sleep(50 * time.Millisecond)
+
+		_, err = js.Publish("foo", fmt.Appendf(nil, "message"))
+		require_NoError(t, err)
+
+		// Priority 3 should time out
+		_, err := priority3.NextMsg(200 * time.Millisecond)
+		require_Error(t, err, nats.ErrTimeout)
+
+		// Priority 2 should time out
+		_, err = priority2.NextMsg(200 * time.Millisecond)
+		require_Error(t, err, nats.ErrTimeout)
+
+		// Priority 1 should get message first
+		msg, err := priority1.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+
+		_, err = js.Publish("foo", fmt.Appendf(nil, "message"))
+		require_NoError(t, err)
+
+		// Priority 3 should time out.
+		_, err = priority3.NextMsg(200 * time.Millisecond)
+		require_Error(t, err, nats.ErrTimeout)
+
+		// Priority 2 should get message next
+		msg, err = priority2.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+
+		_, err = js.Publish("foo", fmt.Appendf(nil, "message"))
+		require_NoError(t, err)
+
+		// Priority 2 should get message next
+		msg, err = priority2.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+
+		// Priority 3 should time out
+		_, err = priority3.NextMsg(2 * time.Second)
+		require_Error(t, err, nats.ErrTimeout)
+
+		_, err = js.Publish("foo", fmt.Appendf(nil, "message"))
+		require_NoError(t, err)
+
+		// Priority 3 should get message next
+		msg, err = priority3.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+	})
+
+	t.Run("dynamic priority interruption", func(t *testing.T) {
+
+		inbox3 := nats.NewInbox()
+		sub3 := sendPullRequest(t, inbox3, 3, 3)
+
+		_, err = js.Publish("foo", fmt.Appendf(nil, "msg"))
+		require_NoError(t, err)
+
+		msg, err := sub3.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+
+		// Now, despite priority 3 still having pending messages, a new pull request
+		// with a lower priority should be able to take over the delivery.
+		inbox2 := nats.NewInbox()
+		sub2 := sendPullRequest(t, inbox2, 2, 2)
+
+		_, err = js.Publish("foo", fmt.Appendf(nil, "msg"))
+		require_NoError(t, err)
+
+		msg, err = sub2.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+
+		// The same should happen with priority 1.
+		inbox1 := nats.NewInbox()
+		sub1 := sendPullRequest(t, inbox1, 1, 1) // Priority 1, batch 3
+
+		_, err = js.Publish("foo", fmt.Appendf(nil, "msg"))
+		require_NoError(t, err)
+		_, err = js.Publish("foo", fmt.Appendf(nil, "msg"))
+		require_NoError(t, err)
+		_, err = js.Publish("foo", fmt.Appendf(nil, "msg"))
+		require_NoError(t, err)
+
+		msg, err = sub1.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+
+		// Now priority 2 should take over for last message.
+		msg, err = sub2.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+
+		// Finally, priority 3 should get its last message.
+		msg, err = sub3.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		require_NotNil(t, msg)
+	})
+}
