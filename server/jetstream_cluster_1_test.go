@@ -23,16 +23,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 )
@@ -9898,6 +9901,233 @@ func TestJetStreamClusterConsumerReadAfterWrite(t *testing.T) {
 		}
 	}
 	require_True(t, observedTimeout)
+}
+
+func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
+	clusterName := "R3S"
+	c := createJetStreamClusterExplicit(t, clusterName, 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+
+	sjs := ml.getJetStream()
+	require_NotNil(t, sjs)
+	sjs.mu.Lock()
+	cc := sjs.cluster
+	if cc == nil || cc.meta == nil {
+		sjs.mu.Unlock()
+		t.Fatalf("Expected cluster to be initialized")
+	}
+
+	restart := func() {
+		t.Helper()
+		for _, s := range c.servers {
+			sjs = s.getJetStream()
+			snap, err := sjs.metaSnapshot()
+			require_NoError(t, err)
+			meta := sjs.getMetaGroup()
+			meta.InstallSnapshot(snap)
+		}
+
+		c.stopAll()
+		c.restartAllSamePorts()
+		c.waitOnLeader()
+		ml = c.leader()
+		require_NotNil(t, ml)
+
+		sjs = ml.getJetStream()
+		require_NotNil(t, sjs)
+		sjs.mu.Lock()
+		cc = sjs.cluster
+		if cc == nil || cc.meta == nil {
+			sjs.mu.Unlock()
+			t.Fatalf("Expected cluster to be initialized")
+		}
+		sjs.mu.Unlock()
+	}
+
+	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
+		t.Helper()
+		snap, err := sjs.metaSnapshot()
+		require_NoError(t, err)
+		require_True(t, len(snap) > 0)
+		dec, err := s2.Decode(nil, snap)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(dec, &wsas))
+		return wsas
+	}
+
+	// Create a stream that's unsupported.
+	ci := &ClientInfo{
+		Account: globalAccountName,
+		Cluster: clusterName,
+	}
+	scfg := &StreamConfig{
+		Name:     "DowngradeStreamTest",
+		Storage:  FileStorage,
+		Replicas: 3,
+		Metadata: map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt - 1)},
+	}
+	rg, perr := sjs.createGroupForStream(ci, scfg)
+	if perr != nil {
+		sjs.mu.Unlock()
+		require_NoError(t, perr)
+	}
+	sa := &streamAssignment{
+		Config:  scfg,
+		Group:   rg,
+		Created: time.Now().UTC(),
+		Client:  ci,
+	}
+	err := cc.meta.Propose(encodeAddStreamAssignment(sa))
+	sjs.mu.Unlock()
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	// Stream should be reported as offline, but healthz should report healthy to not block downgrades.
+	_, err = js.StreamInfo("DowngradeStreamTest")
+	require_Error(t, err, NewJSStreamOfflineError())
+	health := ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+	restart()
+	_, err = js.StreamInfo("DowngradeStreamTest")
+	require_Error(t, err, NewJSStreamOfflineError())
+	health = ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+
+	wsas := getValidMetaSnapshot()
+	require_Len(t, len(wsas), 1)
+	require_Equal(t, wsas[0].Config.Name, "DowngradeStreamTest")
+	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt-1))
+
+	// Update a stream that's unsupported.
+	sjs.mu.Lock()
+	scfg.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
+	err = cc.meta.Propose(encodeUpdateStreamAssignment(sa))
+	sjs.mu.Unlock()
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	// Stream should be reported as offline, but healthz should report healthy to not block downgrades.
+	_, err = js.StreamInfo("DowngradeStreamTest")
+	require_Error(t, err, NewJSStreamOfflineError())
+	health = ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+	restart()
+	_, err = js.StreamInfo("DowngradeStreamTest")
+	require_Error(t, err, NewJSStreamOfflineError())
+	health = ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+
+	wsas = getValidMetaSnapshot()
+	require_Len(t, len(wsas), 1)
+	require_Equal(t, wsas[0].Config.Name, "DowngradeStreamTest")
+	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
+
+	// Deleting a stream should always work, even if it is unsupported.
+	require_NoError(t, js.DeleteStream("DowngradeStreamTest"))
+	snap, err := sjs.metaSnapshot()
+	require_NoError(t, err)
+	require_True(t, snap == nil)
+
+	// Create a supported stream and consumer.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "DowngradeConsumerTest", Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("DowngradeConsumerTest", &nats.ConsumerConfig{Name: "consumer"})
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	// Create a consumer that's unsupported.
+	sjs.mu.Lock()
+	ccfg := &ConsumerConfig{
+		Name:     "DowngradeConsumerTest",
+		Replicas: 3,
+		Metadata: map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt - 1)},
+	}
+	rg = cc.createGroupForConsumer(ccfg, sa)
+	ca := &consumerAssignment{
+		Config:  ccfg,
+		Group:   rg,
+		Stream:  "DowngradeConsumerTest",
+		Name:    "DowngradeConsumerTest",
+		Created: time.Now().UTC(),
+		Client:  ci,
+	}
+	err = cc.meta.Propose(encodeAddConsumerAssignment(ca))
+	sjs.mu.Unlock()
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	// Consumer should be reported as offline, but healthz should report healthy to not block downgrades.
+	_, err = js.ConsumerInfo("DowngradeConsumerTest", "DowngradeConsumerTest")
+	require_Error(t, err, NewJSConsumerOfflineError())
+	health = ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+	restart()
+	_, err = js.ConsumerInfo("DowngradeConsumerTest", "DowngradeConsumerTest")
+	require_Error(t, err, NewJSConsumerOfflineError())
+	health = ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+
+	wsas = getValidMetaSnapshot()
+	require_Len(t, len(wsas), 1)
+	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
+	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], "0")
+	require_Len(t, len(wsas[0].Consumers), 2)
+	for _, wca := range wsas[0].Consumers {
+		if wca.Config.Name == "DowngradeConsumerTest" {
+			require_Equal(t, wca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt-1))
+		} else {
+			require_Equal(t, wca.Config.Name, "consumer")
+		}
+	}
+
+	// Update a consumer (with compressed data) that's unsupported.
+	ccfg.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
+	sjs.mu.Lock()
+	err = cc.meta.Propose(encodeAddConsumerAssignmentCompressed(ca))
+	sjs.mu.Unlock()
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	// Consumer should be reported as offline, but healthz should report healthy to not block downgrades.
+	_, err = js.ConsumerInfo("DowngradeConsumerTest", "DowngradeConsumerTest")
+	require_Error(t, err, NewJSConsumerOfflineError())
+	health = ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+	restart()
+	_, err = js.ConsumerInfo("DowngradeConsumerTest", "DowngradeConsumerTest")
+	require_Error(t, err, NewJSConsumerOfflineError())
+	health = ml.healthz(&HealthzOptions{})
+	require_Equal(t, health.StatusCode, 200)
+
+	wsas = getValidMetaSnapshot()
+	require_Len(t, len(wsas), 1)
+	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
+	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], "0")
+	require_Len(t, len(wsas[0].Consumers), 2)
+	for _, wca := range wsas[0].Consumers {
+		if wca.Config.Name == "DowngradeConsumerTest" {
+			require_Equal(t, wca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
+		} else {
+			require_Equal(t, wca.Config.Name, "consumer")
+		}
+	}
+
+	// Deleting a consumer should always work, even if it is unsupported.
+	require_NoError(t, js.DeleteConsumer("DowngradeConsumerTest", "DowngradeConsumerTest"))
+	c.waitOnAllCurrent()
+
+	wsas = getValidMetaSnapshot()
+	require_Len(t, len(wsas), 1)
+	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
+	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], "0")
+	require_Len(t, len(wsas[0].Consumers), 1)
+	require_Equal(t, wsas[0].Consumers[0].Config.Name, "consumer")
 }
 
 //

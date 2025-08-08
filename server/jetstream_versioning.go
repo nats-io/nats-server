@@ -24,6 +24,24 @@ const (
 	JSServerLevelMetadataKey   = "_nats.level"
 )
 
+// getRequiredApiLevel returns the required API level for the JetStream asset.
+func getRequiredApiLevel(metadata map[string]string) string {
+	if l, ok := metadata[JSRequiredLevelMetadataKey]; ok && l != _EMPTY_ {
+		return l
+	}
+	return _EMPTY_
+}
+
+// supportsRequiredApiLevel returns whether the required API level for the JetStream asset is supported.
+func supportsRequiredApiLevel(metadata map[string]string) bool {
+	if l := getRequiredApiLevel(metadata); l != _EMPTY_ {
+		if li, err := strconv.Atoi(l); err == nil {
+			return li <= JSApiLevel
+		}
+	}
+	return true
+}
+
 // setStaticStreamMetadata sets JetStream stream metadata, like the server version and API level.
 // Any dynamic metadata is removed, it must not be stored and only be added for responses.
 func setStaticStreamMetadata(cfg *StreamConfig) {

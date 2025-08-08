@@ -1837,6 +1837,9 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 
 					// Now consumers, check each since could be different tiers.
 					for _, ca := range sa.consumers {
+						if ca.unsupportedJson != nil {
+							continue
+						}
 						stats.Consumers++
 						consumerTier := tierName(ca.Config.replicas(sa.Config))
 						cu, ok := stats.Tiers[consumerTier]
