@@ -286,6 +286,8 @@ const (
 	hdrLen = 2
 	// This is where we keep the streams.
 	streamsDir = "streams"
+	// This is where we keep inflight batches for streams.
+	batchesDir = "batches"
 	// This is where we keep the message store blocks.
 	msgDir = "msgs"
 	// This is where we temporarily move the messages dir.
@@ -9252,7 +9254,7 @@ func (fs *fileStore) closeAllMsgBlocks(sync bool) {
 	}
 }
 
-func (fs *fileStore) Delete() error {
+func (fs *fileStore) Delete(inline bool) error {
 	if fs.isClosed() {
 		// Always attempt to remove since we could have been closed beforehand.
 		os.RemoveAll(fs.fcfg.StoreDir)
@@ -9307,7 +9309,7 @@ func (fs *fileStore) Delete() error {
 	}
 	// Do this in separate Go routine in case lots of blocks.
 	// Purge above protects us as does the removal of meta artifacts above.
-	go func() {
+	removeDir := func() {
 		<-dios
 		err := os.RemoveAll(ndir)
 		dios <- struct{}{}
@@ -9324,8 +9326,12 @@ func (fs *fileStore) Delete() error {
 				return
 			}
 		}
-	}()
-
+	}
+	if inline {
+		removeDir()
+	} else {
+		go removeDir()
+	}
 	return nil
 }
 

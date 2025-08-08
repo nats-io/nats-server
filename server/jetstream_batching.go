@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,26 +42,69 @@ type batchGroup struct {
 	timer *time.Timer
 }
 
-func newBatchGroup(s *Server, batchId string, batches *batching, store StreamStore) *batchGroup {
+// Lock should be held.
+func (batches *batching) newBatchGroup(mset *stream, batchId string) (*batchGroup, error) {
+	store, err := newBatchStore(mset, batchId)
+	if err != nil {
+		return nil, err
+	}
 	b := &batchGroup{store: store}
 
 	// Create a timer to clean up after timeout.
 	timeout := streamMaxBatchTimeout
-	if maxBatchTimeout := s.getOpts().JetStreamLimits.MaxBatchTimeout; maxBatchTimeout > 0 {
+	if maxBatchTimeout := mset.srv.getOpts().JetStreamLimits.MaxBatchTimeout; maxBatchTimeout > 0 {
 		timeout = maxBatchTimeout
 	}
 	b.timer = time.AfterFunc(timeout, func() {
 		b.cleanup(batchId, batches)
 	})
-	return b
+	return b, nil
 }
 
-// stopCleanupTimerLocked indicates the batch is ready to be committed.
+func getBatchStoreDir(mset *stream, batchId string) (string, string) {
+	mset.mu.RLock()
+	jsa, name := mset.jsa, mset.cfg.Name
+	mset.mu.RUnlock()
+
+	jsa.mu.RLock()
+	sd := jsa.storeDir
+	jsa.mu.RUnlock()
+
+	bname := getHash(batchId)
+	return bname, filepath.Join(sd, streamsDir, name, batchesDir, bname)
+}
+
+func newBatchStore(mset *stream, batchId string) (StreamStore, error) {
+	mset.mu.RLock()
+	replicas, storage := mset.cfg.Replicas, mset.cfg.Storage
+	mset.mu.RUnlock()
+
+	if replicas == 1 && storage == FileStorage {
+		bname, storeDir := getBatchStoreDir(mset, batchId)
+		fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir}
+		s := mset.srv
+		prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
+		if prf != nil {
+			// We are encrypted here, fill in correct cipher selection.
+			fcfg.Cipher = s.getOpts().JetStreamCipher
+		}
+		oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
+		cfg := StreamConfig{Name: bname, Storage: FileStorage}
+		return newFileStoreWithCreated(fcfg, cfg, time.Time{}, prf, oldprf)
+	}
+	return newMemStore(&StreamConfig{Name: _EMPTY_, Storage: MemoryStorage})
+}
+
+// readyForCommit indicates the batch is ready to be committed.
 // If the timer has already cleaned up the batch, we can't commit.
 // Otherwise, we ensure the timer does not clean up the batch in the meantime.
 // Lock should be held.
-func (b *batchGroup) stopCleanupTimerLocked() bool {
-	return b.timer.Stop()
+func (b *batchGroup) readyForCommit() bool {
+	if !b.timer.Stop() {
+		return false
+	}
+	b.store.FlushAllPending()
+	return true
 }
 
 // cleanup deletes underlying resources associated with the batch and unregisters it from the stream's batches.
@@ -74,8 +118,15 @@ func (b *batchGroup) cleanup(batchId string, batches *batching) {
 func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
 	globalInflightBatches.Add(-1)
 	b.timer.Stop()
-	b.store.Delete()
+	b.store.Delete(true)
 	delete(batches.group, batchId)
+}
+
+// Lock should be held.
+func (b *batchGroup) stopLocked() {
+	globalInflightBatches.Add(-1)
+	b.timer.Stop()
+	b.store.Stop()
 }
 
 // batchStagedDiff stages all changes for consistency checks until commit.

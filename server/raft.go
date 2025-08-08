@@ -95,7 +95,7 @@ type WAL interface {
 	State() StreamState
 	FastState(*StreamState)
 	Stop() error
-	Delete() error
+	Delete(inline bool) error
 }
 
 type Peer struct {
@@ -1821,7 +1821,7 @@ func (n *raft) Delete() {
 	defer n.Unlock()
 
 	if wal := n.wal; wal != nil {
-		wal.Delete()
+		wal.Delete(false)
 	}
 	os.RemoveAll(n.sd)
 	n.debug("Deleted")

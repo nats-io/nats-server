@@ -122,7 +122,7 @@ type StreamStore interface {
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
 	RegisterSubjectDeleteMarkerUpdates(SubjectDeleteMarkerUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
-	Delete() error
+	Delete(inline bool) error
 	Stop() error
 	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
 	AddConsumer(o ConsumerStore) error

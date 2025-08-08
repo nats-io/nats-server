@@ -1404,6 +1404,61 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			mset.setCreatedTime(cfg.Created)
 		}
 
+		// Might need to recover from a partial batch write.
+		if cfg.AllowAtomicPublish {
+			var (
+				ok            bool
+				smv           StoreMsg
+				batchId       string
+				batchSeq      uint64
+				commit        bool
+				batchStoreDir string
+				store         StreamStore
+				state         StreamState
+			)
+			// Check if the last message was part of a batch.
+			sm, err := mset.store.LoadLastMsg(fwcs, &smv)
+			if err != nil || sm == nil {
+				goto SKIP
+			}
+			batchId = getBatchId(sm.hdr)
+			batchSeq, ok = getBatchSequence(sm.hdr)
+			commit = len(sliceHeader(JSBatchCommit, sm.hdr)) != 0
+			if batchId == _EMPTY_ || !ok || commit {
+				goto SKIP
+			}
+			// We've observed a partial batch write. Write the remainder of the batch.
+			batchSeq++
+			_, batchStoreDir = getBatchStoreDir(mset, batchId)
+			if _, err = os.Stat(batchStoreDir); err != nil {
+				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
+					mset.accName(), mset.name(), batchSeq, err)
+				goto SKIP
+			}
+			store, err = newBatchStore(mset, batchId)
+			if err != nil {
+				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
+					mset.accName(), mset.name(), batchSeq, err)
+				goto SKIP
+			}
+			store.FastState(&state)
+			s.Noticef("  Restoring partial batch write for stream '%s > %s' (seq %d to %d)",
+				mset.accName(), mset.name(), batchSeq, state.LastSeq)
+			// Loop through items that weren't persisted yet.
+			for seq := batchSeq; seq <= state.LastSeq; seq++ {
+				sm, err = store.LoadMsg(seq, &smv)
+				if err != nil || sm == nil {
+					s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
+						mset.accName(), mset.name(), seq, err)
+					break
+				}
+				mset.processJetStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, 0, 0, nil, false)
+			}
+			store.Delete(true)
+		SKIP:
+			os.RemoveAll(filepath.Join(sdir, fi.Name(), batchesDir))
+		}
+
 		state := mset.state()
 		s.Noticef("  Restored %s messages for stream '%s > %s' in %v",
 			comma(int64(state.Msgs)), mset.accName(), mset.name(), time.Since(rt).Round(time.Millisecond))

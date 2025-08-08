@@ -40,3 +40,8 @@ but if holding "clMu" or "ddMu", locking the stream lock afterward would violate
 
     stream -> clMu
     stream -> ddMu
+
+The "mset.batches.mu" lock protects the batching state without needing to hold the stream lock.
+If "clMu" is used to commit a batch, it should only be acquired while already holding the batch lock.
+
+    mset.batches.mu -> clMu

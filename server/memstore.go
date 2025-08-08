@@ -1966,7 +1966,7 @@ func memStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 }
 
 // Delete is same as Stop for memory store.
-func (ms *memStore) Delete() error {
+func (ms *memStore) Delete(_ bool) error {
 	return ms.Stop()
 }
 
