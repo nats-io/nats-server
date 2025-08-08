@@ -14,7 +14,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -115,7 +117,7 @@ type StreamStore interface {
 	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
 	FastState(*StreamState)
-	EncodedStreamState(failed uint64) (enc []byte, err error)
+	EncodedStreamState(failed uint64, consumers []*consumerAssignment) (enc []byte, err error)
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
@@ -222,12 +224,13 @@ type DeleteBlocks []DeleteBlock
 // StreamReplicatedState represents what is encoded in a binary stream snapshot used
 // for stream replication in an NRG.
 type StreamReplicatedState struct {
-	Msgs     uint64
-	Bytes    uint64
-	FirstSeq uint64
-	LastSeq  uint64
-	Failed   uint64
-	Deleted  DeleteBlocks
+	Msgs      uint64
+	Bytes     uint64
+	FirstSeq  uint64
+	LastSeq   uint64
+	Failed    uint64
+	Deleted   DeleteBlocks
+	Consumers []*consumerAssignment
 }
 
 // Determine if this is an encoded stream state.
@@ -274,14 +277,26 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 
 	if numDeleted := readU64(); numDeleted > 0 {
 		// If we have some deleted blocks.
-		for l := len(buf); l > bi; {
-			switch buf[bi] {
+		// Keep track of remaining deletes, to know when to stop and read data after the deletes.
+		remaining := numDeleted
+		for l := len(buf); l > bi && remaining > 0; {
+			c := buf[bi]
+			switch c {
 			case seqSetMagic:
 				dmap, n, err := avl.Decode(buf[bi:])
 				if err != nil {
 					return nil, ErrCorruptStreamState
 				}
 				bi += n
+				size := dmap.Size()
+				if size < 0 {
+					return nil, ErrCorruptStreamState
+				}
+				usize := uint64(size)
+				if remaining < usize {
+					return nil, ErrCorruptStreamState
+				}
+				remaining -= usize
 				ss.Deleted = append(ss.Deleted, dmap)
 			case runLengthMagic:
 				bi++
@@ -291,10 +306,21 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 				if parserFailed() {
 					return nil, ErrCorruptStreamState
 				}
+				if remaining < rl.Num {
+					return nil, ErrCorruptStreamState
+				}
+				remaining -= rl.Num
 				ss.Deleted = append(ss.Deleted, &rl)
 			default:
 				return nil, ErrCorruptStreamState
 			}
+		}
+	}
+
+	if len(buf)-bi > 0 {
+		br := bytes.NewReader(buf[bi:])
+		if err := json.NewDecoder(br).Decode(&ss.Consumers); err != nil {
+			return nil, ErrCorruptStreamState
 		}
 	}
 
