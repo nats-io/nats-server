@@ -9059,11 +9059,17 @@ func TestJetStreamClusterSetPreferredToOnlineNode(t *testing.T) {
 }
 
 func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
-	test := func(t *testing.T, replicas int) {
-		supportsAsync := replicas > 1
+	test := func(t *testing.T, syncAlways bool) {
+		supportsAsync := !syncAlways
 
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
+
+		for _, s := range c.servers {
+			s.optsMu.Lock()
+			s.opts.SyncAlways = syncAlways
+			s.optsMu.Unlock()
+		}
 
 		nc, js := jsClientConnect(t, c.randomServer())
 		defer nc.Close()
@@ -9101,11 +9107,10 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		}
 
 		cfg := &StreamConfig{
-			Name:            "TEST",
-			Subjects:        []string{"foo"},
-			Storage:         FileStorage,
-			Replicas:        replicas,
-			AllowAsyncFlush: false,
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Storage:  FileStorage,
+			Replicas: 1,
 		}
 		// Test disabled async flush on create.
 		_, err := jsStreamCreate(t, nc, cfg)
@@ -9116,15 +9121,18 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		checkStoreIsAsync(false)
 
 		// Enabling async flush.
-		cfg.AllowAsyncFlush = true
+		cfg.Replicas = 3
 		_, err = jsStreamUpdate(t, nc, cfg)
 		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
 		_, err = js.Publish("foo", nil)
 		require_NoError(t, err)
 		checkStoreIsAsync(supportsAsync)
 
 		// Disabling async flush.
-		cfg.AllowAsyncFlush = false
+		cfg.Replicas = 1
 		_, err = jsStreamUpdate(t, nc, cfg)
 		require_NoError(t, err)
 		_, err = js.Publish("foo", nil)
@@ -9133,7 +9141,7 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 
 		// Test async flush on create.
 		require_NoError(t, js.DeleteStream("TEST"))
-		cfg.AllowAsyncFlush = true
+		cfg.Replicas = 3
 		_, err = jsStreamCreate(t, nc, cfg)
 		require_NoError(t, err)
 		s = c.streamLeader(globalAccountName, "TEST")
@@ -9142,8 +9150,8 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		checkStoreIsAsync(supportsAsync)
 	}
 
-	t.Run("R1", func(t *testing.T) { test(t, 1) })
-	t.Run("R3", func(t *testing.T) { test(t, 3) })
+	t.Run("Default", func(t *testing.T) { test(t, false) })
+	t.Run("SyncAlways", func(t *testing.T) { test(t, true) })
 }
 
 func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
@@ -9154,11 +9162,10 @@ func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	defer nc.Close()
 
 	_, err := jsStreamCreate(t, nc, &StreamConfig{
-		Name:            "TEST",
-		Subjects:        []string{"foo"},
-		Storage:         FileStorage,
-		Replicas:        3,
-		AllowAsyncFlush: true,
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+		Replicas: 3,
 	})
 	require_NoError(t, err)
 
