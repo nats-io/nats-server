@@ -84,8 +84,9 @@ type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 // Used to call back into the upper layers to remove a message.
 type StorageRemoveMsgHandler func(seq uint64)
 
-// Used to call back into the upper layers to report on newly created subject delete markers.
-type SubjectDeleteMarkerUpdateHandler func(*inMsg)
+// Used to call back into the upper layers to process a JetStream message.
+// Will propose the message if the stream is replicated.
+type ProcessJetStreamMsgHandler func(*inMsg)
 
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
@@ -120,7 +121,7 @@ type StreamStore interface {
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
-	RegisterSubjectDeleteMarkerUpdates(SubjectDeleteMarkerUpdateHandler)
+	RegisterProcessJetStreamMsg(ProcessJetStreamMsgHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete(inline bool) error
 	Stop() error
@@ -129,6 +130,7 @@ type StreamStore interface {
 	RemoveConsumer(o ConsumerStore) error
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 	Utilization() (total, reported uint64, err error)
+	ResetState()
 }
 
 // RetentionPolicy determines how messages in a set are retained.

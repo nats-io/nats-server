@@ -20,6 +20,7 @@ import (
 	"math"
 	"math/big"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,7 +199,7 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
 	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
-	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter bool,
+	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules bool,
 	discard DiscardPolicy, discardNewPer bool, maxMsgSize int, maxMsgs int64, maxMsgsPer int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
@@ -462,6 +463,48 @@ func checkMsgHeadersPreClusteredProposal(
 					diff.expectedPerSubject = map[string]*batchExpectedPerSubject{seqSubj: e}
 				} else {
 					diff.expectedPerSubject[seqSubj] = e
+				}
+			}
+		}
+
+		// Message scheduling.
+		if schedule, ok := getMessageSchedule(hdr); !ok {
+			apiErr := NewJSMessageSchedulesPatternInvalidError()
+			if !allowMsgSchedules {
+				apiErr = NewJSMessageSchedulesDisabledError()
+			}
+			return hdr, msg, 0, apiErr, apiErr
+		} else if !schedule.IsZero() {
+			if !allowMsgSchedules {
+				apiErr := NewJSMessageSchedulesDisabledError()
+				return hdr, msg, 0, apiErr, apiErr
+			} else if scheduleTtl, ok := getMessageScheduleTTL(hdr); !ok {
+				apiErr := NewJSMessageSchedulesTTLInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
+			} else if scheduleTtl != _EMPTY_ && !allowTTL {
+				return hdr, msg, 0, NewJSMessageTTLDisabledError(), errMsgTTLDisabled
+			} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
+				!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
+				apiErr := NewJSMessageSchedulesTargetInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
+			} else {
+				mset.cfgMu.RLock()
+				match := slices.ContainsFunc(mset.cfg.Subjects, func(subj string) bool {
+					return SubjectsCollide(subj, scheduleTarget)
+				})
+				mset.cfgMu.RUnlock()
+				if !match {
+					apiErr := NewJSMessageSchedulesTargetInvalidError()
+					return hdr, msg, 0, apiErr, apiErr
+				}
+
+				// Add a rollup sub header if it doesn't already exist.
+				// Otherwise, it must exist already as a rollup on the subject.
+				if rollup := getRollup(hdr); rollup == _EMPTY_ {
+					hdr = genHeader(hdr, JSMsgRollup, JSMsgRollupSubject)
+				} else if rollup != JSMsgRollupSubject {
+					apiErr := NewJSMessageSchedulesRollupInvalidError()
+					return hdr, msg, 0, apiErr, apiErr
 				}
 			}
 		}

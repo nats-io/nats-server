@@ -83,6 +83,11 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			cfg:              &StreamConfig{AllowAtomicPublish: true},
 			expectedMetadata: metadataAtLevel("2"),
 		},
+		{
+			desc:             "AllowMsgSchedules",
+			cfg:              &StreamConfig{AllowMsgSchedules: true},
+			expectedMetadata: metadataAtLevel("2"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg)

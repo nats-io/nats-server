@@ -9956,6 +9956,184 @@ func TestJetStreamClusterConsumerReadAfterWrite(t *testing.T) {
 	require_True(t, observedTimeout)
 }
 
+func TestJetStreamClusterScheduledDelayedMessage(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				_, err := jsStreamCreate(t, nc, &StreamConfig{
+					Name:              "SchedulesDisabled",
+					Subjects:          []string{"disabled"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: false,
+				})
+				require_NoError(t, err)
+
+				schedulePattern := "@at 1970-01-01T00:00:00Z"
+				m := nats.NewMsg("disabled")
+				m.Header.Set("Nats-Schedule", schedulePattern) // Needs to be valid, but is not used.
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesDisabledError())
+
+				m = nats.NewMsg("disabled")
+				m.Header.Set("Nats-Schedule", "disabled")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesDisabledError())
+
+				_, err = jsStreamCreate(t, nc, &StreamConfig{
+					Name:              "SchedulesEnabledNoTtl",
+					Subjects:          []string{"disabled.ttl"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+				})
+				require_NoError(t, err)
+
+				m = nats.NewMsg("disabled.ttl")
+				m.Header.Set("Nats-Schedule", schedulePattern) // Needs to be valid, but is not used.
+				m.Header.Set("Nats-Schedule-TTL", "1s")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageTTLDisabledError())
+
+				_, err = jsStreamCreate(t, nc, &StreamConfig{
+					Name:              "SchedulesEnabled",
+					Subjects:          []string{"foo.*"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+					AllowMsgTTL:       true,
+				})
+				require_NoError(t, err)
+
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", "invalid")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesPatternInvalidError())
+
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "not.matching")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesTargetInvalidError())
+
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.*") // Must be literal.
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesTargetInvalidError())
+
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.invalid") // Can't equal the publish subject.
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesTargetInvalidError())
+
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Schedule-TTL", "invalid")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesTTLInvalidError())
+
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Schedule-TTL", "1s")
+				m.Header.Set("Nats-Rollup", "all")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesRollupInvalidError())
+
+				// Schedule with a delay that takes a very long time.
+				schedule := time.Now().Add(time.Hour).Format(time.RFC3339Nano)
+				schedulePattern = fmt.Sprintf("@at %s", schedule)
+				m = nats.NewMsg("foo.schedule")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Schedule-TTL", "1s")
+				m.Header.Set("Nats-Rollup", "sub")
+				pubAck, err := js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, 1)
+
+				// Schedule where the rollup is missing, automatically gets the rollup added.
+				// Also, will rollup the previous message for this schedule.
+				schedule = time.Now().Add(time.Second).Format(time.RFC3339Nano)
+				schedulePattern = fmt.Sprintf("@at %s", schedule)
+				m = nats.NewMsg("foo.schedule")
+				m.Data = []byte("hello")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Schedule-TTL", "1s")
+				// Add a bunch of headers that will be stripped on the scheduled message.
+				m.Header.Set("Nats-Expected-Stream", "SchedulesEnabled")
+				m.Header.Set("Nats-Expected-Last-Sequence", "1")
+				m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
+				m.Header.Set("Nats-Msg-Id", "X")
+				m.Header.Set("Nats-TTL", "60s")
+				m.Header.Set("Header", "Value")
+				pubAck, err = js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, 2)
+
+				sl := c.streamLeader(globalAccountName, "SchedulesEnabled")
+				mset, err := sl.globalAccount().lookupStream("SchedulesEnabled")
+				require_NoError(t, err)
+
+				// Only one schedule exists.
+				state := mset.state()
+				require_Equal(t, state.LastSeq, 2)
+				require_Equal(t, state.Msgs, 1)
+
+				// Waiting for the delayed message to be published.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					state = mset.state()
+					if state.LastSeq != 3 {
+						return fmt.Errorf("expected last seq 3, got %d", state.LastSeq)
+					} else if state.Msgs != 1 {
+						return fmt.Errorf("expected 1 msg, got %d", state.Msgs)
+					}
+					return nil
+				})
+
+				// Confirm the scheduled message has the correct data.
+				rsm, err := js.GetLastMsg("SchedulesEnabled", "foo.publish")
+				require_NoError(t, err)
+				require_Equal(t, rsm.Sequence, 3)
+				require_True(t, bytes.Equal(rsm.Data, []byte("hello")))
+				require_Len(t, len(rsm.Header), 4)
+				require_Equal(t, rsm.Header.Get("Nats-Scheduler"), "foo.schedule")
+				require_Equal(t, rsm.Header.Get("Nats-Schedule-Next"), "purge")
+				require_Equal(t, rsm.Header.Get("Nats-TTL"), "1s")
+				require_Equal(t, rsm.Header.Get("Header"), "Value")
+
+				// Waiting for the delayed message to age out due to its TTL.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					state = mset.state()
+					if state.FirstSeq != 4 {
+						return fmt.Errorf("expected first seq 4, got %d", state.FirstSeq)
+					} else if state.LastSeq != 3 {
+						return fmt.Errorf("expected last seq 3, got %d", state.LastSeq)
+					} else if state.Msgs != 0 {
+						return fmt.Errorf("expected no messages, got %d", state.Msgs)
+					}
+					return nil
+				})
+
+				// Servers should be synced.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					return checkState(t, c, globalAccountName, "SchedulesEnabled")
+				})
+			})
+		}
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

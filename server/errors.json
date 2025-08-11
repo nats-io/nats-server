@@ -1838,5 +1838,75 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorWithMsgSchedulesErr",
+    "code": 400,
+    "error_code": 10186,
+    "description": "stream mirrors can not also schedule messages",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceWithMsgSchedulesErr",
+    "code": 400,
+    "error_code": 10187,
+    "description": "stream source can not also schedule messages",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSchedulesDisabledErr",
+    "code": 400,
+    "error_code": 10188,
+    "description": "message schedules is disabled",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSchedulesPatternInvalidErr",
+    "code": 400,
+    "error_code": 10189,
+    "description": "message schedules pattern is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSchedulesTargetInvalidErr",
+    "code": 400,
+    "error_code": 10190,
+    "description": "message schedules target is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSchedulesTTLInvalidErr",
+    "code": 400,
+    "error_code": 10191,
+    "description": "message schedules invalid per-message TTL",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSchedulesRollupInvalidErr",
+    "code": 400,
+    "error_code": 10192,
+    "description": "message schedules invalid rollup",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
