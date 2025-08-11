@@ -9921,6 +9921,63 @@ func TestFileStoreCompressionAfterTruncate(t *testing.T) {
 	}
 }
 
+func TestFileStoreTruncateRemovedBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 3 {
+			if i > 0 {
+				_, err = fs.newMsgBlockForWrite()
+				require_NoError(t, err)
+			}
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		fs.mu.RLock()
+		blks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_Len(t, blks, 3)
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 3)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 3)
+		require_Equal(t, state.NumDeleted, 0)
+
+		removed, err := fs.RemoveMsg(2)
+		require_NoError(t, err)
+		require_True(t, removed)
+
+		fs.mu.RLock()
+		blks = len(fs.blks)
+		fs.mu.RUnlock()
+		require_Len(t, blks, 2)
+
+		fs.mu.RLock()
+		blks = len(fs.blks)
+		fs.mu.RUnlock()
+		require_Len(t, blks, 2)
+
+		state = fs.State()
+		require_Equal(t, state.Msgs, 2)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 3)
+		require_Equal(t, state.NumDeleted, 1)
+
+		require_NoError(t, fs.Truncate(2))
+		state = fs.State()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 2)
+		require_Equal(t, state.NumDeleted, 1)
+	})
+}
+
 func TestFileStoreAtomicEraseMsg(t *testing.T) {
 	for _, lmb := range []bool{true, false} {
 		t.Run(fmt.Sprintf("lmb=%v", lmb), func(t *testing.T) {
