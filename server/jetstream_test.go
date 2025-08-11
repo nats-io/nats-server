@@ -21566,3 +21566,27 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 		require_Equal(t, consumerTest.getValue(), consumerTest.defaultValue)
 	}
 }
+
+func TestJetStreamScheduledMirrorOrSource(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Storage:           FileStorage,
+		Mirror:            &StreamSource{Name: "M"},
+		AllowMsgSchedules: true,
+	})
+	require_Error(t, err, NewJSMirrorWithMsgSchedulesError())
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Storage:           FileStorage,
+		Sources:           []*StreamSource{{Name: "S"}},
+		AllowMsgSchedules: true,
+	})
+	require_Error(t, err, NewJSSourceWithMsgSchedulesError())
+}

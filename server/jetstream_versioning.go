@@ -55,6 +55,11 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 		requires(2)
 	}
 
+	// Message scheduling was added in v2.12 and require API level 2.
+	if cfg.AllowMsgSchedules {
+		requires(2)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 

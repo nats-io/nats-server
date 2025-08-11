@@ -1236,7 +1236,7 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 		_, err := fs.RemoveMsg(seq)
 		require_NoError(t, err)
 	}
-	fs.sdmcb = func(im *inMsg) {
+	fs.pmsgcb = func(im *inMsg) {
 		ch <- im
 	}
 
@@ -1330,6 +1330,36 @@ func TestMemStoreSubjectForSeq(t *testing.T) {
 
 	_, err = ms.SubjectForSeq(2)
 	require_Error(t, err, ErrStoreMsgNotFound)
+}
+
+func TestMemStoreMessageSchedule(t *testing.T) {
+	fs, err := newMemStore(
+		&StreamConfig{
+			Name: "TEST", Subjects: []string{"foo.*"}, Storage: MemoryStorage,
+			AllowMsgSchedules: true,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Capture message schedule proposals.
+	ch := make(chan *inMsg, 1)
+	fs.pmsgcb = func(im *inMsg) {
+		ch <- im
+	}
+
+	// Store a single message schedule.
+	schedule := time.Now().Add(time.Second).Format(time.RFC3339Nano)
+	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+	require_NoError(t, err)
+
+	// We should have published a scheduled message.
+	im := require_ChanRead(t, ch, time.Second*5)
+	require_Equal(t, im.subj, "foo.target")
+	require_Equal(t, bytesToString(getHeader(JSScheduler, im.hdr)), "foo.schedule")
+	require_Equal(t, bytesToString(getHeader(JSScheduleNext, im.hdr)), JSScheduleNextPurge)
 }
 
 ///////////////////////////////////////////////////////////////////////////

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"math/bits"
 	"math/rand"
 	"os"
@@ -8875,7 +8876,7 @@ func TestFileStoreSubjectDeleteMarkers(t *testing.T) {
 		_, err := fs.RemoveMsg(seq)
 		require_NoError(t, err)
 	}
-	fs.sdmcb = func(im *inMsg) {
+	fs.pmsgcb = func(im *inMsg) {
 		ch <- im
 	}
 
@@ -10295,4 +10296,125 @@ func TestFileStoreRemoveBlockWithStaleStreamState(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestFileStoreMessageSchedule(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: dir, srv: s},
+		StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, AllowMsgSchedules: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Capture message schedule proposals.
+	ch := make(chan *inMsg, 1)
+	fs.pmsgcb = func(im *inMsg) {
+		ch <- im
+	}
+
+	// Store a single message schedule.
+	schedule := time.Now().Add(time.Second).Format(time.RFC3339Nano)
+	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+	require_NoError(t, err)
+
+	// We should have published a scheduled message.
+	im := require_ChanRead(t, ch, time.Second*5)
+	require_Equal(t, im.subj, "foo.target")
+	require_Equal(t, bytesToString(getHeader(JSScheduler, im.hdr)), "foo.schedule")
+	require_Equal(t, bytesToString(getHeader(JSScheduleNext, im.hdr)), JSScheduleNextPurge)
+}
+
+func TestFileStoreMessageScheduleRecovered(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+	t.Run("BeforeRestart", func(t *testing.T) {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, AllowMsgSchedules: true})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		schedule := time.Now().Add(time.Second).Format(time.RFC3339Nano)
+		hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+		hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+		_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+		require_NoError(t, err)
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 1)
+		require_Equal(t, ss.Msgs, 1)
+	})
+
+	t.Run("AfterRestart", func(t *testing.T) {
+		// Delete the message scheduling state so that we are forced to do a linear scan
+		// of message blocks containing message schedules.
+		fn := filepath.Join(dir, msgDir, msgSchedulingStreamStateFile)
+		require_NoError(t, os.Remove(fn))
+
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, AllowMsgSchedules: true})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		require_Equal(t, fs.numMsgBlocks(), 1)
+		fs.mu.RLock()
+		mb := fs.blks[0]
+		fs.mu.RUnlock()
+		mb.mu.RLock()
+		schedules := mb.schedules
+		mb.mu.RUnlock()
+
+		require_Equal(t, schedules, 1)
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 1)
+		require_Equal(t, ss.Msgs, 1)
+	})
+}
+
+func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
+	ms := newMsgScheduling(func() {})
+	now := time.Now()
+
+	// Add many sequences.
+	numSequences := 100_000
+	for seq := 0; seq < numSequences; seq++ {
+		ts := now.Add(time.Duration(seq) * time.Second).UnixNano()
+		subj := fmt.Sprintf("foo.%d", seq)
+		ms.add(uint64(seq), subj, ts)
+	}
+
+	b := ms.encode(12345)
+	require_True(t, len(b) > 17) // Bigger than just the header
+
+	nms := newMsgScheduling(func() {})
+	stamp, err := nms.decode(b)
+	require_NoError(t, err)
+	require_Equal(t, stamp, 12345)
+	require_Equal(t, ms.ttls.GetNextExpiration(math.MaxInt64), nms.ttls.GetNextExpiration(math.MaxInt64))
+
+	require_Len(t, len(ms.seqToSubj), len(nms.seqToSubj))
+	for seq, subj := range ms.seqToSubj {
+		require_Equal(t, subj, nms.seqToSubj[seq])
+	}
+
+	require_Len(t, len(ms.schedules), len(nms.schedules))
+	for subj, sched := range ms.schedules {
+		nsched := nms.schedules[subj]
+		require_NotNil(t, nsched)
+		require_Equal(t, sched.ts, nsched.ts)
+		require_Equal(t, sched.seq, nsched.seq)
+	}
 }
