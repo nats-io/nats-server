@@ -8955,6 +8955,25 @@ func TestJetStreamClusterDontReviveRemovedStream(t *testing.T) {
 	require_Error(t, err, ErrJetStreamStreamNotFound)
 }
 
+func TestJetStreamClusterCreateEphemeralConsumerWithOfflineNodes(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+
+	// Shutdown a random server.
+	c.randomNonLeader().Shutdown()
+
+	for range 10 {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{})
+		require_NoError(t, err)
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
