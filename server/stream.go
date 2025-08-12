@@ -1398,6 +1398,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	}
 
 	if cfg.Replicas == 0 {
+		if pedantic {
+			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("replicas must be set"))
+		}
 		cfg.Replicas = 1
 	}
 	if cfg.Replicas > StreamMaxReplicas {
@@ -1406,19 +1409,34 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	if cfg.Replicas < 0 {
 		return cfg, NewJSReplicasCountCannotBeNegativeError()
 	}
-	if cfg.MaxMsgs <= 0 {
+	if cfg.MaxMsgs == 0 || cfg.MaxMsgs < -1 {
+		if pedantic {
+			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_msgs must be set to -1"))
+		}
 		cfg.MaxMsgs = -1
 	}
-	if cfg.MaxMsgsPer <= 0 {
+	if cfg.MaxMsgsPer == 0 || cfg.MaxMsgsPer < -1 {
+		if pedantic {
+			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_msgs_per_subject must be set to -1"))
+		}
 		cfg.MaxMsgsPer = -1
 	}
-	if cfg.MaxBytes <= 0 {
+	if cfg.MaxBytes == 0 || cfg.MaxBytes < -1 {
+		if pedantic {
+			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_bytes must be set to -1"))
+		}
 		cfg.MaxBytes = -1
 	}
-	if cfg.MaxMsgSize <= 0 {
+	if cfg.MaxMsgSize == 0 || cfg.MaxMsgSize < -1 {
+		if pedantic {
+			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_msg_size must be set to -1"))
+		}
 		cfg.MaxMsgSize = -1
 	}
-	if cfg.MaxConsumers <= 0 {
+	if cfg.MaxConsumers == 0 || cfg.MaxConsumers < -1 {
+		if pedantic {
+			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_consumers must be set to -1"))
+		}
 		cfg.MaxConsumers = -1
 	}
 	if cfg.MaxAge != 0 && cfg.MaxAge < 100*time.Millisecond {
@@ -1428,13 +1446,13 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		maxWindow := StreamDefaultDuplicatesWindow
 		if lim.Duplicates > 0 && maxWindow > lim.Duplicates {
 			if pedantic {
-				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("pedantic mode: duplicate window limits are higher than current limits"))
+				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("duplicate window limits are higher than current limits"))
 			}
 			maxWindow = lim.Duplicates
 		}
 		if cfg.MaxAge != 0 && cfg.MaxAge < maxWindow {
 			if pedantic {
-				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("pedantic mode: duplicate window cannot be bigger than max age"))
+				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("duplicate window cannot be bigger than max age"))
 			}
 			cfg.Duplicates = cfg.MaxAge
 		} else {
@@ -1828,7 +1846,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		// Empty same as all.
 		if cfg.RePublish.Source == _EMPTY_ {
 			if pedantic {
-				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("pedantic mode: republish source can not be empty"))
+				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("republish source can not be empty"))
 			}
 			cfg.RePublish.Source = fwcs
 		}
