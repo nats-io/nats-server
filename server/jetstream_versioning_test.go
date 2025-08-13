@@ -224,11 +224,6 @@ func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 			cfg:              &ConsumerConfig{PriorityPolicy: PriorityPinnedClient, PriorityGroups: []string{"a"}},
 			expectedMetadata: metadataAtLevel("1"),
 		},
-		{
-			desc:             "MinLastSeq",
-			cfg:              &ConsumerConfig{MinLastSeq: 1},
-			expectedMetadata: metadataAtLevel("2"),
-		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticConsumerMetadata(test.cfg)
