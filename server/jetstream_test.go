@@ -19960,6 +19960,12 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 		Name:                   "PEDANTIC",
 		Storage:                FileStorage,
 		Subjects:               []string{"pedantic"},
+		Replicas:               1,
+		MaxMsgs:                -1,
+		MaxMsgsPer:             -1,
+		MaxBytes:               -1,
+		MaxMsgSize:             -1,
+		MaxConsumers:           -1,
 		SubjectDeleteMarkerTTL: -time.Millisecond,
 	}
 
@@ -21384,42 +21390,79 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 
 	acc := s.globalAccount()
 
-	_, err := s.checkStreamCfg(&StreamConfig{Name: "TEST", Retention: -1}, acc, true)
+	_, err := s.checkStreamCfg(&StreamConfig{Name: "TEST", Retention: -1}, acc, false)
 	require_True(t, err != nil)
 	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid retention")))
 
-	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Discard: -1}, acc, true)
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Discard: -1}, acc, false)
 	require_True(t, err != nil)
 	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid discard policy")))
 
-	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Storage: -1}, acc, true)
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Storage: -1}, acc, false)
 	require_True(t, err != nil)
 	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid storage type")))
 
-	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Compression: 255}, acc, true)
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", Compression: 255}, acc, false)
 	require_True(t, err != nil)
 	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("invalid compression")))
 
-	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", MaxAge: -time.Second}, acc, true)
+	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", MaxAge: -time.Second}, acc, false)
 	require_True(t, err != nil)
 	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms")))
 
-	scfg, err := s.checkStreamCfg(&StreamConfig{
-		Name:         "TEST",
-		MaxConsumers: -10,
-		MaxMsgs:      -10,
-		MaxBytes:     -10,
-		MaxMsgsPer:   -10,
-		MaxMsgSize:   -10,
-	}, acc, true)
-	if err != nil {
-		require_NoError(t, err)
+	scfg := StreamConfig{Name: "TEST"}
+	_, err = s.checkStreamCfg(&scfg, acc, true)
+	if err == nil {
+		t.Fatal("Expected error for pedantic mode")
 	}
-	require_Equal(t, scfg.MaxConsumers, -1)
-	require_Equal(t, scfg.MaxMsgs, -1)
-	require_Equal(t, scfg.MaxBytes, -1)
-	require_Equal(t, scfg.MaxMsgsPer, -1)
-	require_Equal(t, scfg.MaxMsgSize, -1)
+	require_Error(t, err, NewJSPedanticError(fmt.Errorf("replicas must be set")))
+	scfg.Replicas = 1
+	streamTests := []struct {
+		name     string
+		setValue func(value int)
+		getValue func() int
+	}{
+		{
+			name:     "max_msgs",
+			setValue: func(value int) { scfg.MaxMsgs = int64(value) },
+			getValue: func() int { return int(scfg.MaxMsgs) },
+		},
+		{
+			name:     "max_msgs_per_subject",
+			setValue: func(value int) { scfg.MaxMsgsPer = int64(value) },
+			getValue: func() int { return int(scfg.MaxMsgsPer) },
+		},
+		{
+			name:     "max_bytes",
+			setValue: func(value int) { scfg.MaxBytes = int64(value) },
+			getValue: func() int { return int(scfg.MaxBytes) },
+		},
+		{
+			name:     "max_msg_size",
+			setValue: func(value int) { scfg.MaxMsgSize = int32(value) },
+			getValue: func() int { return int(scfg.MaxMsgSize) },
+		},
+		{
+			name:     "max_consumers",
+			setValue: func(value int) { scfg.MaxConsumers = value },
+			getValue: func() int { return scfg.MaxConsumers },
+		},
+	}
+	for _, streamTest := range streamTests {
+		streamTest.setValue(-10)
+		_, err = s.checkStreamCfg(&scfg, acc, true)
+		if err == nil {
+			t.Fatal("Expected error for pedantic mode")
+		}
+		require_Error(t, err, NewJSPedanticError(fmt.Errorf("%s must be set to -1", streamTest.name)))
+
+		streamTest.setValue(-10)
+		scfg, err = s.checkStreamCfg(&scfg, acc, false)
+		if err != nil {
+			require_NoError(t, err)
+		}
+		require_Equal(t, streamTest.getValue(), -1)
+	}
 
 	ccfg := &ConsumerConfig{AckPolicy: -1}
 	err = checkConsumerCfg(ccfg, &JSLimitOpts{}, &scfg, nil, &JetStreamAccountLimits{}, false)
@@ -21441,26 +21484,85 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 	require_True(t, err != nil)
 	require_Error(t, err, NewJSConsumerBackOffNegativeError())
 
-	ccfg = &ConsumerConfig{
-		MaxDeliver:         -10,
-		MaxWaiting:         -10,
-		MaxAckPending:      -10,
-		MaxRequestBatch:    -10,
-		MaxRequestExpires:  -time.Second,
-		MaxRequestMaxBytes: -10,
-		Heartbeat:          -time.Second,
-		InactiveThreshold:  -time.Second,
-		PinnedTTL:          -time.Second,
+	ccfg = &ConsumerConfig{}
+	consumerTests := []struct {
+		name         string
+		setValue     func(value int)
+		getValue     func() int
+		defaultValue int
+	}{
+		{
+			name:         "max_deliver",
+			setValue:     func(value int) { ccfg.MaxDeliver = value },
+			getValue:     func() int { return ccfg.MaxDeliver },
+			defaultValue: -1,
+		},
+		{
+			name:         "max_waiting",
+			setValue:     func(value int) { ccfg.MaxWaiting = value },
+			getValue:     func() int { return ccfg.MaxWaiting },
+			defaultValue: JSWaitQueueDefaultMax,
+		},
+		{
+			name:         "max_ack_pending",
+			setValue:     func(value int) { ccfg.MaxAckPending = value },
+			getValue:     func() int { return ccfg.MaxAckPending },
+			defaultValue: -1,
+		},
+		{
+			name:         "max_batch",
+			setValue:     func(value int) { ccfg.MaxRequestBatch = value },
+			getValue:     func() int { return ccfg.MaxRequestBatch },
+			defaultValue: 0,
+		},
+		{
+			name:         "max_expires",
+			setValue:     func(value int) { ccfg.MaxRequestExpires = time.Duration(value) },
+			getValue:     func() int { return int(ccfg.MaxRequestExpires) },
+			defaultValue: 0,
+		},
+		{
+			name:         "max_bytes",
+			setValue:     func(value int) { ccfg.MaxRequestMaxBytes = value },
+			getValue:     func() int { return ccfg.MaxRequestMaxBytes },
+			defaultValue: 0,
+		},
+		{
+			name:         "idle_heartbeat",
+			setValue:     func(value int) { ccfg.Heartbeat = time.Duration(value) },
+			getValue:     func() int { return int(ccfg.Heartbeat) },
+			defaultValue: 0,
+		},
+		{
+			name:         "inactive_threshold",
+			setValue:     func(value int) { ccfg.InactiveThreshold = time.Duration(value) },
+			getValue:     func() int { return int(ccfg.InactiveThreshold) },
+			defaultValue: 0,
+		},
+		{
+			name:         "priority_timeout",
+			setValue:     func(value int) { ccfg.PinnedTTL = time.Duration(value) },
+			getValue:     func() int { return int(ccfg.PinnedTTL) },
+			defaultValue: 0,
+		},
 	}
-	err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, false)
-	require_True(t, err == nil)
-	require_Equal(t, ccfg.MaxDeliver, -1)
-	require_Equal(t, ccfg.MaxWaiting, JSWaitQueueDefaultMax)
-	require_Equal(t, ccfg.MaxAckPending, 0)
-	require_Equal(t, ccfg.MaxRequestBatch, 0)
-	require_Equal(t, ccfg.MaxRequestExpires, 0)
-	require_Equal(t, ccfg.MaxRequestMaxBytes, 0)
-	require_Equal(t, ccfg.Heartbeat, 0)
-	require_Equal(t, ccfg.InactiveThreshold, 0)
-	require_Equal(t, ccfg.PinnedTTL, 0)
+	for _, consumerTest := range consumerTests {
+		consumerTest.setValue(-10)
+		err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, true)
+		if err == nil {
+			t.Fatal("Expected error for pedantic mode")
+		}
+		if consumerTest.defaultValue == -1 {
+			require_Error(t, err, NewJSPedanticError(fmt.Errorf("%s must be set to -1", consumerTest.name)))
+		} else {
+			require_Error(t, err, NewJSPedanticError(fmt.Errorf("%s must not be negative", consumerTest.name)))
+		}
+
+		consumerTest.setValue(-10)
+		err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, false)
+		if err != nil {
+			require_NoError(t, err)
+		}
+		require_Equal(t, consumerTest.getValue(), consumerTest.defaultValue)
+	}
 }

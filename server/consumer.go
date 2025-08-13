@@ -554,32 +554,59 @@ const (
 // Helper function to set consumer config defaults from above.
 func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, lim *JSLimitOpts, accLim *JetStreamAccountLimits, pedantic bool) *ApiError {
 	// Setup default of -1, meaning no limit for MaxDeliver.
-	if config.MaxDeliver <= 0 {
+	if config.MaxDeliver == 0 || config.MaxDeliver < -1 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("max_deliver must be set to -1"))
+		}
 		config.MaxDeliver = -1
 	}
 	// Setup zero defaults.
 	if config.MaxWaiting < 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("max_waiting must not be negative"))
+		}
 		config.MaxWaiting = 0
 	}
-	if config.MaxAckPending < 0 {
-		config.MaxAckPending = 0
+	if config.MaxAckPending < -1 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("max_ack_pending must be set to -1"))
+		}
+		config.MaxAckPending = -1
 	}
 	if config.MaxRequestBatch < 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("max_batch must not be negative"))
+		}
 		config.MaxRequestBatch = 0
 	}
 	if config.MaxRequestExpires < 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("max_expires must not be negative"))
+		}
 		config.MaxRequestExpires = 0
 	}
 	if config.MaxRequestMaxBytes < 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("max_bytes must not be negative"))
+		}
 		config.MaxRequestMaxBytes = 0
 	}
 	if config.Heartbeat < 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("idle_heartbeat must not be negative"))
+		}
 		config.Heartbeat = 0
 	}
 	if config.InactiveThreshold < 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("inactive_threshold must not be negative"))
+		}
 		config.InactiveThreshold = 0
 	}
 	if config.PinnedTTL < 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("priority_timeout must not be negative"))
+		}
 		config.PinnedTTL = 0
 	}
 
