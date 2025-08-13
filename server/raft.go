@@ -487,12 +487,14 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 			ae, err := n.loadEntry(index)
 			if err != nil {
 				n.warn("Could not load %d from WAL [%+v]: %v", index, state, err)
-				truncateAndErr(index)
+				// Truncate to the previous correct entry.
+				truncateAndErr(index - 1)
 				break
 			}
 			if ae.pindex != index-1 {
 				n.warn("Corrupt WAL, will truncate")
-				truncateAndErr(index)
+				// Truncate to the previous correct entry.
+				truncateAndErr(index - 1)
 				break
 			}
 			n.processAppendEntry(ae, nil)
