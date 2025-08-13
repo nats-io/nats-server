@@ -4661,7 +4661,12 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	if len(reply) == 0 {
 		return
 	}
-	_, msg := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
+	if errorOnRequiredApiLevel(hdr) {
+		hdr := []byte("NATS/1.0 412 Required Api Level\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
 	if len(msg) == 0 {
 		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
@@ -4731,7 +4736,13 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		return
 	}
 	var minLastSeq uint64
-	_, msg := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
+	if errorOnRequiredApiLevel(hdr) {
+		hdr := []byte("NATS/1.0 412 Required Api Level\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+
 	// This version expects no payload, unless min last seq is specified.
 	if len(msg) != 0 {
 		var req JSApiMsgGetRequest
