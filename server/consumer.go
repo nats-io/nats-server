@@ -2233,10 +2233,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	}
 	if cfg.SampleFrequency != o.cfg.SampleFrequency {
 		s := strings.TrimSuffix(cfg.SampleFrequency, "%")
-		// String has been already verified for validity up in the stack, so no
-		// need to check for error here.
-		sampleFreq, _ := strconv.Atoi(s)
-		o.sfreq = int32(sampleFreq)
+		if sampleFreq, err := strconv.ParseInt(s, 10, 32); err == nil {
+			o.sfreq = int32(sampleFreq)
+		}
 	}
 	// Set MaxDeliver if changed
 	if cfg.MaxDeliver != o.cfg.MaxDeliver {

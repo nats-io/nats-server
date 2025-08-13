@@ -1100,7 +1100,7 @@ func mqttParsePubRelNATSHeader(headerBytes []byte) uint16 {
 	if len(pubrelValue) == 0 {
 		return 0
 	}
-	pi, _ := strconv.Atoi(string(pubrelValue))
+	pi, _ := strconv.ParseUint(string(pubrelValue), 10, 16)
 	return uint16(pi)
 }
 

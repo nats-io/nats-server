@@ -1954,7 +1954,7 @@ func (fs *fileStore) recoverTTLState() error {
 					// Selecting the message block should return a block that contains this sequence,
 					// or a later block if it can't be found.
 					// It's an error if we can't find any block within the bounds of first and last seq.
-					fs.warn("Error loading msg block with seq %d for recovering TTL: %s", seq)
+					fs.warn("Error loading msg block with seq %d for recovering TTL", seq)
 					continue
 				}
 				seq = atomic.LoadUint64(&mb.first.seq)
@@ -1970,7 +1970,11 @@ func (fs *fileStore) recoverTTLState() error {
 				// beginning and process the next block.
 				mb.tryForceExpireCache()
 				mb = nil
-				goto retry
+				if seq <= fs.state.LastSeq {
+					goto retry
+				}
+				// Done.
+				break
 			}
 			msg, _, err := mb.fetchMsgNoCopy(seq, &sm)
 			if err != nil {
@@ -5039,7 +5043,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 // Grab info from a slot.
 // Lock should be held.
 func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
-	if mb.cache == nil || slot >= len(mb.cache.idx) {
+	if slot < 0 || mb.cache == nil || slot >= len(mb.cache.idx) {
 		return 0, 0, false, errPartialCache
 	}
 
@@ -8611,6 +8615,10 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		return ErrStoreSnapshotInProgress
 	}
 
+	// Any existing state file will no longer be applicable. We will force write a new one
+	// at the end, after we release the lock.
+	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
 	var lsm *StoreMsg
 	smb := fs.selectMsgBlock(seq)
 	if smb != nil {
@@ -8637,9 +8645,15 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		return err
 	}
 
+	// The selected message block needs to be removed if it needs to be fully truncated.
+	var removeSmb bool
+	if smb != nil {
+		removeSmb = atomic.LoadUint64(&smb.first.seq) > seq
+	}
+
 	// If the selected block is not found or the message was deleted, we'll need to write a tombstone
 	// at the truncated sequence so we don't roll backward on our last sequence and timestamp.
-	if lsm == nil {
+	if lsm == nil || removeSmb {
 		fs.writeTombstone(seq, lastTime)
 	}
 
@@ -8679,8 +8693,28 @@ func (fs *fileStore) Truncate(seq uint64) error {
 
 	hasWrittenTombstones := len(tmb.tombs()) > 0
 	if smb != nil {
-		// Make sure writeable.
 		smb.mu.Lock()
+		if removeSmb {
+			purged += smb.msgs
+			bytes += smb.bytes
+
+			// We could have tombstones for messages before the truncated sequence.
+			if tombs := smb.tombsLocked(); len(tombs) > 0 {
+				// Temporarily unlock while we write tombstones.
+				smb.mu.Unlock()
+				for _, tomb := range tombs {
+					if tomb.seq < seq {
+						fs.writeTombstone(tomb.seq, tomb.ts)
+					}
+				}
+				smb.mu.Lock()
+			}
+			fs.removeMsgBlock(smb)
+			smb.mu.Unlock()
+			goto SKIP
+		}
+
+		// Make sure writeable.
 		if err := smb.enableForWriting(fs.fip); err != nil {
 			smb.mu.Unlock()
 			fs.mu.Unlock()
@@ -8711,6 +8745,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		smb.mu.Unlock()
 	}
 
+SKIP:
 	// If no tombstones were written, we can remove the block and
 	// purely rely on the selected block as the last block.
 	if !hasWrittenTombstones {
@@ -8736,9 +8771,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// Reset our subject lookup info.
 	fs.resetGlobalPerSubjectInfo()
 
-	// Any existing state file no longer applicable. We will force write a new one
-	// after we release the lock.
-	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
 	fs.dirty++
 
 	cb := fs.scb

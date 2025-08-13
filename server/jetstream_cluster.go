@@ -515,12 +515,22 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		js.mu.RUnlock()
 		return errors.New("consumer assignment or group missing")
 	}
+	if ca.deleted {
+		js.mu.RUnlock()
+		return nil // No further checks, consumer was deleted in the meantime.
+	}
+	created := ca.Created
 	node := ca.Group.node
 	js.mu.RUnlock()
 
 	// Check if not running at all.
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
+		if time.Since(created) < 5*time.Second {
+			// No further checks, consumer is not available yet but should be soon.
+			// We'll start erroring once we're sure this consumer is actually broken.
+			return nil
+		}
 		return errors.New("consumer not found")
 	}
 
@@ -7288,6 +7298,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 		return nil
 	}
 
+	replicas := cfg.replicas(sa.Config)
 	peers := copyStrings(sa.Group.Peers)
 	var _ss [5]string
 	active := _ss[:0]
@@ -7300,20 +7311,20 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 			}
 		}
 	}
-	if quorum := cfg.Replicas/2 + 1; quorum > len(active) {
+	if quorum := replicas/2 + 1; quorum > len(active) {
 		// Not enough active to satisfy the request.
 		return nil
 	}
 
 	// If we want less then our parent stream, select from active.
-	if cfg.Replicas > 0 && cfg.Replicas < len(peers) {
+	if replicas > 0 && replicas < len(peers) {
 		// Pedantic in case stream is say R5 and consumer is R3 and 3 or more offline, etc.
-		if len(active) < cfg.Replicas {
+		if len(active) < replicas {
 			return nil
 		}
 		// First shuffle the active peers and then select to account for replica = 1.
 		rand.Shuffle(len(active), func(i, j int) { active[i], active[j] = active[j], active[i] })
-		peers = active[:cfg.Replicas]
+		peers = active[:replicas]
 	}
 	storage := sa.Config.Storage
 	if cfg.MemoryStorage {
@@ -7499,12 +7510,6 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 		// We need to set the ephemeral here before replicating.
 		if !isDurableConsumer(cfg) {
-			// We chose to have ephemerals be R=1 unless stream is interest or workqueue.
-			// Consumer can override.
-			if sa.Config.Retention == LimitsPolicy && cfg.Replicas <= 1 {
-				rg.Peers = []string{rg.Preferred}
-				rg.Name = groupNameForConsumer(rg.Peers, rg.Storage)
-			}
 			if cfg.Name != _EMPTY_ {
 				oname = cfg.Name
 			} else {

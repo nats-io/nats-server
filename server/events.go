@@ -3057,7 +3057,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subj
 	replySubj := s.newRespInbox()
 	// Store our handler.
 	s.sys.replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
-		if n, err := strconv.Atoi(string(msg)); err == nil {
+		if n, err := strconv.ParseInt(string(msg), 10, 32); err == nil {
 			atomic.AddInt32(&nsubs, int32(n))
 		}
 		if atomic.AddInt32(&responses, 1) >= expected {
