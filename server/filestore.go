@@ -8615,6 +8615,10 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		return ErrStoreSnapshotInProgress
 	}
 
+	// Any existing state file will no longer be applicable. We will force write a new one
+	// at the end, after we release the lock.
+	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
 	var lsm *StoreMsg
 	smb := fs.selectMsgBlock(seq)
 	if smb != nil {
@@ -8767,9 +8771,6 @@ SKIP:
 	// Reset our subject lookup info.
 	fs.resetGlobalPerSubjectInfo()
 
-	// Any existing state file no longer applicable. We will force write a new one
-	// after we release the lock.
-	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
 	fs.dirty++
 
 	cb := fs.scb
