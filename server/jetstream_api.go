@@ -680,7 +680,7 @@ type JSApiMsgGetRequest struct {
 	NextFor string `json:"next_by_subj,omitempty"`
 
 	// Force the server to only deliver messages if the stream has at minimum this specified last sequence.
-	MinLastSeq uint64 `json:"min_last_seq,omitempty"`
+	MinLastSeq uint64 `json:"-"`
 
 	// Batch support. Used to request more than one msg at a time.
 	// Can be used with simple starting seq, but also NextFor with wildcards.

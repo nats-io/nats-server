@@ -9230,6 +9230,9 @@ func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 }
 
 func TestJetStreamClusterMsgGetReadAfterWrite(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9270,6 +9273,9 @@ func TestJetStreamClusterMsgGetReadAfterWrite(t *testing.T) {
 }
 
 func TestJetStreamClusterMsgGetMonotonicRead(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9306,6 +9312,9 @@ func TestJetStreamClusterMsgGetMonotonicRead(t *testing.T) {
 }
 
 func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9367,6 +9376,9 @@ func TestJetStreamClusterDirectGetReadAfterWrite(t *testing.T) {
 }
 
 func TestJetStreamClusterMirrorDirectGetReadAfterWrite(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9488,6 +9500,9 @@ func TestJetStreamClusterMirrorDirectGetReadAfterWrite(t *testing.T) {
 }
 
 func TestJetStreamClusterDirectGetReadAfterWriteOutdatedFollower(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	test := func(t *testing.T, templ string, accName string, authenticated bool) {
 		c := createJetStreamClusterWithTemplate(t, templ, "R3S", 3)
 		defer c.shutdown()
@@ -9591,6 +9606,9 @@ func TestJetStreamClusterDirectGetReadAfterWriteOutdatedFollower(t *testing.T) {
 }
 
 func TestJetStreamClusterDirectGetMonotonicRead(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9644,6 +9662,9 @@ func TestJetStreamClusterDirectGetMonotonicRead(t *testing.T) {
 }
 
 func TestJetStreamClusterDirectGetLastBySubjectReadAfterWrite(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9705,6 +9726,9 @@ func TestJetStreamClusterDirectGetLastBySubjectReadAfterWrite(t *testing.T) {
 }
 
 func TestJetStreamClusterDirectGetLastBySubjectReadAfterWriteOutdatedFollower(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9758,6 +9782,9 @@ func TestJetStreamClusterDirectGetLastBySubjectReadAfterWriteOutdatedFollower(t 
 }
 
 func TestJetStreamClusterDirectGetLastBySubjectMonotonicRead(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9808,6 +9835,9 @@ func TestJetStreamClusterDirectGetLastBySubjectMonotonicRead(t *testing.T) {
 }
 
 func TestJetStreamClusterConsumerReadAfterWrite(t *testing.T) {
+	// TODO(mvv): revisit for 2.14+
+	t.Skip()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 

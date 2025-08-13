@@ -116,7 +116,7 @@ type ConsumerConfig struct {
 	// Force memory storage.
 	MemoryStorage bool `json:"mem_storage,omitempty"`
 	// Force the consumer to only deliver messages if the stream has at minimum this specified last sequence.
-	MinLastSeq uint64 `json:"min_last_seq,omitempty"`
+	MinLastSeq uint64 `json:"-"`
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
