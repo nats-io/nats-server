@@ -3158,6 +3158,101 @@ func TestNRGStepdownWithHighestTermDuringCatchup(t *testing.T) {
 	require_Equal(t, n.pindex, 2)
 }
 
+func TestNRGTruncateOnStartup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0] // RunBasicJetStreamServer not available
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, srv: s}
+	scfg := StreamConfig{Name: "RAFT", Storage: FileStorage}
+	fs, err := newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+
+	err = s.bootstrapRaftNode(cfg, nil, false)
+	require_NoError(t, err)
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+
+	// Store two messages the normal way.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+
+	state := n.wal.State()
+	require_Equal(t, state.Msgs, 2)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 2)
+	require_Equal(t, state.NumDeleted, 0)
+
+	// Simulate a truncation that's only performed halfway, and we got hard killed at some point.
+	removed, err := n.wal.RemoveMsg(2)
+	require_True(t, removed)
+	require_NoError(t, err)
+
+	state = n.wal.State()
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 2)
+	require_Equal(t, state.NumDeleted, 1)
+
+	// Restart.
+	n.Stop()
+	n.WaitForStop()
+	require_NoError(t, fs.Stop())
+	fs, err = newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+	cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// Should truncate the WAL on startup, the message was removed.
+	state = n.wal.State()
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 1)
+	require_Equal(t, state.NumDeleted, 0)
+
+	// Store an invalid append entry manually.
+	aeMsg2.pindex = 0
+	aeMsg2 = encode(t, aeMsg2)
+	_, _, err = n.wal.StoreMsg(_EMPTY_, nil, aeMsg2.buf, 0)
+	require_NoError(t, err)
+
+	state = n.wal.State()
+	require_Equal(t, state.Msgs, 2)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 2)
+	require_Equal(t, state.NumDeleted, 0)
+
+	// Restart.
+	n.Stop()
+	n.WaitForStop()
+	require_NoError(t, fs.Stop())
+	fs, err = newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+	cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// Should truncate the WAL on startup, the append entry is invalid.
+	state = n.wal.State()
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 1)
+	require_Equal(t, state.NumDeleted, 0)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
