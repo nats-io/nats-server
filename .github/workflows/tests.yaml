@@ -72,14 +72,14 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: "go.mod"
 
       - name: Run golangci-lint
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
         # Commit 1481404843c368bc19ca9406f87d6e0fc97bdcfd = tag v7.0.0
         uses: golangci/golangci-lint-action@1481404843c368bc19ca9406f87d6e0fc97bdcfd
         with:
-          version: v2.1.2
+          version: v2.3.1
           skip-cache: true
           skip-save-cache: true
           args: --timeout=5m --config=.golangci.yml
