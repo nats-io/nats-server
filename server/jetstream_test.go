@@ -14404,9 +14404,10 @@ func TestJetStreamMirrorUpdatesNotSupported(t *testing.T) {
 	_, err = js.AddStream(cfg)
 	require_NoError(t, err)
 
+	// Promoting a mirror is supported though.
 	cfg.Mirror = nil
 	_, err = js.UpdateStream(cfg)
-	require_Error(t, err, NewJSStreamMirrorNotUpdatableError())
+	require_NoError(t, err)
 }
 
 func TestJetStreamMirrorFirstSeqNotSupported(t *testing.T) {
@@ -21565,4 +21566,185 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 		}
 		require_Equal(t, consumerTest.getValue(), consumerTest.defaultValue)
 	}
+}
+
+func TestJetStreamPromoteMirrorDeletingOrigin(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "O",
+			Subjects: []string{"foo"},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		mirrorCfg := &StreamConfig{
+			Name:     "M",
+			Mirror:   &StreamSource{Name: "O"},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		}
+		mirrorCfg, err = jsStreamCreate(t, nc, mirrorCfg)
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		// Mirror should get message.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			_, err := js.GetMsg("M", 1)
+			return err
+		})
+
+		// Trying to promote the mirror with a subject conflict should fail
+		// because the origin stream is listening on that subject still.
+		mirrorCfg.Mirror = nil
+		mirrorCfg.Subjects = []string{"foo"}
+		_, err = jsStreamUpdate(t, nc, mirrorCfg)
+		require_Error(t, err)
+		apiErr, ok := err.(*ApiError)
+		require_True(t, ok)
+		require_Equal(t, apiErr.ErrCode, uint16(JSStreamSubjectOverlapErr))
+
+		// But if we delete the stream, the subject conflict goes away...
+		err = js.DeleteStream("O")
+		require_NoError(t, err)
+
+		// ... so now it should work.
+		mirrorCfg, err = jsStreamUpdate(t, nc, mirrorCfg)
+		require_NoError(t, err)
+		require_Len(t, len(mirrorCfg.Subjects), 1)
+		require_Equal(t, mirrorCfg.Mirror, nil)
+
+		// Make sure the mirror state has gone away.
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror != nil {
+				return fmt.Errorf("expecting no mirror status, got %+v", si.Mirror)
+			}
+			return nil
+		})
+
+		// Now we should be able to publish into the newly promoted mirror.
+		pubAck, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 2)
+
+		// ... and confirm that it was received in the mirror stream.
+		_, err = js.GetMsg("M", 2)
+		require_NoError(t, err)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamPromoteMirrorUpdatingOrigin(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		originCfg, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "O",
+			Subjects: []string{"foo"},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		mirrorCfg := &StreamConfig{
+			Name:     "M",
+			Mirror:   &StreamSource{Name: "O"},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		}
+		mirrorCfg, err = jsStreamCreate(t, nc, mirrorCfg)
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		// Mirror should get message.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			_, err := js.GetMsg("M", 1)
+			return err
+		})
+
+		// Trying to promote the mirror with a subject conflict should fail
+		// because the origin stream is listening on that subject still.
+		mirrorCfg.Mirror = nil
+		mirrorCfg.Subjects = []string{"foo"}
+		_, err = jsStreamUpdate(t, nc, mirrorCfg)
+		require_Error(t, err)
+		apiErr, ok := err.(*ApiError)
+		require_True(t, ok)
+		require_Equal(t, apiErr.ErrCode, uint16(JSStreamSubjectOverlapErr))
+
+		// But if we change the subjects on the origin stream, the subject
+		// conflict goes away...
+		originCfg.Subjects = []string{"bar"}
+		_, err = jsStreamUpdate(t, nc, originCfg)
+		require_NoError(t, err)
+
+		// ... so now it should work.
+		mirrorCfg, err = jsStreamUpdate(t, nc, mirrorCfg)
+		require_NoError(t, err)
+		require_Len(t, len(mirrorCfg.Subjects), 1)
+		require_Equal(t, mirrorCfg.Mirror, nil)
+
+		// Make sure the mirror state has gone away.
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror != nil {
+				return fmt.Errorf("expecting no mirror status, got %+v", si.Mirror)
+			}
+			return nil
+		})
+
+		// Publishing into the original stream should no longer mirror over
+		// onto the mirror stream...
+		pubAck, err = js.Publish("bar", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 2)
+
+		// ... therefore a new publish to the mirror stream should also have
+		// sequence 2 and not 3.
+		pubAck, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 2)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }

@@ -1943,7 +1943,8 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not cancel deny purge"))
 	}
 	// Check for mirror changes which are not allowed.
-	if !reflect.DeepEqual(cfg.Mirror, old.Mirror) {
+	// We will allow removing the mirror config to "promote" the mirror to a normal stream.
+	if cfg.Mirror != nil && !reflect.DeepEqual(cfg.Mirror, old.Mirror) {
 		return nil, NewJSStreamMirrorNotUpdatableError()
 	}
 
@@ -2099,6 +2100,12 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 
 	mset.mu.Lock()
 	if mset.isLeader() {
+		// Check for mirror promotion.
+		if ocfg.Mirror != nil && cfg.Mirror == nil {
+			mset.cancelMirrorConsumer()
+			mset.mirror = nil
+		}
+
 		// Now check for subject interest differences.
 		current := make(map[string]struct{}, len(ocfg.Subjects))
 		for _, s := range ocfg.Subjects {
