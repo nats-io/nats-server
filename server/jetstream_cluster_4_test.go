@@ -5837,8 +5837,9 @@ func TestJetStreamClusterSubjectDeleteMarkersMinimumTTL(t *testing.T) {
 
 				// After the TTL expires it should still be there, because SubjectDeleteMarkerTTL is the minimum.
 				time.Sleep(1500 * time.Millisecond)
-				_, err = js.GetMsg("TEST", 1)
+				rsm, err := js.GetMsg("TEST", 1)
 				require_NoError(t, err)
+				require_Equal(t, rsm.Header.Get(JSMessageTTL), "3") // 3s from the SDM TTL.
 
 				// Need to wait for the subject delete marker to be placed.
 				time.Sleep(2 * time.Second)

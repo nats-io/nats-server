@@ -5726,6 +5726,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if ttl > 0 && mset.cfg.SubjectDeleteMarkerTTL > 0 && mset.cfg.MaxMsgsPer != 1 {
 		if minTtl := int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds()); ttl < minTtl {
 			ttl = minTtl
+			hdr = removeHeaderIfPresent(hdr, JSMessageTTL)
+			hdr = genHeader(hdr, JSMessageTTL, strconv.FormatInt(ttl, 10))
 		}
 	}
 
