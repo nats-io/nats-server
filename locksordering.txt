@@ -47,3 +47,8 @@ The "mset.batches.mu" lock protects the batching state without needing to hold t
 If "clMu" is used to commit a batch, it should only be acquired while already holding the batch lock.
 
     mset.batches.mu -> clMu
+
+The "mset.isolateMu" lock ensures atomic reads/writes over an arbitrary boundary.
+The stream lock (`mset.mu`) and consumer lock (`o.mu`) are optional.
+
+    mset.isolateMu -> stream -> consumer -> store

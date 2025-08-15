@@ -3598,6 +3598,10 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	var svp StoreMsg
 	var sm *StoreMsg
 
+	// Ensure this read request is isolated and doesn't interleave with writes.
+	mset.isolateMu.RLock()
+	defer mset.isolateMu.RUnlock()
+
 	// If AsOfTime is set, perform this first to get the sequence.
 	var seq uint64
 	if req.StartTime != nil {
