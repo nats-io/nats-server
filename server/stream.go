@@ -111,10 +111,10 @@ type StreamConfig struct {
 	SubjectDeleteMarkerTTL time.Duration `json:"subject_delete_marker_ttl,omitempty"`
 
 	// AllowMsgCounter allows a stream to use (only) counter CRDTs.
-	AllowMsgCounter bool `json:"allow_msg_counter"`
+	AllowMsgCounter bool `json:"allow_msg_counter,omitempty"`
 
 	// AllowAtomicPublish allows atomic batch publishing into the stream.
-	AllowAtomicPublish bool `json:"allow_atomic"`
+	AllowAtomicPublish bool `json:"allow_atomic,omitempty"`
 
 	// AllowMsgSchedules allows the scheduling of messages.
 	AllowMsgSchedules bool `json:"allow_msg_schedules,omitempty"`
