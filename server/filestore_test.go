@@ -1727,7 +1727,7 @@ func TestFileStorePartialIndexes(t *testing.T) {
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
 			mb.mu.Lock()
 			defer mb.mu.Unlock()
-			if mb.cache == nil || len(mb.cache.idx) == 0 {
+			if mbcache := mb.cache.Value(); mbcache == nil || len(mbcache.idx) == 0 {
 				return nil
 			}
 			return fmt.Errorf("Index not empty")
@@ -3888,7 +3888,7 @@ func TestFileStoreEncryptedKeepIndexNeedBekResetBug(t *testing.T) {
 		mb := fs.lmb
 		fs.mu.RUnlock()
 		mb.mu.Lock()
-		mb.clearCacheAndOffset()
+		mb.clearCacheAndOffset(mb.cache.Value())
 		mb.mu.Unlock()
 
 		// Now make sure we can read.
@@ -4374,7 +4374,7 @@ func TestFileStoreFilteredFirstMatchingBug(t *testing.T) {
 			mb.fss = nil
 		}
 		// Now load info back in.
-		mb.generatePerSubjectInfo()
+		mb.generatePerSubjectInfo(mb.cache.Value())
 		mb.mu.Unlock()
 
 		// Now add in a different subject.
@@ -5103,10 +5103,10 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	defer mb.mu.Unlock()
 
 	// Flush the cache.
-	mb.clearCacheAndOffset()
+	mb.clearCacheAndOffset(mb.cache.Value())
 	// Now call with start sequence of 1, the old one
 	// This will panic without the fix.
-	mb.recalculateForSubj("foo", ss)
+	mb.recalculateForSubj(mb.cache.Value(), "foo", ss)
 	// Make sure it was update properly.
 	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
 }
@@ -5181,7 +5181,7 @@ func TestFileStoreErrPartialLoad(t *testing.T) {
 		lmb := fs.lmb
 		fs.mu.RUnlock()
 		lmb.mu.Lock()
-		lmb.clearCache()
+		lmb.clearCache(lmb.cache.Value())
 		lmb.mu.Unlock()
 	}
 	clearCache()
@@ -5212,7 +5212,7 @@ func TestFileStoreErrPartialLoad(t *testing.T) {
 		lmb.mu.Lock()
 		first, last := fs.lmb.first.seq, fs.lmb.last.seq
 		if i%100 == 0 {
-			lmb.clearCache()
+			lmb.clearCache(lmb.cache.Value())
 		}
 		lmb.mu.Unlock()
 
@@ -5248,7 +5248,7 @@ func TestFileStoreErrPartialLoadOnSyncClose(t *testing.T) {
 	require_True(t, lmb != nil)
 
 	lmb.mu.Lock()
-	lmb.expireCacheLocked()
+	lmb.expireCacheLocked(lmb.cache.Value())
 	lmb.dirtyCloseWithRemove(false)
 	lmb.mu.Unlock()
 
@@ -5313,7 +5313,7 @@ func TestFileStoreRecalcFirstSequenceBug(t *testing.T) {
 		mb := fs.lmb
 		fs.mu.RUnlock()
 		mb.mu.Lock()
-		mb.clearCacheAndOffset()
+		mb.clearCacheAndOffset(mb.cache.Value())
 		mb.mu.Unlock()
 	}
 
@@ -6510,7 +6510,7 @@ func TestFileStorePurgeExBufPool(t *testing.T) {
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
-		if mb.cacheAlreadyLoaded() {
+		if mb.cacheAlreadyLoaded(mb.cache.Value()) {
 			loaded++
 		}
 		mb.mu.RUnlock()
@@ -6549,7 +6549,7 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
-		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded(mb.cache.Value())
 		mb.mu.RUnlock()
 	}
 	fs.mu.RUnlock()
@@ -6597,7 +6597,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 		var stillHasCache bool
 		for _, mb := range fs.blks {
 			mb.mu.RLock()
-			stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+			stillHasCache = stillHasCache || mb.cacheAlreadyLoaded(mb.cache.Value())
 			mb.mu.RUnlock()
 		}
 		fs.mu.RUnlock()
@@ -7005,7 +7005,7 @@ func TestFileStoreFSSExpire(t *testing.T) {
 	mb := fs.blks[0]
 	fs.mu.RUnlock()
 	mb.mu.RLock()
-	cache, fss := mb.cache, mb.fss
+	cache, fss := mb.cache.Value(), mb.fss
 	mb.mu.RUnlock()
 	require_True(t, fss != nil)
 	require_True(t, cache != nil)
@@ -7526,7 +7526,7 @@ func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
-		if mb.cache != nil || mb.fss != nil {
+		if mbcache := mb.cache.Value(); mbcache != nil || mb.fss != nil {
 			loaded++
 		}
 		mb.mu.RUnlock()
@@ -7691,7 +7691,7 @@ func TestFileStoreCheckSkipFirstBlockNotLoadOldBlocks(t *testing.T) {
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
-		if mb.cache != nil || mb.fss != nil {
+		if mbcache := mb.cache.Value(); mbcache != nil || mb.fss != nil {
 			loaded++
 		}
 		mb.mu.RUnlock()
@@ -9702,7 +9702,7 @@ func TestFileStoreFirstMatchingMultiExpiry(t *testing.T) {
 
 		fs.mu.RLock()
 		mb := fs.lmb
-		mb.expireCacheLocked()
+		mb.expireCacheLocked(mb.cache.Value())
 		fs.mu.RUnlock()
 
 		sl := gsl.NewSublist[struct{}]()
@@ -10043,10 +10043,10 @@ func TestFileStoreCompressionAfterTruncate(t *testing.T) {
 					require_NoError(t, fs.forceWriteFullState())
 
 					smb.mu.Lock()
-					smb.clearCacheAndOffset()
+					smb.clearCacheAndOffset(smb.cache.Value())
 					smb.mu.Unlock()
 
-					require_NoError(t, smb.loadMsgsWithLock())
+					require_NoError(t, smb.loadMsgs())
 					compressed, err = checkCompressed(smb)
 					require_NoError(t, err)
 					if smb == lmb {
