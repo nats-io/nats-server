@@ -2359,3 +2359,51 @@ func TestServerJsonMarshalNestedStructsPanic(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, string(b), "{\"p\":{\"i\":{\"a\":\"a\",\"b\":\"b\"}}}")
 }
+
+func TestBuildinfoFormatRevision(t *testing.T) {
+	tests := []struct {
+		name     string
+		revision string
+		expected string
+	}{
+		{
+			name:     "Git-like longer version",
+			revision: "abc123def456789",
+			expected: "abc123d",
+		},
+		{
+			name:     "Git-like exactly 7 chars",
+			revision: "abc123d",
+			expected: "abc123d",
+		},
+		{
+			name:     "SVN shorter revision",
+			revision: "1234",
+			expected: "1234",
+		},
+		{
+			name:     "SVN single digit",
+			revision: "5",
+			expected: "5",
+		},
+		{
+			name:     "Empty revision",
+			revision: "",
+			expected: "",
+		},
+		{
+			name:     "6 character revision",
+			revision: "abc123",
+			expected: "abc123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatRevision(tt.revision)
+			if result != tt.expected {
+				t.Errorf("formatRevision(%q) = %q, expected %q", tt.revision, result, tt.expected)
+			}
+		})
+	}
+}
