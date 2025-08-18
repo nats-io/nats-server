@@ -1760,11 +1760,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
-	if len(cfg.Subjects) == 0 {
-		if cfg.Mirror == nil && len(cfg.Sources) == 0 {
-			cfg.Subjects = append(cfg.Subjects, cfg.Name)
-		}
-	} else {
+	if len(cfg.Subjects) > 0 {
 		if cfg.Mirror != nil {
 			return StreamConfig{}, NewJSMirrorWithSubjectsError()
 		}
@@ -1809,11 +1805,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 			// Mark for duplicate check.
 			dset[subj] = struct{}{}
 		}
-	}
-
-	if len(cfg.Subjects) == 0 && len(cfg.Sources) == 0 && cfg.Mirror == nil {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(
-			fmt.Errorf("stream needs at least one configured subject or be a source/mirror"))
 	}
 
 	// Check for MaxBytes required and it's limit

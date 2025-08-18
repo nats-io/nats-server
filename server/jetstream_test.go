@@ -11385,6 +11385,7 @@ func TestJetStreamMessagePerSubjectKeepBug(t *testing.T) {
 
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:              "TEST",
+			Subjects:          []string{"TEST"},
 			MaxMsgsPerSubject: keep,
 			Storage:           store,
 		})
@@ -21565,4 +21566,41 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 		}
 		require_Equal(t, consumerTest.getValue(), consumerTest.defaultValue)
 	}
+}
+
+func TestJetStreamSwitchToEmptySubjects(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	stream, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Now take all of the subjects off. We may want to do
+	// this if you want to promote a mirror without fully
+	// deleting the original.
+	stream.Config.Subjects = []string{}
+	stream, err = js.UpdateStream(&stream.Config)
+	require_NoError(t, err)
+	require_Len(t, len(stream.Config.Subjects), 0)
+
+	// Should no longer be able to publish into the stream.
+	_, err = js.Publish("foo", nil)
+	require_Error(t, err)
+
+	// Should still be able to get messages from the stream.
+	msg, err := js.GetLastMsg("TEST", "foo")
+	require_NoError(t, err)
+	require_Equal(t, msg.Sequence, 5)
 }
