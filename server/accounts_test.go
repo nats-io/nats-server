@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -3534,6 +3535,156 @@ func TestAccountLimitsServerConfig(t *testing.T) {
 	// Should fail.
 	_, err = nats.Connect(s.ClientURL(), nats.UserInfo("derek", "foo"))
 	require_Error(t, err)
+}
+
+// Regression test for issue introduced in: https://github.com/nats-io/nats-server/pull/5757
+// Connections being closed should be the newer ones in case of JWT limits.
+func TestAccountMaxConnectionsDisconnectsNewestFirst(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+        port: -1
+        server_name: A
+        accounts {
+                TEST {
+                        users = [
+                          {user: user1, password: foo}
+                          {user: user2, password: foo}
+                          {user: user3, password: foo}
+                        ]
+                        limits {
+                                max_connections: 3
+                        }
+                }
+        }
+        `))
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	var conns []*nats.Conn
+
+	disconnects := make([]chan error, 0)
+	for i := 1; i <= 3; i++ {
+		disconnectCh := make(chan error)
+		c, err := nats.Connect(s.ClientURL(), nats.UserInfo(fmt.Sprintf("user%d", i), "foo"), nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			disconnectCh <- err
+		}))
+		require_NoError(t, err)
+		defer c.Close()
+		conns = append(conns, c)
+		disconnects = append(disconnects, disconnectCh)
+		// Small delay to ensure distinct start times.
+		time.Sleep(10 * time.Millisecond)
+	}
+	acc, err := s.lookupAccount("TEST")
+	require_NoError(t, err)
+	require_Equal(t, acc.NumConnections(), 3)
+
+	// Force account update to trigger connection limit enforcement.
+	accClaims := jwt.NewAccountClaims(acc.Name)
+	accClaims.Limits.Conn = 2
+	s.UpdateAccountClaims(acc, accClaims)
+
+	// Wait for disconnections from the most recent client.
+	disconnectCh := disconnects[2]
+	select {
+	case <-disconnectCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected newest connection to disconnect!")
+	}
+
+	// Check which connections are still active
+	// The newest connection (last one created) should be disconnected first.
+	activeConnections := 0
+	var connected []int
+	for i, conn := range conns {
+		if !conn.IsClosed() {
+			activeConnections++
+			connected = append(connected, i)
+		}
+	}
+	require_Equal(t, activeConnections, 2)
+	require_Equal(t, len(connected), 2)
+
+	// The first two connections should still be connected.
+	require_Equal(t, connected[0], 0)
+	require_Equal(t, connected[1], 1)
+
+	// The newest connection should be closed.
+	require_True(t, conns[2].IsClosed())
+}
+
+func TestAccountUpdateRemoteServerDisconnectsNewestFirst(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+          port: -1
+          accounts {
+            TEST {
+              users = [{user: dummy, password: foo}]
+              limits {
+                max_connections: 5
+              }
+            }
+          }
+        `))
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	acc, err := s.lookupAccount("TEST")
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		c, err := nats.Connect(s.ClientURL(), nats.UserInfo("dummy", "foo"))
+		require_NoError(t, err)
+		defer c.Close()
+
+		// Small delay to ensure distinct start times.
+		time.Sleep(10 * time.Millisecond)
+	}
+	require_Equal(t, acc.NumConnections(), 3)
+
+	// Simulate remote server reporting connections that would exceed the limit.
+	// Remote has 4 + we have 3, meaning that 2 will have to be disconnected.
+	remoteServerMsg := &AccountNumConns{
+		Server: ServerInfo{
+			ID:   "fake-server-1",
+			Name: "fake-nats-1",
+		},
+		AccountStat: AccountStat{
+			Account: "TEST",
+			Conns:   4,
+		},
+	}
+	toDisconnect := acc.updateRemoteServer(remoteServerMsg)
+
+	// Should want to disconnect 2 clients (7 total - 5 max conns limit = 2 over).
+	require_Equal(t, len(toDisconnect), 2)
+
+	// Verify the returned clients are in reverse chronological order.
+	var startTimes []time.Time
+	for _, c := range toDisconnect {
+		startTimes = append(startTimes, c.start)
+	}
+	if !startTimes[0].After(startTimes[1]) {
+		t.Fatalf("Expected clients to be in reverse chronological order: %v is before %v", startTimes[0], startTimes[1])
+	}
+
+	// The clients to disconnect should be the newest ones we created.
+	disconnected := make(map[uint64]bool)
+	for _, c := range toDisconnect {
+		disconnected[c.cid] = true
+	}
+
+	// Get all current clients and find the oldest ones.
+	allClients := acc.getClients()
+	byStartTime := make([]*client, len(allClients))
+	copy(byStartTime, allClients)
+	slices.SortFunc(byStartTime, func(i, j *client) int {
+		return i.start.Compare(j.start)
+	})
+
+	// The last two clients in the sorted list should be the ones selected for disconnection.
+	require_False(t, disconnected[byStartTime[0].cid])
+	require_True(t, disconnected[byStartTime[1].cid])
+	require_True(t, disconnected[byStartTime[2].cid])
 }
 
 func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
