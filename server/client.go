@@ -6336,8 +6336,10 @@ func (c *client) format(format string) string {
 	}
 	if len(tags) > 0 {
 		return fmt.Sprintf("%s - %s %s", c, format, strings.Join(tags, " "))
+	} else if s := c.String(); s != _EMPTY_ {
+		return fmt.Sprintf("%s - %s", s, format)
 	} else {
-		return fmt.Sprintf("%s - %s", c, format)
+		return format
 	}
 }
 
@@ -6389,7 +6391,11 @@ func (c *client) RateLimitErrorf(format string, v ...any) {
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
-	c.srv.Errorf("%s - %s%s", c, statement, c.formatClientSuffix())
+	if s := c.String(); s != _EMPTY_ {
+		c.srv.Errorf("%s - %s%s", c, statement, c.formatClientSuffix())
+	} else {
+		c.srv.Errorf("%s%s", statement, c.formatClientSuffix())
+	}
 }
 
 func (c *client) rateLimitFormatWarnf(format string, v ...any) {
@@ -6399,7 +6405,11 @@ func (c *client) rateLimitFormatWarnf(format string, v ...any) {
 		return
 	}
 	statement := fmt.Sprintf(format, v...)
-	c.srv.Warnf("%s - %s%s", c, statement, c.formatClientSuffix())
+	if s := c.String(); s != _EMPTY_ {
+		c.srv.Warnf("%s - %s%s", c, statement, c.formatClientSuffix())
+	} else {
+		c.srv.Warnf("%s%s", statement, c.formatClientSuffix())
+	}
 }
 
 func (c *client) RateLimitWarnf(format string, v ...any) {
@@ -6408,7 +6418,11 @@ func (c *client) RateLimitWarnf(format string, v ...any) {
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
-	c.srv.Warnf("%s - %s%s", c, statement, c.formatClientSuffix())
+	if s := c.String(); s != _EMPTY_ {
+		c.srv.Warnf("%s - %s%s", c, statement, c.formatClientSuffix())
+	} else {
+		c.srv.Warnf("%s%s", statement, c.formatClientSuffix())
+	}
 }
 
 func (c *client) RateLimitDebugf(format string, v ...any) {
@@ -6417,7 +6431,11 @@ func (c *client) RateLimitDebugf(format string, v ...any) {
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
-	c.srv.Debugf("%s - %s%s", c, statement, c.formatClientSuffix())
+	if s := c.String(); s != _EMPTY_ {
+		c.srv.Debugf("%s - %s%s", c, statement, c.formatClientSuffix())
+	} else {
+		c.srv.Debugf("%s%s", statement, c.formatClientSuffix())
+	}
 }
 
 // Set the very first PING to a lower interval to capture the initial RTT.
