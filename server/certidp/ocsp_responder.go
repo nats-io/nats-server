@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -87,6 +86,5 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 // encodeOCSPRequest encodes the OCSP request in base64 and URL-encodes it.
 // This is needed to fulfill the OCSP responder's requirements for the request format. (X.690)
 func encodeOCSPRequest(reqDER []byte) string {
-	reqEnc := base64.StdEncoding.EncodeToString(reqDER)
-	return url.QueryEscape(reqEnc)
+	return base64.RawURLEncoding.EncodeToString(reqDER)
 }

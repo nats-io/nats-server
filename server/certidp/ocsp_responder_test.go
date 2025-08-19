@@ -19,7 +19,7 @@ func TestEncodeOCSPRequest(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to url-decode request: %v", err)
 	}
-	decodedData, err := base64.StdEncoding.DecodeString(decodedURL)
+	decodedData, err := base64.RawURLEncoding.DecodeString(decodedURL)
 	if err != nil {
 		t.Errorf("failed to base64-decode request: %v", err)
 	}
