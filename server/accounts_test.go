@@ -3537,7 +3537,6 @@ func TestAccountLimitsServerConfig(t *testing.T) {
 	require_Error(t, err)
 }
 
-// Regression test for issue introduced in: https://github.com/nats-io/nats-server/pull/5757
 // Connections being closed should be the newer ones in case of JWT limits.
 func TestAccountMaxConnectionsDisconnectsNewestFirst(t *testing.T) {
 	cf := createConfFile(t, []byte(`
