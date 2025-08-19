@@ -1594,19 +1594,17 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 	// Now create the max connections.
 	// We create half then we will wait and then create the rest.
 	// Will test that we disconnect the newest ones.
-	newConns := make([]*nats.Conn, 0, 5)
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	for i := 0; i < 5; i++ {
-		nc, err := nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+		nc, err := nats.Connect(url, nats.Name("OLD"), nats.NoReconnect(), createUserCreds(t, s, akp))
 		require_NoError(t, err)
 		defer nc.Close()
 	}
 	time.Sleep(500 * time.Millisecond)
 	for i := 0; i < 5; i++ {
-		nc, err := nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+		nc, err := nats.Connect(url, nats.Name("NEW"), nats.NoReconnect(), createUserCreds(t, s, akp))
 		require_NoError(t, err)
 		defer nc.Close()
-		newConns = append(newConns, nc)
 	}
 
 	// We should have max here.
@@ -1624,15 +1622,12 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 	// We should have closed the excess connections.
 	checkClientsCount(t, s, acc.MaxActiveConnections())
 
-	// Now make sure that only the new ones were closed.
-	var closed int
-	for _, nc := range newConns {
-		if !nc.IsClosed() {
-			closed++
-		}
-	}
-	if closed != 5 {
-		t.Fatalf("Expected all new clients to be closed, only got %d of 5", closed)
+	connz, err := s.Connz(nil)
+	require_NoError(t, err)
+
+	// There should only be OLD connections.
+	for _, c := range connz.Conns {
+		require_Equal(t, c.Name, "OLD")
 	}
 }
 
