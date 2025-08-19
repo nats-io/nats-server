@@ -6633,7 +6633,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		return
 	}
 	// Check for mirror changes which are not allowed.
-	if !reflect.DeepEqual(newCfg.Mirror, osa.Config.Mirror) {
+	// We will allow removing the mirror config to "promote" the mirror to a normal stream.
+	if newCfg.Mirror != nil && !reflect.DeepEqual(newCfg.Mirror, osa.Config.Mirror) {
 		resp.Error = NewJSStreamMirrorNotUpdatableError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
