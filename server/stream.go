@@ -1408,9 +1408,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	}
 
 	if cfg.Replicas == 0 {
-		if pedantic {
-			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("replicas must be set"))
-		}
 		cfg.Replicas = 1
 	}
 	if cfg.Replicas > StreamMaxReplicas {
@@ -1420,34 +1417,37 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		return cfg, NewJSReplicasCountCannotBeNegativeError()
 	}
 	if cfg.MaxMsgs == 0 || cfg.MaxMsgs < -1 {
-		if pedantic {
+		if pedantic && cfg.MaxMsgs < -1 {
 			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_msgs must be set to -1"))
 		}
 		cfg.MaxMsgs = -1
 	}
 	if cfg.MaxMsgsPer == 0 || cfg.MaxMsgsPer < -1 {
-		if pedantic {
+		if pedantic && cfg.MaxMsgsPer < -1 {
 			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_msgs_per_subject must be set to -1"))
 		}
 		cfg.MaxMsgsPer = -1
 	}
 	if cfg.MaxBytes == 0 || cfg.MaxBytes < -1 {
-		if pedantic {
+		if pedantic && cfg.MaxBytes < -1 {
 			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_bytes must be set to -1"))
 		}
 		cfg.MaxBytes = -1
 	}
 	if cfg.MaxMsgSize == 0 || cfg.MaxMsgSize < -1 {
-		if pedantic {
+		if pedantic && cfg.MaxMsgSize < -1 {
 			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_msg_size must be set to -1"))
 		}
 		cfg.MaxMsgSize = -1
 	}
 	if cfg.MaxConsumers == 0 || cfg.MaxConsumers < -1 {
-		if pedantic {
+		if pedantic && cfg.MaxConsumers < -1 {
 			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("max_consumers must be set to -1"))
 		}
 		cfg.MaxConsumers = -1
+	}
+	if cfg.MaxAge < 0 {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("max age can not be negative"))
 	}
 	if cfg.MaxAge != 0 && cfg.MaxAge < 100*time.Millisecond {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms"))

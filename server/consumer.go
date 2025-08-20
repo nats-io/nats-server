@@ -555,7 +555,7 @@ const (
 func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, lim *JSLimitOpts, accLim *JetStreamAccountLimits, pedantic bool) *ApiError {
 	// Setup default of -1, meaning no limit for MaxDeliver.
 	if config.MaxDeliver == 0 || config.MaxDeliver < -1 {
-		if pedantic {
+		if pedantic && config.MaxDeliver < -1 {
 			return NewJSPedanticError(errors.New("max_deliver must be set to -1"))
 		}
 		config.MaxDeliver = -1

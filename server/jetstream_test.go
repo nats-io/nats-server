@@ -11079,7 +11079,7 @@ func TestJetStreamNegativeDupeWindow(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	// we incorrectly set Duplicates to -1 which should fail
+	// we incorrectly set MaxAge to -1 which then as a side effect sets dupe window to -1 which should fail
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:              "TEST",
 		Subjects:          nil,
@@ -19961,12 +19961,6 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 		Name:                   "PEDANTIC",
 		Storage:                FileStorage,
 		Subjects:               []string{"pedantic"},
-		Replicas:               1,
-		MaxMsgs:                -1,
-		MaxMsgsPer:             -1,
-		MaxBytes:               -1,
-		MaxMsgSize:             -1,
-		MaxConsumers:           -1,
 		SubjectDeleteMarkerTTL: -time.Millisecond,
 	}
 
@@ -21409,15 +21403,9 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 
 	_, err = s.checkStreamCfg(&StreamConfig{Name: "TEST", MaxAge: -time.Second}, acc, false)
 	require_True(t, err != nil)
-	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms")))
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("max age can not be negative")))
 
 	scfg := StreamConfig{Name: "TEST"}
-	_, err = s.checkStreamCfg(&scfg, acc, true)
-	if err == nil {
-		t.Fatal("Expected error for pedantic mode")
-	}
-	require_Error(t, err, NewJSPedanticError(fmt.Errorf("replicas must be set")))
-	scfg.Replicas = 1
 	streamTests := []struct {
 		name     string
 		setValue func(value int)
@@ -21450,6 +21438,7 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 		},
 	}
 	for _, streamTest := range streamTests {
+		// Pedantic errors if less than -1.
 		streamTest.setValue(-10)
 		_, err = s.checkStreamCfg(&scfg, acc, true)
 		if err == nil {
@@ -21457,6 +21446,15 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 		}
 		require_Error(t, err, NewJSPedanticError(fmt.Errorf("%s must be set to -1", streamTest.name)))
 
+		// Pedantic defaults if zero-value.
+		streamTest.setValue(0)
+		scfg, err = s.checkStreamCfg(&scfg, acc, true)
+		if err != nil {
+			require_NoError(t, err)
+		}
+		require_Equal(t, streamTest.getValue(), -1)
+
+		// Non-pedantic defaults.
 		streamTest.setValue(-10)
 		scfg, err = s.checkStreamCfg(&scfg, acc, false)
 		if err != nil {
@@ -21485,7 +21483,7 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 	require_True(t, err != nil)
 	require_Error(t, err, NewJSConsumerBackOffNegativeError())
 
-	ccfg = &ConsumerConfig{}
+	ccfg = &ConsumerConfig{AckPolicy: AckExplicit}
 	consumerTests := []struct {
 		name         string
 		setValue     func(value int)
@@ -21503,12 +21501,6 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 			setValue:     func(value int) { ccfg.MaxWaiting = value },
 			getValue:     func() int { return ccfg.MaxWaiting },
 			defaultValue: JSWaitQueueDefaultMax,
-		},
-		{
-			name:         "max_ack_pending",
-			setValue:     func(value int) { ccfg.MaxAckPending = value },
-			getValue:     func() int { return ccfg.MaxAckPending },
-			defaultValue: -1,
 		},
 		{
 			name:         "max_batch",
@@ -21548,6 +21540,7 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 		},
 	}
 	for _, consumerTest := range consumerTests {
+		// Pedantic errors if less than -1.
 		consumerTest.setValue(-10)
 		err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, true)
 		if err == nil {
@@ -21559,6 +21552,15 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 			require_Error(t, err, NewJSPedanticError(fmt.Errorf("%s must not be negative", consumerTest.name)))
 		}
 
+		// Pedantic defaults if zero-value.
+		consumerTest.setValue(0)
+		err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, true)
+		if err != nil {
+			require_NoError(t, err)
+		}
+		require_Equal(t, consumerTest.getValue(), consumerTest.defaultValue)
+
+		// Non-pedantic defaults.
 		consumerTest.setValue(-10)
 		err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, false)
 		if err != nil {
@@ -21566,6 +21568,30 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 		}
 		require_Equal(t, consumerTest.getValue(), consumerTest.defaultValue)
 	}
+
+	// Pedantic errors if less than -1.
+	ccfg.MaxAckPending = -10
+	err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, true)
+	if err == nil {
+		t.Fatal("Expected error for pedantic mode")
+	}
+	require_Error(t, err, NewJSPedanticError(errors.New("max_ack_pending must be set to -1")))
+
+	// Pedantic defaults if zero-value.
+	ccfg.MaxAckPending = 0
+	err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, true)
+	if err != nil {
+		require_NoError(t, err)
+	}
+	require_Equal(t, ccfg.MaxAckPending, JsDefaultMaxAckPending)
+
+	// Non-pedantic defaults.
+	ccfg.MaxAckPending = -10
+	err = setConsumerConfigDefaults(ccfg, &scfg, &JSLimitOpts{}, &JetStreamAccountLimits{}, false)
+	if err != nil {
+		require_NoError(t, err)
+	}
+	require_Equal(t, ccfg.MaxAckPending, -1)
 }
 
 func TestJetStreamPromoteMirrorDeletingOrigin(t *testing.T) {
