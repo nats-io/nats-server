@@ -3964,6 +3964,8 @@ type RaftzGroup struct {
 	Vote          string                    `json:"voted_for,omitempty"`
 	PTerm         uint64                    `json:"pterm"`
 	PIndex        uint64                    `json:"pindex"`
+	SystemAcc     bool                      `json:"system_account"`
+	TrafficAcc    string                    `json:"traffic_account"`
 	IPQPropLen    int                       `json:"ipq_proposal_len"`
 	IPQEntryLen   int                       `json:"ipq_entry_len"`
 	IPQRespLen    int                       `json:"ipq_resp_len"`
@@ -4069,6 +4071,8 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			Vote:          n.vote,
 			PTerm:         n.pterm,
 			PIndex:        n.pindex,
+			SystemAcc:     n.IsSystemAccount(),
+			TrafficAcc:    n.acc.GetName(),
 			IPQPropLen:    n.prop.len(),
 			IPQEntryLen:   n.entry.len(),
 			IPQRespLen:    n.resp.len(),
