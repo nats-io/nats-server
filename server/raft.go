@@ -48,6 +48,7 @@ type RaftNode interface {
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
 	Leader() bool
+	LeaderSince() *time.Time
 	Quorum() bool
 	Current() bool
 	Healthy() bool
@@ -145,10 +146,11 @@ type raft struct {
 	bytes uint64      // Total amount of bytes stored in the WAL. (Saves us from needing to call wal.FastState very often)
 	werr  error       // Last write error
 
-	state       atomic.Int32 // RaftState
-	leaderState atomic.Bool  // Is in (complete) leader state.
-	hh          hash.Hash64  // Highwayhash, used for snapshots
-	snapfile    string       // Snapshot filename
+	state       atomic.Int32              // RaftState
+	leaderState atomic.Bool               // Is in (complete) leader state.
+	leaderSince atomic.Pointer[time.Time] // How long since becoming leader.
+	hh          hash.Hash64               // Highwayhash, used for snapshots
+	snapfile    string                    // Snapshot filename
 
 	csz   int             // Cluster size
 	qn    int             // Number of nodes needed to establish quorum
@@ -1092,7 +1094,11 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		// Quick sanity-check to confirm we're still leader.
 		// In which case we must signal, since switchToLeader would not have done so already.
 		if n.State() == Leader {
-			n.leaderState.Store(true)
+			if !n.leaderState.Swap(true) {
+				// Only update timestamp if leader state actually changed.
+				nowts := time.Now().UTC()
+				n.leaderSince.Store(&nowts)
+			}
 			n.updateLeadChange(true)
 		}
 	}
@@ -1397,6 +1403,15 @@ func (n *raft) Leader() bool {
 		return false
 	}
 	return n.leaderState.Load()
+}
+
+// LeaderSince returns how long we have been leader for,
+// if applicable.
+func (n *raft) LeaderSince() *time.Time {
+	if n == nil {
+		return nil
+	}
+	return n.leaderSince.Load()
 }
 
 // stepdown immediately steps down the Raft node to the
@@ -1813,6 +1828,7 @@ func (n *raft) shutdown() {
 	// to notify the runAs goroutines to stop what they're doing.
 	if n.state.Swap(int32(Closed)) != int32(Closed) {
 		n.leaderState.Store(false)
+		n.leaderSince.Store(nil)
 		close(n.quit)
 	}
 }
@@ -4392,6 +4408,7 @@ func (n *raft) switchToFollowerLocked(leader string) {
 
 	n.aflr = 0
 	n.leaderState.Store(false)
+	n.leaderSince.Store(nil)
 	n.lxfer = false
 	// Reset acks, we can't assume acks from a previous term are still valid in another term.
 	if len(n.acks) > 0 {
@@ -4458,7 +4475,11 @@ func (n *raft) switchToLeader() {
 			// We know we have applied all entries in our log and can signal immediately.
 			// For sanity reset applied floor back down to 0, so we aren't able to signal twice.
 			n.aflr = 0
-			n.leaderState.Store(true)
+			if !n.leaderState.Swap(true) {
+				// Only update timestamp if leader state actually changed.
+				nowts := time.Now().UTC()
+				n.leaderSince.Store(&nowts)
+			}
 			n.updateLeadChange(true)
 		}
 	}
