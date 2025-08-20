@@ -297,8 +297,8 @@ func (ext *ExternalStream) Domain() string {
 
 // For managing stream ingest.
 const (
-	streamDefaultMaxQueueMsgs  = 10_000
-	streamDefaultMaxQueueBytes = 1024 * 1024 * 128
+	streamDefaultMaxQueueMsgs  = -1
+	streamDefaultMaxQueueBytes = 256 * 1024 * 1024
 )
 
 // For managing stream batches.
