@@ -116,6 +116,9 @@ type StreamConfig struct {
 	// AllowAtomicPublish allows atomic batch publishing into the stream.
 	AllowAtomicPublish bool `json:"allow_atomic"`
 
+	// AllowMsgSchedules allows the scheduling of messages.
+	AllowMsgSchedules bool `json:"allow_msg_schedules,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -482,12 +485,22 @@ const (
 	JSBatchId                 = "Nats-Batch-Id"
 	JSBatchSeq                = "Nats-Batch-Sequence"
 	JSBatchCommit             = "Nats-Batch-Commit"
+	JSSchedulePattern         = "Nats-Schedule"
+	JSScheduleTTL             = "Nats-Schedule-TTL"
+	JSScheduleTarget          = "Nats-Schedule-Target"
 )
 
 // Headers for published KV messages.
 var (
 	KVOperation           = "KV-Operation"
 	KVOperationValuePurge = []byte("PURGE")
+)
+
+// Headers for scheduled messages.
+const (
+	JSScheduler         = "Nats-Scheduler"
+	JSScheduleNext      = "Nats-Schedule-Next"
+	JSScheduleNextPurge = "purge" // If it's a non-repeating/delayed message, the schedule is purged.
 )
 
 // Headers for republished messages and direct gets.
@@ -1063,6 +1076,7 @@ func (mset *stream) setLeader(isLeader bool) error {
 		// Clear catchup state
 		mset.clearAllCatchupPeers()
 	}
+	mset.store.ResetState()
 	mset.mu.Unlock()
 
 	// If we are interest based make sure to check consumers.
@@ -1517,6 +1531,15 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete marker TTL must not be negative"))
 	}
 
+	if cfg.AllowMsgSchedules {
+		if !cfg.AllowRollup {
+			if pedantic {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("message scheduling cannot be set if roll-ups are disabled"))
+			}
+			cfg.AllowRollup, cfg.DenyPurge = true, false
+		}
+	}
+
 	getStream := func(streamName string) (bool, StreamConfig) {
 		var exists bool
 		var cfg StreamConfig
@@ -1558,6 +1581,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 		if cfg.AllowMsgCounter {
 			return StreamConfig{}, NewJSMirrorWithCountersError()
+		}
+		if cfg.AllowMsgSchedules {
+			return StreamConfig{}, NewJSMirrorWithMsgSchedulesError()
 		}
 		if cfg.Mirror.FilterSubject != _EMPTY_ && len(cfg.Mirror.SubjectTransforms) != 0 {
 			return StreamConfig{}, NewJSMirrorMultipleFiltersNotAllowedError()
@@ -1631,6 +1657,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 			if cfg.Mirror.External.ApiPrefix != _EMPTY_ {
 				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
 			}
+		}
+	}
+
+	if len(cfg.Sources) > 0 {
+		if cfg.AllowMsgSchedules {
+			return StreamConfig{}, NewJSSourceWithMsgSchedulesError()
 		}
 	}
 
@@ -4376,7 +4408,7 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 			mset.removeMsg(seq)
 		}
 	})
-	mset.store.RegisterSubjectDeleteMarkerUpdates(func(im *inMsg) {
+	mset.store.RegisterProcessJetStreamMsg(func(im *inMsg) {
 		if mset.IsClustered() {
 			if mset.IsLeader() {
 				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
@@ -4603,6 +4635,51 @@ func getMessageIncr(hdr []byte) (*big.Int, bool) {
 	return v.SetString(bytesToString(incr), 10)
 }
 
+// Fast lookup of message schedule.
+func getMessageSchedule(hdr []byte) (time.Time, bool) {
+	if len(hdr) == 0 {
+		return time.Time{}, true
+	}
+	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
+	if val == _EMPTY_ {
+		return time.Time{}, true
+	}
+	if !strings.HasPrefix(val, "@at ") {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, val[4:])
+	return t, err == nil
+}
+
+// Fast lookup of the message schedule TTL from headers.
+// The TTL is confirmed to be valid, but the raw TTL string is returned.
+func getMessageScheduleTTL(hdr []byte) (string, bool) {
+	ttl := getHeader(JSScheduleTTL, hdr)
+	if len(ttl) == 0 {
+		return _EMPTY_, true
+	}
+	if _, err := parseMessageTTL(bytesToString(ttl)); err != nil {
+		return _EMPTY_, false
+	}
+	return string(ttl), true
+}
+
+// Fast lookup of message schedule target.
+func getMessageScheduleTarget(hdr []byte) string {
+	if len(hdr) == 0 {
+		return _EMPTY_
+	}
+	return string(getHeader(JSScheduleTarget, hdr))
+}
+
+// Fast lookup of message scheduler.
+func getMessageScheduler(hdr []byte) string {
+	if len(hdr) == 0 {
+		return _EMPTY_
+	}
+	return string(getHeader(JSScheduler, hdr))
+}
+
 // Fast lookup of batch ID.
 func getBatchId(hdr []byte) string {
 	if len(hdr) == 0 {
@@ -4640,6 +4717,7 @@ type inMsg struct {
 	msg  []byte
 	si   *sourceInfo
 	mt   *msgTrace
+	seq  uint64 // seq that can be optionally used for sorting out-of-band.
 }
 
 var inMsgPool = sync.Pool{
@@ -5158,7 +5236,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.cfg.Retention == InterestPolicy
-	allowMsgCounter := mset.cfg.AllowMsgCounter
+	allowMsgCounter, allowMsgSchedules := mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules
 	// Snapshot if we are the leader and if we can respond.
 	isLeader, isSealed := mset.isLeaderNodeState(), mset.cfg.Sealed
 	isClustered := mset.isClustered()
@@ -5379,6 +5457,95 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				}
 				return fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
 			}
+
+			// Message scheduling.
+			if schedule, ok := getMessageSchedule(hdr); !ok {
+				mset.mu.Unlock()
+				apiErr := NewJSMessageSchedulesPatternInvalidError()
+				if !allowMsgSchedules {
+					apiErr = NewJSMessageSchedulesDisabledError()
+				}
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = apiErr
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return apiErr
+			} else if !schedule.IsZero() {
+				if !allowMsgSchedules {
+					mset.mu.Unlock()
+					apiErr := NewJSMessageSchedulesDisabledError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				} else if scheduleTtl, ok := getMessageScheduleTTL(hdr); !ok {
+					mset.mu.Unlock()
+					apiErr := NewJSMessageSchedulesTTLInvalidError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				} else if scheduleTtl != _EMPTY_ && !mset.cfg.AllowMsgTTL {
+					mset.mu.Unlock()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = NewJSMessageTTLDisabledError()
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return errMsgTTLDisabled
+				} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
+					!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
+					mset.mu.Unlock()
+					apiErr := NewJSMessageSchedulesTargetInvalidError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				} else {
+					match := slices.ContainsFunc(mset.cfg.Subjects, func(subj string) bool {
+						return SubjectsCollide(subj, scheduleTarget)
+					})
+					if !match {
+						mset.mu.Unlock()
+						apiErr := NewJSMessageSchedulesTargetInvalidError()
+						if canRespond {
+							resp.PubAck = &PubAck{Stream: name}
+							resp.Error = apiErr
+							b, _ := json.Marshal(resp)
+							outq.sendMsg(reply, b)
+						}
+						return apiErr
+					}
+
+					// Add a rollup sub header if it doesn't already exist.
+					// Otherwise, it must exist already as a rollup on the subject.
+					if rollup := getRollup(hdr); rollup == _EMPTY_ {
+						hdr = genHeader(hdr, JSMsgRollup, JSMsgRollupSubject)
+					} else if rollup != JSMsgRollupSubject {
+						mset.mu.Unlock()
+						apiErr := NewJSMessageSchedulesRollupInvalidError()
+						if canRespond {
+							resp.PubAck = &PubAck{Stream: name}
+							resp.Error = apiErr
+							b, _ := json.Marshal(resp)
+							outq.sendMsg(reply, b)
+						}
+						return apiErr
+					}
+				}
+			}
 		}
 
 		// Dedupe detection. This is done at the cluster level for dedupe detection above the
@@ -5424,13 +5591,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
 			if canConsistencyCheck && (!mset.cfg.AllowRollup || mset.cfg.DenyPurge) {
 				mset.mu.Unlock()
+				err := errors.New("rollup not permitted")
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
-					resp.Error = NewJSStreamRollupFailedError(errors.New("rollup not permitted"))
+					resp.Error = NewJSStreamRollupFailedError(err)
 					b, _ := json.Marshal(resp)
 					outq.sendMsg(reply, b)
 				}
-				return errors.New("rollup not permitted")
+				return err
 			}
 			switch rollup {
 			case JSMsgRollupSubject:
@@ -5438,8 +5606,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			case JSMsgRollupAll:
 				rollupAll = true
 			default:
-				mset.mu.Unlock()
 				if canConsistencyCheck {
+					mset.mu.Unlock()
 					err := fmt.Errorf("rollup value invalid: %q", rollup)
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
@@ -5810,6 +5978,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.purge(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1})
 	} else if rollupAll {
 		mset.purge(&JSApiStreamPurgeRequest{Keep: 1})
+	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
+		// Purge the message schedule.
+		scheduler := getMessageScheduler(hdr)
+		if scheduler != _EMPTY_ {
+			mset.purge(&JSApiStreamPurgeRequest{Subject: scheduler})
+		}
 	}
 
 	// Check for republish.
@@ -5880,7 +6054,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
-	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowAtomicPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowAtomicPublish
+	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, allowAtomicPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules, mset.cfg.AllowAtomicPublish
 	mset.mu.RUnlock()
 
 	// If message tracing (with message delivery), we will need to send the
@@ -6141,7 +6315,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			return errorOnUnsupported(seq, JSExpectedLastMsgId)
 		}
 
-		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 			rollback(seq)
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()

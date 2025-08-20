@@ -177,7 +177,7 @@ type fileStore struct {
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
-	sdmcb       SubjectDeleteMarkerUpdateHandler
+	pmsgcb      ProcessJetStreamMsgHandler
 	ageChk      *time.Timer
 	syncTmr     *time.Timer
 	cfg         FileStreamInfo
@@ -204,6 +204,7 @@ type fileStore struct {
 	receivedAny bool
 	firstMoved  bool
 	ttls        *thw.HashWheel
+	scheduling  *MsgScheduling
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
 }
@@ -254,6 +255,7 @@ type msgBlock struct {
 	noCompact  bool
 	closed     bool
 	ttls       uint64 // How many msgs have TTLs?
+	schedules  uint64 // How many msgs have schedules?
 
 	// Used to mock write failures.
 	mockWriteErr bool
@@ -338,6 +340,9 @@ const (
 
 	// This is the encoded time hash wheel for TTLs.
 	ttlStreamStateFile = "thw.db"
+
+	// This is the encoded message scheduling file.
+	msgSchedulingStreamStateFile = "sched.db"
 
 	// AEK key sizes
 	minMetaKeySize = 64
@@ -440,6 +445,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	if cfg.AllowMsgTTL {
 		fs.ttls = thw.NewHashWheel()
 	}
+	// Only create scheduling data structure if we're going to allow message schedules.
+	if cfg.AllowMsgSchedules {
+		fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+	}
 
 	// Set flush in place to AsyncFlush which by default is false.
 	fs.fip = !fcfg.AsyncFlush
@@ -515,6 +524,13 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	if cfg.AllowMsgTTL {
 		if err = fs.recoverTTLState(); err != nil && !os.IsNotExist(err) {
 			fs.warn("Recovering TTL state from index errored: %v", err)
+		}
+	}
+
+	// See if we can bring back our message scheduling state from disk.
+	if cfg.AllowMsgSchedules {
+		if err = fs.recoverMsgSchedulingState(); err != nil && !os.IsNotExist(err) {
+			fs.warn("Recovering message scheduling state from index errored: %v", err)
 		}
 	}
 
@@ -659,6 +675,12 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	} else if !cfg.AllowMsgTTL && fs.ttls != nil {
 		fs.ttls = nil
 	}
+	// Create or delete the message scheduling state if needed.
+	if cfg.AllowMsgSchedules && fs.scheduling == nil {
+		fs.recoverMsgSchedulingState()
+	} else if !cfg.AllowMsgSchedules && fs.scheduling != nil {
+		fs.scheduling = nil
+	}
 
 	// Limits checks and enforcement.
 	fs.enforceMsgLimit()
@@ -701,6 +723,9 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 
 	if cfg.MaxAge != 0 || cfg.AllowMsgTTL {
 		fs.expireMsgs()
+	}
+	if cfg.AllowMsgSchedules {
+		fs.runMsgScheduling()
 	}
 	return nil
 }
@@ -1499,10 +1524,11 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 
 		// Check for checksum failures before additional processing.
 		data := buf[index+msgHdrSize : index+rl]
+		subj := data[:slen]
 		if hh := mb.hh; hh != nil {
 			hh.Reset()
 			hh.Write(hdr[4:20])
-			hh.Write(data[:slen])
+			hh.Write(subj)
 			if hasHeaders {
 				hh.Write(data[slen+4 : dlen-recordHashSize])
 			} else {
@@ -1566,6 +1592,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 				expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
 				mb.fs.ttls.Add(seq, int64(expires))
 				mb.ttls++
+			}
+			if mb.fs.scheduling != nil {
+				if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+					mb.fs.scheduling.add(seq, string(subj), schedule.UnixNano())
+					mb.schedules++
+				}
 			}
 		}
 
@@ -1802,6 +1834,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			if version >= 2 {
 				ttls = readU64()
 			}
+			var schedules uint64
+			if version >= 3 {
+				schedules = readU64()
+			}
 			if bi < 0 {
 				os.Remove(fn)
 				return errCorruptState
@@ -1812,6 +1848,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			mb.msgs, mb.bytes = lseq-fseq+1, nbytes
 			mb.first.ts, mb.last.ts = fts+baseTime, lts+baseTime
 			mb.ttls = ttls
+			mb.schedules = schedules
 			if numDeleted > 0 {
 				dmap, n, err := avl.Decode(buf[bi:])
 				if err != nil {
@@ -2012,6 +2049,86 @@ func (fs *fileStore) recoverTTLState() error {
 			if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
 				expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
 				fs.ttls.Add(seq, int64(expires))
+			}
+		}
+	}
+	return nil
+}
+
+// Lock should be held.
+func (fs *fileStore) recoverMsgSchedulingState() error {
+	// See if we have a timed hash wheel for TTLs.
+	<-dios
+	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, msgSchedulingStreamStateFile)
+	buf, err := os.ReadFile(fn)
+	dios <- struct{}{}
+
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+
+	var schedSeq uint64
+	if err == nil {
+		schedSeq, err = fs.scheduling.decode(buf)
+		if err != nil {
+			fs.warn("Error decoding message scheduling state: %s", err)
+			os.Remove(fn)
+		}
+	}
+
+	if schedSeq < fs.state.FirstSeq {
+		schedSeq = fs.state.FirstSeq
+	}
+
+	defer fs.scheduling.resetTimer()
+	if fs.state.Msgs > 0 && schedSeq <= fs.state.LastSeq {
+		fs.warn("Message scheduling state is outdated; attempting to recover using linear scan (seq %d to %d)", schedSeq, fs.state.LastSeq)
+		var (
+			mb     *msgBlock
+			sm     StoreMsg
+			mblseq uint64
+		)
+		for seq := schedSeq; seq <= fs.state.LastSeq; seq++ {
+		retry:
+			if mb == nil {
+				if mb = fs.selectMsgBlock(seq); mb == nil {
+					// Selecting the message block should return a block that contains this sequence,
+					// or a later block if it can't be found.
+					// It's an error if we can't find any block within the bounds of first and last seq.
+					fs.warn("Error loading msg block with seq %d for recovering message schedules", seq)
+					continue
+				}
+				seq = atomic.LoadUint64(&mb.first.seq)
+				mblseq = atomic.LoadUint64(&mb.last.seq)
+			}
+			if mb.schedules == 0 {
+				// None of the messages in the block have message schedules, so don't
+				// bother doing anything further with this block, skip to the end.
+				seq = atomic.LoadUint64(&mb.last.seq) + 1
+			}
+			if seq > mblseq {
+				// We've reached the end of the loaded block, so let's go back to the
+				// beginning and process the next block.
+				mb.tryForceExpireCache()
+				mb = nil
+				if seq <= fs.state.LastSeq {
+					goto retry
+				}
+				// Done.
+				break
+			}
+			msg, _, err := mb.fetchMsgNoCopy(seq, &sm)
+			if err != nil {
+				fs.warn("Error loading msg seq %d for recovering message schedules: %s", seq, err)
+				continue
+			}
+			if len(msg.hdr) == 0 {
+				continue
+			}
+			if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+				fs.scheduling.init(seq, sm.subj, schedule.UnixNano())
 			}
 		}
 	}
@@ -3949,10 +4066,10 @@ func (fs *fileStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	fs.mu.Unlock()
 }
 
-// RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new tombstones.
-func (fs *fileStore) RegisterSubjectDeleteMarkerUpdates(cb SubjectDeleteMarkerUpdateHandler) {
+// RegisterProcessJetStreamMsg registers a callback to process new JetStream messages.
+func (fs *fileStore) RegisterProcessJetStreamMsg(cb ProcessJetStreamMsgHandler) {
 	fs.mu.Lock()
-	fs.sdmcb = cb
+	fs.pmsgcb = cb
 	fs.mu.Unlock()
 }
 
@@ -4231,6 +4348,14 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		fs.resetAgeChk(0)
 	case fs.ageChk == nil && (fs.cfg.MaxAge > 0 || fs.ttls != nil):
 		fs.startAgeChk()
+	}
+
+	// Message scheduling.
+	if fs.scheduling != nil {
+		if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+			fs.scheduling.add(seq, subj, schedule.UnixNano())
+			fs.lmb.schedules++
+		}
 	}
 
 	return nil
@@ -5688,12 +5813,12 @@ func (fs *fileStore) expireMsgs() {
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := ats.AccessTime() - maxAge
 	rmcb := fs.rmcb
-	sdmcb := fs.sdmcb
+	pmsgcb := fs.pmsgcb
 	sdmTTL := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
 	sdmEnabled := sdmTTL > 0
 	fs.mu.RUnlock()
 
-	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+	if sdmEnabled && (rmcb == nil || pmsgcb == nil) {
 		return
 	}
 
@@ -5854,9 +5979,36 @@ func (fs *fileStore) handleRemovalOrSdm(seq uint64, subj string, sdm bool, sdmTT
 			subj: subj,
 			hdr:  hdr,
 		}
-		fs.sdmcb(msg)
+		fs.pmsgcb(msg)
 	} else {
 		fs.rmcb(seq)
+	}
+}
+
+// Will run through scheduled messages.
+func (fs *fileStore) runMsgScheduling() {
+	// TODO: Not great that we're holding the lock here, but the timed hash wheel and message scheduling isn't thread-safe.
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	if fs.scheduling == nil || fs.pmsgcb == nil {
+		return
+	}
+
+	scheduledMsgs := fs.scheduling.getScheduledMessages(func(seq uint64, smv *StoreMsg) *StoreMsg {
+		sm, _ := fs.msgForSeqLocked(seq, smv, false)
+		return sm
+	})
+	if len(scheduledMsgs) > 0 {
+		fs.mu.Unlock()
+		for _, msg := range scheduledMsgs {
+			fs.pmsgcb(msg)
+		}
+		fs.mu.Lock()
+	}
+
+	if fs.scheduling != nil {
+		fs.scheduling.resetTimer()
 	}
 }
 
@@ -6657,9 +6809,10 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	// Mark fss activity.
 	mb.lsts = ats.AccessTime()
 	mb.ttls = 0
+	mb.schedules = 0
 
 	lbuf := uint32(len(buf))
-	var seq, ttls uint64
+	var seq, ttls, schedules uint64
 	var sm StoreMsg // Used for finding TTL headers
 
 	for index < lbuf {
@@ -6735,12 +6888,15 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 				}
 			}
 
-			// Count how many TTLs we think are in this message block.
+			// Count how many TTLs/schedules we think are in this message block.
 			// TODO(nat): Not terribly optimal...
 			if hasHeaders {
 				if fsm, err := mb.msgFromBufNoCopy(buf[index:], &sm, nil); err == nil && fsm != nil {
 					if ttl := sliceHeader(JSMessageTTL, fsm.hdr); len(ttl) > 0 {
 						ttls++
+					}
+					if sched := sliceHeader(JSSchedulePattern, fsm.hdr); len(sched) > 0 {
+						schedules++
 					}
 				}
 			}
@@ -6766,6 +6922,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mb.cache.fseq = fseq
 	mb.cache.wp += int(lbuf)
 	mb.ttls = ttls
+	mb.schedules = schedules
 
 	return nil
 }
@@ -7852,6 +8009,15 @@ func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 
 func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
 	return uint64(emptyRecordLen + slen + 4 + maxPayload)
+}
+
+// ResetState resets any state that's temporary. For example when changing leaders.
+func (fs *fileStore) ResetState() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.scheduling != nil {
+		fs.scheduling.clearInflight()
+	}
 }
 
 // Determine time since any last activity, read/load, write or remove.
@@ -9390,7 +9556,7 @@ func (fs *fileStore) cancelSyncTimer() {
 const (
 	fullStateMagic      = uint8(11)
 	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
-	fullStateVersion    = uint8(2) // What is the current version written out to index.db?
+	fullStateVersion    = uint8(3) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -9552,7 +9718,8 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 		numDeleted := mb.dmap.Size()
 		buf = binary.AppendUvarint(buf, uint64(numDeleted))
-		buf = binary.AppendUvarint(buf, mb.ttls) // Field is new in version 2
+		buf = binary.AppendUvarint(buf, mb.ttls)      // Field is new in version 2
+		buf = binary.AppendUvarint(buf, mb.schedules) // Field is new in version 3
 		if numDeleted > 0 {
 			dmap, _ := mb.dmap.Encode(scratch[:0])
 			dmapTotalLen += len(dmap)
@@ -9638,18 +9805,44 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		fs.mu.Unlock()
 	}
 
-	return fs.writeTTLState()
+	// Attempt to write both files, an error in one should not prevent the other from being written.
+	ttlErr := fs.writeTTLState()
+	schedErr := fs.writeMsgSchedulingState()
+	if ttlErr != nil {
+		return ttlErr
+	} else if schedErr != nil {
+		return schedErr
+	}
+	return nil
 }
 
 func (fs *fileStore) writeTTLState() error {
+	fs.mu.RLock()
 	if fs.ttls == nil {
+		fs.mu.RUnlock()
 		return nil
 	}
-
-	fs.mu.RLock()
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
 	// Must be lseq+1 to identify up to which sequence the TTLs are valid.
 	buf := fs.ttls.Encode(fs.state.LastSeq + 1)
+	fs.mu.RUnlock()
+
+	<-dios
+	err := os.WriteFile(fn, buf, defaultFilePerms)
+	dios <- struct{}{}
+
+	return err
+}
+
+func (fs *fileStore) writeMsgSchedulingState() error {
+	fs.mu.RLock()
+	if fs.scheduling == nil {
+		fs.mu.RUnlock()
+		return nil
+	}
+	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, msgSchedulingStreamStateFile)
+	// Must be lseq+1 to identify up to which sequence the schedules are valid.
+	buf := fs.scheduling.encode(fs.state.LastSeq + 1)
 	fs.mu.RUnlock()
 
 	<-dios

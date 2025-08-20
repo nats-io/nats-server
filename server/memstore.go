@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server/ats"
-
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/stree"
@@ -42,11 +41,12 @@ type memStore struct {
 	maxp        int64
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
-	sdmcb       SubjectDeleteMarkerUpdateHandler
+	pmsgcb      ProcessJetStreamMsgHandler
 	ageChk      *time.Timer
 	consumers   int
 	receivedAny bool
 	ttls        *thw.HashWheel
+	scheduling  *MsgScheduling
 	sdm         *SDMMeta
 }
 
@@ -66,6 +66,9 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	// Only create a THW if we're going to allow TTLs.
 	if cfg.AllowMsgTTL {
 		ms.ttls = thw.NewHashWheel()
+	}
+	if cfg.AllowMsgSchedules {
+		ms.scheduling = newMsgScheduling(ms.runMsgScheduling)
 	}
 	if cfg.FirstSeq > 0 {
 		if _, err := ms.purge(cfg.FirstSeq); err != nil {
@@ -94,6 +97,11 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 		ms.recoverTTLState()
 	} else if !cfg.AllowMsgTTL && ms.ttls != nil {
 		ms.ttls = nil
+	}
+	if cfg.AllowMsgSchedules && ms.scheduling == nil {
+		ms.recoverMsgSchedulingState()
+	} else if !cfg.AllowMsgSchedules && ms.scheduling != nil {
+		ms.scheduling = nil
 	}
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
@@ -127,6 +135,9 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	if cfg.MaxAge != 0 || cfg.AllowMsgTTL {
 		ms.expireMsgs()
 	}
+	if cfg.AllowMsgSchedules {
+		ms.runMsgScheduling()
+	}
 	return nil
 }
 
@@ -150,6 +161,29 @@ func (ms *memStore) recoverTTLState() {
 		if ttl, _ := getMessageTTL(sm.hdr); ttl > 0 {
 			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
 			ms.ttls.Add(seq, int64(expires))
+		}
+	}
+}
+
+// Lock should be held.
+func (ms *memStore) recoverMsgSchedulingState() {
+	ms.scheduling = newMsgScheduling(ms.runMsgScheduling)
+	if ms.state.Msgs == 0 {
+		return
+	}
+
+	var (
+		seq uint64
+		smv StoreMsg
+		sm  *StoreMsg
+	)
+	defer ms.scheduling.resetTimer()
+	for sm, seq, _ = ms.loadNextMsgLocked(fwcs, true, 0, &smv); sm != nil; sm, seq, _ = ms.loadNextMsgLocked(fwcs, true, seq+1, &smv) {
+		if len(sm.hdr) == 0 {
+			continue
+		}
+		if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+			ms.scheduling.init(seq, sm.subj, schedule.UnixNano())
 		}
 	}
 }
@@ -271,6 +305,13 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 		ms.startAgeChk()
 	}
 
+	// Message scheduling.
+	if ms.scheduling != nil {
+		if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+			ms.scheduling.add(seq, subj, schedule.UnixNano())
+		}
+	}
+
 	return nil
 }
 
@@ -382,10 +423,10 @@ func (ms *memStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	ms.mu.Unlock()
 }
 
-// RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new subject delete markers.
-func (ms *memStore) RegisterSubjectDeleteMarkerUpdates(cb SubjectDeleteMarkerUpdateHandler) {
+// RegisterProcessJetStreamMsg registers a callback to process new JetStream messages.
+func (ms *memStore) RegisterProcessJetStreamMsg(cb ProcessJetStreamMsgHandler) {
 	ms.mu.Lock()
-	ms.sdmcb = cb
+	ms.pmsgcb = cb
 	ms.mu.Unlock()
 }
 
@@ -1089,11 +1130,11 @@ func (ms *memStore) expireMsgs() {
 	maxAge := int64(ms.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
 	rmcb := ms.rmcb
-	sdmcb := ms.sdmcb
+	pmsgcb := ms.pmsgcb
 	sdmTTL := int64(ms.cfg.SubjectDeleteMarkerTTL.Seconds())
 	sdmEnabled := sdmTTL > 0
 	ms.mu.RUnlock()
-	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+	if sdmEnabled && (rmcb == nil || pmsgcb == nil) {
 		return
 	}
 
@@ -1249,9 +1290,36 @@ func (ms *memStore) handleRemovalOrSdm(seq uint64, subj string, sdm bool, sdmTTL
 			subj: subj,
 			hdr:  hdr,
 		}
-		ms.sdmcb(msg)
+		ms.pmsgcb(msg)
 	} else {
 		ms.rmcb(seq)
+	}
+}
+
+// Will run through scheduled messages.
+func (ms *memStore) runMsgScheduling() {
+	// TODO: Not great that we're holding the lock here, but the timed hash wheel and message scheduling isn't thread-safe.
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if ms.scheduling == nil || ms.pmsgcb == nil {
+		return
+	}
+
+	scheduledMsgs := ms.scheduling.getScheduledMessages(func(seq uint64, smv *StoreMsg) *StoreMsg {
+		sm, _ := ms.loadMsgLocked(seq, smv, false)
+		return sm
+	})
+	if len(scheduledMsgs) > 0 {
+		ms.mu.Unlock()
+		for _, msg := range scheduledMsgs {
+			ms.pmsgcb(msg)
+		}
+		ms.mu.Lock()
+	}
+
+	if ms.scheduling != nil {
+		ms.scheduling.resetTimer()
 	}
 }
 
@@ -1963,6 +2031,15 @@ func memStoreMsgSizeRaw(slen, hlen, mlen int) uint64 {
 
 func memStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 	return memStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
+}
+
+// ResetState resets any state that's temporary. For example when changing leaders.
+func (ms *memStore) ResetState() {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if ms.scheduling != nil {
+		ms.scheduling.clearInflight()
+	}
 }
 
 // Delete is same as Stop for memory store.

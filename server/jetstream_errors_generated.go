@@ -287,6 +287,21 @@ const (
 	// JSMessageIncrPayloadErr message counter has payload
 	JSMessageIncrPayloadErr ErrorIdentifier = 10170
 
+	// JSMessageSchedulesDisabledErr message schedules is disabled
+	JSMessageSchedulesDisabledErr ErrorIdentifier = 10188
+
+	// JSMessageSchedulesPatternInvalidErr message schedules pattern is invalid
+	JSMessageSchedulesPatternInvalidErr ErrorIdentifier = 10189
+
+	// JSMessageSchedulesRollupInvalidErr message schedules invalid rollup
+	JSMessageSchedulesRollupInvalidErr ErrorIdentifier = 10192
+
+	// JSMessageSchedulesTTLInvalidErr message schedules invalid per-message TTL
+	JSMessageSchedulesTTLInvalidErr ErrorIdentifier = 10191
+
+	// JSMessageSchedulesTargetInvalidErr message schedules target is invalid
+	JSMessageSchedulesTargetInvalidErr ErrorIdentifier = 10190
+
 	// JSMessageTTLDisabledErr per-message TTL is disabled
 	JSMessageTTLDisabledErr ErrorIdentifier = 10166
 
@@ -319,6 +334,9 @@ const (
 
 	// JSMirrorWithFirstSeqErr stream mirrors can not have first sequence configured
 	JSMirrorWithFirstSeqErr ErrorIdentifier = 10143
+
+	// JSMirrorWithMsgSchedulesErr stream mirrors can not also schedule messages
+	JSMirrorWithMsgSchedulesErr ErrorIdentifier = 10186
 
 	// JSMirrorWithSourcesErr stream mirrors can not also contain other sources
 	JSMirrorWithSourcesErr ErrorIdentifier = 10031
@@ -397,6 +415,9 @@ const (
 
 	// JSSourceOverlappingSubjectFilters source filters can not overlap
 	JSSourceOverlappingSubjectFilters ErrorIdentifier = 10147
+
+	// JSSourceWithMsgSchedulesErr stream source can not also schedule messages
+	JSSourceWithMsgSchedulesErr ErrorIdentifier = 10187
 
 	// JSStorageResourcesExceededErr insufficient storage resources available
 	JSStorageResourcesExceededErr ErrorIdentifier = 10047
@@ -654,6 +675,11 @@ var (
 		JSMessageIncrInvalidErr:                    {Code: 400, ErrCode: 10171, Description: "message counter increment is invalid"},
 		JSMessageIncrMissingErr:                    {Code: 400, ErrCode: 10169, Description: "message counter increment is missing"},
 		JSMessageIncrPayloadErr:                    {Code: 400, ErrCode: 10170, Description: "message counter has payload"},
+		JSMessageSchedulesDisabledErr:              {Code: 400, ErrCode: 10188, Description: "message schedules is disabled"},
+		JSMessageSchedulesPatternInvalidErr:        {Code: 400, ErrCode: 10189, Description: "message schedules pattern is invalid"},
+		JSMessageSchedulesRollupInvalidErr:         {Code: 400, ErrCode: 10192, Description: "message schedules invalid rollup"},
+		JSMessageSchedulesTTLInvalidErr:            {Code: 400, ErrCode: 10191, Description: "message schedules invalid per-message TTL"},
+		JSMessageSchedulesTargetInvalidErr:         {Code: 400, ErrCode: 10190, Description: "message schedules target is invalid"},
 		JSMessageTTLDisabledErr:                    {Code: 400, ErrCode: 10166, Description: "per-message TTL is disabled"},
 		JSMessageTTLInvalidErr:                     {Code: 400, ErrCode: 10165, Description: "invalid per-message TTL"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
@@ -665,6 +691,7 @@ var (
 		JSMirrorOverlappingSubjectFilters:          {Code: 400, ErrCode: 10152, Description: "mirror subject filters can not overlap"},
 		JSMirrorWithCountersErr:                    {Code: 400, ErrCode: 10173, Description: "stream mirrors can not also calculate counters"},
 		JSMirrorWithFirstSeqErr:                    {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
+		JSMirrorWithMsgSchedulesErr:                {Code: 400, ErrCode: 10186, Description: "stream mirrors can not also schedule messages"},
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
 		JSMirrorWithSubjectFiltersErr:              {Code: 400, ErrCode: 10033, Description: "stream mirrors can not contain filtered subjects"},
@@ -691,6 +718,7 @@ var (
 		JSSourceMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10046, Description: "stream source must have max message size >= target"},
 		JSSourceMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10144, Description: "source with multiple subject transforms cannot also have a single subject filter"},
 		JSSourceOverlappingSubjectFilters:          {Code: 400, ErrCode: 10147, Description: "source filters can not overlap"},
+		JSSourceWithMsgSchedulesErr:                {Code: 400, ErrCode: 10187, Description: "stream source can not also schedule messages"},
 		JSStorageResourcesExceededErr:              {Code: 500, ErrCode: 10047, Description: "insufficient storage resources available"},
 		JSStreamAssignmentErrF:                     {Code: 500, ErrCode: 10048, Description: "{err}"},
 		JSStreamCreateErrF:                         {Code: 500, ErrCode: 10049, Description: "{err}"},
@@ -1787,6 +1815,56 @@ func NewJSMessageIncrPayloadError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSMessageIncrPayloadErr]
 }
 
+// NewJSMessageSchedulesDisabledError creates a new JSMessageSchedulesDisabledErr error: "message schedules is disabled"
+func NewJSMessageSchedulesDisabledError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesDisabledErr]
+}
+
+// NewJSMessageSchedulesPatternInvalidError creates a new JSMessageSchedulesPatternInvalidErr error: "message schedules pattern is invalid"
+func NewJSMessageSchedulesPatternInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesPatternInvalidErr]
+}
+
+// NewJSMessageSchedulesRollupInvalidError creates a new JSMessageSchedulesRollupInvalidErr error: "message schedules invalid rollup"
+func NewJSMessageSchedulesRollupInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesRollupInvalidErr]
+}
+
+// NewJSMessageSchedulesTTLInvalidError creates a new JSMessageSchedulesTTLInvalidErr error: "message schedules invalid per-message TTL"
+func NewJSMessageSchedulesTTLInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesTTLInvalidErr]
+}
+
+// NewJSMessageSchedulesTargetInvalidError creates a new JSMessageSchedulesTargetInvalidErr error: "message schedules target is invalid"
+func NewJSMessageSchedulesTargetInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesTargetInvalidErr]
+}
+
 // NewJSMessageTTLDisabledError creates a new JSMessageTTLDisabledErr error: "per-message TTL is disabled"
 func NewJSMessageTTLDisabledError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -1913,6 +1991,16 @@ func NewJSMirrorWithFirstSeqError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorWithFirstSeqErr]
+}
+
+// NewJSMirrorWithMsgSchedulesError creates a new JSMirrorWithMsgSchedulesErr error: "stream mirrors can not also schedule messages"
+func NewJSMirrorWithMsgSchedulesError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorWithMsgSchedulesErr]
 }
 
 // NewJSMirrorWithSourcesError creates a new JSMirrorWithSourcesErr error: "stream mirrors can not also contain other sources"
@@ -2215,6 +2303,16 @@ func NewJSSourceOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSSourceOverlappingSubjectFilters]
+}
+
+// NewJSSourceWithMsgSchedulesError creates a new JSSourceWithMsgSchedulesErr error: "stream source can not also schedule messages"
+func NewJSSourceWithMsgSchedulesError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSSourceWithMsgSchedulesErr]
 }
 
 // NewJSStorageResourcesExceededError creates a new JSStorageResourcesExceededErr error: "insufficient storage resources available"

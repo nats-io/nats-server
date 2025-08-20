@@ -662,6 +662,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 		denyPurge         bool
 		allowTTL          bool
 		allowMsgCounter   bool
+		allowMsgSchedules bool
 		discardNew        bool
 		discardNewPerSubj bool
 		init              func(mset *stream)
@@ -759,6 +760,141 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 					require_Equal(t, counter.ops, 2)
 					require_Equal(t, counter.total.String(), "3")
 				}
+			},
+		},
+		{
+			title:             "msg-schedules-disabled",
+			allowMsgSchedules: false,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header:  nats.Header{JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"}},
+					err:     NewJSMessageSchedulesDisabledError(),
+				},
+				{
+					subject: "foo",
+					header:  nats.Header{JSSchedulePattern: {"disabled"}},
+					err:     NewJSMessageSchedulesDisabledError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-ttl-disabled",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTTL:     {"1s"},
+					},
+					err: errMsgTTLDisabled,
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-ttl-invalid",
+			allowMsgSchedules: true,
+			allowTTL:          true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTTL:     {"invalid"},
+					},
+					err: NewJSMessageSchedulesTTLInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-invalid-schedule",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header:  nats.Header{JSSchedulePattern: {"invalid"}},
+					err:     NewJSMessageSchedulesPatternInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-target-mismatch",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"not.matching"},
+					},
+					err: NewJSMessageSchedulesTargetInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-target-must-be-literal",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"foo.*"},
+					},
+					err: NewJSMessageSchedulesTargetInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-target-must-be-unique",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"foo"},
+					},
+					err: NewJSMessageSchedulesTargetInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-rollup-disabled",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"bar"},
+						JSMsgRollup:       {JSMsgRollupSubject},
+					},
+					err: errors.New("rollup not permitted"),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"baz"},
+					},
+				},
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"baz"},
+						JSMsgRollup:       {JSMsgRollupSubject},
+					},
+				},
 			},
 		},
 		{
@@ -1025,6 +1161,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				Name:               "TEST",
 				Storage:            MemoryStorage,
 				AllowAtomicPublish: true,
+				Subjects:           []string{"foo", "bar", "baz"},
 			})
 			require_NoError(t, err)
 
@@ -1060,11 +1197,11 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
-				} else {
-					require_True(t, err == nil)
+				} else if err != nil {
+					require_NoError(t, err)
 				}
 				if test.validate != nil {
 					test.validate(mset, false)
