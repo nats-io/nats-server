@@ -3959,6 +3959,7 @@ type RaftzGroup struct {
 	Applied       uint64                    `json:"applied"`
 	CatchingUp    bool                      `json:"catching_up,omitempty"`
 	Leader        string                    `json:"leader,omitempty"`
+	LeaderSince   *time.Time                `json:"leader_since,omitempty"`
 	EverHadLeader bool                      `json:"ever_had_leader"`
 	Term          uint64                    `json:"term"`
 	Vote          string                    `json:"voted_for,omitempty"`
@@ -4066,6 +4067,7 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			Applied:       n.applied,
 			CatchingUp:    n.catchup != nil,
 			Leader:        n.leader,
+			LeaderSince:   n.leaderSince.Load(),
 			EverHadLeader: n.pleader.Load(),
 			Term:          n.term,
 			Vote:          n.vote,
