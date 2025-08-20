@@ -2849,6 +2849,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				// Parse proxy configuration
 				if proxyConfig, ok := v.(map[string]any); ok {
 					for pk, pv := range proxyConfig {
+						tk, pv = unwrapValue(pv, &lt)
 						switch strings.ToLower(pk) {
 						case "url":
 							remote.Proxy.URL = pv.(string)
