@@ -234,6 +234,18 @@ type RemoteLeafOpts struct {
 		NoMasking   bool `json:"-"`
 	}
 
+	// HTTP Proxy configuration for WebSocket connections
+	Proxy struct {
+		// URL of the HTTP proxy server (e.g., "http://proxy.example.com:8080")
+		URL string `json:"-"`
+		// Username for proxy authentication
+		Username string `json:"-"`
+		// Password for proxy authentication
+		Password string `json:"-"`
+		// Connect timeout for proxy connection
+		ConnectTimeout time.Duration `json:"-"`
+	}
+
 	tlsConfigOpts *TLSConfigOpts
 
 	// If we are clustered and our local account has JetStream, if apps are accessing
@@ -2833,6 +2845,32 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				remote.Websocket.Compression = v.(bool)
 			case "ws_no_masking", "websocket_no_masking":
 				remote.Websocket.NoMasking = v.(bool)
+			case "proxy":
+				// Parse proxy configuration
+				if proxyConfig, ok := v.(map[string]any); ok {
+					for pk, pv := range proxyConfig {
+						switch strings.ToLower(pk) {
+						case "url":
+							remote.Proxy.URL = pv.(string)
+						case "username", "user":
+							remote.Proxy.Username = pv.(string)
+						case "password", "pass":
+							remote.Proxy.Password = pv.(string)
+						case "connect_timeout", "timeout":
+							remote.Proxy.ConnectTimeout = parseDuration("proxy connect_timeout", tk, pv, errors, warnings)
+						default:
+							if !tk.IsUsedVariable() {
+								err := &unknownConfigFieldErr{
+									field: pk,
+									configErr: configErr{
+										token: tk,
+									},
+								}
+								*errors = append(*errors, err)
+							}
+						}
+					}
+				}
 			case "jetstream_cluster_migrate", "js_cluster_migrate":
 				var lt token
 
