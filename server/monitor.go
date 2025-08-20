@@ -1260,6 +1260,7 @@ type Varz struct {
 	InBytes               int64                  `json:"in_bytes"`                          // InBytes is the number of bytes this server received
 	OutBytes              int64                  `json:"out_bytes"`                         // OutMsgs is the number of bytes this server sent
 	SlowConsumers         int64                  `json:"slow_consumers"`                    // SlowConsumers is the total count of clients that were disconnected since start due to being slow consumers
+	StaleConnections      int64                  `json:"stale_connections"`                 // StaleConnections is the total count of stale connections that were detected
 	Subscriptions         uint32                 `json:"subscriptions"`                     // Subscriptions is the count of active subscriptions
 	HTTPReqStats          map[string]uint64      `json:"http_req_stats"`                    // HTTPReqStats is the number of requests each HTTP endpoint received
 	ConfigLoadTime        time.Time              `json:"config_load_time"`                  // ConfigLoadTime is the time the configuration was loaded or reloaded
@@ -1271,7 +1272,8 @@ type Varz struct {
 	SystemAccount         string                 `json:"system_account,omitempty"`          // SystemAccount is the name of the System account
 	PinnedAccountFail     uint64                 `json:"pinned_account_fails,omitempty"`    // PinnedAccountFail is how often user logon fails due to the issuer account not being pinned.
 	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         // OCSPResponseCache is the state of the OCSP cache // OCSPResponseCache holds information about
-	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`               // SlowConsumersStats is statistics about all detected Slow Consumer
+	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`               // SlowConsumersStats are statistics about all detected Slow Consumer
+	StaleConnectionStats  *StaleConnectionStats  `json:"stale_connection_stats,omitempty"`  // StaleConnectionStats are statistics about all detected Stale Connections
 	Proxies               *ProxiesOptsVarz       `json:"proxies,omitempty"`
 }
 
@@ -1409,6 +1411,14 @@ type SlowConsumersStats struct {
 	Routes   uint64 `json:"routes"`   // Routes is how many Routes were slow consumers
 	Gateways uint64 `json:"gateways"` // Gateways is how many Gateways were slow consumers
 	Leafs    uint64 `json:"leafs"`    // Leafs is how many Leafnodes were slow consumers
+}
+
+// StaleConnectionStats contains information about the stale connections from different type of connections.
+type StaleConnectionStats struct {
+	Clients  uint64 `json:"clients"`
+	Routes   uint64 `json:"routes"`
+	Gateways uint64 `json:"gateways"`
+	Leafs    uint64 `json:"leafs"`
 }
 
 func myUptime(d time.Duration) string {
@@ -1805,6 +1815,13 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		Routes:   s.NumSlowConsumersRoutes(),
 		Gateways: s.NumSlowConsumersGateways(),
 		Leafs:    s.NumSlowConsumersLeafs(),
+	}
+	v.StaleConnections = atomic.LoadInt64(&s.staleConnections)
+	v.StaleConnectionStats = &StaleConnectionStats{
+		Clients:  s.NumStaleConnectionsClients(),
+		Routes:   s.NumStaleConnectionsRoutes(),
+		Gateways: s.NumStaleConnectionsGateways(),
+		Leafs:    s.NumStaleConnectionsLeafs(),
 	}
 	v.PinnedAccountFail = atomic.LoadUint64(&s.pinnedAccFail)
 

@@ -170,6 +170,7 @@ type Server struct {
 	pinnedAccFail uint64
 	stats
 	scStats
+	staleStats
 	mu                  sync.RWMutex
 	reloadMu            sync.RWMutex // Write-locked when a config reload is taking place ONLY
 	kp                  nkeys.KeyPair
@@ -396,15 +397,24 @@ type nodeInfo struct {
 }
 
 type stats struct {
-	inMsgs        int64
-	outMsgs       int64
-	inBytes       int64
-	outBytes      int64
-	slowConsumers int64
+	inMsgs           int64
+	outMsgs          int64
+	inBytes          int64
+	outBytes         int64
+	slowConsumers    int64
+	staleConnections int64
 }
 
 // scStats includes the total and per connection counters of Slow Consumers.
 type scStats struct {
+	clients  atomic.Uint64
+	routes   atomic.Uint64
+	leafs    atomic.Uint64
+	gateways atomic.Uint64
+}
+
+// staleStats includes the total and per connection counters of Stale Connections.
+type staleStats struct {
 	clients  atomic.Uint64
 	routes   atomic.Uint64
 	leafs    atomic.Uint64
@@ -3764,6 +3774,31 @@ func (s *Server) NumSlowConsumersGateways() uint64 {
 // NumSlowConsumersLeafs will report the number of slow consumers leafs.
 func (s *Server) NumSlowConsumersLeafs() uint64 {
 	return s.scStats.leafs.Load()
+}
+
+// NumStaleConnections will report the number of stale connections.
+func (s *Server) NumStaleConnections() int64 {
+	return atomic.LoadInt64(&s.staleConnections)
+}
+
+// NumStaleConnectionsClients will report the number of stale client connections.
+func (s *Server) NumStaleConnectionsClients() uint64 {
+	return s.staleStats.clients.Load()
+}
+
+// NumStaleConnectionsRoutes will report the number of stale route connections.
+func (s *Server) NumStaleConnectionsRoutes() uint64 {
+	return s.staleStats.routes.Load()
+}
+
+// NumStaleConnectionsGateways will report the number of stale gateway connections.
+func (s *Server) NumStaleConnectionsGateways() uint64 {
+	return s.staleStats.gateways.Load()
+}
+
+// NumStaleConnectionsLeafs will report the number of stale leaf connections.
+func (s *Server) NumStaleConnectionsLeafs() uint64 {
+	return s.staleStats.leafs.Load()
 }
 
 // ConfigTime will report the last time the server configuration was loaded.
