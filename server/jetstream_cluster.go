@@ -8824,9 +8824,10 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 	n := rg.node
 	ci := &ClusterInfo{
-		Name:      s.cachedClusterName(),
-		Leader:    s.serverNameForNode(n.GroupLeader()),
-		RaftGroup: rg.Name,
+		Name:        s.cachedClusterName(),
+		Leader:      s.serverNameForNode(n.GroupLeader()),
+		LeaderSince: n.LeaderSince(),
+		RaftGroup:   rg.Name,
 	}
 
 	now := time.Now()

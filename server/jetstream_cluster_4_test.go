@@ -5795,6 +5795,7 @@ func TestJetStreamClusterParallelCreateRaftGroup(t *testing.T) {
 
 	// Do second half of Stop while goroutines are in createRaftGroup.
 	rn.leaderState.Store(false)
+	rn.leaderSince.Store(nil)
 	close(rn.quit)
 
 	// Wait for node and goroutines to stop.
