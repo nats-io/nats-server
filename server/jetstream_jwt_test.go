@@ -1698,12 +1698,13 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 	_, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 
-	_, aExpPub := createKey(t)
+	aExpKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
 	accClaim.Name = "acc"
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 10, Streams: 1}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 1, Streams: 1}
 	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, aExpKp)
 
 	_, aExpPub2 := createKey(t)
 	accClaim2 := jwt.NewAccountClaims(aExpPub2)
@@ -1735,6 +1736,13 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 
 	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
 	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+		Storage:  FileStorage,
+	})
 
 	// We'll try flipping the state a few times and then do some sanity
 	// checks to check that it took effect.
@@ -1782,6 +1790,12 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 			}
 			s.rnMu.Unlock()
 
+			// Get the Raftz state also.
+			rz := s.Raftz(&RaftzOptions{AccountFilter: aExpPub})
+			require_NotNil(t, rz)
+			rza := (*rz)[aExpPub]
+			require_NotNil(t, rza)
+
 			// Check whether each of the Raft nodes reports being
 			// in-account or not.
 			for _, rg := range raftNodes {
@@ -1791,10 +1805,16 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 				switch state {
 				case "system":
 					require_Equal(t, rgAcc.Name, syspub)
+					require_Equal(t, rza[rg.group].SystemAcc, true)
+					require_Equal(t, rza[rg.group].TrafficAcc, syspub)
 				case "owner":
 					require_Equal(t, rgAcc.Name, aExpPub)
+					require_Equal(t, rza[rg.group].SystemAcc, false)
+					require_Equal(t, rza[rg.group].TrafficAcc, aExpPub)
 				case thirdAcc:
 					require_Equal(t, rgAcc.Name, aExpPub2)
+					require_Equal(t, rza[rg.group].SystemAcc, false)
+					require_Equal(t, rza[rg.group].TrafficAcc, aExpPub2)
 				}
 			}
 		}
