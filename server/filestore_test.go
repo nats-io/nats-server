@@ -7006,7 +7006,7 @@ func TestFileStoreFSSExpire(t *testing.T) {
 	mb := fs.blks[0]
 	fs.mu.RUnlock()
 	mb.mu.RLock()
-	cache, fss := mb.cache, mb.fss
+	cache, fss := mb.ecache.Value(), mb.fss
 	mb.mu.RUnlock()
 	require_True(t, fss != nil)
 	require_True(t, cache != nil)
