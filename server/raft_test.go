@@ -371,6 +371,39 @@ func TestNRGSimpleElection(t *testing.T) {
 	}
 }
 
+// TestNRGLeaderTransfer verifies that a Raft group correctly transfers
+// leadership to a chosen preferred node when the current leader steps down.
+func TestNRGLeaderTransfer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createMemRaftGroup("Test", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader()
+	sub, err := nc.SubscribeSync(leader.node().(*raft).asubj)
+	require_NoError(t, err)
+
+	preferredID := rg.nonLeader().node().ID()
+	leader.node().StepDown(preferredID)
+	newLeader := rg.waitOnLeader()
+
+	require_Equal(t, newLeader.node().ID(), preferredID)
+
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NoError(t, sub.Unsubscribe())
+
+	ae, err := newLeader.node().(*raft).decodeAppendEntry(msg.Data, nil, msg.Reply)
+	require_NoError(t, err)
+	require_Equal(t, len(ae.entries), 1)
+	require_Equal(t, ae.entries[0].Type, EntryLeaderTransfer)
+	require_Equal(t, string(ae.entries[0].Data), preferredID)
+}
+
 func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
