@@ -3784,6 +3784,11 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			// Absent reload of js server cfg, this is going to be broken until js is disabled
 			a.incomplete = true
 			a.mu.Unlock()
+		} else {
+			a.mu.Lock()
+			// Refresh reference, we've just enabled JetStream, so it would have been nil before.
+			ajs = a.js
+			a.mu.Unlock()
 		}
 	} else if a.jsLimits != nil {
 		// We do not have JS enabled for this server, but the account has it enabled so setup
