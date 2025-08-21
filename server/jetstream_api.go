@@ -198,6 +198,10 @@ const (
 	JSApiStreamRemovePeer  = "$JS.API.STREAM.PEER.REMOVE.*"
 	JSApiStreamRemovePeerT = "$JS.API.STREAM.PEER.REMOVE.%s"
 
+	// JSApiStreamLeaderQuiesce is the endpoint to have stream leader quiesce.
+	// Will return JSON response.
+	JSApiStreamLeaderQuiesce = "$JS.API.STREAM.LEADER.QUIESCE.*"
+
 	// JSApiStreamLeaderStepDown is the endpoint to have stream leader stepdown.
 	// Will return JSON response.
 	JSApiStreamLeaderStepDown  = "$JS.API.STREAM.LEADER.STEPDOWN.*"
@@ -612,6 +616,14 @@ type JSApiStreamRemovePeerResponse struct {
 
 const JSApiStreamRemovePeerResponseType = "io.nats.jetstream.api.v1.stream_remove_peer_response"
 
+// JSApiStreamLeaderQuiesceResponse is the response to a leader stepdown request.
+type JSApiStreamLeaderQuiesceResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiStreamLeaderQuiesceResponseType = "io.nats.jetstream.api.v1.stream_leader_quiesce_response"
+
 // JSApiStreamLeaderStepDownResponse is the response to a leader stepdown request.
 type JSApiStreamLeaderStepDownResponse struct {
 	ApiResponse
@@ -1006,6 +1018,7 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiStreamSnapshot, s.jsStreamSnapshotRequest},
 		{JSApiStreamRestore, s.jsStreamRestoreRequest},
 		{JSApiStreamRemovePeer, s.jsStreamRemovePeerRequest},
+		{JSApiStreamLeaderQuiesce, s.jsStreamLeaderQuiesceRequest},
 		{JSApiStreamLeaderStepDown, s.jsStreamLeaderStepDownRequest},
 		{JSApiConsumerLeaderStepDown, s.jsConsumerLeaderStepDownRequest},
 		{JSApiMsgDelete, s.jsMsgDeleteRequest},
@@ -2264,6 +2277,93 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		mset.checkClusterInfo(resp.StreamInfo.Cluster)
 	}
 
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request a stream leader to quiesce.
+func (s *Server) jsStreamLeaderQuiesceRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	// Have extra token for this one.
+	name := tokenAt(subject, 6)
+
+	var resp = JSApiStreamLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiStreamLeaderQuiesceResponseType}}
+	if errorOnRequiredApiLevel(hdr) {
+		resp.Error = NewJSRequiredApiLevelError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+	if js.isLeaderless() {
+		resp.Error = NewJSClusterNotAvailError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	js.mu.RLock()
+	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
+	js.mu.RUnlock()
+
+	if isLeader && sa == nil {
+		resp.Error = NewJSStreamNotFoundError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	} else if sa == nil {
+		return
+	}
+
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = NewJSNotEnabledForAccountError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
+		return
+	}
+
+	// Check to see if we are a member of the group and if the group has no leader.
+	if js.isGroupLeaderless(sa.Group) {
+		resp.Error = NewJSClusterNotAvailError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// We have the stream assigned and a leader, so only the stream leader should answer.
+	if !acc.JetStreamIsStreamLeader(name) {
+		return
+	}
+
+	mset, err := acc.lookupStream(name)
+	if err != nil || mset == nil {
+		resp.Error = NewJSStreamNotFoundError(Unless(err))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	node := mset.raftNode()
+	if node == nil {
+		resp.Success = true
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	err = node.Quiesce()
+	if err != nil {
+		resp.Error = NewJSRaftGeneralError(err, Unless(err))
+	} else {
+		resp.Success = true
+	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
