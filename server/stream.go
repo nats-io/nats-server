@@ -218,6 +218,8 @@ type ClusterInfo struct {
 	RaftGroup   string      `json:"raft_group,omitempty"`
 	Leader      string      `json:"leader,omitempty"`
 	LeaderSince *time.Time  `json:"leader_since,omitempty"`
+	SystemAcc   bool        `json:"system_account,omitempty"`
+	TrafficAcc  string      `json:"traffic_account,omitempty"`
 	Replicas    []*PeerInfo `json:"replicas,omitempty"`
 }
 

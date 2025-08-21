@@ -8849,6 +8849,8 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 		Name:        s.cachedClusterName(),
 		Leader:      s.serverNameForNode(n.GroupLeader()),
 		LeaderSince: n.LeaderSince(),
+		SystemAcc:   n.IsSystemAccount(),
+		TrafficAcc:  n.GetTrafficAccountName(),
 		RaftGroup:   rg.Name,
 	}
 

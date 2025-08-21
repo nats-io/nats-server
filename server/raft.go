@@ -82,6 +82,7 @@ type RaftNode interface {
 	Delete()
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
+	GetTrafficAccountName() string
 }
 
 type WAL interface {
@@ -579,6 +580,13 @@ func (n *raft) checkAccountNRGStatus() bool {
 // Whether we are using the system account or not.
 func (n *raft) IsSystemAccount() bool {
 	return n.isSysAcc.Load()
+}
+
+// GetTrafficAccountName returns the account name of the account used for replication traffic.
+func (n *raft) GetTrafficAccountName() string {
+	n.RLock()
+	defer n.RUnlock()
+	return n.acc.GetName()
 }
 
 func (n *raft) RecreateInternalSubs() error {
