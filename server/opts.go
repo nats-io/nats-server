@@ -26,6 +26,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -6053,6 +6054,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			// If we get here we only have warnings and can still continue
 			fmt.Fprint(os.Stderr, err)
 		} else if opts.CheckConfig {
+			setBaselineOptions(opts)
+			fmt.Print(opts.PrettyPrint())
 			// Report configuration file syntax test was successful and exit.
 			return opts, nil
 		}
@@ -6286,4 +6289,112 @@ func expandPath(p string) (string, error) {
 	}
 
 	return filepath.Join(home, p[1:]), nil
+}
+
+// PrettyPrint returns a formatted string representation of the Options struct
+// with nested pointers dereferenced and formatted for readability.
+func (o *Options) PrettyPrint() string {
+	return prettyPrintValue(o, "", 0)
+}
+
+func prettyPrintValue(v interface{}, name string, depth int) string {
+	if v == nil {
+		return fmt.Sprintf("%s<nil>", strings.Repeat("  ", depth))
+	}
+
+	rv := reflect.ValueOf(v)
+	rt := reflect.TypeOf(v)
+
+	// Handle pointers by dereferencing them
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return fmt.Sprintf("%s%s: <nil>\n", strings.Repeat("  ", depth), name)
+		}
+		return prettyPrintValue(rv.Elem().Interface(), name, depth)
+	}
+
+	switch rv.Kind() {
+	case reflect.Struct:
+		var result strings.Builder
+		if name != "" {
+			result.WriteString(fmt.Sprintf("%s%s: %s {\n", strings.Repeat("  ", depth), name, rt.Name()))
+		} else {
+			result.WriteString(fmt.Sprintf("%s%s {\n", strings.Repeat("  ", depth), rt.Name()))
+		}
+
+		for i := 0; i < rv.NumField(); i++ {
+			field := rt.Field(i)
+			fieldValue := rv.Field(i)
+
+			// Skip unexported fields
+			if !fieldValue.CanInterface() {
+				continue
+			}
+
+			fieldName := field.Name
+			if field.Tag.Get("json") != "" && field.Tag.Get("json") != "-" {
+				jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
+				if jsonTag != "" {
+					fieldName = jsonTag
+				}
+			}
+
+			result.WriteString(prettyPrintValue(fieldValue.Interface(), fieldName, depth+1))
+		}
+
+		result.WriteString(fmt.Sprintf("%s}\n", strings.Repeat("  ", depth)))
+		return result.String()
+
+	case reflect.Slice, reflect.Array:
+		if rv.Len() == 0 {
+			return fmt.Sprintf("%s%s: []\n", strings.Repeat("  ", depth), name)
+		}
+
+		var result strings.Builder
+		result.WriteString(fmt.Sprintf("%s%s: [\n", strings.Repeat("  ", depth), name))
+		for i := 0; i < rv.Len(); i++ {
+			elem := rv.Index(i).Interface()
+			result.WriteString(prettyPrintValue(elem, fmt.Sprintf("[%d]", i), depth+1))
+		}
+		result.WriteString(fmt.Sprintf("%s]\n", strings.Repeat("  ", depth)))
+		return result.String()
+
+	case reflect.Map:
+		if rv.Len() == 0 {
+			return fmt.Sprintf("%s%s: {}\n", strings.Repeat("  ", depth), name)
+		}
+
+		var result strings.Builder
+		result.WriteString(fmt.Sprintf("%s%s: {\n", strings.Repeat("  ", depth), name))
+		for _, key := range rv.MapKeys() {
+			keyStr := fmt.Sprintf("%v", key.Interface())
+			value := rv.MapIndex(key).Interface()
+			result.WriteString(prettyPrintValue(value, keyStr, depth+1))
+		}
+		result.WriteString(fmt.Sprintf("%s}\n", strings.Repeat("  ", depth)))
+		return result.String()
+
+	default:
+		// Handle basic types
+		var valueStr string
+		switch rv.Kind() {
+		case reflect.String:
+			if rv.String() == "" {
+				valueStr = `""`
+			} else {
+				valueStr = fmt.Sprintf("%q", rv.String())
+			}
+		case reflect.Bool:
+			valueStr = fmt.Sprintf("%t", rv.Bool())
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			valueStr = fmt.Sprintf("%d", rv.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			valueStr = fmt.Sprintf("%d", rv.Uint())
+		case reflect.Float32, reflect.Float64:
+			valueStr = fmt.Sprintf("%g", rv.Float())
+		default:
+			valueStr = fmt.Sprintf("%v", v)
+		}
+		return fmt.Sprintf("%s%s: %s\n", strings.Repeat("  ", depth), name, valueStr)
+	}
 }
