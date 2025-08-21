@@ -1821,6 +1821,91 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 	}
 }
 
+func TestJetStreamJWTClusterAccountNRGPersistsAfterRestart(t *testing.T) {
+	_, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+
+	aExpKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.ClusterTraffic = jwt.ClusterTrafficOwner
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 10, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 1, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, aExpKp)
+
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+
+	// The account had cluster traffic set to "owner" already. Restarting servers should remember this setting.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(aExpPub)
+		require_NoError(t, err)
+
+		// Check that everything looks like it should.
+		require_True(t, acc != nil)
+		require_True(t, acc.js != nil)
+		require_Equal(t, acc.nrgAccount, aExpPub)
+
+		// Now get a list of all the Raft nodes that should have the correct cluster traffic set.
+		s.rnMu.Lock()
+		raftNodes := make([]*raft, 0, len(s.raftNodes))
+		for _, n := range s.raftNodes {
+			rg := n.(*raft)
+			if rg.accName != acc.Name {
+				continue
+			}
+			raftNodes = append(raftNodes, rg)
+		}
+		s.rnMu.Unlock()
+
+		// Get the Raftz state also.
+		rz := s.Raftz(&RaftzOptions{AccountFilter: aExpPub})
+		require_NotNil(t, rz)
+		rza := (*rz)[aExpPub]
+		require_NotNil(t, rza)
+
+		for _, rg := range raftNodes {
+			rg.Lock()
+			rgAcc := rg.acc
+			rg.Unlock()
+			require_Equal(t, rgAcc.Name, aExpPub)
+			require_Equal(t, rza[rg.group].SystemAcc, false)
+			require_Equal(t, rza[rg.group].TrafficAcc, aExpPub)
+		}
+	}
+}
+
 func TestJetStreamJWTUpdateWithPreExistingStream(t *testing.T) {
 	updateJwt := func(url string, creds string, pubKey string, jwt string) {
 		t.Helper()
