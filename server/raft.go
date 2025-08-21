@@ -82,6 +82,7 @@ type RaftNode interface {
 	Delete()
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
+	Quiesce() error
 }
 
 type WAL interface {
@@ -225,6 +226,9 @@ type raft struct {
 	observer     bool // The node is observing, i.e. not able to become leader
 	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
+
+	quiesce  chan bool // Channel to notify leader loop to quiesc
+	quiesced bool      // The node is quiesced
 }
 
 type proposedEntry struct {
@@ -260,6 +264,7 @@ const (
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
 	observerModeIntervalDefault    = 48 * time.Hour
 	peerRemoveTimeoutDefault       = 5 * time.Minute
+	quiesceIntervalDefault         = 15 * time.Minute
 )
 
 var (
@@ -272,6 +277,7 @@ var (
 	lostQuorumCheck      = lostQuorumCheckIntervalDefault
 	observerModeInterval = observerModeIntervalDefault
 	peerRemoveTimeout    = peerRemoveTimeoutDefault
+	quiesceInterval      = quiesceIntervalDefault
 )
 
 type RaftConfig struct {
@@ -426,6 +432,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
+		quiesce:  make(chan bool),
 	}
 
 	// Setup our internal subscriptions for proposals, votes and append entries.
@@ -1601,6 +1608,44 @@ func (n *raft) selectNextLeader() string {
 	return nextLeader
 }
 
+func (n *raft) Quiesce() error {
+	if n.State() != Leader {
+		return errNotLeader
+	}
+	n.quiesce <- true
+	return nil
+}
+
+// Return true if the node can be quiesced
+func (n *raft) mayQuiesce() bool {
+	n.RLock()
+	defer n.RUnlock()
+	// TODO this test should be strengthened:
+	// must check that followers are up-to-date
+	return !n.quiesced && n.State() == Leader && n.hasQuorumLocked()
+}
+
+func (n *raft) doQuiesce() bool {
+	if n.mayQuiesce() {
+		n.sendQuiesce()
+		n.setQuiesced(true)
+		return true
+	}
+	return false
+}
+
+func (n *raft) isQuiesced() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.quiesced
+}
+
+func (n *raft) setQuiesced(quiesced bool) {
+	n.Lock()
+	defer n.Unlock()
+	n.quiesced = quiesced
+}
+
 // StepDown will have a leader stepdown and optionally do a leader transfer.
 func (n *raft) StepDown(preferred ...string) error {
 	if n.State() != Leader {
@@ -2140,8 +2185,13 @@ func (n *raft) runAsFollower() {
 
 		select {
 		case <-n.entry.ch:
+			wasQuiesced := n.isQuiesced()
 			// New append entries have arrived over the network.
 			n.processAppendEntries()
+			if !wasQuiesced && n.isQuiesced() {
+				// Avoid unquiescing immediately
+				continue
+			}
 		case <-n.s.quitCh:
 			// The server is shutting down.
 			return
@@ -2187,6 +2237,11 @@ func (n *raft) runAsFollower() {
 			if voteReq, ok := n.reqs.popOne(); ok {
 				n.processVoteRequest(voteReq)
 			}
+		}
+
+		if n.isQuiesced() {
+			n.setQuiesced(false)
+			n.debug("Follower unquiesced")
 		}
 	}
 }
@@ -2308,6 +2363,7 @@ const (
 	EntryRemovePeer
 	EntryLeaderTransfer
 	EntrySnapshot
+	EntryQuiesce
 )
 
 func (t EntryType) String() string {
@@ -2326,6 +2382,8 @@ func (t EntryType) String() string {
 		return "LeaderTransfer"
 	case EntrySnapshot:
 		return "Snapshot"
+	case EntryQuiesce:
+		return "Quiesce"
 	}
 	return fmt.Sprintf("Unknown [%d]", uint8(t))
 }
@@ -2585,10 +2643,15 @@ func (n *raft) runAsLeader() {
 	n.sendPeerState()
 
 	hb := time.NewTicker(hbInterval)
-	defer hb.Stop()
-
 	lq := time.NewTicker(lostQuorumCheck)
-	defer lq.Stop()
+	qu := time.NewTicker(quiesceInterval)
+
+	stopTicking := func() {
+		hb.Stop()
+		lq.Stop()
+		qu.Stop()
+	}
+	defer stopTicking()
 
 	for n.State() == Leader {
 		select {
@@ -2602,6 +2665,12 @@ func (n *raft) runAsLeader() {
 				n.processAppendEntryResponse(ar)
 			}
 			n.resp.recycle(&ars)
+			// TODO follower could avoid sending a response
+			// for EntryQuiesce
+			if n.isQuiesced() {
+				// Avoid unquiescing immediately
+				continue
+			}
 		case <-n.prop.ch:
 			const maxBatch = 256 * 1024
 			const maxEntries = 512
@@ -2664,15 +2733,31 @@ func (n *raft) runAsLeader() {
 			}
 		case <-n.entry.ch:
 			n.processAppendEntries()
+		case <-qu.C:
+			if time.Since(n.active) > quiesceInterval && n.doQuiesce() {
+				stopTicking()
+				continue
+			}
+		case <-n.quiesce:
+			if n.doQuiesce() {
+				stopTicking()
+				continue
+			}
+		}
+
+		// Any interaction unquiesces the leader
+		if n.isQuiesced() {
+			hb.Reset(hbInterval)
+			lq.Reset(lostQuorumInterval)
+			qu.Reset(quiesceInterval)
+			n.setQuiesced(false)
+			n.debug("Leader unquiesced")
 		}
 	}
 }
 
-// Quorum reports the quorum status. Will be called on former leaders.
-func (n *raft) Quorum() bool {
-	n.RLock()
-	defer n.RUnlock()
-
+// Return true if leader believes it still has a quorum.
+func (n *raft) hasQuorumLocked() bool {
 	nc := 0
 	for id, peer := range n.peers {
 		if id == n.id || time.Since(peer.ts) < lostQuorumInterval {
@@ -2682,6 +2767,13 @@ func (n *raft) Quorum() bool {
 		}
 	}
 	return false
+}
+
+// Quorum reports the quorum status. Will be called on former leaders.
+func (n *raft) Quorum() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.hasQuorumLocked()
 }
 
 func (n *raft) lostQuorum() bool {
@@ -2698,15 +2790,7 @@ func (n *raft) lostQuorumLocked() bool {
 		return false
 	}
 
-	nc := 0
-	for id, peer := range n.peers {
-		if id == n.id || time.Since(peer.ts) < lostQuorumInterval {
-			if nc++; nc >= n.qn {
-				return false
-			}
-		}
-	}
-	return true
+	return !n.hasQuorumLocked()
 }
 
 // Check for being not active in terms of sending entries.
@@ -3719,6 +3803,11 @@ CONTINUE:
 	// Check to see if we have any related entries to process here.
 	for _, e := range ae.entries {
 		switch e.Type {
+		case EntryQuiesce:
+			if isNew && n.State() == Follower {
+				n.elect.Stop()
+				n.quiesced = true
+			}
 		case EntryLeaderTransfer:
 			// Only process these if they are new, so no replays or catchups.
 			if isNew {
@@ -3870,6 +3959,11 @@ func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
 // Determine if we should store an entry. This stops us from storing
 // heartbeat messages.
 func (ae *appendEntry) shouldStore() bool {
+	if len(ae.entries) == 1 {
+		if e := ae.entries[0]; e.Type == EntryQuiesce {
+			return false
+		}
+	}
 	return ae != nil && len(ae.entries) > 0
 }
 
@@ -4031,6 +4125,11 @@ func (n *raft) sendPeerState() {
 // Send a heartbeat.
 func (n *raft) sendHeartbeat() {
 	n.sendAppendEntry(nil)
+}
+
+// Tell the cluster to quiesce the current term
+func (n *raft) sendQuiesce() {
+	n.sendAppendEntry([]*Entry{{EntryQuiesce, nil}})
 }
 
 type voteRequest struct {
