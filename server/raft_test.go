@@ -3532,3 +3532,36 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 		}
 	}
 }
+
+// TestNRGLeaderQuiesce verifies that a Raft group can correctly quiesce.
+func TestNRGQuiesceSimple(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createMemRaftGroup("Test", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader()
+	follower := rg.nonLeader()
+
+	err := leader.node().Quiesce()
+	require_NoError(t, err)
+
+	// TODO this should be avoided
+	time.Sleep(time.Second)
+
+	leader_raft := leader.node().(*raft)
+	require_True(t, leader_raft.isQuiesced())
+
+	follower_raft := follower.node().(*raft)
+	require_True(t, follower_raft.isQuiesced())
+
+	leader.(*stateAdder).proposeDelta(1)
+	rg.waitOnTotal(t, 1)
+
+	require_False(t, leader_raft.isQuiesced())
+	require_False(t, follower_raft.isQuiesced())
+}
