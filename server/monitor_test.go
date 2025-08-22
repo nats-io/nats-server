@@ -5354,6 +5354,8 @@ func TestMonitorJsz(t *testing.T) {
 			if len(crgroup.RaftGroup) == 0 {
 				t.Fatal("expected consumer raft group info to be included")
 			}
+			require_True(t, si.Cluster.SystemAcc)
+			require_Equal(t, si.Cluster.TrafficAcc, "SYS")
 		}
 	})
 	t.Run("js-api-level", func(t *testing.T) {
