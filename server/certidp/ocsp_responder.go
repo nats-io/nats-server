@@ -55,7 +55,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		return nil, err
 	}
 
-	reqEnc := base64.StdEncoding.EncodeToString(reqDER)
+	reqEnc := encodeOCSPRequest(reqDER)
 
 	responders := *link.OCSPWebEndpoints
 
@@ -68,10 +68,10 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		Timeout: timeout,
 	}
 	for _, u := range responders {
-		url := u.String()
-		log.Debugf(DbgMakingCARequest, url)
-		url = strings.TrimSuffix(url, "/")
-		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", url, reqEnc), hc)
+		responderURL := u.String()
+		log.Debugf(DbgMakingCARequest, responderURL)
+		responderURL = strings.TrimSuffix(responderURL, "/")
+		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", responderURL, reqEnc), hc)
 		if err == nil {
 			break
 		}
@@ -81,4 +81,10 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 	}
 
 	return raw, nil
+}
+
+// encodeOCSPRequest encodes the OCSP request in base64 and URL-encodes it.
+// This is needed to fulfill the OCSP responder's requirements for the request format. (X.690)
+func encodeOCSPRequest(reqDER []byte) string {
+	return base64.RawURLEncoding.EncodeToString(reqDER)
 }
