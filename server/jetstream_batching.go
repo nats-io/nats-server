@@ -465,6 +465,9 @@ func checkMsgHeadersPreClusteredProposal(
 					diff.expectedPerSubject[seqSubj] = e
 				}
 			}
+		} else if getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
+			apiErr := NewJSStreamExpectedLastSeqPerSubjectInvalidError()
+			return hdr, msg, 0, apiErr, apiErr
 		}
 
 		// Message scheduling.
