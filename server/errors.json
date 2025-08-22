@@ -1908,5 +1908,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamOfflineReasonErrF",
+    "code": 500,
+    "error_code": 10193,
+    "description": "stream is offline: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerOfflineReasonErrF",
+    "code": 500,
+    "error_code": 10194,
+    "description": "consumer is offline: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

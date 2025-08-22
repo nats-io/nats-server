@@ -499,8 +499,9 @@ type JSApiStreamListRequest struct {
 type JSApiStreamListResponse struct {
 	ApiResponse
 	ApiPaged
-	Streams []*StreamInfo `json:"streams"`
-	Missing []string      `json:"missing,omitempty"`
+	Streams []*StreamInfo     `json:"streams"`
+	Missing []string          `json:"missing,omitempty"`
+	Offline map[string]string `json:"offline,omitempty"`
 }
 
 const JSApiStreamListResponseType = "io.nats.jetstream.api.v1.stream_list_response"
@@ -766,8 +767,9 @@ const JSApiConsumerNamesResponseType = "io.nats.jetstream.api.v1.consumer_names_
 type JSApiConsumerListResponse struct {
 	ApiResponse
 	ApiPaged
-	Consumers []*ConsumerInfo `json:"consumers"`
-	Missing   []string        `json:"missing,omitempty"`
+	Consumers []*ConsumerInfo   `json:"consumers"`
+	Missing   []string          `json:"missing,omitempty"`
+	Offline   map[string]string `json:"offline,omitempty"`
 }
 
 const JSApiConsumerListResponseType = "io.nats.jetstream.api.v1.consumer_list_response"
@@ -1794,6 +1796,11 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+	if mset.offlineReason != _EMPTY_ {
+		resp.Error = NewJSStreamOfflineReasonError(errors.New(mset.offlineReason))
+		s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
+		return
+	}
 
 	// Update asset version metadata.
 	setStaticStreamMetadata(&cfg)
@@ -2035,9 +2042,19 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 		offset = scnt
 	}
 
+	var missingNames []string
 	for _, mset := range msets[offset:] {
+		if mset.offlineReason != _EMPTY_ {
+			if resp.Offline == nil {
+				resp.Offline = make(map[string]string, 1)
+			}
+			resp.Offline[mset.getCfgName()] = mset.offlineReason
+			missingNames = append(missingNames, mset.getCfgName())
+			continue
+		}
+
 		config := mset.config()
-		resp.Streams = append(resp.Streams, &StreamInfo{
+		info := &StreamInfo{
 			Created:   mset.createdTime(),
 			State:     mset.state(),
 			Config:    config,
@@ -2045,7 +2062,8 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 			Mirror:    mset.mirrorInfo(),
 			Sources:   mset.sourcesInfo(),
 			TimeStamp: time.Now().UTC(),
-		})
+		}
+		resp.Streams = append(resp.Streams, info)
 		if len(resp.Streams) >= JSApiListLimit {
 			break
 		}
@@ -2053,6 +2071,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	resp.Total = scnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
+	resp.Missing = missingNames
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -2097,6 +2116,13 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		if sa != nil {
 			clusterWideConsCount = len(sa.consumers)
 			offline = s.allPeersOffline(sa.Group)
+			if sa.unsupported != nil && sa.Group != nil && cc.meta != nil && sa.Group.isMember(cc.meta.ID()) {
+				// If we're a member for this stream, and it's not supported, report it as offline.
+				resp.Error = NewJSStreamOfflineReasonError(errors.New(sa.unsupported.reason))
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
+				js.mu.RUnlock()
+				return
+			}
 		}
 		js.mu.RUnlock()
 
@@ -2200,6 +2226,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+	}
+
+	if mset.offlineReason != _EMPTY_ {
+		resp.Error = NewJSStreamOfflineReasonError(errors.New(mset.offlineReason))
+		s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
+		return
 	}
 
 	config := mset.config()
@@ -3584,6 +3616,10 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+	if mset.offlineReason != _EMPTY_ {
+		// Just let the request time out.
+		return
+	}
 
 	// Reject request if we can't guarantee the precondition of min last sequence.
 	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
@@ -3687,11 +3723,23 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+		if sa.unsupported != nil {
+			js.mu.RUnlock()
+			resp.Error = NewJSStreamOfflineError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 
 		ca, ok := sa.consumers[consumer]
 		if !ok || ca == nil {
 			js.mu.RUnlock()
 			resp.Error = NewJSConsumerNotFoundError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if ca.unsupported != nil {
+			js.mu.RUnlock()
+			resp.Error = NewJSConsumerOfflineError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -3726,10 +3774,18 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+	if mset.offlineReason != _EMPTY_ {
+		// Just let the request time out.
+		return
+	}
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
 		resp.Error = NewJSConsumerNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if o.offlineReason != _EMPTY_ {
+		// Just let the request time out.
 		return
 	}
 
@@ -4604,8 +4660,18 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+	if stream.offlineReason != _EMPTY_ {
+		resp.Error = NewJSStreamOfflineError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 
 	if o := stream.lookupConsumer(consumerName); o != nil {
+		if o.offlineReason != _EMPTY_ {
+			resp.Error = NewJSConsumerOfflineReasonError(errors.New(o.offlineReason))
+			s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
+			return
+		}
 		// If the consumer already exists then don't allow updating the PauseUntil, just set
 		// it back to whatever the current configured value is.
 		req.Config.PauseUntil = o.cfg.PauseUntil
@@ -4851,7 +4917,16 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		offset = ocnt
 	}
 
+	var missingNames []string
 	for _, o := range obs[offset:] {
+		if o.offlineReason != _EMPTY_ {
+			if resp.Offline == nil {
+				resp.Offline = make(map[string]string, 1)
+			}
+			resp.Offline[o.name] = o.offlineReason
+			missingNames = append(missingNames, o.name)
+			continue
+		}
 		if cinfo := o.info(); cinfo != nil {
 			resp.Consumers = append(resp.Consumers, cinfo)
 		}
@@ -4862,6 +4937,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 	resp.Total = ocnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
+	resp.Missing = missingNames
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -4917,6 +4993,13 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			if rg = ca.Group; rg != nil {
 				offline = s.allPeersOffline(rg)
 				isMember = rg.isMember(ourID)
+			}
+			if ca.unsupported != nil && isMember {
+				// If we're a member for this consumer, and it's not supported, report it as offline.
+				resp.Error = NewJSConsumerOfflineReasonError(errors.New(ca.unsupported.reason))
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
+				js.mu.RUnlock()
+				return
 			}
 		}
 		// Capture consumer leader here.
@@ -5041,6 +5124,12 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 	if obs == nil {
 		resp.Error = NewJSConsumerNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if obs.offlineReason != _EMPTY_ {
+		resp.Error = NewJSConsumerOfflineReasonError(errors.New(obs.offlineReason))
+		s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 		return
 	}
 
@@ -5195,11 +5284,23 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+		if sa.unsupported != nil {
+			js.mu.RUnlock()
+			resp.Error = NewJSStreamOfflineError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 
 		ca, ok := sa.consumers[consumer]
 		if !ok || ca == nil {
 			js.mu.RUnlock()
 			resp.Error = NewJSConsumerNotFoundError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if ca.unsupported != nil {
+			js.mu.RUnlock()
+			resp.Error = NewJSConsumerOfflineError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -5236,11 +5337,19 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+	if mset.offlineReason != _EMPTY_ {
+		// Just let the request time out.
+		return
+	}
 
 	obs := mset.lookupConsumer(consumer)
 	if obs == nil {
 		resp.Error = NewJSConsumerNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if obs.offlineReason != _EMPTY_ {
+		// Just let the request time out.
 		return
 	}
 
