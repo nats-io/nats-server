@@ -9173,8 +9173,8 @@ func TestJetStreamLastSequenceBySubject(t *testing.T) {
 }
 
 func TestJetStreamLastSequenceBySubjectWithSubject(t *testing.T) {
-	for _, st := range []StorageType{FileStorage, MemoryStorage} {
-		t.Run(st.String(), func(t *testing.T) {
+	test := func(replicas int, st StorageType) {
+		t.Run(fmt.Sprintf("R%d/%s", replicas, st), func(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "JSC", 3)
 			defer c.shutdown()
 
@@ -9185,7 +9185,7 @@ func TestJetStreamLastSequenceBySubjectWithSubject(t *testing.T) {
 				Name:       "KV",
 				Subjects:   []string{"kv.>"},
 				Storage:    st,
-				Replicas:   3,
+				Replicas:   replicas,
 				MaxMsgsPer: 1,
 			}
 
@@ -9262,7 +9262,20 @@ func TestJetStreamLastSequenceBySubjectWithSubject(t *testing.T) {
 			pubAndCheck("kv.xxx", "kv.*.*", "0", false)   // Last is 11 for kv.xxx; 11 for kv.*.*;
 			pubAndCheck("kv.3.xxx", "kv.3.*", "4", true)  // Last is 12 for kv.3.xxx; 12 for kv.3.*;
 			pubAndCheck("kv.3.xyz", "kv.3.*", "12", true) // Last is 13 for kv.3.xyz; 13 for kv.3.*;
+
+			// When using the last-subj-seq-subj header, but the sequence header is missing.
+			m = nats.NewMsg("kv.invalid")
+			m.Data = []byte("HELLO")
+			m.Header.Set(JSExpectedLastSubjSeqSubj, "kv.invalid")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSStreamExpectedLastSeqPerSubjectInvalidError())
 		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, st := range []StorageType{FileStorage, MemoryStorage} {
+			test(replicas, st)
+		}
 	}
 }
 

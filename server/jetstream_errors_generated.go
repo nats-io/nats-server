@@ -434,6 +434,9 @@ const (
 	// JSStreamDuplicateMessageConflict duplicate message id is in process
 	JSStreamDuplicateMessageConflict ErrorIdentifier = 10158
 
+	// JSStreamExpectedLastSeqPerSubjectInvalid missing sequence for expected last sequence per subject
+	JSStreamExpectedLastSeqPerSubjectInvalid ErrorIdentifier = 10193
+
 	// JSStreamExpectedLastSeqPerSubjectNotReady expected last sequence per subject temporarily unavailable
 	JSStreamExpectedLastSeqPerSubjectNotReady ErrorIdentifier = 10163
 
@@ -724,6 +727,7 @@ var (
 		JSStreamCreateErrF:                         {Code: 500, ErrCode: 10049, Description: "{err}"},
 		JSStreamDeleteErrF:                         {Code: 500, ErrCode: 10050, Description: "{err}"},
 		JSStreamDuplicateMessageConflict:           {Code: 409, ErrCode: 10158, Description: "duplicate message id is in process"},
+		JSStreamExpectedLastSeqPerSubjectInvalid:   {Code: 400, ErrCode: 10193, Description: "missing sequence for expected last sequence per subject"},
 		JSStreamExpectedLastSeqPerSubjectNotReady:  {Code: 503, ErrCode: 10163, Description: "expected last sequence per subject temporarily unavailable"},
 		JSStreamExternalApiOverlapErrF:             {Code: 400, ErrCode: 10021, Description: "stream external api prefix {prefix} must not overlap with {subject}"},
 		JSStreamExternalDelPrefixOverlapsErrF:      {Code: 400, ErrCode: 10022, Description: "stream external delivery prefix {prefix} overlaps with stream subject {subject}"},
@@ -2381,6 +2385,16 @@ func NewJSStreamDuplicateMessageConflictError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamDuplicateMessageConflict]
+}
+
+// NewJSStreamExpectedLastSeqPerSubjectInvalidError creates a new JSStreamExpectedLastSeqPerSubjectInvalid error: "missing sequence for expected last sequence per subject"
+func NewJSStreamExpectedLastSeqPerSubjectInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamExpectedLastSeqPerSubjectInvalid]
 }
 
 // NewJSStreamExpectedLastSeqPerSubjectNotReadyError creates a new JSStreamExpectedLastSeqPerSubjectNotReady error: "expected last sequence per subject temporarily unavailable"

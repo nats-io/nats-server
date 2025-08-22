@@ -1908,5 +1908,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamExpectedLastSeqPerSubjectInvalid",
+    "code": 400,
+    "error_code": 10193,
+    "description": "missing sequence for expected last sequence per subject",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
