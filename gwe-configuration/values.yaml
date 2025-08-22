@@ -1,0 +1,614 @@
+nats:  
+  ################################################################################
+  # Global options
+  ################################################################################
+  global:
+    image:
+      # global image pull policy to use for all container images in the chart
+      # can be overridden by individual image pullPolicy
+      pullPolicy:
+      # global list of secret names to use as image pull secrets for all pod specs in the chart
+      # secrets must exist in the same namespace
+      # https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+      pullSecretNames: 
+        - harbor-registry
+      # global registry to use for all container images in the chart
+      # can be overridden by individual image registry
+      registry:
+
+    # global labels will be applied to all resources deployed by the chart
+    labels: {}
+
+  ################################################################################
+  # Common options
+  ################################################################################
+  # override name of the chart
+  nameOverride:
+  # override full name of the chart+release
+  fullnameOverride:
+  # override the namespace that resources are installed into
+  namespaceOverride:
+
+  # reference a common CA Certificate or Bundle in all nats config `tls` blocks and nats-box contexts
+  # note: `tls.verify` still must be set in the appropriate nats config `tls` blocks to require mTLS
+  tlsCA:
+    enabled: false
+    # set configMapName in order to mount an existing configMap to dir
+    configMapName:
+    # set secretName in order to mount an existing secretName to dir
+    secretName:
+    # directory to mount the configMap or secret to
+    dir: /etc/nats-ca-cert
+    # key in the configMap or secret that contains the CA Certificate or Bundle
+    key: ca.crt
+
+  ################################################################################
+  # NATS Stateful Set and associated resources
+  ################################################################################
+
+  ############################################################
+  # NATS config
+  ############################################################
+  config:
+    cluster:
+      enabled: false
+      port: 6222
+      # must be 2 or higher when jetstream is enabled
+      replicas: 3
+
+      # apply to generated route URLs that connect to other pods in the StatefulSet
+      routeURLs:
+        # if both user and password are set, they will be added to route URLs
+        # and the cluster authorization block
+        user:
+        password:
+        # set to true to use FQDN in route URLs
+        useFQDN: false
+        k8sClusterDomain: cluster.local
+
+      tls:
+        enabled: false
+        # set secretName in order to mount an existing secret to dir
+        secretName:
+        dir: /etc/nats-certs/cluster
+        cert: tls.crt
+        key: tls.key
+        # merge or patch the tls config
+        # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/tls
+        merge: {}
+        patch: []
+
+      # merge or patch the cluster config
+      # https://docs.nats.io/running-a-nats-service/configuration/clustering/cluster_config
+      merge: {}
+      patch: []
+
+    jetstream:
+      enabled: true
+
+      fileStore:
+        enabled: true
+        dir: /data
+
+        ############################################################
+        # stateful set -> volume claim templates -> jetstream pvc
+        ############################################################
+        pvc:
+          enabled: true
+          size: 10Gi
+          storageClassName:
+
+          # merge or patch the jetstream pvc
+          # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#persistentvolumeclaim-v1-core
+          merge: {}
+          patch: []
+          # defaults to "{{ include "nats.fullname" $ }}-js"
+          name:
+
+        # defaults to the PVC size
+        maxSize:
+
+      memoryStore:
+        enabled: false
+        # ensure that container has a sufficient memory limit greater than maxSize
+        maxSize: 1Gi
+
+      # merge or patch the jetstream config
+      # https://docs.nats.io/running-a-nats-service/configuration#jetstream
+      merge: {}
+      patch: []
+
+    nats:
+      port: 4222
+      tls:
+        enabled: false
+        # set secretName in order to mount an existing secret to dir
+        secretName:
+        dir: /etc/nats-certs/nats
+        cert: tls.crt
+        key: tls.key
+        # merge or patch the tls config
+        # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/tls
+        merge: {}
+        patch: []
+
+    leafnodes:
+      enabled: true
+      port: 7422
+      tls:
+        enabled: false
+        # set secretName in order to mount an existing secret to dir
+        secretName:
+        dir: /etc/nats-certs/leafnodes
+        cert: tls.crt
+        key: tls.key
+        # merge or patch the tls config
+        # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/tls
+        merge: {}
+        patch: []
+
+      # merge or patch the leafnodes config
+      # https://docs.nats.io/running-a-nats-service/configuration/leafnodes/leafnode_conf
+      merge:
+        remotes:
+          - urls:
+              - "wss://gwe.euc1.mod.sws.siemens.com:443"
+            credentials: "/creds/nats-credentials/gwe-leafnode-ocmod-prod-cp-gwe-dev.creds"
+            proxy:
+              url: "http://de.coia.siemens.net:9400"
+              connect_timeout: "30s"
+      patch: []
+
+    websocket:
+      enabled: false
+      port: 8080
+      tls:
+        enabled: false
+        # set secretName in order to mount an existing secret to dir
+        secretName:
+        dir: /etc/nats-certs/websocket
+        cert: tls.crt
+        key: tls.key
+        # merge or patch the tls config
+        # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/tls
+        merge: {}
+        patch: []
+
+      ############################################################
+      # ingress
+      ############################################################
+      # service must be enabled also
+      ingress:
+        enabled: false
+        # must contain at least 1 host otherwise ingress will not be created
+        hosts: []
+        path: /
+        pathType: Exact
+        # sets to the ingress class name
+        className:
+        # set to an existing secret name to enable TLS on the ingress; applies to all hosts
+        tlsSecretName:
+
+        # merge or patch the ingress
+        # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#ingress-v1-networking-k8s-io
+        merge: {}
+        patch: []
+        # defaults to "{{ include "nats.fullname" $ }}-ws"
+        name:
+
+      # merge or patch the websocket config
+      # https://docs.nats.io/running-a-nats-service/configuration/websocket/websocket_conf
+      merge: {}
+      patch: []
+
+    mqtt:
+      enabled: false
+      port: 1883
+      tls:
+        enabled: false
+        # set secretName in order to mount an existing secret to dir
+        secretName:
+        dir: /etc/nats-certs/mqtt
+        cert: tls.crt
+        key: tls.key
+        # merge or patch the tls config
+        # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/tls
+        merge: {}
+        patch: []
+
+      # merge or patch the mqtt config
+      # https://docs.nats.io/running-a-nats-service/configuration/mqtt/mqtt_config
+      merge: {}
+      patch: []
+
+    gateway:
+      enabled: false
+      port: 7222
+      tls:
+        enabled: false
+        # set secretName in order to mount an existing secret to dir
+        secretName:
+        dir: /etc/nats-certs/gateway
+        cert: tls.crt
+        key: tls.key
+        # merge or patch the tls config
+        # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/tls
+        merge: {}
+        patch: []
+
+      # merge or patch the gateway config
+      # https://docs.nats.io/running-a-nats-service/configuration/gateways/gateway#gateway-configuration-block
+      merge: {}
+      patch: []
+
+    monitor:
+      enabled: true
+      port: 8222
+      tls:
+        # config.nats.tls must be enabled also
+        # when enabled, monitoring port will use HTTPS with the options from config.nats.tls
+        # if promExporter is also enabled, consider setting promExporter.monitorDomain
+        enabled: false
+
+    profiling:
+      enabled: false
+      port: 65432
+
+    resolver:
+      enabled: false
+      dir: /data/resolver
+
+      ############################################################
+      # stateful set -> volume claim templates -> resolver pvc
+      ############################################################
+      pvc:
+        enabled: true
+        size: 1Gi
+        storageClassName:
+
+        # merge or patch the pvc
+        # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#persistentvolumeclaim-v1-core
+        merge: {}
+        patch: []
+        # defaults to "{{ include "nats.fullname" $ }}-resolver"
+        name:
+
+      # merge or patch the resolver
+      # https://docs.nats.io/running-a-nats-service/configuration/securing_nats/auth_intro/jwt/resolver
+      merge: {}
+      patch: []
+
+    # adds a prefix to the server name, which defaults to the pod name
+    # helpful for ensuring server name is unique in a super cluster
+    serverNamePrefix: ""
+
+    # merge or patch the nats config
+    # https://docs.nats.io/running-a-nats-service/configuration
+    # following special rules apply
+    #  1. strings that start with << and end with >> will be unquoted
+    #     use this for variables and numbers with units
+    #  2. keys ending in $include will be switched to include directives
+    #     keys are sorted alphabetically, use prefix before $includes to control includes ordering
+    #     paths should be relative to /etc/nats-config/nats.conf
+    # example:
+    #
+    #   merge:
+    #     $include: ./my-config.conf
+    #     zzz$include: ./my-config-last.conf
+    #     server_name: nats
+    #     authorization:
+    #       token: << $TOKEN >>
+    #     jetstream:
+    #       max_memory_store: << 1GB >>
+    #
+    # will yield the config:
+    # {
+    #   include ./my-config.conf;
+    #   "authorization": {
+    #     "token": $TOKEN
+    #   },
+    #   "jetstream": {
+    #     "max_memory_store": 1GB
+    #   },
+    #   "server_name": "nats",
+    #   include ./my-config-last.conf;
+    # }
+    merge: {}
+    patch: []
+
+  ############################################################
+  # stateful set -> pod template -> nats container
+  ############################################################
+  container:
+    image:
+      repository: harbor-gwe-mom-dev.pods.siemens.cloud/opcenterx/nats-server-proxy #nats
+      tag: latest #2.11.3-alpine
+      pullPolicy:
+      registry:
+      # if digest is provided, it overrides tag (example: "sha256:abcdef1234567890")
+      digest:
+      # if fullImageName is provided, it overrides registry, repository, tag, and digest
+      fullImageName:
+
+    # container port options
+    # must be enabled in the config section also
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#containerport-v1-core
+    ports:
+      nats: {}
+      leafnodes: {}
+      websocket: {}
+      mqtt: {}
+      cluster: {}
+      gateway: {}
+      monitor: {}
+      profiling: {}
+
+    # map with key as env var name, value can be string or map
+    # example:
+    #
+    #   env:
+    #     GOMEMLIMIT: 7GiB
+    #     TOKEN:
+    #       valueFrom:
+    #         secretKeyRef:
+    #           name: nats-auth
+    #           key: token
+    env:
+      # Different from k8s units, suffix must be B, KiB, MiB, GiB, or TiB
+      # Should be ~80% of memory limit
+      GOMEMLIMIT: 2GiB
+      #no_proxy: "localhost,127.0.0.1,.svc,.svc.cluster.local,169.254.169.254,.siemens.com,.siemens.net,.siemens.io,.siemens.cloud"
+    merge:
+      # Recommended minimum: at least 2 CPU cores and 8Gi memory for production JetStream clusters
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 2Gi
+        limits:
+          cpu: "1"
+          memory: 3Gi
+    patch: 
+      - op: add
+        path: /volumeMounts/-
+        value:
+          name: nats-credentials
+          mountPath: /creds/nats-credentials
+          readOnly: true
+
+  ############################################################
+  # stateful set -> pod template -> reloader container
+  ############################################################
+  reloader:
+    enabled: true
+    image:
+      repository: natsio/nats-server-config-reloader
+      tag: 0.17.2
+      pullPolicy:
+      registry:
+      digest:
+      fullImageName:
+
+    # env var map, see nats.env for an example
+    env: {}
+
+    # all nats container volume mounts with the following prefixes
+    # will be mounted into the reloader container
+    natsVolumeMountPrefixes:
+      - /etc/
+
+    # merge or patch the container
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#container-v1-core
+    merge: 
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "200Mi"
+        limits:
+          cpu: "100m"
+          memory: "200Mi"
+    patch: []
+
+  ############################################################
+  # stateful set -> pod template -> prom-exporter container
+  ############################################################
+  # config.monitor must be enabled
+  promExporter:
+    enabled: false
+    image:
+      repository: natsio/prometheus-nats-exporter
+      tag: 0.17.3
+      pullPolicy:
+      registry:
+      digest:
+      fullImageName:
+
+    port: 7777
+    # if config.monitor.tls.enabled is set to true, monitorDomain must be set to the common name
+    # or a SAN used in the tls certificate
+    monitorDomain: localhost
+    # env var map, see nats.env for an example
+    env: {}
+
+    # merge or patch the container
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#container-v1-core
+    merge:
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "200Mi"
+        limits:
+          cpu: "100m"
+          memory: "200Mi"
+    patch: []
+
+    ############################################################
+    # prometheus pod monitor
+    ############################################################
+    podMonitor:
+      enabled: false
+
+      # merge or patch the pod monitor
+      # https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.PodMonitor
+      merge: {}
+      patch: []
+      # defaults to "{{ include "nats.fullname" $ }}"
+      name:
+
+  ############################################################
+  # service
+  ############################################################
+  service:
+    enabled: true
+
+    # service port options
+    # additional boolean field enable to control whether port is exposed in the service
+    # must be enabled in the config section also
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#serviceport-v1-core
+    ports:
+      nats:
+        enabled: true
+      leafnodes:
+        enabled: false
+      websocket:
+        enabled: false
+      mqtt:
+        enabled: false
+      cluster:
+        enabled: false
+      gateway:
+        enabled: false
+      monitor:
+        enabled: false
+      profiling:
+        enabled: false
+
+    # merge or patch the service
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#service-v1-core
+    merge: {}
+    patch: []
+    # defaults to "{{ include "nats.fullname" $ }}"
+    name:
+
+  ############################################################
+  # other nats extension points
+  ############################################################
+
+  # stateful set
+  statefulSet:
+    # merge or patch the stateful set
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#statefulset-v1-apps
+    merge: {}
+    patch:
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: nats-credentials
+          secret:
+            secretName: nats-credentials
+    # defaults to "{{ include "nats.fullname" $ }}"
+    name:
+
+  # stateful set -> pod template
+  podTemplate:
+    # adds a hash of the ConfigMap as a pod annotation
+    # this will cause the StatefulSet to roll when the ConfigMap is updated
+    configChecksumAnnotation: true
+
+    # map of topologyKey: topologySpreadConstraint
+    # labelSelector will be added to match StatefulSet pods
+    #
+    # topologySpreadConstraints:
+    #   kubernetes.io/hostname:
+    #     maxSkew: 1
+    #
+    topologySpreadConstraints: {}
+
+    # merge or patch the pod template
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#pod-v1-core
+    merge: {}
+    patch: []
+
+  # headless service
+  headlessService:
+    # merge or patch the headless service
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#service-v1-core
+    merge: {}
+    patch: []
+    # defaults to "{{ include "nats.fullname" $ }}-headless"
+    name:
+
+  # config map
+  configMap:
+    # merge or patch the config map
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#configmap-v1-core
+    merge: {}
+    patch: []
+    # defaults to "{{ include "nats.fullname" $ }}-config"
+    name:
+
+  # pod disruption budget
+  podDisruptionBudget:
+    enabled: true
+    # merge or patch the pod disruption budget
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#poddisruptionbudget-v1-policy
+    merge: {}
+    patch: []
+    # defaults to "{{ include "nats.fullname" $ }}"
+    name:
+
+  # service account
+  serviceAccount:
+    enabled: false
+    # merge or patch the service account
+    # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#serviceaccount-v1-core
+    merge: {}
+    patch: []
+    # defaults to "{{ include "nats.fullname" $ }}"
+    name:
+
+  natsBox:
+    enabled: false
+
+
+  ################################################################################
+  # Extra user-defined resources
+  ################################################################################
+  #
+  # add arbitrary user-generated resources
+  # example:
+  #
+  # config:
+  #   websocket:
+  #     enabled: true
+  # extraResources:
+  # - apiVersion: networking.istio.io/v1beta1
+  #   kind: VirtualService
+  #   metadata:
+  #     name:
+  #       $tplYaml: >
+  #         {{ include "nats.fullname" $ | quote }}
+  #     labels:
+  #       $tplYaml: |
+  #         {{ include "nats.labels" $ }}
+  #   spec:
+  #     hosts:
+  #     - demo.nats.io
+  #     gateways:
+  #     - my-gateway
+  #     http:
+  #     - name: default
+  #       match:
+  #       - name: root
+  #         uri:
+  #           exact: /
+  #       route:
+  #       - destination:
+  #           host:
+  #             $tplYaml: >
+  #               {{ .Values.service.name | quote }}
+  #           port:
+  #             number:
+  #               $tplYaml: >
+  #                 {{ .Values.config.websocket.port }}
+  #
+  extraResources: []
