@@ -421,7 +421,8 @@ type stream struct {
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
 
-	batches *batching // Inflight batches prior to committing them.
+	batches    *batching   // Inflight batches prior to committing them.
+	batchApply *batchApply // State to check for batch completeness before applying it.
 }
 
 // inflightSubjectRunningTotal stores a running total of inflight messages for a specific subject.
@@ -2325,6 +2326,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	// If atomic publish is disabled, delete any in-progress batches.
 	if !cfg.AllowAtomicPublish {
 		mset.deleteInflightBatches(false)
+		mset.deleteBatchApplyState()
 	}
 
 	// Now update config and store's version of our config.
@@ -4275,15 +4277,18 @@ func (mset *stream) unsubscribeToStream(stopping, shuttingDown bool) error {
 	// Clear batching state.
 	mset.deleteInflightBatches(shuttingDown)
 
-	// In case we had direct get subscriptions.
+	if stopping {
+		mset.deleteBatchApplyState()
+
+		// In case we had a direct get subscriptions.
+		mset.unsubscribeToDirect()
+		mset.unsubscribeToMirrorDirect()
+	}
+
 	if mset.directLeaderSub == nil {
 		// Always unsubscribe the leader sub.
 		mset.unsubscribe(mset.directLeaderSub)
 		mset.directLeaderSub = nil
-	}
-	if stopping {
-		mset.unsubscribeToDirect()
-		mset.unsubscribeToMirrorDirect()
 	}
 
 	mset.active = false
@@ -4304,6 +4309,17 @@ func (mset *stream) deleteInflightBatches(shuttingDown bool) {
 		}
 		mset.batches.mu.Unlock()
 		mset.batches = nil
+	}
+}
+
+// Lock should be held.
+func (mset *stream) deleteBatchApplyState() {
+	if batch := mset.batchApply; batch != nil {
+		// Need to return entries (if any) to the pool.
+		for _, bce := range batch.entries {
+			bce.ReturnToPool()
+		}
+		mset.batchApply = nil
 	}
 }
 
@@ -6265,6 +6281,31 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	// Need to hold this lock even if we're not clustered, because we'll
 	// be accessing state that requires this lock (even if it's empty).
 	mset.clMu.Lock()
+
+	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
+	// Check if we need to set initial value here
+	if isClustered && (mset.clseq == 0 || mset.clseq < lseq+mset.clfs) {
+		// Need to unlock and re-acquire the locks in the proper order.
+		mset.clMu.Unlock()
+		// Locking order is stream -> batchMu -> clMu
+		mset.mu.RLock()
+		batch := mset.batchApply
+		var batchCount uint64
+		if batch != nil {
+			batch.mu.Lock()
+			batchCount = batch.count
+		}
+		mset.clMu.Lock()
+		// Re-capture
+		lseq = mset.lseq
+		mset.clseq = lseq + mset.clfs + batchCount
+		// Keep hold of the mset.clMu, but unlock the others.
+		if batch != nil {
+			batch.mu.Unlock()
+		}
+		mset.mu.RUnlock()
+	}
+
 	rollback := func(seq uint64) {
 		if isClustered {
 			// TODO(mvv): reset in-memory expected header maps
@@ -6331,10 +6372,11 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 
 		if isClustered {
 			var _reply string
-			if seq == batchSeq {
+			isCommit := seq == batchSeq
+			if isCommit {
 				_reply = reply
 			}
-			esm := encodeStreamMsgAllowCompress(bsubj, _reply, bhdr, bmsg, mset.clseq, ts, false)
+			esm := encodeStreamMsgAllowCompressAndBatch(bsubj, _reply, bhdr, bmsg, mset.clseq, ts, false, batchId, seq, isCommit)
 			entries = append(entries, newEntry(EntryNormal, esm))
 			mset.clseq++
 			sz += len(esm)
@@ -6361,9 +6403,9 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false)
 		}
 	} else {
-		// Do proposal.
+		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order
+		// and not interleaved with other proposals.
 		diff.commit(mset)
-		// TODO(mvv): replace with individual `node.Propose`?
 		if err := node.ProposeMulti(entries); err == nil {
 			mset.trackReplicationTraffic(node, sz, r)
 		} else {
