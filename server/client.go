@@ -154,6 +154,7 @@ const (
 	compressionNegotiated                         // Marks if this connection has negotiated compression level with remote.
 	didTLSFirst                                   // Marks if this connection requested and was accepted doing the TLS handshake first (prior to INFO).
 	isSlowConsumer                                // Marks connection as a slow consumer.
+	firstPong                                     // Marks if this is the first PONG received
 )
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -2587,6 +2588,14 @@ func (c *client) processPong() {
 	c.rtt = computeRTT(c.rttStart)
 	srv := c.srv
 	reorderGWs := c.kind == GATEWAY && c.gw.outbound
+	firstPong := c.flags.setIfNotSet(firstPong)
+	var ri *routeInfo
+	// When receiving the first PONG, for a route with pooling, we may be
+	// instructed to start a new route.
+	if firstPong && c.kind == ROUTER && c.route != nil {
+		ri = c.route.startNewRoute
+		c.route.startNewRoute = nil
+	}
 	// If compression is currently active for a route/leaf connection, if the
 	// compression configuration is s2_auto, check if we should change
 	// the compression level.
@@ -2604,6 +2613,11 @@ func (c *client) processPong() {
 	c.mu.Unlock()
 	if reorderGWs {
 		srv.gateway.orderOutboundConnections()
+	}
+	if ri != nil {
+		srv.startGoRoutine(func() {
+			srv.connectToRoute(ri.url, ri.rtype, true, ri.gossipMode, _EMPTY_)
+		})
 	}
 }
 
