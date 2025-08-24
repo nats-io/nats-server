@@ -6261,23 +6261,42 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			r-len(existing), len(nodes), cluster, r, existing, replaceFirstExisting, len(peers), len(nodes), err)
 		return nil, &err
 	}
-	// Sort based on available from most to least, breaking ties by number of total streams assigned to the peer.
-	slices.SortFunc(nodes, func(i, j wn) int {
-		// Prefer online servers to offline ones.
-		if i.off != j.off {
-			if i.off {
-				return 1
-			} else {
-				return -1
+	// For single replica streams (R=1), prioritize load balancing by stream count
+	// to ensure better distribution across nodes rather than filling one node first.
+	if cfg.Replicas <= 1 {
+		slices.SortFunc(nodes, func(i, j wn) int {
+			// Prefer online servers to offline ones.
+			if i.off != j.off {
+				if i.off {
+					return 1
+				} else {
+					return -1
+				}
 			}
-		}
-		if i.avail == j.avail {
-			return cmp.Compare(i.ns, j.ns)
-		}
-		return -cmp.Compare(i.avail, j.avail) // reverse
-	})
-	// If we are placing a replicated stream, let's sort based on HAAssets, as that is more important to balance.
-	if cfg.Replicas > 1 {
+			// Primary sort: stream count (fewer streams preferred for better distribution)
+			if i.ns != j.ns {
+				return cmp.Compare(i.ns, j.ns)
+			}
+			// Secondary sort: available storage (more storage preferred)
+			return -cmp.Compare(i.avail, j.avail)
+		})
+	} else {
+		// For replicated streams, sort based on available storage first, then stream count
+		slices.SortFunc(nodes, func(i, j wn) int {
+			// Prefer online servers to offline ones.
+			if i.off != j.off {
+				if i.off {
+					return 1
+				} else {
+					return -1
+				}
+			}
+			if i.avail == j.avail {
+				return cmp.Compare(i.ns, j.ns)
+			}
+			return -cmp.Compare(i.avail, j.avail) // reverse
+		})
+		// For replicated streams, let's sort based on HAAssets, as that is more important to balance.
 		slices.SortStableFunc(nodes, func(i, j wn) int {
 			// Prefer online servers to offline ones.
 			if i.off != j.off {
