@@ -3737,7 +3737,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			}
 			mset.monitorWg.Add(1)
 			// Start monitoring..
-			s.startGoRoutine(
+			started := s.startGoRoutine(
 				func() { js.monitorStream(mset, sa, needsNode) },
 				pprofLabels{
 					"type":    "stream",
@@ -3745,6 +3745,9 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 					"stream":  mset.name(),
 				},
 			)
+			if !started {
+				mset.monitorWg.Done()
+			}
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
@@ -4129,7 +4132,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			if mset != nil {
 				mset.monitorWg.Add(1)
 			}
-			s.startGoRoutine(
+			started := s.startGoRoutine(
 				func() { js.monitorStream(mset, sa, false) },
 				pprofLabels{
 					"type":    "stream",
@@ -4137,6 +4140,9 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 					"stream":  mset.name(),
 				},
 			)
+			if !started && mset != nil {
+				mset.monitorWg.Done()
+			}
 		}
 	} else {
 		// Single replica stream, process manually here.
@@ -4762,7 +4768,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// Clustered consumer.
 			// Start our monitoring routine if needed.
 			if !alreadyRunning && o.shouldStartMonitor() {
-				s.startGoRoutine(
+				started := s.startGoRoutine(
 					func() { js.monitorConsumer(o, ca) },
 					pprofLabels{
 						"type":     "consumer",
@@ -4771,6 +4777,9 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 						"consumer": ca.Name,
 					},
 				)
+				if !started {
+					o.clearMonitorRunning()
+				}
 			}
 			// For existing consumer, only send response if not recovering.
 			if wasExisting && !js.isMetaRecovering() {
