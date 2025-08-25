@@ -6495,9 +6495,10 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	// Raft group selection and placement.
 	if rg == nil {
 		// Check inflight before proposing in case we have an existing inflight proposal.
-		if existing, ok := streams[cfg.Name]; ok {
-			// We have existing for same stream. Re-use same group and syncSubject.
-			rg, syncSubject = existing.rg, existing.sync
+		if _, ok = streams[cfg.Name]; ok {
+			resp.Error = NewJSStreamNameExistError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
 		}
 	}
 	// Create a new one here if needed.
