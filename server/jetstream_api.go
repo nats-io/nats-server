@@ -4441,7 +4441,9 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	if o := stream.lookupConsumer(consumerName); o != nil {
 		// If the consumer already exists then don't allow updating the PauseUntil, just set
 		// it back to whatever the current configured value is.
+		o.mu.RLock()
 		req.Config.PauseUntil = o.cfg.PauseUntil
+		o.mu.RUnlock()
 	}
 
 	// Initialize/update asset version metadata.
@@ -4462,9 +4464,11 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 
+	o.mu.RLock()
 	if o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
 		o.sendPauseAdvisoryLocked(&o.cfg)
 	}
+	o.mu.RUnlock()
 }
 
 // Request for the list of all consumer names.
