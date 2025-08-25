@@ -3497,22 +3497,48 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
-	// If we are/were catching up ignore old catchup subs.
-	// This could happen when we stall or cancel a catchup.
-	if !isNew && sub != nil && (!catchingUp || sub != n.catchup.sub) {
+	// If we are/were catching up ignore old catchup subs, but only if catching up from an older server
+	// that doesn't send the leader term when catching up. We can reject old catchups from newer subs
+	// later, just by checking the append entry is on the correct term.
+	if !isNew && sub != nil && ae.lterm == 0 && (!catchingUp || sub != n.catchup.sub) {
 		n.Unlock()
 		n.debug("AppendEntry ignoring old entry from previous catchup")
 		return
 	}
 
+	// If this term is greater than ours.
+	if lterm > n.term {
+		n.term = lterm
+		n.vote = noVote
+		if isNew {
+			n.writeTermVote()
+		}
+		if n.State() != Follower {
+			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.State(), ae.leader)
+			n.stepdownLocked(ae.leader)
+		}
+	} else if lterm < n.term && sub != nil && (isNew || ae.lterm != 0) {
+		// Anything that's below our expected highest term needs to be rejected.
+		// Unless we're replaying (sub=nil), in which case we'll always continue.
+		// For backward-compatibility we shouldn't reject if we're being caught up by an old server.
+		if isNew {
+			n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, lterm)
+		} else {
+			n.debug("AppendEntry ignoring old entry from previous catchup")
+		}
+		n.Unlock()
+		// No need to respond, the leader will respond with the highest term already.
+		// We can simply reject here without sending additional responses.
+		return
+	}
+
 	// Check state if we are catching up.
-	var resetCatchingUp bool
 	if catchingUp {
 		if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
 			// If we are here we are good, so if we have a catchup pending we can cancel.
 			n.cancelCatchup()
 			// Reset our notion of catching up.
-			resetCatchingUp = true
+			catchingUp = false
 		} else if isNew {
 			var ar *appendEntryResponse
 			var inbox string
@@ -3530,34 +3556,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// Ignore new while catching up or replaying.
 			return
 		}
-	}
-
-	// If this term is greater than ours.
-	if lterm > n.term {
-		n.term = lterm
-		n.vote = noVote
-		if isNew {
-			n.writeTermVote()
-		}
-		if n.State() != Follower {
-			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.State(), ae.leader)
-			n.stepdownLocked(ae.leader)
-		}
-	} else if lterm < n.term && sub != nil && !(catchingUp && ae.lterm == 0) {
-		// Anything that's below our expected highest term needs to be rejected.
-		// Unless we're replaying (sub=nil), in which case we'll always continue.
-		// For backward-compatibility we shouldn't reject if we're being caught up by an old server.
-		n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, lterm)
-		ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
-		n.Unlock()
-		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
-		arPool.Put(ar)
-		return
-	}
-
-	// Reset after checking the term is correct, because we use catchingUp in a condition above.
-	if resetCatchingUp {
-		catchingUp = false
 	}
 
 	if isNew && n.leader != ae.leader && n.State() == Follower {
