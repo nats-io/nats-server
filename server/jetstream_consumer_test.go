@@ -2191,7 +2191,8 @@ func TestJetStreamConsumerWithPriorityGroups(t *testing.T) {
 		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityPinnedClient, "", &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
 		{"Pinned Consumer with empty Priority Group", nc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, "", &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
 		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, "", &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
-		{"Consumer with `none` policy priority", nc, "TEST", "NONE", []string{"A"}, PriorityNone, "", nil},
+		{"Consumer with `none` policy priority and no pinned TTL set", nc, "TEST", "NONE", []string{}, PriorityNone, "", &ApiError{ErrCode: uint16(JSConsumerPinnedTTLWithoutPriorityPolicyNone)}},
+		{"Consumer with `none` policy priority and Priority Group set", nc, "TEST", "NONE_WITH_GROUPS", []string{"A"}, PriorityNone, "", &ApiError{ErrCode: uint16(JSConsumerPriorityGroupWithPolicyNone)}},
 		{"Push consumer with Priority Group", nc, "TEST", "PUSH_WITH_POLICY", []string{"A"}, PriorityOverflow, "subject", &ApiError{ErrCode: uint16(JSConsumerPushWithPriorityGroupErr)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
