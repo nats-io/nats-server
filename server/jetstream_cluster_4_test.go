@@ -3230,15 +3230,21 @@ func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 	checkConsumerReplicas(t, "TEST", "r1", 1, 0)
 
 	// Now check that state transferred correctly.
-	ci.Delivered.Last, ci.AckFloor.Last = nil, nil
-	if ci.Delivered != r1ci.Delivered {
-		t.Fatalf("Delivered state for R1 incorrect, wanted %+v got %+v",
-			r1ci.Delivered, ci.Delivered)
-	}
-	if ci.AckFloor != r1ci.AckFloor {
-		t.Fatalf("AckFloor state for R1 incorrect, wanted %+v got %+v",
-			r1ci.AckFloor, ci.AckFloor)
-	}
+	// Wait for consumer state to be properly transferred after stream scaling.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		ci, err = js.ConsumerInfo("TEST", "r1")
+		if err != nil {
+			return err
+		}
+		ci.Delivered.Last, ci.AckFloor.Last = nil, nil
+		if ci.Delivered != r1ci.Delivered {
+			return fmt.Errorf("delivered state not transferred yet: wanted %+v got %+v", r1ci.Delivered, ci.Delivered)
+		}
+		if ci.AckFloor != r1ci.AckFloor {
+			return fmt.Errorf("ack floor state not transferred yet: wanted %+v got %+v", r1ci.AckFloor, ci.AckFloor)
+		}
+		return nil
+	})
 
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "r3")
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "r1")
