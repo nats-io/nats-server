@@ -7620,8 +7620,15 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 		if rBefore < rAfter {
 			newPeerSet := nca.Group.Peers
-			// scale up by adding new members from the stream peer set that are not yet in the consumer peer set
+			// Scale up by adding new members from the stream peer set that are not yet in the consumer peer set.
 			streamPeerSet := copyStrings(sa.Group.Peers)
+
+			// Respond with error when there is a config mismatch between the intended config and expected peer size.
+			if len(streamPeerSet) < rAfter {
+				resp.Error = NewJSConsumerReplicasExceedsStreamError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			rand.Shuffle(rAfter, func(i, j int) { streamPeerSet[i], streamPeerSet[j] = streamPeerSet[j], streamPeerSet[i] })
 			for _, p := range streamPeerSet {
 				found := false
