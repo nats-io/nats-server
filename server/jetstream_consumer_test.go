@@ -10241,3 +10241,47 @@ func TestJetStreamConsumerPrioritized(t *testing.T) {
 		require_NotNil(t, msg)
 	})
 }
+
+func TestJetStreamConsumerMaxDeliverUnderflow(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{Durable: "CONSUMER", MaxDeliver: -1}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Infinite MaxDeliver should be zero.
+	o.mu.RLock()
+	maxdc := o.maxdc
+	o.mu.RUnlock()
+	require_Equal(t, maxdc, 0)
+
+	// Finite MaxDeliver should be reported the same.
+	cfg.MaxDeliver = 1
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	o.mu.RLock()
+	maxdc = o.maxdc
+	o.mu.RUnlock()
+	require_Equal(t, maxdc, 1)
+
+	// Infinite MaxDeliver should be zero.
+	cfg.MaxDeliver = -1
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	o.mu.RLock()
+	maxdc = o.maxdc
+	o.mu.RUnlock()
+	require_Equal(t, maxdc, 0)
+}

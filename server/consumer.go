@@ -1120,7 +1120,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		uch:       make(chan struct{}, 1),
 		mch:       make(chan struct{}, 1),
 		sfreq:     int32(sampleFreq),
-		maxdc:     uint64(config.MaxDeliver),
+		maxdc:     uint64(max(config.MaxDeliver, 0)), // MaxDeliver is negative (-1) when infinite.
 		maxp:      config.MaxAckPending,
 		retention: cfg.Retention,
 		created:   time.Now().UTC(),
@@ -2335,7 +2335,8 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	}
 	// Set MaxDeliver if changed
 	if cfg.MaxDeliver != o.cfg.MaxDeliver {
-		o.maxdc = uint64(cfg.MaxDeliver)
+		// MaxDeliver is negative (-1) when infinite.
+		o.maxdc = uint64(max(cfg.MaxDeliver, 0))
 	}
 	// Set InactiveThreshold if changed.
 	if val := cfg.InactiveThreshold; val != o.cfg.InactiveThreshold {
