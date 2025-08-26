@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
 	"github.com/minio/highwayhash"
@@ -3323,6 +3324,14 @@ func (n *raft) truncateWAL(term, index uint64) {
 		} else {
 			n.debug("Clearing WAL state (no commits)")
 		}
+	}
+	if index < n.commit {
+		assert.Unreachable("WAL truncate lost commits", map[string]any{
+			"term":    term,
+			"index":   index,
+			"commit":  n.commit,
+			"applied": n.applied,
+		})
 	}
 
 	defer func() {
