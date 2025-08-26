@@ -328,10 +328,12 @@ func checkClusterFormed(t testing.TB, servers ...*Server) {
 				if a == b {
 					continue
 				}
-				if b.getOpts().Cluster.PoolSize < 0 {
+				bo := b.getOpts()
+				if ps := bo.Cluster.PoolSize; ps < 0 {
 					total++
 				} else {
-					total += nr
+					bps := ps + len(bo.Cluster.PinnedAccounts)
+					total += max(nr, bps)
 				}
 			}
 			enr = append(enr, total)
@@ -3738,6 +3740,62 @@ func TestRoutePoolWithOlderServerConnectAndReconnect(t *testing.T) {
 	checkClusterFormed(t, s1, s2)
 	// And again, make sure there is no repeat-connect
 	checkRepeatConnect()
+}
+
+func TestRoutePoolBadAuthNoRunawayCreateRoute(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		server_name: "S1"
+		listen: "127.0.0.1:-1"
+		cluster {
+			name: "local"
+			listen: "127.0.0.1:-1"
+			pool_size: 4
+			authorization {
+				user: "correct"
+				password: "correct"
+				timeout: 5
+			}
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 100)}
+	s1.SetLogger(l, false, false)
+
+	tmpl := `
+		server_name: "S2"
+		listen: "127.0.0.1:-1"
+		cluster {
+			name: "local"
+			listen: "127.0.0.1:-1"
+			pool_size: 5
+			routes: ["nats://%s@127.0.0.1:%d"]
+		}
+	`
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl, "incorrect:incorrect", o1.Cluster.Port))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var errors int
+	for time.Now().Before(deadline) {
+		select {
+		case <-l.errCh:
+			errors++
+		default:
+		}
+	}
+	// We should not get that many errors now. In the past, we would get more
+	// than 200 for the 2 sec wait.
+	if errors > 10 {
+		t.Fatalf("Unexpected number of errors: %v", errors)
+	}
+
+	// Reload with proper credentials.
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "correct:correct", o1.Cluster.Port))
+	// Ensure we can connect.
+	checkClusterFormed(t, s1, s2)
 }
 
 func TestRouteCompressionOptions(t *testing.T) {
