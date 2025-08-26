@@ -75,6 +75,7 @@ type jetStreamCluster struct {
 type inflightInfo struct {
 	rg   *raftGroup
 	sync string
+	cfg  *StreamConfig
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -6498,6 +6499,11 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	if rg == nil {
 		// Check inflight before proposing in case we have an existing inflight proposal.
 		if existing, ok := streams[cfg.Name]; ok {
+			if !reflect.DeepEqual(existing.cfg, cfg) {
+				resp.Error = NewJSStreamNameExistError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			// We have existing for same stream. Re-use same group and syncSubject.
 			rg, syncSubject = existing.rg, existing.sync
 		}
@@ -6525,7 +6531,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		// on concurrent create requests while this stream assignment has
 		// possibly not been processed yet.
 		if streams, ok := cc.inflight[acc.Name]; ok && self == nil {
-			streams[cfg.Name] = &inflightInfo{rg, syncSubject}
+			streams[cfg.Name] = &inflightInfo{rg, syncSubject, cfg}
 		}
 	}
 }
