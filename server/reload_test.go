@@ -6392,3 +6392,75 @@ func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+func TestConfigReloadNoDiskIOLimit(t *testing.T) {
+	content1 := `
+		port: -1
+		no_disk_io_limit: true
+		debug: false
+	`
+
+	content2 := `
+		port: -1
+		no_disk_io_limit: false
+		debug: true
+	`
+
+	content3 := `
+		port: -1
+		no_disk_io_limit: true
+		debug: true
+	`
+
+	// Start with dios enabled.
+	s, opts, config := runReloadServerWithContent(t, []byte(content1))
+	defer s.Shutdown()
+
+	if !s.noDiskIOLimit.Load() {
+		t.Fatalf("Expected noDiskIOLimit to be true")
+	}
+	if !opts.NoDiskIOLimit {
+		t.Fatalf("Expected opts.NoDiskIOLimit to be true")
+	}
+
+	// Attempt to reload with no_disk_io_limit changed should fail.
+	changeCurrentConfigContentWithNewContent(t, config, []byte(content2))
+	if err := s.Reload(); err == nil {
+		t.Fatalf("Unexpected success reloading no_disk_io_limit")
+	} else if !strings.Contains(err.Error(), "config reload not supported for NoDiskIOLimit") {
+		t.Fatalf("Expected reload error for NoDiskIOLimit, got: %v", err)
+	}
+	if !s.noDiskIOLimit.Load() {
+		t.Fatalf("Expected noDiskIOLimit atomic field to remain true after failed reload")
+	}
+
+	// Reload with same no_disk_io_limit value but making other config changes.
+	changeCurrentConfigContentWithNewContent(t, config, []byte(content3))
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error reloading config with same no_disk_io_limit value: %v", err)
+	}
+	if !s.noDiskIOLimit.Load() {
+		t.Fatalf("Expected noDiskIOLimit atomic field to remain true")
+	}
+	updatedOpts := s.getOpts()
+	if !updatedOpts.Debug {
+		t.Fatalf("Expected opts.Debug to be true after reload")
+	}
+
+	// Starting server with no_disk_io_limit: false
+	content4 := `
+		port: -1
+		no_disk_io_limit: false
+		debug: false
+	`
+
+	s2, opts2, _ := runReloadServerWithContent(t, []byte(content4))
+	defer s2.Shutdown()
+
+	if s2.noDiskIOLimit.Load() {
+		t.Fatalf("Expected server dios limit to be false")
+	}
+	if opts2.NoDiskIOLimit {
+		t.Fatalf("Expected server opts.NoDiskIOLimit to be false, got true")
+	}
+}

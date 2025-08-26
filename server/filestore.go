@@ -10991,6 +10991,20 @@ func init() {
 	}
 }
 
+func acquireDiosToken(srv *Server) {
+	if srv != nil && srv.noDiskIOLimit.Load() {
+		return
+	}
+	<-dios
+}
+
+func releaseDiosToken(srv *Server) {
+	if srv != nil && srv.noDiskIOLimit.Load() {
+		return
+	}
+	dios <- struct{}{}
+}
+
 func (o *consumerFileStore) writeState(buf []byte) error {
 	// Check if we have the index file open.
 	o.mu.Lock()

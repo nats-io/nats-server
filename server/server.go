@@ -189,6 +189,7 @@ type Server struct {
 	js                  atomic.Pointer[jetStream]
 	isMetaLeader        atomic.Bool
 	jsClustered         atomic.Bool
+	noDiskIOLimit       atomic.Bool
 	accounts            sync.Map
 	tmpAccounts         sync.Map // Temporarily stores accounts that are being built
 	activeAccounts      int32
@@ -774,6 +775,9 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// By default we'll allow account NRG.
 	s.accountNRGAllowed.Store(true)
+
+	// Initialize disk I/O limit setting from options
+	s.noDiskIOLimit.Store(opts.NoDiskIOLimit)
 
 	// Fill up the maximum in flight syncRequests for this server.
 	// Used in JetStream catchup semantics.
