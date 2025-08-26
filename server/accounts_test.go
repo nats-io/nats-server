@@ -3563,9 +3563,14 @@ func TestAccountMaxConnectionsDisconnectsNewestFirst(t *testing.T) {
 	disconnects := make([]chan error, 0)
 	for i := 1; i <= 3; i++ {
 		disconnectCh := make(chan error)
-		c, err := nats.Connect(s.ClientURL(), nats.UserInfo(fmt.Sprintf("user%d", i), "foo"), nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			disconnectCh <- err
-		}))
+		c, err := nats.Connect(
+			s.ClientURL(),
+			nats.UserInfo(fmt.Sprintf("user%d", i), "foo"),
+			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+				disconnectCh <- err
+			}),
+			nats.NoReconnect(),
+		)
 		require_NoError(t, err)
 		defer c.Close()
 		conns = append(conns, c)
