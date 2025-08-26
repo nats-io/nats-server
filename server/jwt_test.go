@@ -7127,6 +7127,24 @@ func TestDefaultSentinelUser(t *testing.T) {
 	require_NoError(t, err)
 
 	aKP, aPub, aAC := NewJwtAccountClaim("A")
+	aScopedKP, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	aScopedPK, err := aScopedKP.PublicKey()
+	require_NoError(t, err)
+
+	sentinelScope := jwt.NewUserScope()
+	sentinelScope.Key = aScopedPK
+	sentinelScope.Role = "sentinel"
+	sentinelScope.Description = "Sentinel Role"
+	sentinelScope.Template = jwt.UserPermissionLimits{
+		BearerToken: true,
+		Permissions: jwt.Permissions{
+			Pub: jwt.Permission{Deny: []string{">"}},
+			Sub: jwt.Permission{Deny: []string{">"}},
+		},
+	}
+	aAC.SigningKeys.AddScopedSigner(sentinelScope)
+
 	preload[aPub], err = aAC.Encode(oKp)
 	require_NoError(t, err)
 
@@ -7188,7 +7206,6 @@ func TestDefaultSentinelUser(t *testing.T) {
 `, ojwt, sysPub, preloadConfig, sentinelToken)))
 
 	ns, _ = RunServerWithConfig(conf)
-	defer ns.Shutdown()
 	nc, err := nats.Connect(ns.ClientURL())
 	require_NoError(t, err)
 	defer nc.Close()
@@ -7201,6 +7218,29 @@ func TestDefaultSentinelUser(t *testing.T) {
 	var ui SR
 	require_NoError(t, json.Unmarshal(r.Data, &ui))
 	require_Equal(t, ui.Data.UserID, uPub)
+	ns.Shutdown()
+
+	// now lets make a sentinel that is a scoped user with bearer token
+	uc = jwt.NewUserClaims(uPub)
+	uc.IssuerAccount = aPub
+	uc.UserPermissionLimits = jwt.UserPermissionLimits{}
+
+	sentinelToken, err = uc.Encode(aScopedKP)
+	require_NoError(t, err)
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+			default_sentinel: %s
+`, ojwt, sysPub, preloadConfig, sentinelToken)))
+	ns, _ = RunServerWithConfig(conf)
+	defer ns.Shutdown()
+	nc, err = nats.Connect(ns.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+
 }
 
 func TestJWTUpdateAccountClaimsStreamAndServiceImportDeadlock(t *testing.T) {
