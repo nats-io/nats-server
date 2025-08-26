@@ -4587,7 +4587,7 @@ func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 
 // Fast lookup of expected subject for the expected stream sequence per subject.
 func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
-	return string(getHeader(JSExpectedLastSubjSeqSubj, hdr))
+	return bytesToString(sliceHeader(JSExpectedLastSubjSeqSubj, hdr))
 }
 
 // Fast lookup of the message TTL from headers:
@@ -5446,6 +5446,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					}
 					return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
 				}
+			} else if getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
+				mset.mu.Unlock()
+				apiErr := NewJSStreamExpectedLastSeqPerSubjectInvalidError()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = apiErr
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return apiErr
 			}
 
 			// Expected last sequence.
