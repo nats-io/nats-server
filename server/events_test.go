@@ -3882,10 +3882,13 @@ func TestServerEventsConnectDisconnectForGlobalAcc(t *testing.T) {
 	require_NoError(t, err)
 	defer ncs.Close()
 
-	s1, err := ncs.SubscribeSync(fmt.Sprintf(connectEventSubj, "*"))
+	s1, err := ncs.SubscribeSync(fmt.Sprintf(connectEventSubj, globalAccountName))
 	require_NoError(t, err)
-	s2, err := ncs.SubscribeSync(fmt.Sprintf(disconnectEventSubj, "*"))
+	s2, err := ncs.SubscribeSync(fmt.Sprintf(disconnectEventSubj, globalAccountName))
 	require_NoError(t, err)
+
+	// Flush to make sure subscriptions are established
+	require_NoError(t, ncs.Flush())
 
 	// Connect to global account
 	ncg, err := nats.Connect(url, nats.UserInfo("", ""))
