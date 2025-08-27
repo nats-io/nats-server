@@ -9631,6 +9631,40 @@ func TestJetStreamClusterConsumerMonitorShutdownWithoutRaftNode(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterUnsetEmptyPlacement(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Placement: &nats.Placement{},
+	}
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	require_True(t, si.Config.Placement == nil)
+
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_True(t, si.Config.Placement == nil)
+
+	// Set a placement level
+	cfg.Placement = &nats.Placement{Cluster: "R3S"}
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_True(t, si.Config.Placement != nil)
+	require_Equal(t, si.Config.Placement.Cluster, "R3S")
+
+	// And ensure it can be reset.
+	cfg.Placement = &nats.Placement{}
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_True(t, si.Config.Placement == nil)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
