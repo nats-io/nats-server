@@ -514,7 +514,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 				truncateAndErr(index - 1)
 				break
 			}
-			n.processAppendEntry(ae, nil)
+			n.recoverAppendEntry(ae)
 			// Check how much we have queued up so far to determine if we should pause.
 			for _, e := range ae.entries {
 				qsz += len(e.Data)
@@ -3444,9 +3444,19 @@ func (n *raft) updateLeader(newLeader string) {
 	}
 }
 
-// processAppendEntry will process an appendEntry. This is called either
-// during recovery or from processAppendEntries when there are new entries
-// to be committed.
+// recoverAppendEntry will process an appendEntry for recovery
+func (n *raft) recoverAppendEntry(ae *appendEntry) {
+	n.Lock()
+	defer n.Unlock()
+
+	n.pterm = ae.term
+	n.pindex = ae.pindex + 1
+
+	n.processEntriesAndCommit(ae, false)
+}
+
+// processAppendEntry will process an appendEntry. This is called from
+// processAppendEntries when there are new entries to be committed.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// Make a copy of the reply subject, as ae may return
 	// to its pool as part of processAppendEntryLocked
