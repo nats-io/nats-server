@@ -3448,7 +3448,26 @@ func (n *raft) updateLeader(newLeader string) {
 // during recovery or from processAppendEntries when there are new entries
 // to be committed.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
+	// Make a copy of the reply subject, as ae may return
+	// to its pool as part of processAppendEntryLocked
+	subject := ae.reply
+
 	n.Lock()
+	ar := n.processAppendEntryLocked(ae, sub)
+	n.Unlock()
+
+	if ar != nil {
+		var scratch [appendEntryResponseLen]byte
+		n.sendRPC(subject, ar.reply, ar.encode(scratch[:]))
+		arPool.Put(ar)
+	}
+}
+
+// Process the given appendEntry. Optionally returns a appendEntryResponse.
+// The caller is responsible for sending out the response and return it to
+// its pool.
+// Lock should be held.
+func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *appendEntryResponse {
 	// Don't reset here if we have been asked to assume leader position.
 	if !n.lxfer {
 		n.resetElectionTimeout()
@@ -3456,13 +3475,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// Just return if closed or we had previous write error.
 	if n.State() == Closed || n.werr != nil {
-		n.Unlock()
-		return
+		return nil
 	}
-
-	// Scratch buffer for responses.
-	var scratch [appendEntryResponseLen]byte
-	arbuf := scratch[:]
 
 	// Grab term from append entry. But if leader explicitly defined its term, use that instead.
 	// This is required during catchup if the leader catches us up on older items from previous terms.
@@ -3487,12 +3501,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.stepdownLocked(ae.leader)
 		} else {
 			// Let them know we are the leader.
-			ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
 			n.debug("AppendEntry ignoring old term from another leader")
-			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
-			arPool.Put(ar)
-			n.Unlock()
-			return
+			return newAppendEntryResponse(n.term, n.pindex, n.id, false)
 		}
 	}
 
@@ -3534,9 +3544,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// that doesn't send the leader term when catching up. We can reject old catchups from newer subs
 	// later, just by checking the append entry is on the correct term.
 	if !isNew && sub != nil && ae.lterm == 0 && (!catchingUp || sub != n.catchup.sub) {
-		n.Unlock()
 		n.debug("AppendEntry ignoring old entry from previous catchup")
-		return
+		return nil
 	}
 
 	// If this term is greater than ours.
@@ -3559,10 +3568,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		} else {
 			n.debug("AppendEntry ignoring old entry from previous catchup")
 		}
-		n.Unlock()
 		// No need to respond, the leader will respond with the highest term already.
 		// We can simply reject here without sending additional responses.
-		return
+		return nil
 	}
 
 	// Check state if we are catching up.
@@ -3573,21 +3581,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// Reset our notion of catching up.
 			catchingUp = false
 		} else if isNew {
-			var ar *appendEntryResponse
-			var inbox string
 			// Check to see if we are stalled. If so recreate our catchup state and resend response.
 			if n.catchupStalled() {
 				n.debug("Catchup may be stalled, will request again")
-				inbox = n.createCatchup(ae)
-				ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
-			}
-			n.Unlock()
-			if ar != nil {
-				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
-				arPool.Put(ar)
+				inbox := n.createCatchup(ae)
+				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+				ar.reply = inbox
+				return ar
 			}
 			// Ignore new while catching up or replaying.
-			return
+			return nil
 		}
 	}
 
@@ -3657,8 +3660,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// For example, if we got partial catchup, and then the "real-time" messages came in very delayed.
 			// If we reported "success" on those "real-time" messages, we'd wrongfully be providing
 			// quorum while not having an up-to-date log.
-			n.Unlock()
-			return
+			return nil
 		}
 
 		// Check if we are catching up. If we are here we know the leader did not have all of the entries
@@ -3670,8 +3672,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
 				n.warn("Expected first catchup entry to be a snapshot and peerstate, will retry")
 				n.cancelCatchup()
-				n.Unlock()
-				return
+				return nil
 			}
 
 			if ps, err := decodePeerState(ae.entries[1].Data); err == nil {
@@ -3681,8 +3682,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			} else {
 				n.warn("Could not parse snapshot peerstate correctly")
 				n.cancelCatchup()
-				n.Unlock()
-				return
+				return nil
 			}
 
 			// Inherit state from appendEntry with the leader's snapshot.
@@ -3699,25 +3699,21 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// Install the leader's snapshot as our own.
 			if err := n.installSnapshot(snap); err != nil {
 				n.setWriteErrLocked(err)
-				n.Unlock()
-				return
+				return nil
 			}
 			n.resetInitializing()
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
 			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
-			n.Unlock()
-			return
+			return nil
 		}
 
 		// Setup our state for catching up.
 		n.debug("AppendEntry did not match [%d:%d] with [%d:%d]", ae.pterm, ae.pindex, n.pterm, n.pindex)
 		inbox := n.createCatchup(ae)
 		ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
-		n.Unlock()
-		n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
-		arPool.Put(ar)
-		return
+		ar.reply = inbox
+		return ar
 	}
 
 CONTINUE:
@@ -3729,8 +3725,7 @@ CONTINUE:
 				if err != ErrStoreClosed {
 					n.warn("Error storing entry to WAL: %v", err)
 				}
-				n.Unlock()
-				return
+				return nil
 			}
 			n.cachePendingEntry(ae)
 			n.resetInitializing()
@@ -3778,9 +3773,9 @@ CONTINUE:
 		}
 	}
 
-	// Make a copy of these values, as the AppendEntry might be cached and returned to the pool in applyCommit.
+	// Copy ae.commit as the AppendEntry might be cached and returned to the
+	// pool in applyCommit.
 	aeCommit := ae.commit
-	aeReply := ae.reply
 
 	// Apply anything we need here.
 	if aeCommit > n.commit {
@@ -3799,17 +3794,12 @@ CONTINUE:
 	// Only ever respond to new entries.
 	// Never respond to catchup messages, because providing quorum based on this is unsafe.
 	// The only way for the leader to receive "success" MUST be through this path.
-	var ar *appendEntryResponse
 	if sub != nil && isNew {
-		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
+		// Success. Send our response.
+		return newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
-	n.Unlock()
 
-	// Success. Send our response.
-	if ar != nil {
-		n.sendRPC(aeReply, _EMPTY_, ar.encode(arbuf))
-		arPool.Put(ar)
-	}
+	return nil
 }
 
 // resetInitializing resets the notion of initializing.
