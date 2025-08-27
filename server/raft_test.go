@@ -822,7 +822,7 @@ func TestNRGCandidateDoesntRevertTermAfterOldAE(t *testing.T) {
 	// the term. Give it to the follower in candidate state.
 	ae := newAppendEntry(leader.id, 6, leader.commit, leader.pterm, leader.pindex, nil)
 	follower.switchToCandidate()
-	follower.processAppendEntry(ae, nil)
+	follower.processAppendEntry(ae, follower.aesub)
 
 	// The candidate must not have reverted back to term 6.
 	require_NotEqual(t, follower.term, 6)
