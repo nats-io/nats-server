@@ -3459,8 +3459,8 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 		n.resetElectionTimeout()
 	}
 
-	// Just return if closed or we had previous write error.
-	if n.State() == Closed || n.werr != nil {
+	// Just return if closed or we had previous write error, or invalid sub
+	if n.State() == Closed || n.werr != nil || sub == nil {
 		return nil
 	}
 
@@ -3515,7 +3515,7 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 	catchingUp := n.catchup != nil
 	// Is this a new entry? New entries will be delivered on the append entry
 	// sub, rather than a catch-up sub.
-	isNew := sub != nil && sub == n.aesub
+	isNew := sub == n.aesub
 
 	// Track leader directly
 	if isNew && ae.leader != noLeader {
@@ -3529,7 +3529,7 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 	// If we are/were catching up ignore old catchup subs, but only if catching up from an older server
 	// that doesn't send the leader term when catching up. We can reject old catchups from newer subs
 	// later, just by checking the append entry is on the correct term.
-	if !isNew && sub != nil && ae.lterm == 0 && (!catchingUp || sub != n.catchup.sub) {
+	if !isNew && ae.lterm == 0 && (!catchingUp || sub != n.catchup.sub) {
 		n.debug("AppendEntry ignoring old entry from previous catchup")
 		return nil
 	}
@@ -3545,9 +3545,8 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.State(), ae.leader)
 			n.stepdownLocked(ae.leader)
 		}
-	} else if lterm < n.term && sub != nil && (isNew || ae.lterm != 0) {
+	} else if lterm < n.term && (isNew || ae.lterm != 0) {
 		// Anything that's below our expected highest term needs to be rejected.
-		// Unless we're replaying (sub=nil), in which case we'll always continue.
 		// For backward-compatibility we shouldn't reject if we're being caught up by an old server.
 		if isNew {
 			n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, lterm)
@@ -3705,35 +3704,28 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 CONTINUE:
 	// Save to our WAL if we have entries.
 	if ae.shouldStore() {
-		// Only store if an original which will have sub != nil
-		if sub != nil {
-			if err := n.storeToWAL(ae); err != nil {
-				if err != ErrStoreClosed {
-					n.warn("Error storing entry to WAL: %v", err)
-				}
-				return nil
+		if err := n.storeToWAL(ae); err != nil {
+			if err != ErrStoreClosed {
+				n.warn("Error storing entry to WAL: %v", err)
 			}
-			// Save in memory for faster processing during applyCommit.
-			// Only save so many however to avoid memory bloat.
-			if l := len(n.pae); l <= paeDropThreshold {
-				n.pae[n.pindex], l = ae, l+1
-				if l > paeWarnThreshold && l%paeWarnModulo == 0 {
-					n.warn("%d append entries pending", len(n.pae))
-				}
-			} else {
-				// Invalidate cache entry at this index, we might have
-				// stored it previously with a different value.
-				delete(n.pae, n.pindex)
-				if l%paeWarnModulo == 0 {
-					n.debug("Not saving to append entries pending")
-				}
-			}
-			n.resetInitializing()
-		} else {
-			// This is a replay on startup so just take the appendEntry version.
-			n.pterm = ae.term
-			n.pindex = ae.pindex + 1
+			return nil
 		}
+		// Save in memory for faster processing during applyCommit.
+		// Only save so many however to avoid memory bloat.
+		if l := len(n.pae); l <= paeDropThreshold {
+			n.pae[n.pindex], l = ae, l+1
+			if l > paeWarnThreshold && l%paeWarnModulo == 0 {
+				n.warn("%d append entries pending", len(n.pae))
+			}
+		} else {
+			// Invalidate cache entry at this index, we might have
+			// stored it previously with a different value.
+			delete(n.pae, n.pindex)
+			if l%paeWarnModulo == 0 {
+				n.debug("Not saving to append entries pending")
+			}
+		}
+		n.resetInitializing()
 	}
 
 	// ae should no longer be used after this call as
@@ -3743,7 +3735,7 @@ CONTINUE:
 	// Only ever respond to new entries.
 	// Never respond to catchup messages, because providing quorum based on this is unsafe.
 	// The only way for the leader to receive "success" MUST be through this path.
-	if sub != nil && isNew {
+	if isNew {
 		// Success. Send our response.
 		return newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
