@@ -3726,6 +3726,24 @@ CONTINUE:
 		}
 	}
 
+	// ae should no longer be used after this call as
+	// processEntriesAndCommit may return the appendEntry back to its pool
+	n.processEntriesAndCommit(ae, isNew)
+
+	// Only ever respond to new entries.
+	// Never respond to catchup messages, because providing quorum based on this is unsafe.
+	// The only way for the leader to receive "success" MUST be through this path.
+	if sub != nil && isNew {
+		// Success. Send our response.
+		return newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
+	}
+
+	return nil
+}
+
+// Process all entries in appendEntry and try to commit.
+// Lock should be held.
+func (n *raft) processEntriesAndCommit(ae *appendEntry, isNew bool) {
 	// Check to see if we have any related entries to process here.
 	for _, e := range ae.entries {
 		switch e.Type {
@@ -3780,16 +3798,6 @@ CONTINUE:
 			}
 		}
 	}
-
-	// Only ever respond to new entries.
-	// Never respond to catchup messages, because providing quorum based on this is unsafe.
-	// The only way for the leader to receive "success" MUST be through this path.
-	if sub != nil && isNew {
-		// Success. Send our response.
-		return newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
-	}
-
-	return nil
 }
 
 // resetInitializing resets the notion of initializing.
