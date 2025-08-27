@@ -2122,6 +2122,7 @@ func (c *client) processConnect(arg []byte) error {
 	}
 	// Indicate that the CONNECT protocol has been received, and that the
 	// server now knows which protocol this client supports.
+	firstConnect := !c.flags.isSet(connectReceived)
 	c.flags.set(connectReceived)
 	// Capture these under lock
 	c.echo = c.opts.Echo
@@ -2131,7 +2132,8 @@ func (c *client) processConnect(arg []byte) error {
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
 
-	if c.kind == CLIENT {
+	// Optionally log more details about this client.
+	if c.kind == CLIENT && firstConnect && c.srv != nil && c.srv.getOpts().LogConnectionInfo {
 		var ncs string
 		if c.opts.Version != _EMPTY_ {
 			ncs = fmt.Sprintf("v%s", c.opts.Version)
@@ -2151,7 +2153,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 		}
 		if ncs != _EMPTY_ {
-			c.ncs.CompareAndSwap(nil, fmt.Sprintf("%s - %q", c, ncs))
+			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
 		}
 	}
 

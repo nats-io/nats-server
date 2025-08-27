@@ -3267,3 +3267,60 @@ func TestClientRejectsNRGSubjects(t *testing.T) {
 		require_True(t, strings.HasPrefix(err.Error(), "nats: permissions violation"))
 	})
 }
+
+func TestConnectionStringWithLogConnectionInfo(t *testing.T) {
+	opts := DefaultOptions()
+	opts.LogConnectionInfo = true
+	s, c, _, _ := rawSetup(*opts)
+	defer c.close()
+	defer s.Shutdown()
+
+	c.kind = CLIENT
+	connectArg := []byte("{\"verbose\":false,\"pedantic\":false,\"version\":\"1.0.0\",\"lang\":\"go\",\"name\":\"test-client\"}")
+
+	err := c.processConnect(connectArg)
+	if err != nil {
+		t.Fatalf("Received error on first processConnect: %v", err)
+	}
+
+	// Get the connection string after first processConnect.
+	firstConnStr := c.ncs.Load()
+	if firstConnStr == nil {
+		return
+	}
+	firstStr := firstConnStr.(string)
+	firstLen := len(firstStr)
+	require_Equal(t, firstStr, `pipe - cid:1 - "v1.0.0:go:test-client"`)
+
+	// Process connect multiple times.
+	for i := 0; i < 3; i++ {
+		err = c.processConnect(connectArg)
+		if err != nil {
+			t.Fatalf("Received error on processConnect attempt %d: %v", i+2, err)
+		}
+	}
+
+	// Get the connection string after multiple calls.
+	finalConnStr := c.ncs.Load()
+	require_NotNil(t, finalConnStr)
+
+	finalStr := finalConnStr.(string)
+	require_Equal(t, firstStr, finalStr)
+
+	// Now send a different connect over the same connection.
+	connectArg2 := []byte("{\"verbose\":false,\"pedantic\":false,\"version\":\"1.0.0\",\"lang\":\"go\",\"name\":\"test-client:new\"}")
+
+	err = c.processConnect(connectArg2)
+	if err != nil {
+		t.Fatalf("Received error on processConnect: %v", err)
+	}
+	finalConnStr = c.ncs.Load()
+	require_NotNil(t, finalConnStr)
+
+	// Check that it remains the same size after a different connect.
+	finalStr = finalConnStr.(string)
+	finalLen := len(finalStr)
+	if finalLen > firstLen {
+		t.Fatalf("Connection string grew from %d to %d characters", firstLen, finalLen)
+	}
+}
