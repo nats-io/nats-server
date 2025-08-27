@@ -1938,5 +1938,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPriorityGroupWithPolicyNone",
+    "code": 400,
+    "error_code": 10196,
+    "description": "consumer can not have priority groups when policy is none",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPinnedTTLWithoutPriorityPolicyNone",
+    "code": 400,
+    "error_code": 10197,
+    "description": "PinnedTTL cannot be set when PriorityPolicy is none",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

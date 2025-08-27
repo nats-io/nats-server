@@ -931,6 +931,14 @@ func checkConsumerCfg(
 				return NewJSConsumerInvalidGroupNameError()
 			}
 		}
+	} else {
+		// If PriorityPolicy is None or not set, reject if PriorityGroups or PinnedTTL are set
+		if len(config.PriorityGroups) > 0 {
+			return NewJSConsumerPriorityGroupWithPolicyNoneError()
+		}
+		if config.PinnedTTL > 0 {
+			return NewJSConsumerPinnedTTLWithoutPriorityPolicyNoneError()
+		}
 	}
 
 	// For now don't allow preferred server in placement.
