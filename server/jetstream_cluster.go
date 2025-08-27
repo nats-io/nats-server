@@ -7167,7 +7167,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			// try to pick one. This could happen with older streams that were assigned by
 			// previous servers.
 			if rg.Cluster == _EMPTY_ {
-				// Prefer placement directrives if we have them.
+				// Prefer placement directives if we have them.
 				if newCfg.Placement != nil && newCfg.Placement.Cluster != _EMPTY_ {
 					rg.Cluster = newCfg.Placement.Cluster
 				} else {
