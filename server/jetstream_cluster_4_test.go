@@ -3213,7 +3213,7 @@ func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 				return fmt.Errorf("cluster nil")
 			}
 			if len(ci.Cluster.Replicas) != clr {
-				return fmt.Errorf("cluster replicas %d != %d", len(ci.Cluster.Replicas), cor)
+				return fmt.Errorf("cluster replica peers %d != %d", len(ci.Cluster.Replicas), clr)
 			}
 			return nil
 		})
