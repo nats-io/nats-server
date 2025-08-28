@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1697,6 +1698,7 @@ func TestReadloopWarning(t *testing.T) {
 
 func TestTraceMsg(t *testing.T) {
 	c := &client{}
+
 	// Enable message trace
 	c.trace = true
 
@@ -3323,4 +3325,156 @@ func TestConnectionStringWithLogConnectionInfo(t *testing.T) {
 	if finalLen > firstLen {
 		t.Fatalf("Connection string grew from %d to %d characters", firstLen, finalLen)
 	}
+}
+
+func TestLogConnectionAuthInfo(t *testing.T) {
+	// Test with username/password authentication
+	t.Run("username_password", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.LogConnectionAuthInfo = true
+		opts.Username = "testuser"
+		opts.Password = "testpass"
+		s, c, _, _ := rawSetup(*opts)
+		defer c.close()
+		defer s.Shutdown()
+
+		c.kind = CLIENT
+		connectArg := []byte(`{"verbose":false,"pedantic":false,"user":"testuser","pass":"testpass"}`)
+
+		err := c.processConnect(connectArg)
+		require_NoError(t, err)
+
+		connStr := c.ncs.Load()
+		require_NotNil(t, connStr)
+		str := connStr.(string)
+		require_Contains(t, str, `"$G/user:testuser"`)
+	})
+
+	// Test with token authentication
+	t.Run("token", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.LogConnectionAuthInfo = true
+		opts.Authorization = "secret-token"
+		s, c, _, _ := rawSetup(*opts)
+		defer c.close()
+		defer s.Shutdown()
+
+		c.kind = CLIENT
+		connectArg := []byte(`{"verbose":false,"pedantic":false,"auth_token":"secret-token"}`)
+
+		err := c.processConnect(connectArg)
+		require_NoError(t, err)
+
+		connStr := c.ncs.Load()
+		require_NotNil(t, connStr)
+		str := connStr.(string)
+		require_Contains(t, str, `"$G/token"`)
+	})
+
+	// Test with nkey authentication
+	t.Run("nkey", func(t *testing.T) {
+		kp, _ := nkeys.CreateUser()
+		pub, _ := kp.PublicKey()
+		nkey := string(pub)
+
+		opts := DefaultOptions()
+		opts.LogConnectionAuthInfo = true
+		opts.Nkeys = []*NkeyUser{{Nkey: nkey}}
+		s, c, _, _ := rawSetup(*opts)
+		defer c.close()
+		defer s.Shutdown()
+
+		c.kind = CLIENT
+
+		// Generate a nonce and sign it for proper nkey authentication
+		nonce := make([]byte, 32)
+		c.nonce = nonce
+		sig, _ := kp.Sign(nonce)
+		sigEncoded := base64.RawURLEncoding.EncodeToString(sig)
+
+		connectArg := fmt.Sprintf(`{"verbose":false,"pedantic":false,"nkey":"%s","sig":"%s"}`, nkey, sigEncoded)
+
+		err := c.processConnect([]byte(connectArg))
+		require_NoError(t, err)
+
+		connStr := c.ncs.Load()
+		require_NotNil(t, connStr)
+		str := connStr.(string)
+		require_Contains(t, str, fmt.Sprintf(`"$G/nkey:%s"`, nkey))
+	})
+
+	// Test with both LogConnectionInfo and LogConnectionAuthInfo enabled
+	t.Run("combined_info_and_auth", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.LogConnectionInfo = true
+		opts.LogConnectionAuthInfo = true
+		opts.Username = "testuser"
+		opts.Password = "testpass"
+		s, c, _, _ := rawSetup(*opts)
+		defer c.close()
+		defer s.Shutdown()
+
+		c.kind = CLIENT
+		connectArg := []byte(`{"verbose":false,"pedantic":false,"user":"testuser","pass":"testpass","version":"1.0.0","lang":"go","name":"test-client"}`)
+
+		err := c.processConnect(connectArg)
+		require_NoError(t, err)
+
+		connStr := c.ncs.Load()
+		require_NotNil(t, connStr)
+		str := connStr.(string)
+		require_Contains(t, str, `"v1.0.0:go:test-client"`)
+		require_Contains(t, str, `"$G/user:testuser"`)
+	})
+
+	// Test with LogConnectionAuthInfo disabled (default behavior)
+	t.Run("auth_info_disabled", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.LogConnectionAuthInfo = false
+		opts.Username = "testuser"
+		opts.Password = "testpass"
+		s, c, _, _ := rawSetup(*opts)
+		defer c.close()
+		defer s.Shutdown()
+
+		c.kind = CLIENT
+		connectArg := []byte(`{"verbose":false,"pedantic":false,"user":"testuser","pass":"testpass"}`)
+
+		err := c.processConnect(connectArg)
+		require_NoError(t, err)
+
+		connStr := c.ncs.Load()
+		if connStr != nil {
+			str := connStr.(string)
+			if strings.Contains(str, "user:testuser") {
+				t.Fatalf("Expected auth info not to be logged when disabled, got: %s", str)
+			}
+			if strings.Contains(str, "$G/") {
+				t.Fatalf("Expected auth info not to be logged when disabled, got: %s", str)
+			}
+		}
+	})
+
+	// Test without any authentication
+	t.Run("no_auth", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.LogConnectionAuthInfo = true
+		s, c, _, _ := rawSetup(*opts)
+		defer c.close()
+		defer s.Shutdown()
+
+		c.kind = CLIENT
+		connectArg := []byte(`{"verbose":false,"pedantic":false}`)
+
+		err := c.processConnect(connectArg)
+		require_NoError(t, err)
+
+		connStr := c.ncs.Load()
+		if connStr != nil {
+			str := connStr.(string)
+			if strings.Contains(str, "$G/") {
+				t.Fatalf("Expected no auth info when no authentication provided, got: %s", str)
+			}
+		}
+	})
 }

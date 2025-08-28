@@ -640,6 +640,14 @@ func (s *subscription) isClosed() bool {
 	return atomic.LoadInt32(&s.closed) == 1
 }
 
+func (c *client) format(format string) string {
+	if s := c.String(); s != _EMPTY_ {
+		return fmt.Sprintf("%s - %s", s, format)
+	} else {
+		return format
+	}
+}
+
 type ClientOpts struct {
 	Echo         bool   `json:"echo"`
 	Verbose      bool   `json:"verbose"`
@@ -2132,31 +2140,6 @@ func (c *client) processConnect(arg []byte) error {
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
 
-	// Optionally log more details about this client.
-	if c.kind == CLIENT && firstConnect && c.srv != nil && c.srv.getOpts().LogConnectionInfo {
-		var ncs string
-		if c.opts.Version != _EMPTY_ {
-			ncs = fmt.Sprintf("v%s", c.opts.Version)
-		}
-		if c.opts.Lang != _EMPTY_ {
-			if c.opts.Version == _EMPTY_ {
-				ncs = c.opts.Lang
-			} else {
-				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Lang)
-			}
-		}
-		if c.opts.Name != _EMPTY_ {
-			if c.opts.Version == _EMPTY_ && c.opts.Lang == _EMPTY_ {
-				ncs = c.opts.Name
-			} else {
-				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Name)
-			}
-		}
-		if ncs != _EMPTY_ {
-			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
-		}
-	}
-
 	// if websocket client, maybe some options through cookies
 	if ws := c.ws; ws != nil {
 		// if JWT not in the CONNECT, use the cookie JWT (possibly empty).
@@ -2235,13 +2218,56 @@ func (c *client) processConnect(arg []byte) error {
 		c.mu.Lock()
 		acc := c.acc
 		if c.getRawAuthUser() != _EMPTY_ {
-			c.ncsUser.Store(c.getAuthUser())
+			c.ncsUser.Store(c.getAuthUserLabel())
 		}
 		c.mu.Unlock()
 		if acc != nil {
 			acc.mu.RLock()
 			c.ncsAcc.Store(acc.traceLabel())
 			acc.mu.RUnlock()
+		}
+
+		// Optionally log more details about this client.
+		o := c.srv.getOpts()
+		cinfoLog := o.LogConnectionInfo
+		ainfoLog := o.LogConnectionAuthInfo
+		if c.kind == CLIENT && firstConnect && c.srv != nil && (cinfoLog || ainfoLog) {
+			var ncs string
+			if cinfoLog {
+				if c.opts.Version != _EMPTY_ {
+					ncs = fmt.Sprintf("v%s", c.opts.Version)
+				}
+				if c.opts.Lang != _EMPTY_ {
+					if c.opts.Version == _EMPTY_ {
+						ncs = c.opts.Lang
+					} else {
+						ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Lang)
+					}
+				}
+				if c.opts.Name != _EMPTY_ {
+					if c.opts.Version == _EMPTY_ && c.opts.Lang == _EMPTY_ {
+						ncs = c.opts.Name
+					} else {
+						ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Name)
+					}
+				}
+			}
+			var acs string
+			if ainfoLog {
+				accl := c.ncsAcc.Load()
+				authUser := c.ncsUser.Load()
+				if accl != nil && authUser != nil {
+					acs = fmt.Sprintf("%s/%s", accl, authUser)
+				}
+			}
+			switch {
+			case ncs != _EMPTY_ && acs != _EMPTY_:
+				c.ncs.Store(fmt.Sprintf("%s - %q - %q", c, ncs, acs))
+			case ncs != _EMPTY_:
+				c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
+			case acs != _EMPTY_:
+				c.ncs.Store(fmt.Sprintf("%s - %q", c, acs))
+			}
 		}
 	}
 
@@ -6267,6 +6293,22 @@ func (c *client) getAuthUser() string {
 	}
 }
 
+// getAuthUserLabel returns a label for the auth user for the client.
+func (c *client) getAuthUserLabel() string {
+	switch {
+	case c.opts.Nkey != _EMPTY_:
+		return fmt.Sprintf("nkey:%s", c.opts.Nkey)
+	case c.opts.Username != _EMPTY_:
+		return fmt.Sprintf("user:%s", c.opts.Username)
+	case c.opts.JWT != _EMPTY_:
+		return fmt.Sprintf("jwt:%s", c.pubKey)
+	case c.opts.Token != _EMPTY_:
+		return "token"
+	default:
+		return ""
+	}
+}
+
 // Given an array of strings, this function converts it to a map as long
 // as all the content (converted to upper-case) matches some constants.
 
@@ -6340,23 +6382,6 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 // flag have been set, or if `nc` is nil, which may happen in tests.
 func (c *client) isClosed() bool {
 	return c.flags.isSet(closeConnection) || c.flags.isSet(connMarkedClosed) || c.nc == nil
-}
-
-func (c *client) format(format string) string {
-	var tags []string
-	if acc := c.ncsAcc.Load(); acc != nil {
-		tags = append(tags, fmt.Sprintf("- Account: %s", acc))
-	}
-	if user := c.ncsUser.Load(); user != nil && user.(string) != _EMPTY_ {
-		tags = append(tags, fmt.Sprintf("- %s", user))
-	}
-	if len(tags) > 0 {
-		return fmt.Sprintf("%s - %s %s", c, format, strings.Join(tags, " "))
-	} else if s := c.String(); s != _EMPTY_ {
-		return fmt.Sprintf("%s - %s", s, format)
-	} else {
-		return format
-	}
 }
 
 func (c *client) formatNoClientInfo(format string) string {
