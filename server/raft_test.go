@@ -413,6 +413,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 		prop:  newIPQueue[*proposedEntry](s, "prop"),
 		resp:  newIPQueue[*appendEntryResponse](s, "resp"),
 		leadc: make(chan bool, 1), // for switchState
+		sd:    t.TempDir(),
 	}
 	n.state.Store(int32(Leader))
 	require_Equal(t, n.prop.len(), 0)
