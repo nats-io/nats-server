@@ -45,6 +45,7 @@ type RaftNode interface {
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
+	Processed(index uint64, applied uint64) (entries uint64, bytes uint64)
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
@@ -168,12 +169,13 @@ type raft struct {
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
 
-	term     uint64 // The current vote term
-	pterm    uint64 // Previous term from the last snapshot
-	pindex   uint64 // Previous index from the last snapshot
-	commit   uint64 // Index of the most recent commit
-	applied  uint64 // Index of the most recently applied commit
-	papplied uint64 // First sequence of our log, matches when we last installed a snapshot.
+	term      uint64 // The current vote term
+	pterm     uint64 // Previous term from the last snapshot
+	pindex    uint64 // Previous index from the last snapshot
+	commit    uint64 // Index of the most recent commit
+	processed uint64 // Index of the most recently processed commit
+	applied   uint64 // Index of the most recently applied commit
+	papplied  uint64 // First sequence of our log, matches when we last installed a snapshot.
 
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
@@ -1104,6 +1106,16 @@ func (n *raft) ResumeApply() {
 // apply queue. It will return the number of entries and an estimation of the
 // byte size that could be removed with a snapshot/compact.
 func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
+	return n.Processed(index, index)
+}
+
+// Processed is a callback that must be called by the upper layer when it
+// has processed the committed entries that it received from the apply queue,
+// but it (maybe) hasn't applied all the processed entries yet.
+// Used to indicate a commit was processed, even if it wasn't applied yet and
+// can't be compacted away by a snapshot just yet. Which allows us to try to
+// become leader if we've processed all commits, even if they're not all applied.
+func (n *raft) Processed(index uint64, applied uint64) (entries uint64, bytes uint64) {
 	n.Lock()
 	defer n.Unlock()
 
@@ -1112,13 +1124,22 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		return 0, 0
 	}
 
-	// Ignore if already applied.
-	if index > n.applied {
-		n.applied = index
+	// Ignore if already processed.
+	if index > n.processed {
+		n.processed = index
 	}
 
-	// If it was set, and we reached the minimum applied index, reset and send signal to upper layer.
-	if n.aflr > 0 && index >= n.aflr {
+	// Ignore if already applied.
+	if applied > index {
+		applied = index
+	}
+	if applied > n.applied {
+		n.applied = applied
+	}
+
+	// If it was set, and we reached the minimum processed index, reset and send signal to upper layer.
+	// We're not waiting for processed AND applied, because applying could take longer.
+	if n.aflr > 0 && n.processed >= n.aflr {
 		n.aflr = 0
 		// Quick sanity-check to confirm we're still leader.
 		// In which case we must signal, since switchToLeader would not have done so already.
@@ -3374,8 +3395,11 @@ func (n *raft) truncateWAL(term, index uint64) {
 		if n.commit > n.pindex {
 			n.commit = n.pindex
 		}
-		if n.applied > n.commit {
-			n.applied = n.commit
+		if n.processed > n.commit {
+			n.processed = n.commit
+		}
+		if n.applied > n.processed {
+			n.applied = n.processed
 		}
 		if n.papplied > n.applied {
 			n.papplied = n.applied
@@ -4497,7 +4521,7 @@ func (n *raft) switchToCandidate() {
 
 	// If we are catching up or are in observer mode we can not switch.
 	// Avoid petitioning to become leader if we're behind on applies.
-	if n.observer || n.paused || n.applied < n.commit {
+	if n.observer || n.paused || n.processed < n.commit {
 		n.resetElect(minElectionTimeout / 4)
 		return
 	}
