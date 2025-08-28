@@ -393,15 +393,30 @@ func TestNRGLeaderTransfer(t *testing.T) {
 
 	require_Equal(t, newLeader.node().ID(), preferredID)
 
-	msg, err := sub.NextMsg(time.Second)
-	require_NoError(t, err)
-	require_NoError(t, sub.Unsubscribe())
+	// Expect to see a EntryLeader message
+	checkFor(t, time.Second, 0, func() (err error) {
+		msg, err := sub.NextMsg(time.Second)
+		if err != nil {
+			return err
+		}
 
-	ae, err := newLeader.node().(*raft).decodeAppendEntry(msg.Data, nil, msg.Reply)
-	require_NoError(t, err)
-	require_Equal(t, len(ae.entries), 1)
-	require_Equal(t, ae.entries[0].Type, EntryLeaderTransfer)
-	require_Equal(t, string(ae.entries[0].Data), preferredID)
+		leader := newLeader.node().(*raft)
+		ae, err := leader.decodeAppendEntry(msg.Data, nil, msg.Reply)
+		if err != nil {
+			return err
+		}
+
+		if len(ae.entries) == 1 {
+			e := ae.entries[0]
+			if e.Type == EntryLeaderTransfer &&
+				string(e.Data) == preferredID {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("Expect EntryLeaderTransfer")
+	})
+	require_NoError(t, sub.Unsubscribe())
 }
 
 func TestNRGSwitchStateClearsQueues(t *testing.T) {
