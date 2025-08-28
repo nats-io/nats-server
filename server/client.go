@@ -1871,6 +1871,19 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	case ReadError, WriteError, SlowConsumerPendingBytes, SlowConsumerWriteDeadline, TLSHandshakeError:
 		c.flags.set(skipFlushOnClose)
 		skipFlush = true
+	case StaleConnection:
+		// Track stale connections statistics.
+		atomic.AddInt64(&c.srv.staleConnections, 1)
+		switch c.kind {
+		case CLIENT:
+			c.srv.staleStats.clients.Add(1)
+		case ROUTER:
+			c.srv.staleStats.routes.Add(1)
+		case GATEWAY:
+			c.srv.staleStats.gateways.Add(1)
+		case LEAF:
+			c.srv.staleStats.leafs.Add(1)
+		}
 	}
 	if c.flags.isSet(connMarkedClosed) {
 		return

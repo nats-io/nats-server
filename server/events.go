@@ -363,24 +363,26 @@ func (ci *ClientInfo) forAdvisory() *ClientInfo {
 
 // ServerStats hold various statistics that we will periodically send out.
 type ServerStats struct {
-	Start              time.Time           `json:"start"`
-	Mem                int64               `json:"mem"`
-	Cores              int                 `json:"cores"`
-	CPU                float64             `json:"cpu"`
-	Connections        int                 `json:"connections"`
-	TotalConnections   uint64              `json:"total_connections"`
-	ActiveAccounts     int                 `json:"active_accounts"`
-	NumSubs            uint32              `json:"subscriptions"`
-	Sent               DataStats           `json:"sent"`
-	Received           DataStats           `json:"received"`
-	SlowConsumers      int64               `json:"slow_consumers"`
-	SlowConsumersStats *SlowConsumersStats `json:"slow_consumer_stats,omitempty"`
-	Routes             []*RouteStat        `json:"routes,omitempty"`
-	Gateways           []*GatewayStat      `json:"gateways,omitempty"`
-	ActiveServers      int                 `json:"active_servers,omitempty"`
-	JetStream          *JetStreamVarz      `json:"jetstream,omitempty"`
-	MemLimit           int64               `json:"gomemlimit,omitempty"`
-	MaxProcs           int                 `json:"gomaxprocs,omitempty"`
+	Start                time.Time             `json:"start"`
+	Mem                  int64                 `json:"mem"`
+	Cores                int                   `json:"cores"`
+	CPU                  float64               `json:"cpu"`
+	Connections          int                   `json:"connections"`
+	TotalConnections     uint64                `json:"total_connections"`
+	ActiveAccounts       int                   `json:"active_accounts"`
+	NumSubs              uint32                `json:"subscriptions"`
+	Sent                 DataStats             `json:"sent"`
+	Received             DataStats             `json:"received"`
+	SlowConsumers        int64                 `json:"slow_consumers"`
+	SlowConsumersStats   *SlowConsumersStats   `json:"slow_consumer_stats,omitempty"`
+	StaleConnections     int64                 `json:"stale_connections"`
+	StaleConnectionStats *StaleConnectionStats `json:"stale_connection_stats,omitempty"`
+	Routes               []*RouteStat          `json:"routes,omitempty"`
+	Gateways             []*GatewayStat        `json:"gateways,omitempty"`
+	ActiveServers        int                   `json:"active_servers,omitempty"`
+	JetStream            *JetStreamVarz        `json:"jetstream,omitempty"`
+	MemLimit             int64                 `json:"gomemlimit,omitempty"`
+	MaxProcs             int                   `json:"gomaxprocs,omitempty"`
 }
 
 // RouteStat holds route statistics.
@@ -954,6 +956,16 @@ func (s *Server) sendStatsz(subj string) {
 	}
 	if scs.Clients != 0 || scs.Routes != 0 || scs.Gateways != 0 || scs.Leafs != 0 {
 		m.Stats.SlowConsumersStats = scs
+	}
+	m.Stats.StaleConnections = atomic.LoadInt64(&s.staleConnections)
+	stcs := &StaleConnectionStats{
+		Clients:  s.NumStaleConnectionsClients(),
+		Routes:   s.NumStaleConnectionsRoutes(),
+		Gateways: s.NumStaleConnectionsGateways(),
+		Leafs:    s.NumStaleConnectionsLeafs(),
+	}
+	if stcs.Clients != 0 || stcs.Routes != 0 || stcs.Gateways != 0 || stcs.Leafs != 0 {
+		m.Stats.StaleConnectionStats = stcs
 	}
 	m.Stats.NumSubs = s.numSubscriptions()
 	// Routes

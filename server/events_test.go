@@ -3764,6 +3764,93 @@ func TestServerEventsPingStatsSlowConsumersStats(t *testing.T) {
 	}
 }
 
+func TestServerEventsPingStatsStaleConnectionStats(t *testing.T) {
+	templ := `
+                        listen: "127.0.0.1:-1"
+                        system_account = sys
+                        accounts {
+                          a {
+                            users = [{ user: a,  pass: a  }]
+                          }
+                          b {
+                            users = [{ user: b,  pass: b  }]
+                          }
+                          sys {
+                            users = [{ user: sys, pass: sys }]
+                          }
+                        }
+                        `
+	conf := createConfFile(t, []byte(templ))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// 3 different ways to get statz:
+	const statsz = "STATSZ"
+
+	// $SYS.REQ.SERVER.NCBT6MBA7Q7ZF4R4WVXTSZTCZDPPXX2ALLN3XM75VCBCNMPIKQFPFLKV.STATSZ
+	dirReqSubject := func(s *Server) string {
+		return fmt.Sprintf(serverDirectReqSubj, s.ID(), statsz)
+	}
+	// $SYS.REQ.SERVER.PING.STATSZ
+	pingReqSubject := func(s *Server) string {
+		return fmt.Sprintf(serverPingReqSubj, statsz)
+	}
+	// $SYS.REQ.SERVER.PING
+	statsPingSubject := func(s *Server) string {
+		return serverStatsPingReqSubj
+	}
+	subjects := []string{dirReqSubject(s), pingReqSubject(s), statsPingSubject(s)}
+
+	ncs, err := nats.Connect(s.ClientURL(), nats.UserInfo("sys", "sys"))
+	require_NoError(t, err)
+
+	for _, subject := range subjects {
+		msg, err := ncs.Request(subject, nil, time.Second)
+		require_NoError(t, err)
+
+		var ssm ServerStatsMsg
+		err = json.Unmarshal(msg.Data, &ssm)
+		require_NoError(t, err)
+
+		// No stale connection stats.
+		require_True(t, ssm.Stats.StaleConnectionStats == nil)
+		require_Equal(t, s.NumStaleConnections(), int64(0))
+		require_Equal(t, s.NumStaleConnectionsClients(), uint64(0))
+		require_Equal(t, s.NumStaleConnectionsRoutes(), uint64(0))
+		require_Equal(t, s.NumStaleConnectionsGateways(), uint64(0))
+		require_Equal(t, s.NumStaleConnectionsLeafs(), uint64(0))
+	}
+
+	// Set some values and confirm.
+	s.staleStats.clients.Store(1)
+	s.staleStats.routes.Store(2)
+	s.staleStats.gateways.Store(3)
+	s.staleStats.leafs.Store(4)
+	atomic.StoreInt64(&s.staleConnections, 10)
+	require_Equal(t, s.NumStaleConnections(), int64(10))
+	require_Equal(t, s.NumStaleConnectionsClients(), uint64(1))
+	require_Equal(t, s.NumStaleConnectionsRoutes(), uint64(2))
+	require_Equal(t, s.NumStaleConnectionsGateways(), uint64(3))
+	require_Equal(t, s.NumStaleConnectionsLeafs(), uint64(4))
+
+	for _, subject := range subjects {
+		msg, err := ncs.Request(subject, nil, time.Second)
+		require_NoError(t, err)
+
+		ssm := ServerStatsMsg{}
+		err = json.Unmarshal(msg.Data, &ssm)
+		require_NoError(t, err)
+
+		require_NotNil(t, ssm.Stats.StaleConnectionStats)
+		stcs := ssm.Stats.StaleConnectionStats
+		require_Equal(t, stcs.Clients, 1)
+		require_Equal(t, stcs.Routes, 2)
+		require_Equal(t, stcs.Gateways, 3)
+		require_Equal(t, stcs.Leafs, 4)
+		require_Equal(t, ssm.Stats.StaleConnections, int64(10))
+	}
+}
+
 func TestServerEventsStatszMaxProcsMemLimit(t *testing.T) {
 	// We want to prove that our set values are reflected in STATSZ,
 	// so we can't use constants that might match the system that
