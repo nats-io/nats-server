@@ -3689,21 +3689,7 @@ CONTINUE:
 				n.Unlock()
 				return
 			}
-			// Save in memory for faster processing during applyCommit.
-			// Only save so many however to avoid memory bloat.
-			if l := len(n.pae); l <= paeDropThreshold {
-				n.pae[n.pindex], l = ae, l+1
-				if l > paeWarnThreshold && l%paeWarnModulo == 0 {
-					n.warn("%d append entries pending", len(n.pae))
-				}
-			} else {
-				// Invalidate cache entry at this index, we might have
-				// stored it previously with a different value.
-				delete(n.pae, n.pindex)
-				if l%paeWarnModulo == 0 {
-					n.debug("Not saving to append entries pending")
-				}
-			}
+			n.cachePendingEntry(ae)
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
 			n.pterm = ae.term
@@ -3922,16 +3908,26 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 			return
 		}
 		n.active = time.Now()
-
-		// Save in memory for faster processing during applyCommit.
-		n.pae[n.pindex] = ae
-		if l := len(n.pae); l > paeWarnThreshold && l%paeWarnModulo == 0 {
-			n.warn("%d append entries pending", len(n.pae))
-		}
+		n.cachePendingEntry(ae)
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 	if !shouldStore {
 		ae.returnToPool()
+	}
+}
+
+// cachePendingEntry saves append entries in memory for faster processing during applyCommit.
+// Only save so many however to avoid memory bloat.
+func (n *raft) cachePendingEntry(ae *appendEntry) {
+	if l := len(n.pae); l < paeDropThreshold {
+		n.pae[n.pindex], l = ae, l+1
+		if l >= paeWarnThreshold && l%paeWarnModulo == 0 {
+			n.warn("%d append entries pending", len(n.pae))
+		}
+	} else {
+		// Invalidate cache entry at this index, we might have
+		// stored it previously with a different value.
+		delete(n.pae, n.pindex)
 	}
 }
 
