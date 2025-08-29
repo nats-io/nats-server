@@ -2135,6 +2135,7 @@ func (c *client) processConnect(arg []byte) error {
 	}
 	// Indicate that the CONNECT protocol has been received, and that the
 	// server now knows which protocol this client supports.
+	firstConnect := !c.flags.isSet(connectReceived)
 	c.flags.set(connectReceived)
 	// Capture these under lock
 	c.echo = c.opts.Echo
@@ -2143,30 +2144,6 @@ func (c *client) processConnect(arg []byte) error {
 	lang := c.opts.Lang
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
-
-	if c.kind == CLIENT {
-		var ncs string
-		if c.opts.Version != _EMPTY_ {
-			ncs = fmt.Sprintf("v%s", c.opts.Version)
-		}
-		if c.opts.Lang != _EMPTY_ {
-			if c.opts.Version == _EMPTY_ {
-				ncs = c.opts.Lang
-			} else {
-				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Lang)
-			}
-		}
-		if c.opts.Name != _EMPTY_ {
-			if c.opts.Version == _EMPTY_ && c.opts.Lang == _EMPTY_ {
-				ncs = c.opts.Name
-			} else {
-				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Name)
-			}
-		}
-		if ncs != _EMPTY_ {
-			c.ncs.CompareAndSwap(nil, fmt.Sprintf("%s - %q", c, ncs))
-		}
-	}
 
 	// if websocket client, maybe some options through cookies
 	if ws := c.ws; ws != nil {
@@ -2246,13 +2223,49 @@ func (c *client) processConnect(arg []byte) error {
 		c.mu.Lock()
 		acc := c.acc
 		if c.getRawAuthUser() != _EMPTY_ {
-			c.ncsUser.Store(c.getAuthUser())
+			c.ncsUser.Store(c.getAuthUserLabel())
 		}
 		c.mu.Unlock()
 		if acc != nil {
 			acc.mu.RLock()
 			c.ncsAcc.Store(acc.traceLabel())
 			acc.mu.RUnlock()
+		}
+
+		// Enable logging connection details and auth info for this client.
+		if c.kind == CLIENT && firstConnect && c.srv != nil {
+			var ncs string
+			if c.opts.Version != _EMPTY_ {
+				ncs = fmt.Sprintf("v%s", c.opts.Version)
+			}
+			if c.opts.Lang != _EMPTY_ {
+				if c.opts.Version == _EMPTY_ {
+					ncs = c.opts.Lang
+				} else {
+					ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Lang)
+				}
+			}
+			if c.opts.Name != _EMPTY_ {
+				if c.opts.Version == _EMPTY_ && c.opts.Lang == _EMPTY_ {
+					ncs = c.opts.Name
+				} else {
+					ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Name)
+				}
+			}
+			var acs string
+			accl := c.ncsAcc.Load()
+			authUser := c.ncsUser.Load()
+			if accl != nil && authUser != nil {
+				acs = fmt.Sprintf("%s/%s", accl, authUser)
+			}
+			switch {
+			case ncs != _EMPTY_ && acs != _EMPTY_:
+				c.ncs.Store(fmt.Sprintf("%s - %q - %q", c, ncs, acs))
+			case ncs != _EMPTY_:
+				c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
+			case acs != _EMPTY_:
+				c.ncs.Store(fmt.Sprintf("%s - %q", c, acs))
+			}
 		}
 	}
 
@@ -6284,6 +6297,22 @@ func (c *client) getAuthUser() string {
 	}
 }
 
+// getAuthUserLabel returns a label for the auth user for the client.
+func (c *client) getAuthUserLabel() string {
+	switch {
+	case c.opts.Nkey != _EMPTY_:
+		return fmt.Sprintf("nkey:%s", c.opts.Nkey)
+	case c.opts.Username != _EMPTY_:
+		return fmt.Sprintf("user:%s", c.opts.Username)
+	case c.opts.JWT != _EMPTY_:
+		return fmt.Sprintf("jwt:%s", c.pubKey)
+	case c.opts.Token != _EMPTY_:
+		return "token"
+	default:
+		return ""
+	}
+}
+
 // Given an array of strings, this function converts it to a map as long
 // as all the content (converted to upper-case) matches some constants.
 
@@ -6360,16 +6389,7 @@ func (c *client) isClosed() bool {
 }
 
 func (c *client) format(format string) string {
-	var tags []string
-	if acc := c.ncsAcc.Load(); acc != nil {
-		tags = append(tags, fmt.Sprintf("- Account: %s", acc))
-	}
-	if user := c.ncsUser.Load(); user != nil && user.(string) != _EMPTY_ {
-		tags = append(tags, fmt.Sprintf("- %s", user))
-	}
-	if len(tags) > 0 {
-		return fmt.Sprintf("%s - %s %s", c, format, strings.Join(tags, " "))
-	} else if s := c.String(); s != _EMPTY_ {
+	if s := c.String(); s != _EMPTY_ {
 		return fmt.Sprintf("%s - %s", s, format)
 	} else {
 		return format
