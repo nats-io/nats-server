@@ -1274,10 +1274,10 @@ type Varz struct {
 	TrustedOperatorsClaim []*jwt.OperatorClaims  `json:"trusted_operators_claim,omitempty"` // TrustedOperatorsClaim is the decoded claims for each trusted operator
 	SystemAccount         string                 `json:"system_account,omitempty"`          // SystemAccount is the name of the System account
 	PinnedAccountFail     uint64                 `json:"pinned_account_fails,omitempty"`    // PinnedAccountFail is how often user logon fails due to the issuer account not being pinned.
-	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         // OCSPResponseCache is the state of the OCSP cache // OCSPResponseCache holds information about
+	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         // OCSPResponseCache is the state of the OCSP cache
 	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`               // SlowConsumersStats are statistics about all detected Slow Consumer
 	StaleConnectionStats  *StaleConnectionStats  `json:"stale_connection_stats,omitempty"`  // StaleConnectionStats are statistics about all detected Stale Connections
-	Proxies               *ProxiesOptsVarz       `json:"proxies,omitempty"`
+	Proxies               *ProxiesOptsVarz       `json:"proxies,omitempty"`                 // Proxies hold information about network proxy devices
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1394,14 +1394,14 @@ type OCSPResponseCacheVarz struct {
 	Unknowns  int64  `json:"cached_unknown_responses,omitempty"` // Unknowns  is how many of the stored cache entries are unknown responses
 }
 
-// ProxiesOptsVarz contains monitoring proxies information
+// ProxiesOptsVarz contains proxies information
 type ProxiesOptsVarz struct {
-	Trusted []*ProxyOptsVarz `json:"trusted,omitempty"`
+	Trusted []*ProxyOptsVarz `json:"trusted,omitempty"` // Trusted holds a list of trusted proxies
 }
 
-// ProxyOptsVarz contains monitoring proxy information
+// ProxyOptsVarz contains proxy information
 type ProxyOptsVarz struct {
-	Key string `json:"key"`
+	Key string `json:"key"` // Key is the public key of the proxy
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1418,10 +1418,10 @@ type SlowConsumersStats struct {
 
 // StaleConnectionStats contains information about the stale connections from different type of connections.
 type StaleConnectionStats struct {
-	Clients  uint64 `json:"clients"`
-	Routes   uint64 `json:"routes"`
-	Gateways uint64 `json:"gateways"`
-	Leafs    uint64 `json:"leafs"`
+	Clients  uint64 `json:"clients"`  // Clients is how many Client connections became stale connections
+	Routes   uint64 `json:"routes"`   // Routes is how many Route connections became stale connections
+	Gateways uint64 `json:"gateways"` // Gateways is how many Gateway connections became stale connections
+	Leafs    uint64 `json:"leafs"`    // Leafs is how many Leafnode connections became stale connections
 }
 
 func myUptime(d time.Duration) string {
