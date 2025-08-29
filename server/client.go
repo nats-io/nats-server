@@ -3505,6 +3505,12 @@ func (c *client) stalledWait(producer *client) {
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
+	// Track per client and total client stalls.
+	atomic.AddInt64(&c.stalls, 1)
+	if c.srv != nil {
+		atomic.AddInt64(&c.srv.stalls, 1)
+	}
+
 	// Now check if we are close to total allowed.
 	if producer.in.tst+ttl > stallTotalAllowed {
 		ttl = stallTotalAllowed - producer.in.tst

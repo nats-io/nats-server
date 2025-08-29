@@ -403,6 +403,7 @@ type stats struct {
 	outBytes         int64
 	slowConsumers    int64
 	staleConnections int64
+	stalls           int64
 }
 
 // scStats includes the total and per connection counters of Slow Consumers.
@@ -3754,6 +3755,11 @@ func (s *Server) numSubscriptions() uint32 {
 // NumSlowConsumers will report the number of slow consumers.
 func (s *Server) NumSlowConsumers() int64 {
 	return atomic.LoadInt64(&s.slowConsumers)
+}
+
+// NumStalledClients will report the total number of times clients have been stalled.
+func (s *Server) NumStalledClients() int64 {
+	return atomic.LoadInt64(&s.stalls)
 }
 
 // NumSlowConsumersClients will report the number of slow consumers clients.

@@ -3081,12 +3081,12 @@ func TestNoRaceProducerStallLimits(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	ncSlow := natsConnect(t, s.ClientURL())
+	ncSlow := natsConnect(t, s.ClientURL(), nats.Name("slow"))
 	defer ncSlow.Close()
 	natsSub(t, ncSlow, "foo", func(m *nats.Msg) { m.Respond([]byte("42")) })
 	natsFlush(t, ncSlow)
 
-	ncProd := natsConnect(t, s.ClientURL())
+	ncProd := natsConnect(t, s.ClientURL(), nats.Name("fast"))
 	defer ncProd.Close()
 
 	cid, err := ncSlow.GetClientID()
@@ -3129,6 +3129,41 @@ func TestNoRaceProducerStallLimits(t *testing.T) {
 	// Should always be close to totalAllowed (e.g. 10ms), but if you run a lot of them in one go can bump up
 	// just past it, hence the Max setting below to avoid a flapper.
 	require_LessThan(t, elapsed, stallTotalAllowed+20*time.Millisecond)
+
+	var tc *client
+	s.mu.Lock()
+	for _, client := range s.clients {
+		client.mu.Lock()
+		if client.opts.Name == "slow" {
+			tc = client
+			client.mu.Unlock()
+			break
+		}
+		client.mu.Unlock()
+	}
+	s.mu.Unlock()
+
+	// Verify counter was incremented.
+	totalStalls := atomic.LoadInt64(&tc.stalls)
+	if totalStalls == 0 {
+		t.Fatalf("Expected stalls count to be incremented, got: %d", totalStalls)
+	}
+
+	// Verify this shows up in Connz monitoring.
+	pconns := pollConnz(t, s, 1, "", nil)
+	var connzStalls int64
+	for _, conn := range pconns.Conns {
+		if conn.Cid == tc.cid {
+			connzStalls = conn.Stalls
+			break
+		}
+	}
+	if connzStalls < 1 {
+		t.Fatalf("Expected connz stalls count to be incremented, got: %d", connzStalls)
+	}
+	if s.NumStalledClients() < 1 {
+		t.Fatalf("Expected total stalled clients to be incremented, got: %d", s.NumStalledClients())
+	}
 }
 
 func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
