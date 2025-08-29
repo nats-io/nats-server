@@ -1951,6 +1951,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 			t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
 		}
 	}
+	// Increment stalls to confirm they are reported.
+	atomic.AddInt64(&sb.stalls, 3)
 
 	// Now query B and check that route's name is "A"
 	subj = fmt.Sprintf(serverStatsReqSubj, sb.ID())
@@ -1971,6 +1973,7 @@ func TestServerEventsStatsZ(t *testing.T) {
 			t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
 		}
 	}
+	require_Equal(t, m.Stats.Stalls, 3)
 }
 
 func TestServerEventsHealthZSingleServer(t *testing.T) {
