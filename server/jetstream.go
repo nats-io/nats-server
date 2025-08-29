@@ -1499,7 +1499,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 						mset.accName(), mset.name(), seq, err)
 					break
 				}
-				mset.processJetStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, 0, 0, nil, false)
+				mset.processJetStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, 0, 0, nil, false, true)
 			}
 			store.Delete(true)
 		SKIP:
