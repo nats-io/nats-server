@@ -375,8 +375,9 @@ type ServerStats struct {
 	Received             DataStats             `json:"received"`
 	SlowConsumers        int64                 `json:"slow_consumers"`
 	SlowConsumersStats   *SlowConsumersStats   `json:"slow_consumer_stats,omitempty"`
-	StaleConnections     int64                 `json:"stale_connections"`
+	StaleConnections     int64                 `json:"stale_connections,omitempty"`
 	StaleConnectionStats *StaleConnectionStats `json:"stale_connection_stats,omitempty"`
+	Stalls               int64                 `json:"stalls,omitempty"`
 	Routes               []*RouteStat          `json:"routes,omitempty"`
 	Gateways             []*GatewayStat        `json:"gateways,omitempty"`
 	ActiveServers        int                   `json:"active_servers,omitempty"`
@@ -958,6 +959,7 @@ func (s *Server) sendStatsz(subj string) {
 		m.Stats.SlowConsumersStats = scs
 	}
 	m.Stats.StaleConnections = atomic.LoadInt64(&s.staleConnections)
+	m.Stats.Stalls = atomic.LoadInt64(&s.stalls)
 	stcs := &StaleConnectionStats{
 		Clients:  s.NumStaleConnectionsClients(),
 		Routes:   s.NumStaleConnectionsRoutes(),
