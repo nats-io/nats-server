@@ -1817,6 +1817,161 @@ func TestTraceMsgHeadersOnly(t *testing.T) {
 	}
 }
 
+func TestTraceMsgDelivery(t *testing.T) {
+	logger := &DummyLogger{}
+
+	opts := DefaultOptions()
+	opts.Trace = true
+	s := RunServer(opts)
+	s.SetLogger(logger, true, true)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+
+	ncp, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+	defer ncp.Close()
+
+	_, err = nc.Subscribe("foo", func(msg *nats.Msg) {
+		m := nats.NewMsg(msg.Reply)
+		m.Header["A"] = []string{"1"}
+		m.Header["B"] = []string{"2"}
+		m.Data = []byte("Hi Traced")
+		msg.RespondMsg(m)
+	})
+	require_NoError(t, err)
+	nc.Flush()
+
+	msg := nats.NewMsg("foo")
+	msg.Header = nats.Header{}
+	msg.Header["A"] = []string{"A:1"}
+	msg.Header["B"] = []string{"B:2"}
+	msg.Data = []byte("Hello Traced")
+	_, err = ncp.RequestMsg(msg, 100*time.Millisecond)
+	require_NoError(t, err)
+
+	// Wait for logging to settle and safely read the message.
+	time.Sleep(50 * time.Millisecond)
+	logger.Lock()
+	m := logger.Msg
+	logger.Unlock()
+	require_Contains(t, m, "->> MSG_PAYLOAD:")
+	require_Contains(t, m, "NATS/1.0")
+	require_Contains(t, m, "Hi Traced")
+
+	_, err = nc.Subscribe("bar", func(msg *nats.Msg) {
+		m := nats.NewMsg(msg.Reply)
+		m.Data = []byte("Plain Response")
+		msg.RespondMsg(m)
+	})
+	require_NoError(t, err)
+	nc.Flush()
+
+	msg = nats.NewMsg("bar")
+	_, err = ncp.RequestMsg(msg, 100*time.Millisecond)
+	require_NoError(t, err)
+
+	// Wait and safely read again.
+	time.Sleep(50 * time.Millisecond)
+	logger.Lock()
+	m = logger.Msg
+	logger.Unlock()
+	require_Contains(t, m, "->> MSG_PAYLOAD:")
+	require_Contains(t, m, "Plain Response")
+}
+
+func TestTraceMsgDeliveryWithHeaders(t *testing.T) {
+	c := &client{}
+	c.trace = true
+	hdr := fmt.Sprintf(`NATS/1.0%sFoo: 1%s%s`, CR_LF, CR_LF, CR_LF)
+	hdr2 := fmt.Sprintf(`NATS/1.0%sFoo: bar%sBar: baz%s%s`, CR_LF, CR_LF, CR_LF, CR_LF)
+
+	cases := []struct {
+		name         string
+		msg          []byte
+		hdr          int
+		traceDeliver bool
+		traceHeaders bool
+		expected     string
+	}{
+		{
+			name:         "delivery with headers enabled",
+			msg:          []byte(hdr),
+			hdr:          len(hdr),
+			traceHeaders: true,
+			expected:     `->> MSG_PAYLOAD: ["NATS/1.0\r\nFoo: 1"]`,
+		},
+		{
+			name:         "delivery with full message",
+			msg:          []byte(fmt.Sprintf("%stest%s", hdr, CR_LF)),
+			hdr:          len(hdr),
+			traceHeaders: false,
+			expected:     `->> MSG_PAYLOAD: ["NATS/1.0\r\nFoo: 1\r\n\r\ntest"]`,
+		},
+		{
+			name:         "delivery with headers only",
+			msg:          []byte(fmt.Sprintf("%stest%s", hdr, CR_LF)),
+			hdr:          len(hdr),
+			traceHeaders: true,
+			expected:     `->> MSG_PAYLOAD: ["NATS/1.0\r\nFoo: 1"]`,
+		},
+		{
+			name:         "delivery multiple headers",
+			msg:          []byte(hdr2),
+			hdr:          len(hdr2),
+			traceHeaders: true,
+			expected:     `->> MSG_PAYLOAD: ["NATS/1.0\r\nFoo: bar\r\nBar: baz"]`,
+		},
+		{
+			name:         "delivery with payload but headers only tracing",
+			msg:          []byte(fmt.Sprintf("%spayload data%s", hdr2, CR_LF)),
+			hdr:          len(hdr2),
+			traceHeaders: true,
+			expected:     `->> MSG_PAYLOAD: ["NATS/1.0\r\nFoo: bar\r\nBar: baz"]`,
+		},
+		{
+			name:         "delivery no headers but tracing enabled",
+			msg:          []byte(fmt.Sprintf("plain message%s", CR_LF)),
+			hdr:          0,
+			traceHeaders: false,
+			expected:     `->> MSG_PAYLOAD: ["plain message"]`,
+		},
+		{
+			name:         "delivery headers disabled but deliver enabled",
+			msg:          []byte(fmt.Sprintf("%spayload%s", hdr, CR_LF)),
+			hdr:          len(hdr),
+			traceHeaders: false,
+			expected:     `->> MSG_PAYLOAD: ["NATS/1.0\r\nFoo: 1\r\n\r\npayload"]`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := &DummyLogger{}
+
+			c.srv = &Server{
+				opts: &Options{
+					Trace:        true,
+					TraceHeaders: tc.traceHeaders,
+				},
+			}
+			c.srv.SetLogger(logger, true, true)
+			c.pa.hdr = tc.hdr
+			c.traceMsgDelivery(tc.msg, tc.hdr)
+			got := logger.Msg
+			if tc.expected == "" {
+				// Disabled
+				require_Equal(t, tc.expected, got)
+			} else {
+				require_True(t, strings.Contains(got, "->> MSG_PAYLOAD:"))
+				require_Equal(t, tc.expected, got)
+			}
+		})
+	}
+}
+
 func TestClientMaxPending(t *testing.T) {
 	opts := DefaultOptions()
 	opts.MaxPending = math.MaxInt32 + 1

@@ -1958,7 +1958,7 @@ func (c *client) flushSignal() {
 
 // Traces a message.
 // Will NOT check if tracing is enabled, does NOT need the client lock.
-func (c *client) traceMsg(msg []byte) {
+func (c *client) traceMsgInternal(msg []byte, delivered bool, hdrSize int) {
 	opts := c.srv.getOpts()
 	maxTrace := opts.MaxTracedMsgLen
 	headersOnly := opts.TraceHeaders
@@ -1967,8 +1967,13 @@ func (c *client) traceMsg(msg []byte) {
 	// If TraceHeaders is enabled, extract only the header portion of the msg.
 	// If a header is present, it ends with an additional trailing CRLF.
 	if headersOnly {
-		msg, _ = c.msgParts(msg)
-		suffix += LEN_CR_LF
+		if hdrSize > 0 && len(msg) >= hdrSize {
+			msg = msg[:hdrSize]
+			suffix += LEN_CR_LF
+		} else {
+			// No headers present, so nothing to trace.
+			return
+		}
 	}
 
 	// Do not emit a log line for zero-length payloads.
@@ -1977,12 +1982,30 @@ func (c *client) traceMsg(msg []byte) {
 		return
 	}
 
+	const (
+		traceInPrefix  string = "<<-"
+		traceOutPrefix string = "->>"
+	)
+	var prefix string
+	if delivered {
+		prefix = traceOutPrefix
+	} else {
+		prefix = traceInPrefix
+	}
 	if maxTrace > 0 && l > maxTrace {
 		tm := fmt.Sprintf("%q", msg[:maxTrace])
-		c.Tracef("<<- MSG_PAYLOAD: [\"%s...\"]", tm[1:len(tm)-1])
+		c.Tracef("%s MSG_PAYLOAD: [\"%s...\"]", prefix, tm[1:len(tm)-1])
 	} else {
-		c.Tracef("<<- MSG_PAYLOAD: [%q]", msg[:l])
+		c.Tracef("%s MSG_PAYLOAD: [%q]", prefix, msg[:l])
 	}
+}
+
+func (c *client) traceMsg(msg []byte) {
+	c.traceMsgInternal(msg, false, c.pa.hdr)
+}
+
+func (c *client) traceMsgDelivery(msg []byte, hdrSize int) {
+	c.traceMsgInternal(msg, true, hdrSize)
 }
 
 // Traces an incoming operation.
@@ -3676,6 +3699,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// support we need to strip the headers from the payload.
 	// The actual header would have been processed correctly for us, so just
 	// need to update payload.
+	hdrSize := c.pa.hdr
 	if c.pa.hdr > 0 && !sub.client.headers {
 		msg = msg[c.pa.hdr:]
 	}
@@ -3817,6 +3841,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	if client.trace {
 		client.traceOutOp(bytesToString(mh[:len(mh)-LEN_CR_LF]), nil)
+		client.traceMsgDelivery(msg, hdrSize)
 	}
 
 	client.mu.Unlock()

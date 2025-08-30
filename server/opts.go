@@ -305,7 +305,7 @@ type Options struct {
 	Debug           bool   `json:"-"`
 	TraceVerbose    bool   `json:"-"`
 
-	// TraceHeaders if true will only trace message headers, not the payload
+	// TraceHeaders if true will only trace message headers, not the payload.
 	TraceHeaders               bool          `json:"-"`
 	NoLog                      bool          `json:"-"`
 	NoSigs                     bool          `json:"-"`
