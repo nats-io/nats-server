@@ -82,6 +82,8 @@ type leaf struct {
 	remoteDomain string
 	// account name of remote server
 	remoteAccName string
+	// Whether or not we want to propagate east-west interest from other LNs.
+	isolated bool
 	// Used to suppress sub and unsub interest. Same as routes but our audience
 	// here is tied to this leaf node. This will hold all subscriptions except this
 	// leaf nodes. This represents all the interest we want to send to the other side.
@@ -128,6 +130,10 @@ func (c *client) isSpokeLeafNode() bool {
 
 func (c *client) isHubLeafNode() bool {
 	return c.kind == LEAF && !c.leaf.isSpoke
+}
+
+func (c *client) isIsolatedLeafNode() bool {
+	return c.kind == LEAF && c.leaf.isolated
 }
 
 // This will spin up go routines to solicit the remote leaf node connections.
@@ -985,6 +991,11 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
 	// Do not update the smap here, we need to do it in initLeafNodeSmapAndSendSubs
 	c.leaf = &leaf{}
+
+	// If the leafnode subject interest should be isolated, flag it here.
+	s.optsMu.RLock()
+	c.leaf.isolated = s.opts.LeafNode.IsolateLeafnodeInterest
+	s.optsMu.RUnlock()
 
 	// For accepted LN connections, ws will be != nil if it was accepted
 	// through the Websocket port.
@@ -2179,6 +2190,10 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", sub.subject, accName, accNTag)
 			continue
 		}
+		// Don't advertise interest from leafnodes to other isolated leafnodes.
+		if sub.client.kind == LEAF && c.isIsolatedLeafNode() {
+			continue
+		}
 		// We ignore ourselves here.
 		// Also don't add the subscription if it has a origin cluster and the
 		// cluster name matches the one of the client we are sending to.
@@ -2295,6 +2310,10 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 	// Walk the connected leafnodes.
 	for _, ln := range acc.lleafs {
 		if ln == sub.client {
+			continue
+		}
+		// Don't advertise interest from leafnodes to other isolated leafnodes.
+		if sub.client.kind == LEAF && ln.isIsolatedLeafNode() {
 			continue
 		}
 		// Check to make sure this sub does not have an origin cluster that matches the leafnode.

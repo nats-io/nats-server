@@ -10258,3 +10258,87 @@ func TestLeafNodesDisableRemote(t *testing.T) {
 	msg = natsNexMsg(t, sub2, time.Second)
 	require_Equal(t, string(msg.Data), "hello4")
 }
+
+func TestLeafNodeIsolatedLeafSubjectPropagation(t *testing.T) {
+	for tname, isolated := range map[string]bool{
+		"Isolated": true,
+		"Normal":   false,
+	} {
+		t.Run(tname, func(t *testing.T) {
+			hubTmpl := `
+				port: -1
+				server_name: "%s"
+				accounts {
+					HA { users: [{user: HA, password: pwd}] }
+				}
+				leafnodes {
+					port: -1
+					isolate_leafnode_interest: %v
+				}
+			`
+			confH := createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "H1", isolated)))
+			sh, oh := RunServerWithConfig(confH)
+			defer sh.Shutdown()
+
+			spokeTmpl := `
+				port: -1
+				server_name: "%s"
+				accounts {
+					A { users: [{user: A, password: pwd}] }
+				}
+				leafnodes {
+					remotes [
+						{
+							url: "nats://HA:pwd@127.0.0.1:%d"
+							local: "A"
+						}
+					]
+				}
+			`
+
+			confSP1 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP1", oh.LeafNode.Port)))
+			sp1, _ := RunServerWithConfig(confSP1)
+			defer sp1.Shutdown()
+
+			confSP2 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP2", oh.LeafNode.Port)))
+			sp2, _ := RunServerWithConfig(confSP2)
+			defer sp2.Shutdown()
+
+			checkLeafNodeConnectedCount(t, sh, 2)
+			checkLeafNodeConnectedCount(t, sp1, 1)
+			checkLeafNodeConnectedCount(t, sp2, 1)
+
+			nch := natsConnect(t, sh.ClientURL(), nats.UserInfo("HA", "pwd"))
+			nc1 := natsConnect(t, sp1.ClientURL(), nats.UserInfo("A", "pwd"))
+
+			// Create a north-south subscription on the hub that should be visible to both spokes.
+			nssub, err := nch.SubscribeSync("northsouth")
+			require_NoError(t, err)
+			checkSubInterest(t, sh, "HA", "northsouth", time.Second) // Visible to the hub.
+			checkSubInterest(t, sp1, "A", "northsouth", time.Second) // Visible to both spokes.
+			checkSubInterest(t, sp2, "A", "northsouth", time.Second) // Visible to both spokes.
+
+			// The spoke subscriptions should be visible to the hub in all cases, but only
+			// visible to other spokes if they are not isolated.
+			ewsub, err := nc1.SubscribeSync("eastwest")
+			require_NoError(t, err)
+			checkSubInterest(t, sh, "HA", "eastwest", time.Second) // Visible to the hub.
+			checkSubInterest(t, sp1, "A", "eastwest", time.Second) // Visible to the spoke with the sub.
+			if isolated {
+				checkSubNoInterest(t, sp2, "A", "eastwest", time.Second) // Not visible to the other spoke.
+			} else {
+				checkSubInterest(t, sp2, "A", "eastwest", time.Second) // Visible to the other spoke.
+			}
+			require_NoError(t, ewsub.Unsubscribe())
+			checkSubNoInterest(t, sh, "HA", "eastwest", time.Second)
+			checkSubNoInterest(t, sp1, "A", "eastwest", time.Second)
+			checkSubNoInterest(t, sp2, "A", "eastwest", time.Second)
+
+			// ... but a subscription from the hub should be visible to both.
+			require_NoError(t, nssub.Unsubscribe())
+			checkSubNoInterest(t, sh, "HA", "northsouth", time.Second)
+			checkSubNoInterest(t, sp1, "A", "northsouth", time.Second)
+			checkSubNoInterest(t, sp2, "A", "northsouth", time.Second)
+		})
+	}
+}
