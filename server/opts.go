@@ -189,6 +189,10 @@ type LeafNodeOpts struct {
 	// least" test).
 	MinVersion string
 
+	// Isolate subject interest from other leafnode connections, preventing
+	// east-west propagation.
+	IsolateLeafnodeInterest bool `json:"-"`
+
 	// Not exported, for tests.
 	resolver    netResolver
 	dialTimeout time.Duration
@@ -2682,6 +2686,8 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 				*errors = append(*errors, err)
 				continue
 			}
+		case "isolate_leafnode_interest", "isolate":
+			opts.LeafNode.IsolateLeafnodeInterest = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
