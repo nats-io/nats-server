@@ -2320,6 +2320,7 @@ type LeafInfo struct {
 	ID          uint64     `json:"id"`
 	Name        string     `json:"name"`
 	IsSpoke     bool       `json:"is_spoke"`
+	IsIsolated  bool       `json:"is_isolated,omitempty"`
 	Account     string     `json:"account"`
 	IP          string     `json:"ip"`
 	Port        int        `json:"port"`
@@ -2364,6 +2365,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 				ID:          ln.cid,
 				Name:        ln.leaf.remoteServer,
 				IsSpoke:     ln.isSpokeLeafNode(),
+				IsIsolated:  ln.leaf.isolated,
 				Account:     ln.acc.Name,
 				IP:          ln.host,
 				Port:        int(ln.port),
