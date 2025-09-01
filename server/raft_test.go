@@ -3351,7 +3351,8 @@ func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, lterm: 20, term: 20, commit: 0, pterm: 20, pindex: 1, entries: entries})
 	aeMsg3 := encode(t, &appendEntry{leader: nats0, lterm: 20, term: 20, commit: 0, pterm: 20, pindex: 2, entries: entries})
 
-	aeMsg1Fork := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeReply := "$TEST"
+	aeMsg1Fork := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: aeReply})
 	aeMsg2Fork := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
 
 	// Trigger a catchup.
@@ -3370,6 +3371,15 @@ func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	require_Equal(t, n.pindex, 1)
 	require_Equal(t, n.pterm, 20)
 
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(aeReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
 	// Would previously stall the catchup and restart it with a previous leader.
 	n.catchup.pindex = aeMsg1.pindex + 1
 	n.catchup.active = time.Time{}
@@ -3377,6 +3387,14 @@ func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	require_Equal(t, n.pindex, 1)
 	require_Equal(t, n.pterm, 20)
 	validateCatchup()
+
+	// Should reply we have a higher term, prompting the server to step down.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar := n.decodeAppendEntryResponse(msg.Data)
+	require_False(t, ar.success)
+	require_Equal(t, ar.index, 1)
+	require_Equal(t, ar.term, 20)
 
 	// Would previously reset the WAL.
 	n.processAppendEntry(aeMsg2Fork, n.aesub)
