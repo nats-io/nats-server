@@ -299,6 +299,9 @@ type client struct {
 	nameTag string
 
 	tlsTo *time.Timer
+
+	// Need to inject headers
+	ihdr []byte
 }
 
 type rrTracking struct {
@@ -3393,7 +3396,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 func (c *client) msgHeader(subj, reply []byte, sub *subscription) []byte {
 	// See if we should do headers. We have to have a headers msg and
 	// the client we are going to deliver to needs to support headers as well.
-	hasHeader := c.pa.hdr > 0
+	hasHeader := c.pa.hdr > 0 || len(c.ihdr) > 0
 	canReceiveHeader := sub.client != nil && sub.client.headers
 
 	var mh []byte
@@ -3416,9 +3419,20 @@ func (c *client) msgHeader(subj, reply []byte, sub *subscription) []byte {
 	}
 	if hasHeader {
 		if canReceiveHeader {
-			mh = append(mh, c.pa.hdb...)
-			mh = append(mh, ' ')
-			mh = append(mh, c.pa.szb...)
+			// If need inject header, reset header length and total size
+			if len(c.ihdr) > 0 {
+				if c.pa.hdr > 0 {
+					l := len(c.ihdr) - len(hdrLine)
+					mh = fmt.Appendf(mh, "%d %d", c.pa.hdr+l, c.pa.size+l)
+				} else {
+					l := len(c.ihdr) + 2
+					mh = fmt.Appendf(mh, "%d %d", l, c.pa.size+l)
+				}
+			} else {
+				mh = append(mh, c.pa.hdb...)
+				mh = append(mh, ' ')
+				mh = append(mh, c.pa.szb...)
+			}
 		} else {
 			// If we are here we need to truncate the payload size
 			nsz := strconv.Itoa(c.pa.size - c.pa.hdr)
@@ -3710,7 +3724,25 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Queue to outbound buffer
 	client.queueOutbound(mh)
-	client.queueOutbound(msg)
+
+	if c.kind == CLIENT && len(c.ihdr) > 0 && client.headers {
+		if c.pa.hdr > 0 {
+			// The reason for injecting the header first is that if the injected header and the original header have duplicate keys,
+			// the injected header will be in front. This way, when the user calls msg.Header.Get(key) can get the correct value.
+			client.queueOutbound(c.ihdr)
+			// Skip "NATS/1.0\r\n" from hdrLine length
+			client.queueOutbound(msg[len(hdrLine):])
+		} else {
+			// If no original header, use pre-built full header
+			client.queueOutbound(c.ihdr)
+			client.queueOutbound([]byte("\r\n"))
+			// Then send message body
+			client.queueOutbound(msg)
+		}
+	} else {
+		client.queueOutbound(msg)
+	}
+
 	if prodIsMQTT {
 		// Need to add CR_LF since MQTT producers don't send CR_LF
 		client.queueOutbound([]byte(CR_LF))
@@ -6383,4 +6415,90 @@ func (c *client) setFirstPingTimer() {
 		c.ping.tmr.Stop()
 	}
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
+}
+
+// injectHeader is used to inject JWT tags into the client's header.
+// Only effective for connections of type CLIENT.
+// The tag format should be "Key:Value", which will be appended to the ihdr field,
+// so that subsequent message sending will automatically include these headers.
+// Keys and values are validated to prevent header injection attacks.
+func (c *client) injectHeader(tags jwt.TagList) {
+	if c.kind != CLIENT {
+		return
+	}
+
+	if len(tags) == 0 {
+		return
+	}
+
+	// Pre-calculate buffer size to reduce allocations
+	var totalSize int
+	validTags := make([]string, 0, len(tags))
+
+	for _, tag := range tags {
+		kv := strings.Split(tag, ":")
+		if len(kv) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(kv[0])
+		value := strings.TrimSpace(kv[1])
+
+		// Validate key
+		if key == "" {
+			continue
+		}
+
+		// Check for header injection attacks (CRLF in key or value)
+		if strings.ContainsAny(key, "\r\n") || strings.ContainsAny(value, "\r\n") {
+			continue
+		}
+
+		// Validate key format (basic HTTP header name validation)
+		if !isValidHeaderName(key) {
+			c.Debugf("Invalid header name in JWT tag: %q", key)
+			continue
+		}
+
+		validTag := key + ":" + value + "\r\n"
+		validTags = append(validTags, validTag)
+		totalSize += len(validTag)
+	}
+
+	if len(validTags) == 0 {
+		return
+	}
+
+	ihdr := make([]byte, 0, len(hdrLine)+totalSize)
+	ihdr = append(ihdr, []byte(hdrLine)...)
+
+	// Append all valid tags
+	for _, tag := range validTags {
+		ihdr = append(ihdr, []byte(tag)...)
+	}
+
+	c.mu.Lock()
+	c.ihdr = ihdr
+	c.mu.Unlock()
+}
+
+// isValidHeaderName checks if a header name is valid according to HTTP standards
+func isValidHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		// HTTP header names should only contain token characters
+		// RFC 7230: token = 1*tchar
+		// tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+		//         "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+		if r <= 32 || r >= 127 ||
+			r == '(' || r == ')' || r == '<' || r == '>' || r == '@' ||
+			r == ',' || r == ';' || r == ':' || r == '\\' || r == '"' ||
+			r == '/' || r == '[' || r == ']' || r == '?' || r == '=' ||
+			r == '{' || r == '}' || r == ' ' || r == '\t' {
+			return false
+		}
+	}
+	return true
 }

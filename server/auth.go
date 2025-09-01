@@ -1033,6 +1033,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		c.nameTag = juc.Name
 		c.mu.Unlock()
 
+		// Inject header from jwt tags
+		if len(juc.Tags) > 0 {
+			c.injectHeader(juc.Tags)
+		}
+
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.setExpiration(juc.Claims(), validFor)
 

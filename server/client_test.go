@@ -3247,3 +3247,135 @@ func TestClientRejectsNRGSubjects(t *testing.T) {
 		require_True(t, strings.HasPrefix(err.Error(), "nats: permissions violation"))
 	})
 }
+
+func TestClientInjectHeaderFromJWTTags(t *testing.T) {
+	_, c, _ := setupClient()
+	defer c.close()
+
+	// Test injectHeader function directly
+	tags := jwt.TagList{"user:alice", "role:admin", "team:engineering"}
+	c.injectHeader(tags)
+
+	c.mu.Lock()
+	ihdr := c.ihdr
+	c.mu.Unlock()
+
+	if ihdr == nil {
+		t.Fatal("Expected headers to be injected")
+	}
+
+	hdrStr := string(ihdr)
+	expectedHeaders := []string{
+		"NATS/1.0\r\n",
+		"user:alice\r\n",
+		"role:admin\r\n",
+		"team:engineering\r\n",
+	}
+
+	for _, expected := range expectedHeaders {
+		if !strings.Contains(hdrStr, expected) {
+			t.Errorf("Expected header %q not found in: %q", expected, hdrStr)
+		}
+	}
+}
+
+func TestClientInjectHeaderValidation(t *testing.T) {
+	_, c, _ := setupClient()
+	defer c.close()
+
+	// Test invalid tags are filtered out
+	tags := jwt.TagList{
+		"valid:value",
+		"invalid_no_colon",
+		":empty_key",
+		"key:value:extra",
+		"malicious:value\r\nattack",
+		"invalid@char:value",
+	}
+	c.injectHeader(tags)
+
+	c.mu.Lock()
+	ihdr := c.ihdr
+	c.mu.Unlock()
+
+	if ihdr == nil {
+		t.Fatal("Expected at least one valid header")
+	}
+
+	hdrStr := string(ihdr)
+
+	// Should contain valid header
+	if !strings.Contains(hdrStr, "valid:value\r\n") {
+		t.Error("Valid header should be present")
+	}
+
+	// Should NOT contain invalid headers
+	invalidStrings := []string{"invalid_no_colon", "empty_key", "extra", "attack", "invalid@char"}
+	for _, invalid := range invalidStrings {
+		if strings.Contains(hdrStr, invalid) {
+			t.Errorf("Invalid content %q should not be present in headers", invalid)
+		}
+	}
+}
+
+func TestClientInjectHeaderNonClientType(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+
+	// Test different client types
+	types := []int{ROUTER, GATEWAY, LEAF, SYSTEM}
+
+	for _, clientType := range types {
+		c := &client{kind: clientType, srv: s}
+		c.initClient()
+
+		tags := jwt.TagList{"user:alice", "role:admin"}
+		c.injectHeader(tags)
+
+		c.mu.Lock()
+		ihdr := c.ihdr
+		c.mu.Unlock()
+
+		if ihdr != nil {
+			t.Errorf("Client type %d should not have headers injected", clientType)
+		}
+	}
+}
+
+func TestClientMsgHeaderWithInjectedHeaders(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+
+	c, _, _ := newClientForServer(s)
+	defer c.close()
+
+	// Enable headers and inject some
+	c.headers = true
+	tags := jwt.TagList{"user:alice", "role:admin"}
+	c.injectHeader(tags)
+
+	// Create a subscription
+	sub := &subscription{
+		client: &client{headers: true},
+		sid:    []byte("1"),
+	}
+
+	// Test msgHeader generation
+	mh := c.msgHeader([]byte("test.subject"), nil, sub)
+
+	if mh == nil {
+		t.Fatal("Expected message header to be generated")
+	}
+
+	mhStr := string(mh)
+
+	// Should start with HMSG for header message
+	if !strings.HasPrefix(mhStr, "HMSG") {
+		t.Errorf("Expected header message to start with HMSG, got: %s", mhStr)
+	}
+
+	// Should contain subject
+	if !strings.Contains(mhStr, "test.subject") {
+		t.Error("Expected subject to be in message header")
+	}
+}

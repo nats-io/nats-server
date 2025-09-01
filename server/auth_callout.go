@@ -301,6 +301,11 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			c.mu.Unlock()
 		}
 
+		// Inject header from jwt tags
+		if len(arc.Tags) > 0 {
+			c.injectHeader(arc.Tags)
+		}
+
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.setExpiration(arc.Claims(), expiration)
 
