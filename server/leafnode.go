@@ -498,6 +498,61 @@ func (s *Server) setLeafNodeNonExportedOptions() {
 
 const sharedSysAccDelay = 250 * time.Millisecond
 
+// establishHTTPProxyTunnel establishes an HTTP CONNECT tunnel through a proxy server
+func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration, username, password string) (net.Conn, error) {
+	proxyAddr, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %v", err)
+	}
+
+	// Connect to the proxy server
+	conn, err := natsDialTimeout("tcp", proxyAddr.Host, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to proxy: %v", err)
+	}
+
+	// Send HTTP CONNECT request
+	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", targetHost, targetHost)
+	
+	// Add proxy authentication if provided
+	if username != "" && password != "" {
+		auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		connectReq += fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth)
+	}
+	
+	connectReq += "\r\n"
+
+	// Send the CONNECT request
+	if _, err := conn.Write([]byte(connectReq)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to send CONNECT request: %v", err)
+	}
+
+	// Read the response
+	response := make([]byte, 1024)
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to set read deadline: %v", err)
+	}
+
+	n, err := conn.Read(response)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to read proxy response: %v", err)
+	}
+
+	// Clear the read deadline
+	conn.SetReadDeadline(time.Time{})
+
+	responseStr := string(response[:n])
+	if !strings.HasPrefix(responseStr, "HTTP/1.1 200") && !strings.HasPrefix(responseStr, "HTTP/1.0 200") {
+		conn.Close()
+		return nil, fmt.Errorf("proxy CONNECT failed: %s", strings.Split(responseStr, "\r\n")[0])
+	}
+
+	return conn, nil
+}
+
 func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool) {
 	defer s.grWG.Done()
 
@@ -553,7 +608,32 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 				err = ErrLeafNodeDisabled
 			} else {
 				s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
-				conn, err = natsDialTimeout("tcp", url, dialTimeout)
+				
+				// Check if this is a WebSocket URL and proxy is configured
+				if isWSURL(rURL) && remote.Proxy.URL != "" {
+					// Use proxy for WebSocket connections
+					targetHost := url
+					if port := rURL.Port(); port != "" {
+						targetHost = net.JoinHostPort(url, port)
+					} else {
+						// Default ports for ws/wss
+						defaultPort := "80"
+						if rURL.Scheme == "wss" {
+							defaultPort = "443"
+						}
+						targetHost = net.JoinHostPort(url, defaultPort)
+					}
+					
+					proxyTimeout := remote.Proxy.Timeout
+					if proxyTimeout == 0 {
+						proxyTimeout = dialTimeout
+					}
+					
+					conn, err = establishHTTPProxyTunnel(remote.Proxy.URL, targetHost, proxyTimeout, remote.Proxy.Username, remote.Proxy.Password)
+				} else {
+					// Direct connection
+					conn, err = natsDialTimeout("tcp", url, dialTimeout)
+				}
 			}
 		}
 		if err != nil {
