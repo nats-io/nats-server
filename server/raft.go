@@ -3501,14 +3501,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		// Anything that's below our expected highest term needs to be rejected.
 		// Unless we're replaying (sub=nil), in which case we'll always continue.
 		// For backward-compatibility we shouldn't reject if we're being caught up by an old server.
-		if isNew {
-			n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, lterm)
-		} else {
+		if !isNew {
 			n.debug("AppendEntry ignoring old entry from previous catchup")
+			n.Unlock()
+			return
 		}
+		n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, lterm)
+		ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
 		n.Unlock()
-		// No need to respond, the leader will respond with the highest term already.
-		// We can simply reject here without sending additional responses.
+		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		arPool.Put(ar)
 		return
 	}
 
