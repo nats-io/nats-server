@@ -3421,7 +3421,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// Are we receiving from another leader.
 	if n.State() == Leader {
-		// If we are the same we should step down to break the tie.
 		if lterm >= n.term {
 			// If the append entry term is newer than the current term, erase our
 			// vote.
@@ -3429,6 +3428,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.term = lterm
 				n.vote = noVote
 				n.writeTermVote()
+			} else {
+				assert.Unreachable(
+					"Two leaders using the same term",
+					map[string]any{
+						"Node id":           n.id,
+						"Node term":         n.term,
+						"AppendEntry id":    ae.leader,
+						"AppendEntry term":  ae.term,
+						"AppendEntry lterm": ae.lterm,
+					})
 			}
 			n.debug("Received append entry from another leader, stepping down to %q", ae.leader)
 			n.stepdownLocked(ae.leader)
