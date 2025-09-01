@@ -10004,14 +10004,15 @@ func TestJetStreamClusterScheduledDelayedMessage(t *testing.T) {
 				_, err = js.PublishMsg(m)
 				require_Error(t, err, NewJSMessageTTLDisabledError())
 
-				_, err = jsStreamCreate(t, nc, &StreamConfig{
+				cfg := &StreamConfig{
 					Name:              "SchedulesEnabled",
 					Subjects:          []string{"foo.*"},
 					Storage:           storage,
 					Replicas:          replicas,
 					AllowMsgSchedules: true,
 					AllowMsgTTL:       true,
-				})
+				}
+				_, err = jsStreamCreate(t, nc, cfg)
 				require_NoError(t, err)
 
 				m = nats.NewMsg("foo.invalid")
@@ -10132,6 +10133,10 @@ func TestJetStreamClusterScheduledDelayedMessage(t *testing.T) {
 				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 					return checkState(t, c, globalAccountName, "SchedulesEnabled")
 				})
+
+				cfg.AllowMsgSchedules = false
+				_, err = jsStreamUpdate(t, nc, cfg)
+				require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("message schedules can not be disabled")))
 			})
 		}
 	}
