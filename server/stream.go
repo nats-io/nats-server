@@ -2024,6 +2024,11 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change message counter setting"))
 	}
 
+	// Can't disable message schedules setting.
+	if old.AllowMsgSchedules && !cfg.AllowMsgSchedules {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("message schedules can not be disabled"))
+	}
+
 	// Do some adjustments for being sealed.
 	// Pedantic mode will allow those changes to be made, as they are deterministic and important to get a sealed stream.
 	if cfg.Sealed {
