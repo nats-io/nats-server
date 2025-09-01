@@ -6339,6 +6339,10 @@ func (s *Server) sendDomainLeaderElectAdvisory() {
 	node := cc.meta
 	js.mu.RUnlock()
 
+	if node == nil {
+		return
+	}
+
 	adv := &JSDomainLeaderElectedAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSDomainLeaderElectedAdvisoryType,
