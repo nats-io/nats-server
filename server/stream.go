@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
@@ -5816,6 +5817,15 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 	mset.mu.Unlock()
 
+	done := atomic.Bool{}
+	mset.srv.Noticef("Stopping %d consumers", len(obs))
+	go func() {
+		<-time.After(10 * time.Second)
+		if !done.Load() {
+			assert.Unreachable("consumer stop timeout", make(map[string]any))
+		}
+	}()
+
 	isShuttingDown := js.isShuttingDown()
 	for _, o := range obs {
 		if !o.isClosed() {
@@ -5828,6 +5838,8 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			}
 		}
 	}
+	done.Store(true)
+	mset.srv.Noticef("Stopped %d consumers", len(obs))
 
 	mset.mu.Lock()
 	// Send stream delete advisory after the consumers.

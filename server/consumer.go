@@ -5752,6 +5752,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 
 	o.mu.Lock()
+	o.srv.Debugf("Consumer closed: %v", o.closed)
 	if o.closed {
 		o.mu.Unlock()
 		return nil
@@ -5778,6 +5779,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		}
 	}
 
+	o.srv.Debugf("Quit channel")
 	if o.qch != nil {
 		close(o.qch)
 		o.qch = nil
@@ -5825,6 +5827,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 	js := o.js
 	o.mu.Unlock()
+	o.srv.Debugf("Unlock")
 
 	if c != nil {
 		c.closeConnection(ClientClosed)
@@ -5838,6 +5841,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 
 	var rp RetentionPolicy
+	o.srv.Debugf("Remove consumer")
 	if mset != nil {
 		mset.mu.Lock()
 		mset.removeConsumer(o)
@@ -5852,6 +5856,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 
 	// Cluster cleanup.
+	o.srv.Debugf("Cleanup, n=%v", n != nil)
 	if n != nil {
 		if dflag {
 			n.Delete()
