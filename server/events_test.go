@@ -1973,7 +1973,7 @@ func TestServerEventsStatsZ(t *testing.T) {
 			t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
 		}
 	}
-	require_Equal(t, m.Stats.Stalls, 3)
+	require_Equal(t, m.Stats.StalledClients, 3)
 }
 
 func TestServerEventsHealthZSingleServer(t *testing.T) {
