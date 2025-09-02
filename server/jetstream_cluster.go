@@ -3105,6 +3105,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// Need to do the rest in a separate Go routine.
 	go func() {
+		mset.signalMonitorQuit()
 		mset.monitorWg.Wait()
 		mset.resetAndWaitOnConsumers()
 		// Stop our stream.
@@ -3906,6 +3907,7 @@ func (s *Server) removeStream(mset *stream, nsa *streamAssignment) {
 
 	if !isShuttingDown {
 		// wait for monitor to be shutdown.
+		mset.signalMonitorQuit()
 		mset.monitorWg.Wait()
 	}
 	mset.stop(true, false)
@@ -4390,6 +4392,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 				n.Delete()
 			}
 			// wait for monitor to be shut down
+			mset.signalMonitorQuit()
 			mset.monitorWg.Wait()
 			err = mset.stop(true, wasLeader)
 			stopped = true
@@ -5130,7 +5133,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	// from underneath the one that is running since it will be the same raft node.
 	defer n.Stop()
 
-	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), meta.ID()
+	qch, mqch, lch, aq, uch, ourPeerId := n.QuitC(), o.monitorQuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), meta.ID()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
@@ -5217,6 +5220,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
+			doSnapshot(false)
+			return
+		case <-mqch:
+			// Clean signal from shutdown routine so do best effort attempt to snapshot.
 			doSnapshot(false)
 			return
 		case <-qch:

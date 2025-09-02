@@ -951,6 +951,17 @@ func (mset *stream) monitorQuitC() <-chan struct{} {
 	return mset.mqch
 }
 
+// signalMonitorQuit signals to exit the monitor loop. If there's no Raft node,
+// this will be the only way to stop the monitor goroutine.
+func (mset *stream) signalMonitorQuit() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	if mset.mqch != nil {
+		close(mset.mqch)
+		mset.mqch = nil
+	}
+}
+
 func (mset *stream) updateC() <-chan struct{} {
 	if mset == nil {
 		return nil
@@ -5756,6 +5767,7 @@ func (mset *stream) resetAndWaitOnConsumers() {
 			node.Stop()
 		}
 		if o.isMonitorRunning() {
+			o.signalMonitorQuit()
 			o.monitorWg.Wait()
 		}
 	}
@@ -5846,6 +5858,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			// but should we log?
 			o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
 			if !isShuttingDown {
+				o.signalMonitorQuit()
 				o.monitorWg.Wait()
 			}
 		}
