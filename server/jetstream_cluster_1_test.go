@@ -10688,6 +10688,114 @@ func TestJetStreamClusterOfflineStreamAndConsumerStrictDecoding(t *testing.T) {
 	require_True(t, bytes.Equal(wca.unsupportedJson, unsupportedJson))
 }
 
+func TestJetStreamClusterStreamMonitorShutdownWithoutRaftNode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if !s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				return fmt.Errorf("stream not assigned on %s", s.Name())
+			}
+		}
+		return nil
+	})
+
+	var nodes []RaftNode
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		// Manually nil-out the node. This shouldn't happen normally,
+		// but tests we can shut down purely with the monitor goroutine quit channel.
+		mset.mu.Lock()
+		n := mset.node
+		mset.node = nil
+		mset.mu.Unlock()
+		require_NotNil(t, n)
+		nodes = append(nodes, n)
+	}
+	for _, n := range nodes {
+		require_NotEqual(t, n.State(), Closed)
+	}
+
+	require_NoError(t, js.DeleteStream("TEST"))
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, n := range nodes {
+			if state := n.State(); state != Closed {
+				return fmt.Errorf("node not closed on %s: %s", n.ID(), state.String())
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterConsumerMonitorShutdownWithoutRaftNode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:  "DURABLE",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			_, cc := s.getJetStreamCluster()
+			if !cc.isConsumerAssigned(s.globalAccount(), "TEST", "DURABLE") {
+				return fmt.Errorf("consumer not assigned on %s", s.Name())
+			}
+		}
+		return nil
+	})
+
+	var nodes []RaftNode
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("DURABLE")
+		require_NotNil(t, o)
+		// Manually nil-out the node. This shouldn't happen normally,
+		// but tests we can shut down purely with the monitor goroutine quit channel.
+		o.mu.Lock()
+		n := o.node
+		o.node = nil
+		o.mu.Unlock()
+		require_NotNil(t, n)
+		nodes = append(nodes, n)
+	}
+	for _, n := range nodes {
+		require_NotEqual(t, n.State(), Closed)
+	}
+
+	require_NoError(t, js.DeleteStream("TEST"))
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, n := range nodes {
+			if state := n.State(); state != Closed {
+				return fmt.Errorf("node not closed on %s: %s", n.ID(), state.String())
+			}
+		}
+		return nil
+	})
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

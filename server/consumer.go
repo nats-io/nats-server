@@ -474,6 +474,7 @@ type consumer struct {
 	dthresh           time.Duration
 	mch               chan struct{} // Message channel
 	qch               chan struct{} // Quit channel
+	mqch              chan struct{} // The monitor's quit channel.
 	inch              chan bool     // Interest change channel
 	sfreq             int32
 	ackEventT         string
@@ -1125,6 +1126,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		outq:      mset.outq,
 		active:    true,
 		qch:       make(chan struct{}),
+		mqch:      make(chan struct{}),
 		uch:       make(chan struct{}, 1),
 		mch:       make(chan struct{}, 1),
 		sfreq:     int32(sampleFreq),
@@ -1386,6 +1388,26 @@ func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	select {
 	case o.uch <- struct{}{}:
 	default:
+	}
+}
+
+func (o *consumer) monitorQuitC() <-chan struct{} {
+	if o == nil {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.mqch
+}
+
+// signalMonitorQuit signals to exit the monitor loop. If there's no Raft node,
+// this will be the only way to stop the monitor goroutine.
+func (o *consumer) signalMonitorQuit() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.mqch != nil {
+		close(o.mqch)
+		o.mqch = nil
 	}
 }
 
@@ -5999,6 +6021,13 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		return nil
 	}
 	o.closed = true
+
+	// Signal to the monitor loop.
+	// Can't use only qch here, since that's used when stepping down as a leader.
+	if o.mqch != nil {
+		close(o.mqch)
+		o.mqch = nil
+	}
 
 	// Check if we are the leader and are being deleted (as a node).
 	if dflag && o.isLeader() {
