@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -6903,4 +6904,110 @@ func TestJetStreamClusterMultiLeaderR3Config(t *testing.T) {
 			return checkMultiLeader("js", invalidStream)
 		})
 	}
+}
+
+func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
+	conf := `
+                listen: 127.0.0.1:-1
+                server_name: %s
+                jetstream: {
+                        store_dir: '%s',
+                }
+                cluster {
+                        name: %s
+                        listen: 127.0.0.1:%d
+                        routes = [%s]
+                }
+                server_tags: ["test"]
+                system_account: sys
+                no_auth_user: js
+                accounts {
+                        sys { users = [ { user: sys, pass: sys } ] }
+                        js {
+                                jetstream = enabled
+                                users = [ { user: js, pass: js } ]
+                                limits {
+                                  max_connections: 3
+                                }
+                    }
+                }`
+	c := createJetStreamClusterWithTemplate(t, conf, "R3CONNECT", 3)
+	defer c.shutdown()
+	var conns []*nats.Conn
+
+	disconnects := make([]chan error, 0)
+	for i := 1; i <= 3; i++ {
+		disconnectCh := make(chan error)
+		c, _ := jsClientConnect(t, c.servers[0], nats.UserInfo("js", "js"), nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			disconnectCh <- err
+		}))
+		defer c.Close()
+		conns = append(conns, c)
+		disconnects = append(disconnects, disconnectCh)
+		// Small delay to ensure distinct start times.
+		time.Sleep(10 * time.Millisecond)
+	}
+	s := c.servers[0]
+	acc, err := s.lookupAccount("js")
+	require_NoError(t, err)
+	require_Equal(t, acc.NumConnections(), 3)
+
+	nc := conns[0]
+	js, _ := nc.JetStream()
+	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
+		ack, err := js.Publish("foo", []byte("hello"), nats.AckWait(5*time.Second))
+		if err != nil {
+			return err
+		}
+		t.Logf("ACK: %+v", ack)
+		return nil
+	})
+
+	// Force account update to trigger connection limit enforcement.
+	accClaims := jwt.NewAccountClaims(acc.Name)
+	accClaims.Limits.Conn = 2
+	s.UpdateAccountClaims(acc, accClaims)
+
+	// Wait for disconnections from the most recent client.
+	disconnectCh := disconnects[2]
+	select {
+	case <-disconnectCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected newest connection to disconnect!")
+	}
+
+	checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
+		activeConnections := 0
+		for _, conn := range conns {
+			if !conn.IsClosed() {
+				activeConnections++
+			}
+		}
+		if activeConnections < 3 {
+			return fmt.Errorf("Unexpected number of connections: %d", activeConnections)
+		}
+		return nil
+	})
+
+	// Force account update to trigger connection limit enforcement.
+	accClaims = jwt.NewAccountClaims(acc.Name)
+	accClaims.Limits.Conn = 10
+	s.UpdateAccountClaims(acc, accClaims)
+
+	checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
+		for _, conn := range conns {
+			if conn.IsClosed() {
+				continue
+			}
+			_, err := js.Publish("foo", []byte("hello"), nats.AckWait(5*time.Second))
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		return nil
+	})
 }
