@@ -8965,11 +8965,11 @@ func TestJetStreamClusterDontReviveRemovedStream(t *testing.T) {
 				return fmt.Errorf("stream still assigned on %s", s.Name())
 			}
 		}
+		if !mset.closed.Load() {
+			return fmt.Errorf("stream not closed yet")
+		}
 		return nil
 	})
-
-	// Confirm the stream is closed.
-	require_True(t, mset.closed.Load())
 
 	// Simulating the stream was catching up and is resetting after timing out.
 	require_True(t, mset.resetClusteredState(nil))
