@@ -26,6 +26,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -3243,6 +3244,75 @@ func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "r3")
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "r1")
 	checkConsumerReplicas(t, "TEST", "r3", 3, 2)
+}
+
+func TestJetStreamClusterConsumerReplicasAfterScaleMoveConsumer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER", nats.BindStream("TEST"), nats.ConsumerReplicas(1))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_NoError(t, msgs[0].AckSync())
+
+	// The consumer will have received anc acked one message.
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Stream, 1)
+	require_Equal(t, ci.AckFloor.Stream, 1)
+	ci.AckFloor.Last = nil
+	consumerLeader := ci.Cluster.Leader
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster.Leader != consumerLeader {
+			return nil
+		}
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+		if err != nil {
+			return err
+		}
+		return errors.New("expected leader to not be equal")
+	})
+
+	// Scaling the stream down to 1 replica means the R1 consumer will need to move to the current stream leader.
+	cfg.Replicas = 1
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Check that the consumer state wasn't lost.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		ci2, err := js.ConsumerInfo("TEST", "CONSUMER")
+		if err != nil {
+			return err
+		}
+		ci2.AckFloor.Last = nil
+		if !reflect.DeepEqual(ci.AckFloor, ci2.AckFloor) {
+			return fmt.Errorf("%+v vs %+v", ci.AckFloor, ci2.AckFloor)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterDesyncAfterQuitDuringCatchup(t *testing.T) {
