@@ -3098,6 +3098,13 @@ func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscri
 	// Update our route map here. But only if we are not a leaf node or a hub leafnode.
 	if c.kind != LEAF || c.isHubLeafNode() {
 		c.srv.updateRemoteSubscription(im.acc, &nsub, 1)
+	} else if c.kind == LEAF {
+		// Update all leafnodes that connect to this server. Note that we could have
+		// used the updateLeafNodes() function since when it does invoke updateSmap()
+		// this function already takes care of not sending to a spoke leafnode since
+		// the `nsub` here is already from a spoke leafnode, but to be explicit, we
+		// use this version that updates only leafnodes that connect to this server.
+		im.acc.updateLeafNodesEx(&nsub, 1, true)
 	}
 
 	return &nsub, nil

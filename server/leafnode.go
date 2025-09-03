@@ -2228,9 +2228,11 @@ func (s *Server) updateInterestForAccountOnGateway(accName string, sub *subscrip
 	acc.updateLeafNodes(sub, delta)
 }
 
-// updateLeafNodes will make sure to update the account smap for the subscription.
+// updateLeafNodesEx will make sure to update the account smap for the subscription.
 // Will also forward to all leaf nodes as needed.
-func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
+// If `hubOnly` is true, then will update only leaf nodes that connect to this server
+// (that is, for which this server acts as a hub to them).
+func (acc *Account) updateLeafNodesEx(sub *subscription, delta int32, hubOnly bool) {
 	if acc == nil || sub == nil {
 		return
 	}
@@ -2278,8 +2280,14 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 		if ln == sub.client {
 			continue
 		}
-		// Check to make sure this sub does not have an origin cluster that matches the leafnode.
 		ln.mu.Lock()
+		// If `hubOnly` is true, it means that we want to update only leafnodes
+		// that connect to this server (so isHubLeafNode() would return `true`).
+		if hubOnly && !ln.isHubLeafNode() {
+			ln.mu.Unlock()
+			continue
+		}
+		// Check to make sure this sub does not have an origin cluster that matches the leafnode.
 		// If skipped, make sure that we still let go the "$LDS." subscription that allows
 		// the detection of loops as long as different cluster.
 		clusterDifferent := cluster != ln.remoteCluster()
@@ -2288,6 +2296,12 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 		}
 		ln.mu.Unlock()
 	}
+}
+
+// updateLeafNodes will make sure to update the account smap for the subscription.
+// Will also forward to all leaf nodes as needed.
+func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
+	acc.updateLeafNodesEx(sub, delta, false)
 }
 
 // This will make an update to our internal smap and determine if we should send out
