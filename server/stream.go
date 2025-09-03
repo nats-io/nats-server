@@ -5161,6 +5161,8 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		var hdr []byte
 		if !req.NoHeaders {
 			hdr = sm.hdr
+			// Track our lseq
+			lseq = sm.seq
 			if isBatchRequest {
 				// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
 				if np > 0 {
@@ -5189,8 +5191,6 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 				}
 			}
 		}
-		// Track our lseq
-		lseq = sm.seq
 		// Send out our message.
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
 		// Check if we have exceeded max bytes.
