@@ -3286,14 +3286,12 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 
 	// Check to see if we have shadow subscriptions.
 	var updateRoute bool
-	var updateGWs bool
+	var isSpokeLeaf bool
 	shadowSubs := sub.shadow
 	sub.shadow = nil
 	if len(shadowSubs) > 0 {
-		updateRoute = (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) && c.srv != nil
-		if updateRoute {
-			updateGWs = c.srv.gateway.enabled
-		}
+		isSpokeLeaf = c.isSpokeLeafNode()
+		updateRoute = !isSpokeLeaf && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) && c.srv != nil
 	}
 	sub.close()
 	c.mu.Unlock()
@@ -3302,16 +3300,12 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 	for _, nsub := range shadowSubs {
 		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
 			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
-		} else {
-			if updateRoute {
-				c.srv.updateRouteSubscriptionMap(nsub.im.acc, nsub, -1)
-			}
-			if updateGWs {
-				c.srv.gatewayUpdateSubInterest(nsub.im.acc.Name, nsub, -1)
-			}
 		}
-		// Now check on leafnode updates.
-		nsub.im.acc.updateLeafNodes(nsub, -1)
+		if updateRoute {
+			c.srv.updateRemoteSubscription(nsub.im.acc, nsub, -1)
+		} else if isSpokeLeaf {
+			nsub.im.acc.updateLeafNodesEx(nsub, -1, true)
+		}
 	}
 
 	// Now check to see if this was part of a respMap entry for service imports.

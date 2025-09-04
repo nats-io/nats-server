@@ -9712,30 +9712,48 @@ func TestLeafNodeDupeDeliveryQueueSubAndPlainSub(t *testing.T) {
 	// Create plain subscriber on server B attached to system-b account.
 	ncB := natsConnect(t, srvB.ClientURL(), nats.UserInfo("sb", "sb"))
 	defer ncB.Close()
-	sub, err := ncB.SubscribeSync("*.system-a.events.>")
-	require_NoError(t, err)
-	// Create a new sub that has a queue group as well.
-	subq, err := ncB.QueueSubscribeSync("*.system-a.events.objectnotfound", "SYSB")
-	require_NoError(t, err)
-	ncB.Flush()
+	sub := natsSubSync(t, ncB, "*.system-a.events.>")
+	subq := natsQueueSubSync(t, ncB, "*.system-a.events.objectnotfound", "SBQ")
+	natsFlush(t, ncB)
+
+	// Create a subscription on SA1 (we will send from SA0). We want to make sure that
+	// when subscription on B is removed, this does not affect the subject interest
+	// in SA0 on behalf of SA1.
+	ncSAA1 := natsConnect(t, srvA1.ClientURL(), nats.UserInfo("sa", "sa"))
+	defer ncSAA1.Close()
+	sub2 := natsSubSync(t, ncSAA1, "*.system-a.events.>")
+	subq2 := natsQueueSubSync(t, ncSAA1, "*.system-a.events.objectnotfound", "SBQ")
+	natsFlush(t, ncSAA1)
+
 	time.Sleep(250 * time.Millisecond)
 
-	// Connect to cluster A
+	// Connect to cluster A on SA0.
 	ncA := natsConnect(t, srvA0.ClientURL(), nats.UserInfo("t", "t"))
 	defer ncA.Close()
 
-	err = ncA.Publish("system-a.events.objectnotfound", []byte("EventA"))
-	require_NoError(t, err)
-	ncA.Flush()
-	// Wait for them to be received.
+	natsPub(t, ncA, "system-a.events.objectnotfound", []byte("EventA"))
+	natsFlush(t, ncA)
+
+	natsNexMsg(t, sub, time.Second)
+	natsNexMsg(t, sub2, time.Second)
+	if _, err := subq.NextMsg(250 * time.Millisecond); err != nil {
+		natsNexMsg(t, subq2, time.Second)
+	}
+
+	// Unsubscribe the subscriptions from server B.
+	natsUnsub(t, sub)
+	natsUnsub(t, subq)
+	natsFlush(t, ncB)
+
+	// Wait for subject propagation.
 	time.Sleep(250 * time.Millisecond)
 
-	n, _, err := sub.Pending()
-	require_NoError(t, err)
-	require_Equal(t, n, 1)
-	n, _, err = subq.Pending()
-	require_NoError(t, err)
-	require_Equal(t, n, 1)
+	// Publish again, subscriptions on SA1 should receive it.
+	natsPub(t, ncA, "system-a.events.objectnotfound", []byte("EventA"))
+	natsFlush(t, ncA)
+
+	natsNexMsg(t, sub2, time.Second)
+	natsNexMsg(t, subq2, time.Second)
 }
 
 func TestLeafNodeServerKickClient(t *testing.T) {
