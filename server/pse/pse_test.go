@@ -22,30 +22,26 @@ import (
 	"testing"
 )
 
-func TestPSEmulation(t *testing.T) {
+func TestPSEmulationCPU(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skipf("Skipping this test on Windows")
 	}
-	var rss, vss, psRss, psVss int64
+	var rss, vss int64
 	var pcpu, psPcpu float64
 
 	debug.FreeOSMemory()
 
 	// PS version first
 	pidStr := fmt.Sprintf("%d", os.Getpid())
-	out, err := exec.Command("ps", "o", "pcpu=,rss=,vsz=", "-p", pidStr).Output()
+	out, err := exec.Command("ps", "o", "pcpu=", "-p", pidStr).Output()
 	if err != nil {
 		t.Fatalf("Failed to execute ps command: %v\n", err)
 	}
 
-	fmt.Sscanf(string(out), "%f %d %d", &psPcpu, &psRss, &psVss)
-	psRss *= 1024 // 1k blocks, want bytes.
-	psVss *= 1024 // 1k blocks, want bytes.
-
-	debug.FreeOSMemory()
-
 	// Our internal version
 	ProcUsage(&pcpu, &rss, &vss)
+
+	fmt.Sscanf(string(out), "%f", &psPcpu)
 
 	if pcpu != psPcpu {
 		delta := int64(pcpu - psPcpu)
@@ -56,6 +52,33 @@ func TestPSEmulation(t *testing.T) {
 			t.Fatalf("CPUs did not match close enough: %f vs %f", pcpu, psPcpu)
 		}
 	}
+}
+
+func TestPSEmulationMem(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("Skipping this test on Windows")
+	}
+	var rss, vss, psRss, psVss int64
+	var pcpu float64
+
+	debug.FreeOSMemory()
+
+	// PS version first
+	pidStr := fmt.Sprintf("%d", os.Getpid())
+	out, err := exec.Command("ps", "o", "rss=,vsz=", "-p", pidStr).Output()
+	if err != nil {
+		t.Fatalf("Failed to execute ps command: %v\n", err)
+	}
+
+	fmt.Sscanf(string(out), "%d %d", &psRss, &psVss)
+	psRss *= 1024 // 1k blocks, want bytes.
+	psVss *= 1024 // 1k blocks, want bytes.
+
+	debug.FreeOSMemory()
+
+	// Our internal version
+	ProcUsage(&pcpu, &rss, &vss)
+
 	if rss != psRss {
 		delta := rss - psRss
 		if delta < 0 {
