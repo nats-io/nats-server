@@ -6909,6 +6909,7 @@ func TestJetStreamClusterMultiLeaderR3Config(t *testing.T) {
 func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 	conf := `
                 listen: 127.0.0.1:-1
+                http: -1
                 server_name: %s
                 jetstream: {
                         store_dir: '%s',
@@ -6922,21 +6923,22 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
                 system_account: sys
                 no_auth_user: js
                 accounts {
-                        sys { users = [ { user: sys, pass: sys } ] }
-                        js {
-                                jetstream = enabled
-                                users = [ { user: js, pass: js } ]
-                                limits {
-                                  max_connections: 3
-                                }
-                    }
-                }`
+                     sys { users = [ { user: sys, pass: sys } ] }
+                     js {
+                         jetstream = enabled
+                         users = [ { user: js, pass: js } ]
+                         limits {
+                           max_connections: 5
+                         }
+                     }
+                }
+        `
 	c := createJetStreamClusterWithTemplate(t, conf, "R3CONNECT", 3)
 	defer c.shutdown()
 	var conns []*nats.Conn
 
 	disconnects := make([]chan error, 0)
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= 5; i++ {
 		disconnectCh := make(chan error)
 		c, _ := jsClientConnect(t, c.servers[0], nats.UserInfo("js", "js"), nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			disconnectCh <- err
@@ -6950,26 +6952,81 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 	s := c.servers[0]
 	acc, err := s.lookupAccount("js")
 	require_NoError(t, err)
-	require_Equal(t, acc.NumConnections(), 3)
+
+	acc.mu.RLock()
+	clients := acc.getClientsLocked()
+	numConnections := acc.NumConnections()
+	jsClients := acc.sysclients
+	totalClients := len(clients)
+	acc.mu.RUnlock()
+
+	require_Equal(t, numConnections, 5)
+	require_Equal(t, jsClients, 0)
+	require_Equal(t, totalClients, 5)
 
 	nc := conns[0]
 	js, _ := nc.JetStream()
-	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Subjects: []string{"foo"}})
-	require_NoError(t, err)
+	for i := 0; i < 10; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("foo:%d", i),
+			Subjects: []string{fmt.Sprintf("foo.%d", i)},
+		})
+		require_NoError(t, err)
+
+		_, err = js.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"), nats.AckWait(5*time.Second))
+		require_NoError(t, err)
+	}
+
+	acc.mu.RLock()
+	clients = acc.getClientsLocked()
+	numConnections = acc.NumConnections()
+	jsClients = acc.sysclients
+	totalClients = len(clients)
+	acc.mu.RUnlock()
+
+	require_Equal(t, numConnections, 5)
+	require_Equal(t, jsClients, 20)
+	require_Equal(t, totalClients, 25)
 
 	checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
-		ack, err := js.Publish("foo", []byte("hello"), nats.AckWait(5*time.Second))
-		if err != nil {
-			return err
+		for i := 0; i < 10; i++ {
+			_, err := js.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"), nats.AckWait(5*time.Second))
+			if err != nil {
+				return err
+			}
 		}
-		t.Logf("ACK: %+v", ack)
 		return nil
 	})
 
 	// Force account update to trigger connection limit enforcement.
 	accClaims := jwt.NewAccountClaims(acc.Name)
-	accClaims.Limits.Conn = 2
+	accClaims.Limits.Conn = 1
+	accClaims.Limits.MemoryStorage = -1
+	accClaims.Limits.DiskStorage = -1
+	accClaims.Limits.Streams = -1
+	accClaims.Limits.Consumer = -1
+
+	// Update server, before this would have disconnected JS internal clients with
+	// 'JETSTREAM - maximum account active connections exceeded'.
 	s.UpdateAccountClaims(acc, accClaims)
+
+	// Allow some time for enforcement.
+	time.Sleep(100 * time.Millisecond)
+
+	acc, err = s.lookupAccount("js")
+	require_NoError(t, err)
+
+	acc.mu.RLock()
+	clients = acc.getClientsLocked()
+	numConnections = acc.NumConnections()
+	jsClients = acc.sysclients
+	totalClients = len(clients)
+	acc.mu.RUnlock()
+
+	// JETSTREAM internal clients should still linger after reducing connections.
+	require_Equal(t, numConnections, 5)
+	require_Equal(t, jsClients, 20)
+	require_Equal(t, totalClients, 20)
 
 	// Wait for disconnections from the most recent client.
 	disconnectCh := disconnects[2]
@@ -6986,7 +7043,7 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 				activeConnections++
 			}
 		}
-		if activeConnections < 3 {
+		if activeConnections < 5 {
 			return fmt.Errorf("Unexpected number of connections: %d", activeConnections)
 		}
 		return nil
@@ -6995,18 +7052,28 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 	// Force account update to trigger connection limit enforcement.
 	accClaims = jwt.NewAccountClaims(acc.Name)
 	accClaims.Limits.Conn = 10
-	s.UpdateAccountClaims(acc, accClaims)
+	accClaims.Limits.MemoryStorage = -1
+	accClaims.Limits.DiskStorage = -1
+	accClaims.Limits.Streams = -1
+	accClaims.Limits.Consumer = -1
 
+	// Update all servers then confirm that internal JS clients should work
+	// and clients have reconnected.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount("js")
+		require_NoError(t, err)
+		s.UpdateAccountClaims(acc, accClaims)
+	}
 	checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
-		for _, conn := range conns {
-			if conn.IsClosed() {
-				continue
+		for _, nc := range conns {
+			js, _ := nc.JetStream()
+			for i := 0; i < 10; i++ {
+				stream := fmt.Sprintf("foo.%d", i)
+				_, err := js.Publish(stream, []byte("hello"), nats.AckWait(5*time.Second))
+				if err != nil {
+					return err
+				}
 			}
-			_, err := js.Publish("foo", []byte("hello"), nats.AckWait(5*time.Second))
-			if err != nil {
-				return err
-			}
-			return nil
 		}
 		return nil
 	})
