@@ -241,6 +241,18 @@ type RemoteLeafOpts struct {
 		NoMasking   bool `json:"-"`
 	}
 
+	// HTTP Proxy configuration for WebSocket connections
+	Proxy struct {
+		// URL of the HTTP proxy server (e.g., "http://proxy.example.com:8080")
+		URL string `json:"-"`
+		// Username for proxy authentication
+		Username string `json:"-"`
+		// Password for proxy authentication
+		Password string `json:"-"`
+		// Timeout for proxy connection
+		Timeout time.Duration `json:"-"`
+	}
+
 	tlsConfigOpts *TLSConfigOpts
 
 	// If we are clustered and our local account has JetStream, if apps are accessing
