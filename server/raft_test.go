@@ -923,6 +923,8 @@ func TestNRGNoResetOnAppendEntryResponse(t *testing.T) {
 	leader := rg.leader().node().(*raft)
 	follower := rg.nonLeader().node().(*raft)
 	lsm := rg.leader().(*stateAdder)
+	isLeader := require_ChanRead(t, lsm.lch, 5*time.Second)
+	require_True(t, isLeader)
 
 	// Subscribe for append entries that aren't heartbeats and respond to
 	// each of them as though it's a non-success and with a higher term.
@@ -936,10 +938,27 @@ func TestNRGNoResetOnAppendEntryResponse(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// Generate an append entry that the subscriber above can respond to.
 	c.waitOnAllCurrent()
+
+	// Temporarily prevent followers to respond
+	locked := rg.lockFollowers()
+
+	// Generate an append entry that the subscriber above can respond to.
 	lsm.proposeDelta(5)
-	rg.waitOnTotal(t, 5)
+
+	// Expect the leader to step down
+	checkFor(t, 10*time.Second, 0, func() error {
+		isLeader = require_ChanRead(t, lsm.lch, 5*time.Second)
+		if isLeader {
+			return fmt.Errorf("Node is still leader!")
+		}
+		return nil
+	})
+
+	// Unlock the followers
+	for _, l := range locked {
+		l.node().(*raft).Unlock()
+	}
 
 	// The was-leader should now have stepped down, make sure that it
 	// didn't blow away its log in the process.
