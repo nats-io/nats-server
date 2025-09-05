@@ -14,6 +14,7 @@ builds:
       - linux
     goarch:
       - amd64
+      - arm64
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 release:
@@ -23,14 +24,40 @@ dockers:
   - goos: linux
     goarch: amd64
     dockerfile: docker/Dockerfile.nightly
-    skip_push: false
+    use: buildx
     build_flag_templates:
+      - '--pull'
+      - '--platform=linux/amd64'
       - '--build-arg=VERSION={{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
     image_templates:
-      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}
-      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-amd64
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}-amd64
     extra_files:
       - docker/nats-server.conf
+  - goos: linux
+    goarch: arm64
+    dockerfile: docker/Dockerfile.nightly
+    use: buildx
+    build_flag_templates:
+      - '--pull'
+      - '--platform=linux/arm64'
+      - '--build-arg=VERSION={{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
+    image_templates:
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-arm64
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}-arm64
+    extra_files:
+      - docker/nats-server.conf
+
+docker_manifests:
+  - name_template: synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}
+    image_templates:
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-amd64
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-arm64
+  - name_template: synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}
+    image_templates:
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}-amd64
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}-arm64
+
 
 checksum:
   name_template: "SHA256SUMS"

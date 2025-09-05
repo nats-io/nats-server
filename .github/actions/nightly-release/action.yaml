@@ -26,6 +26,12 @@ runs:
       with:
         go-version: stable
 
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Build and push Docker images
       # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
       # Commit 9ed2f89a662bf1735a48bc8557fd212fa902bebf = tag v6.1.0
