@@ -1944,11 +1944,12 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, _ *Account, sub
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
 type EventFilterOptions struct {
-	Name    string   `json:"server_name,omitempty"` // filter by server name
-	Cluster string   `json:"cluster,omitempty"`     // filter by cluster name
-	Host    string   `json:"host,omitempty"`        // filter by host name
-	Tags    []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
-	Domain  string   `json:"domain,omitempty"`      // filter by JS domain
+	Name       string   `json:"server_name,omitempty"` // filter by server name
+	Cluster    string   `json:"cluster,omitempty"`     // filter by cluster name
+	Host       string   `json:"host,omitempty"`        // filter by host name
+	ExactMatch bool     `json:"exact_match,omitempty"` // if the above filters should use exact matching or only "contains"
+	Tags       []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
+	Domain     string   `json:"domain,omitempty"`      // filter by JS domain
 }
 
 // StatszEventOptions are options passed to Statsz
@@ -2047,18 +2048,21 @@ type RaftzEventOptions struct {
 }
 
 // returns true if the request does NOT apply to this server and can be ignored.
-// DO NOT hold the server lock when
+// DO NOT hold the server lock when calling this.
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
-	if fOpts.Name != _EMPTY_ && !strings.Contains(s.info.Name, fOpts.Name) {
-		return true
+	if fOpts == nil {
+		return false
 	}
-	if fOpts.Host != _EMPTY_ && !strings.Contains(s.info.Host, fOpts.Host) {
-		return true
-	}
-	if fOpts.Cluster != _EMPTY_ {
-		if !strings.Contains(s.ClusterName(), fOpts.Cluster) {
+	if fOpts.ExactMatch {
+		if (fOpts.Name != _EMPTY_ && fOpts.Name != s.info.Name) ||
+			(fOpts.Host != _EMPTY_ && fOpts.Host != s.info.Host) ||
+			(fOpts.Cluster != _EMPTY_ && fOpts.Cluster != s.ClusterName()) {
 			return true
 		}
+	} else if (fOpts.Name != _EMPTY_ && !strings.Contains(s.info.Name, fOpts.Name)) ||
+		(fOpts.Host != _EMPTY_ && !strings.Contains(s.info.Host, fOpts.Host)) ||
+		(fOpts.Cluster != _EMPTY_ && !strings.Contains(s.ClusterName(), fOpts.Cluster)) {
+		return true
 	}
 	if len(fOpts.Tags) > 0 {
 		opts := s.getOpts()
