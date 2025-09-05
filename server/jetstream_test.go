@@ -18489,7 +18489,7 @@ func TestJetStreamDelayedAPIResponses(t *testing.T) {
 
 	acc := s.GlobalAccount()
 
-	// Send B, A, D, C and exected to receive A, B, C, D
+	// Send B, A, D, C and expected to receive A, B, C, D
 	s.sendDelayedAPIErrResponse(nil, acc, "B", _EMPTY_, "request2", "response2", nil, 500*time.Millisecond)
 	time.Sleep(50 * time.Millisecond)
 	s.sendDelayedAPIErrResponse(nil, acc, "A", _EMPTY_, "request1", "response1", nil, 200*time.Millisecond)
@@ -20604,4 +20604,113 @@ func TestJetStreamKVNoSubjectDeleteMarkerOnPurgeMarker(t *testing.T) {
 			require_Error(t, err, jetstream.ErrMsgNotFound)
 		})
 	}
+}
+
+func TestJetStreamOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	port := s.getOpts().Port
+	sd := s.JetStreamConfig().StoreDir
+
+	_, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "DowngradeStreamTest",
+		Storage:  FileStorage,
+		Replicas: 1,
+		Metadata: map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)},
+	})
+	require_NoError(t, err)
+
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(port, sd)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	offlineReason := fmt.Sprintf("unsupported - required API level: %d, current API level: %d", math.MaxInt, JSApiLevel)
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "DowngradeStreamTest"), nil, time.Second)
+	require_NoError(t, err)
+	var si JSApiStreamInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &si))
+	require_NotNil(t, si.Error)
+	require_Error(t, si.Error, NewJSStreamOfflineReasonError(errors.New(offlineReason)))
+
+	var sn JSApiStreamNamesResponse
+	msg, err = nc.Request(JSApiStreams, nil, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &sn))
+	require_Len(t, len(sn.Streams), 1)
+	require_Equal(t, sn.Streams[0], "DowngradeStreamTest")
+
+	var sl JSApiStreamListResponse
+	msg, err = nc.Request(JSApiStreamList, nil, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &sl))
+	require_Len(t, len(sl.Streams), 0)
+	require_Len(t, len(sl.Missing), 1)
+	require_Equal(t, sl.Missing[0], "DowngradeStreamTest")
+	require_Len(t, len(sl.Offline), 1)
+	require_Equal(t, sl.Offline["DowngradeStreamTest"], offlineReason)
+
+	mset, err := s.globalAccount().lookupStream("DowngradeStreamTest")
+	require_NoError(t, err)
+	require_True(t, mset.closed.Load())
+	require_Equal(t, mset.offlineReason, offlineReason)
+	require_NoError(t, mset.delete())
+
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(port, sd)
+	defer s.Shutdown()
+
+	_, err = s.globalAccount().addStream(&StreamConfig{
+		Name:     "DowngradeConsumerTest",
+		Storage:  FileStorage,
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+	mset, err = s.globalAccount().lookupStream("DowngradeConsumerTest")
+	require_NoError(t, err)
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Name:     "DowngradeConsumerTest",
+		Metadata: map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)},
+	})
+	require_NoError(t, err)
+
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(port, sd)
+	defer s.Shutdown()
+
+	mset, err = s.globalAccount().lookupStream("DowngradeConsumerTest")
+	require_NoError(t, err)
+	require_True(t, mset.closed.Load())
+	require_Equal(t, mset.offlineReason, "stopped")
+
+	obs := mset.getPublicConsumers()
+	require_Len(t, len(obs), 1)
+	require_True(t, obs[0].isClosed())
+	require_Equal(t, obs[0].offlineReason, offlineReason)
+
+	msg, err = nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "DowngradeConsumerTest", "DowngradeConsumerTest"), nil, time.Second)
+	require_NoError(t, err)
+	var ci JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &ci))
+	require_NotNil(t, ci.Error)
+	require_Error(t, ci.Error, NewJSConsumerOfflineReasonError(errors.New(offlineReason)))
+
+	var cn JSApiConsumerNamesResponse
+	msg, err = nc.Request(fmt.Sprintf(JSApiConsumersT, "DowngradeConsumerTest"), nil, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &cn))
+	require_Len(t, len(cn.Consumers), 1)
+	require_Equal(t, cn.Consumers[0], "DowngradeConsumerTest")
+
+	var cl JSApiConsumerListResponse
+	msg, err = nc.Request(fmt.Sprintf(JSApiConsumerListT, "DowngradeConsumerTest"), nil, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &cl))
+	require_Len(t, len(cl.Consumers), 0)
+	require_Len(t, len(cl.Missing), 1)
+	require_Equal(t, cl.Missing[0], "DowngradeConsumerTest")
+	require_Len(t, len(cl.Offline), 1)
+	require_Equal(t, cl.Offline["DowngradeConsumerTest"], offlineReason)
 }

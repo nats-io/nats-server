@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -1333,8 +1334,54 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		}
 
 		var cfg FileStreamInfo
-		if err := json.Unmarshal(buf, &cfg); err != nil {
-			s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, err)
+		decoder := json.NewDecoder(bytes.NewReader(buf))
+		decoder.DisallowUnknownFields()
+		strictErr := decoder.Decode(&cfg)
+		if strictErr != nil {
+			cfg = FileStreamInfo{}
+			if err := json.Unmarshal(buf, &cfg); err != nil {
+				s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, err)
+				continue
+			}
+		}
+		if supported := supportsRequiredApiLevel(cfg.Metadata); !supported || strictErr != nil {
+			var offlineReason string
+			if !supported {
+				apiLevel := getRequiredApiLevel(cfg.Metadata)
+				offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
+				s.Warnf("  Detected unsupported stream '%s > %s', delete the stream or upgrade the server to API level %s", a.Name, cfg.StreamConfig.Name, apiLevel)
+			} else {
+				offlineReason = fmt.Sprintf("decoding error: %v", strictErr)
+				s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, strictErr)
+			}
+			singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
+			if singleServerMode {
+				// Fake a stream, so we can respond to API requests as single-server.
+				mset := &stream{
+					acc:           a,
+					jsa:           jsa,
+					cfg:           cfg.StreamConfig,
+					js:            js,
+					srv:           s,
+					stype:         cfg.Storage,
+					consumers:     make(map[string]*consumer),
+					active:        false,
+					created:       time.Now().UTC(),
+					offlineReason: offlineReason,
+				}
+				if !cfg.Created.IsZero() {
+					mset.created = cfg.Created
+				}
+				mset.closed.Store(true)
+
+				jsa.mu.Lock()
+				jsa.streams[cfg.Name] = mset
+				jsa.mu.Unlock()
+
+				// Now do the consumers.
+				odir := filepath.Join(sdir, fi.Name(), consumerDir)
+				consumers = append(consumers, &ce{mset, odir})
+			}
 			continue
 		}
 
@@ -1455,13 +1502,66 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			}
 
 			var cfg FileConsumerInfo
-			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("    Error unmarshalling consumer metafile %q: %v", metafile, err)
+			decoder := json.NewDecoder(bytes.NewReader(buf))
+			decoder.DisallowUnknownFields()
+			strictErr := decoder.Decode(&cfg)
+			if strictErr != nil {
+				cfg = FileConsumerInfo{}
+				if err := json.Unmarshal(buf, &cfg); err != nil {
+					s.Warnf("    Error unmarshalling consumer metafile %q: %v", metafile, err)
+					continue
+				}
+			}
+			if supported := supportsRequiredApiLevel(cfg.Metadata); !supported || strictErr != nil {
+				var offlineReason string
+				if !supported {
+					apiLevel := getRequiredApiLevel(cfg.Metadata)
+					offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
+					s.Warnf("  Detected unsupported consumer '%s > %s > %s', delete the consumer or upgrade the server to API level %s", a.Name, e.mset.name(), cfg.Name, apiLevel)
+				} else {
+					offlineReason = fmt.Sprintf("decoding error: %v", strictErr)
+					s.Warnf("  Error unmarshalling consumer metafile %q: %v", metafile, strictErr)
+				}
+				singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
+				if singleServerMode {
+					if !e.mset.closed.Load() {
+						s.Warnf("  Stopping unsupported stream '%s > %s'", a.Name, e.mset.name())
+						e.mset.mu.Lock()
+						e.mset.offlineReason = "stopped"
+						e.mset.mu.Unlock()
+						e.mset.stop(false, false)
+					}
+
+					// Fake a consumer, so we can respond to API requests as single-server.
+					o := &consumer{
+						mset:          e.mset,
+						js:            s.getJetStream(),
+						acc:           a,
+						srv:           s,
+						cfg:           cfg.ConsumerConfig,
+						active:        false,
+						stream:        e.mset.name(),
+						name:          cfg.Name,
+						dseq:          1,
+						sseq:          1,
+						created:       time.Now().UTC(),
+						closed:        true,
+						offlineReason: offlineReason,
+					}
+					if !cfg.Created.IsZero() {
+						o.created = cfg.Created
+					}
+
+					e.mset.mu.Lock()
+					e.mset.setConsumer(o)
+					e.mset.mu.Unlock()
+				}
 				continue
 			}
+
 			isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
 			if isEphemeral {
-				// This is an ephermal consumer and this could fail on restart until
+				// This is an ephemeral consumer and this could fail on restart until
 				// the consumer can reconnect. We will create it as a durable and switch it.
 				cfg.ConsumerConfig.Durable = ofi.Name()
 			}

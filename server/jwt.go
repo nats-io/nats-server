@@ -80,7 +80,11 @@ func validateTrustedOperators(o *Options) error {
 		if err != nil {
 			return fmt.Errorf("default sentinel JWT not valid")
 		}
-		if !juc.BearerToken {
+
+		if !juc.BearerToken && juc.IssuerAccount != "" && juc.HasEmptyPermissions() {
+			// we cannot resolve the account yet - but this looks like a scoped user
+			// it will be rejected at runtime if not valid
+		} else if !juc.BearerToken {
 			return fmt.Errorf("default sentinel must be a bearer token")
 		}
 	}

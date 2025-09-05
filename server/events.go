@@ -419,7 +419,7 @@ type pubMsg struct {
 	sub  string
 	rply string
 	si   *ServerInfo
-	hdr  map[string]string
+	hdr  []byte
 	msg  any
 	oct  compressionType
 	echo bool
@@ -428,7 +428,7 @@ type pubMsg struct {
 
 var pubMsgPool sync.Pool
 
-func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr map[string]string,
+func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr []byte,
 	msg any, oct compressionType, echo, last bool) *pubMsg {
 
 	var m *pubMsg
@@ -601,17 +601,28 @@ RESET:
 				// Add in NL
 				b = append(b, _CRLF_...)
 
+				// Optional raw header addition.
+				if pm.hdr != nil {
+					b = append(pm.hdr, b...)
+					nhdr := len(pm.hdr)
+					nsize := len(b) - LEN_CR_LF
+					// MQTT producers don't have CRLF, so add it back.
+					if c.isMqtt() {
+						nsize += LEN_CR_LF
+					}
+					// Update pubArgs
+					// If others will use this later we need to save and restore original.
+					c.pa.hdr = nhdr
+					c.pa.size = nsize
+					c.pa.hdb = []byte(strconv.Itoa(nhdr))
+					c.pa.szb = []byte(strconv.Itoa(nsize))
+				}
+
 				// Check if we should set content-encoding
 				if contentHeader != _EMPTY_ {
 					b = c.setHeader(contentEncodingHeader, contentHeader, b)
 				}
 
-				// Optional header processing.
-				if pm.hdr != nil {
-					for k, v := range pm.hdr {
-						b = c.setHeader(k, v, b)
-					}
-				}
 				// Tracing
 				if trace {
 					c.traceInOp(fmt.Sprintf("PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
@@ -688,7 +699,7 @@ func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg any) err
 }
 
 // Used to send an internal message with an optional reply to an arbitrary account.
-func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr map[string]string, msg any, echo bool) error {
+func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr []byte, msg any, echo bool) error {
 	s.mu.RLock()
 	if s.sys == nil || s.sys.sendq == nil {
 		s.mu.RUnlock()

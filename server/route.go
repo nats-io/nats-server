@@ -87,6 +87,17 @@ type route struct {
 	// Transient value used to set the Info.GossipMode when initiating
 	// an implicit route and sending to the remote.
 	gossipMode byte
+	// This will be set in case of pooling so that a route can trigger
+	// the creation of the next after receiving the first PONG, ensuring
+	// that authentication did not fail.
+	startNewRoute *routeInfo
+}
+
+// This contains the information required to create a new route.
+type routeInfo struct {
+	url        *url.URL
+	rtype      RouteType
+	gossipMode byte
 }
 
 // Do not change the values/order since they are exchanged between servers.
@@ -2379,20 +2390,18 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		// Send the subscriptions interest.
 		s.sendSubsToRoute(c, idx, _EMPTY_)
 
-		// In pool mode, if we did not yet reach the cap, try to connect a new connection
+		// In pool mode, if we did not yet reach the cap, try to connect a new connection,
+		// but do so only after receiving the first PONG to our PING, which will ensure
+		// that we have proper authentication.
 		if pool && didSolicit && sz != effectivePoolSize {
-			s.startGoRoutine(func() {
-				select {
-				case <-time.After(time.Duration(rand.Intn(100)) * time.Millisecond):
-				case <-s.quitCh:
-					// Doing this here and not as a defer because connectToRoute is also
-					// calling s.grWG.Done() on exit, so we do this only if we don't
-					// invoke connectToRoute().
-					s.grWG.Done()
-					return
-				}
-				s.connectToRoute(url, rtype, true, gossipMode, _EMPTY_)
-			})
+			c.mu.Lock()
+			c.route.startNewRoute = &routeInfo{
+				url:        url,
+				rtype:      rtype,
+				gossipMode: gossipMode,
+			}
+			c.sendPing()
+			c.mu.Unlock()
 		}
 	}
 	s.mu.Unlock()
