@@ -3351,6 +3351,86 @@ func TestServerEventsFilteredByTag(t *testing.T) {
 	require_Len(t, len(msgs), 0)
 }
 
+func TestServerUnstableEventFilterMatch(t *testing.T) {
+	confA := createConfFile(t, []byte(`
+		listen: -1
+		server_name: srv1
+		server_tags: ["foo", "bar"]
+		cluster {
+			name: clust
+			listen: -1
+			no_advertise: true
+		}
+		system_account: SYS
+		accounts: {
+			SYS: {
+				users: [
+					{user: b, password: b}
+				]
+			}
+		}
+		no_auth_user: b
+    `))
+	sA, _ := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		server_name: srv10
+		server_tags: ["bar", "baz"]
+		cluster {
+			name: clust
+			listen: -1
+			no_advertise: true
+			routes [
+				nats-route://127.0.0.1:%d
+			]
+		}
+		system_account: SYS
+		accounts: {
+			SYS: {
+				users: [
+					{user: b, password: b}
+				]
+			}
+		}
+		no_auth_user: b
+    `, sA.opts.Cluster.Port)))
+	sB, _ := RunServerWithConfig(confB)
+	defer sB.Shutdown()
+	checkClusterFormed(t, sA, sB)
+
+	tester := func(t *testing.T, nc *nats.Conn, name string, count int) {
+		t.Helper()
+
+		r, err := json.Marshal(VarzEventOptions{EventFilterOptions: EventFilterOptions{Name: name, ExactMatch: true}})
+		require_NoError(t, err)
+
+		for i := 0; i < count; i++ {
+			res, err := nc.Request(fmt.Sprintf(serverPingReqSubj, "VARZ"), r, time.Second)
+			require_NoError(t, err)
+
+			var vz ServerAPIVarzResponse
+			err = json.Unmarshal(res.Data, &vz)
+			require_NoError(t, err)
+
+			if vz.Server.Name != name {
+				t.Fatalf("Expected server name to be %q, got %q", name, vz.Server.Name)
+			}
+		}
+	}
+
+	// Connects to srv1 so it's most likely to respond first while we are asking srv10 to respond.
+	nc := natsConnect(t, sA.ClientURL())
+	defer nc.Close()
+	tester(t, nc, "srv10", 10)
+
+	// Connects to srv10 so it's most likely to respond first while we are asking srv1 to respond.
+	nc.Close()
+	nc = natsConnect(t, sB.ClientURL())
+	defer nc.Close()
+	tester(t, nc, "srv1", 10)
+}
+
 // https://github.com/nats-io/nats-server/issues/3177
 func TestServerEventsAndDQSubscribers(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "DDQ", 3)
