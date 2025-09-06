@@ -2616,7 +2616,7 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 
 // retryDisconnectedSyncConsumers() will check if we have any disconnected
 // sync consumers for either mirror or a source and will reset and retry to connect.
-func (mset *stream) retryDisconnectedSyncConsumers(remoteDomain string) {
+func (mset *stream) retryDisconnectedSyncConsumers() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
@@ -2625,23 +2625,24 @@ func (mset *stream) retryDisconnectedSyncConsumers(remoteDomain string) {
 		return
 	}
 
+	shouldRetry := func(si *sourceInfo) bool {
+		if si != nil && (si.sip || si.sub == nil || (si.sub.client != nil && si.sub.client.isClosed())) {
+			// Need to reset
+			si.fails, si.sip = 0, false
+			mset.cancelSourceInfo(si)
+			return true
+		}
+		return false
+	}
+
 	// Check mirrors first.
 	if si := mset.mirror; si != nil {
-		if si.sub == nil && !si.sip {
-			if remoteDomain == _EMPTY_ || (mset.cfg.Mirror != nil && mset.cfg.Mirror.External.Domain() == remoteDomain) {
-				// Need to reset
-				si.fails = 0
-				mset.cancelSourceInfo(si)
-				mset.scheduleSetupMirrorConsumerRetry()
-			}
+		if shouldRetry(si) {
+			mset.scheduleSetupMirrorConsumerRetry()
 		}
 	} else {
 		for _, si := range mset.sources {
-			ss := mset.streamSource(si.iname)
-			if remoteDomain == _EMPTY_ || (ss != nil && ss.External.Domain() == remoteDomain) {
-				// Need to reset
-				si.fails = 0
-				mset.cancelSourceInfo(si)
+			if shouldRetry(si) {
 				mset.setupSourceConsumer(si.iname, si.sseq+1, time.Time{})
 			}
 		}
@@ -3166,7 +3167,8 @@ func (mset *stream) setupMirrorConsumer() error {
 			if mset.mirror != nil {
 				mset.mirror.sip = false
 				// If we need to retry, schedule now
-				if retry {
+				// If sub is not nil means we re-established somewhere else so do not re-attempt here.
+				if retry && mset.mirror.sub == nil {
 					mset.mirror.fails++
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(mset.mirror)
@@ -3524,7 +3526,8 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 			if si := mset.sources[iname]; si != nil {
 				si.sip = false
 				// If we need to retry, schedule now
-				if retry {
+				// If sub is not nil means we re-established somewhere else so do not re-attempt here.
+				if retry && si.sub == nil {
 					si.fails++
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(si)

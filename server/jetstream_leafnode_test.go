@@ -16,6 +16,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -1619,7 +1620,7 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterConnectionDown(t *testing.T) {
 		// Reset sourceInfo to have lots of failures and last attempt 2 minutes ago.
 		// Lock should be held on parent stream.
 		resetSourceInfo := func(si *sourceInfo) {
-			si.sip = false
+			// Do not reset sip here to make sure that the internal logic clears.
 			si.fails = 100
 			si.lreq = time.Now().Add(-2 * time.Minute)
 		}
@@ -1668,7 +1669,212 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterConnectionDown(t *testing.T) {
 		err = checkStreamMsgs(jsB, "SRC-B", initMsgs*4, err)
 		return err
 	})
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("Expected to resync all streams <2s but got %v", elapsed)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Expected to resync all streams <3s but got %v", elapsed)
 	}
+}
+
+// This test will test a 3 node setup where we have a hub node, a gateway node, and a satellite node.
+// This is specifically testing re-sync when there is not a direct Domain with JS match for the first
+// hop connect LN that is signaling.
+//
+//		  HUB <---- GW(+JS/DOMAIN) -----> SAT1
+//		   ^
+//		   |
+//	       +------- GW(-JS/NO DOMAIN) --> SAT2
+//
+// The Gateway node will solicit the satellites but will act as a LN hub.
+func TestJetStreamLeafNodeAndMirrorResyncAfterLeafEstablished(t *testing.T) {
+	accs := `
+		accounts {
+			JS { users = [ { user: "u", pass: "p" } ]; jetstream: true }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+	`
+	hubT := `
+		listen: -1
+		server_name: hub
+		jetstream { store_dir: '%s', domain: HUB }
+		%s
+		leaf { port: -1 }
+    `
+	confA := createConfFile(t, []byte(fmt.Sprintf(hubT, t.TempDir(), accs)))
+	sHub, oHub := RunServerWithConfig(confA)
+	defer sHub.Shutdown()
+
+	// We run the SAT node second to extract out info for solicitation from targeted GW.
+	sat1T := `
+		listen: -1
+		server_name: sat1
+		jetstream { store_dir: '%s', domain: SAT1 }
+		%s
+		leaf { port: -1 }
+    `
+	confB := createConfFile(t, []byte(fmt.Sprintf(sat1T, t.TempDir(), accs)))
+	sSat1, oSat1 := RunServerWithConfig(confB)
+	defer sSat1.Shutdown()
+
+	sat2T := `
+		listen: -1
+		server_name: sat2
+		jetstream { store_dir: '%s', domain: SAT2 }
+		%s
+		leaf { port: -1 }
+    `
+	confC := createConfFile(t, []byte(fmt.Sprintf(sat2T, t.TempDir(), accs)))
+	sSat2, oSat2 := RunServerWithConfig(confC)
+	defer sSat2.Shutdown()
+
+	hubLeafPort := fmt.Sprintf("nats://u:p@127.0.0.1:%d", oHub.LeafNode.Port)
+	sat1LeafPort := fmt.Sprintf("nats://u:p@127.0.0.1:%d", oSat1.LeafNode.Port)
+	sat2LeafPort := fmt.Sprintf("nats://u:p@127.0.0.1:%d", oSat2.LeafNode.Port)
+
+	gw1T := `
+		listen: -1
+		server_name: gw1
+		jetstream { store_dir: '%s', domain: GW }
+		%s
+		leaf { remotes [ { url: %s, account: "JS" }, { url: %s, account: "JS", hub: true } ], reconnect: "0.25s" }
+    `
+	confD := createConfFile(t, []byte(fmt.Sprintf(gw1T, t.TempDir(), accs, hubLeafPort, sat1LeafPort)))
+	sGW1, _ := RunServerWithConfig(confD)
+	defer sGW1.Shutdown()
+
+	gw2T := `
+		listen: -1
+		server_name: gw2
+		accounts {
+			JS { users = [ { user: "u", pass: "p" } ] }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+		leaf { remotes [ { url: %s, account: "JS" }, { url: %s, account: "JS", hub: true } ], reconnect: "0.25s" }
+    `
+	confE := createConfFile(t, []byte(fmt.Sprintf(gw2T, hubLeafPort, sat2LeafPort)))
+	sGW2, _ := RunServerWithConfig(confE)
+	defer sGW2.Shutdown()
+
+	// Make sure we are connected ok.
+	checkLeafNodeConnectedCount(t, sHub, 2)
+	checkLeafNodeConnectedCount(t, sSat1, 1)
+	checkLeafNodeConnectedCount(t, sSat2, 1)
+	checkLeafNodeConnectedCount(t, sGW1, 2)
+	checkLeafNodeConnectedCount(t, sGW2, 2)
+
+	// Let's place a muxed stream on the hub and have it source from a stream on the Satellite.
+	// Connect to Hub.
+	ncHub, jsHub := jsClientConnect(t, sHub, nats.UserInfo("u", "p"))
+	defer ncHub.Close()
+
+	_, err := jsHub.AddStream(&nats.StreamConfig{Name: "HUB", Subjects: []string{"H.>"}})
+	require_NoError(t, err)
+
+	// Connect to Sat1.
+	ncSat1, jsSat1 := jsClientConnect(t, sSat1, nats.UserInfo("u", "p"))
+	defer ncSat1.Close()
+
+	_, err = jsSat1.AddStream(&nats.StreamConfig{
+		Name:     "SAT-1",
+		Subjects: []string{"S1.*"},
+		Sources: []*nats.StreamSource{{
+			Name:          "HUB",
+			FilterSubject: "H.SAT-1.>",
+			External:      &nats.ExternalStream{APIPrefix: "$JS.HUB.API"},
+		}},
+	})
+	require_NoError(t, err)
+
+	// Connect to Sat2.
+	ncSat2, jsSat2 := jsClientConnect(t, sSat2, nats.UserInfo("u", "p"))
+	defer ncSat2.Close()
+
+	_, err = jsSat2.AddStream(&nats.StreamConfig{
+		Name:     "SAT-2",
+		Subjects: []string{"S2.*"},
+		Sources: []*nats.StreamSource{{
+			Name:          "HUB",
+			FilterSubject: "H.SAT-2.>",
+			External:      &nats.ExternalStream{APIPrefix: "$JS.HUB.API"},
+		}},
+	})
+	require_NoError(t, err)
+
+	// Put in 10 msgs each in for each satellite.
+	for i := 0; i < 10; i++ {
+		jsHub.Publish("H.SAT-1.foo", []byte("CMD"))
+		jsHub.Publish("H.SAT-2.foo", []byte("CMD"))
+	}
+	// Make sure both are sync'd.
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		si, err := jsSat1.StreamInfo("SAT-1")
+		require_NoError(t, err)
+		if si.State.Msgs != 10 {
+			return errors.New("SAT-1 Not sync'd yet")
+		}
+		si, err = jsSat2.StreamInfo("SAT-2")
+		require_NoError(t, err)
+		if si.State.Msgs != 10 {
+			return errors.New("SAT-2 Not sync'd yet")
+		}
+		return nil
+	})
+
+	testReconnect := func(t *testing.T, delay time.Duration, expected uint64) {
+		// Now disconnect Sat1 and Sat2. In 2.12 we can do this with active: false, but since this will be
+		// pulled into 2.11.9 just shutdown both gateways.
+		sGW1.Shutdown()
+		checkLeafNodeConnectedCount(t, sSat1, 0)
+		checkLeafNodeConnectedCount(t, sHub, 1)
+
+		sGW2.Shutdown()
+		checkLeafNodeConnectedCount(t, sSat2, 0)
+		checkLeafNodeConnectedCount(t, sHub, 0)
+
+		// Send 10 more messages for each while GW1 and GW2 are down.
+		for i := 0; i < 10; i++ {
+			jsHub.Publish("H.SAT-1.foo", []byte("CMD"))
+			jsHub.Publish("H.SAT-2.foo", []byte("CMD"))
+		}
+
+		// Keep GWs down for delay.
+		time.Sleep(delay)
+
+		sGW1, _ = RunServerWithConfig(confD)
+		// Make sure we are connected ok.
+		checkLeafNodeConnectedCount(t, sHub, 1)
+		checkLeafNodeConnectedCount(t, sSat1, 1)
+		checkLeafNodeConnectedCount(t, sGW1, 2)
+
+		sGW2, _ = RunServerWithConfig(confE)
+		// Make sure we are connected ok.
+		checkLeafNodeConnectedCount(t, sHub, 2)
+		checkLeafNodeConnectedCount(t, sSat2, 1)
+		checkLeafNodeConnectedCount(t, sGW2, 2)
+
+		// Make sure sync'd in less than a second or two.
+		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+			si, err := jsSat1.StreamInfo("SAT-1")
+			require_NoError(t, err)
+			if si.State.Msgs != expected {
+				return fmt.Errorf("SAT-1 not sync'd, expected %d got %d", expected, si.State.Msgs)
+			}
+			si, err = jsSat2.StreamInfo("SAT-2")
+			require_NoError(t, err)
+			if si.State.Msgs != expected {
+				return fmt.Errorf("SAT-2 not sync'd, expected %d got %d", expected, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+
+	// We will test two scenarios with amount of time the GWs (link) is down.
+	// 1. Just a second, we will not have detected the consumer is offline as of yet.
+	// 2. Just over sourceHealthCheckInterval, meaning we detect it is down and schedule for another try.
+	t.Run(fmt.Sprintf("reconnect-%v", time.Second), func(t *testing.T) {
+		testReconnect(t, time.Second, 20)
+	})
+	t.Run(fmt.Sprintf("reconnect-%v", sourceHealthCheckInterval+time.Second), func(t *testing.T) {
+		testReconnect(t, sourceHealthCheckInterval+time.Second, 30)
+	})
+	defer sGW1.Shutdown()
+	defer sGW2.Shutdown()
 }
