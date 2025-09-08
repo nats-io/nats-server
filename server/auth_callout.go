@@ -403,7 +403,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		return false, errStr
 	}
 	req := []byte(b)
-	var hdr map[string]string
+	var hdr []byte
 
 	// Check if we have been asked to encrypt.
 	if xkp != nil {
@@ -413,7 +413,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			s.Warnf(errStr)
 			return false, errStr
 		}
-		hdr = map[string]string{AuthRequestXKeyHeader: xkey}
+		hdr = genHeader(hdr, AuthRequestXKeyHeader, xkey)
 	}
 
 	// Send out our request.

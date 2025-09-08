@@ -205,6 +205,13 @@ type StreamInfo struct {
 	TimeStamp time.Time `json:"ts"`
 }
 
+// streamInfoClusterResponse is a response used in a cluster to communicate the stream info
+// back to the meta leader as part of a stream list request.
+type streamInfoClusterResponse struct {
+	StreamInfo
+	OfflineReason string `json:"offline_reason,omitempty"` // Reporting when a stream is offline.
+}
+
 type StreamAlternate struct {
 	Name    string `json:"name"`
 	Domain  string `json:"domain,omitempty"`
@@ -378,6 +385,10 @@ type stream struct {
 	lastBySub *subscription
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
+
+	// If standalone/single-server, the offline reason needs to be stored directly in the stream.
+	// Otherwise, if clustered it will be part of the stream assignment.
+	offlineReason string
 }
 
 type sourceInfo struct {
@@ -938,6 +949,17 @@ func (mset *stream) monitorQuitC() <-chan struct{} {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return mset.mqch
+}
+
+// signalMonitorQuit signals to exit the monitor loop. If there's no Raft node,
+// this will be the only way to stop the monitor goroutine.
+func (mset *stream) signalMonitorQuit() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	if mset.mqch != nil {
+		close(mset.mqch)
+		mset.mqch = nil
+	}
 }
 
 func (mset *stream) updateC() <-chan struct{} {
@@ -1781,6 +1803,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
+	// Remove placement if it's an empty object.
+	if cfg.Placement != nil && reflect.DeepEqual(cfg.Placement, &Placement{}) {
+		cfg.Placement = nil
+	}
 	// For now don't allow preferred server in placement.
 	if cfg.Placement != nil && cfg.Placement.Preferred != _EMPTY_ {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("preferred server not permitted in placement"))
@@ -2423,7 +2449,7 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 
 // retryDisconnectedSyncConsumers() will check if we have any disconnected
 // sync consumers for either mirror or a source and will reset and retry to connect.
-func (mset *stream) retryDisconnectedSyncConsumers(remoteDomain string) {
+func (mset *stream) retryDisconnectedSyncConsumers() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
@@ -2432,23 +2458,24 @@ func (mset *stream) retryDisconnectedSyncConsumers(remoteDomain string) {
 		return
 	}
 
+	shouldRetry := func(si *sourceInfo) bool {
+		if si != nil && (si.sip || si.sub == nil || (si.sub.client != nil && si.sub.client.isClosed())) {
+			// Need to reset
+			si.fails, si.sip = 0, false
+			mset.cancelSourceInfo(si)
+			return true
+		}
+		return false
+	}
+
 	// Check mirrors first.
 	if si := mset.mirror; si != nil {
-		if si.sub == nil && !si.sip {
-			if remoteDomain == _EMPTY_ || (mset.cfg.Mirror != nil && mset.cfg.Mirror.External.Domain() == remoteDomain) {
-				// Need to reset
-				si.fails = 0
-				mset.cancelSourceInfo(si)
-				mset.scheduleSetupMirrorConsumerRetry()
-			}
+		if shouldRetry(si) {
+			mset.scheduleSetupMirrorConsumerRetry()
 		}
 	} else {
 		for _, si := range mset.sources {
-			ss := mset.streamSource(si.iname)
-			if remoteDomain == _EMPTY_ || (ss != nil && ss.External.Domain() == remoteDomain) {
-				// Need to reset
-				si.fails = 0
-				mset.cancelSourceInfo(si)
+			if shouldRetry(si) {
 				mset.setupSourceConsumer(si.iname, si.sseq+1, time.Time{})
 			}
 		}
@@ -2973,7 +3000,8 @@ func (mset *stream) setupMirrorConsumer() error {
 			if mset.mirror != nil {
 				mset.mirror.sip = false
 				// If we need to retry, schedule now
-				if retry {
+				// If sub is not nil means we re-established somewhere else so do not re-attempt here.
+				if retry && mset.mirror.sub == nil {
 					mset.mirror.fails++
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(mset.mirror)
@@ -3334,7 +3362,8 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 			if si := mset.sources[iname]; si != nil {
 				si.sip = false
 				// If we need to retry, schedule now
-				if retry {
+				// If sub is not nil means we re-established somewhere else so do not re-attempt here.
+				if retry && si.sub == nil {
 					si.fails++
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(si)
@@ -5745,6 +5774,7 @@ func (mset *stream) resetAndWaitOnConsumers() {
 			node.Stop()
 		}
 		if o.isMonitorRunning() {
+			o.signalMonitorQuit()
 			o.monitorWg.Wait()
 		}
 	}
@@ -5761,7 +5791,7 @@ func (mset *stream) delete() error {
 // Internal function to stop or delete the stream.
 func (mset *stream) stop(deleteFlag, advisory bool) error {
 	mset.mu.RLock()
-	js, jsa, name := mset.js, mset.jsa, mset.cfg.Name
+	js, jsa, name, offlineReason := mset.js, mset.jsa, mset.cfg.Name, mset.offlineReason
 	mset.mu.RUnlock()
 
 	if jsa == nil {
@@ -5770,7 +5800,10 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 
 	// Remove from our account map first.
 	jsa.mu.Lock()
-	delete(jsa.streams, name)
+	// Preserve in the account if it's marked offline, to have it remain queryable.
+	if deleteFlag || offlineReason == _EMPTY_ {
+		delete(jsa.streams, name)
+	}
 	accName := jsa.account.Name
 	jsa.mu.Unlock()
 
@@ -5803,9 +5836,12 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
-	mset.clsMu.Lock()
-	mset.consumers, mset.cList, mset.csl = nil, nil, nil
-	mset.clsMu.Unlock()
+	// Preserve the consumers if it's marked offline, to have them remain queryable.
+	if deleteFlag || offlineReason == _EMPTY_ {
+		mset.clsMu.Lock()
+		mset.consumers, mset.cList, mset.csl = nil, nil, nil
+		mset.clsMu.Unlock()
+	}
 
 	// Check if we are a mirror.
 	if mset.mirror != nil && mset.mirror.sub != nil {
@@ -5829,6 +5865,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			// but should we log?
 			o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
 			if !isShuttingDown {
+				o.signalMonitorQuit()
 				o.monitorWg.Wait()
 			}
 		}
@@ -5906,14 +5943,17 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 
 	if deleteFlag {
+		// cleanup directories after the stream
+		accDir := filepath.Join(js.config.StoreDir, accName)
 		if store != nil {
 			// Ignore errors.
 			store.Delete()
+		} else {
+			streamDir := filepath.Join(accDir, streamsDir)
+			os.RemoveAll(filepath.Join(streamDir, name))
 		}
 		// Release any resources.
 		js.releaseStreamResources(&mset.cfg)
-		// cleanup directories after the stream
-		accDir := filepath.Join(js.config.StoreDir, accName)
 		// Do cleanup in separate go routine similar to how fs will use purge here..
 		go func() {
 			// no op if not empty

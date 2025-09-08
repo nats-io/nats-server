@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -68,6 +70,13 @@ type ConsumerInfo struct {
 	// TimeStamp indicates when the info was gathered
 	TimeStamp      time.Time            `json:"ts"`
 	PriorityGroups []PriorityGroupState `json:"priority_groups,omitempty"`
+}
+
+// consumerInfoClusterResponse is a response used in a cluster to communicate the consumer info
+// back to the meta leader as part of a consumer list request.
+type consumerInfoClusterResponse struct {
+	ConsumerInfo
+	OfflineReason string `json:"offline_reason,omitempty"` // Reporting when a consumer is offline.
 }
 
 type PriorityGroupState struct {
@@ -452,6 +461,7 @@ type consumer struct {
 	dthresh           time.Duration
 	mch               chan struct{} // Message channel
 	qch               chan struct{} // Quit channel
+	mqch              chan struct{} // The monitor's quit channel.
 	inch              chan bool     // Interest change channel
 	sfreq             int32
 	ackEventT         string
@@ -497,6 +507,10 @@ type consumer struct {
 	/// pinnedTtl is the remaining time before the current PinId expires.
 	pinnedTtl *time.Timer
 	pinnedTS  time.Time
+
+	// If standalone/single-server, the offline reason needs to be stored directly in the consumer.
+	// Otherwise, if clustered it will be part of the consumer assignment.
+	offlineReason string
 }
 
 // A single subject filter.
@@ -1021,10 +1035,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		outq:      mset.outq,
 		active:    true,
 		qch:       make(chan struct{}),
+		mqch:      make(chan struct{}),
 		uch:       make(chan struct{}, 1),
 		mch:       make(chan struct{}, 1),
 		sfreq:     int32(sampleFreq),
-		maxdc:     uint64(config.MaxDeliver),
+		maxdc:     uint64(max(config.MaxDeliver, 0)), // MaxDeliver is negative (-1) when infinite.
 		maxp:      config.MaxAckPending,
 		retention: cfg.Retention,
 		created:   time.Now().UTC(),
@@ -1282,6 +1297,26 @@ func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	select {
 	case o.uch <- struct{}{}:
 	default:
+	}
+}
+
+func (o *consumer) monitorQuitC() <-chan struct{} {
+	if o == nil {
+		return nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.mqch
+}
+
+// signalMonitorQuit signals to exit the monitor loop. If there's no Raft node,
+// this will be the only way to stop the monitor goroutine.
+func (o *consumer) signalMonitorQuit() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.mqch != nil {
+		close(o.mqch)
+		o.mqch = nil
 	}
 }
 
@@ -2239,7 +2274,8 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	}
 	// Set MaxDeliver if changed
 	if cfg.MaxDeliver != o.cfg.MaxDeliver {
-		o.maxdc = uint64(cfg.MaxDeliver)
+		// MaxDeliver is negative (-1) when infinite.
+		o.maxdc = uint64(max(cfg.MaxDeliver, 0))
 	}
 	// Set InactiveThreshold if changed.
 	if val := cfg.InactiveThreshold; val != o.cfg.InactiveThreshold {
@@ -4836,7 +4872,7 @@ func (o *consumer) setMaxPendingBytes(limit int) {
 // This does some quick sanity checks to see if we should re-calculate num pending.
 // Lock should be held.
 func (o *consumer) checkNumPending() uint64 {
-	if o.mset != nil {
+	if o.mset != nil && o.mset.store != nil {
 		var state StreamState
 		o.mset.store.FastState(&state)
 		npc := o.numPending()
@@ -5758,6 +5794,13 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 	o.closed = true
 
+	// Signal to the monitor loop.
+	// Can't use only qch here, since that's used when stepping down as a leader.
+	if o.mqch != nil {
+		close(o.mqch)
+		o.mqch = nil
+	}
+
 	// Check if we are the leader and are being deleted (as a node).
 	if dflag && o.isLeader() {
 		// If we are clustered and node leader (probable from above), stepdown.
@@ -5880,6 +5923,14 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		} else {
 			err = store.Stop()
 		}
+	} else if dflag {
+		// If there's no store (for example, when it's offline), manually delete the directories.
+		o.mu.RLock()
+		stream, consumer := o.stream, o.name
+		o.mu.RUnlock()
+		accDir := filepath.Join(js.config.StoreDir, a.GetName())
+		consumersDir := filepath.Join(accDir, streamsDir, stream, consumerDir)
+		os.RemoveAll(filepath.Join(consumersDir, consumer))
 	}
 
 	return err
