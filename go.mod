@@ -2,7 +2,7 @@ module github.com/nats-io/nats-server/v2
 
 go 1.24.0
 
-toolchain go1.24.6
+toolchain go1.24.7
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.4.3-default-no-op
@@ -15,6 +15,6 @@ require (
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.6.0
 	golang.org/x/crypto v0.41.0
-	golang.org/x/sys v0.35.0
-	golang.org/x/time v0.12.0
+	golang.org/x/sys v0.36.0
+	golang.org/x/time v0.13.0
 )
