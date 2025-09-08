@@ -20,6 +20,9 @@ const (
 	// JSAtomicPublishMissingSeqErr atomic publish sequence is missing
 	JSAtomicPublishMissingSeqErr ErrorIdentifier = 10175
 
+	// JSAtomicPublishTooLargeBatchErr atomic publish batch is too large
+	JSAtomicPublishTooLargeBatchErr ErrorIdentifier = 10199
+
 	// JSAtomicPublishUnsupportedHeaderBatchErr atomic publish unsupported header used: {header}
 	JSAtomicPublishUnsupportedHeaderBatchErr ErrorIdentifier = 10177
 
@@ -338,6 +341,9 @@ const (
 	// JSMirrorOverlappingSubjectFilters mirror subject filters can not overlap
 	JSMirrorOverlappingSubjectFilters ErrorIdentifier = 10152
 
+	// JSMirrorWithAtomicPublishErr stream mirrors can not also use atomic publishing
+	JSMirrorWithAtomicPublishErr ErrorIdentifier = 10198
+
 	// JSMirrorWithCountersErr stream mirrors can not also calculate counters
 	JSMirrorWithCountersErr ErrorIdentifier = 10173
 
@@ -601,6 +607,7 @@ var (
 		JSAtomicPublishIncompleteBatchErr:            {Code: 400, ErrCode: 10176, Description: "atomic publish batch is incomplete"},
 		JSAtomicPublishInvalidBatchIDErr:             {Code: 400, ErrCode: 10179, Description: "atomic publish batch ID is invalid"},
 		JSAtomicPublishMissingSeqErr:                 {Code: 400, ErrCode: 10175, Description: "atomic publish sequence is missing"},
+		JSAtomicPublishTooLargeBatchErr:              {Code: 400, ErrCode: 10199, Description: "atomic publish batch is too large"},
 		JSAtomicPublishUnsupportedHeaderBatchErr:     {Code: 400, ErrCode: 10177, Description: "atomic publish unsupported header used: {header}"},
 		JSBadRequestErr:                              {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSClusterIncompleteErr:                       {Code: 503, ErrCode: 10004, Description: "incomplete results"},
@@ -707,6 +714,7 @@ var (
 		JSMirrorMaxMessageSizeTooBigErr:              {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
 		JSMirrorMultipleFiltersNotAllowed:            {Code: 400, ErrCode: 10150, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
 		JSMirrorOverlappingSubjectFilters:            {Code: 400, ErrCode: 10152, Description: "mirror subject filters can not overlap"},
+		JSMirrorWithAtomicPublishErr:                 {Code: 400, ErrCode: 10198, Description: "stream mirrors can not also use atomic publishing"},
 		JSMirrorWithCountersErr:                      {Code: 400, ErrCode: 10173, Description: "stream mirrors can not also calculate counters"},
 		JSMirrorWithFirstSeqErr:                      {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
 		JSMirrorWithMsgSchedulesErr:                  {Code: 400, ErrCode: 10186, Description: "stream mirrors can not also schedule messages"},
@@ -865,6 +873,16 @@ func NewJSAtomicPublishMissingSeqError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSAtomicPublishMissingSeqErr]
+}
+
+// NewJSAtomicPublishTooLargeBatchError creates a new JSAtomicPublishTooLargeBatchErr error: "atomic publish batch is too large"
+func NewJSAtomicPublishTooLargeBatchError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAtomicPublishTooLargeBatchErr]
 }
 
 // NewJSAtomicPublishUnsupportedHeaderBatchError creates a new JSAtomicPublishUnsupportedHeaderBatchErr error: "atomic publish unsupported header used: {header}"
@@ -2027,6 +2045,16 @@ func NewJSMirrorOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorOverlappingSubjectFilters]
+}
+
+// NewJSMirrorWithAtomicPublishError creates a new JSMirrorWithAtomicPublishErr error: "stream mirrors can not also use atomic publishing"
+func NewJSMirrorWithAtomicPublishError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorWithAtomicPublishErr]
 }
 
 // NewJSMirrorWithCountersError creates a new JSMirrorWithCountersErr error: "stream mirrors can not also calculate counters"

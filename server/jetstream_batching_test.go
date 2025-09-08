@@ -326,8 +326,8 @@ func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 			Name:               "TEST",
 			Retention:          retention,
 			Subjects:           []string{"foo"},
-			Replicas:           3,
-			Storage:            FileStorage,
+			Replicas:           replicas,
+			Storage:            storage,
 			AllowAtomicPublish: true,
 		}
 
@@ -412,6 +412,16 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			return checkState(t, c, globalAccountName, "TEST")
 		})
+
+		// Mirror can source batched messages but can't do atomic batching itself.
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "M-no-batch",
+			Storage:            FileStorage,
+			Mirror:             &StreamSource{Name: "TEST"},
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
+		})
+		require_Error(t, err, NewJSMirrorWithAtomicPublishError())
 
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "M",
@@ -1986,4 +1996,76 @@ func TestJetStreamRollupIsolatedRead(t *testing.T) {
 	t.Run("DirectBatchGet", func(t *testing.T) { test(t, DirectBatchGet) })
 	t.Run("DirectMultiGet", func(t *testing.T) { test(t, DirectMultiGet) })
 	t.Run("Consumer", func(t *testing.T) { test(t, Consumer) })
+}
+
+func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		cfg := &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Replicas:           replicas,
+			Storage:            FileStorage,
+			AllowAtomicPublish: true,
+		}
+
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.*", JSAdvisoryStreamBatchAbandonedPre))
+		require_NoError(t, err)
+		defer sub.Drain()
+		require_NoError(t, nc.Flush())
+
+		// Should receive an advisory if gaps are detected.
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		require_NoError(t, nc.PublishMsg(m))
+		m.Header.Set("Nats-Batch-Sequence", "3")
+		require_NoError(t, nc.PublishMsg(m))
+
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var advisory JSStreamBatchAbandonedAdvisory
+		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+		require_Equal(t, advisory.BatchId, "uuid")
+		require_Equal(t, advisory.Reason, BatchIncomplete)
+
+		count := 1002
+		for seq := 1; seq <= count; seq++ {
+			m = nats.NewMsg("foo")
+			m.Header.Set("Nats-Batch-Id", "uuid")
+			m.Header.Set("Nats-Batch-Sequence", strconv.Itoa(seq))
+			if seq != count {
+				require_NoError(t, nc.PublishMsg(m))
+				continue
+			}
+			var pubAck JSPubAckResponse
+			m.Header.Set("Nats-Batch-Commit", "1")
+			rmsg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_NotNil(t, pubAck.Error)
+			require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError())
+		}
+
+		msg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		advisory = JSStreamBatchAbandonedAdvisory{}
+		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+		require_Equal(t, advisory.BatchId, "uuid")
+		require_Equal(t, advisory.Reason, BatchTimeout)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			test(t, replicas)
+		})
+	}
 }
