@@ -518,14 +518,14 @@ const (
 	JSScheduleNextPurge = "purge" // If it's a non-repeating/delayed message, the schedule is purged.
 )
 
-// Headers for republished messages and direct gets.
+// Headers for republished messages and direct get responses.
 const (
 	JSStream       = "Nats-Stream"
 	JSSequence     = "Nats-Sequence"
 	JSTimeStamp    = "Nats-Time-Stamp"
 	JSSubject      = "Nats-Subject"
-	JSLastSequence = "Nats-Last-Sequence"
-	JSNumPending   = "Nats-Num-Pending"
+	JSLastSequence = "Nats-Last-Sequence" // The sequence number of the precedent message either republished or in a batch of responses. 0 in the first message.
+	JSNumPending   = "Nats-Num-Pending"   // Number of messages pending in the multi/batched get response
 	JSUpToSequence = "Nats-UpTo-Sequence"
 )
 

@@ -13795,14 +13795,21 @@ func TestJetStreamStreamRepublishHeadersOnly(t *testing.T) {
 	}
 
 	checkSubsPending(t, sub, toSend)
-	m, err := sub.NextMsg(time.Second)
-	require_NoError(t, err)
+	last := "0"
+	for i := 0; i < toSend; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
 
-	if len(m.Data) > 0 {
-		t.Fatalf("Expected no msg just headers, but got %d bytes", len(m.Data))
-	}
-	if sz := m.Header.Get(JSMsgSize); sz != "512" {
-		t.Fatalf("Expected msg size hdr, got %q", sz)
+		if len(m.Data) > 0 {
+			t.Fatalf("Expected no msg just headers, but got %d bytes", len(m.Data))
+		}
+		if sz := m.Header.Get(JSMsgSize); sz != "512" {
+			t.Fatalf("Expected msg size hdr, got %q", sz)
+		}
+		if lastHeader := m.Header.Get(JSLastSequence); lastHeader != last {
+			t.Fatalf("Expected last message header %q, got %q", last, lastHeader)
+		}
+		last = m.Header.Get(JSSequence)
 	}
 }
 
@@ -16859,6 +16866,7 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 		defer sub.Unsubscribe()
 		checkSubsPending(t, sub, len(expected))
 		np := numPendingStart
+		last := "0"
 		for i := 0; i < len(expected); i++ {
 			msg, err := sub.NextMsg(10 * time.Millisecond)
 			require_NoError(t, err)
@@ -16873,7 +16881,8 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 					np--
 				}
 				require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
-
+				require_Equal(t, last, msg.Header.Get(JSLastSequence))
+				last = msg.Header.Get(JSSequence)
 			} else {
 				// Check for properly formatted EOB marker.
 				// Should have no body.
@@ -16884,6 +16893,7 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 				require_Equal(t, msg.Header.Get("Description"), "EOB")
 				// Check we have NumPending and it's correct.
 				require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
+				require_Equal(t, last, msg.Header.Get(JSLastSequence))
 			}
 		}
 	}
@@ -17246,6 +17256,7 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 			// Multi-Get will have a nil message as the end marker regardless.
 			checkResponses := func(sub *nats.Subscription, numPendingStart int, expected ...p) {
 				t.Helper()
+				last := "0"
 				defer sub.Unsubscribe()
 				checkSubsPending(t, sub, len(expected))
 				np := numPendingStart
@@ -17265,6 +17276,8 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 							np--
 						}
 						require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
+						require_Equal(t, last, msg.Header.Get(JSLastSequence))
+						last = msg.Header.Get(JSSequence)
 					} else {
 						// Check for properly formatted EOB marker.
 						// Should have no body.
@@ -17275,6 +17288,7 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 						require_Equal(t, msg.Header.Get("Description"), "EOB")
 						// Check we have NumPending and it's correct.
 						require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
+						require_Equal(t, last, msg.Header.Get(JSLastSequence))
 					}
 				}
 			}
@@ -17284,7 +17298,9 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 			// Check with UpToSeq
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}, UpToSeq: 3})
 			checkResponses(sub, 3, p{"foo.foo", 1}, p{"foo.bar", 2}, p{"foo.baz", 3}, eob)
-
+			// check last header sequence number is correct
+			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.foo", "foo.baz"}})
+			checkResponses(sub, 2, p{"foo.foo", 97}, p{"foo.baz", 99}, eob)
 			// Test No Results.
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"bar.*"}})
 			checkSubsPending(t, sub, 1)
