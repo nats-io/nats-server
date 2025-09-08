@@ -133,6 +133,10 @@ func (c *client) isHubLeafNode() bool {
 }
 
 func (c *client) isIsolatedLeafNode() bool {
+	// TODO(nat): In future we may want to pass in and consider an isolation
+	// group name here, which the hub and/or leaf could provide, so that we
+	// can isolate away certain LNs but not others on an opt-in basis. For
+	// now we will just isolate all LN interest until then.
 	return c.kind == LEAF && c.leaf.isolated
 }
 
@@ -826,6 +830,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		Compression:   c.leaf.compression,
 		RemoteAccount: c.acc.GetName(),
 		Proto:         c.srv.getServerProto(),
+		Isolate:       c.leaf.remote.RequestIsolation,
 	}
 
 	// If a signature callback is specified, this takes precedence over anything else.
@@ -994,7 +999,9 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 	// If the leafnode subject interest should be isolated, flag it here.
 	s.optsMu.RLock()
-	c.leaf.isolated = s.opts.LeafNode.IsolateLeafnodeInterest
+	if c.leaf.isolated = s.opts.LeafNode.IsolateLeafnodeInterest; !c.leaf.isolated && remote != nil {
+		c.leaf.isolated = remote.LocalIsolation
+	}
 	s.optsMu.RUnlock()
 
 	// For accepted LN connections, ws will be != nil if it was accepted
@@ -1844,6 +1851,7 @@ type leafConnectInfo struct {
 	Headers   bool     `json:"headers,omitempty"`
 	JetStream bool     `json:"jetstream,omitempty"`
 	DenyPub   []string `json:"deny_pub,omitempty"`
+	Isolate   bool     `json:"isolate,omitempty"`
 
 	// There was an existing field called:
 	// >> Comp bool `json:"compression,omitempty"`
@@ -1954,6 +1962,8 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.leaf.remoteServer = proto.Name
 	// Remember the remote account name
 	c.leaf.remoteAccName = proto.RemoteAccount
+	// Remember if the leafnode requested isolation.
+	c.leaf.isolated = c.leaf.isolated || proto.Isolate
 
 	// If the other side has declared itself a hub, so we will take on the spoke role.
 	if proto.Hub {

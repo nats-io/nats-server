@@ -10277,7 +10277,7 @@ func TestLeafNodesDisableRemote(t *testing.T) {
 	require_Equal(t, string(msg.Data), "hello4")
 }
 
-func TestLeafNodeIsolatedLeafSubjectPropagation(t *testing.T) {
+func TestLeafNodeIsolatedLeafSubjectPropagationGlobal(t *testing.T) {
 	for tname, isolated := range map[string]bool{
 		"Isolated": true,
 		"Normal":   false,
@@ -10325,6 +10325,221 @@ func TestLeafNodeIsolatedLeafSubjectPropagation(t *testing.T) {
 			checkLeafNodeConnectedCount(t, sh, 2)
 			checkLeafNodeConnectedCount(t, sp1, 1)
 			checkLeafNodeConnectedCount(t, sp2, 1)
+
+			// We expect that the hub side will have answered the request from the spoke for
+			// isolation if needed, but the spokes themselves will not themselves isolate
+			// subscription interest in the other direction unless also configured to do so.
+			for _, c := range sh.leafs {
+				require_Equal(t, c.leaf.isolated, isolated)
+			}
+			for _, c := range sp1.leafs {
+				require_False(t, c.leaf.isolated)
+			}
+			for _, c := range sp2.leafs {
+				require_False(t, c.leaf.isolated)
+			}
+
+			nch := natsConnect(t, sh.ClientURL(), nats.UserInfo("HA", "pwd"))
+			nc1 := natsConnect(t, sp1.ClientURL(), nats.UserInfo("A", "pwd"))
+
+			// Create a north-south subscription on the hub that should be visible to both spokes.
+			nssub, err := nch.SubscribeSync("northsouth")
+			require_NoError(t, err)
+			checkSubInterest(t, sh, "HA", "northsouth", time.Second) // Visible to the hub.
+			checkSubInterest(t, sp1, "A", "northsouth", time.Second) // Visible to both spokes.
+			checkSubInterest(t, sp2, "A", "northsouth", time.Second) // Visible to both spokes.
+
+			// The spoke subscriptions should be visible to the hub in all cases, but only
+			// visible to other spokes if they are not isolated.
+			ewsub, err := nc1.SubscribeSync("eastwest")
+			require_NoError(t, err)
+			checkSubInterest(t, sh, "HA", "eastwest", time.Second) // Visible to the hub.
+			checkSubInterest(t, sp1, "A", "eastwest", time.Second) // Visible to the spoke with the sub.
+			if isolated {
+				checkSubNoInterest(t, sp2, "A", "eastwest", time.Second) // Not visible to the other spoke.
+			} else {
+				checkSubInterest(t, sp2, "A", "eastwest", time.Second) // Visible to the other spoke.
+			}
+			require_NoError(t, ewsub.Unsubscribe())
+			checkSubNoInterest(t, sh, "HA", "eastwest", time.Second)
+			checkSubNoInterest(t, sp1, "A", "eastwest", time.Second)
+			checkSubNoInterest(t, sp2, "A", "eastwest", time.Second)
+
+			// ... but a subscription from the hub should be visible to both.
+			require_NoError(t, nssub.Unsubscribe())
+			checkSubNoInterest(t, sh, "HA", "northsouth", time.Second)
+			checkSubNoInterest(t, sp1, "A", "northsouth", time.Second)
+			checkSubNoInterest(t, sp2, "A", "northsouth", time.Second)
+		})
+	}
+}
+
+func TestLeafNodeIsolatedLeafSubjectPropagationRequestIsolation(t *testing.T) {
+	for tname, isolated := range map[string]bool{
+		"Isolated": true,
+		"Normal":   false,
+	} {
+		t.Run(tname, func(t *testing.T) {
+			hubTmpl := `
+				port: -1
+				server_name: "%s"
+				accounts {
+					HA { users: [{user: HA, password: pwd}] }
+				}
+				leafnodes {
+					port: -1
+				}
+			`
+			confH := createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "H1")))
+			sh, oh := RunServerWithConfig(confH)
+			defer sh.Shutdown()
+
+			spokeTmpl := `
+				port: -1
+				server_name: "%s"
+				accounts {
+					A { users: [{user: A, password: pwd}] }
+				}
+				leafnodes {
+					remotes [
+						{
+							url: "nats://HA:pwd@127.0.0.1:%d"
+							local: "A"
+							request_isolation: %v
+						}
+					]
+				}
+			`
+
+			confSP1 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP1", oh.LeafNode.Port, isolated)))
+			sp1, _ := RunServerWithConfig(confSP1)
+			defer sp1.Shutdown()
+
+			confSP2 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP2", oh.LeafNode.Port, isolated)))
+			sp2, _ := RunServerWithConfig(confSP2)
+			defer sp2.Shutdown()
+
+			checkLeafNodeConnectedCount(t, sh, 2)
+			checkLeafNodeConnectedCount(t, sp1, 1)
+			checkLeafNodeConnectedCount(t, sp2, 1)
+
+			// We expect that the hub side will have answered the request from the spoke for
+			// isolation if needed, but the spokes themselves will not themselves isolate
+			// subscription interest in the other direction unless also configured to do so.
+			for _, c := range sh.leafs {
+				require_Equal(t, c.leaf.isolated, isolated)
+			}
+			for _, c := range sp1.leafs {
+				require_False(t, c.leaf.isolated)
+			}
+			for _, c := range sp2.leafs {
+				require_False(t, c.leaf.isolated)
+			}
+
+			nch := natsConnect(t, sh.ClientURL(), nats.UserInfo("HA", "pwd"))
+			nc1 := natsConnect(t, sp1.ClientURL(), nats.UserInfo("A", "pwd"))
+
+			// Create a north-south subscription on the hub that should be visible to both spokes.
+			nssub, err := nch.SubscribeSync("northsouth")
+			require_NoError(t, err)
+			checkSubInterest(t, sh, "HA", "northsouth", time.Second) // Visible to the hub.
+			checkSubInterest(t, sp1, "A", "northsouth", time.Second) // Visible to both spokes.
+			checkSubInterest(t, sp2, "A", "northsouth", time.Second) // Visible to both spokes.
+
+			// The spoke subscriptions should be visible to the hub in all cases, but only
+			// visible to other spokes if they are not isolated.
+			ewsub, err := nc1.SubscribeSync("eastwest")
+			require_NoError(t, err)
+			checkSubInterest(t, sh, "HA", "eastwest", time.Second) // Visible to the hub.
+			checkSubInterest(t, sp1, "A", "eastwest", time.Second) // Visible to the spoke with the sub.
+			if isolated {
+				checkSubNoInterest(t, sp2, "A", "eastwest", time.Second) // Not visible to the other spoke.
+			} else {
+				checkSubInterest(t, sp2, "A", "eastwest", time.Second) // Visible to the other spoke.
+			}
+			require_NoError(t, ewsub.Unsubscribe())
+			checkSubNoInterest(t, sh, "HA", "eastwest", time.Second)
+			checkSubNoInterest(t, sp1, "A", "eastwest", time.Second)
+			checkSubNoInterest(t, sp2, "A", "eastwest", time.Second)
+
+			// ... but a subscription from the hub should be visible to both.
+			require_NoError(t, nssub.Unsubscribe())
+			checkSubNoInterest(t, sh, "HA", "northsouth", time.Second)
+			checkSubNoInterest(t, sp1, "A", "northsouth", time.Second)
+			checkSubNoInterest(t, sp2, "A", "northsouth", time.Second)
+		})
+	}
+}
+
+func TestLeafNodeIsolatedLeafSubjectPropagationLocalIsolation(t *testing.T) {
+	for tname, isolated := range map[string]bool{
+		"Isolated": true,
+		"Normal":   false,
+	} {
+		t.Run(tname, func(t *testing.T) {
+			spokeTmpl := `
+				port: -1
+				server_name: "%s"
+				accounts {
+					A { users: [{user: A, password: pwd}] }
+				}
+				leafnodes {
+					port: -1
+				}
+			`
+
+			confSP1 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP1")))
+			sp1, osp1 := RunServerWithConfig(confSP1)
+			defer sp1.Shutdown()
+
+			confSP2 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP2")))
+			sp2, osp2 := RunServerWithConfig(confSP2)
+			defer sp2.Shutdown()
+
+			hubTmpl := `
+				port: -1
+				server_name: "%s"
+				accounts {
+					HA { users: [{user: HA, password: pwd}] }
+				}
+				leafnodes {
+					port: -1
+					remotes [
+						{
+							url: "nats://A:pwd@127.0.0.1:%d"
+							local: "HA"
+							isolate: %v
+							hub: true
+						},
+						{
+							url: "nats://A:pwd@127.0.0.1:%d"
+							local: "HA"
+							isolate: %v
+							hub: true
+						}
+					]
+				}
+			`
+			confH := createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "H1", osp1.LeafNode.Port, isolated, osp2.LeafNode.Port, isolated)))
+			sh, _ := RunServerWithConfig(confH)
+			defer sh.Shutdown()
+
+			checkLeafNodeConnectedCount(t, sh, 2)
+			checkLeafNodeConnectedCount(t, sp1, 1)
+			checkLeafNodeConnectedCount(t, sp2, 1)
+
+			// We expect that the hub side will have answered the request from the spoke for
+			// isolation if needed, but the spokes themselves will not themselves isolate
+			// subscription interest in the other direction unless also configured to do so.
+			for _, c := range sh.leafs {
+				require_Equal(t, c.leaf.isolated, isolated)
+			}
+			for _, c := range sp1.leafs {
+				require_False(t, c.leaf.isolated)
+			}
+			for _, c := range sp2.leafs {
+				require_False(t, c.leaf.isolated)
+			}
 
 			nch := natsConnect(t, sh.ClientURL(), nats.UserInfo("HA", "pwd"))
 			nc1 := natsConnect(t, sp1.ClientURL(), nats.UserInfo("A", "pwd"))

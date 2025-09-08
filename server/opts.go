@@ -253,6 +253,12 @@ type RemoteLeafOpts struct {
 	// will be migrated away from this server if still disconnected.
 	JetStreamClusterMigrateDelay time.Duration `json:"jetstream_cluster_migrate_delay,omitempty"`
 
+	// LocalIsolation isolates this remote from east-west subject interest originating locally.
+	LocalIsolation bool `json:"local_isolation,omitempty"`
+
+	// RequestIsolation asks the remote side to isolate us from their east-west subject interest.
+	RequestIsolation bool `json:"request_isolation,omitempty"`
+
 	// If this is set to true, the connection to this remote will not be solicited.
 	// During a configuration reload, if this is changed from `false` to `true`, the
 	// existing connection will be closed and not solicited again (until it is changed
@@ -2971,6 +2977,10 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				default:
 					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected boolean or map for jetstream_cluster_migrate, got %T", v)})
 				}
+			case "isolate_leafnode_interest", "isolate":
+				remote.LocalIsolation = v.(bool)
+			case "request_isolation":
+				remote.RequestIsolation = v.(bool)
 			case "compression":
 				if err := parseCompression(&remote.Compression, CompressionS2Auto, tk, k, v); err != nil {
 					*errors = append(*errors, err)
