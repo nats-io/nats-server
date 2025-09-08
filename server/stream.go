@@ -1361,6 +1361,34 @@ func (mset *stream) sendUpdateAdvisoryLocked() {
 	}
 }
 
+func (mset *stream) sendStreamBatchAbandonedAdvisory(batchId string, reason BatchAbandonReason) {
+	if mset == nil {
+		return
+	}
+	s := mset.srv
+	stream, acc := mset.name(), mset.account()
+	subj := JSAdvisoryStreamBatchAbandonedPre + "." + stream
+	adv := &JSStreamBatchAbandonedAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamBatchAbandonedAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:  stream,
+		Domain:  s.getOpts().JetStreamDomain,
+		BatchId: batchId,
+		Reason:  reason,
+	}
+
+	// Send to the user's account if not the system account.
+	if acc != s.SystemAccount() {
+		s.publishAdvisory(acc, subj, adv)
+	}
+	// Now do system level one. Place account info in adv, and nil account means system.
+	adv.Account = acc.GetName()
+	s.publishAdvisory(nil, subj, adv)
+}
+
 // Created returns created time.
 func (mset *stream) createdTime() time.Time {
 	mset.mu.RLock()
@@ -1616,6 +1644,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 		if cfg.AllowMsgCounter {
 			return StreamConfig{}, NewJSMirrorWithCountersError()
+		}
+		if cfg.AllowAtomicPublish {
+			return StreamConfig{}, NewJSMirrorWithAtomicPublishError()
 		}
 		if cfg.AllowMsgSchedules {
 			return StreamConfig{}, NewJSMirrorWithMsgSchedulesError()
@@ -6220,6 +6251,19 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if !ok {
 		if batchSeq != 1 {
 			batches.mu.Unlock()
+			maxBatchSize := streamMaxBatchSize
+			opts := s.getOpts()
+			if opts.JetStreamLimits.MaxBatchSize > 0 {
+				maxBatchSize = opts.JetStreamLimits.MaxBatchSize
+			}
+			if batchSeq > uint64(maxBatchSize) {
+				err := NewJSAtomicPublishTooLargeBatchError()
+				if canRespond {
+					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
+					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
+				}
+				return err
+			}
 			return respondIncompleteBatch()
 		}
 
@@ -6261,6 +6305,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if b.lseq != batchSeq {
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
+		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
 		return respondIncompleteBatch()
 	}
 
@@ -6272,6 +6317,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if batchSeq > uint64(maxSize) {
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
+		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
 		return respondIncompleteBatch()
 	}
 
@@ -6282,6 +6328,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if err != nil || seq != batchSeq {
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
 			return respondIncompleteBatch()
 		}
 	}
@@ -6294,6 +6341,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if !b.readyForCommit() {
 		// Don't do cleanup, this is already done.
 		batches.mu.Unlock()
+		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
 		return respondIncompleteBatch()
 	}
 

@@ -1958,5 +1958,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorWithAtomicPublishErr",
+    "code": 400,
+    "error_code": 10198,
+    "description": "stream mirrors can not also use atomic publishing",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishTooLargeBatchErr",
+    "code": 400,
+    "error_code": 10199,
+    "description": "atomic publish batch is too large",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
