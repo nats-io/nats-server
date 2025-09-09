@@ -268,6 +268,9 @@ const (
 	// JSAdvisoryConsumerMsgTerminatedPre is a notification published when a message has been terminated.
 	JSAdvisoryConsumerMsgTerminatedPre = "$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED"
 
+	// JSAdvisoryConsumerMsgInProgress is a notification published when a message is marked as in-progress.
+	JSAdvisoryConsumerMsgInProgress = "$JS.EVENT.ADVISORY.CONSUMER.IN_PROGRESS"
+
 	// JSAdvisoryStreamCreatedPre notification that a stream was created.
 	JSAdvisoryStreamCreatedPre = "$JS.EVENT.ADVISORY.STREAM.CREATED"
 
