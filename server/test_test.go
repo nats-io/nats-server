@@ -382,3 +382,9 @@ func runSolicitLeafServerToURL(surl string) (*Server, *Options) {
 	o.LeafNode.ReconnectInterval = 100 * time.Millisecond
 	return RunServer(&o), &o
 }
+
+func skipIfBuildkite(t *testing.T) {
+	if os.Getenv("BUILDKITE") == "true" {
+		t.Skip("skipping test on Buildkite CI")
+	}
+}
