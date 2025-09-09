@@ -628,12 +628,10 @@ func TestNoRaceRouteMemUsage(t *testing.T) {
 
 func TestNoRaceRouteCache(t *testing.T) {
 	maxPerAccountCacheSize = 20
-	prunePerAccountCacheSize = 5
 	closedSubsCheckInterval = 250 * time.Millisecond
 
 	defer func() {
 		maxPerAccountCacheSize = defaultMaxPerAccountCacheSize
-		prunePerAccountCacheSize = defaultPrunePerAccountCacheSize
 		closedSubsCheckInterval = defaultClosedSubsCheckInterval
 	}()
 
@@ -723,35 +721,39 @@ func TestNoRaceRouteCache(t *testing.T) {
 					return nil
 				})
 			}
-			checkExpected(t, (maxPerAccountCacheSize+1)-(prunePerAccountCacheSize+1))
+
+			// Expect the cache to be full
+			checkExpected(t, maxPerAccountCacheSize)
 
 			// Wait for more than the orphan check
 			time.Sleep(2 * closedSubsCheckInterval)
 
-			// Add a new subs up to point where new prune would occur
-			sendReqs(t, requestor, prunePerAccountCacheSize+1, false)
+			// Add a new subs up to point where new prunes would occur
+			sendReqs(t, requestor, maxPerAccountCacheSize+1, false)
 
-			// Now closed subs should have been removed, so expected
-			// subs in the cache should be the new ones.
-			checkExpected(t, prunePerAccountCacheSize+1)
+			// Now closed subs should have been removed, but we have added
+			// new subs, so shouldn't exceed maxPerAccountCacheSize still
+			checkExpected(t, maxPerAccountCacheSize)
 
 			// Now try wil implicit unsubscribe (due to connection close)
 			sendReqs(t, requestor, maxPerAccountCacheSize+1, false)
 			requestor.Close()
 
-			checkExpected(t, maxPerAccountCacheSize-prunePerAccountCacheSize)
+			// Cache should be empty now due to implicit unsubscribes
+			checkExpected(t, 0)
 
 			// Wait for more than the orphan check
 			time.Sleep(2 * closedSubsCheckInterval)
 
-			// Now create new connection and send prunePerAccountCacheSize+1
+			// Now create new connection and send maxPerAccountCacheSize+1
 			// and that should cause all subs from previous connection to be
 			// removed from cache
 			requestor = natsConnect(t, bURL)
 			defer requestor.Close()
+			sendReqs(t, requestor, maxPerAccountCacheSize+1, false)
 
-			sendReqs(t, requestor, prunePerAccountCacheSize+1, false)
-			checkExpected(t, prunePerAccountCacheSize+1)
+			// We still won't have exceeded maxPerAccountCacheSize regardless
+			checkExpected(t, maxPerAccountCacheSize)
 		})
 	}
 }
