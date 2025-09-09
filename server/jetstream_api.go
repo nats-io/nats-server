@@ -129,10 +129,6 @@ const (
 	JSDirectMsgGet  = "$JS.API.DIRECT.GET.*"
 	JSDirectMsgGetT = "$JS.API.DIRECT.GET.%s"
 
-	// JSDirectLeaderMsgGet is JSDirectLeaderMsgGetT but only answered by the current stream leader.
-	JSDirectLeaderMsgGet  = "$JS.API.DIRECT_LEADER.GET.*"
-	JSDirectLeaderMsgGetT = "$JS.API.DIRECT_LEADER.GET.%s"
-
 	// This is a direct version of get last by subject, which will be the dominant pattern for KV access once 2.9 is released.
 	// The stream and the key will be part of the subject to allow for no-marshal payloads and subject based security permissions.
 	JSDirectGetLastBySubject  = "$JS.API.DIRECT.GET.*.>"
@@ -688,9 +684,6 @@ type JSApiMsgGetRequest struct {
 	Seq     uint64 `json:"seq,omitempty"`
 	LastFor string `json:"last_by_subj,omitempty"`
 	NextFor string `json:"next_by_subj,omitempty"`
-
-	// Force the server to only deliver messages if the stream has at minimum this specified last sequence.
-	MinLastSeq uint64 `json:"-"`
 
 	// Batch support. Used to request more than one msg at a time.
 	// Can be used with simple starting seq, but also NextFor with wildcards.
@@ -3620,16 +3613,6 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	}
 	if mset.offlineReason != _EMPTY_ {
 		// Just let the request time out.
-		return
-	}
-
-	// Reject request if we can't guarantee the precondition of min last sequence.
-	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
-		// Even though only the leader is subscribed and will respond, we must delay the error.
-		// An old leader could think it's still leader, and it must not
-		// error sooner than the real leader can answer.
-		resp.Error = NewJSStreamMinLastSeqError()
-		s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 		return
 	}
 
