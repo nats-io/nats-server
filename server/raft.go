@@ -2424,7 +2424,7 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 }
 
 // This can not be used post the wire level callback since we do not copy.
-func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*appendEntry, error) {
+func decodeAppendEntry(msg []byte, sub *subscription, reply string) (*appendEntry, error) {
 	if len(msg) < appendEntryBaseLen {
 		return nil, errBadAppendEntry
 	}
@@ -2509,7 +2509,7 @@ func (ar *appendEntryResponse) encode(b []byte) []byte {
 // Track all peers we may have ever seen to use an string interns for appendEntryResponse decoding.
 var peers sync.Map
 
-func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
+func decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 	if len(msg) != appendEntryResponseLen {
 		return nil
 	}
@@ -2972,7 +2972,7 @@ func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return n.decodeAppendEntry(sm.msg, nil, _EMPTY_)
+	return decodeAppendEntry(sm.msg, nil, _EMPTY_)
 }
 
 // applyCommit will update our commit index and apply the entry to the apply queue.
@@ -3302,7 +3302,7 @@ func (n *raft) runAsCandidate() {
 // is an internal callback from the "asubj" append entry subscription.
 func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
 	msg = copyBytes(msg)
-	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
+	if ae, err := decodeAppendEntry(msg, sub, reply); err == nil {
 		// Push to the new entry channel. From here one of the worker
 		// goroutines (runAsLeader, runAsFollower, runAsCandidate) will
 		// pick it up.
@@ -3894,7 +3894,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 // handleAppendEntryResponse processes responses to append entries.
 func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	ar := n.decodeAppendEntryResponse(msg)
+	ar := decodeAppendEntryResponse(msg)
 	ar.reply = reply
 	n.resp.push(ar)
 }
