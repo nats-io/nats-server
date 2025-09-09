@@ -4932,7 +4932,6 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	if len(reply) == 0 {
 		return
 	}
-	var minLastSeq uint64
 	hdr, msg := c.msgParts(rmsg)
 	if errorOnRequiredApiLevel(hdr) {
 		hdr := []byte("NATS/1.0 412 Required Api Level\r\n\r\n")
@@ -4940,23 +4939,16 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		return
 	}
 
-	// This version expects no payload, unless min last seq is specified.
-	if len(msg) != 0 {
-		var req JSApiMsgGetRequest
+	var req JSApiMsgGetRequest
+	if len(msg) > 0 {
 		err := json.Unmarshal(msg, &req)
 		if err != nil {
 			hdr := []byte("NATS/1.0 408 Malformed Request\r\n\r\n")
 			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			return
 		}
-
-		if req.MinLastSeq == 0 {
-			hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
-			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-			return
-		}
-		minLastSeq = req.MinLastSeq
 	}
+
 	// Extract the key.
 	var key string
 	for i, n := 0, 0; i < len(subject); i++ {
@@ -4976,7 +4968,17 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		return
 	}
 
-	req := JSApiMsgGetRequest{LastFor: key, MinLastSeq: minLastSeq}
+	// Error if request fields are provided that don't make sense for this endpoint.
+	switch {
+	case req.LastFor != _EMPTY_, req.NextFor != _EMPTY_,
+		len(req.MultiLastFor) > 0, req.Seq != 0, req.Batch != 0,
+		req.StartTime != nil, req.UpToSeq != 0, req.UpToTime != nil:
+		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	default:
+		req.LastFor = key
+	}
 
 	// Reject request if we can't guarantee the precondition of min last sequence.
 	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {

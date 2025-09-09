@@ -21348,6 +21348,27 @@ func TestJetStreamGetNoHeaders(t *testing.T) {
 		require_Equal(t, headers.Get("Nats-Sequence"), _EMPTY_)
 		require_Equal(t, headers.Get("Nats-Time-Stamp"), _EMPTY_)
 	})
+
+	t.Run("DirectGetLastFor", func(t *testing.T) {
+		directGet := func(noHeaders bool) (payload []byte, hdrs nats.Header) {
+			getSubj := fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo")
+			req := fmt.Appendf(nil, `{"no_hdr":%v}`, noHeaders)
+			resp, err := nc.Request(getSubj, req, time.Second)
+			require_NoError(t, err)
+			return resp.Data, resp.Header
+		}
+
+		payload, headers := directGet(false)
+		require_True(t, bytes.Equal(payload, msg.Data))
+		require_Equal(t, headers.Get("test"), "something")
+
+		payload, headers = directGet(true)
+		require_True(t, bytes.Equal(payload, msg.Data))
+		require_Equal(t, headers.Get("test"), _EMPTY_)
+		require_Equal(t, headers.Get("Nats-Stream"), _EMPTY_)
+		require_Equal(t, headers.Get("Nats-Sequence"), _EMPTY_)
+		require_Equal(t, headers.Get("Nats-Time-Stamp"), _EMPTY_)
+	})
 }
 
 func TestJetStreamKVNoSubjectDeleteMarkerOnPurgeMarker(t *testing.T) {
