@@ -508,15 +508,13 @@ func (rcf readCacheFlag) isSet(c readCacheFlag) bool {
 }
 
 const (
-	defaultMaxPerAccountCacheSize   = 8192
-	defaultPrunePerAccountCacheSize = 1024
-	defaultClosedSubsCheckInterval  = 5 * time.Minute
+	defaultMaxPerAccountCacheSize  = 8192
+	defaultClosedSubsCheckInterval = 5 * time.Minute
 )
 
 var (
-	maxPerAccountCacheSize   = defaultMaxPerAccountCacheSize
-	prunePerAccountCacheSize = defaultPrunePerAccountCacheSize
-	closedSubsCheckInterval  = defaultClosedSubsCheckInterval
+	maxPerAccountCacheSize  = defaultMaxPerAccountCacheSize
+	closedSubsCheckInterval = defaultClosedSubsCheckInterval
 )
 
 // perAccountCache is for L1 semantics for inbound messages from a route or gateway to mimic the performance of clients.
@@ -6012,7 +6010,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
 			ok = false
-			c.in.pacache = make(map[string]*perAccountCache)
+			clear(c.in.pacache)
 		} else {
 			acc = pac.acc
 			r = pac.results
@@ -6035,13 +6033,33 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 		// Match against the account sublist.
 		r = sl.MatchBytes(c.pa.subject)
 
-		// Check if we need to prune.
+		// Check if we need to prune. This should give us a perAccountCache struct
+		// to reuse instead of having to allocate a new one.
+		// Previously we would have removed multiple entries but now we will only
+		// prune the minimum number required to maintain the cache size, so that
+		// we reduce the amount of GC pressure and maintain cache stability as best
+		// as possible.
 		if len(c.in.pacache) >= maxPerAccountCacheSize {
-			c.prunePerAccountCache()
+			for cacheKey, p := range c.in.pacache {
+				delete(c.in.pacache, cacheKey)
+				pac = p
+				if len(c.in.pacache) < maxPerAccountCacheSize {
+					break
+				}
+			}
 		}
 
+		// If we can reuse the pac from earlier (i.e. we loaded one but it was an
+		// old generation or we pruned the cache) then do so.
+		if pac == nil {
+			pac = &perAccountCache{}
+		}
+		pac.acc = acc
+		pac.results = r
+		pac.genid = atomic.LoadUint64(&sl.genid)
+
 		// Store in our cache,make sure to do so after we prune.
-		c.in.pacache[string(c.pa.pacache)] = &perAccountCache{acc, r, atomic.LoadUint64(&sl.genid)}
+		c.in.pacache[string(c.pa.pacache)] = pac
 	}
 	return acc, r
 }
@@ -6055,17 +6073,6 @@ func (c *client) Account() *Account {
 	acc := c.acc
 	c.mu.Unlock()
 	return acc
-}
-
-// prunePerAccountCache will prune off a random number of cache entries.
-func (c *client) prunePerAccountCache() {
-	n := 0
-	for cacheKey := range c.in.pacache {
-		delete(c.in.pacache, cacheKey)
-		if n++; n > prunePerAccountCacheSize {
-			break
-		}
-	}
 }
 
 // pruneClosedSubFromPerAccountCache remove entries that contain subscriptions
