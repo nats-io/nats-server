@@ -4221,15 +4221,6 @@ func (mset *stream) subscribeToStream() error {
 	// Check for direct get access.
 	// We spin up followers for clustered streams in monitorStream().
 	if mset.cfg.AllowDirect {
-		// The leader subscribes separately to a non-queue-group sub.
-		if mset.cfg.Mirror == nil && mset.directLeaderSub == nil {
-			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.cfg.Name)
-			if sub, err := mset.subscribeInternal(dsubj, mset.processDirectGetRequest); err == nil {
-				mset.directLeaderSub = sub
-			} else {
-				return err
-			}
-		}
 		if err := mset.subscribeToDirect(); err != nil {
 			return err
 		}
@@ -4897,26 +4888,6 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 
-	// Reject request if we can't guarantee the precondition of min last sequence.
-	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
-		// We are not up-to-date yet, and don't know how long it will take us to be.
-
-		// If we're not the leader, we can redirect to the leader for them to answer.
-		// But only on the original stream, mirrors only error.
-		if !mset.isMirror() && !mset.isLeaderNodeState() {
-			// Copy since we're sending the same bytes.
-			msg = copyBytes(msg)
-			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.getCfgName())
-			mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, nil, msg, nil, 0))
-			return
-		}
-
-		// Otherwise, simply reject the request so the client can retry.
-		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
-		mset.srv.sendDelayedErrResponse(mset.account(), reply, hdr, _EMPTY_, errRespDelay)
-		return
-	}
-
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
 	if !inlineOk {
 		dg := dgPool.Get().(*directGetReq)
@@ -4978,25 +4949,6 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 		return
 	default:
 		req.LastFor = key
-	}
-
-	// Reject request if we can't guarantee the precondition of min last sequence.
-	if req.MinLastSeq > 0 && mset.lastSeq() < req.MinLastSeq {
-		// We are not up-to-date yet, and don't know how long it will take us to be.
-
-		// If we're not the leader, we can redirect to the leader for them to answer.
-		// But only on the original stream, mirrors only error.
-		if !mset.isMirror() && !mset.isLeaderNodeState() {
-			dsubj := fmt.Sprintf(JSDirectLeaderMsgGetT, mset.getCfgName())
-			msg, _ = json.Marshal(req)
-			mset.outq.send(newJSPubMsg(dsubj, _EMPTY_, reply, nil, msg, nil, 0))
-			return
-		}
-
-		// Otherwise, simply reject the request so the client can retry.
-		hdr := []byte("NATS/1.0 412 Min Last Sequence\r\n\r\n")
-		mset.srv.sendDelayedErrResponse(mset.account(), reply, hdr, _EMPTY_, errRespDelay)
-		return
 	}
 
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
