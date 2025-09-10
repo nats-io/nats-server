@@ -2472,7 +2472,7 @@ func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, ad
 			return NewJSMemoryResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && js.memReserved+totalBytes > js.config.MaxMemory {
+		if checkServer && atomic.LoadInt64(&js.memReserved)+totalBytes > js.config.MaxMemory {
 			return NewJSMemoryResourcesExceededError()
 		}
 	case FileStorage:
@@ -2481,7 +2481,7 @@ func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, ad
 			return NewJSStorageResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && js.storeReserved+totalBytes > js.config.MaxStore {
+		if checkServer && atomic.LoadInt64(&js.storeReserved)+totalBytes > js.config.MaxStore {
 			return NewJSStorageResourcesExceededError()
 		}
 	}
@@ -2597,10 +2597,10 @@ func (js *jetStream) sufficientResources(limits map[string]JetStreamAccountLimit
 	totalMaxMemory, totalMaxStore := totalMaxBytes(limits)
 
 	// Reserved is now specific to the MaxBytes for streams.
-	if js.memReserved+totalMaxMemory > js.config.MaxMemory {
+	if atomic.LoadInt64(&js.memReserved)+totalMaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
-	if js.storeReserved+totalMaxStore > js.config.MaxStore {
+	if atomic.LoadInt64(&js.storeReserved)+totalMaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
 
@@ -2637,9 +2637,9 @@ func (js *jetStream) reserveStreamResources(cfg *StreamConfig) {
 	js.mu.Lock()
 	switch cfg.Storage {
 	case MemoryStorage:
-		js.memReserved += cfg.MaxBytes
+		atomic.AddInt64(&js.memReserved, cfg.MaxBytes)
 	case FileStorage:
-		js.storeReserved += cfg.MaxBytes
+		atomic.AddInt64(&js.storeReserved, cfg.MaxBytes)
 	}
 	s, clustered := js.srv, !js.standAlone
 	js.mu.Unlock()
@@ -2658,9 +2658,9 @@ func (js *jetStream) releaseStreamResources(cfg *StreamConfig) {
 	js.mu.Lock()
 	switch cfg.Storage {
 	case MemoryStorage:
-		js.memReserved -= cfg.MaxBytes
+		atomic.AddInt64(&js.memReserved, -cfg.MaxBytes)
 	case FileStorage:
-		js.storeReserved -= cfg.MaxBytes
+		atomic.AddInt64(&js.storeReserved, -cfg.MaxBytes)
 	}
 	s, clustered := js.srv, !js.standAlone
 	js.mu.Unlock()
