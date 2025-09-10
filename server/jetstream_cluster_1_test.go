@@ -9140,7 +9140,7 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		s = c.streamLeader(globalAccountName, "TEST")
 		_, err = js.Publish("foo", nil)
 		require_NoError(t, err)
-		checkStoreIsAsync(false)
+		checkStoreIsAsync(supportsAsync)
 
 		// Enabling async flush.
 		cfg.Replicas = 3
@@ -9159,7 +9159,7 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		require_NoError(t, err)
 		_, err = js.Publish("foo", nil)
 		require_NoError(t, err)
-		checkStoreIsAsync(false)
+		checkStoreIsAsync(supportsAsync)
 
 		// Test async flush on create.
 		require_NoError(t, js.DeleteStream("TEST"))
