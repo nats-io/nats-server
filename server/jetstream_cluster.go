@@ -3163,6 +3163,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 	for i, e := range ce.Entries {
 		// Check if a batch is abandoned.
 		if e.Type != EntryNormal && batch != nil && batch.id != _EMPTY_ {
+			mset.srv.Debugf("[batch] reject %s - entry type: %s", batch.id, e.Type)
 			batch.rejectBatchState(mset)
 		}
 
@@ -3189,6 +3190,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
+					mset.srv.Debugf("[batch] reject stage %s - abandoned, new: %s", batch.id, batchId)
 					batch.rejectBatchStateLocked(mset)
 				}
 				if batchSeq == 1 {
@@ -3222,6 +3224,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				batch.count++
 				// If the sequence is not monotonically increasing/we identify gaps, the batch can't be accepted.
 				if batchSeq != batch.count {
+					mset.srv.Debugf("[batch] reject stage %s - batch count mismatch, seq: %d, count: %d", batch.id, batchSeq, batch.count)
 					batch.rejectBatchStateLocked(mset)
 					batch.mu.Unlock()
 					continue
@@ -3247,15 +3250,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
+					mset.srv.Debugf("[batch] reject %s - abandoned, new: %s", batch.id, batchId)
 					batch.rejectBatchStateLocked(mset)
-					// If this is the first message in the batch, need to mark the start index.
-					// We'll continue to check batch-completeness and try to find the commit.
-					// At that point we'll commit the whole batch.
-					if batchSeq == 1 {
-						batch.entryStart = i
-						batch.maxApplied = ce.Index - 1
-					}
-					batch.id = batchId
 				}
 				if batchSeq == 1 {
 					// If this is the first message in the batch, need to mark the start index.
@@ -3284,6 +3280,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				batch.count++
 				// Detected a gap, reject the batch.
 				if batchSeq != batch.count {
+					mset.srv.Debugf("[batch] reject %s - batch count mismatch, seq: %d, count: %d", batch.id, batchSeq, batch.count)
 					batch.rejectBatchStateLocked(mset)
 					batch.mu.Unlock()
 					mset.mu.Unlock()
@@ -3357,6 +3354,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				continue
 			} else if batch != nil && batch.id != _EMPTY_ {
 				// If a batch is abandoned without a commit, reject it.
+				mset.srv.Debugf("[batch] reject %s - op: %d", batch.id, op)
 				batch.rejectBatchState(mset)
 			}
 
