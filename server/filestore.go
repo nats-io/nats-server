@@ -7104,18 +7104,19 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	if ts := ats.AccessTime(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
 		mb.cache.wp += lob
 	} else {
-		if cap(mb.cache.buf) <= maxBufReuse {
-			buf = mb.cache.buf[:0]
-		} else if moreBytes == 0 {
-			recycleMsgBlockBuf(mb.cache.buf)
-			buf = nil
-		} else {
-			nbuf := mb.cache.buf[len(mb.cache.buf)-moreBytes:]
-			if moreBytes > (len(mb.cache.buf)/4*3) && cap(nbuf) <= maxBufReuse {
-				buf = nbuf
+		if moreBytes == 0 {
+			if cap(mb.cache.buf) <= maxBufReuse {
+				// Reuse the entire underlying buffer
+				buf = mb.cache.buf[:0]
 			} else {
-				buf = append(buf, nbuf...)
+				recycleMsgBlockBuf(mb.cache.buf)
+				buf = nil
 			}
+		} else {
+			// Move the additional bytes to the beginning of the buffer and re-slice so
+			// we will have more usable capacity at the end again for additional writes.
+			copy(mb.cache.buf[:moreBytes], mb.cache.buf[len(mb.cache.buf)-moreBytes:])
+			buf = mb.cache.buf[:moreBytes]
 		}
 		// Update our cache offset.
 		mb.cache.off = int(woff)
