@@ -1762,6 +1762,25 @@ func TestJetStreamAtomicBatchPublishProposeMultiplePartialBatches(t *testing.T) 
 			pubAck, err = js.Publish("foo", nil)
 			require_NoError(t, err)
 			require_Equal(t, pubAck.Sequence, uint64(2+batchSize))
+
+			// Validate the stream only committed the full batch.
+			rsm, err := js.GetMsg("TEST", 1)
+			require_NoError(t, err)
+			require_True(t, rsm.Header.Get("Nats-Batch-Id") == _EMPTY_)
+			for j := range batchSize {
+				rsm, err = js.GetMsg("TEST", uint64(2+j))
+				require_NoError(t, err)
+				require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "ID_2")
+				require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), strconv.Itoa(j+1))
+			}
+			rsm, err = js.GetMsg("TEST", uint64(2+batchSize))
+			require_NoError(t, err)
+			require_True(t, rsm.Header.Get("Nats-Batch-Id") == _EMPTY_)
+
+			mset.clMu.Lock()
+			clfs := mset.clfs
+			mset.clMu.Unlock()
+			require_Equal(t, clfs, 1)
 		})
 	}
 }
