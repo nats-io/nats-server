@@ -303,7 +303,7 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 					require_True(t, pubAck.Error == nil)
 					require_Equal(t, pubAck.BatchSize, size)
 				} else {
-					require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+					require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError(streamMaxBatchSize))
 				}
 			}
 		}
@@ -2052,7 +2052,7 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 			require_NoError(t, err)
 			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 			require_NotNil(t, pubAck.Error)
-			require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError())
+			require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError(streamDefaultMaxBatchSize))
 		}
 
 		msg, err = sub.NextMsg(time.Second)
@@ -2060,7 +2060,7 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 		advisory = JSStreamBatchAbandonedAdvisory{}
 		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
 		require_Equal(t, advisory.BatchId, "uuid")
-		require_Equal(t, advisory.Reason, BatchTimeout)
+		require_Equal(t, advisory.Reason, BatchLarge)
 	}
 
 	for _, replicas := range []int{1, 3} {

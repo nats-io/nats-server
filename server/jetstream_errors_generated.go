@@ -20,8 +20,8 @@ const (
 	// JSAtomicPublishMissingSeqErr atomic publish sequence is missing
 	JSAtomicPublishMissingSeqErr ErrorIdentifier = 10175
 
-	// JSAtomicPublishTooLargeBatchErr atomic publish batch is too large
-	JSAtomicPublishTooLargeBatchErr ErrorIdentifier = 10199
+	// JSAtomicPublishTooLargeBatchErrF atomic publish batch is too large: {size}
+	JSAtomicPublishTooLargeBatchErrF ErrorIdentifier = 10199
 
 	// JSAtomicPublishUnsupportedHeaderBatchErr atomic publish unsupported header used: {header}
 	JSAtomicPublishUnsupportedHeaderBatchErr ErrorIdentifier = 10177
@@ -607,7 +607,7 @@ var (
 		JSAtomicPublishIncompleteBatchErr:            {Code: 400, ErrCode: 10176, Description: "atomic publish batch is incomplete"},
 		JSAtomicPublishInvalidBatchIDErr:             {Code: 400, ErrCode: 10179, Description: "atomic publish batch ID is invalid"},
 		JSAtomicPublishMissingSeqErr:                 {Code: 400, ErrCode: 10175, Description: "atomic publish sequence is missing"},
-		JSAtomicPublishTooLargeBatchErr:              {Code: 400, ErrCode: 10199, Description: "atomic publish batch is too large"},
+		JSAtomicPublishTooLargeBatchErrF:             {Code: 400, ErrCode: 10199, Description: "atomic publish batch is too large: {size}"},
 		JSAtomicPublishUnsupportedHeaderBatchErr:     {Code: 400, ErrCode: 10177, Description: "atomic publish unsupported header used: {header}"},
 		JSBadRequestErr:                              {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSClusterIncompleteErr:                       {Code: 503, ErrCode: 10004, Description: "incomplete results"},
@@ -875,14 +875,20 @@ func NewJSAtomicPublishMissingSeqError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSAtomicPublishMissingSeqErr]
 }
 
-// NewJSAtomicPublishTooLargeBatchError creates a new JSAtomicPublishTooLargeBatchErr error: "atomic publish batch is too large"
-func NewJSAtomicPublishTooLargeBatchError(opts ...ErrorOption) *ApiError {
+// NewJSAtomicPublishTooLargeBatchError creates a new JSAtomicPublishTooLargeBatchErrF error: "atomic publish batch is too large: {size}"
+func NewJSAtomicPublishTooLargeBatchError(size interface{}, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSAtomicPublishTooLargeBatchErr]
+	e := ApiErrors[JSAtomicPublishTooLargeBatchErrF]
+	args := e.toReplacerArgs([]interface{}{"{size}", size})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSAtomicPublishUnsupportedHeaderBatchError creates a new JSAtomicPublishUnsupportedHeaderBatchErr error: "atomic publish unsupported header used: {header}"

@@ -270,6 +270,7 @@ type BatchAbandonReason string
 
 var (
 	BatchTimeout    BatchAbandonReason = "timeout"
+	BatchLarge      BatchAbandonReason = "large"
 	BatchIncomplete BatchAbandonReason = "incomplete"
 )
 
