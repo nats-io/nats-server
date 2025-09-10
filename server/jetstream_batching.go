@@ -333,6 +333,7 @@ func checkMsgHeadersPreClusteredProposal(
 		return hdr, msg, 0, apiErr, apiErr
 	}
 	if incr != nil && allowMsgCounter {
+		mset.srv.Debugf("[counter] counter %s increment %s", subject, incr.String())
 		var initial big.Int
 		var sources CounterSources
 
@@ -342,12 +343,14 @@ func checkMsgHeadersPreClusteredProposal(
 		if counter, ok = diff.counter[subject]; ok {
 			initial = *counter.total
 			sources = counter.sources
+			mset.srv.Debugf("[counter] counter %s diff start %s", subject, initial.String())
 		} else if counter, ok = mset.clusteredCounterTotal[subject]; ok {
 			initial = *counter.total
 			sources = counter.sources
 			// Make an explicit copy to separate the staged data from what's committed.
 			// Don't need to initialize all values, they'll be overwritten later.
 			counter = &msgCounterRunningTotal{ops: counter.ops}
+			mset.srv.Debugf("[counter] counter %s running start %s", subject, initial.String())
 		} else {
 			// Load last message, and store as inflight running total.
 			var smv StoreMsg
@@ -366,6 +369,9 @@ func checkMsgHeadersPreClusteredProposal(
 					}
 				}
 				initial.SetString(val.Value, 10)
+				mset.srv.Debugf("[counter] counter %s load start %s", subject, initial.String())
+			} else {
+				mset.srv.Debugf("[counter] counter %s empty, err: %v", subject, err)
 			}
 		}
 		srchdr := sliceHeader(JSStreamSource, hdr)
@@ -403,6 +409,7 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 		// Now make the change.
 		initial.Add(&initial, incr)
+		mset.srv.Debugf("[counter] counter %s update %s", subject, initial.String())
 		// Generate the new payload.
 		var _msg [128]byte
 		msg = fmt.Appendf(_msg[:0], "{%q:%q}", "val", initial.String())

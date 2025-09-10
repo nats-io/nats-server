@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
@@ -5770,6 +5771,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Apply increment for counter.
 	// But only if it's allowed for this stream. This can happen when we store verbatim for a sourced stream.
 	if canConsistencyCheck && incr != nil && allowMsgCounter {
+		assert.Unreachable("non-replicated increment", map[string]any{
+			"subject": subject,
+		})
 		var initial big.Int
 		var sources CounterSources
 		var smv StoreMsg
@@ -6019,6 +6023,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			hdr = removeHeaderIfPresent(hdr, JSMessageTTL)
 			hdr = genHeader(hdr, JSMessageTTL, strconv.FormatInt(ttl, 10))
 		}
+	}
+
+	if allowMsgCounter {
+		mset.srv.Debugf("[counter] store counter %s: %s", subject, string(msg))
 	}
 
 	// Store actual msg.
