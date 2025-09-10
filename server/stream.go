@@ -5134,8 +5134,8 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 			err error
 		)
 		if seq > 0 && req.NextFor == _EMPTY_ {
-			// Only do direct lookup for first in a batch.
-			if i == 0 {
+			// Only do direct lookup for a non batch.
+			if i == 0 && !isBatchRequest {
 				sm, err = store.LoadMsg(seq, &svp)
 			} else {
 				// We want to use load next with fwcs to step over deleted msgs.
