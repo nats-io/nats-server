@@ -218,7 +218,6 @@ func (batch *batchApply) clearBatchStateLocked() {
 // Corrects mset.clfs to take the failed batch into account.
 // batch.mu lock should be held.
 func (batch *batchApply) rejectBatchStateLocked(mset *stream) {
-	mset.srv.Debugf("[batch] reject %s", batch.id)
 	mset.clMu.Lock()
 	mset.clfs += batch.count
 	mset.clMu.Unlock()
