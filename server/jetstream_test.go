@@ -16915,6 +16915,29 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 	// Test stopping early by starting at 997 with only 3 messages.
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 997, Batch: 10, NextFor: "foo.*"})
 	checkResponses(sub, 3, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+
+	err = js.PurgeStream("TEST")
+	require_NoError(t, err)
+
+	// Add in messages
+	js.PublishAsync("foo.foo", []byte("HELLO"))
+	js.PublishAsync("foo.bar", []byte("WORLD"))
+	js.PublishAsync("foo.baz", []byte("AGAIN"))
+
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Verify that a batch get request starting at a deleted sequence number skips over the deleted messages.
+	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 10})
+	checkResponses(sub, 3, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+
+	// verify that a non-batch direct get to a deleted message returns not found.
+	_, err = js.GetMsg("TEST", 1, nats.DirectGet())
+	require_Error(t, err, fmt.Errorf("nats: message not found"))
+
 }
 
 func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
