@@ -3262,6 +3262,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					batch.rejectBatchStateLocked(mset)
+					// If this is the first message in the batch, need to mark the start index.
+					// We'll continue to check batch-completeness and try to find the commit.
+					// At that point we'll commit the whole batch.
+					if batchSeq == 1 {
+						batch.entryStart = i
+						batch.maxApplied = ce.Index - 1
+					}
+					batch.id = batchId
 				}
 				if batchSeq == 1 {
 					// If this is the first message in the batch, need to mark the start index.
@@ -3296,6 +3304,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					continue
 				}
 
+				mset.srv.Debugf("[batch] commit %s, size: %d", batch.id, batch.count)
+
 				// Process any entries that are part of this batch but prior to the current one.
 				var entries []*Entry
 				for j, bce := range batch.entries {
@@ -3322,6 +3332,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 							batch.clearBatchStateLocked()
 							batch.mu.Unlock()
 							mset.mu.Unlock()
+							mset.srv.Debugf("[batch] commit err %s, err: %v", batchId, err)
 							return 0, err
 						}
 					}
@@ -3348,6 +3359,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						batch.clearBatchStateLocked()
 						batch.mu.Unlock()
 						mset.mu.Unlock()
+						mset.srv.Debugf("[batch] commit err %s, err: %v", batchId, err)
 						return 0, err
 					}
 				}
@@ -3355,6 +3367,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				batch.clearBatchStateLocked()
 				batch.mu.Unlock()
 				mset.mu.Unlock()
+				mset.srv.Debugf("[batch] commit done %s, lseq=%d", batchId, mset.lastSeq())
 				continue
 			} else if batch != nil && batch.id != _EMPTY_ {
 				// If a batch is abandoned without a commit, reject it.
