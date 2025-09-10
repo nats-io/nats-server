@@ -3368,6 +3368,91 @@ func TestNRGSendAppendEntryNotLeader(t *testing.T) {
 	require_True(t, msg == nil)
 }
 
+func TestNRGDrainAndReplaySnapshot(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: entries})
+	aeHeartbeat1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: nil})
+	aeMsg4 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: entries})
+	aeHeartbeat2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 4, pterm: 1, pindex: 4, entries: nil})
+
+	// Stage some entries as normal.
+	require_Len(t, n.apply.len(), 0)
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeMsg3, n.aesub)
+	n.processAppendEntry(aeHeartbeat1, n.aesub)
+	require_Equal(t, n.pindex, 3)
+	require_Len(t, n.apply.len(), 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.hcommit, 0)
+
+	// Just a sanity-check, if we have no snapshot then this should fail.
+	require_False(t, n.DrainAndReplaySnapshot())
+	require_Len(t, n.apply.len(), 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.hcommit, 0)
+
+	// Simulate this server processing a snapshot that requires upper layer catchup.
+	// This catchup timed out and we would then call into DrainAndReplaySnapshot.
+	snap := []byte("snapshot")
+	n.Applied(1)
+	require_NoError(t, n.InstallSnapshot(snap))
+
+	require_True(t, n.DrainAndReplaySnapshot())
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 3)
+
+	// Simulate snapshot processing being successful and restoring the apply queue when resuming.
+	n.ResumeApply()
+	require_False(t, n.paused)
+	require_Len(t, n.apply.len(), 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.hcommit, 0)
+
+	// Now simulate another case where the snapshot processing times out multiple times.
+	require_True(t, n.DrainAndReplaySnapshot())
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 3)
+
+	// Could receive new messages in the meantime and need to keep tracking the highest known commit properly.
+	n.processAppendEntry(aeMsg4, n.aesub)
+	n.processAppendEntry(aeHeartbeat2, n.aesub)
+	require_Equal(t, n.pindex, 4)
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 4)
+
+	// Replaying again should preserve the highest known commit.
+	require_True(t, n.DrainAndReplaySnapshot())
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 4)
+
+	// Resume applies, and ensure correct state.
+	n.ResumeApply()
+	require_False(t, n.paused)
+	require_Len(t, n.apply.len(), 4)
+	require_Equal(t, n.commit, 4)
+	require_Equal(t, n.hcommit, 0)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:

@@ -75,6 +75,7 @@ type RaftNode interface {
 	ApplyQ() *ipQueue[*CommittedEntry]
 	PauseApply() error
 	ResumeApply()
+	DrainAndReplaySnapshot() bool
 	LeadChangeC() <-chan bool
 	QuitC() <-chan struct{}
 	Created() time.Time
@@ -1016,10 +1017,13 @@ func (n *raft) PauseApply() error {
 	if n.State() == Leader {
 		return errAlreadyLeader
 	}
-
 	n.Lock()
 	defer n.Unlock()
+	n.pauseApplyLocked()
+	return nil
+}
 
+func (n *raft) pauseApplyLocked() {
 	// If we are currently a candidate make sure we step down.
 	if n.State() == Candidate {
 		n.stepdownLocked(noLeader)
@@ -1027,12 +1031,12 @@ func (n *raft) PauseApply() error {
 
 	n.debug("Pausing our apply channel")
 	n.paused = true
-	n.hcommit = n.commit
+	if n.hcommit < n.commit {
+		n.hcommit = n.commit
+	}
 	// Also prevent us from trying to become a leader while paused and catching up.
 	n.pobserver, n.observer = n.observer, true
 	n.resetElect(observerModeInterval)
-
-	return nil
 }
 
 // ResumeApply will resume sending applies to the external apply queue. This
@@ -1083,6 +1087,25 @@ func (n *raft) ResumeApply() {
 	} else {
 		n.resetElectionTimeout()
 	}
+}
+
+// DrainAndReplaySnapshot will drain the apply queue and replay the snapshot.
+// Our highest known commit will be preserved by pausing applies. The caller
+// should make sure to call ResumeApply() when handling the snapshot from the
+// queue, which will populate the rest of the committed entries in the queue.
+func (n *raft) DrainAndReplaySnapshot() bool {
+	n.Lock()
+	defer n.Unlock()
+	n.warn("Draining and replaying snapshot")
+	snap, err := n.loadLastSnapshot()
+	if err != nil {
+		return false
+	}
+	n.pauseApplyLocked()
+	n.apply.drain()
+	n.commit = snap.lastIndex
+	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	return true
 }
 
 // Applied is a callback that must be called by the upper layer when it

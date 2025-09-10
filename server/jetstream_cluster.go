@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -2626,6 +2627,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 							mset.retryMirrorConsumer()
 							continue
 						}
+						// If the error signals we timed out of a snapshot, we should try to replay the snapshot
+						// instead of fully resetting the state. Resetting the clustered state may result in
+						// race conditions and should only be used as a last effort attempt.
+						if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries {
+							if node := mset.raftNode(); node != nil && node.DrainAndReplaySnapshot() {
+								break
+							}
+						}
 						// We will attempt to reset our cluster state.
 						if mset.resetClusteredState(err) {
 							aq.recycle(&ces)
@@ -2976,9 +2985,15 @@ func (mset *stream) isMigrating() bool {
 // resetClusteredState is called when a clustered stream had an error (e.g sequence mismatch, bad snapshot) and needs to be reset.
 func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
-	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
+	s, js, jsa, sa, acc, node, name := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node, mset.nameLocked(false)
 	stype, tierName, replicas := mset.cfg.Storage, mset.tier, mset.cfg.Replicas
 	mset.mu.RUnlock()
+
+	assert.Unreachable("Reset clustered state", map[string]any{
+		"stream":  name,
+		"account": acc.Name,
+		"err":     err,
+	})
 
 	// The stream might already be deleted and not assigned to us anymore.
 	// In any case, don't revive the stream if it's already closed.
@@ -8811,6 +8826,14 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
 
+	// Always try to resume applies, we might be paused already if we timed out of processing the snapshot previously.
+	defer func() {
+		// Don't bother resuming if server or stream is gone.
+		if e != errCatchupStreamStopped && e != ErrServerNotRunning {
+			n.ResumeApply()
+		}
+	}()
+
 	// Bug that would cause this to be empty on stream update.
 	if subject == _EMPTY_ {
 		return errCatchupCorruptSnapshot
@@ -8825,13 +8848,6 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 	if err := n.PauseApply(); err != nil {
 		return err
 	}
-
-	defer func() {
-		// Don't bother resuming if server or stream is gone.
-		if e != errCatchupStreamStopped && e != ErrServerNotRunning {
-			n.ResumeApply()
-		}
-	}()
 
 	// Set our catchup state.
 	mset.setCatchingUp()

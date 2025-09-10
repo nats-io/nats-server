@@ -5631,6 +5631,17 @@ func (mset *stream) name() string {
 	return mset.cfg.Name
 }
 
+func (mset *stream) nameLocked(needLock bool) string {
+	if mset == nil {
+		return _EMPTY_
+	}
+	if needLock {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+	}
+	return mset.cfg.Name
+}
+
 func (mset *stream) internalLoop() {
 	mset.mu.RLock()
 	setGoRoutineLabels(pprofLabels{
