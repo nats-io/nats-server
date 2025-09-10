@@ -12,6 +12,10 @@ RUN mkdir -p src/github.com/nats-io && \
 RUN go install github.com/nats-io/nsc/v2@latest
 
 FROM alpine:latest
+LABEL org.opencontainers.image.title="NATS Server"
+LABEL org.opencontainers.image.description="High-Performance server for NATS.io, the cloud and edge native messaging system."
+LABEL org.opencontainers.image.source="https://github.com/nats-io/nats-server"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
 

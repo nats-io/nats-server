@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   run:
@@ -32,3 +33,4 @@ jobs:
           workdir: src/github.com/nats-io/nats-server
           hub_username: "${{ secrets.DOCKER_USERNAME }}"
           hub_password: "${{ secrets.DOCKER_PASSWORD }}"
+          github_token: "${{ secrets.GITHUB_TOKEN }}"
