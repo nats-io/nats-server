@@ -7106,11 +7106,10 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	} else {
 		if cap(mb.cache.buf) <= maxBufReuse {
 			buf = mb.cache.buf[:0]
-		} else {
+		} else if moreBytes == 0 {
 			recycleMsgBlockBuf(mb.cache.buf)
 			buf = nil
-		}
-		if moreBytes > 0 {
+		} else {
 			nbuf := mb.cache.buf[len(mb.cache.buf)-moreBytes:]
 			if moreBytes > (len(mb.cache.buf)/4*3) && cap(nbuf) <= maxBufReuse {
 				buf = nbuf
