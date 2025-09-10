@@ -1970,10 +1970,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSAtomicPublishTooLargeBatchErr",
+    "constant": "JSAtomicPublishTooLargeBatchErrF",
     "code": 400,
     "error_code": 10199,
-    "description": "atomic publish batch is too large",
+    "description": "atomic publish batch is too large: {size}",
     "comment": "",
     "help": "",
     "url": "",

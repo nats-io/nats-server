@@ -6215,7 +6215,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 				maxBatchSize = opts.JetStreamLimits.MaxBatchSize
 			}
 			if batchSeq > uint64(maxBatchSize) {
-				err := NewJSAtomicPublishTooLargeBatchError()
+				err := NewJSAtomicPublishTooLargeBatchError(maxBatchSize)
 				if canRespond {
 					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
 					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
@@ -6275,8 +6275,13 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if batchSeq > uint64(maxSize) {
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
-		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
-		return respondIncompleteBatch()
+		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchLarge)
+		err := NewJSAtomicPublishTooLargeBatchError(maxSize)
+		if canRespond {
+			buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
+			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
+		}
+		return err
 	}
 
 	// Persist, but optimize if we're committing because we already know last.
