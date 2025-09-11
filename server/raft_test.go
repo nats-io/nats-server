@@ -3342,6 +3342,32 @@ func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	require_Equal(t, n.pterm, 20)
 }
 
+func TestNRGSendAppendEntryNotLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	require_Equal(t, n.State(), Follower)
+	require_Equal(t, n.pindex, 0)
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(n.asubj)
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// sendAppendEntry acquires the lock by itself, so it must also protect against us not being leader anymore.
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, nil)})
+
+	// We're a follower, so we should not be able to send or store a message.
+	require_Equal(t, n.pindex, 0)
+	msg, err := sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+	require_True(t, msg == nil)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
