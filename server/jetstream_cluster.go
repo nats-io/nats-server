@@ -3220,6 +3220,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					mset.srv.Debugf("[batch] reject stage %s - abandoned, new: %s", batch.id, batchId)
 					batch.rejectBatchStateLocked(mset)
+				} else if batchSeq == 1 {
+					// If this is the first message in the batch, need to mark the start index.
+					// We'll continue to check batch-completeness and try to find the commit.
+					// At that point we'll commit the whole batch.
+					mset.srv.Debugf("[batch] new %s", batch.id)
+					batch.rejectBatchStateLocked(mset)
+					batch.entryStart = i
+					batch.maxApplied = ce.Index - 1
 				}
 				batch.id = batchId
 				batch.count++
@@ -3229,14 +3237,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					batch.rejectBatchStateLocked(mset)
 					batch.mu.Unlock()
 					continue
-				}
-				// If this is the first message in the batch, need to mark the start index.
-				// We'll continue to check batch-completeness and try to find the commit.
-				// At that point we'll commit the whole batch.
-				if batchSeq == 1 {
-					mset.srv.Debugf("[batch] new %s", batch.id)
-					batch.entryStart = i
-					batch.maxApplied = ce.Index - 1
 				}
 				batch.mu.Unlock()
 				continue
@@ -3261,6 +3261,13 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					mset.srv.Debugf("[batch] reject %s - abandoned, new: %s", batch.id, batchId)
 					batch.rejectBatchStateLocked(mset)
+				} else if batchSeq == 1 {
+					// If this is the first message in the batch, need to mark the start index.
+					// This is a batch of size one that immediately commits.
+					mset.srv.Debugf("[batch] new %s", batchId)
+					batch.rejectBatchStateLocked(mset)
+					batch.entryStart = i
+					batch.maxApplied = ce.Index - 1
 				}
 
 				var entries []*Entry
@@ -3273,15 +3280,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					batch.mu.Unlock()
 					mset.mu.Unlock()
 					continue
-				}
-
-				// If this is the first message in the batch, need to mark the start index.
-				// We'll continue to check batch-completeness and try to find the commit.
-				// At that point we'll commit the whole batch.
-				if batchSeq == 1 {
-					mset.srv.Debugf("[batch] new %s", batch.id)
-					batch.entryStart = i
-					batch.maxApplied = ce.Index - 1
 				}
 
 				mset.srv.Debugf("[batch] commit %s, size: %d", batch.id, batch.count)
@@ -3303,12 +3301,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 							panic(err.Error())
 						}
 						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering, false); err != nil {
-							batch.mu.Unlock()
-							mset.mu.Unlock()
 							// Make sure to return remaining entries to the pool on an error.
 							for _, nce := range batch.entries[j:] {
 								nce.ReturnToPool()
 							}
+							// Important to clear, otherwise we could return the entries to the pool multiple times.
+							batch.clearBatchStateLocked()
+							batch.mu.Unlock()
+							mset.mu.Unlock()
 							mset.srv.Debugf("[batch] commit err %s, err: %v", batchId, err)
 							return 0, err
 						}
@@ -3332,6 +3332,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						panic(err.Error())
 					}
 					if err = js.applyStreamMsgOp(mset, op, buf, isRecovering, false); err != nil {
+						// Important to clear, otherwise we could return the entries to the pool multiple times.
+						batch.clearBatchStateLocked()
 						batch.mu.Unlock()
 						mset.mu.Unlock()
 						mset.srv.Debugf("[batch] commit err %s, err: %v", batchId, err)
