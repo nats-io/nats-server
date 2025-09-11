@@ -24,6 +24,7 @@ builds:
       - GOTOOLCHAIN={{ envOrDefault "GORELEASER_TOOLCHAIN" "go1.25.1" }}
       - GO111MODULE=on
       - CGO_ENABLED=0
+      - GOEXPERIMENT=greenteagc
     goos:
       - darwin
       - linux
