@@ -6026,7 +6026,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	if allowMsgCounter {
-		mset.srv.Debugf("[counter] store counter %s: %s", subject, string(msg))
+		var state StreamState
+		mset.store.FastState(&state)
+		mset.srv.Debugf("[counter] store counter %s: %s, state {msgs: %d, fseq: %d, lseq: %d, num_deleted: %d}", subject, string(msg), state.Msgs, state.FirstSeq, state.LastSeq, state.NumDeleted)
 	}
 
 	// Store actual msg.
