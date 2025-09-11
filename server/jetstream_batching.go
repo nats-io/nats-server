@@ -219,6 +219,9 @@ func (batch *batchApply) clearBatchStateLocked() {
 // batch.mu lock should be held.
 func (batch *batchApply) rejectBatchStateLocked(mset *stream) {
 	mset.clMu.Lock()
+	if batch.count > 0 {
+		mset.srv.Debugf("[batch] up CLFS %d -> %d", mset.clfs, mset.clfs+batch.count)
+	}
 	mset.clfs += batch.count
 	mset.clMu.Unlock()
 	// We're rejecting the batch, so all entries need to be returned to the pool.

@@ -3210,7 +3210,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					// If this is the first message in the batch, need to mark the start index.
 					// We'll continue to check batch-completeness and try to find the commit.
 					// At that point we'll commit the whole batch.
-					mset.srv.Debugf("[batch] new %s", batch.id)
+					mset.srv.Debugf("[batch] new %s", batchId)
 					batch.rejectBatchStateLocked(mset)
 					batch.entryStart = i
 					batch.maxApplied = ce.Index - 1
@@ -3258,6 +3258,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err != nil {
 					panic(err.Error())
 				}
+
+				mset.srv.Debugf("[batch] commit prepare %s, lseq=%d, clfs=%d", batchId, mset.lastSeq(), mset.getCLFS())
 
 				// Ensure the whole batch is fully isolated, and reads
 				// can only happen after the full batch is committed.
@@ -3379,7 +3381,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				batch.clearBatchStateLocked()
 				batch.mu.Unlock()
 				mset.mu.Unlock()
-				mset.srv.Debugf("[batch] commit done %s, lseq=%d", batchId, mset.lastSeq())
+				mset.srv.Debugf("[batch] commit done %s, lseq=%d, clfs=%d", batchId, mset.lastSeq(), mset.getCLFS())
 				continue
 			} else if batch != nil && batch.id != _EMPTY_ {
 				// If a batch is abandoned without a commit, reject it.
