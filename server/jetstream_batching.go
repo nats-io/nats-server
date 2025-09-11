@@ -332,7 +332,9 @@ func checkMsgHeadersPreClusteredProposal(
 		return hdr, msg, 0, apiErr, apiErr
 	}
 	if incr != nil && allowMsgCounter {
-		mset.srv.Debugf("[counter] counter %s increment %s", subject, incr.String())
+		var state StreamState
+		mset.store.FastState(&state)
+		mset.srv.Debugf("[counter] counter %s increment %s, state {msgs: %d, fseq: %d, lseq: %d, num_deleted: %d}", subject, incr.String(), state.Msgs, state.FirstSeq, state.LastSeq, state.NumDeleted)
 		var initial big.Int
 		var sources CounterSources
 
