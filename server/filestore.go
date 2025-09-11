@@ -7661,29 +7661,51 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCop
 	// To recycle the large blocks we can never pass back a reference, so need to copy for the upper
 	// layers and for us to be safe to expire, and recycle, the large msgBlocks.
 	end := dlen - 8
+	if len(data) < end {
+		return nil, errBadMsg
+	}
 
 	if hasHeaders {
+		if slen+4 > len(data) {
+			return nil, errBadMsg
+		}
 		hl := le.Uint32(data[slen:])
 		bi := slen + 4
 		li := bi + int(hl)
+		if bi > end {
+			return nil, errBadMsg
+		}
 		if doCopy {
 			sm.buf = append(sm.buf, data[bi:end]...)
 		} else {
 			sm.buf = data[bi:end]
 		}
 		li, end = li-bi, end-bi
+		if li > len(sm.buf) || end > len(sm.buf) {
+			return nil, errBadMsg
+		}
 		sm.hdr = sm.buf[0:li:li]
 		sm.msg = sm.buf[li:end]
 	} else {
+		if slen > end {
+			return nil, errBadMsg
+		}
 		if doCopy {
 			sm.buf = append(sm.buf, data[slen:end]...)
 		} else {
 			sm.buf = data[slen:end]
 		}
-		sm.msg = sm.buf[0 : end-slen]
+		mlen := end - slen
+		if mlen > len(sm.buf) {
+			return nil, errBadMsg
+		}
+		sm.msg = sm.buf[0:mlen]
 	}
 	sm.seq, sm.ts = seq, ts
 	if slen > 0 {
+		if slen > len(data) {
+			return nil, errBadMsg
+		}
 		if doCopy {
 			// Make a copy since sm.subj lifetime may last longer.
 			sm.subj = string(data[:slen])
