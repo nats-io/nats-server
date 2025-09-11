@@ -508,13 +508,15 @@ func (rcf readCacheFlag) isSet(c readCacheFlag) bool {
 }
 
 const (
-	defaultMaxPerAccountCacheSize  = 8192
-	defaultClosedSubsCheckInterval = 5 * time.Minute
+	defaultMaxPerAccountCacheSize   = 8192
+	defaultPrunePerAccountCacheSize = 1024
+	defaultClosedSubsCheckInterval  = 5 * time.Minute
 )
 
 var (
-	maxPerAccountCacheSize  = defaultMaxPerAccountCacheSize
-	closedSubsCheckInterval = defaultClosedSubsCheckInterval
+	maxPerAccountCacheSize   = defaultMaxPerAccountCacheSize
+	prunePerAccountCacheSize = defaultPrunePerAccountCacheSize
+	closedSubsCheckInterval  = defaultClosedSubsCheckInterval
 )
 
 // perAccountCache is for L1 semantics for inbound messages from a route or gateway to mimic the performance of clients.
@@ -5987,6 +5989,12 @@ func (c *client) getRTTValue() time.Duration {
 	return rtt
 }
 
+var pacPool = sync.Pool{
+	New: func() any {
+		return &perAccountCache{}
+	},
+}
+
 // This function is used by ROUTER and GATEWAY connections to
 // look for a subject on a given account (since these type of
 // connections are not bound to a specific account).
@@ -6010,6 +6018,12 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
 			ok = false
+			for _, p := range c.in.pacache {
+				p.results = nil
+				p.acc = nil
+				p.genid = 0
+				pacPool.Put(p)
+			}
 			clear(c.in.pacache)
 		} else {
 			acc = pac.acc
@@ -6033,17 +6047,16 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 		// Match against the account sublist.
 		r = sl.MatchBytes(c.pa.subject)
 
-		// Check if we need to prune. This should give us a perAccountCache struct
-		// to reuse instead of having to allocate a new one.
-		// Previously we would have removed multiple entries but now we will only
-		// prune the minimum number required to maintain the cache size, so that
-		// we reduce the amount of GC pressure and maintain cache stability as best
-		// as possible.
+		// Check if we need to prune.
 		if len(c.in.pacache) >= maxPerAccountCacheSize {
+			n := 0
 			for cacheKey, p := range c.in.pacache {
 				delete(c.in.pacache, cacheKey)
-				pac = p
-				if len(c.in.pacache) < maxPerAccountCacheSize {
+				p.results = nil
+				p.acc = nil
+				p.genid = 0
+				pacPool.Put(p)
+				if n++; n == prunePerAccountCacheSize {
 					break
 				}
 			}
@@ -6051,9 +6064,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 		// If we can reuse the pac from earlier (i.e. we loaded one but it was an
 		// old generation or we pruned the cache) then do so.
-		if pac == nil {
-			pac = &perAccountCache{}
-		}
+		pac := pacPool.Get().(*perAccountCache)
 		pac.acc = acc
 		pac.results = r
 		pac.genid = atomic.LoadUint64(&sl.genid)
