@@ -6398,6 +6398,7 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	// Get size for this message.
 	rl := fileStoreMsgSize(subj, hdr, msg)
 	if rl&hbit != 0 || rl > rlBadThresh {
+		fs.srv.Errorf("In writeMsgRecord. seq: %v, ts: %v, hdr:%v, subj: %v, rl: %v, rlBadThresh:%v", seq, ts, hdr, subj, rl, rlBadThresh)
 		return 0, ErrMsgTooLarge
 	}
 	// Grab our current last message block.
