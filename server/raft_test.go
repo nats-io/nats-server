@@ -3785,3 +3785,8 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 func TestFlakyDetectorCI(t *testing.T) {
 	// TEST ONLY
 }
+
+func TestFlakyDetectorCILong(t *testing.T) {
+	// TEST ONLY
+	time.Sleep(10 * time.Second)
+}
