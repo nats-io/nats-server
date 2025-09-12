@@ -1746,6 +1746,50 @@ func TestFileStorePartialIndexes(t *testing.T) {
 	})
 }
 
+func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		toSend := 5
+		for i := 0; i < toSend; i++ {
+			fs.StoreMsg("foo", nil, []byte("ok-1"), 0)
+		}
+		fs.FlushAllPending()
+
+		// Now we're going to mangle the in-memory cache by changing
+		// the sequence number of the first message. We also need to
+		// trick the cache into believing the hash is already validated
+		// so we don't fail on that. This is specifically testing the
+		// seq != fsm.seq condition.
+		mb := fs.selectMsgBlock(1)
+		require_NotNil(t, mb)
+		require_NoError(t, mb.loadMsgs())
+		require_True(t, mb.cacheAlreadyLoaded())
+		ri, rl, _, err := mb.slotInfo(0)
+		require_NoError(t, err)
+		require_NotNil(t, mb.cache)
+		require_NotNil(t, mb.cache.buf)
+		slot := mb.cache.buf[ri : ri+rl]
+		require_Equal(t, binary.LittleEndian.Uint64(slot[4:]), 1)
+		binary.LittleEndian.PutUint64(slot[4:], 12345)
+		mb.cache.idx[0] = (mb.cache.idx[0] | cbit)
+
+		// Expect an error on the first instance and for cacheLookupEx
+		// to discard the cache.
+		_, err = mb.cacheLookupEx(1, nil, false)
+		require_Error(t, err)
+		require_True(t, mb.cache.buf == nil)
+
+		// Now fetchMsg should notice and rebuild the index with the
+		// correct sequence from disk.
+		sm, _, err := mb.fetchMsg(1, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.seq, 1)
+	})
+}
+
 func TestFileStoreSnapshot(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		subj, msg := "foo", []byte("Hello Snappy!")

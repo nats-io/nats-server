@@ -6849,11 +6849,19 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	dms := uint64(mb.dmap.Size())
 	idxSz := mbLastSeq - mbFirstSeq + 1
 
-	if mb.cache == nil {
+	if mb.cache == nil || mb.cache.buf == nil {
 		// Approximation, may adjust below.
 		fseq = mbFirstSeq
-		idx = make([]uint32, 0, idxSz)
-		mb.cache = &cache{}
+		if mb.cache != nil && mb.cache.idx != nil {
+			idx = mb.cache.idx[:0]
+		} else {
+			idx = make([]uint32, 0, idxSz)
+		}
+		if mb.cache == nil {
+			mb.cache = &cache{}
+		} else {
+			*mb.cache = cache{}
+		}
 	} else {
 		fseq = mb.cache.fseq
 		idx = mb.cache.idx
@@ -7535,7 +7543,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 		return nil, errDeletedMsg
 	}
 
-	if seq != fsm.seq {
+	if seq != fsm.seq { // See TestFileStoreInvalidIndexesRebuilt.
 		recycleMsgBlockBuf(mb.cache.buf)
 		mb.cache.buf = nil
 		return nil, fmt.Errorf("sequence numbers for cache load did not match, %d vs %d", seq, fsm.seq)
