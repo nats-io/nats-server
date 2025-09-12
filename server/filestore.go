@@ -1446,7 +1446,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		minTombstoneTs  int64
 	)
 
-	// To detect gaps from compaction.
+	// To detect gaps from compaction, and to ensure the sequence keeps moving up.
 	var last uint64
 
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
@@ -1534,6 +1534,13 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			firstNeedsSet, mb.first.ts = false, ts
 		}
 
+		// The sequence needs to only ever move up.
+		if seq <= last {
+			// Advance to next record.
+			// We've already accounted for this sequence and marked it as deleted.
+			index += rl
+			continue
+		}
 		if !mb.dmap.Exists(seq) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
@@ -6599,6 +6606,9 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	var seq, ttls uint64
 	var sm StoreMsg // Used for finding TTL headers
 
+	// To ensure the sequence keeps moving up.
+	var last uint64
+
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
 			return errCorruptState
@@ -6629,6 +6639,15 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		// Clear any erase bits.
 		erased := seq&ebit != 0
 		seq = seq &^ ebit
+
+		// The sequence needs to only ever move up.
+		if seq <= last {
+			// Advance to next record.
+			// We've already accounted for this sequence and marked it as deleted.
+			index += rl
+			continue
+		}
+		last = seq
 
 		// We defer checksum checks to individual msg cache lookups to amortorize costs and
 		// not introduce latency for first message from a newly loaded block.

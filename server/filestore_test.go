@@ -10153,3 +10153,59 @@ func TestFileStoreRemoveBlockWithStaleStreamState(t *testing.T) {
 		}
 	})
 }
+
+func TestFileStoreCorruptedNonOrderedSequences(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		seqs    []uint64
+		msgs    uint64
+		deleted int
+	}{
+		{title: "Unordered", seqs: []uint64{1, 3, 2, 4}, msgs: 3, deleted: 1},
+		{title: "Duplicated", seqs: []uint64{1, 2, 2, 3}, msgs: 3, deleted: 0},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				for _, seq := range test.seqs {
+					_, err = fs.writeMsgRecord(seq, 0, _EMPTY_, nil, nil)
+					require_NoError(t, err)
+				}
+
+				fs.mu.RLock()
+				lmb := fs.lmb
+				fs.mu.RUnlock()
+
+				// The filestore will not yet know that something was corrupt.
+				lmb.mu.RLock()
+				defer lmb.mu.RUnlock()
+				require_Equal(t, lmb.msgs, 4)
+				require_Equal(t, lmb.dmap.Size(), 0)
+
+				// Need to reset, otherwise the rebuild will be incorrect.
+				atomic.StoreUint64(&lmb.first.seq, 0)
+
+				// Upon rebuild it should realize and correct.
+				_, _, err = lmb.rebuildStateLocked()
+				require_NoError(t, err)
+				require_Equal(t, lmb.msgs, test.msgs)
+				require_Equal(t, lmb.dmap.Size(), test.deleted)
+
+				// Indexing should also realize and correct.
+				require_True(t, lmb.cacheNotLoaded())
+				buf, err := lmb.loadBlock(nil)
+				require_NoError(t, err)
+				require_NoError(t, lmb.encryptOrDecryptIfNeeded(buf))
+				buf, err = lmb.decompressIfNeeded(buf)
+				require_NoError(t, err)
+				require_NoError(t, lmb.indexCacheBuf(buf))
+				require_True(t, lmb.cacheAlreadyLoaded())
+			})
+		})
+	}
+}
