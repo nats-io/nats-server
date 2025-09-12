@@ -69,6 +69,8 @@ nfpms:
       - src: /usr/bin/nats-server
         dst: /usr/local/bin/nats-server
         type: "symlink"
+    rpm:
+      buildhost: synadia.com
 
 archives:
   - name_template: "{{.ProjectName}}-{{.Tag}}-{{.Os}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}"
