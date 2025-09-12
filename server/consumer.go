@@ -4670,14 +4670,14 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 			if err == ErrStoreMsgNotFound || err == errDeletedMsg || err == ErrStoreEOF || err == errMaxAckPending {
 				goto waitForMsgs
-			} else if err == errPartialCache {
-				s.Warnf("Unexpected partial cache error looking up message for consumer '%s > %s > %s'",
-					o.mset.acc, stream, o.cfg.Name)
-				goto waitForMsgs
-
 			} else {
-				s.Errorf("Received an error looking up message for consumer '%s > %s > %s': %v",
-					o.mset.acc, stream, o.cfg.Name, err)
+				if pmsg != nil {
+					s.Errorf("Received an error looking up message with sequence %d for consumer '%s > %s > %s': %v",
+						pmsg.seq, o.mset.acc, stream, o.cfg.Name, err)
+				} else {
+					s.Errorf("Received an error looking up message for consumer '%s > %s > %s': %v",
+						o.mset.acc, stream, o.cfg.Name, err)
+				}
 				goto waitForMsgs
 			}
 		}
