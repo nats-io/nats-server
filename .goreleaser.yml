@@ -42,6 +42,8 @@ builds:
       - 6
       - 7
     ignore:
+      - goos: windows
+        goarch: arm
       - goos: darwin
         goarch: 386
       - goos: freebsd
