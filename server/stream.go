@@ -826,8 +826,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
 	fsCfg.Compression = config.Compression
-	// Async flushing is only allowed if the stream has a sync log backing it.
-	fsCfg.AsyncFlush = !fsCfg.SyncAlways && config.Replicas > 1
+	// Always allow async flushing, but must ensure flushing is triggered manually when required.
+	// Not allowed if sync always is configured.
+	fsCfg.AsyncFlush = !fsCfg.SyncAlways
 
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
@@ -6045,6 +6046,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, hdr, rpMsg, nil, seq))
 	}
 
+	// Store is async, so we need to flush all writes before we respond back with an ack.
+	// Replicated streams don't need to force flush, because they're backed by a replicated store.
+	// Also don't need to flush if we're not responsible for holding the lock, for example when batching.
+	// Flushing should be done outside this method in that case.
+	if needLock && mset.cfg.Replicas <= 1 {
+		mset.flushAllPending()
+	}
+
 	// Send response here.
 	if canRespond {
 		response = append(pubAck, strconv.FormatUint(seq, 10)...)
@@ -6440,6 +6449,8 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			}
 			mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false)
 		}
+		// Store is async, so we need to flush all writes before we're allowed to clean up the batch.
+		mset.flushAllPending()
 		mset.mu.Unlock()
 	} else {
 		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order

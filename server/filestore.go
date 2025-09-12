@@ -501,8 +501,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 
 		// Check if our prior state remembers a last sequence past where we can see.
-		// Unless we're async flushing, in which case this can happen if some blocks weren't flushed.
-		if prior.LastSeq > fs.state.LastSeq && !fs.fcfg.AsyncFlush {
+		// Unless we're replicated, in which case we don't want to adjust and replication must resolve this.
+		if prior.LastSeq > fs.state.LastSeq && cfg.Replicas <= 1 {
 			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
 			if fs.state.Msgs == 0 {
 				fs.state.FirstSeq = fs.state.LastSeq + 1
@@ -702,24 +702,12 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 
 	if lmb := fs.lmb; lmb != nil {
-		// Enable/disable async flush depending on if it's supported and already initialized.
-		supportsAsyncFlush := !fs.fcfg.SyncAlways && cfg.Replicas > 1
-		if supportsAsyncFlush && !fs.fcfg.AsyncFlush {
-			fs.fcfg.AsyncFlush = true
-			lmb.spinUpFlushLoop()
-		} else if !supportsAsyncFlush && fs.fcfg.AsyncFlush {
-			fs.fcfg.AsyncFlush = false
+		// We remain async flush if we are already, but make sure to flush when converting to single replica.
+		if cfg.Replicas == 1 {
 			lmb.mu.Lock()
-			// Quit the flush loop.
-			if lmb.qch != nil {
-				close(lmb.qch)
-				lmb.qch = nil
-			}
 			lmb.flushPendingMsgsLocked()
 			lmb.mu.Unlock()
 		}
-		// Set flush in place to AsyncFlush which by default is false.
-		fs.fip = !fs.fcfg.AsyncFlush
 	}
 	fs.mu.Unlock()
 
