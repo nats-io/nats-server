@@ -1,0 +1,62 @@
+# This GitHub Actions workflow finds new tests in pull requests
+# and runs them repeatedly to check for flakiness.
+name: 'Flaky Test Detector'
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  stress-new-test-additions:
+    name: Stress new tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+
+      - name: Find New Tests
+        id: find_new_tests
+        run: go run scripts/gitTestDetector.go
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run New Tests
+        if: steps.find_new_tests.outputs.new_tests != ''
+        env:
+          RUN_COUNT: 100
+          TOTAL_TIMEOUT: 100s
+        run: |
+          echo "Found new tests to run:"
+          echo "${{ steps.find_new_tests.outputs.new_tests }}" | tr ' ' '\n'
+          fail=0
+          for test_info in ${{ steps.find_new_tests.outputs.new_tests }}; do
+            test_package=$(echo $test_info | cut -d':' -f1)
+            test_name=$(echo $test_info | cut -d':' -f2)
+
+            echo "---"
+            echo "Running test '$test_package/$test_name' for up to ${TOTAL_TIMEOUT}"
+
+            exit_code=0
+            timeout ${TOTAL_TIMEOUT} go test -v -failfast -count=${RUN_COUNT} ./$test_package -run "^${test_name}$" || exit_code=$?
+
+            if [ $exit_code -ne 0 ]; then
+              if [ $exit_code -eq 124 ]; then
+                echo "::warning title=Test Timeout::Test '$test_name' did not complete ${RUN_COUNT} runs within the time limit."
+              else
+                echo "::error title=Flaky test detected:: Test '$test_name' failed with exit code $exit_code during one of its ${RUN_COUNT} runs."
+                fail=1
+              fi
+            else
+              echo "Test '$test_name' passed all ${RUN_COUNT} runs within the time limit."
+            fi
+          done
+          exit $fail
