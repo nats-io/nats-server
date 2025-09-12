@@ -3781,3 +3781,7 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 		}
 	}
 }
+
+func TestFlakyDetectorCI(t *testing.T) {
+	// TEST ONLY
+}
