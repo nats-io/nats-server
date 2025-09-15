@@ -17,22 +17,21 @@ import (
 	"weak"
 )
 
-func Make[T any](ptr *T) *Pointer[T] {
-	return &Pointer[T]{
-		weak: weak.Make(ptr),
-	}
-}
-
 type Pointer[T any] struct {
 	weak   weak.Pointer[T]
 	strong *T
 }
 
 func (e *Pointer[T]) Set(ptr *T) {
-	e.weak = weak.Make(ptr)
 	if e.strong != nil {
 		e.strong = ptr
 	}
+	e.weak = weak.Make(ptr)
+}
+
+func (e *Pointer[T]) SetStrong(ptr *T) {
+	e.strong = ptr
+	e.weak = weak.Make(ptr)
 }
 
 func (e *Pointer[T]) Strengthen() {

@@ -4116,12 +4116,13 @@ func (mb *msgBlock) setupWriteCache(buf []byte) {
 	// This implicitly checks if we have a weakly-referenced cache that we
 	// can reuse.
 	if mb.cacheAlreadyLoaded() {
+		mb.ecache.Strengthen()
 		return
 	}
 
 	// Setup simple cache.
 	mb.cache = &cache{buf: buf}
-	mb.ecache.Set(mb.cache)
+	mb.ecache.SetStrong(mb.cache)
 	// Make sure we set the proper cache offset if we have existing data.
 	var fi os.FileInfo
 	if mb.mfd != nil {
@@ -6189,14 +6190,9 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	}
 
 	// Make sure we have a cache setup. Do so after ensurePerSubjectInfoLoaded
-	// as it can mutate and clean the cache.
-	if mb.cache == nil {
-		mb.setupWriteCache(nil)
-	}
-
-	// Make sure that the GC can't take away our writes by strengthening the elastic
-	// reference. It will now stay strong until the flusher decides it is time to weaken.
-	mb.ecache.Strengthen()
+	// as it can mutate and clean the cache. This will ensure our reference is
+	// strong too.
+	mb.setupWriteCache(nil)
 
 	// Indexing
 	index := len(mb.cache.buf) + int(mb.cache.off)
@@ -8320,16 +8316,12 @@ func (fs *fileStore) cacheSize() uint64 {
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
-		var needsCleanup bool
-		if mb.cache == nil {
-			mb.cache = mb.ecache.Value()
-			needsCleanup = mb.cache != nil
+		cache := mb.cache
+		if cache == nil {
+			cache = mb.ecache.Value()
 		}
-		if mb.cache != nil {
-			sz += uint64(len(mb.cache.buf))
-		}
-		if needsCleanup {
-			mb.finishedWithCache()
+		if cache != nil {
+			sz += uint64(len(cache.buf))
 		}
 		mb.mu.RUnlock()
 	}
@@ -9465,12 +9457,12 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return err
 		}
+		defer mb.finishedWithCache()
 		// indexCacheBuf can produce fss now, so if non-nil we are good.
 		if mb.fss != nil {
 			return nil
 		}
 	}
-	defer mb.finishedWithCache()
 
 	// Create new one regardless.
 	mb.fss = mb.fss.Empty()
