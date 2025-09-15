@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -4464,6 +4465,7 @@ func (mset *stream) deleteInflightBatches(shuttingDown bool) {
 // Lock should be held.
 func (mset *stream) deleteBatchApplyState() {
 	if batch := mset.batchApply; batch != nil {
+		mset.srv.Debugf("[batch] delete %v, stack: %s", batch, debug.Stack())
 		// Need to return entries (if any) to the pool.
 		for _, bce := range batch.entries {
 			bce.ReturnToPool()
