@@ -2069,3 +2069,43 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamAtomicBatchPublishExpectedSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("hello"))
+	require_NoError(t, err)
+
+	// test expect last seq for standalone publish
+	_, err = js.Publish("foo", []byte("hello"), nats.ExpectLastSequence(1))
+	require_NoError(t, err)
+
+	// now do a single msg batch with expect last seq
+	m := nats.NewMsg("foo")
+	m.Header.Set("Nats-Expected-Last-Sequence", "2")
+	m.Header.Set("Nats-Batch-Id", "uuid")
+	m.Header.Set("Nats-Batch-Sequence", "1")
+	m.Header.Set("Nats-Batch-Commit", "1")
+	resp, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(resp.Data, &pubAck))
+	if pubAck.Error != nil {
+		t.Fatalf("Commit error: %v", pubAck.Error)
+	}
+	require_Equal(t, pubAck.Sequence, 3)
+	require_Equal(t, pubAck.BatchSize, 1)
+}
