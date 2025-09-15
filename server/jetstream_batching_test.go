@@ -159,6 +159,68 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 	}
 }
 
+func TestJetStreamAtomicBatchPublishEmptyAck(t *testing.T) {
+	test := func(
+		t *testing.T,
+		storage StorageType,
+		retention RetentionPolicy,
+		replicas int,
+	) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo.*"},
+			Storage:            storage,
+			Retention:          retention,
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		// Publish a batch of N messages.
+		for seq, batch := uint64(1), uint64(5); seq <= batch; seq++ {
+			m := nats.NewMsg(fmt.Sprintf("foo.%d", seq))
+			m.Data = []byte(m.Subject)
+			m.Header.Set("Nats-Batch-Id", "uuid")
+			m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
+			commit := seq == batch
+			if commit {
+				m.Header.Set("Nats-Batch-Commit", "1")
+			}
+
+			rmsg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			// If not commit we should receive an empty ack for flow control.
+			if !commit {
+				require_Len(t, len(rmsg.Data), 0)
+				continue
+			}
+
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, 5)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 5)
+		}
+	}
+
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			for _, replicas := range []int{1, 3} {
+				t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
+					test(t, storage, retention, replicas)
+				})
+			}
+		}
+	}
+}
+
 func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 	streamMaxBatchInflightPerStream = 1
 	streamMaxBatchInflightTotal = 1
