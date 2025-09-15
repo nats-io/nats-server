@@ -4114,12 +4114,15 @@ func (fs *fileStore) hashKeyForBlock(index uint32) []byte {
 
 func (mb *msgBlock) setupWriteCache(buf []byte) {
 	// This implicitly checks if we have a weakly-referenced cache that we
-	// can reuse.
-	if mb.cacheAlreadyLoaded() {
+	// can reuse. Note we can't use mb.cacheAlreadyLoaded() here because that
+	// checks for offsets from e.g. buffer reuse, which would cause us to blow
+	// away the cache prematurely.
+	if mb.cache != nil {
 		return
 	}
-
-	// Setup simple cache.
+	if mb.cache = mb.ecache.Value(); mb.cache != nil {
+		return
+	}
 	mb.cache = &cache{buf: buf}
 	mb.ecache.Set(mb.cache)
 	// Make sure we set the proper cache offset if we have existing data.
@@ -7052,7 +7055,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		mb.cache = mb.ecache.Value()
 	}
 	if mb.cache == nil || mb.mfd == nil {
-		return nil, nil
+		return nil, errNoCache
 	}
 
 	buf, err := mb.bytesPending()
@@ -7099,13 +7102,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		}
 		// Update our write offset.
 		woff += int64(n)
-		// Partial write.
-		if n != lbb {
-			buf = buf[n:]
-		} else {
-			// Done.
-			break
-		}
+		buf = buf[n:]
 	}
 
 	// Clear any error.
@@ -7124,41 +7121,35 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	}
 
 	// Check for additional writes while we were writing to the disk.
+	// TODO(nat): This should not be possible at present since, as above, we are
+	// not releasing the lock during I/O operation. Therefore this will always
+	// return zero.
 	moreBytes := len(mb.cache.buf) - mb.cache.wp - lob
 
-	// Decide what we want to do with the buffer in hand. If we have load interest
-	// we will hold onto the whole thing, otherwise empty the buffer, possibly reusing it.
-	if ts := ats.AccessTime(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
+	// Determine whether there's access interest on this message block, if there
+	// is then we will keep the cache loaded rather than recycling it.
+	ts := ats.AccessTime()
+	mbai := ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp)
+	if moreBytes > 0 {
+		// Pending writes while we were flushing (if lock was allowed to be
+		// released during I/O), at this point access interest is irrelevant.
+		off := len(mb.cache.buf) - moreBytes
+		mb.cache.off += off
+		mb.cache.wp -= off
+		copy(mb.cache.buf[:moreBytes], mb.cache.buf[off:])
+		buf = mb.cache.buf[:moreBytes]
+	} else if mbai {
+		// No pending writes with access interest. We'll maintain the buffer
+		// and just advance the write pointer, but since we have no more pending
+		// writes, we can weak the reference.
 		mb.cache.wp += lob
-	} else {
-		if moreBytes == 0 {
-			if cap(mb.cache.buf) <= maxBufReuse {
-				// Reuse the entire underlying buffer
-				buf = mb.cache.buf[:0]
-			} else {
-				recycleMsgBlockBuf(mb.cache.buf)
-				buf = nil
-			}
-		} else {
-			// Move the additional bytes to the beginning of the buffer and re-slice so
-			// we will have more usable capacity at the end again for additional writes.
-			copy(mb.cache.buf[:moreBytes], mb.cache.buf[len(mb.cache.buf)-moreBytes:])
-			buf = mb.cache.buf[:moreBytes]
-		}
-		// Update our cache offset.
-		mb.cache.off = int(woff)
-		// Reset write pointer.
-		mb.cache.wp = 0
-		// Place buffer back in the cache structure.
-		mb.cache.buf = buf
-		// Mark fseq to 0
-		mb.cache.fseq = 0
-	}
-
-	// If there's nothing left in the block to write then we can weaken the
-	// reference to allow the GC to clean it up if needed.
-	if moreBytes == 0 {
 		mb.ecache.Weaken()
+	} else {
+		// No pending writes without access interest, so we can just discard
+		// this cache altogether and recycle the buffer.
+		recycleMsgBlockBuf(mb.cache.buf)
+		mb.cache = nil
+		mb.ecache.Set(nil)
 	}
 
 	return fsLostData, mb.werr
