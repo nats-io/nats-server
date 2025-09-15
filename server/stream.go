@@ -5027,7 +5027,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		return
 	}
 
-	np, lseq, sentBytes, sent := uint64(len(seqs)), uint64(0), 0, 0
+	np, lseq, sentBytes, sent := uint64(len(seqs)-1), uint64(0), 0, 0
 	for _, seq := range seqs {
 		if seq < req.Seq {
 			if np > 0 {
@@ -5046,10 +5046,6 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		hdr := sm.hdr
 		ts := time.Unix(0, sm.ts).UTC()
 
-		// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
-		if np > 0 {
-			np--
-		}
 		if len(hdr) == 0 {
 			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 		} else {
@@ -5060,6 +5056,10 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
 			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+		}
+		// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
+		if np > 0 {
+			np--
 		}
 		// Track our lseq
 		lseq = sm.seq
@@ -5165,10 +5165,6 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		if !req.NoHeaders {
 			hdr = sm.hdr
 			if isBatchRequest {
-				// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
-				if np > 0 {
-					np--
-				}
 				if len(hdr) == 0 {
 					hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 				} else {
@@ -5180,6 +5176,8 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 					hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
 					hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
 				}
+				// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
+				np--
 			} else {
 				if len(hdr) == 0 {
 					hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
