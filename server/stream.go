@@ -6315,6 +6315,11 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	// be accessing state that requires this lock (even if it's empty).
 	mset.clMu.Lock()
 
+	// If not clustered, set up the last sequence.
+	if !isClustered {
+		mset.clseq, mset.clfs = mset.lseq, 0
+	}
+
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
 	if isClustered && (mset.clseq == 0 || mset.clseq < lseq+mset.clfs) {
@@ -6411,13 +6416,15 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			}
 			esm := encodeStreamMsgAllowCompressAndBatch(bsubj, _reply, bhdr, bmsg, mset.clseq, ts, false, batchId, seq, isCommit)
 			entries = append(entries, newEntry(EntryNormal, esm))
-			mset.clseq++
 			sz += len(esm)
 		}
+		mset.clseq++
 	}
 
 	// Commit batch.
 	if !isClustered {
+		// Reset, we only used this to do the batching checks.
+		mset.clseq, mset.clfs = 0, 0
 		mset.clMu.Unlock()
 
 		// Ensure the whole batch is fully isolated, and reads

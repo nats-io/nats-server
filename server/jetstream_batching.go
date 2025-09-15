@@ -444,6 +444,10 @@ func checkMsgHeadersPreClusteredProposal(
 			mlseq := mset.clseq - mset.clfs
 			err := fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
 			return hdr, msg, 0, NewJSStreamWrongLastSequenceError(mlseq), err
+		} else if exists && len(diff.inflight) > 0 {
+			// Only the first message in a batch can contain an expected last sequence.
+			err := fmt.Errorf("last sequence mismatch")
+			return hdr, msg, 0, NewJSStreamWrongLastSequenceConstantError(), err
 		}
 
 		// Expected last sequence per subject.
