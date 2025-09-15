@@ -1059,7 +1059,14 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			title: "expect-last-seq",
 			batch: []BatchItem{
 				{subject: "foo", header: nats.Header{JSExpectedLastSeq: {"0"}}},
-				{subject: "bar", header: nats.Header{JSExpectedLastSeq: {"1"}}},
+				{subject: "bar"},
+			},
+		},
+		{
+			title: "expect-last-seq-not-first",
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "bar", header: nats.Header{JSExpectedLastSeq: {"0"}}, err: errors.New("last sequence mismatch")},
 			},
 		},
 		{
@@ -2163,4 +2170,69 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 			test(t, replicas)
 		})
 	}
+}
+
+func TestJetStreamAtomicBatchPublishExpectedSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	clseqAndClfs := func() (uint64, uint64) {
+		mset.clMu.Lock()
+		defer mset.clMu.Unlock()
+		return mset.clseq, mset.clfs
+	}
+
+	clseq, clfs := clseqAndClfs()
+	require_Equal(t, clseq, 0)
+	require_Equal(t, clfs, 0)
+
+	_, err = js.Publish("foo", []byte("hello"))
+	require_NoError(t, err)
+
+	clseq, clfs = clseqAndClfs()
+	require_Equal(t, clseq, 0)
+	require_Equal(t, clfs, 0)
+
+	// test expect last seq for standalone publish
+	_, err = js.Publish("foo", []byte("hello"), nats.ExpectLastSequence(1))
+	require_NoError(t, err)
+
+	clseq, clfs = clseqAndClfs()
+	require_Equal(t, clseq, 0)
+	require_Equal(t, clfs, 0)
+
+	// now do a single msg batch with expect last seq
+	m := nats.NewMsg("foo")
+	m.Header.Set("Nats-Expected-Last-Sequence", "2")
+	m.Header.Set("Nats-Batch-Id", "uuid")
+	m.Header.Set("Nats-Batch-Sequence", "1")
+	m.Header.Set("Nats-Batch-Commit", "1")
+	resp, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(resp.Data, &pubAck))
+	if pubAck.Error != nil {
+		t.Fatalf("Commit error: %v", pubAck.Error)
+	}
+	require_Equal(t, pubAck.Sequence, 3)
+	require_Equal(t, pubAck.BatchSize, 1)
+
+	clseq, clfs = clseqAndClfs()
+	require_Equal(t, clseq, 0)
+	require_Equal(t, clfs, 0)
 }
