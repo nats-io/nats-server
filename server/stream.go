@@ -6297,6 +6297,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	}
 	if !commit {
 		batches.mu.Unlock()
+		// Send empty ack to let them know we've persisted the data prior to commit.
+		if canRespond {
+			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0))
+		}
 		return nil
 	}
 
