@@ -1643,7 +1643,6 @@ func TestJetStreamAtomicBatchPublishProposeMultiple(t *testing.T) {
 }
 
 // Test a batch that was only partially proposed.
-// This should not happen, but guard against it anyhow.
 func TestJetStreamAtomicBatchPublishProposeOnePartialBatch(t *testing.T) {
 	maxEntries := 3
 	for i := range maxEntries + 1 {
@@ -1706,63 +1705,97 @@ func TestJetStreamAtomicBatchPublishProposeOnePartialBatch(t *testing.T) {
 }
 
 // Test multiple sequential batches, the first batch is partially proposed.
-// This should not happen, but guard against it anyhow.
 func TestJetStreamAtomicBatchPublishProposeMultiplePartialBatches(t *testing.T) {
-	for i := range 2 {
-		batchSize := i + 1
-		t.Run(fmt.Sprintf("B-%d", batchSize), func(t *testing.T) {
-			c := createJetStreamClusterExplicit(t, "R3S", 3)
-			defer c.shutdown()
+	test := func(t *testing.T, batchSize int, retry bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
 
-			nc, js := jsClientConnect(t, c.randomServer())
-			defer nc.Close()
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
 
-			_, err := jsStreamCreate(t, nc, &StreamConfig{
-				Name:               "TEST",
-				Subjects:           []string{"foo"},
-				Storage:            FileStorage,
-				Replicas:           3,
-				AllowAtomicPublish: true,
-			})
-			require_NoError(t, err)
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			Replicas:           3,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
 
-			sl := c.streamLeader(globalAccountName, "TEST")
-			mset, err := sl.globalAccount().lookupStream("TEST")
-			require_NoError(t, err)
+		sl := c.streamLeader(globalAccountName, "TEST")
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
 
-			pubAck, err := js.Publish("foo", nil)
-			require_NoError(t, err)
-			require_Equal(t, pubAck.Sequence, 1)
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
 
-			var entries []*Entry
-			mset.clMu.Lock()
-			msg := []byte("hello")
-			hdr := genHeader(nil, "Nats-Batch-Id", "ID_1")
-			hdr = setHeader("Nats-Batch-Sequence", "1", hdr)
-			esm := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, msg, mset.clseq, 0, false, "ID_1", 1, false)
+		batchId1, batchId2 := "ID_1", "ID_2"
+		if retry {
+			batchId1, batchId2 = "uuid", "uuid"
+		}
+
+		var entries []*Entry
+		mset.clMu.Lock()
+		msg := []byte("hello")
+		hdr := genHeader(nil, "Nats-Batch-Id", batchId1)
+		hdr = setHeader("Nats-Batch-Sequence", "1", hdr)
+		esm := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, msg, mset.clseq, 0, false, batchId1, 1, false)
+		entries = append(entries, newEntry(EntryNormal, esm))
+		mset.clseq++
+
+		for j := range batchSize {
+			bseq := uint64(j + 1)
+			hdr = genHeader(nil, "Nats-Batch-Id", batchId2)
+			hdr = setHeader("Nats-Batch-Sequence", strconv.FormatUint(bseq, 10), hdr)
+			commit := bseq == uint64(batchSize)
+			if commit {
+				hdr = setHeader("Nats-Batch-Commit", "1", hdr)
+			}
+			esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, msg, mset.clseq, 0, false, batchId2, bseq, commit)
 			entries = append(entries, newEntry(EntryNormal, esm))
 			mset.clseq++
+		}
+		mset.clMu.Unlock()
+		n := mset.raftNode().(*raft)
+		n.sendAppendEntry(entries)
 
-			for j := range batchSize {
-				bseq := uint64(j + 1)
-				hdr = genHeader(nil, "Nats-Batch-Id", "ID_2")
-				hdr = setHeader("Nats-Batch-Sequence", strconv.FormatUint(bseq, 10), hdr)
-				commit := bseq == uint64(batchSize)
-				if commit {
-					hdr = setHeader("Nats-Batch-Commit", "1", hdr)
-				}
-				esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, msg, mset.clseq, 0, false, "ID_2", bseq, commit)
-				entries = append(entries, newEntry(EntryNormal, esm))
-				mset.clseq++
-			}
-			mset.clMu.Unlock()
-			n := mset.raftNode().(*raft)
-			n.sendAppendEntry(entries)
+		pubAck, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, uint64(2+batchSize))
 
-			pubAck, err = js.Publish("foo", nil)
+		// Validate the stream only committed the full batch.
+		rsm, err := js.GetMsg("TEST", 1)
+		require_NoError(t, err)
+		require_True(t, rsm.Header.Get("Nats-Batch-Id") == _EMPTY_)
+		for j := range batchSize {
+			rsm, err = js.GetMsg("TEST", uint64(2+j))
 			require_NoError(t, err)
-			require_Equal(t, pubAck.Sequence, uint64(2+batchSize))
-		})
+			require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), batchId2)
+			require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), strconv.Itoa(j+1))
+		}
+		rsm, err = js.GetMsg("TEST", uint64(2+batchSize))
+		require_NoError(t, err)
+		require_True(t, rsm.Header.Get("Nats-Batch-Id") == _EMPTY_)
+
+		mset.clMu.Lock()
+		clfs := mset.clfs
+		mset.clMu.Unlock()
+		require_Equal(t, clfs, 1)
+	}
+	for _, retry := range []bool{false, true} {
+		for i := range 2 {
+			batchSize := i + 1
+			title := fmt.Sprintf("B-%d", batchSize)
+			if retry {
+				title += "/Retry"
+			} else {
+				title += "/NoRetry"
+			}
+			t.Run(title, func(t *testing.T) {
+				test(t, batchSize, retry)
+			})
+		}
 	}
 }
 
