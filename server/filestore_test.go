@@ -1702,6 +1702,10 @@ func TestFileStorePartialCacheExpiration(t *testing.T) {
 }
 
 func TestFileStorePartialIndexes(t *testing.T) {
+	// TODO(nat): This test is no longer applicable as we no longer have positional
+	// write caches but check before removing whether it proves anything else of value.
+	t.SkipNow()
+
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cexp := 10 * time.Millisecond
 		fcfg.CacheExpire = cexp
