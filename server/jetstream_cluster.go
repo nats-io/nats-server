@@ -3236,14 +3236,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					mset.srv.Debugf("[batch] reject stage %s - abandoned, new: %s", batch.id, batchId)
 					batch.rejectBatchStateLocked(mset)
-				} else if batchSeq == 1 {
-					// If this is the first message in the batch, need to mark the start index.
-					// We'll continue to check batch-completeness and try to find the commit.
-					// At that point we'll commit the whole batch.
-					mset.srv.Debugf("[batch] new %s", batchId)
-					batch.rejectBatchStateLocked(mset)
-					batch.entryStart = i
-					batch.maxApplied = ce.Index - 1
 				}
 				if batchSeq == 1 {
 					// If this is the first message in the batch, need to mark the start index.
@@ -3252,6 +3244,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					batch.rejectBatchStateLocked(mset)
 					batch.entryStart = i
 					batch.maxApplied = ce.Index - 1
+					mset.srv.Debugf("[batch] new %s, entryStart: %d, maxApplied: %d", batchId, batch.entryStart, batch.maxApplied)
 				}
 				batch.id = batchId
 
@@ -3306,13 +3299,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					mset.srv.Debugf("[batch] reject %s - abandoned, new: %s", batch.id, batchId)
 					batch.rejectBatchStateLocked(mset)
-				} else if batchSeq == 1 {
-					// If this is the first message in the batch, need to mark the start index.
-					// This is a batch of size one that immediately commits.
-					mset.srv.Debugf("[batch] new %s", batchId)
-					batch.rejectBatchStateLocked(mset)
-					batch.entryStart = i
-					batch.maxApplied = ce.Index - 1
 				}
 				if batchSeq == 1 {
 					// If this is the first message in the batch, need to mark the start index.
@@ -3320,6 +3306,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					batch.rejectBatchStateLocked(mset)
 					batch.entryStart = i
 					batch.maxApplied = ce.Index - 1
+					mset.srv.Debugf("[batch] new %s, entryStart: %d, maxApplied: %d", batchId, batch.entryStart, batch.maxApplied)
 				}
 				batch.id = batchId
 
@@ -3348,7 +3335,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					continue
 				}
 
-				mset.srv.Debugf("[batch] commit %s, size: %d", batch.id, batch.count)
+				mset.srv.Debugf("[batch] commit %s, size: %d, entryStart: %d, maxApplied: %d, entries: %d", batch.id, batch.count, batch.entryStart, batch.maxApplied, len(batch.entries))
 
 				// Process any entries that are part of this batch but prior to the current one.
 				var entries []*Entry
