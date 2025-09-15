@@ -3218,7 +3218,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					batch.rejectBatchStateLocked(mset)
-				} else if batchSeq == 1 {
+				}
+				if batchSeq == 1 {
 					// If this is the first message in the batch, need to mark the start index.
 					// We'll continue to check batch-completeness and try to find the commit.
 					// At that point we'll commit the whole batch.
@@ -3256,7 +3257,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					batch.rejectBatchStateLocked(mset)
-				} else if batchSeq == 1 {
+				}
+				if batchSeq == 1 {
 					// If this is the first message in the batch, need to mark the start index.
 					// This is a batch of size one that immediately commits.
 					batch.rejectBatchStateLocked(mset)
