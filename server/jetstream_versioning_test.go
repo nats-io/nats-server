@@ -101,6 +101,11 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			cfg:              &StreamConfig{AllowMsgSchedules: true},
 			expectedMetadata: metadataAtLevel("2"),
 		},
+		{
+			desc:             "AsyncPersistMode",
+			cfg:              &StreamConfig{PersistMode: AsyncPersistMode},
+			expectedMetadata: metadataAtLevel("2"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg)

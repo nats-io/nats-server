@@ -2362,3 +2362,22 @@ func TestJetStreamAtomicBatchPublishRejectPartialBatchOnLeaderChange(t *testing.
 		return nil
 	})
 }
+
+func TestJetStreamAtomicBatchPublishPersistModeAsync(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+		PersistMode:        AsyncPersistMode,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("async persist mode is not supported with atomic batch publish")))
+}

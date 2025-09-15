@@ -21982,3 +21982,36 @@ func TestJetStreamOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 	require_Len(t, len(cl.Offline), 1)
 	require_Equal(t, cl.Offline["DowngradeConsumerTest"], offlineReason)
 }
+
+func TestJetStreamPersistModeAsync(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Storage:     MemoryStorage,
+		PersistMode: AsyncPersistMode,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("async persist mode is only supported on file storage")))
+
+	cfg.Storage = FileStorage
+	si, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.PersistMode, AsyncPersistMode)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.store.(*fileStore)
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	require_True(t, fs.fcfg.AsyncFlush)
+}

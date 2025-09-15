@@ -701,6 +701,15 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if lmb := fs.lmb; lmb != nil {
 		// Enable/disable async flush depending on if it's supported and already initialized.
 		supportsAsyncFlush := !fs.fcfg.SyncAlways && cfg.Replicas > 1
+
+		// Async persist mode opts in to async flushing,
+		// sync always would also be disabled if it was configured.
+		if cfg.PersistMode == AsyncPersistMode {
+			supportsAsyncFlush = true
+			fs.fcfg.SyncAlways = false
+			lmb.syncAlways = false
+		}
+
 		if supportsAsyncFlush && !fs.fcfg.AsyncFlush {
 			fs.fcfg.AsyncFlush = true
 			lmb.spinUpFlushLoop()

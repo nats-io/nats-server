@@ -119,6 +119,9 @@ type StreamConfig struct {
 	// AllowMsgSchedules allows the scheduling of messages.
 	AllowMsgSchedules bool `json:"allow_msg_schedules,omitempty"`
 
+	// PersistMode allows to opt-in to different persistence mode settings.
+	PersistMode PersistModeType `json:"persist_mode,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -175,6 +178,63 @@ type RePublish struct {
 	Source      string `json:"src,omitempty"`
 	Destination string `json:"dest"`
 	HeadersOnly bool   `json:"headers_only,omitempty"`
+}
+
+// PersistModeType determines what persistence mode the stream uses.
+type PersistModeType int
+
+const (
+	// DefaultPersistMode specifies the default persist mode. Writes to the stream will immediately be flushed.
+	// The publish acknowledgement will be sent after the persisting completes.
+	DefaultPersistMode = PersistModeType(iota)
+	// AsyncPersistMode specifies writes to the stream will be flushed asynchronously.
+	// The publish acknowledgement may be sent before the persisting completes.
+	// This means writes could be lost if they weren't flushed prior to a hard kill of the server.
+	AsyncPersistMode
+)
+
+const (
+	defaultPersistModeJSONString = `"default"`
+	asyncPersistModeJSONString   = `"async"`
+)
+
+var (
+	defaultPersistModeJSONBytes = []byte(defaultPersistModeJSONString)
+	asyncPersistModeJSONBytes   = []byte(asyncPersistModeJSONString)
+)
+
+func (wc PersistModeType) String() string {
+	switch wc {
+	case DefaultPersistMode:
+		return "Default"
+	case AsyncPersistMode:
+		return "Async"
+	default:
+		return "Unknown Persist Mode Type"
+	}
+}
+
+func (wc PersistModeType) MarshalJSON() ([]byte, error) {
+	switch wc {
+	case DefaultPersistMode:
+		return defaultPersistModeJSONBytes, nil
+	case AsyncPersistMode:
+		return asyncPersistModeJSONBytes, nil
+	default:
+		return nil, fmt.Errorf("can not marshal %v", wc)
+	}
+}
+
+func (wc *PersistModeType) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case defaultPersistModeJSONString:
+		*wc = DefaultPersistMode
+	case asyncPersistModeJSONString:
+		*wc = AsyncPersistMode
+	default:
+		return fmt.Errorf("can not unmarshal %q", data)
+	}
+	return nil
 }
 
 // JSPubAckResponse is a formal response to a publish operation.
@@ -828,6 +888,13 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.Compression = config.Compression
 	// Async flushing is only allowed if the stream has a sync log backing it.
 	fsCfg.AsyncFlush = !fsCfg.SyncAlways && config.Replicas > 1
+
+	// Async persist mode opts in to async flushing,
+	// sync always would also be disabled if it was configured.
+	if config.PersistMode == AsyncPersistMode {
+		fsCfg.SyncAlways = false
+		fsCfg.AsyncFlush = true
+	}
 
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
@@ -1600,6 +1667,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("message scheduling cannot be set if roll-ups are disabled"))
 			}
 			cfg.AllowRollup, cfg.DenyPurge = true, false
+		}
+	}
+
+	if cfg.PersistMode == AsyncPersistMode {
+		if cfg.Storage != FileStorage {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("async persist mode is only supported on file storage"))
+		}
+		if cfg.Replicas > 1 {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("async persist mode is not supported on replicated streams"))
+		}
+		if cfg.AllowAtomicPublish {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("async persist mode is not supported with atomic batch publish"))
 		}
 	}
 
