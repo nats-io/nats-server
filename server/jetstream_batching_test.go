@@ -2236,3 +2236,61 @@ func TestJetStreamAtomicBatchPublishExpectedSeq(t *testing.T) {
 	require_Equal(t, clseq, 0)
 	require_Equal(t, clfs, 0)
 }
+
+// Test two different batches within the same append entry.
+func TestJetStreamAtomicBatchPublishPartialBatchInSharedAppendEntry(t *testing.T) {
+	test := func(t *testing.T, commit bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			Replicas:           3,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		sl := c.streamLeader(globalAccountName, "TEST")
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+
+		js := sl.getJetStream()
+		esm1 := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, nil, []byte("b1"), 0, 0, false, "b1", 1, false)
+		esm2 := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, nil, []byte("b2"), 1, 0, false, "b2", 1, commit)
+		ce := newCommittedEntry(2, []*Entry{
+			newEntry(EntryNormal, esm1),
+			newEntry(EntryNormal, esm2),
+		})
+		_, err = js.applyStreamEntries(mset, ce, false)
+		require_NoError(t, err)
+
+		mset.mu.RLock()
+		batch := mset.batchApply
+		mset.mu.RUnlock()
+		batch.mu.Lock()
+		entryStart, maxApplied := batch.entryStart, batch.maxApplied
+		batch.mu.Unlock()
+
+		if !commit {
+			require_Equal(t, entryStart, 1)
+			require_Equal(t, maxApplied, 1)
+			return
+		}
+		require_Equal(t, entryStart, 0)
+		require_Equal(t, maxApplied, 0)
+		require_Equal(t, mset.lastSeq(), 1)
+
+		var smv StoreMsg
+		sm, err := mset.store.LoadMsg(1, &smv)
+		require_NoError(t, err)
+		require_Equal(t, string(sm.buf), "b2")
+	}
+
+	t.Run("NoCommit", func(t *testing.T) { test(t, false) })
+	t.Run("Commit", func(t *testing.T) { test(t, true) })
+}
