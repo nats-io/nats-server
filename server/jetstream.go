@@ -1451,8 +1451,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			mset.setCreatedTime(cfg.Created)
 		}
 
-		// Might need to recover from a partial batch write.
-		if cfg.AllowAtomicPublish {
+		// Might need to recover from a partial batch write, but only if a single replica stream.
+		if cfg.AllowAtomicPublish && cfg.Replicas == 1 {
 			var (
 				ok            bool
 				smv           StoreMsg
