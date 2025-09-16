@@ -22012,6 +22012,11 @@ func TestJetStreamPersistModeAsync(t *testing.T) {
 	require_NoError(t, err)
 	fs := mset.store.(*fileStore)
 	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-	require_True(t, fs.fcfg.AsyncFlush)
+	asyncFlush := fs.fcfg.AsyncFlush
+	fs.mu.RUnlock()
+	require_True(t, asyncFlush)
+
+	cfg.PersistMode = DefaultPersistMode
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change persist mode")))
 }

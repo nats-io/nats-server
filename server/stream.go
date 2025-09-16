@@ -227,7 +227,7 @@ func (wc PersistModeType) MarshalJSON() ([]byte, error) {
 
 func (wc *PersistModeType) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case defaultPersistModeJSONString:
+	case defaultPersistModeJSONString, `""`:
 		*wc = DefaultPersistMode
 	case asyncPersistModeJSONString:
 		*wc = AsyncPersistMode
@@ -2152,6 +2152,10 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 	// Can't disable message schedules setting.
 	if old.AllowMsgSchedules && !cfg.AllowMsgSchedules {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("message schedules can not be disabled"))
+	}
+
+	if old.PersistMode != cfg.PersistMode {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change persist mode"))
 	}
 
 	// Do some adjustments for being sealed.
