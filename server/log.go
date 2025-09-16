@@ -245,6 +245,10 @@ func (s *Server) RateLimitDebugf(format string, v ...any) {
 
 // Fatalf logs a fatal error
 func (s *Server) Fatalf(format string, v ...any) {
+	if s.isShuttingDown() {
+		s.Errorf(format, v)
+		return
+	}
 	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Fatalf(format, v...)
 	}, format, v...)
