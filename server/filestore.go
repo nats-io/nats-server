@@ -6313,8 +6313,10 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 			ss.Msgs++
 			ss.Last = seq
 			ss.lastNeedsUpdate = false
+			mb.fs.srv.Debugf("[counter] counter %s seq %d, subj {msgs: %d, fseq: %d (%v), lseq: %d (%v)}", subj, seq, ss.Msgs, ss.First, ss.firstNeedsUpdate, ss.Last, ss.lastNeedsUpdate)
 		} else {
 			mb.fss.Insert(stringToBytes(subj), SimpleState{Msgs: 1, First: seq, Last: seq})
+			mb.fs.srv.Debugf("[counter] counter %s seq %d, init subj {msgs: 1, seq: %d}", subj, seq, seq)
 		}
 	}
 
