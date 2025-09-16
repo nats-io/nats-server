@@ -2294,3 +2294,71 @@ func TestJetStreamAtomicBatchPublishPartialBatchInSharedAppendEntry(t *testing.T
 	t.Run("NoCommit", func(t *testing.T) { test(t, false) })
 	t.Run("Commit", func(t *testing.T) { test(t, true) })
 }
+
+func TestJetStreamAtomicBatchPublishRejectPartialBatchOnLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc := clientConnectToServer(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Replicas:           3,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Propose a partial batch that doesn't commit.
+	var entries []*Entry
+	for i := range uint64(10) {
+		esm := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, nil, nil, i, 0, false, "b", i+1, false)
+		entries = append(entries, newEntry(EntryNormal, esm))
+	}
+	n := mset.raftNode()
+	require_NoError(t, n.ProposeMulti(entries))
+
+	// Wait for all servers to have received and populated the partial batch.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset2, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			mset2.mu.RLock()
+			batch := mset2.batchApply
+			mset2.mu.RUnlock()
+			if batch == nil {
+				return fmt.Errorf("expected batch to be set")
+			}
+			batch.mu.Lock()
+			count := batch.count
+			batch.mu.Unlock()
+			if count != 10 {
+				return fmt.Errorf("expected batch count to be 10, got: %d", count)
+			}
+		}
+		return nil
+	})
+
+	// Trigger a leader change and ensure the CLFS gets accounted for.
+	require_NoError(t, n.StepDown())
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err = s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if clfs := mset.getCLFS(); clfs != 10 {
+				return fmt.Errorf("expected clfs to be 10, got: %d", clfs)
+			}
+		}
+		return nil
+	})
+}

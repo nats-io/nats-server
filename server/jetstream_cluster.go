@@ -2704,6 +2704,17 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					}
 					continue
 				} else if len(ce.Entries) == 0 {
+					// If we have a partial batch, it needs to be rejected to ensure CLFS is correct.
+					if mset != nil {
+						mset.mu.RLock()
+						batch := mset.batchApply
+						mset.mu.RUnlock()
+						if batch != nil {
+							mset.srv.Debugf("[batch] reject %s - empty entry", batch.id)
+							batch.rejectBatchState(mset)
+						}
+					}
+
 					// Entry could be empty on a restore when mset is nil.
 					ne, nb = n.Applied(ce.Index)
 					ce.ReturnToPool()
