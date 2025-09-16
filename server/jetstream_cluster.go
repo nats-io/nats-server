@@ -3224,7 +3224,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// If we still see the first message of the batch, we don't skip any messages of the batch here.
 				if isRecovering {
 					if batchSeq > 1 && batch.count == 0 {
-						if skip, err := mset.skipBatchIfRecovering(batch, buf); err != nil || skip {
+						if skip, err := mset.skipBatchIfRecovering(batch, batchId, batchSeq, buf); err != nil || skip {
 							batch.mu.Unlock()
 							mset.mu.Unlock()
 							if err != nil {
@@ -3252,7 +3252,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					panic(err.Error())
 				}
 
-				mset.srv.Debugf("[batch] commit prepare %s, lseq=%d, clfs=%d", batchId, mset.lastSeq(), mset.getCLFS())
+				mset.srv.Debugf("[batch] commit prepare %s, lseq=%d, clfs=%d, recovering=%v", batchId, mset.lastSeq(), mset.getCLFS(), isRecovering)
 
 				// Ensure the whole batch is fully isolated, and reads
 				// can only happen after the full batch is committed.
@@ -3285,7 +3285,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// applied but the second wasn't.
 				// If we still see the first message of the batch, we don't skip any messages of the batch here.
 				if isRecovering && batchSeq > 1 && batch.count == 0 {
-					if skip, err := mset.skipBatchIfRecovering(batch, buf); err != nil || skip {
+					if skip, err := mset.skipBatchIfRecovering(batch, batchId, batchSeq, buf); err != nil || skip {
 						batch.mu.Unlock()
 						mset.mu.Unlock()
 						if err != nil {
@@ -3569,7 +3569,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 // skipBatchIfRecovering returns whether the batched message can be skipped because the batch was already fully applied.
 // Stream and batch.mu locks should be held.
-func (mset *stream) skipBatchIfRecovering(batch *batchApply, buf []byte) (bool, error) {
+func (mset *stream) skipBatchIfRecovering(batch *batchApply, batchId string, batchSeq uint64, buf []byte) (bool, error) {
+	mset.srv.Debugf("[batch] recovering %s %d", batchId, batchSeq)
+
 	_, _, op, mbuf, err := decodeBatchMsg(buf[1:])
 	if err != nil {
 		return false, err
@@ -3591,7 +3593,8 @@ func (mset *stream) skipBatchIfRecovering(batch *batchApply, buf []byte) (bool, 
 
 	// We can skip if we know this is less than what we already have.
 	if lseq-clfs < last {
-		mset.srv.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
+		mset.srv.Debugf("[batch] skip %s", batchId)
+		mset.srv.Debugf("[batch] Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
 			mset.accountLocked(false), mset.nameLocked(false), lseq+1-clfs, last)
 		// Check for any preAcks in case we are interest based.
 		mset.clearAllPreAcks(lseq + 1 - clfs)
