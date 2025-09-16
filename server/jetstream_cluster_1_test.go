@@ -9441,6 +9441,53 @@ func TestJetStreamClusterScheduledDelayedMessage(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterScheduledDelayedMessageReversedHeaderOrder(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, _ := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				cfg := &StreamConfig{
+					Name:              "TEST",
+					Subjects:          []string{"foo.*"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+					AllowMsgTTL:       true,
+				}
+				_, err := jsStreamCreate(t, nc, cfg)
+				require_NoError(t, err)
+
+				sl := c.streamLeader(globalAccountName, "TEST")
+				gacc := sl.globalAccount()
+				// The Nats-Schedule headers share a common prefix, so make sure if these are ordered differently
+				// we can still properly schedule a message.
+				hdr := genHeader(nil, "Nats-Schedule-Target", "foo.publish")
+				hdr = genHeader(hdr, "Nats-Schedule", "@at 1970-01-01T00:00:00Z")
+				require_NoError(t, sl.sendInternalAccountMsgWithReply(gacc, "foo.schedule", _EMPTY_, hdr, nil, false))
+
+				mset, err := gacc.lookupStream("TEST")
+				require_NoError(t, err)
+
+				// Waiting for the delayed message to be published.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					state := mset.state()
+					if state.LastSeq != 2 {
+						return fmt.Errorf("expected last seq 2, got %d", state.LastSeq)
+					} else if state.Msgs != 1 {
+						return fmt.Errorf("expected 1 msg, got %d", state.Msgs)
+					}
+					return nil
+				})
+			})
+		}
+	}
+}
+
 func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *testing.T) {
 	clusterName := "R3S"
 	c := createJetStreamClusterExplicit(t, clusterName, 3)
