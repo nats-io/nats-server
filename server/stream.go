@@ -4423,8 +4423,6 @@ func (mset *stream) unsubscribeToStream(stopping, shuttingDown bool) error {
 	mset.deleteInflightBatches(shuttingDown)
 
 	if stopping {
-		mset.deleteBatchApplyState()
-
 		// In case we had a direct get subscriptions.
 		mset.unsubscribeToDirect()
 		mset.unsubscribeToMirrorDirect()
@@ -7863,6 +7861,9 @@ func (mset *stream) clearMonitorRunning() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	mset.inMonitor = false
+
+	// We've stopped running the monitor goroutine, now also do additional cleanup.
+	mset.deleteBatchApplyState()
 }
 
 // Check if our monitor is running.

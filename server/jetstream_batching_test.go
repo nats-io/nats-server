@@ -648,12 +648,19 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		})
 		// Should clean up the batch apply state.
 		if mode == Disable || mode == Delete {
-			mset.mu.RLock()
-			batch = mset.batchApply
-			mset.mu.RUnlock()
-			nclfs := mset.getCLFS()
-			require_True(t, batch == nil)
-			require_Equal(t, clfs, nclfs)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				mset.mu.RLock()
+				batch = mset.batchApply
+				mset.mu.RUnlock()
+				nclfs := mset.getCLFS()
+				if batch != nil {
+					return fmt.Errorf("expected no batch apply")
+				}
+				if clfs != nclfs {
+					return fmt.Errorf("expected no change in CLFS")
+				}
+				return nil
+			})
 		}
 	}
 
