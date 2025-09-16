@@ -10176,6 +10176,24 @@ func TestJetStreamClusterUnsetEmptyPlacement(t *testing.T) {
 	require_True(t, si.Config.Placement == nil)
 }
 
+func TestJetStreamClusterPersistModeAsync(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc := clientConnectToServer(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Storage:     FileStorage,
+		Replicas:    3,
+		PersistMode: AsyncPersistMode,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("async persist mode is not supported on replicated streams")))
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

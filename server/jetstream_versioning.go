@@ -77,6 +77,11 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 		requires(2)
 	}
 
+	// Async persist mode was added in v2.12 and requires API level 2.
+	if cfg.PersistMode == AsyncPersistMode {
+		requires(2)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
