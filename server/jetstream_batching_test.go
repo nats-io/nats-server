@@ -648,12 +648,19 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		})
 		// Should clean up the batch apply state.
 		if mode == Disable || mode == Delete {
-			mset.mu.RLock()
-			batch = mset.batchApply
-			mset.mu.RUnlock()
-			nclfs := mset.getCLFS()
-			require_True(t, batch == nil)
-			require_Equal(t, clfs, nclfs)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				mset.mu.RLock()
+				batch = mset.batchApply
+				mset.mu.RUnlock()
+				nclfs := mset.getCLFS()
+				if batch != nil {
+					return fmt.Errorf("expected no batch apply")
+				}
+				if clfs != nclfs {
+					return fmt.Errorf("expected no change in CLFS")
+				}
+				return nil
+			})
 		}
 	}
 
@@ -1910,12 +1917,18 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 	mset.clMu.Lock()
 	hdr = genHeader(nil, "Nats-Batch-Id", "ID_1")
 	hdr = setHeader("Nats-Batch-Sequence", "2", hdr)
+	esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID_1", 2, false)
+	entries = append(entries, newEntry(EntryNormal, esm))
+	mset.clseq++
+
+	hdr = genHeader(nil, "Nats-Batch-Id", "ID_1")
+	hdr = setHeader("Nats-Batch-Sequence", "3", hdr)
 	hdr = setHeader("Nats-Batch-Commit", "1", hdr)
-	esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID_1", 2, true)
+	esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID_1", 3, true)
+	entries = append(entries, newEntry(EntryNormal, esm))
 	mset.clseq++
 
 	// The second batch doesn't commit.
-	entries = append(entries, newEntry(EntryNormal, esm))
 	hdr = genHeader(nil, "Nats-Batch-Id", "ID_2")
 	hdr = setHeader("Nats-Batch-Sequence", "1", hdr)
 	esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID_2", 1, false)
@@ -1953,7 +1966,7 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 	// Confirm the last batch gets rejected, and we are still able to publish with quorum.
 	pubAck, err = js.Publish("foo", nil)
 	require_NoError(t, err)
-	require_Equal(t, pubAck.Sequence, 4)
+	require_Equal(t, pubAck.Sequence, 5)
 
 	c.restartServer(sl)
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
@@ -1963,7 +1976,111 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 	// Publish again, now with all servers online.
 	pubAck, err = js.Publish("foo", nil)
 	require_NoError(t, err)
-	require_Equal(t, pubAck.Sequence, 5)
+	require_Equal(t, pubAck.Sequence, 6)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+}
+
+// Test a batch that's committed but only partially applied, and the server gets hard killed.
+// Upon recovery the server should skip the messages that were already applied but store the
+// messages that weren't applied yet.
+func TestJetStreamAtomicBatchPublishPartiallyAppliedBatchOnRecovery(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Replicas:           3,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Pause applies on all followers.
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		fmset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, fmset.raftNode().PauseApply())
+	}
+
+	// Publish a batch.
+	var entries []*Entry
+	mset.clMu.Lock()
+	for seq := uint64(1); seq <= 4; seq++ {
+		batchCommit := seq == 4
+		hdr := genHeader(nil, "Nats-Batch-Id", "ID")
+		hdr = genHeader(hdr, "Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
+		esm := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, nil, mset.clseq, 0, false, "ID", seq, batchCommit)
+		entries = append(entries, newEntry(EntryNormal, esm))
+		mset.clseq++
+	}
+	mset.clMu.Unlock()
+
+	// Wait for the leader to have applied the batch, so the next
+	// publish informs the followers that it can be committed.
+	n := mset.raftNode().(*raft)
+	_, _, applied := n.Progress()
+	n.sendAppendEntry(entries)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, _, napplied := n.Progress()
+		if applied == napplied {
+			return errors.New("batch hasn't been applied yet")
+		}
+		return nil
+	})
+
+	// Publish so the commit moves up on all servers.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 6)
+
+	// Simulate this follower only partially applied the batch and then got hard killed.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err = rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	ts := time.Now().UnixNano()
+	hdr := genHeader(nil, "Nats-Batch-Id", "ID")
+	hdr = genHeader(hdr, "Nats-Batch-Sequence", "1")
+	require_NoError(t, mset.store.StoreRawMsg("foo", hdr, nil, 2, ts, 0))
+
+	hdr = genHeader(nil, "Nats-Batch-Id", "ID")
+	hdr = genHeader(hdr, "Nats-Batch-Sequence", "2")
+	require_NoError(t, mset.store.StoreRawMsg("foo", hdr, nil, 3, ts, 0))
+
+	// Unpause applies on the remaining follower.
+	for _, s := range c.servers {
+		if s == sl || s == rs {
+			continue
+		}
+		fmset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		fmset.raftNode().ResumeApply()
+	}
+
+	// Restart the "hard killed" follower, should apply the remainder of the batch upon recovery.
+	rs.Shutdown()
+	c.restartServer(rs)
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		return checkState(t, c, globalAccountName, "TEST")
 	})
