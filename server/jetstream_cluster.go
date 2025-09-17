@@ -3225,7 +3225,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mset.mu.Unlock()
 				}
 
+				// Need to grab the stream lock before the batch lock.
+				if isRecovering {
+					mset.mu.Lock()
+				}
 				batch.mu.Lock()
+
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					batch.rejectBatchStateLocked(mset)
@@ -3239,6 +3244,25 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					batch.maxApplied = ce.Index - 1
 				}
 				batch.id = batchId
+
+				// While recovering, we could come up in the middle of a compacted batch that has already been applied.
+				// This is possible if two batches are part of the same append entry, and the first batch was fully
+				// applied but the second wasn't.
+				// If we still see the first message of the batch, we don't skip any messages of the batch here.
+				if isRecovering {
+					if batchSeq > 1 && batch.count == 0 {
+						if skip, err := mset.skipBatchIfRecovering(batch, buf); err != nil || skip {
+							batch.mu.Unlock()
+							mset.mu.Unlock()
+							if err != nil {
+								panic(err.Error())
+							}
+							continue
+						}
+					}
+					mset.mu.Unlock()
+				}
+
 				batch.count++
 				// If the sequence is not monotonically increasing/we identify gaps, the batch can't be accepted.
 				if batchSeq != batch.count {
@@ -3263,8 +3287,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					batch = &batchApply{}
 					mset.batchApply = batch
 				}
-
 				batch.mu.Lock()
+
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					batch.rejectBatchStateLocked(mset)
@@ -3276,9 +3300,23 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					batch.entryStart = i
 					batch.maxApplied = ce.Index - 1
 				}
-
-				var entries []*Entry
 				batch.id = batchId
+
+				// While recovering, we could come up in the middle of a compacted batch that has already been applied.
+				// This is possible if two batches are part of the same append entry, and the first batch was fully
+				// applied but the second wasn't.
+				// If we still see the first message of the batch, we don't skip any messages of the batch here.
+				if isRecovering && batchSeq > 1 && batch.count == 0 {
+					if skip, err := mset.skipBatchIfRecovering(batch, buf); err != nil || skip {
+						batch.mu.Unlock()
+						mset.mu.Unlock()
+						if err != nil {
+							panic(err.Error())
+						}
+						continue
+					}
+				}
+
 				batch.count++
 				// Detected a gap, reject the batch.
 				if batchSeq != batch.count {
@@ -3289,6 +3327,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				// Process any entries that are part of this batch but prior to the current one.
+				var entries []*Entry
 				for j, bce := range batch.entries {
 					if j == 0 {
 						// The first needs only the entries when the batch is started.
@@ -3536,6 +3575,33 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 		return maxApplied, nil
 	}
 	return 0, nil
+}
+
+// skipBatchIfRecovering returns whether the batched message can be skipped because the batch was already fully applied.
+// Stream and batch.mu locks should be held.
+func (mset *stream) skipBatchIfRecovering(batch *batchApply, buf []byte) (bool, error) {
+	_, _, _, mbuf, err := decodeBatchMsg(buf[1:])
+	if err != nil {
+		return false, err
+	}
+	_, _, _, _, lseq, _, _, err := decodeStreamMsg(mbuf)
+	if err != nil {
+		return false, err
+	}
+
+	// Grab last sequence and CLFS.
+	last, clfs := mset.lastSeqAndCLFS()
+
+	// We can skip if we know this is less than what we already have.
+	if lseq-clfs < last {
+		mset.srv.Debugf("[batch] Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
+			mset.accountLocked(false), mset.nameLocked(false), lseq+1-clfs, last)
+		// Check for any preAcks in case we are interest based.
+		mset.clearAllPreAcks(lseq + 1 - clfs)
+		batch.clearBatchStateLocked()
+		return true, nil
+	}
+	return false, nil
 }
 
 func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isRecovering bool, needLock bool) error {
