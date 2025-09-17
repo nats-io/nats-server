@@ -1147,20 +1147,23 @@ func (s *Server) startWebsocketServer() {
 	// regardless of NoTLS. If we don't have a TLS config, it means that the
 	// user has configured NoTLS because otherwise the server would have failed
 	// to start due to options validation.
+	var config *tls.Config
 	if o.TLSConfig != nil {
 		proto = wsSchemePrefixTLS
-		config := o.TLSConfig.Clone()
+		config = o.TLSConfig.Clone()
 		config.GetConfigForClient = s.wsGetTLSConfig
-		hl, err = tls.Listen("tcp", hp, config)
 	} else {
 		proto = wsSchemePrefix
-		hl, err = net.Listen("tcp", hp)
 	}
+	hl, err = natsListen("tcp", hp)
 	s.websocket.listenerErr = err
 	if err != nil {
 		s.mu.Unlock()
 		s.Fatalf("Unable to listen for websocket connections: %v", err)
 		return
+	}
+	if config != nil {
+		hl = tls.NewListener(hl, config)
 	}
 	if port == 0 {
 		o.Port = hl.Addr().(*net.TCPAddr).Port
