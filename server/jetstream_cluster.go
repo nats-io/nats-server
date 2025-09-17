@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"cmp"
 	crand "crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -3574,6 +3575,7 @@ func (mset *stream) skipBatchIfRecovering(batch *batchApply, batchId string, bat
 
 	_, _, op, mbuf, err := decodeBatchMsg(buf[1:])
 	if err != nil {
+		mset.srv.Noticef("[batch] recovering error batch %s %d, buf=%s", batchId, batchSeq, base64.StdEncoding.EncodeToString(buf))
 		return false, err
 	}
 
@@ -3585,6 +3587,7 @@ func (mset *stream) skipBatchIfRecovering(batch *batchApply, batchId string, bat
 
 	_, _, _, _, lseq, _, _, err := decodeStreamMsg(mbuf)
 	if err != nil {
+		mset.srv.Noticef("[batch] recovering error stream %s %d, buf=%s", batchId, batchSeq, base64.StdEncoding.EncodeToString(buf))
 		return false, err
 	}
 
