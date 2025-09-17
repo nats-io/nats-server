@@ -866,13 +866,12 @@ func (s *Server) transferRaftLeaders() bool {
 // Propose will propose a new entry to the group.
 // This should only be called on the leader.
 func (n *raft) Propose(data []byte) error {
-	n.Lock()
-	defer n.Unlock()
-	// Check state under lock, we might not be leader anymore.
 	if state := n.State(); state != Leader {
 		n.debug("Proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
+	n.Lock()
+	defer n.Unlock()
 
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
@@ -885,13 +884,12 @@ func (n *raft) Propose(data []byte) error {
 // ProposeMulti will propose multiple entries at once.
 // This should only be called on the leader.
 func (n *raft) ProposeMulti(entries []*Entry) error {
-	n.Lock()
-	defer n.Unlock()
-	// Check state under lock, we might not be leader anymore.
 	if state := n.State(); state != Leader {
 		n.debug("Multi proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
+	n.Lock()
+	defer n.Unlock()
 
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
@@ -919,12 +917,10 @@ func (n *raft) ForwardProposal(entry []byte) error {
 
 // ProposeAddPeer is called to add a peer to the group.
 func (n *raft) ProposeAddPeer(peer string) error {
-	n.RLock()
-	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
-		n.RUnlock()
 		return errNotLeader
 	}
+	n.RLock()
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
 		n.RUnlock()
@@ -1012,13 +1008,10 @@ func (n *raft) AdjustBootClusterSize(csz int) error {
 // AdjustClusterSize will change the cluster set size.
 // Must be the leader.
 func (n *raft) AdjustClusterSize(csz int) error {
-	n.Lock()
-	defer n.Unlock()
-
-	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
 		return errNotLeader
 	}
+	n.Lock()
 	// Same floor as bootstrap.
 	if csz < 2 {
 		csz = 2
@@ -1028,6 +1021,7 @@ func (n *raft) AdjustClusterSize(csz int) error {
 	// a quorum.
 	n.csz = csz
 	n.qn = n.csz/2 + 1
+	n.Unlock()
 
 	n.sendPeerState()
 	return nil
@@ -1212,10 +1206,7 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 // Should only be used when the upper layers know this is most recent.
 // Used when restoring streams, moving a stream from R1 to R>1, etc.
 func (n *raft) SendSnapshot(data []byte) error {
-	n.Lock()
-	defer n.Unlock()
-	// Don't check if we're leader before sending and storing, this is used on scaleup.
-	n.sendAppendEntryLocked([]*Entry{{EntrySnapshot, data}}, false)
+	n.sendAppendEntry([]*Entry{{EntrySnapshot, data}})
 	return nil
 }
 
@@ -1642,12 +1633,11 @@ func (n *raft) selectNextLeader() string {
 
 // StepDown will have a leader stepdown and optionally do a leader transfer.
 func (n *raft) StepDown(preferred ...string) error {
-	n.Lock()
-	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
-		n.Unlock()
 		return errNotLeader
 	}
+
+	n.Lock()
 	if len(preferred) > 1 {
 		n.Unlock()
 		return errTooManyPrefs
@@ -1827,27 +1817,21 @@ func (n *raft) Peers() []*Peer {
 
 // Update and propose our known set of peers.
 func (n *raft) ProposeKnownPeers(knownPeers []string) {
-	n.Lock()
-	defer n.Unlock()
 	// If we are the leader update and send this update out.
 	if n.State() != Leader {
 		return
 	}
-	n.updateKnownPeersLocked(knownPeers)
+	n.UpdateKnownPeers(knownPeers)
 	n.sendPeerState()
 }
 
 // Update our known set of peers.
 func (n *raft) UpdateKnownPeers(knownPeers []string) {
 	n.Lock()
-	n.updateKnownPeersLocked(knownPeers)
-	n.Unlock()
-}
-
-func (n *raft) updateKnownPeersLocked(knownPeers []string) {
 	// Process like peer state update.
 	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
 	n.processPeerState(ps)
+	n.Unlock()
 }
 
 // ApplyQ returns the apply queue that new commits will be sent to for the
@@ -2549,18 +2533,16 @@ func decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
 	n.debug("Received forwarded remove peer proposal: %q", msg)
 
+	if n.State() != Leader {
+		n.debug("Ignoring forwarded peer removal proposal, not leader")
+		return
+	}
 	if len(msg) != idLen {
 		n.warn("Received invalid peer name for remove proposal: %q", msg)
 		return
 	}
 
 	n.RLock()
-	// Check state under lock, we might not be leader anymore.
-	if n.State() != Leader {
-		n.debug("Ignoring forwarded peer removal proposal, not leader")
-		n.RUnlock()
-		return
-	}
 	prop, werr := n.prop, n.werr
 	n.RUnlock()
 
@@ -2576,16 +2558,14 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 
 // Called when a peer has forwarded a proposal.
 func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
+	if n.State() != Leader {
+		n.debug("Ignoring forwarded proposal, not leader")
+		return
+	}
 	// Need to copy since this is underlying client/route buffer.
 	msg = copyBytes(msg)
 
 	n.RLock()
-	// Check state under lock, we might not be leader anymore.
-	if n.State() != Leader {
-		n.debug("Ignoring forwarded proposal, not leader")
-		n.RUnlock()
-		return
-	}
 	prop, werr := n.prop, n.werr
 	n.RUnlock()
 
@@ -2621,6 +2601,7 @@ func (n *raft) runAsLeader() {
 		n.Unlock()
 		return
 	}
+	n.Unlock()
 
 	// Cleanup our subscription when we leave.
 	defer func() {
@@ -2632,7 +2613,6 @@ func (n *raft) runAsLeader() {
 
 	// To send out our initial peer state.
 	n.sendPeerState()
-	n.Unlock()
 
 	hb := time.NewTicker(hbInterval)
 	defer hb.Stop()
@@ -2785,7 +2765,6 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 	n.RLock()
 	s, reply := n.s, n.areply
 	peer, subj, term, pterm, last := ar.peer, ar.reply, n.term, n.pterm, n.pindex
-	leader := n.State() == Leader // Grab while holding lock, to not race.
 	n.RUnlock()
 
 	defer s.grWG.Done()
@@ -2807,10 +2786,6 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		indexUpdatesQ.unregister()
 	}()
 
-	if !leader {
-		n.debug("Canceling catchup for %q, not leader anymore", peer)
-		return
-	}
 	n.debug("Running catchup for %q [%d:%d] to [%d:%d]", peer, ar.term, ar.index, pterm, last)
 
 	const maxOutstanding = 2 * 1024 * 1024 // 2MB for now.
@@ -3402,13 +3377,10 @@ func (n *raft) truncateWAL(term, index uint64) {
 	}
 	if index < n.commit {
 		assert.Unreachable("WAL truncate lost commits", map[string]any{
-			"n.accName": n.accName,
-			"n.group":   n.group,
-			"n.id":      n.id,
-			"term":      term,
-			"index":     index,
-			"commit":    n.commit,
-			"applied":   n.applied,
+			"term":    term,
+			"index":   index,
+			"commit":  n.commit,
+			"applied": n.applied,
 		})
 	}
 
@@ -3513,13 +3485,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				assert.Unreachable(
 					"Two leaders using the same term",
 					map[string]any{
-						"n.accName": n.accName,
-						"n.group":   n.group,
-						"n.id":      n.id,
-						"n.term":    n.term,
-						"ae.leader": ae.leader,
-						"ae.term":   ae.term,
-						"ae.lterm":  ae.lterm,
+						"Node id":           n.id,
+						"Node term":         n.term,
+						"AppendEntry id":    ae.leader,
+						"AppendEntry term":  ae.term,
+						"AppendEntry lterm": ae.lterm,
 					})
 			}
 			n.debug("Received append entry from another leader, stepping down to %q", ae.leader)
@@ -3988,15 +3958,6 @@ const (
 func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.Lock()
 	defer n.Unlock()
-	n.sendAppendEntryLocked(entries, true)
-}
-func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
-	// Safeguard against sending an append entry right after a stepdown from a different goroutine.
-	// Specifically done while holding the lock to not race.
-	if checkLeader && n.State() != Leader {
-		n.debug("Not sending append entry, not leader")
-		return
-	}
 	ae := n.buildAppendEntry(entries)
 
 	var err error
@@ -4103,19 +4064,14 @@ func (n *raft) peerNames() []string {
 
 func (n *raft) currentPeerState() *peerState {
 	n.RLock()
-	ps := n.currentPeerStateLocked()
+	ps := &peerState{n.peerNames(), n.csz, n.extSt}
 	n.RUnlock()
 	return ps
 }
 
-func (n *raft) currentPeerStateLocked() *peerState {
-	return &peerState{n.peerNames(), n.csz, n.extSt}
-}
-
 // sendPeerState will send our current peer state to the cluster.
-// Lock should be held.
 func (n *raft) sendPeerState() {
-	n.sendAppendEntryLocked([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerStateLocked())}}, true)
+	n.sendAppendEntry([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerState())}})
 }
 
 // Send a heartbeat.
