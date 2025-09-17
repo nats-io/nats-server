@@ -1736,8 +1736,8 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Determine if we should proceed here when we are in clustered mode.
+	js, cc := s.getJetStreamCluster()
 	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
 		if js == nil || cc == nil {
 			return
 		}
@@ -1759,7 +1759,34 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		}
 		return
 	}
+
+	streamName := streamNameFromSubject(subject)
+
+	// Try and work out what the most recent stream config is, so that the unmarshaled
+	// JSON forms a delta rather than a full replace. This is necessary so that an old
+	// client does not accidentally unset options that it does not know about.
 	var ncfg StreamConfigRequest
+	if s.JetStreamIsClustered() {
+		sa := js.streamAssignment(acc.Name, streamName)
+		if sa == nil {
+			resp.Error = NewJSStreamNotFoundError(Unless(err))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		js.mu.RLock()
+		ncfg.StreamConfig = *sa.Config.clone()
+		js.mu.RUnlock()
+	} else {
+		mset, err := acc.lookupStream(streamName)
+		if err != nil {
+			resp.Error = NewJSStreamNotFoundError(Unless(err))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		mset.mu.RLock()
+		ncfg.StreamConfig = *mset.cfg.clone()
+		mset.mu.RUnlock()
+	}
 	if err := s.unmarshalRequest(c, acc, subject, msg, &ncfg); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1773,7 +1800,6 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = NewJSStreamMismatchError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
