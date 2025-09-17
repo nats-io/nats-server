@@ -3580,10 +3580,17 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 // skipBatchIfRecovering returns whether the batched message can be skipped because the batch was already fully applied.
 // Stream and batch.mu locks should be held.
 func (mset *stream) skipBatchIfRecovering(batch *batchApply, buf []byte) (bool, error) {
-	_, _, _, mbuf, err := decodeBatchMsg(buf[1:])
+	_, _, op, mbuf, err := decodeBatchMsg(buf[1:])
 	if err != nil {
 		return false, err
 	}
+
+	if op == compressedStreamMsgOp {
+		if mbuf, err = s2.Decode(nil, mbuf); err != nil {
+			return false, err
+		}
+	}
+
 	_, _, _, _, lseq, _, _, err := decodeStreamMsg(mbuf)
 	if err != nil {
 		return false, err
