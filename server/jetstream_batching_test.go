@@ -2246,8 +2246,35 @@ func TestJetStreamRollupIsolatedRead(t *testing.T) {
 }
 
 func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
+	templ := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		max_mem_store: 2GB
+		max_file_store: 2GB
+		store_dir: '%s'
+		limits {
+			batch {
+				timeout: 2s
+			}
+		}
+	}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
 	test := func(t *testing.T, replicas int) {
-		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		c := createJetStreamClusterWithTemplate(t, templ, "R3S", 3)
 		defer c.shutdown()
 
 		nc := clientConnectToServer(t, c.randomServer())
@@ -2284,6 +2311,7 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 		require_Equal(t, advisory.BatchId, "uuid")
 		require_Equal(t, advisory.Reason, BatchIncomplete)
 
+		// Should receive an advisory if the batch is too large.
 		count := 1002
 		for seq := 1; seq <= count; seq++ {
 			m = nats.NewMsg("foo")
@@ -2308,6 +2336,19 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
 		require_Equal(t, advisory.BatchId, "uuid")
 		require_Equal(t, advisory.Reason, BatchLarge)
+
+		// Should receive an advisory if the batch times out and is abandoned.
+		m = nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		require_NoError(t, nc.PublishMsg(m))
+
+		msg, err = sub.NextMsg(3 * time.Second)
+		require_NoError(t, err)
+		advisory = JSStreamBatchAbandonedAdvisory{}
+		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+		require_Equal(t, advisory.BatchId, "uuid")
+		require_Equal(t, advisory.Reason, BatchTimeout)
 	}
 
 	for _, replicas := range []int{1, 3} {

@@ -58,6 +58,7 @@ func (batches *batching) newBatchGroup(mset *stream, batchId string) (*batchGrou
 	}
 	b.timer = time.AfterFunc(timeout, func() {
 		b.cleanup(batchId, batches)
+		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
 	})
 	return b, nil
 }
