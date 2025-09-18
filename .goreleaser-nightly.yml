@@ -10,7 +10,6 @@ builds:
     env:
       - GO111MODULE=on
       - CGO_ENABLED=0
-      - GOEXPERIMENT=greenteagc
     goos:
       - linux
     goarch:
