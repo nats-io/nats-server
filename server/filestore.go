@@ -4155,6 +4155,7 @@ func (mb *msgBlock) setupWriteCache(buf []byte) error {
 // returning it to the elastic pointer. Note that the elastic pointer can
 // be either weak or strong, they are strengthened when there are pending
 // writes and weak otherwise.
+// Lock must be held.
 func (mb *msgBlock) finishedWithCache() {
 	if mb.cache != nil && mb.pendingWriteSizeLocked() == 0 {
 		mb.cache = nil
@@ -5753,6 +5754,11 @@ func (mb *msgBlock) tryExpireWriteCache() []byte {
 
 // Lock should be held.
 func (mb *msgBlock) expireCacheLocked() {
+	var strengthened bool
+	if mb.cache == nil {
+		mb.cache = mb.ecache.Value()
+		strengthened = true
+	}
 	if mb.cache == nil && mb.fss == nil {
 		if mb.ctmr != nil {
 			mb.ctmr.Stop()
@@ -5764,6 +5770,9 @@ func (mb *msgBlock) expireCacheLocked() {
 	// Can't expire if we still have pending.
 	if mb.cache != nil && len(mb.cache.buf)-int(mb.cache.wp) > 0 {
 		mb.resetCacheExpireTimer(mb.cexp)
+		if strengthened {
+			mb.finishedWithCache()
+		}
 		return
 	}
 
@@ -5779,6 +5788,9 @@ func (mb *msgBlock) expireCacheLocked() {
 	// Check for activity on the cache that would prevent us from expiring.
 	if tns-bufts <= int64(mb.cexp) {
 		mb.resetCacheExpireTimer(mb.cexp - time.Duration(tns-bufts))
+		if strengthened {
+			mb.finishedWithCache()
+		}
 		return
 	}
 
@@ -7130,14 +7142,22 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// TODO(nat): This should not be possible at present since, as above, we are
 	// not releasing the lock during I/O operation. Therefore this will always
 	// return zero.
-	moreBytes := len(mb.cache.buf) - mb.cache.wp
-	if moreBytes > 0 {
+	if mb.pendingWriteSizeLocked() > 0 {
 		return fsLostData, mb.werr
 	}
 
-	// No pending writes, so weaken the pointer.
-	mb.cache = nil
-	mb.ecache.Weaken()
+	// Check last access time. If we think the block still has read interest
+	// then we will weaken the pointer but otherwise try to hold onto it.
+	if ts := ats.AccessTime(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
+		mb.cache = nil
+		mb.ecache.Weaken()
+		mb.resetCacheExpireTimer(0)
+		return fsLostData, mb.werr
+	}
+
+	// If not, we'll just drop the cache altogether & recycle the buffer.
+	mb.cache.nra = false
+	mb.expireCacheLocked()
 	return fsLostData, mb.werr
 }
 
