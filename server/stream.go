@@ -6372,7 +6372,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if err != nil || seq != batchSeq {
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
-			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
 			return respondIncompleteBatch()
 		}
 	}
