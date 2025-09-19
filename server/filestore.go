@@ -944,53 +944,56 @@ func (fs *fileStore) writeStreamMeta() error {
 }
 
 // Pools to recycle the blocks to help with memory pressure.
-var blkPoolBig sync.Pool    // 16MB
-var blkPoolMedium sync.Pool // 8MB
-var blkPoolSmall sync.Pool  // 2MB
+var blkPoolSmall = &sync.Pool{
+	New: func() any {
+		b := [defaultSmallBlockSize]byte{}
+		return &b
+	},
+}
+var blkPoolMedium = &sync.Pool{
+	New: func() any {
+		b := [defaultMediumBlockSize]byte{}
+		return &b
+	},
+}
+var blkPoolBig = &sync.Pool{
+	New: func() any {
+		b := [defaultLargeBlockSize]byte{}
+		return &b
+	},
+}
 
 // Get a new msg block based on sz estimate.
 func getMsgBlockBuf(sz int) (buf []byte) {
-	var pb any
-	if sz <= defaultSmallBlockSize {
-		pb = blkPoolSmall.Get()
-	} else if sz <= defaultMediumBlockSize {
-		pb = blkPoolMedium.Get()
-	} else {
-		pb = blkPoolBig.Get()
+	switch {
+	case sz <= defaultSmallBlockSize:
+		return blkPoolSmall.Get().(*[defaultSmallBlockSize]byte)[:0]
+	case sz <= defaultMediumBlockSize:
+		return blkPoolMedium.Get().(*[defaultMediumBlockSize]byte)[:0]
+	case sz <= defaultLargeBlockSize:
+		return blkPoolBig.Get().(*[defaultLargeBlockSize]byte)[:0]
+	default:
+		// Ideally this should not happen, once we return a buffer that's
+		// larger than defaultLargeBlockSize then we will refuse to recycle
+		// it to stop the pools from bloating excessively.
+		return make([]byte, 0, sz)
 	}
-	if pb != nil {
-		buf = *(pb.(*[]byte))
-	} else {
-		// Here we need to make a new blk.
-		// If small leave as is..
-		if sz > defaultSmallBlockSize && sz <= defaultMediumBlockSize {
-			sz = defaultMediumBlockSize
-		} else if sz > defaultMediumBlockSize {
-			sz = defaultLargeBlockSize
-		}
-		buf = make([]byte, sz)
-	}
-	return buf[:0]
 }
 
 // Recycle the msg block.
 func recycleMsgBlockBuf(buf []byte) {
-	if buf == nil || cap(buf) < defaultSmallBlockSize {
-		return
-	}
-	// Make sure to reset before placing back into pool.
-	buf = buf[:0]
-
-	// We need to make sure the load code gets a block that can fit the maximum for a size block.
-	// E.g. 8, 16 etc. otherwise we thrash and actually make things worse by pulling it out, and putting
-	// it right back in and making a new []byte.
-	// From above we know its already >= defaultSmallBlockSize
-	if sz := cap(buf); sz < defaultMediumBlockSize {
-		blkPoolSmall.Put(&buf)
-	} else if sz < defaultLargeBlockSize {
-		blkPoolMedium.Put(&buf)
-	} else {
-		blkPoolBig.Put(&buf)
+	switch cap(buf) {
+	case defaultSmallBlockSize:
+		b := (*[defaultSmallBlockSize]byte)(buf[0:defaultSmallBlockSize])
+		blkPoolSmall.Put(b)
+	case defaultMediumBlockSize:
+		b := (*[defaultMediumBlockSize]byte)(buf[0:defaultMediumBlockSize])
+		blkPoolMedium.Put(b)
+	case defaultLargeBlockSize:
+		b := (*[defaultLargeBlockSize]byte)(buf[0:defaultLargeBlockSize])
+		blkPoolBig.Put(b)
+	default:
+		// Too large, let the GC collect it instead.
 	}
 }
 
@@ -7241,23 +7244,15 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 		}
 	}
 
-	if buf == nil {
+	if buf == nil || cap(buf) < sz {
+		// getMsgBlockBuf will try to return a slice that fits from the
+		// buffer pool, but if by chance `sz` is greater than the maximum
+		// large block size, it'll return a new slice to fit regardless.
 		buf = getMsgBlockBuf(sz)
-		if sz > cap(buf) {
-			// We know we will make a new one so just recycle for now.
-			recycleMsgBlockBuf(buf)
-			buf = nil
-		}
-	}
-
-	if sz > cap(buf) {
-		buf = make([]byte, sz)
-	} else {
-		buf = buf[:sz]
 	}
 
 	<-dios
-	n, err := io.ReadFull(f, buf)
+	n, err := io.ReadFull(f, buf[:sz])
 	dios <- struct{}{}
 	// On success capture raw bytes size.
 	if err == nil {
