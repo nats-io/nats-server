@@ -16877,12 +16877,10 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 				// Should have Data field non-zero
 				require_True(t, len(msg.Data) > 0)
 				// Check we have NumPending and it's correct.
-				if np > 0 {
-					np--
-				}
 				require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
 				require_Equal(t, last, msg.Header.Get(JSLastSequence))
 				last = msg.Header.Get(JSSequence)
+				np--
 			} else {
 				// Check for properly formatted EOB marker.
 				// Should have no body.
@@ -17295,10 +17293,10 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 						// Should have Data field non-zero
 						require_True(t, len(msg.Data) > 0)
 						// Check we have NumPending and it's correct.
+						require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
 						if np > 0 {
 							np--
 						}
-						require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
 						require_Equal(t, last, msg.Header.Get(JSLastSequence))
 						last = msg.Header.Get(JSSequence)
 					} else {
@@ -17317,13 +17315,13 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 			}
 
 			sub := sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}})
-			checkResponses(sub, 3, p{"foo.foo", 97}, p{"foo.bar", 98}, p{"foo.baz", 99}, eob)
+			checkResponses(sub, 2, p{"foo.foo", 97}, p{"foo.bar", 98}, p{"foo.baz", 99}, eob)
 			// Check with UpToSeq
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}, UpToSeq: 3})
-			checkResponses(sub, 3, p{"foo.foo", 1}, p{"foo.bar", 2}, p{"foo.baz", 3}, eob)
+			checkResponses(sub, 2, p{"foo.foo", 1}, p{"foo.bar", 2}, p{"foo.baz", 3}, eob)
 			// check last header sequence number is correct
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.foo", "foo.baz"}})
-			checkResponses(sub, 2, p{"foo.foo", 97}, p{"foo.baz", 99}, eob)
+			checkResponses(sub, 1, p{"foo.foo", 97}, p{"foo.baz", 99}, eob)
 			// Test No Results.
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"bar.*"}})
 			checkSubsPending(t, sub, 1)
@@ -17508,7 +17506,7 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 	}
 
 	// Setup variables that control procesPartial
-	start, seq, np, b, bsz := 1, 1, sent, 0, 128
+	start, seq, np, b, bsz := 1, 1, sent-1, 0, 128
 
 	processPartial := func(expected int) {
 		t.Helper()
@@ -17522,10 +17520,10 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 			// Make sure sequence is correct.
 			require_Equal(t, strconv.Itoa(int(seq)), msg.Header.Get(JSSequence))
 			// Check we have NumPending and it's correct.
+			require_Equal(t, strconv.Itoa(int(np)), msg.Header.Get(JSNumPending))
 			if np > 0 {
 				np--
 			}
-			require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
 		}
 		// Now check EOB
 		msg, err := sub.NextMsg(10 * time.Millisecond)
@@ -17551,7 +17549,7 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 	processPartial(116 + 1)
 
 	// Now reset and test that batch is honored as well.
-	start, seq, np, b = 1, 1, sent, 100
+	start, seq, np, b = 1, 1, sent-1, 100
 	for i := 0; i < 5; i++ {
 		processPartial(b + 1) // 100 + EOB
 	}
