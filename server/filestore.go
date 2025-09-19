@@ -6852,12 +6852,13 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	var le = binary.LittleEndian
 
-	var fseq uint64
+	var alloc bool
 	var idx []uint32
 	var index uint32
 
 	mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
 	mbLastSeq := atomic.LoadUint64(&mb.last.seq)
+	fseq := mbFirstSeq
 
 	// Sanity check here since we calculate size to allocate based on this.
 	if mbFirstSeq > (mbLastSeq + 1) { // Purged state first == last + 1
@@ -6870,27 +6871,27 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	dms := uint64(mb.dmap.Size())
 	idxSz := mbLastSeq - mbFirstSeq + 1
 
-	if mb.cache == nil || mb.cache.buf == nil {
-		// Approximation, may adjust below.
-		fseq = mbFirstSeq
-		if mb.cache != nil && mb.cache.idx != nil {
-			idx = mb.cache.idx[:0]
-		} else {
-			idx = make([]uint32, 0, idxSz)
-		}
-		if mb.cache == nil {
-			mb.cache = &cache{}
-		} else {
-			*mb.cache = cache{}
-		}
+	if mb.cache == nil {
+		mb.cache = mb.ecache.Value()
+	}
+	if mb.cache == nil {
+		mb.cache = &cache{}
+		alloc = true
 	} else {
-		fseq = mb.cache.fseq
-		idx = mb.cache.idx
-		if len(idx) == 0 {
-			idx = make([]uint32, 0, idxSz)
-		}
-		index = uint32(len(mb.cache.buf))
-		buf = append(mb.cache.buf, buf...)
+		// The buf arg already came from the pool probably, so there's
+		// no point in reusing mb.cache.buf's underlying capacity here.
+		// Just recycle it for the next block load.
+		recycleMsgBlockBuf(mb.cache.buf)
+	}
+	if idx = mb.cache.idx; uint64(cap(idx)) >= idxSz {
+		idx = idx[:0]
+	} else {
+		idx = make([]uint32, 0, idxSz)
+	}
+	if !alloc {
+		// We didn't allocate a new *cache so instead wipe the current
+		// one, we already have reused idx if possible.
+		*mb.cache = cache{}
 	}
 
 	// Create FSS if we should track.
@@ -7102,6 +7103,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		var dst []byte
 		if lob <= defaultLargeBlockSize {
 			dst = getMsgBlockBuf(lob)[:lob]
+			defer recycleMsgBlockBuf(dst)
 		} else {
 			dst = make([]byte, lob)
 		}
@@ -7318,10 +7320,6 @@ checkCache:
 		}
 		return err
 	}
-
-	// Reset the cache since we just read everything in.
-	// Make sure this is cleared in case we had a partial when we started.
-	mb.clearCacheAndOffset()
 
 	// Check if we need to decrypt.
 	if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
