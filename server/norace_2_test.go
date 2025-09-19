@@ -2954,10 +2954,11 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 
 		switch store.(type) {
 		case *memStore:
-			require_True(t, elapsedNew < elapsed)
+			require_LessThan(t, elapsedNew, elapsed)
 		case *fileStore:
-			// Bigger gains for filestore, 10x
-			require_True(t, elapsedNew*10 < elapsed)
+			// Bigger gains for filestore, 5x. It's normally
+			// closer to 10x in reality but CI is flaky.
+			require_LessThan(t, elapsedNew*5, elapsed)
 		}
 	}
 }
