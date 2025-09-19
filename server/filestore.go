@@ -7107,9 +7107,11 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	}
 
 	// Append new data to the message block file.
+	mb.mu.Unlock()
 	for lbb := lob; lbb > 0; lbb = len(buf) {
 		n, err := mb.writeAt(buf, wp)
 		if err != nil {
+			mb.mu.Lock()
 			mb.dirtyCloseWithRemove(false)
 			ld, _, _ := mb.rebuildStateLocked()
 			mb.werr = err
@@ -7119,6 +7121,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		wp += int64(n)
 		buf = buf[n:]
 	}
+	mb.mu.Lock()
 
 	// Clear any error.
 	mb.werr = nil
