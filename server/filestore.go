@@ -6237,6 +6237,17 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	// reference. It will now stay strong until the flusher decides it is time to weaken.
 	mb.ecache.Strengthen()
 
+	// Make sure we have enough space to write into. If we don't then we can pull a buffer
+	// from the next pool size up to save us from reallocating in append() below.
+	if nsz := len(mb.cache.buf) + int(rl); cap(mb.cache.buf) < nsz {
+		prev := mb.cache.buf
+		mb.cache.buf = getMsgBlockBuf(nsz)
+		if prev != nil {
+			mb.cache.buf = mb.cache.buf[:copy(mb.cache.buf[:nsz], prev)]
+			recycleMsgBlockBuf(prev)
+		}
+	}
+
 	// Indexing
 	index := len(mb.cache.buf)
 
