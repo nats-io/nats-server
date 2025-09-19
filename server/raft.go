@@ -2635,6 +2635,8 @@ func (n *raft) runAsLeader() {
 	n.sendPeerState()
 	n.Unlock()
 
+	var propBatch []*proposedEntry
+
 	hb := time.NewTicker(hbInterval)
 	defer hb.Stop()
 
@@ -2654,41 +2656,43 @@ func (n *raft) runAsLeader() {
 			}
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
-			const maxBatch = 256 * 1024
-			const maxEntries = 512
-			var entries []*Entry
+			// Drain the channel and combine with any leftovers.
+			newProposals := n.prop.pop()
+			propBatch = append(propBatch, newProposals...)
 
-			es, sz := n.prop.pop(), 0
-			for _, b := range es {
-				if b.Type == EntryRemovePeer {
-					n.doRemovePeerAsLeader(string(b.Data))
+			// Loop until all proposals are batched and sent.
+			for len(propBatch) > 0 {
+				batchEntries, newLeftovers, sz := n.composeBatch(propBatch)
+
+				// Send our batch if we have one.
+				if len(batchEntries) > 0 {
+					log.Println("Batch:", len(batchEntries), "entries", sz, "bytes")
+					n.sendAppendEntry(batchEntries)
 				}
-				entries = append(entries, b.Entry)
-				// Increment size.
-				sz += len(b.Data) + 1
-				// If below thresholds go ahead and send.
-				if sz < maxBatch && len(entries) < maxEntries {
+
+				// Only handle replies for proposals that were consumed.
+				numConsumed := len(propBatch) - len(newLeftovers)
+				consumedProposals := propBatch[:numConsumed]
+				for _, pe := range consumedProposals {
+					if pe.reply != _EMPTY_ {
+						n.sendReply(pe.reply, nil)
+					}
+					pe.returnToPool()
+				}
+
+				// The new leftovers become the batch for the next iteration.
+				propBatch = newLeftovers
+
+				// If we have leftovers and the proposal channel is empty,
+				// loop again to send them immediately. Otherwise, break
+				// to allow the select to pull more from the channel.
+				if len(propBatch) > 0 && n.prop.len() == 0 {
 					continue
 				}
-				log.Println("Batch:", len(entries), "entries", sz, "bytes")
-				n.sendAppendEntry(entries)
-				// Reset our sz and entries.
-				// We need to re-create `entries` because there is a reference
-				// to it in the node's pae map.
-				sz, entries = 0, nil
+				break
 			}
-			if len(entries) > 0 {
-				log.Println("Batch:", len(entries), "entries", sz, "bytes")
-				n.sendAppendEntry(entries)
-			}
-			// Respond to any proposals waiting for a confirmation.
-			for _, pe := range es {
-				if pe.reply != _EMPTY_ {
-					n.sendReply(pe.reply, nil)
-				}
-				pe.returnToPool()
-			}
-			n.prop.recycle(&es)
+			// Recycle the container for the new proposals that were popped.
+			n.prop.recycle(&newProposals)
 
 		case <-hb.C:
 			if n.notActive() {
@@ -2719,6 +2723,45 @@ func (n *raft) runAsLeader() {
 			n.processAppendEntries()
 		}
 	}
+}
+
+// composeBatch will compose a batch from a set of proposals.
+// It will return a batch of entries to be sent and any new leftovers.
+func (n *raft) composeBatch(allProposals []*proposedEntry) ([]*Entry, []*proposedEntry, int) {
+	const maxBatch = 256 * 1024
+	const maxEntries = 512
+
+	if len(allProposals) == 0 {
+		return nil, nil, 0
+	}
+
+	var sz int
+	end := 0
+	for end < len(allProposals) {
+		p := allProposals[end]
+		sz += len(p.Data) + 1
+		end++
+		if sz < maxBatch && end < maxEntries {
+			continue
+		}
+		break
+	}
+
+	// The batch to send is from the start up to `end`.
+	batchProposals := allProposals[:end]
+	// The new leftovers are from `end` to the end.
+	newLeftovers := allProposals[end:]
+
+	// Create the entries to be sent.
+	entries := make([]*Entry, len(batchProposals))
+	for i, p := range batchProposals {
+		if p.Type == EntryRemovePeer {
+			n.doRemovePeerAsLeader(string(p.Data))
+		}
+		entries[i] = p.Entry
+	}
+
+	return entries, newLeftovers, sz
 }
 
 // Quorum reports the quorum status. Will be called on former leaders.
