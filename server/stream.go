@@ -6482,7 +6482,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			return errorOnUnsupported(seq, JSExpectedLastMsgId)
 		}
 
-		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, bsubj, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 			rollback(seq)
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
