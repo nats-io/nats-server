@@ -703,7 +703,9 @@ func New(opts *Options) *Server {
 // Either use Options.Clone() to pass a copy, or make a new one.
 func NewServer(opts *Options) (*Server, error) {
 	if opts.ConfigFile != _EMPTY_ && opts.configDigest == "" {
-		opts.ProcessConfigFile(opts.ConfigFile)
+		if err := opts.ProcessConfigFile(opts.ConfigFile); err != nil {
+			return nil, err
+		}
 	}
 	setBaselineOptions(opts)
 

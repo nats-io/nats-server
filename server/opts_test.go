@@ -3921,3 +3921,201 @@ func TestOptionsProxyRequired(t *testing.T) {
 	require_NoError(t, err)
 	checkUsersAndNkeys(o.LeafNode.Users, false, nil)
 }
+
+// TestConfigStructReplacesLoadConfig plagiarises TestLargeMaxPayload but replaces
+// LoadConfig call with a config struct.
+func TestConfigStructReplacesLoadConfig(t *testing.T) {
+	// Test 1: Large max_payload error (same as TestLargeMaxPayload first part)
+	// OLD WAY: if _, err := ProcessConfigFile(confFileName); err == nil
+	// NEW WAY: Use Options struct with ConfigFile, let NewServer process it
+	confFileName := createConfFile(t, []byte(`
+		max_payload = 3000000000
+	`))
+	opts1 := &Options{
+		ConfigFile: confFileName,
+	}
+	if _, err := NewServer(opts1); err == nil {
+		t.Fatalf("Expected an error from too large of a max_payload entry")
+	}
+
+	// Test 2: max_pending > max_payload error (plagiarised from TestLargeMaxPayload)
+	confFileName = createConfFile(t, []byte(`
+		max_payload = 100000
+		max_pending = 50000
+	`))
+
+	// OLD WAY (from TestLargeMaxPayload): o := LoadConfig(confFileName)
+	// NEW WAY (config struct): Use Options struct with ConfigFile
+	opts := &Options{
+		ConfigFile: confFileName,
+	}
+
+	// This should trigger the same validation error as TestLargeMaxPayload
+	server, err := NewServer(opts)
+	if err == nil || !strings.Contains(err.Error(), "cannot be higher") {
+		if server != nil {
+			server.Shutdown()
+		}
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Verify that config was processed (configDigest should be set)
+	if opts.configDigest == "" {
+		t.Error("Expected configDigest to be set after config processing")
+	}
+}
+
+// TestConfigFileProcessingComparison tests the behavior difference between
+// LoadConfig and Options.ProcessConfigFile to ensure both work correctly.
+func TestConfigFileProcessingComparison(t *testing.T) {
+	// Create a configuration file
+	confFileName := createConfFile(t, []byte(`
+		port = 4224
+		max_payload = 4194304
+		max_connections = 200
+		ping_interval = "30s"
+	`))
+
+	// Method 1: Using LoadConfig (traditional approach)
+	opts1 := LoadConfig(confFileName)
+	if opts1.Port != 4224 {
+		t.Errorf("LoadConfig: Expected port 4224, got %d", opts1.Port)
+	}
+
+	// Method 2: Using Options.ProcessConfigFile (new approach for embedded servers)
+	opts2 := &Options{ConfigFile: confFileName}
+
+	// Test 1: Both should be able to create servers successfully
+	server1, err := NewServer(opts1)
+	if err != nil {
+		t.Fatalf("Failed to create server with LoadConfig options: %v", err)
+	}
+	server1.Shutdown()
+
+	server2, err := NewServer(opts2)
+	if err != nil {
+		t.Fatalf("Failed to create server with ProcessConfigFile options: %v", err)
+	}
+	server2.Shutdown()
+
+	// Test 2: Both methods should produce equivalent results - normalize test environment fields
+	// LoadConfig sets these fields for testing, so we need to match them for fair comparison
+	opts2.NoSigs, opts2.NoLog = true, opts2.LogFile == _EMPTY_
+
+	checkOptionsEqual(t, opts1, opts2)
+
+	// Test 3: Update config file
+	confContent2 := []byte(`
+		port = 4224
+		max_payload = 2097152
+		max_connections = 250
+	`)
+
+	if err := os.WriteFile(confFileName, confContent2, 0666); err != nil {
+		t.Fatalf("Failed to update config file: %v", err)
+	}
+	// Test 4: Reload both servers
+	err1 := server1.Reload()
+	err2 := server2.Reload()
+
+	if err1 != nil {
+		t.Errorf("Failed to reload LoadConfig server: %v", err1)
+	}
+	if err2 != nil {
+		t.Errorf("Failed to reload Options struct server: %v", err2)
+	}
+
+	// Test 5: Verify both servers have the same reloaded configuration
+	opts1Reloaded := server1.getOpts()
+	opts2Reloaded := server2.getOpts()
+
+	checkOptionsEqual(t, opts1Reloaded, opts2Reloaded)
+}
+
+// TestConfigFileHotReloadWithEmbeddedServer tests that config file hot reload
+// works correctly with embedded servers that use the Options struct ConfigFile approach.
+// This ensures our NewServer config processing change doesn't interfere with reload.
+func TestConfigFileHotReloadWithEmbeddedServer(t *testing.T) {
+	// Create initial configuration file
+	confContent1 := []byte(`
+		port = 4225
+		max_payload = 1048576
+		max_connections = 100
+		ping_interval = "2m"
+	`)
+	confFileName := createConfFile(t, confContent1)
+
+	// Test 1: Create server using Options struct (embedded server approach)
+	opts := &Options{
+		ConfigFile: confFileName,
+	}
+
+	// Verify configDigest is initially empty (triggers config processing in NewServer)
+	if opts.configDigest != "" {
+		t.Errorf("Expected empty configDigest initially, got '%s'", opts.configDigest)
+	}
+
+	server, err := NewServer(opts)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Shutdown()
+
+	// Verify initial configuration was processed
+	if opts.configDigest == "" {
+		t.Error("Expected configDigest to be set after NewServer")
+	}
+	initialDigest := opts.configDigest
+
+	if opts.Port != 4225 {
+		t.Errorf("Expected initial port 4225, got %d", opts.Port)
+	}
+	if opts.MaxPayload != 1048576 {
+		t.Errorf("Expected initial max_payload 1048576, got %d", opts.MaxPayload)
+	}
+	if opts.MaxConn != 100 {
+		t.Errorf("Expected initial max_connections 100, got %d", opts.MaxConn)
+	}
+
+	// Test 2: Update configuration file content
+	confContent2 := []byte(`
+		port = 4225
+		max_payload = 2097152
+		max_connections = 200
+		ping_interval = "3m"
+		write_deadline = "10s"
+	`)
+
+	// Write new content to the same config file
+	if err := os.WriteFile(confFileName, confContent2, 0666); err != nil {
+		t.Fatalf("Failed to update config file: %v", err)
+	}
+
+	// Test 3: Perform hot reload
+	err = server.Reload()
+	if err != nil {
+		t.Fatalf("Failed to reload configuration: %v", err)
+	}
+
+	// Test 4: Verify that reload worked and updated the configuration
+	newOpts := server.getOpts()
+
+	// Check that new configuration values are applied
+	if newOpts.MaxPayload != 2097152 {
+		t.Errorf("Expected reloaded max_payload 2097152, got %d", newOpts.MaxPayload)
+	}
+	if newOpts.MaxConn != 200 {
+		t.Errorf("Expected reloaded max_connections 200, got %d", newOpts.MaxConn)
+	}
+	if newOpts.WriteDeadline != 10*time.Second {
+		t.Errorf("Expected reloaded write_deadline 10s, got %v", newOpts.WriteDeadline)
+	}
+
+	// Verify that configDigest changed after reload (indicating config was reprocessed)
+	if newOpts.configDigest == "" {
+		t.Error("Expected configDigest to be set after reload")
+	}
+	if newOpts.configDigest == initialDigest {
+		t.Error("Expected configDigest to change after reload, but it remained the same")
+	}
+}
