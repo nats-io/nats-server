@@ -48,6 +48,12 @@ type HashWheel struct {
 	count  uint64  // How many entries are present?
 }
 
+// HashWheelEntry represents a single entry in the wheel.
+type HashWheelEntry struct {
+	Seq     uint64
+	Expires int64
+}
+
 // NewHashWheel initializes a new HashWheel.
 func NewHashWheel() *HashWheel {
 	return &HashWheel{
@@ -59,17 +65,6 @@ func NewHashWheel() *HashWheel {
 // getPosition calculates the slot position for a given expiration time.
 func (hw *HashWheel) getPosition(expires int64) int64 {
 	return (expires / tickDuration) & wheelMask
-}
-
-// updateLowestExpires finds the new lowest expiration time across all slots.
-func (hw *HashWheel) updateLowestExpires() {
-	lowest := int64(math.MaxInt64)
-	for _, s := range hw.wheel {
-		if s != nil && s.lowest < lowest {
-			lowest = s.lowest
-		}
-	}
-	hw.lowest = lowest
 }
 
 // newSlot creates a new slot.
@@ -120,22 +115,7 @@ func (hw *HashWheel) Remove(seq uint64, expires int64) error {
 	// If the slot is empty, we can set it to nil to free memory.
 	if len(s.entries) == 0 {
 		hw.wheel[pos] = nil
-	} else if expires == s.lowest {
-		// Find new lowest in this slot.
-		lowest := int64(math.MaxInt64)
-		for _, exp := range s.entries {
-			if exp < lowest {
-				lowest = exp
-			}
-		}
-		s.lowest = lowest
 	}
-
-	// If we removed the global lowest, find the new one.
-	if expires == hw.lowest {
-		hw.updateLowestExpires()
-	}
-
 	return nil
 }
 
