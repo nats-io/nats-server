@@ -20737,3 +20737,49 @@ func TestJetStreamOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 	require_Len(t, len(cl.Offline), 1)
 	require_Equal(t, cl.Offline["DowngradeConsumerTest"], offlineReason)
 }
+
+func TestJetStreamRemoveTTLOnRemoveMsg(t *testing.T) {
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:        "TEST",
+				Subjects:    []string{"foo"},
+				Storage:     storageType,
+				AllowMsgTTL: true,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil, nats.MsgTTL(time.Hour))
+			require_NoError(t, err)
+
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+
+			validateTTLCount := func(count uint64) {
+				store := mset.Store()
+				switch storageType {
+				case nats.FileStorage:
+					fs := store.(*fileStore)
+					fs.mu.RLock()
+					defer fs.mu.RUnlock()
+					require_Equal(t, fs.ttls.Count(), count)
+				case nats.MemoryStorage:
+					ms := store.(*memStore)
+					ms.mu.RLock()
+					defer ms.mu.RUnlock()
+					require_Equal(t, ms.ttls.Count(), count)
+				}
+			}
+			validateTTLCount(1)
+
+			require_NoError(t, js.DeleteMsg("TEST", 1))
+			validateTTLCount(0)
+		})
+	}
+}

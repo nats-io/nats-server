@@ -1860,6 +1860,15 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	ms.dmap.Insert(seq)
 	ms.updateFirstSeq(seq)
 
+	// Remove any per subject tracking.
+	ms.removeSeqPerSubject(sm.subj, seq)
+	if ms.ttls != nil {
+		if ttl, err := getMessageTTL(sm.hdr); err == nil {
+			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
+			ms.ttls.Remove(seq, int64(expires))
+		}
+	}
+
 	if secure {
 		if len(sm.hdr) > 0 {
 			sm.hdr = make([]byte, len(sm.hdr))
@@ -1871,9 +1880,6 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 		}
 		sm.seq, sm.ts = 0, 0
 	}
-
-	// Remove any per subject tracking.
-	ms.removeSeqPerSubject(sm.subj, seq)
 
 	// Must delete message after updating per-subject info, to be consistent with file store.
 	delete(ms.msgs, seq)

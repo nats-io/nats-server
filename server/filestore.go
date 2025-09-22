@@ -4800,6 +4800,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// If we are tracking multiple subjects here make sure we update that accounting.
 	mb.removeSeqPerSubject(sm.subj, seq)
 	fs.removePerSubject(sm.subj)
+	if fs.ttls != nil {
+		if ttl, err := getMessageTTL(sm.hdr); err == nil {
+			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
+			fs.ttls.Remove(seq, int64(expires))
+		}
+	}
 
 	fifo := seq == atomic.LoadUint64(&mb.first.seq)
 	isLastBlock := mb == fs.lmb
