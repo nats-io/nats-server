@@ -30,12 +30,6 @@ type SDMBySeq struct {
 	ts   int64 // Last timestamp we proposed a removal/sdm.
 }
 
-// SDMBySubj holds whether a message for a specific subject and sequence was a subject delete marker or not.
-type SDMBySubj struct {
-	seq uint64
-	sdm bool
-}
-
 func newSDMMeta() *SDMMeta {
 	return &SDMMeta{
 		totals:  make(map[string]uint64, 1),
@@ -46,7 +40,7 @@ func newSDMMeta() *SDMMeta {
 // isSubjectDeleteMarker returns whether the headers indicate this message is a subject delete marker.
 // Either it's a usual marker with JSMarkerReason, or it's a KV Purge marker as the KVOperation.
 func isSubjectDeleteMarker(hdr []byte) bool {
-	return len(sliceHeader(JSMarkerReason, hdr)) == 0 && !bytes.Equal(sliceHeader(KVOperation, hdr), KVOperationValuePurge)
+	return len(sliceHeader(JSMarkerReason, hdr)) != 0 || bytes.Equal(sliceHeader(KVOperation, hdr), KVOperationValuePurge)
 }
 
 // empty clears all data.
