@@ -1088,7 +1088,10 @@ func (ms *memStore) expireMsgs() {
 	sdmTTL := int64(ms.cfg.SubjectDeleteMarkerTTL.Seconds())
 	sdmEnabled := sdmTTL > 0
 	ms.mu.RUnlock()
+
+	// If SDM is enabled, but handlers aren't set up yet. Try again later.
 	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+		ms.resetAgeChk(0)
 		return
 	}
 
@@ -1104,7 +1107,7 @@ func (ms *memStore) expireMsgs() {
 			}
 			if sdmEnabled {
 				if last, ok := ms.shouldProcessSdm(seq, sm.subj); ok {
-					sdm := last && isSubjectDeleteMarker(sm.hdr)
+					sdm := last && !isSubjectDeleteMarker(sm.hdr)
 					ms.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
 				}
 			} else {
@@ -1122,27 +1125,13 @@ func (ms *memStore) expireMsgs() {
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
-	var rmSeqs []uint64
-	var ttlSdm map[string][]SDMBySubj
+	var rmSeqs []thw.HashWheelEntry
 	if ms.ttls != nil {
 		ms.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
-			if sdmEnabled {
-				// Need to grab subject for the specified sequence, and check
-				// if the message hasn't been removed in the meantime.
-				sm, _ = ms.loadMsgLocked(seq, &smv, false)
-				if sm != nil {
-					if ttlSdm == nil {
-						ttlSdm = make(map[string][]SDMBySubj, 1)
-					}
-					ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, !isSubjectDeleteMarker(sm.hdr)})
-					return false
-				}
-			} else {
-				// Collect sequences to remove. Don't remove messages inline here,
-				// as that releases the lock and THW is not thread-safe.
-				rmSeqs = append(rmSeqs, seq)
-			}
-			return true
+			rmSeqs = append(rmSeqs, thw.HashWheelEntry{Seq: seq, Expires: ts})
+			// We might need to remove messages out of band, those can fail, and we can be shutdown halfway
+			// through so don't remove from THW just yet.
+			return false
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
@@ -1154,28 +1143,39 @@ func (ms *memStore) expireMsgs() {
 	}
 
 	// Remove messages collected by THW.
-	for _, seq := range rmSeqs {
-		ms.removeMsg(seq, false)
-	}
-
-	// THW is unordered, so must sort by sequence and must not be holding the lock.
-	if len(ttlSdm) > 0 {
+	if !sdmEnabled {
+		for _, rm := range rmSeqs {
+			ms.removeMsg(rm.Seq, false)
+		}
+	} else {
+		// THW is unordered, so must sort by sequence and must not be holding the lock.
 		ms.mu.Unlock()
-		for subj, es := range ttlSdm {
-			slices.SortFunc(es, func(a, b SDMBySubj) int {
-				if a.seq == b.seq {
-					return 0
-				} else if a.seq < b.seq {
-					return -1
-				} else {
-					return 1
-				}
-			})
-			for _, e := range es {
-				if last, ok := ms.shouldProcessSdm(e.seq, subj); ok {
-					sdm := last && !e.sdm
-					ms.handleRemovalOrSdm(e.seq, subj, sdm, sdmTTL)
-				}
+		slices.SortFunc(rmSeqs, func(a, b thw.HashWheelEntry) int {
+			if a.Seq == b.Seq {
+				return 0
+			} else if a.Seq < b.Seq {
+				return -1
+			} else {
+				return 1
+			}
+		})
+		for _, rm := range rmSeqs {
+			// Need to grab subject for the specified sequence if for SDM, and check
+			// if the message hasn't been removed in the meantime.
+			// We need to grab the message and check if we should process SDM while holding the lock,
+			// otherwise we can race if a deletion of this message is in progress.
+			ms.mu.Lock()
+			sm, _ = ms.loadMsgLocked(rm.Seq, &smv, false)
+			if sm == nil {
+				ms.ttls.Remove(rm.Seq, rm.Expires)
+				ms.mu.Unlock()
+				continue
+			}
+			last, ok := ms.shouldProcessSdmLocked(rm.Seq, sm.subj)
+			ms.mu.Unlock()
+			if ok {
+				sdm := last && !isSubjectDeleteMarker(sm.hdr)
+				ms.handleRemovalOrSdm(rm.Seq, sm.subj, sdm, sdmTTL)
 			}
 		}
 		ms.mu.Lock()
@@ -1196,7 +1196,11 @@ func (ms *memStore) expireMsgs() {
 func (ms *memStore) shouldProcessSdm(seq uint64, subj string) (bool, bool) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
+	return ms.shouldProcessSdmLocked(seq, subj)
+}
 
+// Lock should be held.
+func (ms *memStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool) {
 	if ms.sdm == nil {
 		ms.sdm = newSDMMeta()
 	}

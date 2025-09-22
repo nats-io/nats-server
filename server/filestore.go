@@ -5645,7 +5645,9 @@ func (fs *fileStore) expireMsgs() {
 	sdmEnabled := sdmTTL > 0
 	fs.mu.RUnlock()
 
+	// If SDM is enabled, but handlers aren't set up yet. Try again later.
 	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+		fs.resetAgeChk(0)
 		return
 	}
 
@@ -5663,7 +5665,7 @@ func (fs *fileStore) expireMsgs() {
 			// if it was the last message of that particular subject that we just deleted.
 			if sdmEnabled {
 				if last, ok := fs.shouldProcessSdm(seq, sm.subj); ok {
-					sdm := last && isSubjectDeleteMarker(sm.hdr)
+					sdm := last && !isSubjectDeleteMarker(sm.hdr)
 					fs.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
 				}
 			} else {
@@ -5675,69 +5677,61 @@ func (fs *fileStore) expireMsgs() {
 			minAge = ats.AccessTime() - maxAge
 		}
 	}
+	var ageDelta int64
+	if sm != nil {
+		ageDelta = sm.ts - minAge
+	}
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
-	var rmSeqs []uint64
-	var ttlSdm map[string][]SDMBySubj
+	var rmSeqs []thw.HashWheelEntry
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
-			// Need to grab subject for the specified sequence if for SDM, and check
-			// if the message hasn't been removed in the meantime.
-			sm, _ = fs.msgForSeqLocked(seq, &smv, false)
-			if sm == nil {
-				return true
-			}
-
-			if sdmEnabled {
-				if ttlSdm == nil {
-					ttlSdm = make(map[string][]SDMBySubj, 1)
-				}
-				ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, !isSubjectDeleteMarker(sm.hdr)})
-			} else {
-				// Collect sequences to remove. Don't remove messages inline here,
-				// as that releases the lock and THW is not thread-safe.
-				rmSeqs = append(rmSeqs, seq)
-			}
-			// Removing messages out of band, those can fail, and we can be shutdown halfway
+			rmSeqs = append(rmSeqs, thw.HashWheelEntry{Seq: seq, Expires: ts})
+			// We might need to remove messages out of band, those can fail, and we can be shutdown halfway
 			// through so don't remove from THW just yet.
 			return false
 		})
-		if maxAge > 0 {
-			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
-			// of work if MaxAge will beat us to the next expiry anyway.
-			nextTTL = fs.ttls.GetNextExpiration(time.Now().Add(time.Duration(maxAge)).UnixNano())
-		} else {
-			nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
-		}
+		nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
 	}
 
 	// Remove messages collected by THW.
-	for _, seq := range rmSeqs {
-		fs.removeMsg(seq, false, false, false)
-	}
-
-	// THW is unordered, so must sort by sequence and must not be holding the lock.
-	if len(ttlSdm) > 0 {
+	if !sdmEnabled {
+		for _, rm := range rmSeqs {
+			fs.removeMsg(rm.Seq, false, false, false)
+		}
+	} else {
+		// THW is unordered, so must sort by sequence and must not be holding the lock.
 		fs.mu.Unlock()
-		for subj, es := range ttlSdm {
-			slices.SortFunc(es, func(a, b SDMBySubj) int {
-				if a.seq == b.seq {
-					return 0
-				} else if a.seq < b.seq {
-					return -1
-				} else {
-					return 1
-				}
-			})
-			for _, e := range es {
-				if last, ok := fs.shouldProcessSdm(e.seq, subj); ok {
-					sdm := last && !e.sdm
-					fs.handleRemovalOrSdm(e.seq, subj, sdm, sdmTTL)
-				}
+		slices.SortFunc(rmSeqs, func(a, b thw.HashWheelEntry) int {
+			if a.Seq == b.Seq {
+				return 0
+			} else if a.Seq < b.Seq {
+				return -1
+			} else {
+				return 1
+			}
+		})
+		for _, rm := range rmSeqs {
+			// Need to grab subject for the specified sequence if for SDM, and check
+			// if the message hasn't been removed in the meantime.
+			// We need to grab the message and check if we should process SDM while holding the lock,
+			// otherwise we can race if a deletion of this message is in progress.
+			fs.mu.Lock()
+			sm, _ = fs.msgForSeqLocked(rm.Seq, &smv, false)
+			if sm == nil {
+				fs.ttls.Remove(rm.Seq, rm.Expires)
+				fs.mu.Unlock()
+				continue
+			}
+			last, ok := fs.shouldProcessSdmLocked(rm.Seq, sm.subj)
+			fs.mu.Unlock()
+			if ok {
+				sdm := last && !isSubjectDeleteMarker(sm.hdr)
+				fs.handleRemovalOrSdm(rm.Seq, sm.subj, sdm, sdmTTL)
 			}
 		}
 		fs.mu.Lock()
@@ -5747,18 +5741,18 @@ func (fs *fileStore) expireMsgs() {
 	if fs.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		fs.cancelAgeChk()
 	} else {
-		if sm == nil {
-			fs.resetAgeChk(0)
-		} else {
-			fs.resetAgeChk(sm.ts - minAge)
-		}
+		fs.resetAgeChk(ageDelta)
 	}
 }
 
 func (fs *fileStore) shouldProcessSdm(seq uint64, subj string) (bool, bool) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	return fs.shouldProcessSdmLocked(seq, subj)
+}
 
+// Lock should be held.
+func (fs *fileStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool) {
 	if fs.sdm == nil {
 		fs.sdm = newSDMMeta()
 	}
