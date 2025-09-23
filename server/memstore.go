@@ -1326,9 +1326,15 @@ func (ms *memStore) runMsgScheduling() {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	if ms.scheduling == nil || ms.pmsgcb == nil {
+	// If scheduling is enabled, but handler isn't set up yet. Try again later.
+	if ms.scheduling == nil {
 		return
 	}
+	if ms.pmsgcb == nil {
+		ms.scheduling.resetTimer()
+		return
+	}
+	ms.scheduling.running = true
 
 	scheduledMsgs := ms.scheduling.getScheduledMessages(func(seq uint64, smv *StoreMsg) *StoreMsg {
 		sm, _ := ms.loadMsgLocked(seq, smv, false)
@@ -1342,9 +1348,8 @@ func (ms *memStore) runMsgScheduling() {
 		ms.mu.Lock()
 	}
 
-	if ms.scheduling != nil {
-		ms.scheduling.resetTimer()
-	}
+	ms.scheduling.running, ms.scheduling.deadline = false, 0
+	ms.scheduling.resetTimer()
 }
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
