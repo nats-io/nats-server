@@ -6093,9 +6093,15 @@ func (fs *fileStore) runMsgScheduling() {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	if fs.scheduling == nil || fs.pmsgcb == nil {
+	// If scheduling is enabled, but handler isn't set up yet. Try again later.
+	if fs.scheduling == nil {
 		return
 	}
+	if fs.pmsgcb == nil {
+		fs.scheduling.resetTimer()
+		return
+	}
+	fs.scheduling.running = true
 
 	scheduledMsgs := fs.scheduling.getScheduledMessages(func(seq uint64, smv *StoreMsg) *StoreMsg {
 		sm, _ := fs.msgForSeqLocked(seq, smv, false)
@@ -6109,9 +6115,8 @@ func (fs *fileStore) runMsgScheduling() {
 		fs.mu.Lock()
 	}
 
-	if fs.scheduling != nil {
-		fs.scheduling.resetTimer()
-	}
+	fs.scheduling.running, fs.scheduling.deadline = false, 0
+	fs.scheduling.resetTimer()
 }
 
 // Lock should be held.
