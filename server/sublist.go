@@ -446,7 +446,12 @@ func (s *Sublist) Insert(sub *subscription) error {
 	s.inserts++
 
 	s.addToCache(subject, sub)
-	atomic.AddUint64(&s.genid, 1)
+	// We only need to increase the genid if we've invalidated caches
+	// by updating an existing entry or removing one. A pure add is
+	// fine within the current cache generation.
+	if !isnew {
+		atomic.AddUint64(&s.genid, 1)
+	}
 
 	if s.notify != nil && isnew && !haswc && len(s.notify.insert) > 0 {
 		s.chkForInsertNotification(subject, string(sub.queue))
