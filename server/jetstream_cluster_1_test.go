@@ -9665,6 +9665,33 @@ func TestJetStreamClusterUnsetEmptyPlacement(t *testing.T) {
 	require_True(t, si.Config.Placement == nil)
 }
 
+func TestJetStreamClusterDeleteMsgEOF(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: replicas,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			require_Error(t, js.DeleteMsg("TEST", 0), NewJSNoMessageFoundError())
+			require_NoError(t, js.DeleteMsg("TEST", 1))
+			require_Error(t, js.DeleteMsg("TEST", 1), NewJSNoMessageFoundError())
+			require_Error(t, js.DeleteMsg("TEST", 2), NewJSStreamMsgDeleteFailedError(ErrStoreEOF))
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
