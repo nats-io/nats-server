@@ -2086,6 +2086,18 @@ func TestSublistInterestBasedIntersection(t *testing.T) {
 		require_NoDuplicates(t, got)
 	})
 
+	t.Run("PWCExtended", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("stream.*.child"))
+		sl.Insert(newSub("stream.A"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 2)
+		require_NoDuplicates(t, got)
+	})
+
 	t.Run("FWCAll", func(t *testing.T) {
 		got := map[string]int{}
 		sl := NewSublistNoCache()

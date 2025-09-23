@@ -489,13 +489,14 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 	if len(nsubj) > 0 {
 		nsubj = append(subj, '.')
 	}
-	switch {
-	case r.fwc != nil:
+	if r.fwc != nil {
 		// We've reached a full wildcard, do a FWC match on the stree at this point
 		// and don't keep iterating downward.
 		nsubj := append(nsubj, '>')
 		st.Match(nsubj, cb)
-	case r.pwc != nil:
+		return
+	}
+	if r.pwc != nil {
 		// We've found a partial wildcard. We'll keep iterating downwards, but first
 		// check whether there's interest at this level (without triggering dupes) and
 		// match if so.
@@ -506,22 +507,27 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 		if r.pwc.next != nil && r.pwc.next.numNodes() > 0 {
 			intersectStree(st, r.pwc.next, nsubj, cb)
 		}
-	default:
-		// Normal node with subject literals, keep iterating.
-		for t, n := range r.nodes {
-			nsubj := append(nsubj, t...)
-			if len(n.subs) > 0 {
-				if subjectHasWildcard(bytesToString(nsubj)) {
-					st.Match(nsubj, cb)
-				} else {
-					if e, ok := st.Find(nsubj); ok {
-						cb(nsubj, e)
-					}
+	}
+	// Normal node with subject literals, keep iterating.
+	for t, n := range r.nodes {
+		// Skip if a partial wildcard exists, and this node fully overlaps.
+		if r.pwc != nil &&
+			(r.pwc.next == nil || r.pwc.next.numNodes() == 0) &&
+			(n.next == nil || n.next.numNodes() == 0) {
+			continue
+		}
+		nsubj := append(nsubj, t...)
+		if len(n.subs) > 0 {
+			if subjectHasWildcard(bytesToString(nsubj)) {
+				st.Match(nsubj, cb)
+			} else {
+				if e, ok := st.Find(nsubj); ok {
+					cb(nsubj, e)
 				}
 			}
-			if n.next != nil && n.next.numNodes() > 0 {
-				intersectStree(st, n.next, nsubj, cb)
-			}
+		}
+		if n.next != nil && n.next.numNodes() > 0 {
+			intersectStree(st, n.next, nsubj, cb)
 		}
 	}
 }
