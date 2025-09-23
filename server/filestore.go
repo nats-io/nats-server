@@ -178,7 +178,9 @@ type fileStore struct {
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
-	ageChk      *time.Timer
+	ageChk      *time.Timer // Timer to expire messages.
+	ageChkRun   bool        // Whether message expiration is currently running.
+	ageChkTime  int64       // When the message expiration is scheduled to run.
 	syncTmr     *time.Timer
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
@@ -667,6 +669,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if fs.ageChk != nil && fs.cfg.MaxAge == 0 {
 		fs.ageChk.Stop()
 		fs.ageChk = nil
+		fs.ageChkTime = 0
 	}
 
 	if fs.cfg.MaxMsgsPer > 0 && (old_cfg.MaxMsgsPer == 0 || fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer) {
@@ -4222,9 +4225,7 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
 	if !fs.receivedAny && fs.cfg.MaxAge != 0 && ts > 0 {
 		fs.receivedAny = true
-		// don't block here by calling expireMsgs directly.
-		// Instead, set short timeout.
-		fs.resetAgeChk(int64(time.Millisecond * 50))
+		fs.resetAgeChk(0)
 	}
 	fs.mu.Unlock()
 
@@ -5569,6 +5570,12 @@ func (fs *fileStore) startAgeChk() {
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
+	// If we're already expiring messages, it will make sure to reset.
+	// Don't trigger again, as that could result in many expire goroutines.
+	if fs.ageChkRun {
+		return
+	}
+
 	var next int64 = math.MaxInt64
 	if fs.ttls != nil {
 		next = fs.ttls.GetNextExpiration(next)
@@ -5614,6 +5621,14 @@ func (fs *fileStore) resetAgeChk(delta int64) {
 		fireIn = 250 * time.Millisecond
 	}
 
+	// If we want to kick the timer to run later than what was assigned before, don't reset it.
+	// Otherwise, we could get in a situation where the timer is continuously reset, and it never runs.
+	expires := ats.AccessTime() + fireIn.Nanoseconds()
+	if fs.ageChkTime > 0 && expires > fs.ageChkTime {
+		return
+	}
+
+	fs.ageChkTime = expires
 	if fs.ageChk != nil {
 		fs.ageChk.Reset(fireIn)
 	} else {
@@ -5626,6 +5641,7 @@ func (fs *fileStore) cancelAgeChk() {
 	if fs.ageChk != nil {
 		fs.ageChk.Stop()
 		fs.ageChk = nil
+		fs.ageChkTime = 0
 	}
 }
 
@@ -5636,20 +5652,22 @@ func (fs *fileStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
 
-	fs.mu.RLock()
+	fs.mu.Lock()
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := ats.AccessTime() - maxAge
 	rmcb := fs.rmcb
 	sdmcb := fs.sdmcb
 	sdmTTL := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
 	sdmEnabled := sdmTTL > 0
-	fs.mu.RUnlock()
 
 	// If SDM is enabled, but handlers aren't set up yet. Try again later.
 	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
 		fs.resetAgeChk(0)
+		fs.mu.Unlock()
 		return
 	}
+	fs.ageChkRun = true
+	fs.mu.Unlock()
 
 	if maxAge > 0 {
 		var seq uint64
@@ -5738,6 +5756,7 @@ func (fs *fileStore) expireMsgs() {
 	}
 
 	// Only cancel if no message left, not on potential lookup error that would result in sm == nil.
+	fs.ageChkRun, fs.ageChkTime = false, 0
 	if fs.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		fs.cancelAgeChk()
 	} else {
@@ -5758,6 +5777,10 @@ func (fs *fileStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool
 	}
 
 	if p, ok := fs.sdm.pending[seq]; ok {
+		// Don't allow more proposals for the same sequence if we already did recently.
+		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
+			return p.last, false
+		}
 		// If we're about to use the cached value, and we knew it was last before,
 		// quickly check that we don't have more remaining messages for the subject now.
 		// Which means we are not the last anymore and must reset to not remove later data.
@@ -5767,11 +5790,6 @@ func (fs *fileStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool
 			if remaining := msgs - numPending; remaining > 0 {
 				p.last = false
 			}
-		}
-
-		// Don't allow more proposals for the same sequence if we already did recently.
-		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
-			return p.last, false
 		}
 		fs.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
 		return p.last, true

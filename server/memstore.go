@@ -43,7 +43,9 @@ type memStore struct {
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
-	ageChk      *time.Timer
+	ageChk      *time.Timer // Timer to expire messages.
+	ageChkRun   bool        // Whether message expiration is currently running.
+	ageChkTime  int64       // When the message expiration is scheduled to run.
 	consumers   int
 	receivedAny bool
 	ttls        *thw.HashWheel
@@ -105,6 +107,7 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	if ms.ageChk != nil && ms.cfg.MaxAge == 0 {
 		ms.ageChk.Stop()
 		ms.ageChk = nil
+		ms.ageChkTime = 0
 	}
 	// Make sure to update MaxMsgsPer
 	if cfg.MaxMsgsPer < -1 {
@@ -1016,6 +1019,12 @@ func (ms *memStore) startAgeChk() {
 
 // Lock should be held.
 func (ms *memStore) resetAgeChk(delta int64) {
+	// If we're already expiring messages, it will make sure to reset.
+	// Don't trigger again, as that could result in many expire goroutines.
+	if ms.ageChkRun {
+		return
+	}
+
 	var next int64 = math.MaxInt64
 	if ms.ttls != nil {
 		next = ms.ttls.GetNextExpiration(next)
@@ -1061,6 +1070,14 @@ func (ms *memStore) resetAgeChk(delta int64) {
 		fireIn = 250 * time.Millisecond
 	}
 
+	// If we want to kick the timer to run later than what was assigned before, don't reset it.
+	// Otherwise, we could get in a situation where the timer is continuously reset, and it never runs.
+	expires := ats.AccessTime() + fireIn.Nanoseconds()
+	if ms.ageChkTime > 0 && expires > ms.ageChkTime {
+		return
+	}
+
+	ms.ageChkTime = expires
 	if ms.ageChk != nil {
 		ms.ageChk.Reset(fireIn)
 	} else {
@@ -1073,6 +1090,7 @@ func (ms *memStore) cancelAgeChk() {
 	if ms.ageChk != nil {
 		ms.ageChk.Stop()
 		ms.ageChk = nil
+		ms.ageChkTime = 0
 	}
 }
 
@@ -1080,20 +1098,22 @@ func (ms *memStore) cancelAgeChk() {
 func (ms *memStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
-	ms.mu.RLock()
+	ms.mu.Lock()
 	maxAge := int64(ms.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
 	rmcb := ms.rmcb
 	sdmcb := ms.sdmcb
 	sdmTTL := int64(ms.cfg.SubjectDeleteMarkerTTL.Seconds())
 	sdmEnabled := sdmTTL > 0
-	ms.mu.RUnlock()
 
 	// If SDM is enabled, but handlers aren't set up yet. Try again later.
 	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
 		ms.resetAgeChk(0)
+		ms.mu.Unlock()
 		return
 	}
+	ms.ageChkRun = true
+	ms.mu.Unlock()
 
 	if maxAge > 0 {
 		var seq uint64
@@ -1182,6 +1202,7 @@ func (ms *memStore) expireMsgs() {
 	}
 
 	// Only cancel if no message left, not on potential lookup error that would result in sm == nil.
+	ms.ageChkRun, ms.ageChkTime = false, 0
 	if ms.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		ms.cancelAgeChk()
 	} else {
@@ -1206,6 +1227,10 @@ func (ms *memStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool)
 	}
 
 	if p, ok := ms.sdm.pending[seq]; ok {
+		// Don't allow more proposals for the same sequence if we already did recently.
+		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
+			return p.last, false
+		}
 		// If we're about to use the cached value, and we knew it was last before,
 		// quickly check that we don't have more remaining messages for the subject now.
 		// Which means we are not the last anymore and must reset to not remove later data.
@@ -1215,11 +1240,6 @@ func (ms *memStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool)
 			if remaining := msgs - numPending; remaining > 0 {
 				p.last = false
 			}
-		}
-
-		// Don't allow more proposals for the same sequence if we already did recently.
-		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
-			return p.last, false
 		}
 		ms.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
 		return p.last, true
@@ -1980,6 +2000,7 @@ func (ms *memStore) Stop() error {
 	if ms.ageChk != nil {
 		ms.ageChk.Stop()
 		ms.ageChk = nil
+		ms.ageChkTime = 0
 	}
 	ms.msgs = nil
 	ms.mu.Unlock()
