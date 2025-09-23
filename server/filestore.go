@@ -1451,6 +1451,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 
 	// To detect gaps from compaction, and to ensure the sequence keeps moving up.
 	var last uint64
+	var hb [highwayhash.Size64]byte
 
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
@@ -1486,7 +1487,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			} else {
 				hh.Write(data[slen : dlen-recordHashSize])
 			}
-			checksum := hh.Sum(nil)
+			checksum := hh.Sum(hb[:0])
 			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
 				truncate(index)
 				return gatherLost(lbuf - index), tombstones, errBadMsg{mb.mfn, "invalid checksum"}
@@ -1670,7 +1671,8 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	buf = buf[:len(buf)-highwayhash.Size64]
 	fs.hh.Reset()
 	fs.hh.Write(buf)
-	if !bytes.Equal(h, fs.hh.Sum(nil)) {
+	var hb [highwayhash.Size64]byte
+	if !bytes.Equal(h, fs.hh.Sum(hb[:0])) {
 		os.Remove(fn)
 		fs.warn("Stream state checksum did not match")
 		return errCorruptState
@@ -5226,7 +5228,8 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	mb.hh.Reset()
 	mb.hh.Write(hdr[4:20])
 	mb.hh.Write(data)
-	checksum := mb.hh.Sum(nil)
+	var hb [highwayhash.Size64]byte
+	checksum := mb.hh.Sum(hb[:0])
 	// Write to msg record.
 	b.Write(checksum)
 
@@ -7401,7 +7404,8 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCop
 		} else {
 			hh.Write(data[slen : dlen-recordHashSize])
 		}
-		if !bytes.Equal(hh.Sum(nil), data[len(data)-8:]) {
+		var hb [highwayhash.Size64]byte
+		if !bytes.Equal(hh.Sum(hb[:0]), data[len(data)-8:]) {
 			return nil, errBadMsg{mb.mfn, "invalid checksum"}
 		}
 	}
