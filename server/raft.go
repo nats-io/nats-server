@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -2669,6 +2670,7 @@ func (n *raft) runAsLeader() {
 				if sz < maxBatch && len(entries) < maxEntries {
 					continue
 				}
+				log.Println("Batch:", len(entries), "entries", sz, "bytes")
 				n.sendAppendEntry(entries)
 				// Reset our sz and entries.
 				// We need to re-create `entries` because there is a reference
@@ -2676,6 +2678,7 @@ func (n *raft) runAsLeader() {
 				sz, entries = 0, nil
 			}
 			if len(entries) > 0 {
+				log.Println("Batch:", len(entries), "entries", sz, "bytes")
 				n.sendAppendEntry(entries)
 			}
 			// Respond to any proposals waiting for a confirmation.
