@@ -22066,3 +22066,64 @@ func TestJetStreamRemoveTTLOnRemoveMsg(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamMessageTTLNotExpiring(t *testing.T) {
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:        "TEST",
+				Subjects:    []string{"foo"},
+				Storage:     storageType,
+				AllowMsgTTL: true,
+			})
+			require_NoError(t, err)
+
+			// Triggers the expiry timer once, and needs to be reset to trigger earlier.
+			_, err = js.Publish("foo", nil, nats.MsgTTL(time.Hour))
+			require_NoError(t, err)
+
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+
+			// Storing messages with a TTL would continuously reset the timer.
+			var wg sync.WaitGroup
+			wg.Add(1)
+			defer wg.Wait()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(100 * time.Millisecond):
+						ttl := time.Hour.Nanoseconds()
+						store := mset.Store()
+						store.StoreMsg("foo", nil, nil, ttl)
+					}
+				}
+			}()
+
+			// The message should be expired timely.
+			pubAck, err := js.Publish("foo", nil, nats.MsgTTL(time.Second))
+			require_NoError(t, err)
+			checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
+				_, err = js.GetMsg("TEST", pubAck.Sequence)
+				if err == nil {
+					return fmt.Errorf("message not removed yet")
+				}
+				if !errors.Is(err, nats.ErrMsgNotFound) {
+					return err
+				}
+				return nil
+			})
+		})
+	}
+}
