@@ -22127,3 +22127,76 @@ func TestJetStreamMessageTTLNotExpiring(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamScheduledMessageNotTriggering(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:              "TEST",
+				Subjects:          []string{"foo.>"},
+				Storage:           storageType,
+				AllowMsgSchedules: true,
+			})
+			require_NoError(t, err)
+
+			delay := func(d time.Duration) string {
+				return fmt.Sprintf("@at %s", time.Now().Add(d).Format(time.RFC3339Nano))
+			}
+
+			// Triggers the schedule timer once, and needs to be reset to trigger earlier.
+			m := nats.NewMsg("foo.schedule.first")
+			m.Header.Set("Nats-Schedule", delay(time.Hour))
+			m.Header.Set("Nats-Schedule-Target", "foo.msg")
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+
+			// Storing messages with a schedule would continuously reset the timer.
+			var wg sync.WaitGroup
+			wg.Add(1)
+			defer wg.Wait()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				defer wg.Done()
+				var i int
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(100 * time.Millisecond):
+						i++
+						ms := nats.NewMsg(fmt.Sprintf("foo.schedule.%d", i))
+						ms.Header.Set("Nats-Schedule", delay(time.Hour))
+						ms.Header.Set("Nats-Schedule-Target", "foo.msg")
+						js.PublishMsg(ms)
+					}
+				}
+			}()
+
+			// The message should be scheduled timely.
+			m = nats.NewMsg("foo.schedule.validate")
+			m.Header.Set("Nats-Schedule", delay(time.Second))
+			m.Header.Set("Nats-Schedule-Target", "foo.msg")
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+			pubAck, err := js.PublishMsg(m)
+			require_NoError(t, err)
+			checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
+				_, err = js.GetMsg("TEST", pubAck.Sequence)
+				if err == nil {
+					return fmt.Errorf("message not removed yet")
+				}
+				if !errors.Is(err, nats.ErrMsgNotFound) {
+					return err
+				}
+				return nil
+			})
+		})
+	}
+}
