@@ -151,10 +151,10 @@ type streamAssignment struct {
 	reassigning bool // i.e. due to placement issues, lack of resources, etc.
 	resetting   bool // i.e. there was an error, and we're stopping and starting the stream
 	err         error
-	unsupported *unsupportedStreamAssignment
+	unsupported *unsupportedStreamAssignmentState
 }
 
-type unsupportedStreamAssignment struct {
+type unsupportedStreamAssignmentState struct {
 	json    []byte // The raw JSON content of the assignment, if it's unsupported due to the required API level.
 	reason  string
 	info    StreamInfo
@@ -162,14 +162,14 @@ type unsupportedStreamAssignment struct {
 	infoSub *subscription
 }
 
-func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, json []byte) *unsupportedStreamAssignment {
+func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, json []byte) *unsupportedStreamAssignmentState {
 	reason := "stopped"
 	if sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata) {
 		if req := getRequiredApiLevel(sa.Config.Metadata); req != _EMPTY_ {
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", req, JSApiLevel)
 		}
 	}
-	return &unsupportedStreamAssignment{
+	return &unsupportedStreamAssignmentState{
 		json:   json,
 		reason: reason,
 		info: StreamInfo{
@@ -181,7 +181,7 @@ func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, json []byte
 	}
 }
 
-func (usa *unsupportedStreamAssignment) setupInfoSub(s *Server, sa *streamAssignment) {
+func (usa *unsupportedStreamAssignmentState) setupInfoSub(s *Server, sa *streamAssignment) {
 	if usa.infoSub != nil {
 		return
 	}
@@ -196,13 +196,13 @@ func (usa *unsupportedStreamAssignment) setupInfoSub(s *Server, sa *streamAssign
 	usa.infoSub, _ = s.systemSubscribe(isubj, _EMPTY_, false, ic, usa.handleClusterStreamInfoRequest)
 }
 
-func (usa *unsupportedStreamAssignment) handleClusterStreamInfoRequest(_ *subscription, c *client, _ *Account, _, reply string, _ []byte) {
+func (usa *unsupportedStreamAssignmentState) handleClusterStreamInfoRequest(_ *subscription, c *client, _ *Account, _, reply string, _ []byte) {
 	s, acc := c.srv, c.acc
 	info := streamInfoClusterResponse{OfflineReason: usa.reason, StreamInfo: usa.info}
 	s.sendDelayedErrResponse(acc, reply, nil, s.jsonResponse(&info), errRespDelay)
 }
 
-func (usa *unsupportedStreamAssignment) closeInfoSub(s *Server) {
+func (usa *unsupportedStreamAssignmentState) closeInfoSub(s *Server) {
 	if usa.infoSub != nil {
 		s.sysUnsubscribe(usa.infoSub)
 		usa.infoSub = nil
@@ -230,10 +230,10 @@ type consumerAssignment struct {
 	pending     bool
 	deleted     bool
 	err         error
-	unsupported *unsupportedConsumerAssignment
+	unsupported *unsupportedConsumerAssignmentState
 }
 
-type unsupportedConsumerAssignment struct {
+type unsupportedConsumerAssignmentState struct {
 	json    []byte // The raw JSON content of the assignment, if it's unsupported due to the required API level.
 	reason  string
 	info    ConsumerInfo
@@ -241,14 +241,14 @@ type unsupportedConsumerAssignment struct {
 	infoSub *subscription
 }
 
-func newUnsupportedConsumerAssignment(ca *consumerAssignment, json []byte) *unsupportedConsumerAssignment {
+func newUnsupportedConsumerAssignment(ca *consumerAssignment, json []byte) *unsupportedConsumerAssignmentState {
 	reason := "stopped"
 	if ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata) {
 		if req := getRequiredApiLevel(ca.Config.Metadata); req != _EMPTY_ {
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", getRequiredApiLevel(ca.Config.Metadata), JSApiLevel)
 		}
 	}
-	return &unsupportedConsumerAssignment{
+	return &unsupportedConsumerAssignmentState{
 		json:   json,
 		reason: reason,
 		info: ConsumerInfo{
@@ -261,7 +261,7 @@ func newUnsupportedConsumerAssignment(ca *consumerAssignment, json []byte) *unsu
 	}
 }
 
-func (uca *unsupportedConsumerAssignment) setupInfoSub(s *Server, ca *consumerAssignment) {
+func (uca *unsupportedConsumerAssignmentState) setupInfoSub(s *Server, ca *consumerAssignment) {
 	if uca.infoSub != nil {
 		return
 	}
@@ -276,13 +276,13 @@ func (uca *unsupportedConsumerAssignment) setupInfoSub(s *Server, ca *consumerAs
 	uca.infoSub, _ = s.systemSubscribe(isubj, _EMPTY_, false, ic, uca.handleClusterConsumerInfoRequest)
 }
 
-func (uca *unsupportedConsumerAssignment) handleClusterConsumerInfoRequest(_ *subscription, c *client, _ *Account, _, reply string, _ []byte) {
+func (uca *unsupportedConsumerAssignmentState) handleClusterConsumerInfoRequest(_ *subscription, c *client, _ *Account, _, reply string, _ []byte) {
 	s, acc := c.srv, c.acc
 	info := consumerInfoClusterResponse{OfflineReason: uca.reason, ConsumerInfo: uca.info}
 	s.sendDelayedErrResponse(acc, reply, nil, s.jsonResponse(&info), errRespDelay)
 }
 
-func (uca *unsupportedConsumerAssignment) closeInfoSub(s *Server) {
+func (uca *unsupportedConsumerAssignmentState) closeInfoSub(s *Server) {
 	if uca.infoSub != nil {
 		s.sysUnsubscribe(uca.infoSub)
 		uca.infoSub = nil
@@ -294,7 +294,7 @@ func (uca *unsupportedConsumerAssignment) closeInfoSub(s *Server) {
 }
 
 type writeableConsumerAssignment struct {
-	consumerAssignment
+	*consumerAssignment
 	// Internal
 	unsupportedJson []byte // The raw JSON content of the assignment, if it's unsupported due to the required API level.
 }
@@ -318,7 +318,7 @@ func (wca *writeableConsumerAssignment) UnmarshalJSON(data []byte) error {
 			return err
 		}
 	}
-	wca.consumerAssignment = ca
+	wca.consumerAssignment = &ca
 	if unsupported || (wca.Config != nil && !supportsRequiredApiLevel(wca.Config.Metadata)) {
 		wca.unsupportedJson = data
 	}
@@ -1542,40 +1542,49 @@ func (js *jetStream) checkClusterSize() {
 
 // Represents our stable meta state that we can write out.
 type writeableStreamAssignment struct {
-	backingStreamAssignment
+	unsupportedStreamAssignment
 	// Internal
 	unsupportedJson []byte // The raw JSON content of the assignment, if it's unsupported due to the required API level.
 }
 
-type backingStreamAssignment struct {
-	Client    *ClientInfo   `json:"client,omitempty"`
-	Created   time.Time     `json:"created"`
-	Config    *StreamConfig `json:"stream"`
-	Group     *raftGroup    `json:"group"`
-	Sync      string        `json:"sync"`
+type unsupportedStreamAssignment struct {
+	backingStreamAssignment
 	Consumers []*writeableConsumerAssignment
+}
+
+type supportedStreamAssignment struct {
+	backingStreamAssignment
+	Consumers []*consumerAssignment
+}
+
+type backingStreamAssignment struct {
+	Client  *ClientInfo   `json:"client,omitempty"`
+	Created time.Time     `json:"created"`
+	Config  *StreamConfig `json:"stream"`
+	Group   *raftGroup    `json:"group"`
+	Sync    string        `json:"sync"`
 }
 
 func (wsa *writeableStreamAssignment) MarshalJSON() ([]byte, error) {
 	if wsa.unsupportedJson != nil {
 		return wsa.unsupportedJson, nil
 	}
-	return json.Marshal(wsa.backingStreamAssignment)
+	return json.Marshal(wsa.unsupportedStreamAssignment)
 }
 
 func (wsa *writeableStreamAssignment) UnmarshalJSON(data []byte) error {
 	var unsupported bool
-	var bsa backingStreamAssignment
+	var usa unsupportedStreamAssignment
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&bsa); err != nil {
+	if err := decoder.Decode(&usa); err != nil {
 		unsupported = true
-		bsa = backingStreamAssignment{}
-		if err = json.Unmarshal(data, &bsa); err != nil {
+		usa = unsupportedStreamAssignment{}
+		if err = json.Unmarshal(data, &usa); err != nil {
 			return err
 		}
 	}
-	wsa.backingStreamAssignment = bsa
+	wsa.unsupportedStreamAssignment = usa
 	if unsupported || (wsa.Config != nil && !supportsRequiredApiLevel(wsa.Config.Metadata)) {
 		wsa.unsupportedJson = data
 	}
@@ -1601,23 +1610,25 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	for _, asa := range cc.streams {
 		nsa += len(asa)
 	}
-	streams := make([]writeableStreamAssignment, 0, nsa)
+	streams := make([]supportedStreamAssignment, 0, nsa)
+	var unsupportedStreams []writeableStreamAssignment
 	for _, asa := range cc.streams {
 		for _, sa := range asa {
 			if sa.unsupported != nil && sa.unsupported.json != nil {
-				streams = append(streams, writeableStreamAssignment{unsupportedJson: sa.unsupported.json})
+				unsupportedStreams = append(unsupportedStreams, writeableStreamAssignment{unsupportedJson: sa.unsupported.json})
 				continue
 			}
-			wsa := writeableStreamAssignment{
+			wsa := supportedStreamAssignment{
 				backingStreamAssignment: backingStreamAssignment{
-					Client:    sa.Client.forAssignmentSnap(),
-					Created:   sa.Created,
-					Config:    sa.Config,
-					Group:     sa.Group,
-					Sync:      sa.Sync,
-					Consumers: make([]*writeableConsumerAssignment, 0, len(sa.consumers)),
+					Client:  sa.Client.forAssignmentSnap(),
+					Created: sa.Created,
+					Config:  sa.Config,
+					Group:   sa.Group,
+					Sync:    sa.Sync,
 				},
+				Consumers: make([]*consumerAssignment, 0, len(sa.consumers)),
 			}
+			var unsupportedConsumers []*writeableConsumerAssignment
 			for _, ca := range sa.consumers {
 				// Skip if the consumer is pending, we can't include it in our snapshot.
 				// If the proposal fails after we marked it pending, it would result in a ghost consumer.
@@ -1625,7 +1636,7 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 					continue
 				}
 				if ca.unsupported != nil && ca.unsupported.json != nil {
-					wsa.Consumers = append(wsa.Consumers, &writeableConsumerAssignment{unsupportedJson: ca.unsupported.json})
+					unsupportedConsumers = append(unsupportedConsumers, &writeableConsumerAssignment{unsupportedJson: ca.unsupported.json})
 					nca++
 					continue
 				}
@@ -1633,14 +1644,26 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 				cca.Stream = wsa.Config.Name // Needed for safe roll-backs.
 				cca.Client = cca.Client.forAssignmentSnap()
 				cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
-				wsa.Consumers = append(wsa.Consumers, &writeableConsumerAssignment{consumerAssignment: cca})
+				wsa.Consumers = append(wsa.Consumers, &cca)
 				nca++
+			}
+			if len(unsupportedConsumers) > 0 {
+				for _, ca := range wsa.Consumers {
+					unsupportedConsumers = append(unsupportedConsumers, &writeableConsumerAssignment{consumerAssignment: ca})
+				}
+				unsupportedStreams = append(unsupportedStreams, writeableStreamAssignment{
+					unsupportedStreamAssignment: unsupportedStreamAssignment{
+						backingStreamAssignment: wsa.backingStreamAssignment,
+						Consumers:               unsupportedConsumers,
+					}},
+				)
+				continue
 			}
 			streams = append(streams, wsa)
 		}
 	}
 
-	if len(streams) == 0 {
+	if len(streams) == 0 && len(unsupportedStreams) == 0 {
 		js.mu.RUnlock()
 		return nil, nil
 	}
@@ -1648,15 +1671,29 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	// Track how long it took to marshal the JSON
 	mstart := time.Now()
 	b, err := json.Marshal(streams)
-	mend := time.Since(mstart)
-
-	js.mu.RUnlock()
-
 	// Must not be possible for a JSON marshaling error to result
 	// in an empty snapshot.
 	if err != nil {
+		js.mu.RUnlock()
 		return nil, err
 	}
+	// Add unsupported streams separately.
+	if len(unsupportedStreams) > 0 {
+		bu, err := json.Marshal(unsupportedStreams)
+		if err != nil {
+			js.mu.RUnlock()
+			return nil, err
+		}
+		b = b[:len(b)-1] // Remove the last ']'
+		if len(streams) > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, bu[1:]...) // Remove the first '['
+	}
+
+	mend := time.Since(mstart)
+
+	js.mu.RUnlock()
 
 	// Track how long it took to compress the JSON
 	cstart := time.Now()
