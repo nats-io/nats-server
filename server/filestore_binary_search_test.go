@@ -3,6 +3,7 @@ package server
 
 import (
     "fmt"
+    "sync/atomic"
     "testing"
     "time"
 )
@@ -72,41 +73,119 @@ func TestGetSeqFromTimeBinarySearchCorrectness(t *testing.T) {
 
 // Performance benchmark comparing binary search vs linear search
 func BenchmarkGetSeqFromTimeComparison(b *testing.B) {
-	// Create a temporary filestore for testing
-	storeDir := b.TempDir()
-	
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{Name: "BENCH", Storage: FileStorage})
-	if err != nil {
-		b.Fatalf("Unexpected error: %v", err)
-	}
-	defer fs.Stop()
-
-	// Store a large number of messages to see the performance difference
-	numMessages := 10000
-	
-	for i := 0; i < numMessages; i++ {
-		subject := fmt.Sprintf("test.%d", i)
-		data := fmt.Sprintf("message_%d", i)
-		_, _, err := fs.StoreMsg(subject, nil, []byte(data), 0)
-		if err != nil {
-			b.Fatalf("Failed to store message %d: %v", i, err)
-		}
-	}
-
-    // Use the timestamp of a middle message
-    var sm StoreMsg
-    if _, err := fs.LoadMsg(uint64(numMessages/2), &sm); err != nil {
-        b.Fatalf("LoadMsg failed: %v", err)
+    sizes := []int{10_000, 100_000}
+    positions := []struct{
+        name string
+        pick func(*fileStore, int) time.Time
+    }{
+        {
+            name: "Mid",
+            pick: func(fs *fileStore, n int) time.Time {
+                var sm StoreMsg
+                if _, err := fs.LoadMsg(uint64(n/2), &sm); err != nil {
+                    b.Fatalf("LoadMsg failed: %v", err)
+                }
+                return time.Unix(0, sm.ts)
+            },
+        },
+        {
+            name: "NearEnd",
+            pick: func(fs *fileStore, n int) time.Time {
+                var sm StoreMsg
+                if _, err := fs.LoadMsg(uint64(n), &sm); err != nil {
+                    b.Fatalf("LoadMsg failed: %v", err)
+                }
+                // 1ns before the last message to maximize linear walk
+                return time.Unix(0, sm.ts-1)
+            },
+        },
     }
-    queryTime := time.Unix(0, sm.ts)
-	
-	b.Run("BinarySearch", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			_ = fs.GetSeqFromTime(queryTime)
-		}
-	})
+
+    for _, n := range sizes {
+        b.Run(fmt.Sprintf("N=%d", n), func(b *testing.B) {
+            // Create a temporary filestore for this sub-benchmark
+            storeDir := b.TempDir()
+            fs, err := newFileStore(
+                FileStoreConfig{StoreDir: storeDir},
+                StreamConfig{Name: fmt.Sprintf("BENCH_%d", n), Storage: FileStorage})
+            if err != nil {
+                b.Fatalf("Unexpected error: %v", err)
+            }
+            defer fs.Stop()
+
+            // Populate
+            for i := 1; i <= n; i++ {
+                subject := fmt.Sprintf("test.%d", i)
+                data := fmt.Sprintf("message_%d", i)
+                if _, _, err := fs.StoreMsg(subject, nil, []byte(data), 0); err != nil {
+                    b.Fatalf("Failed to store message %d: %v", i, err)
+                }
+            }
+
+            for _, pos := range positions {
+                b.Run(pos.name, func(b *testing.B) {
+                    queryTime := pos.pick(fs, n)
+                    // Warm caches for fairness
+                    _ = fs.GetSeqFromTime(queryTime)
+                    _ = linearGetSeqFromTime(fs, queryTime)
+
+                    b.Run("BinarySearch", func(b *testing.B) {
+                        for i := 0; i < b.N; i++ {
+                            _ = fs.GetSeqFromTime(queryTime)
+                        }
+                    })
+
+                    b.Run("LinearSearch", func(b *testing.B) {
+                        for i := 0; i < b.N; i++ {
+                            _ = linearGetSeqFromTime(fs, queryTime)
+                        }
+                    })
+                })
+            }
+        })
+    }
+}
+
+// linearSelectMsgBlockForStart reproduces the previous linear block selection.
+func linearSelectMsgBlockForStart(fs *fileStore, minTime time.Time) *msgBlock {
+    fs.mu.RLock()
+    defer fs.mu.RUnlock()
+    t := minTime.UnixNano()
+    for _, mb := range fs.blks {
+        mb.mu.RLock()
+        found := t <= mb.last.ts
+        mb.mu.RUnlock()
+        if found {
+            return mb
+        }
+    }
+    return nil
+}
+
+// linearGetSeqFromTime reproduces the previous O(n) intra-block scan for baseline comparisons.
+func linearGetSeqFromTime(fs *fileStore, t time.Time) uint64 {
+    fs.mu.RLock()
+    lastSeq := fs.state.LastSeq
+    closed := fs.closed
+    fs.mu.RUnlock()
+    if closed {
+        return 0
+    }
+    mb := linearSelectMsgBlockForStart(fs, t)
+    if mb == nil {
+        return lastSeq + 1
+    }
+    fseq := atomic.LoadUint64(&mb.first.seq)
+    lseq := atomic.LoadUint64(&mb.last.seq)
+    var smv StoreMsg
+    ts := t.UnixNano()
+    for seq := fseq; seq <= lseq; seq++ {
+        sm, _, _ := mb.fetchMsgNoCopy(seq, &smv)
+        if sm != nil && sm.ts >= ts {
+            return sm.seq
+        }
+    }
+    return 0
 }
 
 // Test edge cases for binary search implementation
