@@ -3922,7 +3922,7 @@ func TestOptionsProxyRequired(t *testing.T) {
 	checkUsersAndNkeys(o.LeafNode.Users, false, nil)
 }
 
-// TestConfigStructReplacesLoadConfig plagiarises TestLargeMaxPayload but replaces
+// TestConfigStructReplacesLoadConfig plagiarizes TestLargeMaxPayload but replaces
 // LoadConfig call with a config struct.
 func TestConfigStructReplacesLoadConfig(t *testing.T) {
 	// Test 1: Large max_payload error (same as TestLargeMaxPayload first part)
@@ -3938,7 +3938,7 @@ func TestConfigStructReplacesLoadConfig(t *testing.T) {
 		t.Fatalf("Expected an error from too large of a max_payload entry")
 	}
 
-	// Test 2: max_pending > max_payload error (plagiarised from TestLargeMaxPayload)
+	// Test 2: max_pending > max_payload error (plagiarized from TestLargeMaxPayload)
 	confFileName = createConfFile(t, []byte(`
 		max_payload = 100000
 		max_pending = 50000
