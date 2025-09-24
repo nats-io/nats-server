@@ -241,6 +241,18 @@ type RemoteLeafOpts struct {
 		NoMasking   bool `json:"-"`
 	}
 
+	// HTTP Proxy configuration for WebSocket connections
+	Proxy struct {
+		// URL of the HTTP proxy server (e.g., "http://proxy.example.com:8080")
+		URL string `json:"-"`
+		// Username for proxy authentication
+		Username string `json:"-"`
+		// Password for proxy authentication
+		Password string `json:"-"`
+		// Timeout for proxy connection
+		Timeout time.Duration `json:"-"`
+	}
+
 	tlsConfigOpts *TLSConfigOpts
 
 	// If we are clustered and our local account has JetStream, if apps are accessing
@@ -2990,6 +3002,48 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				remote.FirstInfoTimeout = parseDuration(k, tk, v, errors, warnings)
 			case "disabled":
 				remote.Disabled = v.(bool)
+			case "proxy":
+				proxyMap, ok := v.(map[string]any)
+				if !ok {
+					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected proxy to be a map, got %T", v)})
+					continue
+				}
+				// Capture the token for the "proxy" field itself, before the map iteration
+				proxyToken := tk
+				for pk, pv := range proxyMap {
+					tk, pv = unwrapValue(pv, &lt)
+					switch strings.ToLower(pk) {
+					case "url":
+						remote.Proxy.URL = pv.(string)
+					case "username":
+						remote.Proxy.Username = pv.(string)
+					case "password":
+						remote.Proxy.Password = pv.(string)
+					case "timeout":
+						remote.Proxy.Timeout = parseDuration("proxy timeout", tk, pv, errors, warnings)
+					default:
+						if !tk.IsUsedVariable() {
+							err := &unknownConfigFieldErr{
+								field: pk,
+								configErr: configErr{
+									token: tk,
+								},
+							}
+							*errors = append(*errors, err)
+							continue
+						}
+					}
+				}
+				// Use the saved proxy token for validation errors, not the last field token
+				if warns, err := validateLeafNodeProxyOptions(remote); err != nil {
+					*errors = append(*errors, &configErr{proxyToken, err.Error()})
+					continue
+				} else {
+					// Add any warnings about proxy configuration
+					for _, warn := range warns {
+						*warnings = append(*warnings, &configErr{proxyToken, warn})
+					}
+				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
