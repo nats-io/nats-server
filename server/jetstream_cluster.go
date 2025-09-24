@@ -3408,7 +3408,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					}
 					panic(err.Error())
 				}
-				s, cc := js.server(), js.cluster
+				s := js.server()
 
 				var removed bool
 				if md.NoErase {
@@ -3417,19 +3417,24 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					removed, err = mset.eraseMsg(md.Seq)
 				}
 
-				// Cluster reset error.
+				var isLeader bool
+				if node := mset.raftNode(); node != nil && node.Leader() {
+					isLeader = true
+				}
+
 				if err == ErrStoreEOF {
-					return 0, err
+					if isLeader && !isRecovering {
+						var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
+						resp.Error = NewJSStreamMsgDeleteFailedError(err, Unless(err))
+						s.sendAPIErrResponse(md.Client, mset.account(), md.Subject, md.Reply, _EMPTY_, s.jsonResponse(resp))
+					}
+					continue
 				}
 
 				if err != nil && !isRecovering {
 					s.Debugf("JetStream cluster failed to delete stream msg %d from '%s > %s': %v",
 						md.Seq, md.Client.serviceAccount(), md.Stream, err)
 				}
-
-				js.mu.RLock()
-				isLeader := cc.isStreamLeader(md.Client.serviceAccount(), md.Stream)
-				js.mu.RUnlock()
 
 				if isLeader && !isRecovering {
 					var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
