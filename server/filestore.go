@@ -2560,7 +2560,7 @@ func copyMsgBlocks(src []*msgBlock) []*msgBlock {
 
 // GetSeqFromTime looks for the first sequence number that has
 // the message with >= timestamp.
-// FIXME(dlc) - inefficient, and dumb really. Make this better.
+// Optimized with binary search instead of linear search.
 func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	fs.mu.RLock()
 	lastSeq := fs.state.LastSeq
@@ -2579,17 +2579,54 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	fseq := atomic.LoadUint64(&mb.first.seq)
 	lseq := atomic.LoadUint64(&mb.last.seq)
 
-	var smv StoreMsg
+	// Use binary search for much better performance
+	return fs.binarySearchSeqFromTime(mb, t.UnixNano(), fseq, lseq)
+}
 
-	// Linear search, hence the dumb part..
-	ts := t.UnixNano()
-	for seq := fseq; seq <= lseq; seq++ {
-		sm, _, _ := mb.fetchMsgNoCopy(seq, &smv)
-		if sm != nil && sm.ts >= ts {
-			return sm.seq
+// binarySearchSeqFromTime performs binary search to find the first sequence
+// with timestamp >= target timestamp within a message block.
+// This replaces the O(n) linear search with O(log n) binary search.
+func (fs *fileStore) binarySearchSeqFromTime(mb *msgBlock, targetTs int64, fseq, lseq uint64) uint64 {
+	var smv StoreMsg
+	
+	// Edge case: check if the first message already satisfies the condition
+	if sm, _, _ := mb.fetchMsgNoCopy(fseq, &smv); sm != nil && sm.ts >= targetTs {
+		return sm.seq
+	}
+	
+	// Edge case: check if the last message doesn't satisfy the condition
+	if sm, _, _ := mb.fetchMsgNoCopy(lseq, &smv); sm == nil || sm.ts < targetTs {
+		return 0 // No message found
+	}
+
+	// Binary search between fseq and lseq
+	left, right := fseq, lseq
+	result := uint64(0)
+
+	for left <= right {
+		mid := left + (right-left)/2
+		
+		sm, _, err := mb.fetchMsgNoCopy(mid, &smv)
+		if err != nil || sm == nil {
+			// If we can't fetch the message (deleted), try the next one
+			left = mid + 1
+			continue
+		}
+
+		if sm.ts >= targetTs {
+			// Found a candidate, but search for earlier ones
+			result = sm.seq
+			if mid == fseq {
+				break // Can't go earlier
+			}
+			right = mid - 1
+		} else {
+			// Timestamp is too early, search in the right half
+			left = mid + 1
 		}
 	}
-	return 0
+
+	return result
 }
 
 // Find the first matching message against a sublist.
@@ -6887,15 +6924,26 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 	defer fs.mu.RUnlock()
 
 	t := minTime.UnixNano()
-	for _, mb := range fs.blks {
+	nb := len(fs.blks)
+	if nb == 0 {
+		return nil
+	}
+	low, high := 0, nb-1
+	var cand *msgBlock
+	for low <= high {
+		mid := (low + high) / 2
+		mb := fs.blks[mid]
 		mb.mu.RLock()
-		found := t <= mb.last.ts
+		lastTs := mb.last.ts
 		mb.mu.RUnlock()
-		if found {
-			return mb
+		if t <= lastTs {
+			cand = mb
+			high = mid - 1
+		} else {
+			low = mid + 1
 		}
 	}
-	return nil
+	return cand
 }
 
 // Index a raw msg buffer.
