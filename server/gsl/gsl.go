@@ -408,6 +408,9 @@ func (n *node[T]) isEmpty() bool {
 
 // Return the number of nodes for the given level.
 func (l *level[T]) numNodes() int {
+	if l == nil {
+		return 0
+	}
 	num := len(l.nodes)
 	if l.pwc != nil {
 		num++
@@ -500,20 +503,24 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 		// We've found a partial wildcard. We'll keep iterating downwards, but first
 		// check whether there's interest at this level (without triggering dupes) and
 		// match if so.
+		var done bool
 		nsubj := append(nsubj, '*')
 		if len(r.pwc.subs) > 0 {
 			st.Match(nsubj, cb)
+			done = true
 		}
-		if r.pwc.next != nil && r.pwc.next.numNodes() > 0 {
+		if r.pwc.next.numNodes() > 0 {
 			intersectStree(st, r.pwc.next, nsubj, cb)
+		}
+		if done {
+			return
 		}
 	}
 	// Normal node with subject literals, keep iterating.
 	for t, n := range r.nodes {
-		// Skip if a partial wildcard exists, and this node fully overlaps.
-		if r.pwc != nil &&
-			(r.pwc.next == nil || r.pwc.next.numNodes() == 0) &&
-			(n.next == nil || n.next.numNodes() == 0) {
+		if r.pwc != nil && r.pwc.next.numNodes() > 0 && n.next.numNodes() > 0 {
+			// A wildcard at the next level will already visit these descendents
+			// so skip so we don't callback the same subject more than once.
 			continue
 		}
 		nsubj := append(nsubj, t...)
@@ -526,7 +533,7 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 				}
 			}
 		}
-		if n.next != nil && n.next.numNodes() > 0 {
+		if n.next.numNodes() > 0 {
 			intersectStree(st, n.next, nsubj, cb)
 		}
 	}
