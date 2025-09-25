@@ -145,6 +145,10 @@ type RemoteGatewayOpts struct {
 	tlsConfigOpts *TLSConfigOpts
 }
 
+type CustomDialer interface {
+	Dial(network, address string) (net.Conn, error)
+}
+
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
 type LeafNodeOpts struct {
 	Host           string        `json:"addr,omitempty"`
@@ -200,6 +204,9 @@ type LeafNodeOpts struct {
 
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
+
+	// CustomDialer is used to override the default dialer.
+	CustomDialer CustomDialer
 }
 
 // SignatureHandler is used to sign a nonce from the server while

@@ -76,6 +76,18 @@ func runSolicitLeafServerToURL(surl string) (*server.Server, *server.Options) {
 	return RunServer(&o), &o
 }
 
+func runSolicitLeafServerCustomDialer(lso *server.Options, dialer server.CustomDialer) (*server.Server, *server.Options) {
+	surl := fmt.Sprintf("nats-leaf://%s:%d", lso.LeafNode.Host, lso.LeafNode.Port)
+	o := DefaultTestOptions
+	o.Port = -1
+	o.NoSystemAccount = true
+	rurl, _ := url.Parse(surl)
+	o.LeafNode.Remotes = []*server.RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
+	o.LeafNode.ReconnectInterval = 100 * time.Millisecond
+	o.LeafNode.CustomDialer = dialer
+	return RunServer(&o), &o
+}
+
 func TestLeafNodeInfo(t *testing.T) {
 	s, opts := runLeafServer()
 	defer s.Shutdown()
@@ -514,6 +526,34 @@ func TestLeafNodeSolicit(t *testing.T) {
 	defer s.Shutdown()
 
 	sl, _ := runSolicitLeafServer(opts)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	// Now test reconnect.
+	s.Shutdown()
+	// Need to restart it on the same port.
+	s, _ = runLeafServerOnPort(opts.LeafNode.Port)
+	defer s.Shutdown()
+	checkLeafNodeConnected(t, s)
+}
+
+type TestDialer struct{
+}
+
+func (td TestDialer) Dial(network, address string) (net.Conn, error) {
+	d := net.Dialer{
+		Timeout:   1 * time.Second,
+		KeepAlive: -1,
+	}
+	return d.Dial(network, address)
+}
+
+func TestLeafNodeSolicitCustomDialer(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	sl, _ := runSolicitLeafServerCustomDialer(opts,&TestDialer{})
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
