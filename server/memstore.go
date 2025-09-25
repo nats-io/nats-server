@@ -2068,6 +2068,10 @@ func memStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 	return memStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
 }
 
+func (ms *memStore) MsgSize(msg []byte) uint64 {
+	return memStoreMsgSizeRaw(0, 0, len(msg))
+}
+
 // ResetState resets any state that's temporary. For example when changing leaders.
 func (ms *memStore) ResetState() {
 	ms.mu.Lock()

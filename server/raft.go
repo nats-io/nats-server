@@ -91,6 +91,7 @@ type RaftNode interface {
 type WAL interface {
 	Type() StorageType
 	StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error)
+	MsgSize(msg []byte) uint64
 	LoadMsg(index uint64, sm *StoreMsg) (*StoreMsg, error)
 	RemoveMsg(index uint64) (bool, error)
 	Compact(index uint64) (uint64, error)
@@ -867,19 +868,22 @@ func (s *Server) transferRaftLeaders() bool {
 // Propose will propose a new entry to the group.
 // This should only be called on the leader.
 func (n *raft) Propose(data []byte) error {
-	n.Lock()
-	defer n.Unlock()
-	// Check state under lock, we might not be leader anymore.
-	if state := n.State(); state != Leader {
+	n.RLock()
+	state := n.State()
+	writeError := n.werr
+	prop := n.prop
+	n.RUnlock()
+
+	if state != Leader {
 		n.debug("Proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
 
-	// Error if we had a previous write error.
-	if werr := n.werr; werr != nil {
-		return werr
+	if writeError != nil {
+		return writeError
 	}
-	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_))
+
+	prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_))
 	return nil
 }
 
@@ -1014,10 +1018,9 @@ func (n *raft) AdjustBootClusterSize(csz int) error {
 // Must be the leader.
 func (n *raft) AdjustClusterSize(csz int) error {
 	n.Lock()
-	defer n.Unlock()
-
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
+		n.Unlock()
 		return errNotLeader
 	}
 	// Same floor as bootstrap.
@@ -1029,8 +1032,10 @@ func (n *raft) AdjustClusterSize(csz int) error {
 	// a quorum.
 	n.csz = csz
 	n.qn = n.csz/2 + 1
+	n.Unlock()
 
-	n.sendPeerState()
+	n.prop.push(newProposedEntry(
+		newEntry(EntryPeerState, encodePeerState(n.currentPeerState())), _EMPTY_))
 	return nil
 }
 
@@ -1213,10 +1218,8 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 // Should only be used when the upper layers know this is most recent.
 // Used when restoring streams, moving a stream from R1 to R>1, etc.
 func (n *raft) SendSnapshot(data []byte) error {
-	n.Lock()
-	defer n.Unlock()
-	// Don't check if we're leader before sending and storing, this is used on scaleup.
-	n.sendAppendEntryLocked([]*Entry{{EntrySnapshot, data}}, false)
+	// TODO Need to copy data?
+	n.prop.push(newProposedEntry(newEntry(EntrySnapshot, data), _EMPTY_))
 	return nil
 }
 
@@ -1714,6 +1717,8 @@ func (n *raft) StepDown(preferred ...string) error {
 	// Send the append entry directly rather than via the proposals queue,
 	// as we will switch to follower state immediately and will blow away
 	// the contents of the proposal queue in the process.
+	// Also, we won't store the entry in the Raft log, so it is OK ot call
+	// into sendAppendEntry() directly from here.
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader, stepping down due to leadership transfer", maybeLeader)
 		ae := newEntry(EntryLeaderTransfer, []byte(maybeLeader))
@@ -1829,13 +1834,16 @@ func (n *raft) Peers() []*Peer {
 // Update and propose our known set of peers.
 func (n *raft) ProposeKnownPeers(knownPeers []string) {
 	n.Lock()
-	defer n.Unlock()
 	// If we are the leader update and send this update out.
 	if n.State() != Leader {
+		n.Unlock()
 		return
 	}
 	n.updateKnownPeersLocked(knownPeers)
-	n.sendPeerState()
+	n.Unlock()
+
+	n.prop.push(newProposedEntry(
+		newEntry(EntryPeerState, encodePeerState(n.currentPeerState())), _EMPTY_))
 }
 
 // Update our known set of peers.
@@ -2630,12 +2638,11 @@ func (n *raft) runAsLeader() {
 		n.unsubscribe(rpsub)
 		n.Unlock()
 	}()
-
-	// To send out our initial peer state.
-	n.sendPeerState()
 	n.Unlock()
 
 	var propBatch []*proposedEntry
+	n.sendAppendEntry(
+		[]*Entry{{EntryPeerState, encodePeerState(n.currentPeerState())}})
 
 	hb := time.NewTicker(hbInterval)
 	defer hb.Stop()
@@ -2739,6 +2746,14 @@ func (n *raft) composeBatch(allProposals []*proposedEntry) ([]*Entry, []*propose
 	end := 0
 	for end < len(allProposals) {
 		p := allProposals[end]
+		// If we have a snapshot do not batch with anything else.
+		if p.Type == EntrySnapshot {
+			if end == 0 {
+				sz = len(p.Data) + 1
+				end = 1
+			}
+			break
+		}
 		sz += len(p.Data) + 1
 		end++
 		if sz < maxBatch && end < maxEntries {
@@ -3812,13 +3827,24 @@ CONTINUE:
 	if ae.shouldStore() {
 		// Only store if an original which will have sub != nil
 		if sub != nil {
-			if err := n.storeToWAL(ae); err != nil {
+			n.Unlock()
+			size, seq, err := n.storeToWAL(ae)
+			n.Lock()
+			if err != nil {
 				if err != ErrStoreClosed {
 					n.warn("Error storing entry to WAL: %v", err)
+				}
+				if err == errEntryStoreFailed {
+					n.resetWAL()
+					n.cancelCatchup()
 				}
 				n.Unlock()
 				return
 			}
+			n.bytes += size
+			n.pterm = ae.term
+			n.pindex = seq
+			n.active = time.Now()
 			n.cachePendingEntry(ae)
 			n.resetInitializing()
 		} else {
@@ -3979,50 +4005,54 @@ func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
 	return newAppendEntry(n.id, n.term, n.commit, n.pterm, n.pindex, entries)
 }
 
-// Determine if we should store an entry. This stops us from storing
-// heartbeat messages.
+// Determine if we should store an entry.
+// This stops us from storing heartbeat and leader transfer messages.
 func (ae *appendEntry) shouldStore() bool {
-	return ae != nil && len(ae.entries) > 0
+	if ae == nil {
+		return false
+	}
+	l := len(ae.entries)
+	if l == 0 {
+		return false
+	}
+	if l == 1 {
+		return ae.entries[0].Type != EntryLeaderTransfer
+	}
+	return true
+}
+
+func (ae *appendEntry) shouldCheckLeader() bool {
+	if ae != nil && len(ae.entries) == 1 &&
+		ae.entries[0].Type == EntrySnapshot {
+		return true
+	}
+	return false
 }
 
 // Store our append entry to our WAL.
-// lock should be held.
-func (n *raft) storeToWAL(ae *appendEntry) error {
+// Returns the number of bytes written and the sequence number
+// assigned to the message.
+func (n *raft) storeToWAL(ae *appendEntry) (uint64, uint64, error) {
 	if ae == nil {
-		return fmt.Errorf("raft: Missing append entry for storage")
+		return 0, 0, fmt.Errorf("raft: Missing append entry for storage")
 	}
+
 	if n.werr != nil {
-		return n.werr
+		return 0, 0, n.werr
 	}
 
 	seq, _, err := n.wal.StoreMsg(_EMPTY_, nil, ae.buf, 0)
 	if err != nil {
-		n.setWriteErrLocked(err)
-		return err
+		return 0, 0, err
 	}
-
 	// Sanity checking for now.
 	if index := ae.pindex + 1; index != seq {
 		n.warn("Wrong index, ae is %+v, index stored was %d, n.pindex is %d, will reset", ae, seq, n.pindex)
-		if n.State() == Leader {
-			n.stepdownLocked(n.selectNextLeader())
-		}
-		// Reset and cancel any catchup.
-		n.resetWAL()
-		n.cancelCatchup()
-		return errEntryStoreFailed
+		return 0, 0, errEntryStoreFailed
 	}
 
-	var sz uint64
-	if n.wtype == FileStorage {
-		sz = fileStoreMsgSize(_EMPTY_, nil, ae.buf)
-	} else {
-		sz = memStoreMsgSize(_EMPTY_, nil, ae.buf)
-	}
-	n.bytes += sz
-	n.pterm = ae.term
-	n.pindex = seq
-	return nil
+	sz := n.wal.MsgSize(ae.buf)
+	return sz, seq, nil
 }
 
 const (
@@ -4031,19 +4061,25 @@ const (
 	paeWarnModulo    = 5_000
 )
 
+// sendAppendEntry builds a appendEntry and stores it to the WAL,
+// before sending it to the followers.
+// It is expected for this method to be called from Raft's main
+// goroutine, unless the appendEntry does not need to be stored
+// to the WAL (heartbeat or EntryLeaderTransfer)
 func (n *raft) sendAppendEntry(entries []*Entry) {
-	n.Lock()
-	defer n.Unlock()
-	n.sendAppendEntryLocked(entries, true)
-}
-func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
-	// Safeguard against sending an append entry right after a stepdown from a different goroutine.
-	// Specifically done while holding the lock to not race.
-	if checkLeader && n.State() != Leader {
+	// Safeguard against sending an append entry right after a stepdown
+	// from a different goroutine. Specifically done while holding the
+	// lock to not race.
+	n.RLock()
+	state := n.State()
+	ae := n.buildAppendEntry(entries)
+	n.RUnlock()
+
+	if ae.shouldCheckLeader() && state != Leader {
 		n.debug("Not sending append entry, not leader")
+		ae.returnToPool()
 		return
 	}
-	ae := n.buildAppendEntry(entries)
 
 	var err error
 	var scratch [1024]byte
@@ -4055,12 +4091,30 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
 	// If we have entries store this in our wal.
 	shouldStore := ae.shouldStore()
 	if shouldStore {
-		if err := n.storeToWAL(ae); err != nil {
+		size, seq, err := n.storeToWAL(ae)
+		n.Lock()
+		if err != nil {
+			n.setWriteErrLocked(err)
+			if err == errEntryStoreFailed {
+				if n.State() == Leader {
+					n.stepdownLocked(n.selectNextLeader())
+				}
+				// are we sure we want this?
+				n.resetWAL()
+				n.cancelCatchup()
+			}
+			n.Unlock()
 			return
 		}
+
+		n.bytes += size
+		n.pterm = ae.term
+		n.pindex = seq
 		n.active = time.Now()
 		n.cachePendingEntry(ae)
+		n.Unlock()
 	}
+
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 	if !shouldStore {
 		ae.returnToPool()
@@ -4149,23 +4203,15 @@ func (n *raft) peerNames() []string {
 
 func (n *raft) currentPeerState() *peerState {
 	n.RLock()
-	ps := n.currentPeerStateLocked()
-	n.RUnlock()
-	return ps
-}
-
-func (n *raft) currentPeerStateLocked() *peerState {
+	defer n.RUnlock()
 	return &peerState{n.peerNames(), n.csz, n.extSt}
-}
-
-// sendPeerState will send our current peer state to the cluster.
-// Lock should be held.
-func (n *raft) sendPeerState() {
-	n.sendAppendEntryLocked([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerStateLocked())}}, true)
 }
 
 // Send a heartbeat.
 func (n *raft) sendHeartbeat() {
+	// OK to call sendAppendEntry() directly here.
+	// No need to push heardbeats into prop queue
+	// because we don't store those into the log.
 	n.sendAppendEntry(nil)
 }
 
