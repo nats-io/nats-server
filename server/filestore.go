@@ -2588,12 +2588,12 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 // This replaces the O(n) linear search with O(log n) binary search.
 func (fs *fileStore) binarySearchSeqFromTime(mb *msgBlock, targetTs int64, fseq, lseq uint64) uint64 {
 	var smv StoreMsg
-	
+
 	// Edge case: check if the first message already satisfies the condition
 	if sm, _, _ := mb.fetchMsgNoCopy(fseq, &smv); sm != nil && sm.ts >= targetTs {
 		return sm.seq
 	}
-	
+
 	// Edge case: check if the last message doesn't satisfy the condition
 	if sm, _, _ := mb.fetchMsgNoCopy(lseq, &smv); sm == nil || sm.ts < targetTs {
 		return 0 // No message found
@@ -2605,7 +2605,7 @@ func (fs *fileStore) binarySearchSeqFromTime(mb *msgBlock, targetTs int64, fseq,
 
 	for left <= right {
 		mid := left + (right-left)/2
-		
+
 		sm, _, err := mb.fetchMsgNoCopy(mid, &smv)
 		if err != nil || sm == nil {
 			// If we can't fetch the message (deleted), try the next one
