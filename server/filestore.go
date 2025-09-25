@@ -8143,6 +8143,10 @@ func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
 	return uint64(emptyRecordLen + slen + 4 + maxPayload)
 }
 
+func (fs *fileStore) MsgSize(msg []byte) uint64 {
+	return fileStoreMsgSizeRaw(0, 0, len(msg))
+}
+
 // ResetState resets any state that's temporary. For example when changing leaders.
 func (fs *fileStore) ResetState() {
 	fs.mu.Lock()
