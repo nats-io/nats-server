@@ -315,7 +315,7 @@ type ClientInfo struct {
 	Name       string        `json:"name,omitempty"`
 	Lang       string        `json:"lang,omitempty"`
 	Version    string        `json:"ver,omitempty"`
-	RTT        time.Duration `json:"rtt,omitempty"`
+	RTT        time.Duration `json:"rtt,omitempty,format:units"`
 	Server     string        `json:"server,omitempty"`
 	Cluster    string        `json:"cluster,omitempty"`
 	Alternates []string      `json:"alts,omitempty"`

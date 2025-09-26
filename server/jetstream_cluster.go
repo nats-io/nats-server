@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
@@ -69,6 +70,9 @@ type jetStreamCluster struct {
 	peerStreamCancelMove *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
+	// Meta snapshot encode buffers. Weakly held so GC can collect at any time, but
+	// can help us optimistically to reduce allocations on future snapshot calls.
+	lastsnap weak.Pointer[bytes.Buffer] // nolint:unused
 }
 
 // Used to track inflight stream add requests to properly re-use same group and sync subject.
@@ -1584,7 +1588,7 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 
 	// Track how long it took to marshal the JSON
 	mstart := time.Now()
-	b, err := json.Marshal(streams)
+	b, err := js.metaSnapshotJSON(streams)
 	mend := time.Since(mstart)
 
 	js.mu.RUnlock()

@@ -2,6 +2,8 @@
 
 set -ex
 
+export GOEXPERIMENT=jsonv2
+
 if [ "$1" = "compile" ]; then
     # First check that NATS builds.
     go build -v;
