@@ -2560,7 +2560,6 @@ func copyMsgBlocks(src []*msgBlock) []*msgBlock {
 
 // GetSeqFromTime looks for the first sequence number that has
 // the message with >= timestamp.
-// FIXME(dlc) - inefficient, and dumb really. Make this better.
 func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	fs.mu.RLock()
 	lastSeq := fs.state.LastSeq
@@ -2580,14 +2579,17 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	lseq := atomic.LoadUint64(&mb.last.seq)
 
 	var smv StoreMsg
-
-	// Linear search, hence the dumb part..
 	ts := t.UnixNano()
-	for seq := fseq; seq <= lseq; seq++ {
-		sm, _, _ := mb.fetchMsgNoCopy(seq, &smv)
-		if sm != nil && sm.ts >= ts {
-			return sm.seq
-		}
+
+	// Because sort.Search expects range [0,off), we have to manually
+	// calculate the offset from the first sequence.
+	off := int(lseq - fseq + 1)
+	i := sort.Search(off, func(i int) bool {
+		sm, _, _ := mb.fetchMsgNoCopy(fseq+uint64(i), &smv)
+		return sm != nil && sm.ts >= ts
+	})
+	if i < off {
+		return fseq + uint64(i)
 	}
 	return 0
 }
@@ -6886,14 +6888,25 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	t := minTime.UnixNano()
-	for _, mb := range fs.blks {
+	// Binary search for first block where last.ts >= t.
+	i, _ := slices.BinarySearchFunc(fs.blks, minTime.UnixNano(), func(mb *msgBlock, target int64) int {
 		mb.mu.RLock()
-		found := t <= mb.last.ts
+		last := mb.last.ts
 		mb.mu.RUnlock()
-		if found {
-			return mb
+		switch {
+		case last < target:
+			return -1
+		case last > target:
+			return 1
+		default:
+			return 0
 		}
+	})
+
+	// BinarySearchFunc returns an insertion point if not found.
+	// Either way, i is the index of the first mb where mb.last.ts >= t.
+	if i < len(fs.blks) {
+		return fs.blks[i]
 	}
 	return nil
 }
