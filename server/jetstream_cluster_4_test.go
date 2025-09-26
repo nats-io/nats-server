@@ -4269,7 +4269,7 @@ func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 	rn.Lock()
 	entries := []*Entry{{EntryNormal, updateDeliveredBuffer()}, {EntryNormal, updateAcksBuffer()}}
 	ae := encode(t, rn.buildAppendEntry(entries))
-	err = rn.storeToWAL(ae)
+	_, _, err = rn.storeToWAL(ae)
 	minPindex := rn.pindex
 	rn.Unlock()
 	require_NoError(t, err)

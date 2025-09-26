@@ -6973,7 +6973,7 @@ func TestJetStreamClusterCatchupMustStallWhenBehindOnApplies(t *testing.T) {
 	n := mset.node.(*raft)
 	n.Lock()
 	ae := n.buildAppendEntry(nil)
-	err = n.storeToWAL(ae)
+	_, _, err = n.storeToWAL(ae)
 	n.Unlock()
 	index, commit, applied := n.Progress()
 	require_NoError(t, err)
