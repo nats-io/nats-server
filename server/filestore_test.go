@@ -10534,3 +10534,55 @@ func TestFileStoreCorruptedNonOrderedSequences(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkFileStoreGetSeqFromTime(b *testing.B) {
+	fs, err := newFileStore(
+		FileStoreConfig{
+			StoreDir:  b.TempDir(),
+			BlockSize: 16,
+		},
+		StreamConfig{
+			Name:     "foo",
+			Subjects: []string{"foo.>"},
+			Storage:  FileStorage,
+		},
+	)
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	for range 4096 {
+		_, _, err := fs.StoreMsg("foo.bar", nil, []byte{1, 2, 3, 4, 5}, 0)
+		require_NoError(b, err)
+	}
+
+	fs.mu.RLock()
+	fs.blks[0].mu.RLock()
+	fs.lmb.mu.RLock()
+	start := time.Unix(0, fs.blks[0].first.ts)
+	middle := time.Unix(0, fs.blks[0].first.ts+(fs.lmb.last.ts-fs.blks[0].first.ts)/2)
+	end := time.Unix(0, fs.lmb.last.ts)
+	fs.blks[0].mu.RUnlock()
+	fs.lmb.mu.RUnlock()
+	fs.mu.RUnlock()
+
+	b.Run("Start", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			fs.GetSeqFromTime(start)
+		}
+	})
+
+	b.Run("Middle", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			fs.GetSeqFromTime(middle)
+		}
+	})
+
+	b.Run("End", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			fs.GetSeqFromTime(end)
+		}
+	})
+}
