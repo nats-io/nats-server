@@ -22,6 +22,10 @@ import (
 	"testing"
 )
 
+func TestInServerPSE(t *testing.T) {
+
+}
+
 func TestPSEmulationCPU(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skipf("Skipping this test on Windows")
