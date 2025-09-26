@@ -2642,7 +2642,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						batch := mset.batchApply
 						mset.mu.RUnlock()
 						if batch != nil {
-							mset.srv.Debugf("[batch] reject %s - empty entry", batch.id)
 							batch.rejectBatchState(mset)
 						}
 					}
@@ -3538,7 +3537,7 @@ func (mset *stream) skipBatchIfRecovering(batch *batchApply, buf []byte) (bool, 
 
 	// We can skip if we know this is less than what we already have.
 	if lseq-clfs < last {
-		mset.srv.Debugf("[batch] Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
+		mset.srv.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
 			mset.accountLocked(false), mset.nameLocked(false), lseq+1-clfs, last)
 		// Check for any preAcks in case we are interest based.
 		mset.clearAllPreAcks(lseq + 1 - clfs)
