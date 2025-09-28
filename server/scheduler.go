@@ -95,6 +95,14 @@ func (ms *MsgScheduling) remove(seq uint64) {
 	}
 }
 
+func (ms *MsgScheduling) removeSubject(subj string) {
+	if sched, ok := ms.schedules[subj]; ok {
+		ms.ttls.Remove(sched.seq, sched.ts)
+		delete(ms.schedules, subj)
+		delete(ms.seqToSubj, sched.seq)
+	}
+}
+
 func (ms *MsgScheduling) clearInflight() {
 	ms.inflight = make(map[string]struct{})
 }
