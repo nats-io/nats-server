@@ -3921,3 +3921,76 @@ func TestOptionsProxyRequired(t *testing.T) {
 	require_NoError(t, err)
 	checkUsersAndNkeys(o.LeafNode.Users, false, nil)
 }
+
+// TestNewServerFromConfigFunctionality tests the NewServerFromConfig() function
+// to ensure it properly processes config files and creates servers correctly.
+func TestNewServerFromConfigFunctionality(t *testing.T) {
+	// Test 1: Error handling - invalid configuration
+	confFileName := createConfFile(t, []byte(`
+		max_payload = 3000000000
+	`))
+
+	opts1 := &Options{
+		ConfigFile: confFileName,
+	}
+
+	// Should fail due to oversized max_payload (same as TestLargeMaxPayload)
+	if _, err := NewServerFromConfig(opts1); err == nil {
+		t.Fatalf("Expected an error from too large of a max_payload entry")
+	}
+
+	// Test 2: Config validation error - max_pending > max_payload
+	confFileName = createConfFile(t, []byte(`
+		max_payload = 100000
+		max_pending = 50000
+	`))
+
+	opts2 := &Options{
+		ConfigFile: confFileName,
+	}
+
+	// This should trigger validation error (same as TestLargeMaxPayload)
+	server, err := NewServerFromConfig(opts2)
+	if err == nil || !strings.Contains(err.Error(), "cannot be higher") {
+		if server != nil {
+			server.Shutdown()
+		}
+		t.Fatalf("Expected validation error, got: %v", err)
+	}
+}
+
+// TestNewServerFromConfigVsLoadConfig tests that NewServerFromConfig produces
+// equivalent results to the traditional LoadConfig approach.
+func TestNewServerFromConfigVsLoadConfig(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		port = 4224
+		max_payload = 4194304
+		max_connections = 200
+		ping_interval = "30s"
+	`))
+
+	// Method 1: Using LoadConfig (traditional approach)
+	opts1 := LoadConfig(confFileName)
+
+	// Method 2: Using NewServerFromConfig (new approach for embedded servers)
+	opts2 := &Options{ConfigFile: confFileName}
+
+	// Test 1: Both should be able to create servers successfully
+	server1, err := NewServer(opts1)
+	if err != nil {
+		t.Fatalf("Failed to create server with LoadConfig options: %v", err)
+	}
+	server1.Shutdown()
+
+	server2, err := NewServerFromConfig(opts2)
+	if err != nil {
+		t.Fatalf("Failed to create server with NewServerFromConfig: %v", err)
+	}
+	server2.Shutdown()
+
+	// Test 2: Both methods should produce equivalent results - normalize test environment fields
+	// LoadConfig sets these fields for testing, so we need to match them for fair comparison
+	opts2.NoSigs, opts2.NoLog = true, opts2.LogFile == _EMPTY_
+
+	checkOptionsEqual(t, opts1, opts2)
+}
