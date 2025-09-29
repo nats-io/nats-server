@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -2614,4 +2615,78 @@ func TestJetStreamAtomicBatchPublishExpectedLastSubjectSequence(t *testing.T) {
 	require_Equal(t, resp.PubAck.Sequence, 4)
 	require_Equal(t, resp.PubAck.BatchId, "uuid")
 	require_Equal(t, resp.PubAck.BatchSize, 2)
+}
+
+func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            MemoryStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	var resp JSPubAckResponse
+	for _, unsupportedCommit := range []string{"", "unsupported", "0"} {
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		_, err = nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+
+		m.Header.Set("Nats-Batch-Sequence", "2")
+		m.Header.Set("Nats-Batch-Commit", unsupportedCommit)
+		msg, err := nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		resp = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Error(t, resp.Error, NewJSAtomicPublishInvalidBatchCommitError())
+
+		// Confirm no batches are left.
+		mset.mu.RLock()
+		batches := mset.batches
+		mset.mu.RUnlock()
+		batches.mu.Lock()
+		groups := len(batches.group)
+		batches.mu.Unlock()
+		require_Len(t, groups, 0)
+	}
+
+	// The required API level should allow the batch to be rejected.
+	m := nats.NewMsg("foo")
+	m.Header.Set("Nats-Batch-Id", "uuid")
+	m.Header.Set("Nats-Batch-Sequence", "1")
+	m.Header.Set("Nats-Batch-Commit", "1")
+	m.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+	msg, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+	resp = JSPubAckResponse{}
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error != nil)
+	require_Error(t, resp.Error, NewJSRequiredApiLevelError())
+
+	// If required API level check passes, the header should be stripped.
+	m.Header.Set("Nats-Required-Api-Level", "0")
+	msg, err = nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+	resp = JSPubAckResponse{}
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_Equal(t, resp.PubAck.Sequence, 1)
+
+	sm, err := mset.getMsg(1)
+	require_NoError(t, err)
+	require_Len(t, len(sliceHeader(JSRequiredApiLevel, sm.Header)), 0)
 }
