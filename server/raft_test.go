@@ -133,9 +133,8 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 	require_NoError(t, err)
 
 	// Truncate buffer first.
-	var node *raft
 	short := buf[0 : len(buf)-1025]
-	_, err = node.decodeAppendEntry(short, nil, _EMPTY_)
+	_, err = decodeAppendEntry(short, nil, _EMPTY_)
 	require_Error(t, err, errBadAppendEntry)
 
 	for i := 0; i < 100; i++ {
@@ -144,7 +143,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 		bi := 42 + rand.Intn(len(b)-42)
 		if b[bi] != 0 && bi != 40 {
 			b[bi] = 0
-			_, err = node.decodeAppendEntry(b, nil, _EMPTY_)
+			_, err = decodeAppendEntry(b, nil, _EMPTY_)
 			require_Error(t, err, errBadAppendEntry)
 		}
 	}
@@ -279,7 +278,7 @@ func TestNRGAEFromOldLeader(t *testing.T) {
 	require_NoError(t, err)
 
 	// Wait for the response, the server should have rejected it.
-	ar := leader.decodeAppendEntryResponse(resp.Data)
+	ar := decodeAppendEntryResponse(resp.Data)
 	require_NotNil(t, ar)
 	require_Equal(t, ar.success, false)
 
@@ -393,15 +392,29 @@ func TestNRGLeaderTransfer(t *testing.T) {
 
 	require_Equal(t, newLeader.node().ID(), preferredID)
 
-	msg, err := sub.NextMsg(time.Second)
-	require_NoError(t, err)
-	require_NoError(t, sub.Unsubscribe())
+	// Expect to see a EntryLeader message
+	checkFor(t, time.Second, 0, func() (err error) {
+		msg, err := sub.NextMsg(time.Second)
+		if err != nil {
+			return err
+		}
 
-	ae, err := newLeader.node().(*raft).decodeAppendEntry(msg.Data, nil, msg.Reply)
-	require_NoError(t, err)
-	require_Equal(t, len(ae.entries), 1)
-	require_Equal(t, ae.entries[0].Type, EntryLeaderTransfer)
-	require_Equal(t, string(ae.entries[0].Data), preferredID)
+		ae, err := decodeAppendEntry(msg.Data, nil, msg.Reply)
+		if err != nil {
+			return err
+		}
+
+		if len(ae.entries) == 1 {
+			e := ae.entries[0]
+			if e.Type == EntryLeaderTransfer &&
+				string(e.Data) == preferredID {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("Expect EntryLeaderTransfer")
+	})
+	require_NoError(t, sub.Unsubscribe())
 }
 
 func TestNRGSwitchStateClearsQueues(t *testing.T) {
@@ -458,7 +471,7 @@ func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
 
 	// We're going to modify the append entry that we received so that
 	// we can send it again with modifications.
-	ae, err := leader.decodeAppendEntry(msg.Data, nil, msg.Reply)
+	ae, err := decodeAppendEntry(msg.Data, nil, msg.Reply)
 	require_NoError(t, err)
 
 	// First of all we're going to try sending an append entry that
@@ -953,7 +966,7 @@ func TestNRGNoResetOnAppendEntryResponse(t *testing.T) {
 	// The higher term in this case is what would cause the leader previously
 	// to reset the entire log which it shouldn't do.
 	_, err := nc.Subscribe(fmt.Sprintf(raftAppendSubj, "TEST"), func(msg *nats.Msg) {
-		if ae, err := follower.decodeAppendEntry(msg.Data, nil, msg.Reply); err == nil && len(ae.entries) > 0 {
+		if ae, err := decodeAppendEntry(msg.Data, nil, msg.Reply); err == nil && len(ae.entries) > 0 {
 			ar := newAppendEntryResponse(ae.term+1, ae.commit, follower.id, false)
 			require_NoError(t, msg.Respond(ar.encode(nil)))
 		}
@@ -1028,7 +1041,7 @@ func TestNRGCandidateDontStepdownDueToLeaderOfPreviousTerm(t *testing.T) {
 	defer rg.unlockAll()
 
 	// Decode the append entry
-	ae, err := leader.decodeAppendEntry(msg.Data, nil, msg.Reply)
+	ae, err := decodeAppendEntry(msg.Data, nil, msg.Reply)
 	require_NoError(t, err)
 
 	// Check that the append entry is from the leader
@@ -2439,7 +2452,7 @@ func TestNRGCatchupDontCountTowardQuorum(t *testing.T) {
 	// Should reply we require catchup.
 	msg, err := sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	ar := n.decodeAppendEntryResponse(msg.Data)
+	ar := decodeAppendEntryResponse(msg.Data)
 	require_Equal(t, ar.index, 0)
 	require_False(t, ar.success)
 	require_True(t, strings.HasPrefix(msg.Reply, "$NRG.CR"))
@@ -2457,7 +2470,7 @@ func TestNRGCatchupDontCountTowardQuorum(t *testing.T) {
 	n.processAppendEntry(aeHeartbeat, n.aesub)
 	msg, err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	ar = n.decodeAppendEntryResponse(msg.Data)
+	ar = decodeAppendEntryResponse(msg.Data)
 	require_Equal(t, ar.index, aeHeartbeat.pindex)
 	require_True(t, ar.success)
 	require_Equal(t, msg.Reply, _EMPTY_)
@@ -3077,7 +3090,7 @@ func TestNRGDelayedMessagesAfterCatchupDontCountTowardQuorum(t *testing.T) {
 	// Should reply "success", this is the latest message.
 	msg, err := sub.NextMsg(500 * time.Millisecond)
 	require_NoError(t, err)
-	ar := n.decodeAppendEntryResponse(msg.Data)
+	ar := decodeAppendEntryResponse(msg.Data)
 	require_Equal(t, ar.index, 3)
 	require_True(t, ar.success)
 	require_Equal(t, msg.Reply, _EMPTY_)
@@ -3240,14 +3253,14 @@ func TestNRGLeaderCatchupHandling(t *testing.T) {
 	// Should receive all messages the leader knows up to this point.
 	msg, err := sub.NextMsg(500 * time.Millisecond)
 	require_NoError(t, err)
-	ae, err := n.decodeAppendEntry(msg.Data, nil, _EMPTY_)
+	ae, err := decodeAppendEntry(msg.Data, nil, _EMPTY_)
 	require_NoError(t, err)
 	require_Equal(t, ae.pterm, 1)
 	require_Equal(t, ae.pindex, 1)
 
 	msg, err = sub.NextMsg(500 * time.Millisecond)
 	require_NoError(t, err)
-	ae, err = n.decodeAppendEntry(msg.Data, nil, _EMPTY_)
+	ae, err = decodeAppendEntry(msg.Data, nil, _EMPTY_)
 	require_NoError(t, err)
 	require_Equal(t, ae.pterm, 1)
 	require_Equal(t, ae.pindex, 2)
@@ -3306,7 +3319,7 @@ func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	// Should reply we have a higher term, prompting the server to step down.
 	msg, err := sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	ar := n.decodeAppendEntryResponse(msg.Data)
+	ar := decodeAppendEntryResponse(msg.Data)
 	require_False(t, ar.success)
 	require_Equal(t, ar.index, 1)
 	require_Equal(t, ar.term, 20)
@@ -3327,6 +3340,117 @@ func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	n.processAppendEntry(aeMsg3, csub)
 	require_Equal(t, n.pindex, 3)
 	require_Equal(t, n.pterm, 20)
+}
+
+func TestNRGSendAppendEntryNotLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	require_Equal(t, n.State(), Follower)
+	require_Equal(t, n.pindex, 0)
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(n.asubj)
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// sendAppendEntry acquires the lock by itself, so it must also protect against us not being leader anymore.
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, nil)})
+
+	// We're a follower, so we should not be able to send or store a message.
+	require_Equal(t, n.pindex, 0)
+	msg, err := sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+	require_True(t, msg == nil)
+}
+
+func TestNRGDrainAndReplaySnapshot(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: entries})
+	aeHeartbeat1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: nil})
+	aeMsg4 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: entries})
+	aeHeartbeat2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 4, pterm: 1, pindex: 4, entries: nil})
+
+	// Stage some entries as normal.
+	require_Len(t, n.apply.len(), 0)
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeMsg3, n.aesub)
+	n.processAppendEntry(aeHeartbeat1, n.aesub)
+	require_Equal(t, n.pindex, 3)
+	require_Len(t, n.apply.len(), 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.hcommit, 0)
+
+	// Just a sanity-check, if we have no snapshot then this should fail.
+	require_False(t, n.DrainAndReplaySnapshot())
+	require_Len(t, n.apply.len(), 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.hcommit, 0)
+
+	// Simulate this server processing a snapshot that requires upper layer catchup.
+	// This catchup timed out and we would then call into DrainAndReplaySnapshot.
+	snap := []byte("snapshot")
+	n.Applied(1)
+	require_NoError(t, n.InstallSnapshot(snap))
+
+	require_True(t, n.DrainAndReplaySnapshot())
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 3)
+
+	// Simulate snapshot processing being successful and restoring the apply queue when resuming.
+	n.ResumeApply()
+	require_False(t, n.paused)
+	require_Len(t, n.apply.len(), 3)
+	require_Equal(t, n.commit, 3)
+	require_Equal(t, n.hcommit, 0)
+
+	// Now simulate another case where the snapshot processing times out multiple times.
+	require_True(t, n.DrainAndReplaySnapshot())
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 3)
+
+	// Could receive new messages in the meantime and need to keep tracking the highest known commit properly.
+	n.processAppendEntry(aeMsg4, n.aesub)
+	n.processAppendEntry(aeHeartbeat2, n.aesub)
+	require_Equal(t, n.pindex, 4)
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 4)
+
+	// Replaying again should preserve the highest known commit.
+	require_True(t, n.DrainAndReplaySnapshot())
+	require_True(t, n.paused)
+	require_Len(t, n.apply.len(), 1)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.hcommit, 4)
+
+	// Resume applies, and ensure correct state.
+	n.ResumeApply()
+	require_False(t, n.paused)
+	require_Len(t, n.apply.len(), 4)
+	require_Equal(t, n.commit, 4)
+	require_Equal(t, n.hcommit, 0)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before

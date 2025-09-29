@@ -75,6 +75,7 @@ type RaftNode interface {
 	ApplyQ() *ipQueue[*CommittedEntry]
 	PauseApply() error
 	ResumeApply()
+	DrainAndReplaySnapshot() bool
 	LeadChangeC() <-chan bool
 	QuitC() <-chan struct{}
 	Created() time.Time
@@ -842,12 +843,13 @@ func (s *Server) transferRaftLeaders() bool {
 // Propose will propose a new entry to the group.
 // This should only be called on the leader.
 func (n *raft) Propose(data []byte) error {
+	n.Lock()
+	defer n.Unlock()
+	// Check state under lock, we might not be leader anymore.
 	if state := n.State(); state != Leader {
 		n.debug("Proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
-	n.Lock()
-	defer n.Unlock()
 
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
@@ -860,12 +862,13 @@ func (n *raft) Propose(data []byte) error {
 // ProposeDirect will propose multiple entries at once.
 // This should only be called on the leader.
 func (n *raft) ProposeMulti(entries []*Entry) error {
+	n.Lock()
+	defer n.Unlock()
+	// Check state under lock, we might not be leader anymore.
 	if state := n.State(); state != Leader {
 		n.debug("Direct proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
-	n.Lock()
-	defer n.Unlock()
 
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
@@ -893,10 +896,12 @@ func (n *raft) ForwardProposal(entry []byte) error {
 
 // ProposeAddPeer is called to add a peer to the group.
 func (n *raft) ProposeAddPeer(peer string) error {
+	n.RLock()
+	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
+		n.RUnlock()
 		return errNotLeader
 	}
-	n.RLock()
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
 		n.RUnlock()
@@ -984,10 +989,13 @@ func (n *raft) AdjustBootClusterSize(csz int) error {
 // AdjustClusterSize will change the cluster set size.
 // Must be the leader.
 func (n *raft) AdjustClusterSize(csz int) error {
+	n.Lock()
+	defer n.Unlock()
+
+	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
 		return errNotLeader
 	}
-	n.Lock()
 	// Same floor as bootstrap.
 	if csz < 2 {
 		csz = 2
@@ -997,7 +1005,6 @@ func (n *raft) AdjustClusterSize(csz int) error {
 	// a quorum.
 	n.csz = csz
 	n.qn = n.csz/2 + 1
-	n.Unlock()
 
 	n.sendPeerState()
 	return nil
@@ -1010,10 +1017,13 @@ func (n *raft) PauseApply() error {
 	if n.State() == Leader {
 		return errAlreadyLeader
 	}
-
 	n.Lock()
 	defer n.Unlock()
+	n.pauseApplyLocked()
+	return nil
+}
 
+func (n *raft) pauseApplyLocked() {
 	// If we are currently a candidate make sure we step down.
 	if n.State() == Candidate {
 		n.stepdownLocked(noLeader)
@@ -1021,12 +1031,12 @@ func (n *raft) PauseApply() error {
 
 	n.debug("Pausing our apply channel")
 	n.paused = true
-	n.hcommit = n.commit
+	if n.hcommit < n.commit {
+		n.hcommit = n.commit
+	}
 	// Also prevent us from trying to become a leader while paused and catching up.
 	n.pobserver, n.observer = n.observer, true
 	n.resetElect(observerModeInterval)
-
-	return nil
 }
 
 // ResumeApply will resume sending applies to the external apply queue. This
@@ -1077,6 +1087,25 @@ func (n *raft) ResumeApply() {
 	} else {
 		n.resetElectionTimeout()
 	}
+}
+
+// DrainAndReplaySnapshot will drain the apply queue and replay the snapshot.
+// Our highest known commit will be preserved by pausing applies. The caller
+// should make sure to call ResumeApply() when handling the snapshot from the
+// queue, which will populate the rest of the committed entries in the queue.
+func (n *raft) DrainAndReplaySnapshot() bool {
+	n.Lock()
+	defer n.Unlock()
+	n.warn("Draining and replaying snapshot")
+	snap, err := n.loadLastSnapshot()
+	if err != nil {
+		return false
+	}
+	n.pauseApplyLocked()
+	n.apply.drain()
+	n.commit = snap.lastIndex
+	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	return true
 }
 
 // Applied is a callback that must be called by the upper layer when it
@@ -1165,7 +1194,10 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 // Should only be used when the upper layers know this is most recent.
 // Used when restoring streams, moving a stream from R1 to R>1, etc.
 func (n *raft) SendSnapshot(data []byte) error {
-	n.sendAppendEntry([]*Entry{{EntrySnapshot, data}})
+	n.Lock()
+	defer n.Unlock()
+	// Don't check if we're leader before sending and storing, this is used on scaleup.
+	n.sendAppendEntryLocked([]*Entry{{EntrySnapshot, data}}, false)
 	return nil
 }
 
@@ -1592,11 +1624,12 @@ func (n *raft) selectNextLeader() string {
 
 // StepDown will have a leader stepdown and optionally do a leader transfer.
 func (n *raft) StepDown(preferred ...string) error {
+	n.Lock()
+	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
+		n.Unlock()
 		return errNotLeader
 	}
-
-	n.Lock()
 	if len(preferred) > 1 {
 		n.Unlock()
 		return errTooManyPrefs
@@ -1775,21 +1808,27 @@ func (n *raft) Peers() []*Peer {
 
 // Update and propose our known set of peers.
 func (n *raft) ProposeKnownPeers(knownPeers []string) {
+	n.Lock()
+	defer n.Unlock()
 	// If we are the leader update and send this update out.
 	if n.State() != Leader {
 		return
 	}
-	n.UpdateKnownPeers(knownPeers)
+	n.updateKnownPeersLocked(knownPeers)
 	n.sendPeerState()
 }
 
 // Update our known set of peers.
 func (n *raft) UpdateKnownPeers(knownPeers []string) {
 	n.Lock()
+	n.updateKnownPeersLocked(knownPeers)
+	n.Unlock()
+}
+
+func (n *raft) updateKnownPeersLocked(knownPeers []string) {
 	// Process like peer state update.
 	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
 	n.processPeerState(ps)
-	n.Unlock()
 }
 
 // ApplyQ returns the apply queue that new commits will be sent to for the
@@ -2387,7 +2426,7 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 }
 
 // This can not be used post the wire level callback since we do not copy.
-func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*appendEntry, error) {
+func decodeAppendEntry(msg []byte, sub *subscription, reply string) (*appendEntry, error) {
 	if len(msg) < appendEntryBaseLen {
 		return nil, errBadAppendEntry
 	}
@@ -2472,7 +2511,7 @@ func (ar *appendEntryResponse) encode(b []byte) []byte {
 // Track all peers we may have ever seen to use an string interns for appendEntryResponse decoding.
 var peers sync.Map
 
-func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
+func decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 	if len(msg) != appendEntryResponseLen {
 		return nil
 	}
@@ -2496,16 +2535,18 @@ func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
 	n.debug("Received forwarded remove peer proposal: %q", msg)
 
-	if n.State() != Leader {
-		n.debug("Ignoring forwarded peer removal proposal, not leader")
-		return
-	}
 	if len(msg) != idLen {
 		n.warn("Received invalid peer name for remove proposal: %q", msg)
 		return
 	}
 
 	n.RLock()
+	// Check state under lock, we might not be leader anymore.
+	if n.State() != Leader {
+		n.debug("Ignoring forwarded peer removal proposal, not leader")
+		n.RUnlock()
+		return
+	}
 	prop, werr := n.prop, n.werr
 	n.RUnlock()
 
@@ -2521,14 +2562,16 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 
 // Called when a peer has forwarded a proposal.
 func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
-	if n.State() != Leader {
-		n.debug("Ignoring forwarded proposal, not leader")
-		return
-	}
 	// Need to copy since this is underlying client/route buffer.
 	msg = copyBytes(msg)
 
 	n.RLock()
+	// Check state under lock, we might not be leader anymore.
+	if n.State() != Leader {
+		n.debug("Ignoring forwarded proposal, not leader")
+		n.RUnlock()
+		return
+	}
 	prop, werr := n.prop, n.werr
 	n.RUnlock()
 
@@ -2564,7 +2607,6 @@ func (n *raft) runAsLeader() {
 		n.Unlock()
 		return
 	}
-	n.Unlock()
 
 	// Cleanup our subscription when we leave.
 	defer func() {
@@ -2576,6 +2618,7 @@ func (n *raft) runAsLeader() {
 
 	// To send out our initial peer state.
 	n.sendPeerState()
+	n.Unlock()
 
 	hb := time.NewTicker(hbInterval)
 	defer hb.Stop()
@@ -2728,6 +2771,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 	n.RLock()
 	s, reply := n.s, n.areply
 	peer, subj, term, pterm, last := ar.peer, ar.reply, n.term, n.pterm, n.pindex
+	leader := n.State() == Leader // Grab while holding lock, to not race.
 	n.RUnlock()
 
 	defer s.grWG.Done()
@@ -2749,6 +2793,10 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		indexUpdatesQ.unregister()
 	}()
 
+	if !leader {
+		n.debug("Canceling catchup for %q, not leader anymore", peer)
+		return
+	}
 	n.debug("Running catchup for %q [%d:%d] to [%d:%d]", peer, ar.term, ar.index, pterm, last)
 
 	const maxOutstanding = 2 * 1024 * 1024 // 2MB for now.
@@ -2935,7 +2983,7 @@ func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return n.decodeAppendEntry(sm.msg, nil, _EMPTY_)
+	return decodeAppendEntry(sm.msg, nil, _EMPTY_)
 }
 
 // applyCommit will update our commit index and apply the entry to the apply queue.
@@ -3252,7 +3300,7 @@ func (n *raft) runAsCandidate() {
 // is an internal callback from the "asubj" append entry subscription.
 func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
 	msg = copyBytes(msg)
-	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
+	if ae, err := decodeAppendEntry(msg, sub, reply); err == nil {
 		// Push to the new entry channel. From here one of the worker
 		// goroutines (runAsLeader, runAsFollower, runAsCandidate) will
 		// pick it up.
@@ -3327,10 +3375,13 @@ func (n *raft) truncateWAL(term, index uint64) {
 	}
 	if index < n.commit {
 		assert.Unreachable("WAL truncate lost commits", map[string]any{
-			"term":    term,
-			"index":   index,
-			"commit":  n.commit,
-			"applied": n.applied,
+			"n.accName": n.accName,
+			"n.group":   n.group,
+			"n.id":      n.id,
+			"term":      term,
+			"index":     index,
+			"commit":    n.commit,
+			"applied":   n.applied,
 		})
 	}
 
@@ -3432,11 +3483,13 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				assert.Unreachable(
 					"Two leaders using the same term",
 					map[string]any{
-						"Node id":           n.id,
-						"Node term":         n.term,
-						"AppendEntry id":    ae.leader,
-						"AppendEntry term":  ae.term,
-						"AppendEntry lterm": ae.lterm,
+						"n.accName": n.accName,
+						"n.group":   n.group,
+						"n.id":      n.id,
+						"n.term":    n.term,
+						"ae.leader": ae.leader,
+						"ae.term":   ae.term,
+						"ae.lterm":  ae.lterm,
 					})
 			}
 			n.debug("Received append entry from another leader, stepping down to %q", ae.leader)
@@ -3828,7 +3881,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 // handleAppendEntryResponse processes responses to append entries.
 func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	ar := n.decodeAppendEntryResponse(msg)
+	ar := decodeAppendEntryResponse(msg)
 	ar.reply = reply
 	n.resp.push(ar)
 }
@@ -3892,6 +3945,15 @@ const (
 func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.Lock()
 	defer n.Unlock()
+	n.sendAppendEntryLocked(entries, true)
+}
+func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
+	// Safeguard against sending an append entry right after a stepdown from a different goroutine.
+	// Specifically done while holding the lock to not race.
+	if checkLeader && n.State() != Leader {
+		n.debug("Not sending append entry, not leader")
+		return
+	}
 	ae := n.buildAppendEntry(entries)
 
 	var err error
@@ -3998,14 +4060,19 @@ func (n *raft) peerNames() []string {
 
 func (n *raft) currentPeerState() *peerState {
 	n.RLock()
-	ps := &peerState{n.peerNames(), n.csz, n.extSt}
+	ps := n.currentPeerStateLocked()
 	n.RUnlock()
 	return ps
 }
 
+func (n *raft) currentPeerStateLocked() *peerState {
+	return &peerState{n.peerNames(), n.csz, n.extSt}
+}
+
 // sendPeerState will send our current peer state to the cluster.
+// Lock should be held.
 func (n *raft) sendPeerState() {
-	n.sendAppendEntry([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerState())}})
+	n.sendAppendEntryLocked([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerStateLocked())}}, true)
 }
 
 // Send a heartbeat.

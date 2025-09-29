@@ -178,7 +178,9 @@ type fileStore struct {
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
 	sdmcb       SubjectDeleteMarkerUpdateHandler
-	ageChk      *time.Timer
+	ageChk      *time.Timer // Timer to expire messages.
+	ageChkRun   bool        // Whether message expiration is currently running.
+	ageChkTime  int64       // When the message expiration is scheduled to run.
 	syncTmr     *time.Timer
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
@@ -667,6 +669,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if fs.ageChk != nil && fs.cfg.MaxAge == 0 {
 		fs.ageChk.Stop()
 		fs.ageChk = nil
+		fs.ageChkTime = 0
 	}
 
 	if fs.cfg.MaxMsgsPer > 0 && (old_cfg.MaxMsgsPer == 0 || fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer) {
@@ -1446,8 +1449,9 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		minTombstoneTs  int64
 	)
 
-	// To detect gaps from compaction.
+	// To detect gaps from compaction, and to ensure the sequence keeps moving up.
 	var last uint64
+	var hb [highwayhash.Size64]byte
 
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
@@ -1469,7 +1473,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		// Do some quick sanity checks here.
 		if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
 			truncate(index)
-			return gatherLost(lbuf - index), tombstones, errBadMsg
+			return gatherLost(lbuf - index), tombstones, errBadMsg{mb.mfn, fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d index %d lbuf %d)", dlen, slen, rl, index, lbuf)}
 		}
 
 		// Check for checksum failures before additional processing.
@@ -1483,10 +1487,10 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			} else {
 				hh.Write(data[slen : dlen-recordHashSize])
 			}
-			checksum := hh.Sum(nil)
+			checksum := hh.Sum(hb[:0])
 			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
 				truncate(index)
-				return gatherLost(lbuf - index), tombstones, errBadMsg
+				return gatherLost(lbuf - index), tombstones, errBadMsg{mb.mfn, "invalid checksum"}
 			}
 			copy(mb.lchk[0:], checksum)
 		}
@@ -1534,6 +1538,13 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			firstNeedsSet, mb.first.ts = false, ts
 		}
 
+		// The sequence needs to only ever move up.
+		if seq <= last {
+			// Advance to next record.
+			// We've already accounted for this sequence and marked it as deleted.
+			index += rl
+			continue
+		}
 		if !mb.dmap.Exists(seq) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
@@ -1660,7 +1671,8 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	buf = buf[:len(buf)-highwayhash.Size64]
 	fs.hh.Reset()
 	fs.hh.Write(buf)
-	if !bytes.Equal(h, fs.hh.Sum(nil)) {
+	var hb [highwayhash.Size64]byte
+	if !bytes.Equal(h, fs.hh.Sum(hb[:0])) {
 		os.Remove(fn)
 		fs.warn("Stream state checksum did not match")
 		return errCorruptState
@@ -2376,7 +2388,6 @@ func copyMsgBlocks(src []*msgBlock) []*msgBlock {
 
 // GetSeqFromTime looks for the first sequence number that has
 // the message with >= timestamp.
-// FIXME(dlc) - inefficient, and dumb really. Make this better.
 func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	fs.mu.RLock()
 	lastSeq := fs.state.LastSeq
@@ -2396,14 +2407,17 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	lseq := atomic.LoadUint64(&mb.last.seq)
 
 	var smv StoreMsg
-
-	// Linear search, hence the dumb part..
 	ts := t.UnixNano()
-	for seq := fseq; seq <= lseq; seq++ {
-		sm, _, _ := mb.fetchMsgNoCopy(seq, &smv)
-		if sm != nil && sm.ts >= ts {
-			return sm.seq
-		}
+
+	// Because sort.Search expects range [0,off), we have to manually
+	// calculate the offset from the first sequence.
+	off := int(lseq - fseq + 1)
+	i := sort.Search(off, func(i int) bool {
+		sm, _, _ := mb.fetchMsgNoCopy(fseq+uint64(i), &smv)
+		return sm != nil && sm.ts >= ts
+	})
+	if i < off {
+		return fseq + uint64(i)
 	}
 	return 0
 }
@@ -4215,9 +4229,7 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
 	if !fs.receivedAny && fs.cfg.MaxAge != 0 && ts > 0 {
 		fs.receivedAny = true
-		// don't block here by calling expireMsgs directly.
-		// Instead, set short timeout.
-		fs.resetAgeChk(int64(time.Millisecond * 50))
+		fs.resetAgeChk(0)
 	}
 	fs.mu.Unlock()
 
@@ -4793,6 +4805,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// If we are tracking multiple subjects here make sure we update that accounting.
 	mb.removeSeqPerSubject(sm.subj, seq)
 	fs.removePerSubject(sm.subj)
+	if fs.ttls != nil {
+		if ttl, err := getMessageTTL(sm.hdr); err == nil {
+			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
+			fs.ttls.Remove(seq, int64(expires))
+		}
+	}
 
 	fifo := seq == atomic.LoadUint64(&mb.first.seq)
 	isLastBlock := mb == fs.lmb
@@ -5077,7 +5095,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 		}
 	}
 	if rl < msgHdrSize {
-		return 0, 0, false, errBadMsg
+		return 0, 0, false, errBadMsg{mb.mfn, fmt.Sprintf("length too short for slot %d", slot)}
 	}
 	return uint32(ri), rl, hashChecked, nil
 }
@@ -5212,7 +5230,8 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	mb.hh.Reset()
 	mb.hh.Write(hdr[4:20])
 	mb.hh.Write(data)
-	checksum := mb.hh.Sum(nil)
+	var hb [highwayhash.Size64]byte
+	checksum := mb.hh.Sum(hb[:0])
 	// Write to msg record.
 	b.Write(checksum)
 
@@ -5556,6 +5575,12 @@ func (fs *fileStore) startAgeChk() {
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
+	// If we're already expiring messages, it will make sure to reset.
+	// Don't trigger again, as that could result in many expire goroutines.
+	if fs.ageChkRun {
+		return
+	}
+
 	var next int64 = math.MaxInt64
 	if fs.ttls != nil {
 		next = fs.ttls.GetNextExpiration(next)
@@ -5601,6 +5626,14 @@ func (fs *fileStore) resetAgeChk(delta int64) {
 		fireIn = 250 * time.Millisecond
 	}
 
+	// If we want to kick the timer to run later than what was assigned before, don't reset it.
+	// Otherwise, we could get in a situation where the timer is continuously reset, and it never runs.
+	expires := ats.AccessTime() + fireIn.Nanoseconds()
+	if fs.ageChkTime > 0 && expires > fs.ageChkTime {
+		return
+	}
+
+	fs.ageChkTime = expires
 	if fs.ageChk != nil {
 		fs.ageChk.Reset(fireIn)
 	} else {
@@ -5613,6 +5646,7 @@ func (fs *fileStore) cancelAgeChk() {
 	if fs.ageChk != nil {
 		fs.ageChk.Stop()
 		fs.ageChk = nil
+		fs.ageChkTime = 0
 	}
 }
 
@@ -5623,18 +5657,22 @@ func (fs *fileStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
 
-	fs.mu.RLock()
+	fs.mu.Lock()
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := ats.AccessTime() - maxAge
 	rmcb := fs.rmcb
 	sdmcb := fs.sdmcb
 	sdmTTL := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
 	sdmEnabled := sdmTTL > 0
-	fs.mu.RUnlock()
 
+	// If SDM is enabled, but handlers aren't set up yet. Try again later.
 	if sdmEnabled && (rmcb == nil || sdmcb == nil) {
+		fs.resetAgeChk(0)
+		fs.mu.Unlock()
 		return
 	}
+	fs.ageChkRun = true
+	fs.mu.Unlock()
 
 	if maxAge > 0 {
 		var seq uint64
@@ -5650,7 +5688,7 @@ func (fs *fileStore) expireMsgs() {
 			// if it was the last message of that particular subject that we just deleted.
 			if sdmEnabled {
 				if last, ok := fs.shouldProcessSdm(seq, sm.subj); ok {
-					sdm := last && isSubjectDeleteMarker(sm.hdr)
+					sdm := last && !isSubjectDeleteMarker(sm.hdr)
 					fs.handleRemovalOrSdm(seq, sm.subj, sdm, sdmTTL)
 				}
 			} else {
@@ -5662,95 +5700,92 @@ func (fs *fileStore) expireMsgs() {
 			minAge = ats.AccessTime() - maxAge
 		}
 	}
+	var ageDelta int64
+	if sm != nil {
+		ageDelta = sm.ts - minAge
+	}
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
-	var rmSeqs []uint64
-	var ttlSdm map[string][]SDMBySubj
+	var rmSeqs []thw.HashWheelEntry
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
-			// Need to grab subject for the specified sequence if for SDM, and check
-			// if the message hasn't been removed in the meantime.
-			sm, _ = fs.msgForSeqLocked(seq, &smv, false)
-			if sm == nil {
-				return true
-			}
-
-			if sdmEnabled {
-				if ttlSdm == nil {
-					ttlSdm = make(map[string][]SDMBySubj, 1)
-				}
-				ttlSdm[sm.subj] = append(ttlSdm[sm.subj], SDMBySubj{seq, !isSubjectDeleteMarker(sm.hdr)})
-			} else {
-				// Collect sequences to remove. Don't remove messages inline here,
-				// as that releases the lock and THW is not thread-safe.
-				rmSeqs = append(rmSeqs, seq)
-			}
-			// Removing messages out of band, those can fail, and we can be shutdown halfway
+			rmSeqs = append(rmSeqs, thw.HashWheelEntry{Seq: seq, Expires: ts})
+			// We might need to remove messages out of band, those can fail, and we can be shutdown halfway
 			// through so don't remove from THW just yet.
 			return false
 		})
-		if maxAge > 0 {
-			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
-			// of work if MaxAge will beat us to the next expiry anyway.
-			nextTTL = fs.ttls.GetNextExpiration(time.Now().Add(time.Duration(maxAge)).UnixNano())
-		} else {
-			nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
-		}
+		nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
 	}
 
 	// Remove messages collected by THW.
-	for _, seq := range rmSeqs {
-		fs.removeMsg(seq, false, false, false)
-	}
-
-	// THW is unordered, so must sort by sequence and must not be holding the lock.
-	if len(ttlSdm) > 0 {
+	if !sdmEnabled {
+		for _, rm := range rmSeqs {
+			fs.removeMsg(rm.Seq, false, false, false)
+		}
+	} else {
+		// THW is unordered, so must sort by sequence and must not be holding the lock.
 		fs.mu.Unlock()
-		for subj, es := range ttlSdm {
-			slices.SortFunc(es, func(a, b SDMBySubj) int {
-				if a.seq == b.seq {
-					return 0
-				} else if a.seq < b.seq {
-					return -1
-				} else {
-					return 1
-				}
-			})
-			for _, e := range es {
-				if last, ok := fs.shouldProcessSdm(e.seq, subj); ok {
-					sdm := last && !e.sdm
-					fs.handleRemovalOrSdm(e.seq, subj, sdm, sdmTTL)
-				}
+		slices.SortFunc(rmSeqs, func(a, b thw.HashWheelEntry) int {
+			if a.Seq == b.Seq {
+				return 0
+			} else if a.Seq < b.Seq {
+				return -1
+			} else {
+				return 1
+			}
+		})
+		for _, rm := range rmSeqs {
+			// Need to grab subject for the specified sequence if for SDM, and check
+			// if the message hasn't been removed in the meantime.
+			// We need to grab the message and check if we should process SDM while holding the lock,
+			// otherwise we can race if a deletion of this message is in progress.
+			fs.mu.Lock()
+			sm, _ = fs.msgForSeqLocked(rm.Seq, &smv, false)
+			if sm == nil {
+				fs.ttls.Remove(rm.Seq, rm.Expires)
+				fs.mu.Unlock()
+				continue
+			}
+			last, ok := fs.shouldProcessSdmLocked(rm.Seq, sm.subj)
+			fs.mu.Unlock()
+			if ok {
+				sdm := last && !isSubjectDeleteMarker(sm.hdr)
+				fs.handleRemovalOrSdm(rm.Seq, sm.subj, sdm, sdmTTL)
 			}
 		}
 		fs.mu.Lock()
 	}
 
 	// Only cancel if no message left, not on potential lookup error that would result in sm == nil.
+	fs.ageChkRun, fs.ageChkTime = false, 0
 	if fs.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		fs.cancelAgeChk()
 	} else {
-		if sm == nil {
-			fs.resetAgeChk(0)
-		} else {
-			fs.resetAgeChk(sm.ts - minAge)
-		}
+		fs.resetAgeChk(ageDelta)
 	}
 }
 
 func (fs *fileStore) shouldProcessSdm(seq uint64, subj string) (bool, bool) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	return fs.shouldProcessSdmLocked(seq, subj)
+}
 
+// Lock should be held.
+func (fs *fileStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool) {
 	if fs.sdm == nil {
 		fs.sdm = newSDMMeta()
 	}
 
 	if p, ok := fs.sdm.pending[seq]; ok {
+		// Don't allow more proposals for the same sequence if we already did recently.
+		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
+			return p.last, false
+		}
 		// If we're about to use the cached value, and we knew it was last before,
 		// quickly check that we don't have more remaining messages for the subject now.
 		// Which means we are not the last anymore and must reset to not remove later data.
@@ -5760,11 +5795,6 @@ func (fs *fileStore) shouldProcessSdm(seq uint64, subj string) (bool, bool) {
 			if remaining := msgs - numPending; remaining > 0 {
 				p.last = false
 			}
-		}
-
-		// Don't allow more proposals for the same sequence if we already did recently.
-		if time.Since(time.Unix(0, p.ts)) < 2*time.Second {
-			return p.last, false
 		}
 		fs.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
 		return p.last, true
@@ -6535,14 +6565,25 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	t := minTime.UnixNano()
-	for _, mb := range fs.blks {
+	// Binary search for first block where last.ts >= t.
+	i, _ := slices.BinarySearchFunc(fs.blks, minTime.UnixNano(), func(mb *msgBlock, target int64) int {
 		mb.mu.RLock()
-		found := t <= mb.last.ts
+		last := mb.last.ts
 		mb.mu.RUnlock()
-		if found {
-			return mb
+		switch {
+		case last < target:
+			return -1
+		case last > target:
+			return 1
+		default:
+			return 0
 		}
+	})
+
+	// BinarySearchFunc returns an insertion point if not found.
+	// Either way, i is the index of the first mb where mb.last.ts >= t.
+	if i < len(fs.blks) {
+		return fs.blks[i]
 	}
 	return nil
 }
@@ -6561,7 +6602,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 	// Sanity check here since we calculate size to allocate based on this.
 	if mbFirstSeq > (mbLastSeq + 1) { // Purged state first == last + 1
-		mb.fs.warn("indexCacheBuf corrupt state: mb.first %d mb.last %d", mbFirstSeq, mbLastSeq)
+		mb.fs.warn("indexCacheBuf corrupt state in %s: mb.first %d mb.last %d", mb.mfn, mbFirstSeq, mbLastSeq)
 		// This would cause idxSz to wrap.
 		return errCorruptState
 	}
@@ -6570,11 +6611,19 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	dms := uint64(mb.dmap.Size())
 	idxSz := mbLastSeq - mbFirstSeq + 1
 
-	if mb.cache == nil {
+	if mb.cache == nil || mb.cache.buf == nil {
 		// Approximation, may adjust below.
 		fseq = mbFirstSeq
-		idx = make([]uint32, 0, idxSz)
-		mb.cache = &cache{}
+		if mb.cache != nil && mb.cache.idx != nil {
+			idx = mb.cache.idx[:0]
+		} else {
+			idx = make([]uint32, 0, idxSz)
+		}
+		if mb.cache == nil {
+			mb.cache = &cache{}
+		} else {
+			*mb.cache = cache{}
+		}
 	} else {
 		fseq = mb.cache.fseq
 		idx = mb.cache.idx
@@ -6599,6 +6648,9 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	var seq, ttls uint64
 	var sm StoreMsg // Used for finding TTL headers
 
+	// To ensure the sequence keeps moving up.
+	var last uint64
+
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
 			return errCorruptState
@@ -6614,7 +6666,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 		// Do some quick sanity checks here.
 		if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
-			mb.fs.warn("indexCacheBuf corrupt record state: dlen %d slen %d index %d rl %d lbuf %d", dlen, slen, index, rl, lbuf)
+			mb.fs.warn("indexCacheBuf corrupt record state in %s: dlen %d slen %d index %d rl %d lbuf %d", mb.mfn, dlen, slen, index, rl, lbuf)
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
 			return errCorruptState
@@ -6629,6 +6681,15 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		// Clear any erase bits.
 		erased := seq&ebit != 0
 		seq = seq &^ ebit
+
+		// The sequence needs to only ever move up.
+		if seq <= last {
+			// Advance to next record.
+			// We've already accounted for this sequence and marked it as deleted.
+			index += rl
+			continue
+		}
+		last = seq
 
 		// We defer checksum checks to individual msg cache lookups to amortorize costs and
 		// not introduce latency for first message from a newly loaded block.
@@ -6824,19 +6885,19 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	if ts := ats.AccessTime(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
 		mb.cache.wp += lob
 	} else {
-		if cap(mb.cache.buf) <= maxBufReuse {
-			buf = mb.cache.buf[:0]
-		} else {
-			recycleMsgBlockBuf(mb.cache.buf)
-			buf = nil
-		}
-		if moreBytes > 0 {
-			nbuf := mb.cache.buf[len(mb.cache.buf)-moreBytes:]
-			if moreBytes > (len(mb.cache.buf)/4*3) && cap(nbuf) <= maxBufReuse {
-				buf = nbuf
+		if moreBytes == 0 {
+			if cap(mb.cache.buf) <= maxBufReuse {
+				// Reuse the entire underlying buffer
+				buf = mb.cache.buf[:0]
 			} else {
-				buf = append(buf, nbuf...)
+				recycleMsgBlockBuf(mb.cache.buf)
+				buf = nil
 			}
+		} else {
+			// Move the additional bytes to the beginning of the buffer and re-slice so
+			// we will have more usable capacity at the end again for additional writes.
+			copy(mb.cache.buf[:moreBytes], mb.cache.buf[len(mb.cache.buf)-moreBytes:])
+			buf = mb.cache.buf[:moreBytes]
 		}
 		// Update our cache offset.
 		mb.cache.off = int(woff)
@@ -6973,7 +7034,7 @@ func (mb *msgBlock) loadMsgsWithLock() error {
 checkCache:
 	nchecks++
 	if nchecks > 8 {
-		return errCorruptState
+		return errNoCache
 	}
 
 	// Check to see if we have a full cache.
@@ -7103,7 +7164,6 @@ func (mb *msgBlock) fetchMsgEx(seq uint64, sm *StoreMsg, doCopy bool) (*StoreMsg
 
 var (
 	errNoCache       = errors.New("no message cache")
-	errBadMsg        = errors.New("malformed or corrupt message")
 	errDeletedMsg    = errors.New("deleted message")
 	errPartialCache  = errors.New("partial cache")
 	errNoPending     = errors.New("message block does not have pending data")
@@ -7120,6 +7180,17 @@ var (
 	errNoBlkData     = errors.New("message block data missing")
 	errStateTooBig   = errors.New("store state too big for optional write")
 )
+
+type (
+	errBadMsg struct{ fn, detail string }
+)
+
+func (e errBadMsg) Error() string {
+	if e.detail != _EMPTY_ {
+		return fmt.Sprintf("malformed or corrupt message in %s: %s", filepath.Base(e.fn), e.detail)
+	}
+	return fmt.Sprintf("malformed or corrupt message in %s", filepath.Base(e.fn))
+}
 
 const (
 	// "Checksum bit" is used in "mb.cache.idx" for marking messages that have had their checksums checked.
@@ -7220,7 +7291,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 		return nil, errDeletedMsg
 	}
 
-	if seq != fsm.seq {
+	if seq != fsm.seq { // See TestFileStoreInvalidIndexesRebuilt.
 		recycleMsgBlockBuf(mb.cache.buf)
 		mb.cache.buf = nil
 		return nil, fmt.Errorf("sequence numbers for cache load did not match, %d vs %d", seq, fsm.seq)
@@ -7321,7 +7392,7 @@ func (mb *msgBlock) msgFromBufNoCopy(buf []byte, sm *StoreMsg, hh hash.Hash64) (
 // Lock should be held.
 func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCopy bool) (*StoreMsg, error) {
 	if len(buf) < emptyRecordLen {
-		return nil, errBadMsg
+		return nil, errBadMsg{mb.mfn, "record too short"}
 	}
 	var le = binary.LittleEndian
 
@@ -7333,7 +7404,7 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCop
 	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
 	if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || int(rl) > len(buf) || rl > rlBadThresh {
-		return nil, errBadMsg
+		return nil, errBadMsg{mb.mfn, fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d buf %d)", dlen, slen, rl, buf)}
 	}
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
@@ -7346,8 +7417,9 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCop
 		} else {
 			hh.Write(data[slen : dlen-recordHashSize])
 		}
-		if !bytes.Equal(hh.Sum(nil), data[len(data)-8:]) {
-			return nil, errBadMsg
+		var hb [highwayhash.Size64]byte
+		if !bytes.Equal(hh.Sum(hb[:0]), data[len(data)-8:]) {
+			return nil, errBadMsg{mb.mfn, "invalid checksum"}
 		}
 	}
 	seq := le.Uint64(hdr[4:])
@@ -7365,29 +7437,51 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCop
 	// To recycle the large blocks we can never pass back a reference, so need to copy for the upper
 	// layers and for us to be safe to expire, and recycle, the large msgBlocks.
 	end := dlen - 8
+	if len(data) < end {
+		return nil, errBadMsg{mb.mfn, "invalid data length"}
+	}
 
 	if hasHeaders {
+		if slen+4 > len(data) {
+			return nil, errBadMsg{mb.mfn, "invalid subject length greataer than data length"}
+		}
 		hl := le.Uint32(data[slen:])
 		bi := slen + 4
 		li := bi + int(hl)
+		if bi > end {
+			return nil, errBadMsg{mb.mfn, "invalid buffer index"}
+		}
 		if doCopy {
 			sm.buf = append(sm.buf, data[bi:end]...)
 		} else {
 			sm.buf = data[bi:end]
 		}
 		li, end = li-bi, end-bi
+		if li > len(sm.buf) || end > len(sm.buf) {
+			return nil, errBadMsg{mb.mfn, "invalid message length or end greater than buffer length"}
+		}
 		sm.hdr = sm.buf[0:li:li]
 		sm.msg = sm.buf[li:end]
 	} else {
+		if slen > end {
+			return nil, errBadMsg{mb.mfn, "invalid subject length greater than end"}
+		}
 		if doCopy {
 			sm.buf = append(sm.buf, data[slen:end]...)
 		} else {
 			sm.buf = data[slen:end]
 		}
-		sm.msg = sm.buf[0 : end-slen]
+		mlen := end - slen
+		if mlen > len(sm.buf) {
+			return nil, errBadMsg{mb.mfn, "invalid message length greater than buffer length"}
+		}
+		sm.msg = sm.buf[0:mlen]
 	}
 	sm.seq, sm.ts = seq, ts
 	if slen > 0 {
+		if slen > len(data) {
+			return nil, errBadMsg{mb.mfn, "invalid subject length greater than data length"}
+		}
 		if doCopy {
 			// Make a copy since sm.subj lifetime may last longer.
 			sm.subj = string(data[:slen])

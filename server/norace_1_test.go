@@ -3606,7 +3606,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	ae, err := node.decodeAppendEntry(sm.msg, nil, _EMPTY_)
+	ae, err := decodeAppendEntry(sm.msg, nil, _EMPTY_)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

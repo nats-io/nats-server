@@ -76,7 +76,7 @@ type leaf struct {
 	isSpoke bool
 	// remoteCluster is when we are a hub but the spoke leafnode is part of a cluster.
 	remoteCluster string
-	// remoteServer holds onto the remove server's name or ID.
+	// remoteServer holds onto the remote server's name or ID.
 	remoteServer string
 	// domain name of remote server
 	remoteDomain string
@@ -2004,7 +2004,7 @@ func (s *Server) checkInternalSyncConsumers(acc *Account) {
 	// We will check all streams in our local account. They must be a leader and
 	// be sourcing or mirroring. We will check the external config on the stream itself
 	// if this is cross domain, or if the remote domain is empty, meaning we might be
-	// extedning the system across this leafnode connection and hence we would be extending
+	// extending the system across this leafnode connection and hence we would be extending
 	// our own domain.
 	jsa := js.lookupAccount(acc)
 	if jsa == nil {

@@ -9106,8 +9106,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	wsas := getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeStreamTest")
-	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt-1))
+	nsa := &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeStreamTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt-1))
 
 	// Update a stream that's unsupported.
 	sjs.mu.Lock()
@@ -9128,8 +9130,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeStreamTest")
-	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeStreamTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
 
 	// Deleting a stream should always work, even if it is unsupported.
 	require_NoError(t, js.DeleteStream("DowngradeStreamTest"))
@@ -9213,14 +9217,18 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
-	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], "0")
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeConsumerTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], "0")
 	require_Len(t, len(wsas[0].Consumers), 2)
 	for _, wca := range wsas[0].Consumers {
-		if wca.Config.Name == "DowngradeConsumerTest" {
-			require_Equal(t, wca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt-1))
+		nca := &consumerAssignment{ConfigJSON: wca.ConfigJSON}
+		require_NoError(t, decodeConsumerAssignmentConfig(nca))
+		if nca.Config.Name == "DowngradeConsumerTest" {
+			require_Equal(t, nca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt-1))
 		} else {
-			require_Equal(t, wca.Config.Name, "consumer")
+			require_Equal(t, nca.Config.Name, "consumer")
 		}
 	}
 
@@ -9243,14 +9251,18 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
-	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], "0")
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeConsumerTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], "0")
 	require_Len(t, len(wsas[0].Consumers), 2)
 	for _, wca := range wsas[0].Consumers {
-		if wca.Config.Name == "DowngradeConsumerTest" {
-			require_Equal(t, wca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
+		nca := &consumerAssignment{ConfigJSON: wca.ConfigJSON}
+		require_NoError(t, decodeConsumerAssignmentConfig(nca))
+		if nca.Config.Name == "DowngradeConsumerTest" {
+			require_Equal(t, nca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
 		} else {
-			require_Equal(t, wca.Config.Name, "consumer")
+			require_Equal(t, nca.Config.Name, "consumer")
 		}
 	}
 
@@ -9260,10 +9272,14 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
-	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], "0")
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeConsumerTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], "0")
 	require_Len(t, len(wsas[0].Consumers), 1)
-	require_Equal(t, wsas[0].Consumers[0].Config.Name, "consumer")
+	nca := &consumerAssignment{ConfigJSON: wsas[0].Consumers[0].ConfigJSON}
+	require_NoError(t, decodeConsumerAssignmentConfig(nca))
+	require_Equal(t, nca.Config.Name, "consumer")
 }
 
 func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
@@ -9381,7 +9397,9 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	wsas := getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeStreamTest")
+	nsa := &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeStreamTest")
 
 	// Update a stream to be unsupported.
 	sjs.mu.Lock()
@@ -9402,7 +9420,9 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeStreamTest")
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeStreamTest")
 
 	// Deleting a stream should always work, even if it is unsupported.
 	require_NoError(t, js.DeleteStream("DowngradeStreamTest"))
@@ -9416,8 +9436,9 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	sjs.mu.Lock()
 	ccfg := &ConsumerConfig{
-		Name:     "DowngradeConsumerTest",
-		Replicas: 3,
+		Name:       "DowngradeConsumerTest",
+		Replicas:   3,
+		MaxWaiting: JSWaitQueueDefaultMax,
 	}
 	rg = cc.createGroupForConsumer(ccfg, sa)
 	ca := &consumerAssignment{
@@ -9463,7 +9484,9 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeConsumerTest")
 	require_Len(t, len(wsas[0].Consumers), 1)
 
 	// Update a consumer to be unsupported.
@@ -9485,10 +9508,99 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
-	require_Equal(t, wsas[0].Config.Name, "DowngradeConsumerTest")
-	require_Equal(t, wsas[0].Config.Metadata["_nats.req.level"], "0")
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeConsumerTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], "0")
 	require_Len(t, len(wsas[0].Consumers), 1)
-	require_Equal(t, wsas[0].Consumers[0].Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
+	nca := &consumerAssignment{ConfigJSON: wsas[0].Consumers[0].ConfigJSON}
+	require_NoError(t, decodeConsumerAssignmentConfig(nca))
+	require_Equal(t, nca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
+}
+
+func TestJetStreamClusterOfflineStreamAndConsumerUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "DowngradeTest", Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("DowngradeTest", &nats.ConsumerConfig{Durable: "D", Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+	sjs := ml.getJetStream()
+	require_NotNil(t, sjs)
+
+	var sa *streamAssignment
+	var ca *consumerAssignment
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		sjs.mu.Lock()
+		defer sjs.mu.Unlock()
+		sa = sjs.streamAssignment(globalAccountName, "DowngradeTest")
+		if sa == nil {
+			return errors.New("stream assignment missing")
+		}
+		ca = sjs.consumerAssignment(globalAccountName, "DowngradeTest", "D")
+		if ca == nil {
+			return errors.New("consumer assignment missing")
+		}
+		return nil
+	})
+
+	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
+		t.Helper()
+		snap, err := sjs.metaSnapshot()
+		require_NoError(t, err)
+		require_True(t, len(snap) > 0)
+		dec, err := s2.Decode(nil, snap)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(dec, &wsas))
+		return wsas
+	}
+
+	wsas := getValidMetaSnapshot()
+	require_Len(t, len(wsas), 1)
+	nsa := &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], "0")
+	require_Len(t, len(wsas[0].Consumers), 1)
+	nca := &consumerAssignment{ConfigJSON: wsas[0].Consumers[0].ConfigJSON}
+	require_NoError(t, decodeConsumerAssignmentConfig(nca))
+	require_Equal(t, wsas[0].Consumers[0].Name, "D")
+	require_Equal(t, nca.Config.Metadata["_nats.req.level"], "0")
+
+	// Update a consumer to be unsupported.
+	sjs.mu.Lock()
+	ca.Config.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
+	err = sjs.cluster.meta.Propose(encodeAddConsumerAssignment(ca))
+	sjs.mu.Unlock()
+	require_NoError(t, err)
+
+	// Update the stream to be unsupported.
+	sjs.mu.Lock()
+	sa.Config.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
+	err = sjs.cluster.meta.Propose(encodeUpdateStreamAssignment(sa))
+	sjs.mu.Unlock()
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	wsas = getValidMetaSnapshot()
+	require_Len(t, len(wsas), 1)
+	nsa = &streamAssignment{ConfigJSON: wsas[0].ConfigJSON}
+	require_NoError(t, decodeStreamAssignmentConfig(ml, nsa))
+	require_Equal(t, nsa.Config.Name, "DowngradeTest")
+	require_Equal(t, nsa.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
+	require_Len(t, len(wsas[0].Consumers), 1)
+	nca = &consumerAssignment{ConfigJSON: wsas[0].Consumers[0].ConfigJSON}
+	require_NoError(t, decodeConsumerAssignmentConfig(nca))
+	require_Equal(t, wsas[0].Consumers[0].Name, "D")
+	require_Equal(t, nca.Config.Metadata["_nats.req.level"], strconv.Itoa(math.MaxInt))
 }
 
 func TestJetStreamClusterOfflineStreamAndConsumerStrictDecoding(t *testing.T) {
@@ -9496,31 +9608,28 @@ func TestJetStreamClusterOfflineStreamAndConsumerStrictDecoding(t *testing.T) {
 	defer s.Shutdown()
 
 	unsupportedJson := []byte("{\"unknown\": true}")
+	unsupportedStreamJson := []byte(fmt.Sprintf("{\"stream\":%s}", unsupportedJson))
+	unsupportedConsumerJson := []byte(fmt.Sprintf("{\"consumer\":%s}", unsupportedJson))
 
-	sa, err := decodeStreamAssignment(s, unsupportedJson)
+	sa, err := decodeStreamAssignment(s, unsupportedStreamJson)
 	require_NoError(t, err)
-	require_True(t, bytes.Equal(sa.unsupported.json, unsupportedJson))
+	require_True(t, bytes.Equal(sa.ConfigJSON, unsupportedJson))
+	require_True(t, sa.unsupported != nil)
 
-	ca, err := decodeConsumerAssignment(unsupportedJson)
+	ca, err := decodeConsumerAssignment(unsupportedConsumerJson)
 	require_NoError(t, err)
-	require_True(t, bytes.Equal(ca.unsupported.json, unsupportedJson))
+	require_True(t, bytes.Equal(ca.ConfigJSON, unsupportedJson))
+	require_True(t, ca.unsupported != nil)
 
 	var bb bytes.Buffer
 	s2e := s2.NewWriter(&bb)
-	_, err = s2e.Write(unsupportedJson)
+	_, err = s2e.Write(unsupportedConsumerJson)
 	require_NoError(t, err)
 	require_NoError(t, s2e.Close())
 	ca, err = decodeConsumerAssignmentCompressed(bb.Bytes())
 	require_NoError(t, err)
-	require_True(t, bytes.Equal(ca.unsupported.json, unsupportedJson))
-
-	var wsa writeableStreamAssignment
-	require_NoError(t, wsa.UnmarshalJSON(unsupportedJson))
-	require_True(t, bytes.Equal(wsa.unsupportedJson, unsupportedJson))
-
-	var wca writeableConsumerAssignment
-	require_NoError(t, wca.UnmarshalJSON(unsupportedJson))
-	require_True(t, bytes.Equal(wca.unsupportedJson, unsupportedJson))
+	require_True(t, bytes.Equal(ca.ConfigJSON, unsupportedJson))
+	require_True(t, ca.unsupported != nil)
 }
 
 func TestJetStreamClusterStreamMonitorShutdownWithoutRaftNode(t *testing.T) {
@@ -9663,6 +9772,33 @@ func TestJetStreamClusterUnsetEmptyPlacement(t *testing.T) {
 	si, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 	require_True(t, si.Config.Placement == nil)
+}
+
+func TestJetStreamClusterDeleteMsgEOF(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: replicas,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			require_Error(t, js.DeleteMsg("TEST", 0), NewJSNoMessageFoundError())
+			require_NoError(t, js.DeleteMsg("TEST", 1))
+			require_Error(t, js.DeleteMsg("TEST", 1), NewJSNoMessageFoundError())
+			require_Error(t, js.DeleteMsg("TEST", 2), NewJSStreamMsgDeleteFailedError(ErrStoreEOF))
+		})
+	}
 }
 
 //

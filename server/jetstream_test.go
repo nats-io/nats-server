@@ -16891,6 +16891,29 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 	// Test stopping early by starting at 997 with only 3 messages.
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 997, Batch: 10, NextFor: "foo.*"})
 	checkResponses(sub, 3, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+
+	err = js.PurgeStream("TEST")
+	require_NoError(t, err)
+
+	// Add in messages
+	js.PublishAsync("foo.foo", []byte("HELLO"))
+	js.PublishAsync("foo.bar", []byte("WORLD"))
+	js.PublishAsync("foo.baz", []byte("AGAIN"))
+
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Verify that a batch get request starting at a deleted sequence number skips over the deleted messages.
+	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 10})
+	checkResponses(sub, 3, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+
+	// verify that a non-batch direct get to a deleted message returns not found.
+	_, err = js.GetMsg("TEST", 1, nats.DirectGet())
+	require_Error(t, err, fmt.Errorf("nats: message not found"))
+
 }
 
 func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
@@ -20713,4 +20736,111 @@ func TestJetStreamOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 	require_Equal(t, cl.Missing[0], "DowngradeConsumerTest")
 	require_Len(t, len(cl.Offline), 1)
 	require_Equal(t, cl.Offline["DowngradeConsumerTest"], offlineReason)
+}
+
+func TestJetStreamRemoveTTLOnRemoveMsg(t *testing.T) {
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:        "TEST",
+				Subjects:    []string{"foo"},
+				Storage:     storageType,
+				AllowMsgTTL: true,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil, nats.MsgTTL(time.Hour))
+			require_NoError(t, err)
+
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+
+			validateTTLCount := func(count uint64) {
+				store := mset.Store()
+				switch storageType {
+				case nats.FileStorage:
+					fs := store.(*fileStore)
+					fs.mu.RLock()
+					defer fs.mu.RUnlock()
+					require_Equal(t, fs.ttls.Count(), count)
+				case nats.MemoryStorage:
+					ms := store.(*memStore)
+					ms.mu.RLock()
+					defer ms.mu.RUnlock()
+					require_Equal(t, ms.ttls.Count(), count)
+				}
+			}
+			validateTTLCount(1)
+
+			require_NoError(t, js.DeleteMsg("TEST", 1))
+			validateTTLCount(0)
+		})
+	}
+}
+
+func TestJetStreamMessageTTLNotExpiring(t *testing.T) {
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:        "TEST",
+				Subjects:    []string{"foo"},
+				Storage:     storageType,
+				AllowMsgTTL: true,
+			})
+			require_NoError(t, err)
+
+			// Triggers the expiry timer once, and needs to be reset to trigger earlier.
+			_, err = js.Publish("foo", nil, nats.MsgTTL(time.Hour))
+			require_NoError(t, err)
+
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+
+			// Storing messages with a TTL would continuously reset the timer.
+			var wg sync.WaitGroup
+			wg.Add(1)
+			defer wg.Wait()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(100 * time.Millisecond):
+						ttl := time.Hour.Nanoseconds()
+						store := mset.Store()
+						store.StoreMsg("foo", nil, nil, ttl)
+					}
+				}
+			}()
+
+			// The message should be expired timely.
+			pubAck, err := js.Publish("foo", nil, nats.MsgTTL(time.Second))
+			require_NoError(t, err)
+			checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
+				_, err = js.GetMsg("TEST", pubAck.Sequence)
+				if err == nil {
+					return fmt.Errorf("message not removed yet")
+				}
+				if !errors.Is(err, nats.ErrMsgNotFound) {
+					return err
+				}
+				return nil
+			})
+		})
+	}
 }

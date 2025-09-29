@@ -3795,6 +3795,8 @@ func (acc *Account) jsNonClusteredStreamLimitsCheck(cfg *StreamConfig) *ApiError
 	if apiErr != nil {
 		return apiErr
 	}
+	jsa.js.mu.RLock()
+	defer jsa.js.mu.RUnlock()
 	jsa.mu.RLock()
 	defer jsa.mu.RUnlock()
 	if selectedLimits.MaxStreams > 0 && jsa.countStreams(tier, cfg) >= selectedLimits.MaxStreams {

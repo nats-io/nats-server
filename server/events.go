@@ -400,17 +400,17 @@ type GatewayStat struct {
 	NumInbound int       `json:"inbound_connections"`
 }
 
-type dataStats struct {
+type MsgBytes struct {
 	Msgs  int64 `json:"msgs"`
 	Bytes int64 `json:"bytes"`
 }
 
 // DataStats reports how may msg and bytes. Applicable for both sent and received.
 type DataStats struct {
-	dataStats
-	Gateways dataStats `json:"gateways,omitempty"`
-	Routes   dataStats `json:"routes,omitempty"`
-	Leafs    dataStats `json:"leafs,omitempty"`
+	MsgBytes
+	Gateways *MsgBytes `json:"gateways,omitempty"`
+	Routes   *MsgBytes `json:"routes,omitempty"`
+	Leafs    *MsgBytes `json:"leafs,omitempty"`
 }
 
 // Used for internally queueing up messages that the server wants to send.
@@ -860,13 +860,13 @@ func routeStat(r *client) *RouteStat {
 	rs := &RouteStat{
 		ID: r.cid,
 		Sent: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  r.outMsgs,
 				Bytes: r.outBytes,
 			},
 		},
 		Received: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  atomic.LoadInt64(&r.inMsgs),
 				Bytes: atomic.LoadInt64(&r.inBytes),
 			},
@@ -968,7 +968,7 @@ func (s *Server) sendStatsz(subj string) {
 			// Note that *client.out[Msgs|Bytes] are not set using atomic,
 			// unlike the in[Msgs|bytes].
 			gs.Sent = DataStats{
-				dataStats: dataStats{
+				MsgBytes: MsgBytes{
 					Msgs:  c.outMsgs,
 					Bytes: c.outBytes,
 				},
@@ -2428,37 +2428,37 @@ func (a *Account) statz() *AccountStat {
 
 	a.stats.Lock()
 	received := DataStats{
-		dataStats: dataStats{
+		MsgBytes: MsgBytes{
 			Msgs:  a.stats.inMsgs,
 			Bytes: a.stats.inBytes,
 		},
-		Gateways: dataStats{
+		Gateways: &MsgBytes{
 			Msgs:  a.stats.gw.inMsgs,
 			Bytes: a.stats.gw.inBytes,
 		},
-		Routes: dataStats{
+		Routes: &MsgBytes{
 			Msgs:  a.stats.rt.inMsgs,
 			Bytes: a.stats.rt.inBytes,
 		},
-		Leafs: dataStats{
+		Leafs: &MsgBytes{
 			Msgs:  a.stats.ln.inMsgs,
 			Bytes: a.stats.ln.inBytes,
 		},
 	}
 	sent := DataStats{
-		dataStats: dataStats{
+		MsgBytes: MsgBytes{
 			Msgs:  a.stats.outMsgs,
 			Bytes: a.stats.outBytes,
 		},
-		Gateways: dataStats{
+		Gateways: &MsgBytes{
 			Msgs:  a.stats.gw.outMsgs,
 			Bytes: a.stats.gw.outBytes,
 		},
-		Routes: dataStats{
+		Routes: &MsgBytes{
 			Msgs:  a.stats.rt.outMsgs,
 			Bytes: a.stats.rt.outBytes,
 		},
-		Leafs: dataStats{
+		Leafs: &MsgBytes{
 			Msgs:  a.stats.ln.outMsgs,
 			Bytes: a.stats.ln.outBytes,
 		},
@@ -2591,13 +2591,13 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			MQTTClient: c.getMQTTClientID(),
 		},
 		Sent: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  atomic.LoadInt64(&c.inMsgs),
 				Bytes: atomic.LoadInt64(&c.inBytes),
 			},
 		},
 		Received: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  c.outMsgs,
 				Bytes: c.outBytes,
 			},
@@ -2649,13 +2649,13 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 			MQTTClient: c.getMQTTClientID(),
 		},
 		Sent: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  c.inMsgs,
 				Bytes: c.inBytes,
 			},
 		},
 		Received: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  c.outMsgs,
 				Bytes: c.outBytes,
 			},
@@ -2711,13 +2711,13 @@ func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason strin
 			MQTTClient: c.getMQTTClientID(),
 		},
 		Sent: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  c.inMsgs,
 				Bytes: c.inBytes,
 			},
 		},
 		Received: DataStats{
-			dataStats: dataStats{
+			MsgBytes: MsgBytes{
 				Msgs:  c.outMsgs,
 				Bytes: c.outBytes,
 			},
