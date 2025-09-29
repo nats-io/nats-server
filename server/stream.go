@@ -6264,7 +6264,6 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 		return err
 	}
-	commit := len(sliceHeader(JSBatchCommit, hdr)) != 0
 
 	mset.mu.Lock()
 	if mset.batches == nil {
@@ -6337,6 +6336,37 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			return respondIncompleteBatch()
 		}
 		batches.group[batchId] = b
+	}
+
+	var commit bool
+	if c := sliceHeader(JSBatchCommit, hdr); c != nil {
+		// Reject the batch if the commit is not recognized.
+		if !bytes.Equal(c, []byte("1")) {
+			b.cleanupLocked(batchId, batches)
+			batches.mu.Unlock()
+			err := NewJSAtomicPublishInvalidBatchCommitError()
+			if canRespond {
+				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
+			}
+			return err
+		}
+		commit = true
+	}
+
+	// The required API level can have the batch be rejected. But the header is always removed.
+	if len(sliceHeader(JSRequiredApiLevel, hdr)) != 0 {
+		if errorOnRequiredApiLevel(hdr) {
+			b.cleanupLocked(batchId, batches)
+			batches.mu.Unlock()
+			err := NewJSRequiredApiLevelError()
+			if canRespond {
+				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
+			}
+			return err
+		}
+		hdr = removeHeaderIfPresent(hdr, JSRequiredApiLevel)
 	}
 
 	// Detect gaps.
@@ -6482,7 +6512,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			return errorOnUnsupported(seq, JSExpectedLastMsgId)
 		}
 
-		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, bsubj, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 			rollback(seq)
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()

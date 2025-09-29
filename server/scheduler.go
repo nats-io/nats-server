@@ -35,6 +35,8 @@ type MsgScheduling struct {
 	run       func()
 	ttls      *thw.HashWheel
 	timer     *time.Timer
+	running   bool
+	deadline  int64
 	schedules map[string]*MsgSchedule
 	seqToSubj map[uint64]string
 	inflight  map[string]struct{}
@@ -93,11 +95,25 @@ func (ms *MsgScheduling) remove(seq uint64) {
 	}
 }
 
+func (ms *MsgScheduling) removeSubject(subj string) {
+	if sched, ok := ms.schedules[subj]; ok {
+		ms.ttls.Remove(sched.seq, sched.ts)
+		delete(ms.schedules, subj)
+		delete(ms.seqToSubj, sched.seq)
+	}
+}
+
 func (ms *MsgScheduling) clearInflight() {
 	ms.inflight = make(map[string]struct{})
 }
 
 func (ms *MsgScheduling) resetTimer() {
+	// If we're already scheduling messages, it will make sure to reset.
+	// Don't trigger again, as that could result in many expire goroutines.
+	if ms.running {
+		return
+	}
+
 	next := ms.ttls.GetNextExpiration(math.MaxInt64)
 	if next == math.MaxInt64 {
 		clearTimer(&ms.timer)
@@ -111,6 +127,14 @@ func (ms *MsgScheduling) resetTimer() {
 		fireIn = 250 * time.Millisecond
 	}
 
+	// If we want to kick the timer to run later than what was assigned before, don't reset it.
+	// Otherwise, we could get in a situation where the timer is continuously reset, and it never runs.
+	deadline := time.Now().UnixNano() + fireIn.Nanoseconds()
+	if ms.deadline > 0 && deadline > ms.deadline {
+		return
+	}
+
+	ms.deadline = deadline
 	if ms.timer != nil {
 		ms.timer.Reset(fireIn)
 	} else {
