@@ -312,6 +312,8 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 	if ms.scheduling != nil {
 		if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
 			ms.scheduling.add(seq, subj, schedule.UnixNano())
+		} else {
+			ms.scheduling.removeSubject(subj)
 		}
 	}
 
