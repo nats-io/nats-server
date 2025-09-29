@@ -1978,5 +1978,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishInvalidBatchCommitErr",
+    "code": 400,
+    "error_code": 10200,
+    "description": "atomic publish batch commit is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

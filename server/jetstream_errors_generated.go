@@ -14,6 +14,9 @@ const (
 	// JSAtomicPublishIncompleteBatchErr atomic publish batch is incomplete
 	JSAtomicPublishIncompleteBatchErr ErrorIdentifier = 10176
 
+	// JSAtomicPublishInvalidBatchCommitErr atomic publish batch commit is invalid
+	JSAtomicPublishInvalidBatchCommitErr ErrorIdentifier = 10200
+
 	// JSAtomicPublishInvalidBatchIDErr atomic publish batch ID is invalid
 	JSAtomicPublishInvalidBatchIDErr ErrorIdentifier = 10179
 
@@ -605,6 +608,7 @@ var (
 		JSAccountResourcesExceededErr:                {Code: 400, ErrCode: 10002, Description: "resource limits exceeded for account"},
 		JSAtomicPublishDisabledErr:                   {Code: 400, ErrCode: 10174, Description: "atomic publish is disabled"},
 		JSAtomicPublishIncompleteBatchErr:            {Code: 400, ErrCode: 10176, Description: "atomic publish batch is incomplete"},
+		JSAtomicPublishInvalidBatchCommitErr:         {Code: 400, ErrCode: 10200, Description: "atomic publish batch commit is invalid"},
 		JSAtomicPublishInvalidBatchIDErr:             {Code: 400, ErrCode: 10179, Description: "atomic publish batch ID is invalid"},
 		JSAtomicPublishMissingSeqErr:                 {Code: 400, ErrCode: 10175, Description: "atomic publish sequence is missing"},
 		JSAtomicPublishTooLargeBatchErrF:             {Code: 400, ErrCode: 10199, Description: "atomic publish batch is too large: {size}"},
@@ -853,6 +857,16 @@ func NewJSAtomicPublishIncompleteBatchError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSAtomicPublishIncompleteBatchErr]
+}
+
+// NewJSAtomicPublishInvalidBatchCommitError creates a new JSAtomicPublishInvalidBatchCommitErr error: "atomic publish batch commit is invalid"
+func NewJSAtomicPublishInvalidBatchCommitError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAtomicPublishInvalidBatchCommitErr]
 }
 
 // NewJSAtomicPublishInvalidBatchIDError creates a new JSAtomicPublishInvalidBatchIDErr error: "atomic publish batch ID is invalid"
