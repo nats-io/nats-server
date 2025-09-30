@@ -6641,13 +6641,13 @@ func TestJetStreamClusterMetaRecoveryUpdatesDeletesConsumers(t *testing.T) {
 	}
 
 	// Push recovery entries that create the stream & consumer.
-	_, _, _, err := js.applyMetaEntries(create, ru)
+	_, err := js.applyMetaEntries(create, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.updateConsumers), 1)
 
 	// Now push another recovery entry that deletes the stream. The
 	// entry that creates the consumer should now be gone.
-	_, _, _, err = js.applyMetaEntries(delete, ru)
+	_, err = js.applyMetaEntries(delete, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.removeStreams), 1)
 	require_Len(t, len(ru.updateConsumers), 0)
@@ -6695,27 +6695,27 @@ func TestJetStreamClusterMetaRecoveryRecreateFileStreamAsMemory(t *testing.T) {
 	}
 
 	// We created a file-based stream first, but deleted it shortly after.
-	_, _, _, err := js.applyMetaEntries(createFileStream, ru)
+	_, err := js.applyMetaEntries(createFileStream, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
 	require_Len(t, len(ru.removeStreams), 0)
 
 	// Now push another recovery entry that deletes the stream.
 	// The file-based stream should not have been created.
-	_, _, _, err = js.applyMetaEntries(deleteFileStream, ru)
+	_, err = js.applyMetaEntries(deleteFileStream, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 0)
 	require_Len(t, len(ru.removeStreams), 1)
 
 	// Now stage a memory-based stream to be created.
-	_, _, _, err = js.applyMetaEntries(createMemoryStream, ru)
+	_, err = js.applyMetaEntries(createMemoryStream, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
 	require_Len(t, len(ru.removeStreams), 0)
 	require_Len(t, len(ru.updateConsumers), 0)
 
 	// Also create a consumer on that memory-based stream.
-	_, _, _, err = js.applyMetaEntries(createConsumer, ru)
+	_, err = js.applyMetaEntries(createConsumer, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
 	require_Len(t, len(ru.removeStreams), 0)
@@ -6752,19 +6752,19 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 			}
 
 			// Creating the consumer should append to update consumers list.
-			_, _, _, err := js.applyMetaEntries(createConsumer, ru)
+			_, err := js.applyMetaEntries(createConsumer, ru)
 			require_NoError(t, err)
 			require_Len(t, len(ru.updateConsumers[":TEST"]), 1)
 			require_Len(t, len(ru.removeConsumers), 0)
 
 			// Deleting the consumer should append to remove consumers list and remove from update list.
-			_, _, _, err = js.applyMetaEntries(deleteConsumer, ru)
+			_, err = js.applyMetaEntries(deleteConsumer, ru)
 			require_NoError(t, err)
 			require_Len(t, len(ru.removeConsumers[":TEST"]), 1)
 			require_Len(t, len(ru.updateConsumers[":TEST"]), 0)
 
 			// When re-creating the consumer, add to update list and remove from remove list.
-			_, _, _, err = js.applyMetaEntries(createConsumer, ru)
+			_, err = js.applyMetaEntries(createConsumer, ru)
 			require_NoError(t, err)
 			require_Len(t, len(ru.updateConsumers[":TEST"]), 1)
 			require_Len(t, len(ru.removeConsumers[":TEST"]), 0)
