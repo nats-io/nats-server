@@ -1409,13 +1409,13 @@ func (js *jetStream) monitorCluster() {
 					go checkHealth()
 					continue
 				}
-				if didSnap, didStreamRemoval, _, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
+				if didSnap, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					var nb uint64
 					// Some entries can fail without an error when shutting down, don't move applied forward.
 					if !js.isShuttingDown() {
 						_, nb = n.Applied(ce.Index)
 					}
-					if js.hasPeerEntries(ce.Entries) || didStreamRemoval || (didSnap && !isLeader) {
+					if js.hasPeerEntries(ce.Entries) || (didSnap && !isLeader) {
 						doSnapshot()
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
 						doSnapshot()
@@ -1992,8 +1992,8 @@ func (ca *consumerAssignment) recoveryKey() string {
 	return ca.Client.serviceAccount() + ksep + ca.Stream + ksep + ca.Name
 }
 
-func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bool, bool, bool, error) {
-	var didSnap, didRemoveStream, didRemoveConsumer bool
+func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bool, error) {
+	var didSnap bool
 	isRecovering := js.isMetaRecovering()
 
 	for _, e := range entries {
@@ -2015,7 +2015,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				sa, err := decodeStreamAssignment(js.srv, buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
-					return didSnap, didRemoveStream, didRemoveConsumer, err
+					return didSnap, err
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
@@ -2029,7 +2029,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				sa, err := decodeStreamAssignment(js.srv, buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
-					return didSnap, didRemoveStream, didRemoveConsumer, err
+					return didSnap, err
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
@@ -2041,13 +2041,12 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					delete(ru.removeConsumers, key)
 				} else {
 					js.processStreamRemoval(sa)
-					didRemoveStream = true
 				}
 			case assignConsumerOp:
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
-					return didSnap, didRemoveStream, didRemoveConsumer, err
+					return didSnap, err
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
@@ -2067,7 +2066,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				ca, err := decodeConsumerAssignmentCompressed(buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
-					return didSnap, didRemoveStream, didRemoveConsumer, err
+					return didSnap, err
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
@@ -2087,7 +2086,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
-					return didSnap, didRemoveStream, didRemoveConsumer, err
+					return didSnap, err
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
@@ -2102,13 +2101,12 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					}
 				} else {
 					js.processConsumerRemoval(ca)
-					didRemoveConsumer = true
 				}
 			case updateStreamOp:
 				sa, err := decodeStreamAssignment(js.srv, buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
-					return didSnap, didRemoveStream, didRemoveConsumer, err
+					return didSnap, err
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
@@ -2118,16 +2116,13 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					delete(ru.removeStreams, key)
 				} else {
 					js.processUpdateStreamAssignment(sa)
-					// Since an update can be lowering replica count, we want upper layer to treat
-					// similar to a removal and snapshot to collapse old entries.
-					didRemoveStream = true
 				}
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown meta entry op type: %v", entryOp(buf[0])))
 			}
 		}
 	}
-	return didSnap, didRemoveStream, didRemoveConsumer, nil
+	return didSnap, nil
 }
 
 func (rg *raftGroup) isMember(id string) bool {
