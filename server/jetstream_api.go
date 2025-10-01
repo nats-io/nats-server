@@ -2562,15 +2562,16 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	}
 
 	js, cc := s.getJetStreamCluster()
-	if js == nil || cc == nil || cc.meta == nil {
+	if js == nil || cc == nil {
 		return
 	}
 
-	// Extra checks here but only leader is listening.
 	js.mu.RLock()
 	isLeader := cc.isLeader()
+	meta := cc.meta
 	js.mu.RUnlock()
 
+	// Extra checks here but only leader is listening.
 	if !isLeader {
 		return
 	}
@@ -2592,7 +2593,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 
 	var found string
 	js.mu.RLock()
-	for _, p := range cc.meta.Peers() {
+	for _, p := range meta.Peers() {
 		// If Peer is specified, it takes precedence
 		if req.Peer != _EMPTY_ {
 			if p.ID == req.Peer {
@@ -2617,7 +2618,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 
 	// So we have a valid peer.
 	js.mu.Lock()
-	cc.meta.ProposeRemovePeer(found)
+	meta.ProposeRemovePeer(found)
 	js.mu.Unlock()
 
 	resp.Success = true
@@ -2668,7 +2669,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	}
 
 	js, cc := s.getJetStreamCluster()
-	if js == nil || cc == nil || cc.meta == nil {
+	if js == nil || cc == nil {
 		return
 	}
 
@@ -2827,7 +2828,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	}
 
 	js, cc := s.getJetStreamCluster()
-	if js == nil || cc == nil || cc.meta == nil {
+	if js == nil || cc == nil {
 		return
 	}
 
@@ -2977,7 +2978,13 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	}
 
 	_, cc := s.getJetStreamCluster()
-	if cc == nil || cc.meta == nil || !cc.isLeader() {
+
+	js.mu.RLock()
+	isLeader := cc.isLeader()
+	meta := cc.meta
+	js.mu.RUnlock()
+
+	if !isLeader {
 		return
 	}
 
@@ -2995,11 +3002,11 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 		for _, oca := range osa.consumers {
 			oca.deleted = true
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client}
-			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+			meta.Propose(encodeDeleteConsumerAssignment(ca))
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client}
-		cc.meta.Propose(encodeDeleteStreamAssignment(sa))
+		meta.Propose(encodeDeleteStreamAssignment(sa))
 		ns++
 	}
 	js.mu.RUnlock()
@@ -3030,13 +3037,14 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 	}
 
 	js, cc := s.getJetStreamCluster()
-	if js == nil || cc == nil || cc.meta == nil {
+	if js == nil || cc == nil {
 		return
 	}
 
 	// Extra checks here but only leader is listening.
 	js.mu.RLock()
 	isLeader := cc.isLeader()
+	meta := cc.meta
 	js.mu.RUnlock()
 
 	if !isLeader {
@@ -3053,14 +3061,14 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		if preferredLeader, resp.Error = s.getStepDownPreferredPlacement(cc.meta, req.Placement); resp.Error != nil {
+		if preferredLeader, resp.Error = s.getStepDownPreferredPlacement(meta, req.Placement); resp.Error != nil {
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 	}
 
 	// Call actual stepdown.
-	err = cc.meta.StepDown(preferredLeader)
+	err = meta.StepDown(preferredLeader)
 	if err != nil {
 		resp.Error = NewJSRaftGeneralError(err, Unless(err))
 	} else {
@@ -4788,6 +4796,10 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		meta := cc.meta
 		js.mu.RUnlock()
 
+		if meta == nil {
+			return
+		}
+
 		// Since these could wait on the Raft group lock, don't do so under the JS lock.
 		ourID := meta.ID()
 		groupLeaderless := meta.Leaderless()
@@ -5104,6 +5116,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		nca := *ca
 		ncfg := *ca.Config
 		nca.Config = &ncfg
+		meta := cc.meta
 		js.mu.RUnlock()
 		pauseUTC := req.PauseUntil.UTC()
 		if !pauseUTC.IsZero() {
@@ -5117,7 +5130,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		setStaticConsumerMetadata(nca.Config)
 
 		eca := encodeAddConsumerAssignment(&nca)
-		cc.meta.Propose(eca)
+		meta.Propose(eca)
 
 		resp.PauseUntil = pauseUTC
 		if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {
