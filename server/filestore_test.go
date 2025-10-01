@@ -10404,11 +10404,126 @@ func TestFileStoreTombstonesNoFirstSeqRollback(t *testing.T) {
 		require_Equal(t, before.FirstSeq, 21)
 		require_Equal(t, before.LastSeq, 20)
 
-		// Expect 2 blocks purely with tombstones.
+		// Expect 1 block purely with tombstones.
 		fs.mu.RLock()
 		lblks = len(fs.blks)
 		fs.mu.RUnlock()
-		require_Equal(t, lblks, 2)
+		require_Equal(t, lblks, 1)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+	})
+}
+
+func TestFileStoreTombstonesSelectNextFirstCleanup(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33 // 10 messages per block.
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Write a bunch of messages in multiple blocks.
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(2); seq <= 49; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(50); seq <= 100; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 100)
+
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+
+		before = fs.State()
+		require_Equal(t, before.Msgs, 0)
+		require_Equal(t, before.FirstSeq, 101)
+		require_Equal(t, before.LastSeq, 100)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+	})
+}
+
+func TestFileStoreTombstonesSelectNextFirstCleanupOnRecovery(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33 // 10 messages per block.
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Write a bunch of messages in multiple blocks.
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(2); seq <= 49; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(50); seq <= 100; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 100)
+
+		// Explicitly write tombstone instead of calling fs.RemoveMsg,
+		// so we need to recover from a hard kill.
+		require_NoError(t, fs.writeTombstone(1, 0))
+		before = StreamState{FirstSeq: 101, FirstTime: time.Time{}, LastSeq: 100, LastTime: before.LastTime}
 
 		// Make sure we can recover properly with no index.db present.
 		fs.Stop()
