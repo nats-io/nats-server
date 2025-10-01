@@ -1,24 +1,38 @@
 FROM golang:alpine AS builder
 
 ARG VERSION="nightly"
+ARG GIT_COMMIT
+ARG TARGETOS
+ARG TARGETARCH
 
-RUN apk add --update git
-RUN mkdir -p src/github.com/nats-io && \
-    cd src/github.com/nats-io/ && \
-    git clone https://github.com/nats-io/natscli.git && \
-    cd natscli/nats && \
-    go build -ldflags "-w -X main.version=${VERSION}" -o /nats
+ENV GOOS=$TARGETOS \
+    GOARCH=$TARGETARCH \
+    GO111MODULE=on \
+    CGO_ENABLED=0
 
-RUN go install github.com/nats-io/nsc/v2@latest
+RUN apk add --no-cache git ca-certificates
+RUN mkdir -p /src/nats-server /src/natscli /src/nsc
+
+COPY . /src/nats-server
+RUN git clone --depth 1 https://github.com/nats-io/natscli /src/natscli
+RUN git clone --depth 1 https://github.com/nats-io/nsc /src/nsc
+
+WORKDIR /src/nats-server
+RUN go install -v -trimpath -ldflags "-w -X server.serverVersion=${VERSION},server.gitCommit=${GIT_COMMIT}" .
+
+WORKDIR /src/natscli
+RUN go install -v -trimpath -ldflags "-w -X main.version=${VERSION}" ./nats
+
+WORKDIR /src/nsc
+RUN go install -v -trimpath .
 
 FROM alpine:latest
 
-RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
-
 COPY docker/nats-server.conf /nats/conf/nats-server.conf
-COPY nats-server /bin/nats-server
-COPY --from=builder /nats /bin/nats
+COPY --from=builder /go/bin/nats-server /bin/nats-server
+COPY --from=builder /go/bin/nats /bin/nats
 COPY --from=builder /go/bin/nsc /bin/nsc
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 EXPOSE 4222 8222 6222 5222
 

@@ -10,6 +10,11 @@ inputs:
     description: Docker hub password
     required: true
 
+  name:
+    description: The name of the build
+    default: nightly
+    required: false
+
   workdir:
     description: The working directory for actions requiring it
     required: true
@@ -21,16 +26,31 @@ runs:
       shell: bash
       run: docker login -u "${{ inputs.hub_username }}" -p "${{ inputs.hub_password }}"
 
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
         go-version: stable
 
+    - name: Generate build metadata
+      shell: sh
+      run: |
+        echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+        echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        echo "BUILD_NAME=$(echo ${{ inputs.name }} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g')" >> $GITHUB_ENV
+
     - name: Build and push Docker images
-      # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-      # Commit 9ed2f89a662bf1735a48bc8557fd212fa902bebf = tag v6.1.0
-      uses: goreleaser/goreleaser-action@9ed2f89a662bf1735a48bc8557fd212fa902bebf
+      uses: docker/build-push-action@v6
       with:
-        workdir: "${{ inputs.workdir }}"
-        version: ~> v2
-        args: release --skip=announce,validate --config .goreleaser-nightly.yml
+        context: "${{ inputs.workdir }}"
+        file: "${{ inputs.workdir }}/docker/Dockerfile.nightly"
+        build-args: |
+          VERSION=nightly-${{ env.BUILD_DATE }}
+          GIT_COMMIT=${{ env.GIT_COMMIT }}
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          synadia/nats-server:${{ env.BUILD_NAME }}
+          synadia/nats-server:${{ env.BUILD_NAME }}-${{ env.BUILD_DATE }}
