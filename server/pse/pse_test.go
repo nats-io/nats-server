@@ -22,38 +22,6 @@ import (
 	"testing"
 )
 
-func TestPSEmulationCPU(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skipf("Skipping this test on Windows")
-	}
-	var rss, vss int64
-	var pcpu, psPcpu float64
-
-	debug.FreeOSMemory()
-
-	// PS version first
-	pidStr := fmt.Sprintf("%d", os.Getpid())
-	out, err := exec.Command("ps", "o", "pcpu=", "-p", pidStr).Output()
-	if err != nil {
-		t.Fatalf("Failed to execute ps command: %v\n", err)
-	}
-
-	// Our internal version
-	ProcUsage(&pcpu, &rss, &vss)
-
-	fmt.Sscanf(string(out), "%f", &psPcpu)
-
-	if pcpu != psPcpu {
-		delta := int64(pcpu - psPcpu)
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta > 30 { // 30%?
-			t.Fatalf("CPUs did not match close enough: %f vs %f", pcpu, psPcpu)
-		}
-	}
-}
-
 func TestPSEmulationMem(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skipf("Skipping this test on Windows")

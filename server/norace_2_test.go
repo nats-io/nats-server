@@ -24,9 +24,11 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	crand "crypto/rand"
 
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats-server/v2/server/pse"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -3479,4 +3482,36 @@ func TestNoRaceAccessTimeLeakCheck(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNoRacePSEmulationCPU(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("Skipping this test on Windows")
+	}
+	var rss, vss int64
+	var pcpu, psPcpu float64
+
+	debug.FreeOSMemory()
+
+	// PS version first
+	pidStr := fmt.Sprintf("%d", os.Getpid())
+	out, err := exec.Command("ps", "o", "pcpu=", "-p", pidStr).Output()
+	if err != nil {
+		t.Fatalf("Failed to execute ps command: %v\n", err)
+	}
+
+	// Our internal version
+	pse.ProcUsage(&pcpu, &rss, &vss)
+
+	fmt.Sscanf(string(out), "%f", &psPcpu)
+
+	if pcpu != psPcpu {
+		delta := int64(pcpu - psPcpu)
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 30 { // 30%?
+			t.Fatalf("CPUs did not match close enough: %f vs %f", pcpu, psPcpu)
+		}
+	}
 }
