@@ -697,6 +697,15 @@ func New(opts *Options) *Server {
 	return s
 }
 
+func NewServerFromConfig(opts *Options) (*Server, error) {
+	if opts.ConfigFile != _EMPTY_ && opts.configDigest == "" {
+		if err := opts.ProcessConfigFile(opts.ConfigFile); err != nil {
+			return nil, err
+		}
+	}
+	return NewServer(opts)
+}
+
 // NewServer will setup a new server struct after parsing the options.
 // Could return an error if options can not be validated.
 // The provided Options type should not be re-used afterwards.
