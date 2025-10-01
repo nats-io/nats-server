@@ -10305,3 +10305,65 @@ func BenchmarkFileStoreGetSeqFromTime(b *testing.B) {
 		}
 	})
 }
+
+func TestFileStoreEraseMsgDoesNotLoseTombstones(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		secret := []byte("secret!")
+		// The first message will remain throughout.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		// The second message wil be removed, so a tombstone will be placed.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		// The third message is secret and will be erased.
+		_, _, err = fs.StoreMsg("foo", nil, secret, 0)
+		require_NoError(t, err)
+
+		// Removing the second message places a tombstone.
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		// A fourth message gets placed after the tombstone.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Now we erase the third message.
+		// This erases this message and should not lose the tombstone that comes after it.
+		_, err = fs.EraseMsg(3)
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 2)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 4)
+		require_True(t, slices.Equal(before.Deleted, []uint64{2, 3}))
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, errDeletedMsg)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, errDeletedMsg)
+	})
+}

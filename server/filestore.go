@@ -4819,8 +4819,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// If erase but block is empty, we can simply remove the block later.
 	if secure && !isEmpty {
 		// Grab record info.
-		ri, rl, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
-		if err := mb.eraseMsg(seq, int(ri), int(rl), isLastBlock); err != nil {
+		ri, _, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
+		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			return false, err
 		}
 	}
