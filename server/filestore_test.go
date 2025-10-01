@@ -10586,3 +10586,30 @@ func BenchmarkFileStoreGetSeqFromTime(b *testing.B) {
 		}
 	})
 }
+
+func TestFileStoreCacheLookupOnEmptyBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+
+		// First make sure that we haven't got a strong reference to the cache.
+		require_NotNil(t, lmb)
+		lmb.finishedWithCache()
+		require_True(t, lmb.cache == nil)
+
+		// Specifically we want ErrStoreMsgNotFound, not errNoCache.
+		_, err = lmb.cacheLookup(atomic.LoadUint64(&lmb.first.seq), nil)
+		require_Error(t, err, ErrStoreMsgNotFound)
+
+		// Now make sure that we didn't strengthen the reference. This proves
+		// that we short-circuited properly.
+		require_True(t, lmb.cache == nil)
+	})
+}
