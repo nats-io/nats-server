@@ -2156,7 +2156,7 @@ func (n *raft) processAppendEntries() {
 	aes := n.entry.pop()
 	if canProcess {
 		for _, ae := range aes {
-			n.processAppendEntry(ae, ae.sub)
+			n.processAppendEntry(ae)
 		}
 	}
 	n.entry.recycle(&aes)
@@ -3457,13 +3457,27 @@ func (n *raft) recoverAppendEntry(ae *appendEntry) {
 
 // processAppendEntry will process an appendEntry. This is called from
 // processAppendEntries when there are new entries to be committed.
-func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
+func (n *raft) processAppendEntry(ae *appendEntry) {
+	var ar *appendEntryResponse
+
 	// Make a copy of the reply subject, as ae may return
 	// to its pool as part of processAppendEntryLocked
 	subject := ae.reply
 
 	n.Lock()
-	ar := n.processAppendEntryLocked(ae, sub)
+	isNew := ae.sub != nil && ae.sub == n.aesub
+	isCatchup := !isNew && n.catchup != nil && ae.sub == n.catchup.sub
+
+	// Process the appendEntry if it is a new proposal, or if we are
+	// catching up. Ignore messages coming from old catchup subs when
+	// ae.lterm <= 0. Older versions of the server do not send the leader
+	// term when catching up. Old catchups from newer subs can be rejected
+	// later by checking that the appendEntry is on the correct term.
+	if isNew || isCatchup || ae.lterm > 0 {
+		ar = n.processAppendEntryLocked(ae, isNew)
+	} else {
+		n.debug("processAppendEntry ignore entry from old subscription")
+	}
 	n.Unlock()
 
 	if ar != nil {
@@ -3473,23 +3487,25 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 }
 
-// Process the given appendEntry. Optionally returns a appendEntryResponse.
-// The caller is responsible for sending out the response and return it to
-// its pool.
+// Process the given appendEntry. Parameter isNew indicates whether the
+// appendEntry is comes from a new proposal or from a catchup request.
+// Optionally returns a appendEntryResponse. The caller is responsible
+// for sending out the response and return it to its pool.
 // Lock should be held.
-func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *appendEntryResponse {
+func (n *raft) processAppendEntryLocked(ae *appendEntry, isNew bool) *appendEntryResponse {
 	// Don't reset here if we have been asked to assume leader position.
 	if !n.lxfer {
 		n.resetElectionTimeout()
 	}
 
-	// Just return if closed or we had previous write error, or invalid sub
-	if n.State() == Closed || n.werr != nil || sub == nil {
+	// Just return if closed or we had previous write error.
+	if n.State() == Closed || n.werr != nil {
 		return nil
 	}
 
-	// Grab term from append entry. But if leader explicitly defined its term, use that instead.
-	// This is required during catchup if the leader catches us up on older items from previous terms.
+	// Grab term from append entry. But if leader explicitly defined its term,
+	// use that instead. This is required during catchup if the leader catches
+	// us up on older items from previous terms.
 	// While still allowing us to confirm they're matching our highest known term.
 	lterm := ae.term
 	if ae.lterm != 0 {
@@ -3544,12 +3560,6 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 		}
 	}
 
-	// Catching up state.
-	catchingUp := n.catchup != nil
-	// Is this a new entry? New entries will be delivered on the append entry
-	// sub, rather than a catch-up sub.
-	isNew := sub == n.aesub
-
 	// Track leader directly
 	if isNew && ae.leader != noLeader {
 		if ps := n.peers[ae.leader]; ps != nil {
@@ -3557,14 +3567,6 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 		} else {
 			n.peers[ae.leader] = &lps{time.Now(), 0, true}
 		}
-	}
-
-	// If we are/were catching up ignore old catchup subs, but only if catching up from an older server
-	// that doesn't send the leader term when catching up. We can reject old catchups from newer subs
-	// later, just by checking the append entry is on the correct term.
-	if !isNew && ae.lterm == 0 && (!catchingUp || sub != n.catchup.sub) {
-		n.debug("AppendEntry ignoring old entry from previous catchup")
-		return nil
 	}
 
 	// If this term is greater than ours.
@@ -3590,12 +3592,10 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 	}
 
 	// Check state if we are catching up.
-	if catchingUp {
-		if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
+	if n.catchup != nil {
+		if n.pterm >= n.catchup.cterm && n.pindex >= n.catchup.cindex {
 			// If we are here we are good, so if we have a catchup pending we can cancel.
 			n.cancelCatchup()
-			// Reset our notion of catching up.
-			catchingUp = false
 		} else if isNew {
 			// Check to see if we are stalled. If so recreate our catchup state and resend response.
 			if n.catchupStalled() {
@@ -3682,7 +3682,7 @@ func (n *raft) processAppendEntryLocked(ae *appendEntry, sub *subscription) *app
 		// Check if we are catching up. If we are here we know the leader did not have all of the entries
 		// so make sure this is a snapshot entry. If it is not start the catchup process again since it
 		// means we may have missed additional messages.
-		if catchingUp {
+		if n.catchup != nil {
 			// This means we already entered into a catchup state but what the leader sent us did not match what we expected.
 			// Snapshots and peerstate will always be together when a leader is catching us up in this fashion.
 			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
