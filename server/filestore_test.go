@@ -4171,6 +4171,7 @@ func TestFileStoreEncrypted(t *testing.T) {
 		err = o.Update(state)
 		require_NoError(t, err)
 
+		o.Stop()
 		fs.Stop()
 		fs, err = newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, created, prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -4971,36 +4972,41 @@ func TestFileStoreSubjectsTotals(t *testing.T) {
 
 func TestFileStoreConsumerStoreEncodeAfterRestart(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
-		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
-		require_NoError(t, err)
-		defer fs.Stop()
-
-		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
-		require_NoError(t, err)
-
 		state := &ConsumerState{}
-		state.Delivered.Consumer = 22
-		state.Delivered.Stream = 22
-		state.AckFloor.Consumer = 11
-		state.AckFloor.Stream = 11
-		err = o.Update(state)
-		require_NoError(t, err)
 
-		fs.Stop()
+		func() { // for defers
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
 
-		fs, err = newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
-		require_NoError(t, err)
-		defer fs.Stop()
+			o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+			require_NoError(t, err)
+			defer o.Stop()
 
-		o, err = fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
-		require_NoError(t, err)
+			state.Delivered.Consumer = 22
+			state.Delivered.Stream = 22
+			state.AckFloor.Consumer = 11
+			state.AckFloor.Stream = 11
+			err = o.Update(state)
+			require_NoError(t, err)
+		}()
 
-		if o.(*consumerFileStore).state.Delivered != state.Delivered {
-			t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
-		}
-		if o.(*consumerFileStore).state.AckFloor != state.AckFloor {
-			t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
-		}
+		func() { // for defers
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+			require_NoError(t, err)
+			defer o.Stop()
+
+			if o.(*consumerFileStore).state.Delivered != state.Delivered {
+				t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
+			}
+			if o.(*consumerFileStore).state.AckFloor != state.AckFloor {
+				t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
+			}
+		}()
 	})
 }
 
