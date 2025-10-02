@@ -11764,29 +11764,47 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
-	if fs.fcfg.SyncAlways {
-		return writeFileWithSync(name, data, perm)
-	}
-	<-dios
-	defer func() {
-		dios <- struct{}{}
-	}()
-	return os.WriteFile(name, data, perm)
+	return writeAtomically(name, data, perm, fs.fcfg.SyncAlways)
 }
 
 func writeFileWithSync(name string, data []byte, perm fs.FileMode) error {
+	return writeAtomically(name, data, perm, true)
+}
+
+func writeAtomically(name string, data []byte, perm fs.FileMode, sync bool) error {
+	tmp := name + ".tmp"
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if sync {
+		flags = flags | os.O_SYNC
+	}
 	<-dios
 	defer func() {
 		dios <- struct{}{}
 	}()
-	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC | os.O_SYNC
-	f, err := os.OpenFile(name, flags, perm)
+	f, err := os.OpenFile(tmp, flags, perm)
 	if err != nil {
 		return err
 	}
-	if _, err = f.Write(data); err != nil {
+	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, name); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if sync {
+		// To ensure that the file rename was persisted on all filesystems,
+		// also try to flush the directory metadata.
+		if d, err := os.Open(filepath.Dir(name)); err == nil {
+			_ = d.Sync()
+			_ = d.Close()
+		}
+	}
+	return nil
 }
