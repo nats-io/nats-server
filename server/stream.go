@@ -6461,7 +6461,8 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 
 	rollback := func(seq uint64) {
 		if isClustered {
-			// TODO(mvv): reset in-memory expected header maps
+			// Only need to move the clustered sequence back if the batch fails to commit.
+			// Other changes were staged but not applied, so this is the only thing we need to do.
 			mset.clseq -= seq - 1
 		}
 		mset.clMu.Unlock()
@@ -6567,12 +6568,9 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order
 		// and not interleaved with other proposals.
 		diff.commit(mset)
-		if err := node.ProposeMulti(entries); err == nil {
-			mset.trackReplicationTraffic(node, sz, r)
-		} else {
-			// TODO(mvv): reset in-memory expected header maps
-			mset.clseq -= batchSeq
-		}
+		_ = node.ProposeMulti(entries)
+		// The proposal can fail, but we always account for trying.
+		mset.trackReplicationTraffic(node, sz, r)
 
 		// Check to see if we are being overrun.
 		// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
