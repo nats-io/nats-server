@@ -4380,9 +4380,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 			if index > info.lblk {
 				info.lblk = index
 			}
+			fs.srv.Debugf("[counter] counter %s seq %d psim, subj {total: %d, fblk: %d, lblk: %d}", subj, seq, info.total, info.fblk, info.lblk)
 		} else {
-			fs.psim.Insert(stringToBytes(subj), psi{total: 1, fblk: index, lblk: index})
+			p := psi{total: 1, fblk: index, lblk: index}
+			fs.psim.Insert(stringToBytes(subj), p)
 			fs.tsl += len(subj)
+			fs.srv.Debugf("[counter] counter %s seq %d psim, init subj {total: %d, fblk: %d, lblk: %d}", subj, seq, p.total, p.fblk, p.lblk)
 		}
 	}
 
@@ -6313,10 +6316,10 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 			ss.Msgs++
 			ss.Last = seq
 			ss.lastNeedsUpdate = false
-			mb.fs.srv.Debugf("[counter] counter %s seq %d, subj {msgs: %d, fseq: %d (%v), lseq: %d (%v)}", subj, seq, ss.Msgs, ss.First, ss.firstNeedsUpdate, ss.Last, ss.lastNeedsUpdate)
+			mb.fs.srv.Debugf("[counter] counter %s seq %d mb %d, subj {msgs: %d, fseq: %d (%v), lseq: %d (%v)}", subj, seq, mb.index, ss.Msgs, ss.First, ss.firstNeedsUpdate, ss.Last, ss.lastNeedsUpdate)
 		} else {
 			mb.fss.Insert(stringToBytes(subj), SimpleState{Msgs: 1, First: seq, Last: seq})
-			mb.fs.srv.Debugf("[counter] counter %s seq %d, init subj {msgs: 1, seq: %d}", subj, seq, seq)
+			mb.fs.srv.Debugf("[counter] counter %s seq %d mb %d, init subj {msgs: 1, seq: %d}", subj, seq, mb.index, seq)
 		}
 	}
 
