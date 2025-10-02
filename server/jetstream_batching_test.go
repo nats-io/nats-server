@@ -397,24 +397,38 @@ func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 		_, err := jsStreamCreate(t, nc, cfg)
 		require_NoError(t, err)
 
-		m := nats.NewMsg("foo")
-		m.Header.Set("Nats-Batch-Id", "uuid")
-		m.Header.Set("Nats-Batch-Sequence", "1")
-		m.Header.Set("Nats-Msg-Id", "msgId1")
-		require_NoError(t, nc.PublishMsg(m))
-		m.Header.Set("Nats-Batch-Sequence", "2")
-		m.Header.Set("Nats-Msg-Id", "pre-existing")
-		require_NoError(t, nc.PublishMsg(m))
+		_, err = js.Publish("foo", nil, nats.MsgId("pre-existing"))
+		require_NoError(t, err)
 
 		var pubAck JSPubAckResponse
-		m.Header.Set("Nats-Batch-Sequence", "3")
-		m.Header.Set("Nats-Msg-Id", "msgId2")
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Msg-Id", "pre-existing")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
 		m.Header.Set("Nats-Batch-Commit", "1")
 		rmsg, err := nc.RequestMsg(m, time.Second)
 		require_NoError(t, err)
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 		require_NotNil(t, pubAck.Error)
-		require_Error(t, pubAck.Error, NewJSAtomicPublishUnsupportedHeaderBatchError("Nats-Msg-Id"))
+		require_Error(t, pubAck.Error, NewJSAtomicPublishContainsDuplicateMessageError())
+
+		m = nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Msg-Id", "msgId1")
+		require_NoError(t, nc.PublishMsg(m))
+
+		pubAck = JSPubAckResponse{}
+		m.Header.Set("Nats-Batch-Sequence", "2")
+		m.Header.Set("Nats-Msg-Id", "msgId2")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		rmsg, err = nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.BatchSize, 2)
+		require_Equal(t, pubAck.Sequence, 3)
+		require_Equal(t, pubAck.BatchId, "uuid")
 	}
 
 	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
@@ -727,7 +741,6 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 
 		// We might support these headers later on, but for now error.
 		for key, value := range map[string]string{
-			"Nats-Msg-Id":               "msgId",
 			"Nats-Expected-Last-Msg-Id": "msgId",
 		} {
 			t.Run(key, func(t *testing.T) {
