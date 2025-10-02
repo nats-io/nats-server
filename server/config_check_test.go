@@ -2398,6 +2398,98 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 9,
 			errorPos:  9,
 		},
+		{
+			name: "leafnode proxy with unsupported scheme",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "ftp://proxy.example.com:8080"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy URL scheme must be http or https, got: ftp"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with missing host",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "http://"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy URL must specify a host"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with username but no password",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "http://proxy.example.com:8080"
+								username: "testuser"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy username and password must both be specified or both be empty"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with password but no username",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "http://proxy.example.com:8080"
+								password: "testpass"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy username and password must both be specified or both be empty"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with WSS URL but no TLS config",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "wss://127.0.0.1:7422"
+							proxy {
+								url: "http://proxy.example.com:8080"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy is configured but remote URL wss://127.0.0.1:7422 requires TLS and no TLS configuration is provided"),
+			errorLine: 6,
+			errorPos:  8,
+		},
 	}
 
 	checkConfig := func(config string) error {
