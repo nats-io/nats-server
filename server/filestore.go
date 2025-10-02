@@ -10076,11 +10076,7 @@ func (fs *fileStore) writeTTLState() error {
 	buf := fs.ttls.Encode(fs.state.LastSeq + 1)
 	fs.mu.RUnlock()
 
-	<-dios
-	err := os.WriteFile(fn, buf, defaultFilePerms)
-	dios <- struct{}{}
-
-	return err
+	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
 }
 
 func (fs *fileStore) writeMsgSchedulingState() error {
@@ -10094,11 +10090,7 @@ func (fs *fileStore) writeMsgSchedulingState() error {
 	buf := fs.scheduling.encode(fs.state.LastSeq + 1)
 	fs.mu.RUnlock()
 
-	<-dios
-	err := os.WriteFile(fn, buf, defaultFilePerms)
-	dios <- struct{}{}
-
-	return err
+	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
 }
 
 // Stop the current filestore.
