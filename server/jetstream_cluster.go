@@ -8885,7 +8885,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	)
 	diff := &batchStagedDiff{}
 	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
-		// TODO(mvv): reset in-memory expected header maps
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {
 			var buf [256]byte
@@ -8916,12 +8915,10 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Do proposal.
-	err = node.Propose(esm)
-	// TODO(mvv): reset in-memory expected header maps, if err!=nil
-	if err == nil {
-		mset.clseq++
-		mset.trackReplicationTraffic(node, len(esm), r)
-	}
+	_ = node.Propose(esm)
+	// The proposal can fail, but we always account for trying.
+	mset.clseq++
+	mset.trackReplicationTraffic(node, len(esm), r)
 
 	// Check to see if we are being overrun.
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
