@@ -6505,9 +6505,6 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 
 		// Reject unsupported headers.
-		if msgId := getMsgId(bhdr); msgId != _EMPTY_ {
-			return errorOnUnsupported(seq, JSMsgId)
-		}
 		if getExpectedLastMsgId(hdr) != _EMPTY_ {
 			return errorOnUnsupported(seq, JSExpectedLastMsgId)
 		}

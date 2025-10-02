@@ -303,7 +303,7 @@ func checkMsgHeadersPreClusteredProposal(
 		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
 			// Dedupe if staged.
 			if _, ok = diff.msgIds[msgId]; ok {
-				return hdr, msg, 0, nil, errMsgIdDuplicate
+				return hdr, msg, 0, NewJSAtomicPublishContainsDuplicateMessageError(), errMsgIdDuplicate
 			}
 			mset.ddMu.Lock()
 			if dde := mset.checkMsgId(msgId); dde != nil {
@@ -311,7 +311,7 @@ func checkMsgHeadersPreClusteredProposal(
 				mset.ddMu.Unlock()
 				// Should not return an invalid sequence, in that case error.
 				if seq > 0 {
-					return hdr, msg, seq, nil, errMsgIdDuplicate
+					return hdr, msg, seq, NewJSAtomicPublishContainsDuplicateMessageError(), errMsgIdDuplicate
 				} else {
 					return hdr, msg, 0, NewJSStreamDuplicateMessageConflictError(), errMsgIdDuplicate
 				}

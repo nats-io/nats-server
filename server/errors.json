@@ -1988,5 +1988,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishContainsDuplicateMessageErr",
+    "code": 400,
+    "error_code": 10201,
+    "description": "atomic publish batch contains duplicate message id",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
