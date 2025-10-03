@@ -461,13 +461,6 @@ type Pending struct {
 	Timestamp int64
 }
 
-// TemplateStore stores templates.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-type TemplateStore interface {
-	Store(*streamTemplate) error
-	Delete(*streamTemplate) error
-}
-
 const (
 	limitsPolicyJSONString    = `"limits"`
 	interestPolicyJSONString  = `"interest"`
