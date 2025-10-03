@@ -4182,6 +4182,7 @@ func TestFileStoreEncrypted(t *testing.T) {
 		err = o.Update(state)
 		require_NoError(t, err)
 
+		o.Stop()
 		fs.Stop()
 		fs, err = newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, created, prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -4982,36 +4983,41 @@ func TestFileStoreSubjectsTotals(t *testing.T) {
 
 func TestFileStoreConsumerStoreEncodeAfterRestart(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
-		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
-		require_NoError(t, err)
-		defer fs.Stop()
-
-		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
-		require_NoError(t, err)
-
 		state := &ConsumerState{}
-		state.Delivered.Consumer = 22
-		state.Delivered.Stream = 22
-		state.AckFloor.Consumer = 11
-		state.AckFloor.Stream = 11
-		err = o.Update(state)
-		require_NoError(t, err)
 
-		fs.Stop()
+		func() { // for defers
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
 
-		fs, err = newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
-		require_NoError(t, err)
-		defer fs.Stop()
+			o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+			require_NoError(t, err)
+			defer o.Stop()
 
-		o, err = fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
-		require_NoError(t, err)
+			state.Delivered.Consumer = 22
+			state.Delivered.Stream = 22
+			state.AckFloor.Consumer = 11
+			state.AckFloor.Stream = 11
+			err = o.Update(state)
+			require_NoError(t, err)
+		}()
 
-		if o.(*consumerFileStore).state.Delivered != state.Delivered {
-			t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
-		}
-		if o.(*consumerFileStore).state.AckFloor != state.AckFloor {
-			t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
-		}
+		func() { // for defers
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+			require_NoError(t, err)
+			defer o.Stop()
+
+			if o.(*consumerFileStore).state.Delivered != state.Delivered {
+				t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
+			}
+			if o.(*consumerFileStore).state.AckFloor != state.AckFloor {
+				t.Fatalf("Consumer state is wrong %+v vs %+v", o.(*consumerFileStore).state, state)
+			}
+		}()
 	})
 }
 
@@ -10583,6 +10589,266 @@ func BenchmarkFileStoreGetSeqFromTime(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
 			fs.GetSeqFromTime(end)
+		}
+	})
+}
+
+func TestFileStoreCacheLookupOnEmptyBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+
+		// First make sure that we haven't got a strong reference to the cache.
+		require_NotNil(t, lmb)
+		lmb.finishedWithCache()
+		require_True(t, lmb.cache == nil)
+
+		// Specifically we want ErrStoreMsgNotFound, not errNoCache.
+		_, err = lmb.cacheLookup(atomic.LoadUint64(&lmb.first.seq), nil)
+		require_Error(t, err, ErrStoreMsgNotFound)
+
+		// Now make sure that we didn't strengthen the reference. This proves
+		// that we short-circuited properly.
+		require_True(t, lmb.cache == nil)
+	})
+}
+
+func TestFileStoreEraseMsgDoesNotLoseTombstones(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		secret := []byte("secret!")
+		// The first message will remain throughout.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		// The second message wil be removed, so a tombstone will be placed.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		// The third message is secret and will be erased.
+		_, _, err = fs.StoreMsg("foo", nil, secret, 0)
+		require_NoError(t, err)
+
+		// Removing the second message places a tombstone.
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		// A fourth message gets placed after the tombstone.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Now we erase the third message.
+		// This erases this message and should not lose the tombstone that comes after it.
+		_, err = fs.EraseMsg(3)
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 2)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 4)
+		require_True(t, slices.Equal(before.Deleted, []uint64{2, 3}))
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, errDeletedMsg)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, errDeletedMsg)
+	})
+}
+
+func TestFileStoreTombstonesNoFirstSeqRollback(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33 // 10 messages per block.
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := 0; i < 20; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 20)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 20)
+
+		// Expect 2 blocks with messages.
+		fs.mu.RLock()
+		lblks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 2)
+
+		// Write some tombstones for all messages, these will be in multiple blocks.
+		for seq := uint64(1); seq <= 20; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		before = fs.State()
+		require_Equal(t, before.Msgs, 0)
+		require_Equal(t, before.FirstSeq, 21)
+		require_Equal(t, before.LastSeq, 20)
+
+		// Expect 1 block purely with tombstones.
+		fs.mu.RLock()
+		lblks = len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 1)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+	})
+}
+
+func TestFileStoreTombstonesSelectNextFirstCleanup(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33 // 10 messages per block.
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Write a bunch of messages in multiple blocks.
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(2); seq <= 49; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(50); seq <= 100; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 100)
+
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+
+		before = fs.State()
+		require_Equal(t, before.Msgs, 0)
+		require_Equal(t, before.FirstSeq, 101)
+		require_Equal(t, before.LastSeq, 100)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+	})
+}
+
+func TestFileStoreTombstonesSelectNextFirstCleanupOnRecovery(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33 // 10 messages per block.
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Write a bunch of messages in multiple blocks.
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(2); seq <= 49; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		for i := 0; i < 50; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		for seq := uint64(50); seq <= 100; seq++ {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 100)
+
+		// Explicitly write tombstone instead of calling fs.RemoveMsg,
+		// so we need to recover from a hard kill.
+		require_NoError(t, fs.writeTombstone(1, 0))
+		before = StreamState{FirstSeq: 101, FirstTime: time.Time{}, LastSeq: 100, LastTime: before.LastTime}
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
 		}
 	})
 }

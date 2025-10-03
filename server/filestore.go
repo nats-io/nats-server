@@ -1520,8 +1520,8 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	// For tombstones that we find and collect.
 	var (
 		tombstones      []uint64
-		minTombstoneSeq uint64
-		minTombstoneTs  int64
+		maxTombstoneSeq uint64
+		maxTombstoneTs  int64
 	)
 
 	// To detect gaps from compaction, and to ensure the sequence keeps moving up.
@@ -1580,8 +1580,8 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			seq = seq &^ tbit
 			// Need to process this here and make sure we have accounted for this properly.
 			tombstones = append(tombstones, seq)
-			if minTombstoneSeq == 0 || seq < minTombstoneSeq {
-				minTombstoneSeq, minTombstoneTs = seq, ts
+			if maxTombstoneSeq == 0 || seq > maxTombstoneSeq {
+				maxTombstoneSeq, maxTombstoneTs = seq, ts
 			}
 			index += rl
 			continue
@@ -1664,12 +1664,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		fseq := atomic.LoadUint64(&mb.first.seq)
 		if fseq > 0 {
 			atomic.StoreUint64(&mb.last.seq, fseq-1)
-		} else if fseq == 0 && minTombstoneSeq > 0 {
-			atomic.StoreUint64(&mb.first.seq, minTombstoneSeq+1)
+		} else if fseq == 0 && maxTombstoneSeq > 0 {
+			atomic.StoreUint64(&mb.first.seq, maxTombstoneSeq+1)
 			mb.first.ts = 0
 			if mb.last.seq == 0 {
-				atomic.StoreUint64(&mb.last.seq, minTombstoneSeq)
-				mb.last.ts = minTombstoneTs
+				atomic.StoreUint64(&mb.last.seq, maxTombstoneSeq)
+				mb.last.ts = maxTombstoneTs
 			}
 		}
 	}
@@ -2284,6 +2284,12 @@ func (fs *fileStore) recoverMsgs() error {
 				mb.dirtyCloseWithRemove(true)
 				fs.removeMsgBlockFromList(mb)
 				continue
+			}
+			// If the stream is empty, reset the first/last sequences so these can
+			// properly move up based purely on tombstones spread over multiple blocks.
+			if fs.state.Msgs == 0 {
+				fs.state.FirstSeq, fs.state.LastSeq = 0, 0
+				fs.state.FirstTime, fs.state.LastTime = time.Time{}, time.Time{}
 			}
 			fseq := atomic.LoadUint64(&mb.first.seq)
 			if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
@@ -5064,9 +5070,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 
 	// If erase but block is empty, we can simply remove the block later.
 	if secure && !isEmpty {
-		// Grab record info.
-		ri, rl, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
-		if err := mb.eraseMsg(seq, int(ri), int(rl), isLastBlock); err != nil {
+		// Grab record info, but use the pre-computed record length.
+		ri, _, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
+		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			mb.finishedWithCache()
 			return false, err
 		}
@@ -5665,9 +5671,21 @@ func (mb *msgBlock) selectNextFirst() {
 }
 
 // Select the next FirstSeq
+// Also cleans up empty blocks at the start only containing tombstones.
 // Lock should be held.
 func (fs *fileStore) selectNextFirst() {
 	if len(fs.blks) > 0 {
+		for len(fs.blks) > 1 {
+			mb := fs.blks[0]
+			mb.mu.Lock()
+			empty := mb.msgs == 0
+			if !empty {
+				mb.mu.Unlock()
+				break
+			}
+			fs.forceRemoveMsgBlock(mb)
+			mb.mu.Unlock()
+		}
 		mb := fs.blks[0]
 		mb.mu.RLock()
 		fs.state.FirstSeq = atomic.LoadUint64(&mb.first.seq)
@@ -7537,7 +7555,14 @@ func (mb *msgBlock) cacheLookupNoCopy(seq uint64, sm *StoreMsg) (*StoreMsg, erro
 // Will do a lookup from cache.
 // Lock should be held.
 func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*StoreMsg, error) {
-	if seq < atomic.LoadUint64(&mb.first.seq) || seq > atomic.LoadUint64(&mb.last.seq) {
+	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+	switch {
+	case lseq == fseq-1:
+		// The block is empty, no messages have been written yet. This works because
+		// newMsgBlockForWrite sets fseq=fs.State.LastSeq+1 and lseq=fs.State.LastSeq.
+		return nil, ErrStoreMsgNotFound
+	case seq < fseq || seq > lseq:
+		// Sequence is out of range for this block.
 		return nil, ErrStoreMsgNotFound
 	}
 
@@ -9131,7 +9156,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			}
 			mb.mu.Lock()
 		}
-		fs.removeMsgBlock(mb)
+		fs.forceRemoveMsgBlock(mb)
 		mb.mu.Unlock()
 	}
 
@@ -9153,7 +9178,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 				}
 				smb.mu.Lock()
 			}
-			fs.removeMsgBlock(smb)
+			fs.forceRemoveMsgBlock(smb)
 			smb.mu.Unlock()
 			goto SKIP
 		}
@@ -9195,7 +9220,7 @@ SKIP:
 	if !hasWrittenTombstones {
 		fs.lmb = smb
 		tmb.mu.Lock()
-		fs.removeMsgBlock(tmb)
+		fs.forceRemoveMsgBlock(tmb)
 		tmb.mu.Unlock()
 	}
 
@@ -9275,8 +9300,8 @@ func (fs *fileStore) removeMsgBlockFromList(mb *msgBlock) {
 // Both locks should be held.
 func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 	// Check for us being last message block
+	lseq, lts := atomic.LoadUint64(&mb.last.seq), mb.last.ts
 	if mb == fs.lmb {
-		lseq, lts := atomic.LoadUint64(&mb.last.seq), mb.last.ts
 		// Creating a new message write block requires that the lmb lock is not held.
 		mb.mu.Unlock()
 		// Write the tombstone to remember since this was last block.
@@ -9284,8 +9309,17 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 			fs.writeTombstone(lseq, lts)
 		}
 		mb.mu.Lock()
+	} else if lseq == fs.state.LastSeq {
+		// Need to write a tombstone for the last sequence if we're removing the block containing it.
+		fs.writeTombstone(lseq, lts)
 	}
-	// Only delete message block after (potentially) writing a new lmb.
+	// Only delete message block after (potentially) writing a tombstone.
+	fs.forceRemoveMsgBlock(mb)
+}
+
+// Removes the msgBlock, without writing tombstones to ensure the last sequence is preserved.
+// Both locks should be held.
+func (fs *fileStore) forceRemoveMsgBlock(mb *msgBlock) {
 	mb.dirtyCloseWithRemove(true)
 	fs.removeMsgBlockFromList(mb)
 }
@@ -10042,11 +10076,7 @@ func (fs *fileStore) writeTTLState() error {
 	buf := fs.ttls.Encode(fs.state.LastSeq + 1)
 	fs.mu.RUnlock()
 
-	<-dios
-	err := os.WriteFile(fn, buf, defaultFilePerms)
-	dios <- struct{}{}
-
-	return err
+	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
 }
 
 func (fs *fileStore) writeMsgSchedulingState() error {
@@ -10060,11 +10090,7 @@ func (fs *fileStore) writeMsgSchedulingState() error {
 	buf := fs.scheduling.encode(fs.state.LastSeq + 1)
 	fs.mu.RUnlock()
 
-	<-dios
-	err := os.WriteFile(fn, buf, defaultFilePerms)
-	dios <- struct{}{}
-
-	return err
+	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
 }
 
 // Stop the current filestore.
@@ -11738,29 +11764,47 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
-	if fs.fcfg.SyncAlways {
-		return writeFileWithSync(name, data, perm)
-	}
-	<-dios
-	defer func() {
-		dios <- struct{}{}
-	}()
-	return os.WriteFile(name, data, perm)
+	return writeAtomically(name, data, perm, fs.fcfg.SyncAlways)
 }
 
 func writeFileWithSync(name string, data []byte, perm fs.FileMode) error {
+	return writeAtomically(name, data, perm, true)
+}
+
+func writeAtomically(name string, data []byte, perm fs.FileMode, sync bool) error {
+	tmp := name + ".tmp"
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if sync {
+		flags = flags | os.O_SYNC
+	}
 	<-dios
 	defer func() {
 		dios <- struct{}{}
 	}()
-	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC | os.O_SYNC
-	f, err := os.OpenFile(name, flags, perm)
+	f, err := os.OpenFile(tmp, flags, perm)
 	if err != nil {
 		return err
 	}
-	if _, err = f.Write(data); err != nil {
+	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, name); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if sync {
+		// To ensure that the file rename was persisted on all filesystems,
+		// also try to flush the directory metadata.
+		if d, err := os.Open(filepath.Dir(name)); err == nil {
+			_ = d.Sync()
+			_ = d.Close()
+		}
+	}
+	return nil
 }

@@ -29,6 +29,7 @@ jobs:
 
       - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
         with:
+          name: ${{ inputs.target || 'nightly' }}
           workdir: src/github.com/nats-io/nats-server
           hub_username: "${{ secrets.DOCKER_USERNAME }}"
           hub_password: "${{ secrets.DOCKER_PASSWORD }}"

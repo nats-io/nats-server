@@ -6,11 +6,11 @@ toolchain go1.24.7
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.4.3-default-no-op
-	github.com/google/go-tpm v0.9.5
+	github.com/google/go-tpm v0.9.6
 	github.com/klauspost/compress v1.18.0
 	github.com/minio/highwayhash v1.0.3
 	github.com/nats-io/jwt/v2 v2.8.0
-	github.com/nats-io/nats.go v1.45.0
+	github.com/nats-io/nats.go v1.46.1
 	github.com/nats-io/nkeys v0.4.11
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.6.0
