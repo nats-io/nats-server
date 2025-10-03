@@ -888,6 +888,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.Compression = config.Compression
 	// Async flushing is only allowed if the stream has a sync log backing it.
 	fsCfg.AsyncFlush = !fsCfg.SyncAlways && config.Replicas > 1
+	fsCfg.SyncAlways = false
 
 	// Async persist mode opts in to async flushing,
 	// sync always would also be disabled if it was configured.

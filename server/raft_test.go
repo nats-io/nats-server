@@ -1096,7 +1096,7 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 			ae := n.buildAppendEntry(entries)
 			ae.buf, err = ae.encode(scratch[:])
 			require_NoError(t, err)
-			err = n.storeToWAL(ae)
+			_, _, err = n.storeToWAL(ae)
 			n.Unlock()
 			require_NoError(t, err)
 
@@ -1620,7 +1620,8 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	require_Equal(t, n.wal.State().Msgs, 0)
 
 	// Store a third message, it stays uncommitted.
-	require_NoError(t, n.storeToWAL(aeMsg3))
+	_, _, err = n.storeToWAL(aeMsg3)
+	require_NoError(t, err)
 	require_Equal(t, n.commit, 2)
 	require_Equal(t, n.wal.State().Msgs, 1)
 	entry, err = n.loadEntry(3)
@@ -3070,13 +3071,15 @@ func TestNRGSizeAndApplied(t *testing.T) {
 	require_Equal(t, bytes, 0)
 
 	// Store the first append entry.
-	require_NoError(t, n.storeToWAL(aeMsg1))
+	_, _, err := n.storeToWAL(aeMsg1)
+	require_NoError(t, err)
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 1)
 	require_Equal(t, bytes, 105)
 
 	// Store the second append entry.
-	require_NoError(t, n.storeToWAL(aeMsg2))
+	_, _, err = n.storeToWAL(aeMsg2)
+	require_NoError(t, err)
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 2)
 	require_Equal(t, bytes, 210)
