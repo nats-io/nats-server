@@ -3866,3 +3866,18 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 		}
 	}
 }
+
+// func TestFlakyDetectorFail(t *testing.T) {
+// 	if rand.Intn(10) == 0 {
+// 		t.FailNow()
+// 	}
+// }
+
+func TestFlakyDetectorCI(t *testing.T) {
+	// TEST ONLY
+}
+
+func TestFlakyDetectorCILong(t *testing.T) {
+	// TEST ONLY
+	time.Sleep(10 * time.Second)
+}
