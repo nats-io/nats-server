@@ -4406,11 +4406,15 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	if psmax && psmc >= mmp {
 		// We may have done this above.
 		if fseq == 0 {
-			fseq, _ = fs.firstSeqForSubj(subj)
+			fseq, err = fs.firstSeqForSubj(subj)
+			fs.srv.Debugf("[counter] counter %s seq %d fseq %d err %v", subj, seq, fseq, err)
 		}
-		if ok, _ := fs.removeMsgViaLimits(fseq); ok {
+		ok, err := fs.removeMsgViaLimits(fseq)
+		fs.srv.Debugf("[counter] counter %s seq %d rm ok %v err %v", subj, seq, ok, err)
+		if ok {
 			// Make sure we are below the limit.
 			if psmc--; psmc >= mmp {
+				fs.srv.Debugf("[counter] counter %s seq %d above limit %d", subj, seq, psmc)
 				bsubj := stringToBytes(subj)
 				for info, ok := fs.psim.Find(bsubj); ok && info.total > mmp; info, ok = fs.psim.Find(bsubj) {
 					if seq, _ := fs.firstSeqForSubj(subj); seq > 0 {
@@ -4423,11 +4427,14 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 				}
 			}
 		} else if mb := fs.selectMsgBlock(fseq); mb != nil {
+			fs.srv.Debugf("[counter] counter %s seq %d fail mb.index=%d", subj, seq, mb.index)
 			// If we are here we could not remove fseq from above, so rebuild.
 			var ld *LostStreamData
 			if ld, _, _ = mb.rebuildState(); ld != nil {
 				fs.rebuildStateLocked(ld)
 			}
+		} else {
+			fs.srv.Debugf("[counter] counter %s seq %d fail", subj, seq)
 		}
 	}
 
@@ -8006,6 +8013,11 @@ func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, e
 	if sm == nil || (err != nil && err != ErrStoreClosed) {
 		err = ErrStoreMsgNotFound
 	}
+	var seq uint64
+	if sm != nil {
+		seq = sm.seq
+	}
+	fs.srv.Debugf("[counter] counter %s load last, seq %d err %v", subject, seq, err)
 	return sm, err
 }
 
