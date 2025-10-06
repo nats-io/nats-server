@@ -639,7 +639,7 @@ func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
 		{
 			title: "SkipMsg",
 			action: func(s StreamStore, lseq uint64) {
-				s.SkipMsg()
+				s.SkipMsg(0)
 			},
 		},
 		{
