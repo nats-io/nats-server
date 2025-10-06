@@ -6452,6 +6452,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
 	if isClustered && (mset.clseq == 0 || mset.clseq < lseq+mset.clfs) {
+		mset.srv.Debugf("[batch] check CLSEQ clseq %d lseq %d clfs %d", mset.clseq, lseq, mset.clfs)
 		// Need to unlock and re-acquire the locks in the proper order.
 		mset.clMu.Unlock()
 		// Locking order is stream -> batchMu -> clMu
@@ -6465,7 +6466,9 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		mset.clMu.Lock()
 		// Re-capture
 		lseq = mset.lseq
+		bclseq := mset.clseq
 		mset.clseq = lseq + mset.clfs + batchCount
+		mset.srv.Debugf("[batch] update CLSEQ %d -> %d", bclseq, mset.clseq)
 		// Keep hold of the mset.clMu, but unlock the others.
 		if batch != nil {
 			batch.mu.Unlock()
@@ -6477,7 +6480,9 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if isClustered {
 			// Only need to move the clustered sequence back if the batch fails to commit.
 			// Other changes were staged but not applied, so this is the only thing we need to do.
+			bclseq := mset.clseq
 			mset.clseq -= seq - 1
+			mset.srv.Debugf("[batch] rollback CLSEQ %d -> %d", bclseq, mset.clseq)
 		}
 		mset.clMu.Unlock()
 	}
@@ -6511,6 +6516,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		batchSeq--
 	}
 
+	mset.srv.Debugf("[batch] commit start %s CLSEQ %d", batchId, mset.clseq)
 	diff := &batchStagedDiff{}
 	for seq := uint64(1); seq <= batchSeq; seq++ {
 		if seq == batchSeq && !commitEob && b.store.Type() != FileStorage {
@@ -6592,6 +6598,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order
 		// and not interleaved with other proposals.
 		diff.commit(mset)
+		mset.srv.Debugf("[batch] commit propose %s CLSEQ %d", batchId, mset.clseq)
 		_ = node.ProposeMulti(entries)
 		// The proposal can fail, but we always account for trying.
 		mset.trackReplicationTraffic(node, sz, r)
