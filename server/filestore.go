@@ -4541,18 +4541,26 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 }
 
 // SkipMsg will use the next sequence number but not store anything.
-func (fs *fileStore) SkipMsg() uint64 {
+func (fs *fileStore) SkipMsg(seq uint64) (uint64, error) {
+	// Grab time.
+	now := ats.AccessTime()
+
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+
+	// Check sequence matches our last sequence.
+	if seq != fs.state.LastSeq+1 {
+		if seq > 0 {
+			return 0, ErrSequenceMismatch
+		}
+		seq = fs.state.LastSeq + 1
+	}
 
 	// Grab our current last message block.
 	mb, err := fs.checkLastBlock(emptyRecordLen)
 	if err != nil {
-		return 0
+		return 0, err
 	}
-
-	// Grab time and last seq.
-	now, seq := ats.AccessTime(), fs.state.LastSeq+1
 
 	// Write skip msg.
 	mb.skipMsg(seq, now)
@@ -4568,7 +4576,7 @@ func (fs *fileStore) SkipMsg() uint64 {
 	// Mark as dirty for stream state.
 	fs.dirty++
 
-	return seq
+	return seq, nil
 }
 
 // Skip multiple msgs. We will determine if we can fit into current lmb or we need to create a new block.
