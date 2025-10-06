@@ -10544,3 +10544,46 @@ func TestFileStoreTombstonesSelectNextFirstCleanupOnRecovery(t *testing.T) {
 		}
 	})
 }
+
+func TestFileStoreDetectDeleteGapWithLastSkipMsg(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Skip a message at a sequence such that a gap is created.
+		// The gap should be detected later on as deleted messages.
+		require_NoError(t, fs.SkipMsgs(2, 3))
+
+		// We should have 3 deletes, one is the skip msg, the other two is the gap.
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 4)
+		require_Equal(t, before.NumDeleted, 3)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of %+v, got %+v", before, state)
+		}
+
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		defer mb.mu.RUnlock()
+		require_Equal(t, atomic.LoadUint64(&mb.first.seq), 1)
+		require_Equal(t, atomic.LoadUint64(&mb.last.seq), 4)
+		require_Len(t, mb.dmap.Size(), 3)
+	})
+}

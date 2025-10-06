@@ -1453,6 +1453,23 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	var last uint64
 	var hb [highwayhash.Size64]byte
 
+	updateLast := func(seq uint64, ts int64) {
+		// The sequence needs to only ever move up.
+		if seq <= last {
+			return
+		}
+
+		// Check for any gaps from compaction, meaning no ebit entry.
+		if last > 0 && seq != last+1 {
+			for dseq := last + 1; dseq < seq; dseq++ {
+				addToDmap(dseq)
+			}
+		}
+		last = seq
+		atomic.StoreUint64(&mb.last.seq, last)
+		mb.last.ts = ts
+	}
+
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
 			truncate(index)
@@ -1516,8 +1533,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if seq == 0 || seq&ebit != 0 || seq < fseq {
 			seq = seq &^ ebit
 			if seq >= fseq {
-				atomic.StoreUint64(&mb.last.seq, seq)
-				mb.last.ts = ts
+				updateLast(seq, ts)
 				if mb.msgs == 0 {
 					atomic.StoreUint64(&mb.first.seq, seq+1)
 					mb.first.ts = 0
@@ -1555,17 +1571,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			}
 		}
 
-		// Check for any gaps from compaction, meaning no ebit entry.
-		if last > 0 && seq != last+1 {
-			for dseq := last + 1; dseq < seq; dseq++ {
-				addToDmap(dseq)
-			}
-		}
-
-		// Always set last
-		last = seq
-		atomic.StoreUint64(&mb.last.seq, last)
-		mb.last.ts = ts
+		updateLast(seq, ts)
 
 		// Advance to next record.
 		index += rl
