@@ -1784,7 +1784,7 @@ func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
 		// to discard the cache.
 		_, err = mb.cacheLookupEx(1, nil, false)
 		require_Error(t, err)
-		require_True(t, mb.cache.buf == nil)
+		require_True(t, mb.ecache.Value() == nil)
 
 		// Now fetchMsg should notice and rebuild the index with the
 		// correct sequence from disk.
