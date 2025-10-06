@@ -3864,6 +3864,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		// Clear clseq. If we become leader again, it will be fixed up
 		// automatically on the next mset.setLeader call.
 		mset.clMu.Lock()
+		mset.srv.Debugf("[batch] reset CLSEQ %d -> 0", mset.clseq)
 		if mset.clseq > 0 {
 			mset.clseq = 0
 		}
@@ -8921,6 +8922,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
+		mset.srv.Debugf("[batch] check CLSEQ (cluster) clseq %d lseq %d clfs %d", mset.clseq, lseq, mset.clfs)
 		// Need to unlock and re-acquire the locks in the proper order.
 		mset.clMu.Unlock()
 		// Locking order is stream -> batchMu -> clMu
@@ -8934,7 +8936,9 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		mset.clMu.Lock()
 		// Re-capture
 		lseq = mset.lseq
+		bclseq := mset.clseq
 		mset.clseq = lseq + mset.clfs + batchCount
+		mset.srv.Debugf("[batch] update CLSEQ (cluster) %d -> %d", bclseq, mset.clseq)
 		// Keep hold of the mset.clMu, but unlock the others.
 		if batch != nil {
 			batch.mu.Unlock()
