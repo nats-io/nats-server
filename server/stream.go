@@ -3143,6 +3143,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	mirror := mset.mirror
+	mirrorWg := &mirror.wg
 
 	// We want to throttle here in terms of how fast we request new consumers,
 	// or if the previous is still in progress.
@@ -3301,7 +3302,7 @@ func (mset *stream) setupMirrorConsumer() error {
 
 		// Wait for previous processMirrorMsgs go routine to be completely done.
 		// If none is running, this will not block.
-		mirror.wg.Wait()
+		mirrorWg.Wait()
 
 		select {
 		case ccr := <-respCh:
