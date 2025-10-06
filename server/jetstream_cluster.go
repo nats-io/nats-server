@@ -3630,7 +3630,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 	// Messages to be skipped have no subject or timestamp or msg or hdr.
 	if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
 		// Skip and update our lseq.
-		last := mset.store.SkipMsg()
+		last, _ := mset.store.SkipMsg(0)
 		if needLock {
 			mset.mu.Lock()
 		}
@@ -9478,7 +9478,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	// Messages to be skipped have no subject or timestamp.
 	// TODO(dlc) - formalize with skipMsgOp
 	if subj == _EMPTY_ && ts == 0 {
-		if lseq := mset.store.SkipMsg(); lseq != seq {
+		if _, err = mset.store.SkipMsg(seq); err != nil {
 			return 0, errCatchupWrongSeqForSkip
 		}
 	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl); err != nil {
