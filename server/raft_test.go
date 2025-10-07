@@ -3453,6 +3453,82 @@ func TestNRGDrainAndReplaySnapshot(t *testing.T) {
 	require_Equal(t, n.hcommit, 0)
 }
 
+func TestNRGTrackPeerActive(t *testing.T) {
+	// The leader should track timestamps for all peers.
+	// Each follower should only track the leader, otherwise we would get outdated timestamps.
+	checkLastSeen := func(peers map[string]RaftzGroupPeer) {
+		for _, peer := range peers {
+			if peer.LastSeen == _EMPTY_ {
+				continue
+			}
+			elapsed, err := time.ParseDuration(peer.LastSeen)
+			require_NoError(t, err)
+			require_LessThan(t, elapsed, time.Second)
+		}
+	}
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	rs := c.randomNonLeader()
+	var preferred *Server
+	for _, s := range c.servers {
+		if s == ml || s == rs {
+			continue
+		}
+		preferred = s
+		break
+	}
+	require_NotNil(t, preferred)
+
+	time.Sleep(2 * time.Second)
+	before := (*rs.Raftz(&RaftzOptions{}))[DEFAULT_SYSTEM_ACCOUNT][defaultMetaGroupName].Peers
+	checkLastSeen(before)
+
+	js := ml.getJetStream()
+	n := js.getMetaGroup()
+	require_NoError(t, n.StepDown(preferred.NodeName()))
+
+	time.Sleep(2 * time.Second)
+	after := (*rs.Raftz(&RaftzOptions{}))[DEFAULT_SYSTEM_ACCOUNT][defaultMetaGroupName].Peers
+	checkLastSeen(after)
+}
+
+func TestNRGLostQuorum(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	require_Equal(t, n.State(), Follower)
+	require_False(t, n.Quorum())
+	require_True(t, n.lostQuorum())
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// Respond to a vote request.
+	sub, err := nc.Subscribe(n.vsubj, func(m *nats.Msg) {
+		req := decodeVoteRequest(m.Data, m.Reply)
+		resp := voteResponse{term: req.term, peer: "random", granted: true}
+		m.Respond(resp.encode())
+	})
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// Switch to candidate and make sure we properly track the peer as active.
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+	require_False(t, n.Quorum())
+	require_True(t, n.lostQuorum())
+
+	n.runAsCandidate()
+	require_Equal(t, n.State(), Leader)
+	require_True(t, n.Quorum())
+	require_False(t, n.lostQuorum())
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
