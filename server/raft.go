@@ -2729,7 +2729,6 @@ func (n *raft) runAsLeader() {
 				n.stepdown(noLeader)
 				return
 			}
-			n.trackPeer(vresp.peer)
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			if voteReq, ok := n.reqs.popOne(); ok {
@@ -3093,7 +3092,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 			if lp, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
-				n.peers[newPeer] = &lps{time.Now(), 0, true}
+				n.peers[newPeer] = &lps{time.Time{}, 0, true}
 			} else {
 				// Mark as added.
 				lp.kp = true
@@ -3493,6 +3492,17 @@ func (n *raft) updateLeader(newLeader string) {
 			}
 		}
 	}
+	// Reset last seen timestamps.
+	// If we're the leader we track everyone, and don't reset.
+	// But if we're a follower we only track the leader, and reset all others.
+	if newLeader != n.id {
+		for peer, ps := range n.peers {
+			if peer == newLeader {
+				continue
+			}
+			ps.ts = time.Time{}
+		}
+	}
 }
 
 // processAppendEntry will process an appendEntry. This is called either
@@ -3583,15 +3593,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// sub, rather than a catch-up sub.
 	isNew := sub != nil && sub == n.aesub
 
-	// Track leader directly
-	if isNew && ae.leader != noLeader {
-		if ps := n.peers[ae.leader]; ps != nil {
-			ps.ts = time.Now()
-		} else {
-			n.peers[ae.leader] = &lps{time.Now(), 0, true}
-		}
-	}
-
 	// If we are/were catching up ignore old catchup subs, but only if catching up from an older server
 	// that doesn't send the leader term when catching up. We can reject old catchups from newer subs
 	// later, just by checking the append entry is on the correct term.
@@ -3661,6 +3662,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.writeTermVote()
 		n.resetElectionTimeout()
 		n.updateLeadChange(false)
+	}
+
+	// Track leader directly
+	// But, do so after all consistency checks so we don't track an old leader.
+	if isNew && ae.leader != noLeader && ae.leader == n.leader {
+		if ps := n.peers[ae.leader]; ps != nil {
+			ps.ts = time.Now()
+		} else {
+			n.peers[ae.leader] = &lps{time.Now(), 0, true}
+		}
 	}
 
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
@@ -3831,10 +3842,8 @@ CONTINUE:
 		case EntryAddPeer:
 			if newPeer := string(e.Data); len(newPeer) == idLen {
 				// Track directly, but wait for commit to be official
-				if ps := n.peers[newPeer]; ps != nil {
-					ps.ts = time.Now()
-				} else {
-					n.peers[newPeer] = &lps{time.Now(), 0, false}
+				if _, ok := n.peers[newPeer]; !ok {
+					n.peers[newPeer] = &lps{time.Time{}, 0, false}
 				}
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
@@ -4384,10 +4393,6 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		return nil
 	}
 	n.debug("Received a voteRequest %+v", vr)
-
-	if err := n.trackPeer(vr.candidate); err != nil {
-		return err
-	}
 
 	n.Lock()
 
