@@ -345,7 +345,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 
 		numSkips := 10
 		for i := 0; i < numSkips; i++ {
-			fs.SkipMsg()
+			fs.SkipMsg(0)
 		}
 		state := fs.State()
 		if state.Msgs != 0 {
@@ -356,10 +356,10 @@ func TestFileStoreSkipMsg(t *testing.T) {
 		}
 
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
-		fs.SkipMsg()
+		fs.SkipMsg(0)
+		fs.SkipMsg(0)
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 
 		state = fs.State()
 		if state.Msgs != 2 {
@@ -393,7 +393,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 			t.Fatalf("Message did not match")
 		}
 
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 		nseq, _, err := fs.StoreMsg("AAA", nil, []byte("Skip?"), 0)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up seq 11: %v", err)
@@ -5080,7 +5080,7 @@ func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
 
 	fs.StoreMsg(subj, nil, msg, 0)
 	for i := 0; i < numMsgs; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg(subj, nil, msg, 0)
 	require_Equal(t, fs.numMsgBlocks(), 3)
@@ -6824,7 +6824,7 @@ func TestFileStoreEraseMsgWithDbitSlots(t *testing.T) {
 
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	// Now grab that first block and compact away the skips which will
@@ -6853,7 +6853,7 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	fs.StoreMsg("foo", nil, []byte("abcdefg"), 0)
 
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	// Now grab that first block and compact away the skips which will
 	// introduce dbits into our idx.
@@ -7200,7 +7200,7 @@ func TestFileStoreReloadAndLoseLastSequence(t *testing.T) {
 	defer fs.Stop()
 
 	for i := 0; i < 22; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 
 	// Restart 5 times.
@@ -9053,7 +9053,7 @@ func TestFileStoreLeftoverSkipMsgInDmap(t *testing.T) {
 	}
 
 	// Only skip a message.
-	fs.SkipMsg()
+	fs.SkipMsg(0)
 
 	// Confirm state.
 	state := fs.State()

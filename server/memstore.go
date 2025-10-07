@@ -359,12 +359,21 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, i
 }
 
 // SkipMsg will use the next sequence number but not store anything.
-func (ms *memStore) SkipMsg() uint64 {
+func (ms *memStore) SkipMsg(seq uint64) (uint64, error) {
 	// Grab time.
 	now := time.Unix(0, ats.AccessTime()).UTC()
 
 	ms.mu.Lock()
-	seq := ms.state.LastSeq + 1
+	defer ms.mu.Unlock()
+
+	// Check sequence matches our last sequence.
+	if seq != ms.state.LastSeq+1 {
+		if seq > 0 {
+			return 0, ErrSequenceMismatch
+		}
+		seq = ms.state.LastSeq + 1
+	}
+
 	ms.state.LastSeq = seq
 	ms.state.LastTime = now
 	if ms.state.Msgs == 0 {
@@ -373,8 +382,7 @@ func (ms *memStore) SkipMsg() uint64 {
 	} else {
 		ms.dmap.Insert(seq)
 	}
-	ms.mu.Unlock()
-	return seq
+	return seq, nil
 }
 
 // Skip multiple msgs.
