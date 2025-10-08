@@ -1897,11 +1897,31 @@ func TestConfigCheck(t *testing.T) {
 			err: nil,
 		},
 		{
-			name: "valid cluster close_slow_consumer_routes",
+			name: "valid cluster close_slow_consumers",
 			config: `
 				cluster {
 					port: -1
-					close_slow_consumer_routes: true
+					close_slow_consumers: true
+				}
+			`,
+			err: nil,
+		},
+		{
+			name: "valid gateway close_slow_consumers",
+			config: `
+				gateway {
+					port: -1
+					close_slow_consumers: true
+				}
+			`,
+			err: nil,
+		},
+		{
+			name: "valid leafnodes close_slow_consumers",
+			config: `
+				leafnodes {
+					port: -1
+					close_slow_consumers: true
 				}
 			`,
 			err: nil,

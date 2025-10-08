@@ -5094,7 +5094,7 @@ func TestClusterSlowConsumerRouteClose(t *testing.T) {
 	o1.Cluster.Name = "test"
 	o1.Cluster.Port = -1
 	o1.Cluster.PoolSize = -1 // Disable route pooling
-	o1.Cluster.CloseSlowConsumerRoutes = true
+	o1.Cluster.CloseSlowConsumers = true
 	s1 := RunServer(o1)
 	defer s1.Shutdown()
 
@@ -5136,9 +5136,9 @@ func TestClusterSlowConsumerRouteClose(t *testing.T) {
 	closed := targetRoute.handleWriteTimeout(100, 1000, 5) // Some written, more attempted
 	targetRoute.mu.Unlock()
 
-	// Should be closed because close_slow_consumer_routes is true
+	// Should be closed because close_slow_consumers is true
 	if !closed {
-		t.Error("Route should be closed when close_slow_consumer_routes is true")
+		t.Error("Route should be closed when close_slow_consumers is true")
 	}
 
 	// Verify slow consumer stats were recorded
@@ -5156,7 +5156,7 @@ func TestClusterSlowConsumerRouteNoClose(t *testing.T) {
 	o1.Cluster.Name = "test"
 	o1.Cluster.Port = -1
 	o1.Cluster.PoolSize = -1 // Disable route pooling
-	// o1.Cluster.CloseSlowConsumerRoutes is false by default
+	// o1.Cluster.CloseSlowConsumers is false by default
 	s1 := RunServer(o1)
 	defer s1.Shutdown()
 
@@ -5200,12 +5200,12 @@ func TestClusterSlowConsumerRouteNoClose(t *testing.T) {
 	closed := targetRoute.handleWriteTimeout(100, 1000, 5) // Some written, more attempted
 	targetRoute.mu.Unlock()
 
-	// Should not be closed because close_slow_consumer_routes is false
+	// Should not be closed because close_slow_consumers is false
 	if closed {
-		t.Error("Route should not be closed when close_slow_consumer_routes is false")
+		t.Error("Route should not be closed when close_slow_consumers is false")
 	}
 
-	// Without close_slow_consumer_routes, routes should still be connected
+	// Without close_slow_consumers, routes should still be connected
 	if nc := s1.NumRoutes(); nc != initialRoutes {
 		t.Errorf("Expected %d route connections to remain, got %v", initialRoutes, nc)
 	}

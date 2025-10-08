@@ -61,30 +61,30 @@ type PinnedCertSet map[string]struct{}
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type ClusterOpts struct {
-	Name                    string            `json:"-"`
-	Host                    string            `json:"addr,omitempty"`
-	Port                    int               `json:"cluster_port,omitempty"`
-	Username                string            `json:"-"`
-	Password                string            `json:"-"`
-	AuthTimeout             float64           `json:"auth_timeout,omitempty"`
-	Permissions             *RoutePermissions `json:"-"`
-	TLSTimeout              float64           `json:"-"`
-	TLSConfig               *tls.Config       `json:"-"`
-	TLSMap                  bool              `json:"-"`
-	TLSCheckKnownURLs       bool              `json:"-"`
-	TLSPinnedCerts          PinnedCertSet     `json:"-"`
-	ListenStr               string            `json:"-"`
-	Advertise               string            `json:"-"`
-	NoAdvertise             bool              `json:"-"`
-	ConnectRetries          int               `json:"-"`
-	ConnectBackoff          bool              `json:"-"`
-	PoolSize                int               `json:"-"`
-	PinnedAccounts          []string          `json:"-"`
-	Compression             CompressionOpts   `json:"-"`
-	PingInterval            time.Duration     `json:"-"`
-	MaxPingsOut             int               `json:"-"`
-	WriteDeadline           time.Duration     `json:"-"`
-	CloseSlowConsumerRoutes bool              `json:"-"`
+	Name               string            `json:"-"`
+	Host               string            `json:"addr,omitempty"`
+	Port               int               `json:"cluster_port,omitempty"`
+	Username           string            `json:"-"`
+	Password           string            `json:"-"`
+	AuthTimeout        float64           `json:"auth_timeout,omitempty"`
+	Permissions        *RoutePermissions `json:"-"`
+	TLSTimeout         float64           `json:"-"`
+	TLSConfig          *tls.Config       `json:"-"`
+	TLSMap             bool              `json:"-"`
+	TLSCheckKnownURLs  bool              `json:"-"`
+	TLSPinnedCerts     PinnedCertSet     `json:"-"`
+	ListenStr          string            `json:"-"`
+	Advertise          string            `json:"-"`
+	NoAdvertise        bool              `json:"-"`
+	ConnectRetries     int               `json:"-"`
+	ConnectBackoff     bool              `json:"-"`
+	PoolSize           int               `json:"-"`
+	PinnedAccounts     []string          `json:"-"`
+	Compression        CompressionOpts   `json:"-"`
+	PingInterval       time.Duration     `json:"-"`
+	MaxPingsOut        int               `json:"-"`
+	WriteDeadline      time.Duration     `json:"-"`
+	CloseSlowConsumers bool              `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -111,23 +111,24 @@ type CompressionOpts struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type GatewayOpts struct {
-	Name              string               `json:"name"`
-	Host              string               `json:"addr,omitempty"`
-	Port              int                  `json:"port,omitempty"`
-	Username          string               `json:"-"`
-	Password          string               `json:"-"`
-	AuthTimeout       float64              `json:"auth_timeout,omitempty"`
-	TLSConfig         *tls.Config          `json:"-"`
-	TLSTimeout        float64              `json:"tls_timeout,omitempty"`
-	TLSMap            bool                 `json:"-"`
-	TLSCheckKnownURLs bool                 `json:"-"`
-	TLSPinnedCerts    PinnedCertSet        `json:"-"`
-	Advertise         string               `json:"advertise,omitempty"`
-	ConnectRetries    int                  `json:"connect_retries,omitempty"`
-	ConnectBackoff    bool                 `json:"connect_backoff,omitempty"`
-	Gateways          []*RemoteGatewayOpts `json:"gateways,omitempty"`
-	RejectUnknown     bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
-	WriteDeadline     time.Duration        `json:"-"`
+	Name               string               `json:"name"`
+	Host               string               `json:"addr,omitempty"`
+	Port               int                  `json:"port,omitempty"`
+	Username           string               `json:"-"`
+	Password           string               `json:"-"`
+	AuthTimeout        float64              `json:"auth_timeout,omitempty"`
+	TLSConfig          *tls.Config          `json:"-"`
+	TLSTimeout         float64              `json:"tls_timeout,omitempty"`
+	TLSMap             bool                 `json:"-"`
+	TLSCheckKnownURLs  bool                 `json:"-"`
+	TLSPinnedCerts     PinnedCertSet        `json:"-"`
+	Advertise          string               `json:"advertise,omitempty"`
+	ConnectRetries     int                  `json:"connect_retries,omitempty"`
+	ConnectBackoff     bool                 `json:"connect_backoff,omitempty"`
+	Gateways           []*RemoteGatewayOpts `json:"gateways,omitempty"`
+	RejectUnknown      bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
+	WriteDeadline      time.Duration        `json:"-"`
+	CloseSlowConsumers bool                 `json:"-"`
 
 	// Not exported, for tests.
 	resolver         netResolver
@@ -195,6 +196,9 @@ type LeafNodeOpts struct {
 	// Isolate subject interest from other leafnode connections, preventing
 	// east-west propagation.
 	IsolateLeafnodeInterest bool `json:"-"`
+
+	// Close slow consumer connections instead of marking them
+	CloseSlowConsumers bool `json:"-"`
 
 	// Not exported, for tests.
 	resolver    netResolver
@@ -2003,8 +2007,8 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			opts.Cluster.MaxPingsOut = int(mv.(int64))
 		case "write_deadline":
 			opts.Cluster.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
-		case "close_slow_consumer_routes":
-			opts.Cluster.CloseSlowConsumerRoutes = mv.(bool)
+		case "close_slow_consumers":
+			opts.Cluster.CloseSlowConsumers = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2195,6 +2199,8 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 			o.Gateway.RejectUnknown = mv.(bool)
 		case "write_deadline":
 			o.Gateway.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
+		case "close_slow_consumers":
+			o.Gateway.CloseSlowConsumers = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2715,6 +2721,8 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 			}
 		case "isolate_leafnode_interest", "isolate":
 			opts.LeafNode.IsolateLeafnodeInterest = mv.(bool)
+		case "close_slow_consumers":
+			opts.LeafNode.CloseSlowConsumers = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
