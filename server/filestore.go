@@ -1534,7 +1534,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		}
 
 		// Check for any gaps from compaction, meaning no ebit entry.
-		if last > 0 && seq != last+1 {
+		if last > 0 && seq != last+1 && mb.msgs != 0 {
 			for dseq := last + 1; dseq < seq; dseq++ {
 				addToDmap(dseq)
 			}
