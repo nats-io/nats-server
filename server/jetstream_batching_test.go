@@ -3026,6 +3026,7 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 	test := func(
 		t *testing.T,
 		storage StorageType,
+		retention RetentionPolicy,
 		replicas int,
 		gapMode string,
 	) {
@@ -3042,6 +3043,7 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 			Name:              "TEST",
 			Subjects:          []string{"foo"},
 			Storage:           storage,
+			Retention:         retention,
 			Replicas:          replicas,
 			AllowBatchPublish: true,
 		})
@@ -3108,11 +3110,13 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 	}
 
 	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
-		for _, replicas := range []int{1, 3} {
-			for _, gapMode := range []string{_EMPTY_, "fail", "ok"} {
-				t.Run(fmt.Sprintf("%s/R%d/%s", storage, replicas, gapMode), func(t *testing.T) {
-					test(t, storage, replicas, gapMode)
-				})
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			for _, replicas := range []int{1, 3} {
+				for _, gapMode := range []string{_EMPTY_, "fail", "ok"} {
+					t.Run(fmt.Sprintf("%s/%s/R%d/%s", storage, retention, replicas, gapMode), func(t *testing.T) {
+						test(t, storage, retention, replicas, gapMode)
+					})
+				}
 			}
 		}
 	}

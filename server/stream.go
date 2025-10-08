@@ -5417,11 +5417,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	var resp = &JSPubAckResponse{}
 
-	var batchId string
-	var batchSeq uint64
+	var (
+		batchId     string
+		batchSeq    uint64
+		batchAtomic bool
+	)
 	if len(hdr) > 0 {
 		// Populate batch details.
-		if batchId, _ = getBatchId(hdr); batchId != _EMPTY_ {
+		if batchId, batchAtomic = getBatchId(hdr); batchId != _EMPTY_ {
 			batchSeq, _ = getBatchSequence(hdr)
 			// Disable consistency checking if this was already done
 			// earlier as part of the batch consistency check.
@@ -5971,6 +5974,17 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, mset.lseq, ts})
 		}
+		// If using fast batch publish, we might need to send the final PubAck as a result of an EOB commit.
+		if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
+			batches := mset.batches
+			batches.mu.Lock()
+			commitReply := batches.registerStreamSeq(batchId, batchSeq, mset.lseq)
+			batches.mu.Unlock()
+			if commitReply != _EMPTY_ {
+				reply = commitReply
+				canRespond = doAck && len(reply) > 0 && isLeader
+			}
+		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
 			if batchId != _EMPTY_ {
@@ -6155,6 +6169,18 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 		}
 		outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, hdr, rpMsg, nil, seq))
+	}
+
+	// If using fast batch publish, we might need to send the final PubAck as a result of an EOB commit.
+	if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
+		batches := mset.batches
+		batches.mu.Lock()
+		commitReply := batches.registerStreamSeq(batchId, batchSeq, seq)
+		batches.mu.Unlock()
+		if commitReply != _EMPTY_ {
+			reply = commitReply
+			canRespond = doAck && len(reply) > 0 && isLeader
+		}
 	}
 
 	// Send response here.
@@ -6361,6 +6387,8 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 		commit = true
 	}
 
+	// FIXME(mvv): reject if fast and no reply is set
+
 	// The required API level can have the batch be rejected. But the header is always removed.
 	if len(sliceHeader(JSRequiredApiLevel, hdr)) != 0 {
 		if errorOnRequiredApiLevel(hdr) {
@@ -6386,18 +6414,31 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 			}
 		}
 		if reject {
-			b.cleanupLocked(batchId, batches)
+			// Revert, since we incremented for the gap check.
+			b.lseq--
 			if !atomic {
-				var buf [256]byte
-				pubAck := append(buf[:0], mset.pubAck...)
-				response := append(pubAck, strconv.FormatUint(1, 10)...)
-				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, 1)...)
-				batches.mu.Unlock()
-				if canRespond {
-					outq.sendMsg(reply, response)
+				// If the whole batch has been persisted, we can respond with the PubAck now.
+				if b.lseq == b.pseq {
+					b.cleanupLocked(batchId, batches)
+					var buf [256]byte
+					pubAck := append(buf[:0], mset.pubAck...)
+					response := append(pubAck, strconv.FormatUint(b.sseq, 10)...)
+					response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, b.lseq)...)
+					batches.mu.Unlock()
+					if canRespond {
+						outq.sendMsg(reply, response)
+					}
+					return nil
 				}
+
+				// Otherwise, we need to wait and the PubAck will be sent when the last message is persisted.
+				b.readyForCommit()
+				// And, need to store the reply for later for the PubAck.
+				b.reply = reply
+				batches.mu.Unlock()
 				return nil
 			}
+			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
 			return respondIncompleteBatch()
@@ -6407,19 +6448,31 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 	// If not atomic we care about going fast. Proposals happen immediately.
 	if !atomic {
 		if commit {
-			b.cleanupLocked(batchId, batches)
-
 			if commitEob {
-				var buf [256]byte
-				pubAck := append(buf[:0], mset.pubAck...)
-				response := append(pubAck, strconv.FormatUint(2, 10)...)
-				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, batchSeq-1)...)
-				batches.mu.Unlock()
-				if canRespond {
-					outq.sendMsg(reply, response)
+				// Revert, since we incremented for the gap check.
+				b.lseq--
+				// If the whole batch has been persisted, we can respond with the PubAck now.
+				if b.lseq == b.pseq {
+					b.cleanupLocked(batchId, batches)
+					var buf [256]byte
+					pubAck := append(buf[:0], mset.pubAck...)
+					response := append(pubAck, strconv.FormatUint(b.sseq, 10)...)
+					response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, b.lseq)...)
+					batches.mu.Unlock()
+					if canRespond {
+						outq.sendMsg(reply, response)
+					}
+					return nil
 				}
+
+				// Otherwise, we need to wait and the PubAck will be sent when the last message is persisted.
+				b.readyForCommit()
+				// And, need to store the reply for later for the PubAck.
+				b.reply = reply
+				batches.mu.Unlock()
 				return nil
 			}
+			b.cleanupLocked(batchId, batches)
 		}
 		batches.mu.Unlock()
 

@@ -39,9 +39,14 @@ type batching struct {
 
 type batchGroup struct {
 	lseq  uint64
-	store StreamStore
 	timer *time.Timer
+	// Used for atomic publish.
+	store StreamStore
+	// Used for fast batch publish.
+	pseq  uint64 // Last persisted batch sequence.
+	sseq  uint64 // Last persisted stream sequence.
 	gapOk bool
+	reply string // If the batch is committed through EOB, this is the reply subject used for the PubAck.
 }
 
 // Lock should be held.
@@ -66,6 +71,23 @@ func (batches *batching) newBatchGroup(mset *stream, batchId string, atomic, gap
 		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
 	})
 	return b, nil
+}
+
+// Lock should be held.
+// Registers the highest stored batch and stream sequence, and returns whether a PubAck should be sent
+// if the batch has been committed through EOB. Which also requires the reply subject to be known.
+func (batches *batching) registerStreamSeq(batchId string, batchSeq, streamSeq uint64) string {
+	if b, ok := batches.group[batchId]; ok {
+		b.sseq = streamSeq
+		b.pseq = batchSeq
+		// If the PubAck needs to be sent now as a result of a commit.
+		// Return the reply and clean up the batch now.
+		if b.lseq == batchSeq && b.reply != _EMPTY_ {
+			b.cleanupLocked(batchId, batches)
+			return b.reply
+		}
+	}
+	return _EMPTY_
 }
 
 func getBatchStoreDir(mset *stream, batchId string) (string, string) {
