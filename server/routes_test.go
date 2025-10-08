@@ -4977,3 +4977,31 @@ func TestRouteImplicitJoinsSeparateGroups(t *testing.T) {
 		})
 	}
 }
+
+func TestRouteConfigureWriteDeadline(t *testing.T) {
+	o1, o2 := DefaultOptions(), DefaultOptions()
+
+	o1.Cluster.WriteDeadline = 5 * time.Second
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	o2.Cluster.WriteDeadline = 6 * time.Second
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	s1.mu.RLock()
+	s2.mu.RLock()
+	defer s1.mu.RUnlock()
+	defer s2.mu.RUnlock()
+
+	s1.forEachRoute(func(r *client) {
+		require_Equal(t, r.out.wdl, 5*time.Second)
+	})
+
+	s2.forEachRoute(func(r *client) {
+		require_Equal(t, r.out.wdl, 6*time.Second)
+	})
+}
