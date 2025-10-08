@@ -1458,6 +1458,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				smv           StoreMsg
 				batchId       string
 				batchSeq      uint64
+				atomic        bool
 				commit        bool
 				commitEob     bool
 				batchStoreDir string
@@ -1469,10 +1470,10 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			if err != nil || sm == nil {
 				goto SKIP
 			}
-			batchId = getBatchId(sm.hdr)
+			batchId, atomic = getBatchId(sm.hdr)
 			batchSeq, ok = getBatchSequence(sm.hdr)
 			commit = len(sliceHeader(JSBatchCommit, sm.hdr)) != 0
-			if batchId == _EMPTY_ || !ok || commit {
+			if batchId == _EMPTY_ || !atomic || !ok || commit {
 				goto SKIP
 			}
 			// We've observed a partial batch write. Write the remainder of the batch.
