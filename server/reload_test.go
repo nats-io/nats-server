@@ -6392,3 +6392,128 @@ func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+func TestConfigReloadClusterWriteDeadline(t *testing.T) {
+	// Test cluster write_deadline reload
+	confTemplate := `
+		listen: -1
+		cluster: {
+			listen: 127.0.0.1:-1
+			write_deadline: "%s"
+		}`
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, "2s")))
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Check initial write deadline (2s)
+	if opts.Cluster.WriteDeadline != 2*time.Second {
+		t.Fatalf("Expected initial cluster write deadline to be 2s, got %v", opts.Cluster.WriteDeadline)
+	}
+
+	// Create a route connection to verify it gets updated
+	confPeer := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		cluster: {
+			listen: 127.0.0.1:-1
+			routes = ["nats://127.0.0.1:%d"]
+		}`, opts.Cluster.Port)))
+	sPeer, _ := RunServerWithConfig(confPeer)
+	defer sPeer.Shutdown()
+
+	checkClusterFormed(t, s, sPeer)
+
+	// Get current route write deadline
+	var initialDeadline time.Duration
+	s.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		initialDeadline = r.out.wdl
+		r.mu.Unlock()
+	})
+
+	if initialDeadline != 2*time.Second {
+		t.Fatalf("Expected route write deadline to be 2s, got %v", initialDeadline)
+	}
+
+	// Reload with new write deadline
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(confTemplate, "5s"))
+
+	// Verify the new deadline was applied to existing routes
+	var newDeadline time.Duration
+	s.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		newDeadline = r.out.wdl
+		r.mu.Unlock()
+	})
+
+	if newDeadline != 5*time.Second {
+		t.Fatalf("Expected route write deadline to be updated to 5s, got %v", newDeadline)
+	}
+}
+
+func TestConfigReloadGatewayWriteDeadline(t *testing.T) {
+	// Test gateway write_deadline reload
+	confATemplate := `
+		listen: -1
+		gateway: {
+			name: "A"
+			listen: 127.0.0.1:-1
+			write_deadline: "%s"
+		}`
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, "2s")))
+	sA, optsA := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+
+	// Check initial write deadline (2s)
+	if optsA.Gateway.WriteDeadline != 2*time.Second {
+		t.Fatalf("Expected initial gateway write deadline to be 2s, got %v", optsA.Gateway.WriteDeadline)
+	}
+
+	// Create a peer gateway to verify it gets updated
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		gateway: {
+			name: "B"
+			listen: 127.0.0.1:-1
+			gateways: [{name: "A", urls: ["nats://127.0.0.1:%d"]}]
+		}`, optsA.Gateway.Port)))
+	sB, _ := RunServerWithConfig(confB)
+	defer sB.Shutdown()
+
+	waitForOutboundGateways(t, sA, 1, 2*time.Second)
+	waitForOutboundGateways(t, sB, 1, 2*time.Second)
+
+	// Get current gateway write deadline
+	var initialDeadline time.Duration
+	sA.mu.Lock()
+	for _, gw := range sA.gateway.out {
+		gw.mu.Lock()
+		initialDeadline = gw.out.wdl
+		gw.mu.Unlock()
+		break
+	}
+	sA.mu.Unlock()
+
+	if initialDeadline != 2*time.Second {
+		t.Fatalf("Expected gateway write deadline to be 2s, got %v", initialDeadline)
+	}
+
+	// Reload with new write deadline
+	reloadUpdateConfig(t, sA, confA, fmt.Sprintf(confATemplate, "5s"))
+
+	// Verify the new deadline was applied to existing gateways
+	var newDeadline time.Duration
+	sA.mu.Lock()
+	for _, gw := range sA.gateway.out {
+		gw.mu.Lock()
+		newDeadline = gw.out.wdl
+		gw.mu.Unlock()
+		break
+	}
+	sA.mu.Unlock()
+
+	if newDeadline != 5*time.Second {
+		t.Fatalf("Expected gateway write deadline to be updated to 5s, got %v", newDeadline)
+	}
+}

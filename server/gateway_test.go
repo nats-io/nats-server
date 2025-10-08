@@ -7533,7 +7533,7 @@ func TestGatewayWriteDeadlineDifferentFromClient(t *testing.T) {
 	// Test that gateway write_deadline affects gateways differently from clients
 
 	// Gateway A with different write deadlines for client vs gateway
-	confA := createConfFile(t, []byte(fmt.Sprintf(`
+	confA := createConfFile(t, []byte(`
 		port: -1
 		write_deadline: "5s"
 		gateway {
@@ -7541,7 +7541,7 @@ func TestGatewayWriteDeadlineDifferentFromClient(t *testing.T) {
 			port: -1
 			write_deadline: "2s"
 		}
-	`)))
+	`))
 	sA, optsA := RunServerWithConfig(confA)
 	defer sA.Shutdown()
 

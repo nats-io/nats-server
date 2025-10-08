@@ -402,15 +402,57 @@ func (u *nkeysOption) Apply(server *Server) {
 	server.Noticef("Reloaded: authorization nkey users")
 }
 
+// gatewayOption implements the option interface for the `gateway` setting.
+type gatewayOption struct {
+	authOption
+	newValue             GatewayOpts
+	writeDeadlineChanged bool
+}
+
+// Apply the gateway change.
+func (g *gatewayOption) Apply(s *Server) {
+	// Update write deadline for all gateways if it changed
+	if g.writeDeadlineChanged {
+		s.mu.Lock()
+		if s.gateway.enabled {
+			// Update outbound gateways
+			for _, gw := range s.gateway.out {
+				gw.mu.Lock()
+				if g.newValue.WriteDeadline > 0 {
+					gw.out.wdl = g.newValue.WriteDeadline
+				} else {
+					// Fall back to global write deadline
+					gw.out.wdl = s.getOpts().WriteDeadline
+				}
+				gw.mu.Unlock()
+			}
+			// Update inbound gateways
+			for _, gw := range s.gateway.in {
+				gw.mu.Lock()
+				if g.newValue.WriteDeadline > 0 {
+					gw.out.wdl = g.newValue.WriteDeadline
+				} else {
+					// Fall back to global write deadline
+					gw.out.wdl = s.getOpts().WriteDeadline
+				}
+				gw.mu.Unlock()
+			}
+		}
+		s.mu.Unlock()
+		s.Noticef("Reloaded: gateway write_deadline")
+	}
+}
+
 // clusterOption implements the option interface for the `cluster` setting.
 type clusterOption struct {
 	authOption
-	newValue        ClusterOpts
-	permsChanged    bool
-	accsAdded       []string
-	accsRemoved     []string
-	poolSizeChanged bool
-	compressChanged bool
+	newValue             ClusterOpts
+	permsChanged         bool
+	accsAdded            []string
+	accsRemoved          []string
+	poolSizeChanged      bool
+	compressChanged      bool
+	writeDeadlineChanged bool
 }
 
 // Apply the cluster change.
@@ -456,6 +498,19 @@ func (c *clusterOption) Apply(s *Server) {
 				// Simply change the compression writer
 				r.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
 				r.route.compression = newMode
+			}
+			r.mu.Unlock()
+		})
+	}
+	// Update write deadline for all routes if it changed
+	if c.writeDeadlineChanged {
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			if c.newValue.WriteDeadline > 0 {
+				r.out.wdl = c.newValue.WriteDeadline
+			} else {
+				// Fall back to global write deadline
+				r.out.wdl = s.getOpts().WriteDeadline
 			}
 			r.mu.Unlock()
 		})
@@ -1373,9 +1428,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, err
 			}
 			co := &clusterOption{
-				newValue:        newClusterOpts,
-				permsChanged:    !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
-				compressChanged: !compressOptsEqual(&oldClusterOpts.Compression, &newClusterOpts.Compression),
+				newValue:             newClusterOpts,
+				permsChanged:         !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
+				compressChanged:      !compressOptsEqual(&oldClusterOpts.Compression, &newClusterOpts.Compression),
+				writeDeadlineChanged: newClusterOpts.WriteDeadline != oldClusterOpts.WriteDeadline,
 			}
 			co.diffPoolAndAccounts(&oldClusterOpts)
 			// If there are added accounts, first make sure that we can look them up.
@@ -1434,13 +1490,17 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "accountresolvertlsconfig":
 			diffOpts = append(diffOpts, &accountsOption{})
 		case "gateway":
-			// Not supported for now, but report warning if configuration of gateway
-			// is actually changed so that user knows that it won't take effect.
+			newGatewayOpts := newValue.(GatewayOpts)
+			oldGatewayOpts := oldValue.(GatewayOpts)
 
-			// Any deep-equal is likely to fail for when there is a TLSConfig. so
-			// remove for the test.
-			tmpOld := oldValue.(GatewayOpts)
-			tmpNew := newValue.(GatewayOpts)
+			// Check if only write deadline changed (other changes not supported yet)
+			writeDeadlineChanged := newGatewayOpts.WriteDeadline != oldGatewayOpts.WriteDeadline
+
+			// Create temporary copies to check for other changes
+			tmpOld := oldGatewayOpts
+			tmpNew := newGatewayOpts
+			// Set write deadline to same value to ignore it in comparison
+			tmpOld.WriteDeadline = tmpNew.WriteDeadline
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
 			tmpOld.tlsConfigOpts = nil
@@ -1452,11 +1512,18 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpOld.Gateways = copyRemoteGWConfigsWithoutTLSConfig(tmpOld.Gateways)
 			tmpNew.Gateways = copyRemoteGWConfigsWithoutTLSConfig(tmpNew.Gateways)
 
-			// If there is really a change prevents reload.
+			// If there are changes other than write deadline, prevent reload
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
-				// See TODO(ik) note below about printing old/new values.
-				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+				return nil, fmt.Errorf("config reload not supported for %s (only write_deadline changes are supported): old=%v, new=%v",
 					field.Name, oldValue, newValue)
+			}
+
+			// Only add the gateway option if write deadline actually changed
+			if writeDeadlineChanged {
+				diffOpts = append(diffOpts, &gatewayOption{
+					newValue:             newGatewayOpts,
+					writeDeadlineChanged: true,
+				})
 			}
 		case "leafnode":
 			// Similar to gateways
