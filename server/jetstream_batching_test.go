@@ -132,6 +132,7 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 
 			pubAck = JSPubAckResponse{}
 			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_True(t, pubAck.Error == nil)
 			require_Equal(t, pubAck.Sequence, 6)
 			require_Equal(t, pubAck.BatchId, "uuid")
 			require_Equal(t, pubAck.BatchSize, 5)
@@ -393,7 +394,7 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 				return errors.New("batches not found")
 			}
 			batches.mu.Lock()
-			groups := len(batches.group)
+			groups := len(batches.atomic)
 			batches.mu.Unlock()
 			if groups != 0 {
 				return fmt.Errorf("expected 0 groups, got %d", groups)
@@ -575,10 +576,12 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 		})
 		require_NoError(t, err)
 
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:     "S",
-			Sources:  []*nats.StreamSource{{Name: "TEST"}},
-			Replicas: replicas,
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "S",
+			Storage:            FileStorage,
+			Sources:            []*StreamSource{{Name: "TEST"}},
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
 		})
 		require_NoError(t, err)
 
@@ -682,8 +685,8 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		require_NotNil(t, batches)
 		require_NotNil(t, batch)
 		batches.mu.Lock()
-		groups := len(batches.group)
-		b := batches.group["uuid"]
+		groups := len(batches.atomic)
+		b := batches.atomic["uuid"]
 		batches.mu.Unlock()
 		require_Len(t, groups, 1)
 		require_NotNil(t, b)
@@ -718,7 +721,7 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 					return fmt.Errorf("expected no batches")
 				}
 				batches.mu.Lock()
-				groups = len(batches.group)
+				groups = len(batches.atomic)
 				batches.mu.Unlock()
 				if groups > 0 {
 					return fmt.Errorf("expected 0 groups, got %d", groups)
@@ -1601,7 +1604,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid")
+	b, err := batches.newAtomicBatch(mset, "uuid")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -1683,7 +1686,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) 
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid")
+	b, err := batches.newAtomicBatch(mset, "uuid")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -2891,7 +2894,7 @@ func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {
 		batches := mset.batches
 		mset.mu.RUnlock()
 		batches.mu.Lock()
-		groups := len(batches.group)
+		groups := len(batches.atomic)
 		batches.mu.Unlock()
 		require_Len(t, groups, 0)
 	}
@@ -2921,4 +2924,1000 @@ func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {
 	sm, err := mset.getMsg(1)
 	require_NoError(t, err)
 	require_Len(t, len(sliceHeader(JSRequiredApiLevel, sm.Header)), 0)
+}
+
+func generateFastBatchReply(inbox string, batchId string, batchSeq uint64, flow uint16, gap string, op int) string {
+	return fmt.Sprintf("%s.%s.%d.%s.%d.%d.$FI", inbox, batchId, flow, gap, batchSeq, op)
+}
+
+func TestJetStreamFastBatchPublish(t *testing.T) {
+	test := func(
+		t *testing.T,
+		storage StorageType,
+		retention RetentionPolicy,
+		replicas int,
+	) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		cfg := &StreamConfig{
+			Name:      "TEST",
+			Subjects:  []string{"foo.*"},
+			Storage:   storage,
+			Retention: retention,
+			Replicas:  replicas,
+		}
+
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo.0")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 0, 0, FastBatchGapFail, FastBatchOpStart)
+		m.Data = []byte("foo.0")
+
+		// Publish with batch publish disabled.
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
+		require_Error(t, pubAck.Error, NewJSBatchPublishDisabledError())
+
+		// Enable batch publish.
+		cfg.AllowBatchPublish = true
+		_, err = jsStreamUpdate(t, nc, cfg)
+		require_NoError(t, err)
+
+		// Publish with incorrect batch sequence errors.
+		m.Reply = generateFastBatchReply(inbox, "uuid", 0, 0, FastBatchGapFail, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidPatternError())
+
+		// A batch ID must not exceed the maximum length.
+		longBatchId := strings.Repeat("A", 65)
+		m.Reply = generateFastBatchReply(inbox, longBatchId, 1, 0, FastBatchGapFail, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
+		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidBatchIDError())
+
+		// Publish a batch, misses start.
+		m.Reply = generateFastBatchReply(inbox, "uuid", 2, 0, FastBatchGapFail, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishUnknownBatchIDError())
+
+		// Publish a "batch" which immediately commits.
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		// The PubAck comes in immediately without an intermediate BatchFlowAck.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Equal(t, pubAck.Sequence, 1)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 1)
+
+		// Publish a batch of N messages.
+		for seq, batch := uint64(1), uint64(5); seq <= batch; seq++ {
+			m.Subject = fmt.Sprintf("foo.%d", seq)
+			m.Data = []byte(m.Subject)
+			if seq == batch {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 0, FastBatchGapFail, FastBatchOpCommit)
+			} else if seq == 1 {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 0, FastBatchGapFail, FastBatchOpStart)
+			} else {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 0, FastBatchGapFail, FastBatchOpAppend)
+			}
+			require_NoError(t, nc.PublishMsg(m))
+
+			// Can already pre-check receiving the first flow control message.
+			if seq == 1 {
+				rmsg, err = sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"ack\","))
+				var batchFlowAck BatchFlowAck
+				require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+				require_Equal(t, batchFlowAck.Messages, 10)
+				require_Equal(t, batchFlowAck.Sequence, 0)
+			}
+		}
+		// Should receive the PubAck upon commit.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Equal(t, pubAck.Sequence, 6)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 5)
+
+		// Validate stream contents.
+		if retention != InterestPolicy {
+			for i := 0; i < 6; i++ {
+				rsm, err := js.GetMsg("TEST", uint64(i+1))
+				require_NoError(t, err)
+				subj := fmt.Sprintf("foo.%d", i)
+				require_Equal(t, rsm.Subject, subj)
+				require_Equal(t, string(rsm.Data), subj)
+			}
+		}
+	}
+
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			for _, replicas := range []int{1, 3} {
+				t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
+					test(t, storage, retention, replicas)
+				})
+			}
+		}
+	}
+}
+
+func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
+	test := func(
+		t *testing.T,
+		replicas int,
+		gapMode string,
+	) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, gapMode, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		if gapMode == "unknown" {
+			pubAck = JSPubAckResponse{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_NotNil(t, pubAck.Error)
+			require_Error(t, pubAck.Error, NewJSBatchPublishInvalidPatternError())
+			return
+		}
+
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 10)
+		require_Equal(t, batchFlowAck.Sequence, 0)
+
+		// Now a message is missed and a gap should be detected.
+		m.Reply = generateFastBatchReply(inbox, "uuid", 3, 0, gapMode, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		// There will always be a flow control message with the missed sequences.
+		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"gap\","))
+		var batchFlowGap BatchFlowGap
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
+		require_Equal(t, batchFlowGap.ExpectedLastSequence, 1)
+		require_Equal(t, batchFlowGap.CurrentSequence, 3)
+
+		switch gapMode {
+		case FastBatchGapFail:
+			// By default, if a gap is detected, the batch is rejected.
+			// A PubAck is returned with the data that has been persisted up to that point.
+			rmsg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			pubAck = JSPubAckResponse{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, 1)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 1)
+		case FastBatchGapOk:
+			// If a gap is ok, the batch will continue to function.
+			// An EOB commit should get us the PubAck for the third message.
+			m.Reply = generateFastBatchReply(inbox, "uuid", 4, 0, gapMode, FastBatchOpCommitEob)
+			require_NoError(t, nc.PublishMsg(m))
+			rmsg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			pubAck = JSPubAckResponse{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, 2)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 3)
+		default:
+			t.Fatalf("unexpected gap mode: %q", gapMode)
+		}
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, gapMode := range []string{"fail", "ok", "unknown"} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, gapMode), func(t *testing.T) {
+				test(t, replicas, gapMode)
+			})
+		}
+	}
+}
+
+func TestJetStreamFastBatchPublishFlowControl(t *testing.T) {
+	templ := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		max_mem_store: 2GB
+		max_file_store: 2GB
+		store_dir: '%s'
+		limits {
+			batch {
+				timeout: 750ms
+			}
+		}
+	}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterWithTemplate(t, templ, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo")
+		lseq := uint64(5)
+		for seq := uint64(1); seq <= lseq; seq++ {
+			if seq == lseq {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 2, FastBatchGapFail, FastBatchOpCommit)
+			} else if seq == 1 {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 2, FastBatchGapFail, FastBatchOpStart)
+			} else {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 2, FastBatchGapFail, FastBatchOpAppend)
+			}
+			require_NoError(t, nc.PublishMsg(m))
+
+			if seq == 1 || seq%2 == 0 {
+				rmsg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				batchFlowAck = BatchFlowAck{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+				if seq > 1 {
+					require_Equal(t, batchFlowAck.Sequence, seq)
+				} else {
+					require_Equal(t, batchFlowAck.Sequence, 0)
+				}
+				require_Equal(t, batchFlowAck.Messages, 2)
+			} else if seq == lseq {
+				rmsg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				pubAck = JSPubAckResponse{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+				require_Equal(t, pubAck.Sequence, 5)
+				require_Equal(t, pubAck.BatchId, "uuid")
+				require_Equal(t, pubAck.BatchSize, 5)
+			}
+
+			// Sleep between messages such that we'll go over the batch timeout.
+			// New messages being received should receive the timer.
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			test(t, replicas)
+		})
+	}
+}
+
+func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			AllowBatchPublish: true,
+			Replicas:          replicas,
+		})
+		require_NoError(t, err)
+
+		for seq := uint64(1); seq <= 3; seq++ {
+			m := nats.NewMsg("foo")
+			if seq == 1 {
+				m.Reply = generateFastBatchReply("", "uuid", seq, 10, FastBatchGapFail, FastBatchOpStart)
+			} else {
+				m.Reply = generateFastBatchReply("", "uuid", seq, 10, FastBatchGapFail, FastBatchOpAppend)
+			}
+			commit := seq == 3
+			if !commit {
+				require_NoError(t, nc.PublishMsg(m))
+				continue
+			}
+
+			inbox := nats.NewInbox()
+			sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+			require_NoError(t, err)
+			defer sub.Drain()
+
+			m.Reply = generateFastBatchReply(inbox, "uuid", seq, 10, FastBatchGapFail, FastBatchOpCommit)
+			require_NoError(t, nc.PublishMsg(m))
+			rmsg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			var pubAck JSPubAckResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, 3)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 3)
+		}
+
+		require_NoError(t, js.DeleteMsg("TEST", 2))
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		// Mirror can source batched messages but can't do fast batching itself.
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "M-no-batch",
+			Storage:           FileStorage,
+			Mirror:            &StreamSource{Name: "TEST"},
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_Error(t, err, NewJSMirrorWithBatchPublishError())
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "M",
+			Mirror:   &nats.StreamSource{Name: "TEST"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "S",
+			Storage:           FileStorage,
+			Sources:           []*StreamSource{{Name: "TEST"}},
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			for _, name := range []string{"M", "S"} {
+				if si, err := js.StreamInfo(name); err != nil {
+					return err
+				} else if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 messages for stream %q, got %d", name, si.State.Msgs)
+				}
+			}
+			return nil
+		})
+
+		// Ensure the batching headers were removed when ingested into the source/mirror.
+		rsm, err := js.GetMsg("M", 1)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 0)
+
+		rsm, err = js.GetMsg("M", 3)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 0)
+
+		rsm, err = js.GetMsg("S", 1)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 1)
+		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 1 > > foo")
+
+		rsm, err = js.GetMsg("S", 2)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 1)
+		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 3 > > foo")
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamFastBatchPublishDuplicates(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// Simulate storing a duplicate message.
+		msgId := "msgId"
+		sl := c.streamLeader(globalAccountName, "TEST")
+		require_NotNil(t, sl)
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		dseq := uint64(1)
+		// If replicated, we simulate it being proposed still.
+		if replicas > 1 {
+			dseq = 0
+		}
+		mset.storeMsgId(&ddentry{msgId, dseq, 0})
+
+		// Publish a "batch" which immediately commits.
+		m := nats.NewMsg("foo")
+		m.Header.Set(JSMsgId, msgId)
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		// The PubAck comes in immediately without an intermediate BatchFlowAck.
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		if replicas == 1 {
+			require_True(t, pubAck.Error == nil)
+			require_Equal(t, pubAck.Sequence, 1)
+			require_True(t, pubAck.Duplicate)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 1)
+		} else {
+			require_True(t, pubAck.Error != nil)
+			require_Equal(t, pubAck.Error.Error(), NewJSStreamDuplicateMessageConflictError().Error())
+		}
+		mset.mu.RLock()
+		batches := mset.batches
+		batches.mu.Lock()
+		fastBatches := len(mset.batches.fast)
+		batches.mu.Unlock()
+		mset.mu.RUnlock()
+		require_Len(t, fastBatches, 0)
+
+		// Flow setting so we get one flow control message below.
+		flow := uint16(3)
+
+		// Publish a batch of N messages that are all duplicates, we expect
+		// to receive both a flow control message and PubAck.
+		for seq, batch := uint64(1), uint64(5); seq <= batch; seq++ {
+			if seq == batch {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, flow, FastBatchGapFail, FastBatchOpCommit)
+			} else if seq == 1 {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, flow, FastBatchGapFail, FastBatchOpStart)
+			} else {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, flow, FastBatchGapFail, FastBatchOpAppend)
+			}
+			require_NoError(t, nc.PublishMsg(m))
+
+			// Can already pre-check receiving the first flow control message.
+			if seq == 1 {
+				rmsg, err = sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				batchFlowAck = BatchFlowAck{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+				require_Equal(t, batchFlowAck.Sequence, 0)
+				require_Equal(t, batchFlowAck.Messages, flow)
+			}
+
+			// Expect one flow control message for this batch.
+			if seq%uint64(flow) == 0 {
+				rmsg, err = sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				batchFlowAck = BatchFlowAck{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+				require_Equal(t, batchFlowAck.Sequence, 3)
+				require_Equal(t, batchFlowAck.Messages, flow)
+			}
+		}
+		// Should receive the PubAck upon commit.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, 0)
+		require_False(t, pubAck.Duplicate)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 5)
+
+		mset.mu.RLock()
+		batches = mset.batches
+		batches.mu.Lock()
+		fastBatches = len(mset.batches.fast)
+		batches.mu.Unlock()
+		mset.mu.RUnlock()
+		require_Len(t, fastBatches, 0)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			test(t, replicas)
+		})
+	}
+}
+
+func TestJetStreamFastBatchPublishDuplicatesCluster(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	var batchFlowAck BatchFlowAck
+	var pubAck JSPubAckResponse
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	msgId := "msgId"
+	m := nats.NewMsg("foo")
+	m.Header.Set(JSMsgId, msgId)
+	m.Reply = generateFastBatchReply(inbox, "uuid", 1, 4, FastBatchGapFail, FastBatchOpStart)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 4)
+	require_Equal(t, batchFlowAck.Sequence, 0)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	batches := mset.batches
+	mset.mu.Unlock()
+	require_NotNil(t, batches)
+
+	batches.mu.Lock()
+	b := batches.fast["uuid"]
+
+	// Simulate a pending message that will take some time to be processed due to replication.
+	b.lseq++
+	b.pending++
+
+	// Simulate a bunch of messages being marked as duplicate and not being accounted for.
+	// These two would trigger the first ack.
+	b.lseq += 2
+	// These would trigger the second ack.
+	b.lseq += 4
+
+	// Now simulate the second message we published is processed.
+	reply := generateFastBatchReply(inbox, "uuid", 2, 4, FastBatchGapFail, FastBatchOpAppend)
+	batches.fastBatchRegisterSequences(mset, reply, "uuid", 2, 2)
+	batches.mu.Unlock()
+
+	// Normally we'd receive two flow control messages, but since both were triggered due to
+	// the above process finishing, we only send one out to save bandwidth.
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 4)
+	require_Equal(t, batchFlowAck.Sequence, 8)
+
+	// Now commit the batch (but this message is also a duplicate).
+	m.Reply = generateFastBatchReply(inbox, "uuid", 9, 0, FastBatchGapFail, FastBatchOpCommit)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	pubAck = JSPubAckResponse{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.Sequence, 2)
+	require_False(t, pubAck.Duplicate)
+	require_Equal(t, pubAck.BatchId, "uuid")
+	require_Equal(t, pubAck.BatchSize, 9)
+}
+
+func TestJetStreamFastBatchPublishDuplicatesEobCommit(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		msgId := "msgId"
+		m := nats.NewMsg("foo")
+		m.Header.Set(JSMsgId, msgId)
+		for seq := uint64(1); seq <= 2; seq++ {
+			if seq == 1 {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 0, FastBatchGapFail, FastBatchOpStart)
+			} else {
+				m.Reply = generateFastBatchReply(inbox, "uuid", seq, 0, FastBatchGapFail, FastBatchOpAppend)
+			}
+			require_NoError(t, nc.PublishMsg(m))
+		}
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 10)
+
+		m.Reply = generateFastBatchReply(inbox, "uuid", 3, 0, FastBatchGapFail, FastBatchOpCommitEob)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, 1)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 2)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			test(t, replicas)
+		})
+	}
+}
+
+func TestJetStreamFastBatchPublishHeaderCheckError(t *testing.T) {
+	test := func(t *testing.T, replicas int, gapMode string) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// Send the first message.
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, gapMode, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+
+		// Add a header that will require returning an error.
+		m.Header.Set(JSExpectedLastSeq, "100")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 2, 0, gapMode, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(m))
+
+		// The first message triggered the initial flow control message.
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 10)
+
+		// The second message should always report the error based on the header.
+		// But it should report about this error on that sequence.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"err\","))
+		var batchFlowErr BatchFlowErr
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowErr))
+		require_Equal(t, batchFlowErr.Sequence, 2)
+		require_True(t, batchFlowErr.Error != nil)
+		require_Equal(t, batchFlowErr.Error.Error(), NewJSStreamWrongLastSequenceError(1).Error())
+
+		switch gapMode {
+		case FastBatchGapFail:
+			// Nothing to do, we simply wait for the PubAck below.
+			break
+		case FastBatchGapOk:
+			// Commit the batch.
+			m.Header.Del(JSExpectedLastSeq)
+			m.Reply = generateFastBatchReply(inbox, "uuid", 3, 0, gapMode, FastBatchOpCommitEob)
+			require_NoError(t, nc.PublishMsg(m))
+		default:
+			t.Fatalf("Unexpected gap mode: %q", gapMode)
+		}
+
+		// We always expect a PubAck containing the last persisted message data.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, 1)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		switch {
+		case gapMode == FastBatchGapFail:
+			require_Equal(t, pubAck.BatchSize, 1)
+		case gapMode == FastBatchGapOk:
+			require_Equal(t, pubAck.BatchSize, 2)
+		default:
+			t.Fatalf("Unexpected gap mode: %q", gapMode)
+		}
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, gapMode := range []string{FastBatchGapFail, FastBatchGapOk} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, gapMode), func(t *testing.T) {
+				test(t, replicas, gapMode)
+			})
+		}
+	}
+}
+
+func TestJetStreamFastBatchPublishPing(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	var batchFlowAck BatchFlowAck
+	var pubAck JSPubAckResponse
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Send the first message.
+	m := nats.NewMsg("foo")
+	m.Reply = generateFastBatchReply(inbox, "uuid", 1, 2, FastBatchGapOk, FastBatchOpStart)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+
+	// Send the second message that will trigger the flow control message.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 2, 2, FastBatchGapOk, FastBatchOpAppend)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	// A ping will resend the flow control message.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 2, 2, FastBatchGapOk, FastBatchOpPing)
+	require_NoError(t, nc.PublishMsg(m))
+	for i := range 2 {
+		if i > 0 {
+			rmsg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+		}
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 2)
+		require_Equal(t, batchFlowAck.Sequence, 2)
+	}
+
+	// Simulate losing one message and a ping making us aware of the gap.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 3, 2, FastBatchGapOk, FastBatchOpPing)
+	require_NoError(t, nc.PublishMsg(m))
+	// First, we get the report of the detected gap.
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowGap BatchFlowGap
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
+	require_Equal(t, batchFlowGap.ExpectedLastSequence, 3)
+	require_Equal(t, batchFlowGap.CurrentSequence, 4)
+	// Second, we get the last flow control message, since we might have missed that before.
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+	require_Equal(t, batchFlowAck.Sequence, 2)
+
+	// Send another message.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 4, 2, FastBatchGapOk, FastBatchOpAppend)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+	require_Equal(t, batchFlowAck.Sequence, 4)
+
+	// Simulate losing many messages and a ping making us aware of the gap as well as updating flow control.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 100, 2, FastBatchGapOk, FastBatchOpPing)
+	require_NoError(t, nc.PublishMsg(m))
+	// First, we get the report of the detected gap.
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowGap = BatchFlowGap{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
+	require_Equal(t, batchFlowGap.ExpectedLastSequence, 5)
+	require_Equal(t, batchFlowGap.CurrentSequence, 101)
+	// Second, we get the updated flow control message.
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+	require_Equal(t, batchFlowAck.Sequence, 100)
+
+	m.Reply = generateFastBatchReply(inbox, "uuid", 101, 2, FastBatchGapOk, FastBatchOpCommitEob)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	pubAck = JSPubAckResponse{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.Sequence, 3)
+	require_Equal(t, pubAck.BatchId, "uuid")
+	require_Equal(t, pubAck.BatchSize, 100)
+}
+
+func TestJetStreamFastBatchSequentialDuplicateAndErrorPubAck(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	// Publish the first message.
+	msgId := "msgId"
+	m := nats.NewMsg("foo")
+	m.Header.Set(JSMsgId, msgId)
+	_, err = nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Send the first message, which is a duplicate.
+	m.Header.Set(JSMsgId, msgId)
+	m.Reply = generateFastBatchReply(inbox, "uuid", 1, 2, FastBatchGapFail, FastBatchOpStart)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowAck BatchFlowAck
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+
+	// Send the second message which triggers an error and terminates the batch.
+	m.Header.Del(JSMsgId)
+	m.Header.Set(JSExpectedLastSeq, "100")
+	m.Reply = generateFastBatchReply(inbox, "uuid", 2, 2, FastBatchGapFail, FastBatchOpAppend)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowErr BatchFlowErr
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowErr))
+	require_Equal(t, batchFlowErr.Sequence, 2)
+	require_True(t, batchFlowErr.Error != nil)
+	require_Equal(t, batchFlowErr.Error.Error(), NewJSStreamWrongLastSequenceError(1).Error())
+
+	// Lastly, we expect the PubAck.
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.BatchId, "uuid")
+	require_Equal(t, pubAck.BatchSize, 1)
+	// The batch only had duplicate messages.
+	// Technically, we shouldn't return a zero-sequence, but it's unavoidable.
+	require_Equal(t, pubAck.Sequence, 0)
 }
