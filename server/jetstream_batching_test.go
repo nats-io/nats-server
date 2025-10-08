@@ -2872,3 +2872,152 @@ func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {
 	require_NoError(t, err)
 	require_Len(t, len(sliceHeader(JSRequiredApiLevel, sm.Header)), 0)
 }
+
+func TestJetStreamFastBatchPublish(t *testing.T) {
+	test := func(
+		t *testing.T,
+		storage StorageType,
+		retention RetentionPolicy,
+		replicas int,
+	) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		cfg := &StreamConfig{
+			Name:      "TEST",
+			Subjects:  []string{"foo.*"},
+			Storage:   storage,
+			Retention: retention,
+			Replicas:  replicas,
+		}
+
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo.0")
+		m.Reply = reply
+		m.Data = []byte("foo.0")
+		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
+
+		// Publish with batch publish disabled.
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
+		require_Error(t, pubAck.Error, NewJSBatchPublishDisabledError())
+
+		// Enable batch publish.
+		cfg.AllowBatchPublish = true
+		_, err = jsStreamUpdate(t, nc, cfg)
+		require_NoError(t, err)
+
+		// Publish without batch sequence errors.
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishMissingSeqError())
+
+		// A batch ID must not exceed the maximum length.
+		longBatchId := strings.Repeat("A", 65)
+		m.Header.Set("Nats-Fast-Batch-Id", longBatchId)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
+		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidBatchIDError())
+
+		// Publish a batch, misses start.
+		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "2")
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishUnknownBatchIDError())
+
+		// Publish a "batch" which immediately commits.
+		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.AckMessages, 10)
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Equal(t, pubAck.Sequence, 1)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 1)
+
+		// Publish a batch of N messages.
+		m.Header.Del("Nats-Batch-Commit")
+		for seq, batch := uint64(1), uint64(5); seq <= batch; seq++ {
+			m.Subject = fmt.Sprintf("foo.%d", seq)
+			m.Data = []byte(m.Subject)
+			m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
+			if seq == batch {
+				m.Header.Set("Nats-Batch-Commit", "1")
+			}
+			require_NoError(t, nc.PublishMsg(m))
+
+			// Can already pre-check receiving the first flow control message.
+			if seq == 1 {
+				rmsg, err = sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				batchFlowAck = BatchFlowAck{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+				require_Equal(t, batchFlowAck.AckMessages, 10)
+			}
+		}
+		// Should receive the PubAck upon commit.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Equal(t, pubAck.Sequence, 6)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 5)
+
+		// Validate stream contents.
+		if retention != InterestPolicy {
+			for i := 0; i < 6; i++ {
+				rsm, err := js.GetMsg("TEST", uint64(i+1))
+				require_NoError(t, err)
+				subj := fmt.Sprintf("foo.%d", i)
+				require_Equal(t, rsm.Subject, subj)
+				require_Equal(t, string(rsm.Data), subj)
+			}
+		}
+	}
+
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			for _, replicas := range []int{1, 3} {
+				t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
+					test(t, storage, retention, replicas)
+				})
+			}
+		}
+	}
+}

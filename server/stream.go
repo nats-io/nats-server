@@ -277,6 +277,18 @@ type CounterValue struct {
 // e.g. {"stream":{"subject":"123"}}
 type CounterSources map[string]map[string]string
 
+// BatchFlowAck is used for flow control when fast batch publishing into a stream.
+type BatchFlowAck struct {
+	// LastSequence is the previously highest sequence seen, this is set when a gap is detected
+	LastSequence int `json:"last_seq,omitempty"`
+	// CurrentSequence is the sequence of the message that triggered the ack
+	CurrentSequence int `json:"seq,omitempty"`
+	// AckMessages indicates the active per-message frequency of Flow Acks
+	AckMessages int `json:"messages,omitempty"`
+	// AckBytes indicates the active per-bytes frequency of Flow Acks in unit of bytes
+	AckBytes int64 `json:"bytes,omitempty"`
+}
+
 // StreamInfo shows config and current state for this stream.
 type StreamInfo struct {
 	Config     StreamConfig        `json:"config"`
@@ -6174,7 +6186,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
-	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, allowAtomicPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules, mset.cfg.AllowAtomicPublish
+	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, allowAtomicPublish, allowBatchPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules, mset.cfg.AllowAtomicPublish, mset.cfg.AllowBatchPublish
 	mset.mu.RUnlock()
 
 	// If message tracing (with message delivery), we will need to send the
@@ -6237,17 +6249,25 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 
 	if atomic && !allowAtomicPublish {
 		return respondError(NewJSAtomicPublishDisabledError())
+	} else if !atomic && !allowBatchPublish {
+		return respondError(NewJSBatchPublishDisabledError())
 	}
 
 	// Batch ID is too long.
 	if len(batchId) > 64 {
-		err := NewJSAtomicPublishInvalidBatchIDError()
+		err := NewJSBatchPublishInvalidBatchIDError()
+		if atomic {
+			err = NewJSAtomicPublishInvalidBatchIDError()
+		}
 		return respondError(err)
 	}
 
 	batchSeq, exists := getBatchSequence(hdr)
 	if !exists {
-		err := NewJSAtomicPublishMissingSeqError()
+		err := NewJSBatchPublishMissingSeqError()
+		if atomic {
+			err = NewJSAtomicPublishMissingSeqError()
+		}
 		return respondError(err)
 	}
 
@@ -6271,6 +6291,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 	if !ok {
 		if batchSeq != 1 {
 			batches.mu.Unlock()
+			if !atomic {
+				err := NewJSBatchPublishUnknownBatchIDError()
+				return respondError(err)
+			}
 			maxBatchSize := streamMaxBatchSize
 			opts := s.getOpts()
 			if opts.JetStreamLimits.MaxBatchSize > 0 {
@@ -6347,6 +6371,90 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 		batches.mu.Unlock()
 		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
 		return respondIncompleteBatch()
+	}
+
+	// If not atomic we care about going fast. Proposals happen immediately.
+	if !atomic {
+		if commit {
+			b.cleanupLocked(batchId, batches)
+		}
+		batches.mu.Unlock()
+
+		// The first message in the batch responds with the settings used for flow control.
+		if batchSeq == 1 && canRespond {
+			buf, _ := json.Marshal(&BatchFlowAck{AckMessages: 10})
+			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
+		}
+
+		// Proceed with proposing this message.
+
+		// We only use mset.clseq for clustering and in case we run ahead of actual commits.
+		// Check if we need to set initial value here
+		mset.clMu.Lock()
+		if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
+			// Need to unlock and re-acquire the locks in the proper order.
+			mset.clMu.Unlock()
+			// Locking order is stream -> batchMu -> clMu
+			mset.mu.RLock()
+			batch := mset.batchApply
+			var batchCount uint64
+			if batch != nil {
+				batch.mu.Lock()
+				batchCount = batch.count
+			}
+			mset.clMu.Lock()
+			// Re-capture
+			lseq = mset.lseq
+			mset.clseq = lseq + mset.clfs + batchCount
+			// Keep hold of the mset.clMu, but unlock the others.
+			if batch != nil {
+				batch.mu.Unlock()
+			}
+			mset.mu.RUnlock()
+		}
+
+		var err error
+		diff := &batchStagedDiff{}
+		if hdr, msg, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+			mset.clMu.Unlock()
+			return err
+		}
+
+		// TODO(mvv): docs
+		if !commit {
+			reply = _EMPTY_
+		}
+
+		if !isClustered {
+			mset.clMu.Unlock()
+			return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, false, true)
+		}
+
+		diff.commit(mset)
+		esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), false)
+		var mtKey uint64
+		if mt != nil {
+			mtKey = mset.clseq
+			if mset.mt == nil {
+				mset.mt = make(map[uint64]*msgTrace)
+			}
+			mset.mt[mtKey] = mt
+		}
+
+		// Do proposal.
+		_ = node.Propose(esm)
+		// The proposal can fail, but we always account for trying.
+		mset.clseq++
+		mset.trackReplicationTraffic(node, len(esm), r)
+
+		// Check to see if we are being overrun.
+		// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
+		if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
+			lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
+			s.RateLimitWarnf("%s", lerr.Error())
+		}
+		mset.clMu.Unlock()
+		return nil
 	}
 
 	// Confirm the batch doesn't exceed the allowed size.

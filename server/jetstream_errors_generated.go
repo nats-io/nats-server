@@ -35,6 +35,18 @@ const (
 	// JSBadRequestErr bad request
 	JSBadRequestErr ErrorIdentifier = 10003
 
+	// JSBatchPublishDisabledErr batch publish is disabled
+	JSBatchPublishDisabledErr ErrorIdentifier = 10202
+
+	// JSBatchPublishInvalidBatchIDErr batch publish ID is invalid
+	JSBatchPublishInvalidBatchIDErr ErrorIdentifier = 10204
+
+	// JSBatchPublishMissingSeqErr batch publish sequence is missing
+	JSBatchPublishMissingSeqErr ErrorIdentifier = 10203
+
+	// JSBatchPublishUnknownBatchIDErr batch publish ID unknown
+	JSBatchPublishUnknownBatchIDErr ErrorIdentifier = 10205
+
 	// JSClusterIncompleteErr incomplete results
 	JSClusterIncompleteErr ErrorIdentifier = 10004
 
@@ -618,6 +630,10 @@ var (
 		JSAtomicPublishTooLargeBatchErrF:             {Code: 400, ErrCode: 10199, Description: "atomic publish batch is too large: {size}"},
 		JSAtomicPublishUnsupportedHeaderBatchErr:     {Code: 400, ErrCode: 10177, Description: "atomic publish unsupported header used: {header}"},
 		JSBadRequestErr:                              {Code: 400, ErrCode: 10003, Description: "bad request"},
+		JSBatchPublishDisabledErr:                    {Code: 400, ErrCode: 10202, Description: "batch publish is disabled"},
+		JSBatchPublishInvalidBatchIDErr:              {Code: 400, ErrCode: 10204, Description: "batch publish ID is invalid"},
+		JSBatchPublishMissingSeqErr:                  {Code: 400, ErrCode: 10203, Description: "batch publish sequence is missing"},
+		JSBatchPublishUnknownBatchIDErr:              {Code: 400, ErrCode: 10205, Description: "batch publish ID unknown"},
 		JSClusterIncompleteErr:                       {Code: 503, ErrCode: 10004, Description: "incomplete results"},
 		JSClusterNoPeersErrF:                         {Code: 400, ErrCode: 10005, Description: "{err}"},
 		JSClusterNotActiveErr:                        {Code: 500, ErrCode: 10006, Description: "JetStream not in clustered mode"},
@@ -943,6 +959,46 @@ func NewJSBadRequestError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSBadRequestErr]
+}
+
+// NewJSBatchPublishDisabledError creates a new JSBatchPublishDisabledErr error: "batch publish is disabled"
+func NewJSBatchPublishDisabledError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishDisabledErr]
+}
+
+// NewJSBatchPublishInvalidBatchIDError creates a new JSBatchPublishInvalidBatchIDErr error: "batch publish ID is invalid"
+func NewJSBatchPublishInvalidBatchIDError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishInvalidBatchIDErr]
+}
+
+// NewJSBatchPublishMissingSeqError creates a new JSBatchPublishMissingSeqErr error: "batch publish sequence is missing"
+func NewJSBatchPublishMissingSeqError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishMissingSeqErr]
+}
+
+// NewJSBatchPublishUnknownBatchIDError creates a new JSBatchPublishUnknownBatchIDErr error: "batch publish ID unknown"
+func NewJSBatchPublishUnknownBatchIDError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishUnknownBatchIDErr]
 }
 
 // NewJSClusterIncompleteError creates a new JSClusterIncompleteErr error: "incomplete results"

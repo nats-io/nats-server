@@ -1998,5 +1998,45 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishDisabledErr",
+    "code": 400,
+    "error_code": 10202,
+    "description": "batch publish is disabled",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishMissingSeqErr",
+    "code": 400,
+    "error_code": 10203,
+    "description": "batch publish sequence is missing",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishInvalidBatchIDErr",
+    "code": 400,
+    "error_code": 10204,
+    "description": "batch publish ID is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishUnknownBatchIDErr",
+    "code": 400,
+    "error_code": 10205,
+    "description": "batch publish ID unknown",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

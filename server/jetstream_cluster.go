@@ -8927,24 +8927,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		s.RateLimitWarnf("%s", lerr.Error())
 	}
 	mset.clMu.Unlock()
-
-	if err != nil {
-		if mt != nil {
-			mset.getAndDeleteMsgTrace(mtKey)
-		}
-		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
-			resp.Error = &ApiError{Code: 503, Description: err.Error()}
-			response, _ = json.Marshal(resp)
-			// If we errored out respond here.
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
-		}
-		if isOutOfSpaceErr(err) {
-			s.handleOutOfSpace(mset)
-		}
-	}
-
-	return err
+	return nil
 }
 
 func (mset *stream) getAndDeleteMsgTrace(lseq uint64) *msgTrace {
