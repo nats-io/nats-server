@@ -1897,6 +1897,16 @@ func TestConfigCheck(t *testing.T) {
 			err: nil,
 		},
 		{
+			name: "valid cluster close_slow_consumer_routes",
+			config: `
+				cluster {
+					port: -1
+					close_slow_consumer_routes: true
+				}
+			`,
+			err: nil,
+		},
+		{
 			name: "wrong type for leafnodes compression",
 			config: `
 				leafnodes {

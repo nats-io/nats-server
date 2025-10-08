@@ -5084,3 +5084,155 @@ func TestClusterWriteDeadlineDifferentFromClient(t *testing.T) {
 		t.Error("Expected no slow consumer clients")
 	}
 }
+
+func TestClusterSlowConsumerRouteClose(t *testing.T) {
+	// Test that close_slow_consumer_routes option closes route connections
+	// instead of just marking them as slow consumers
+
+	// Server 1 with close_slow_consumer_routes enabled
+	o1 := DefaultOptions()
+	o1.Cluster.Name = "test"
+	o1.Cluster.Port = -1
+	o1.Cluster.PoolSize = -1 // Disable route pooling
+	o1.Cluster.CloseSlowConsumerRoutes = true
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	// Server 2 that will connect to Server 1
+	o2 := DefaultOptions()
+	o2.Cluster.Name = "test"
+	o2.Cluster.Port = -1
+	o2.Cluster.PoolSize = -1 // Disable route pooling
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	// Wait for cluster to form
+	checkClusterFormed(t, s1, s2)
+
+	// Get initial route count
+	initialRoutes := s1.NumRoutes()
+	if initialRoutes == 0 {
+		t.Fatal("Expected at least one route connection")
+	}
+
+	// Trigger slow consumer condition by calling handleWriteTimeout directly
+	s1.mu.Lock()
+	var targetRoute *client
+	for _, routeMap := range s1.routes {
+		for _, route := range routeMap {
+			targetRoute = route
+			break
+		}
+	}
+	s1.mu.Unlock()
+
+	if targetRoute == nil {
+		t.Fatal("No route connection found")
+	}
+
+	// Simulate slow consumer by calling handleWriteTimeout with partial write
+	targetRoute.mu.Lock()
+	closed := targetRoute.handleWriteTimeout(100, 1000, 5) // Some written, more attempted
+	targetRoute.mu.Unlock()
+
+	// Should be closed because close_slow_consumer_routes is true
+	if !closed {
+		t.Error("Route should be closed when close_slow_consumer_routes is true")
+	}
+
+	// Verify slow consumer stats were recorded
+	if s1.NumSlowConsumersRoutes() == 0 {
+		t.Error("Expected at least one slow consumer route to be recorded")
+	}
+}
+
+func TestClusterSlowConsumerRouteNoClose(t *testing.T) {
+	// Test that without close_slow_consumer_routes, routes are not closed
+	// but just marked as slow consumers
+
+	// Server 1 without close_slow_consumer_routes (default false)
+	o1 := DefaultOptions()
+	o1.Cluster.Name = "test"
+	o1.Cluster.Port = -1
+	o1.Cluster.PoolSize = -1 // Disable route pooling
+	// o1.Cluster.CloseSlowConsumerRoutes is false by default
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	// Server 2 that will connect to Server 1
+	o2 := DefaultOptions()
+	o2.Cluster.Name = "test"
+	o2.Cluster.Port = -1
+	o2.Cluster.PoolSize = -1 // Disable route pooling
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	// Wait for cluster to form
+	checkClusterFormed(t, s1, s2)
+
+	// Get initial route count
+	initialRoutes := s1.NumRoutes()
+	if initialRoutes == 0 {
+		t.Fatal("Expected at least one route connection")
+	}
+
+	// Trigger slow consumer condition differently for this test
+	// We'll create a scenario where there's partial write
+	s1.mu.Lock()
+	var targetRoute *client
+	for _, routeMap := range s1.routes {
+		for _, route := range routeMap {
+			targetRoute = route
+			break
+		}
+	}
+	s1.mu.Unlock()
+
+	if targetRoute == nil {
+		t.Fatal("No route connection found")
+	}
+
+	// Simulate slow consumer by calling handleWriteTimeout directly
+	// with parameters that indicate a partial write (not zero)
+	targetRoute.mu.Lock()
+	closed := targetRoute.handleWriteTimeout(100, 1000, 5) // Some written, more attempted
+	targetRoute.mu.Unlock()
+
+	// Should not be closed because close_slow_consumer_routes is false
+	if closed {
+		t.Error("Route should not be closed when close_slow_consumer_routes is false")
+	}
+
+	// Without close_slow_consumer_routes, routes should still be connected
+	if nc := s1.NumRoutes(); nc != initialRoutes {
+		t.Errorf("Expected %d route connections to remain, got %v", initialRoutes, nc)
+	}
+	if nc := s2.NumRoutes(); nc != initialRoutes {
+		t.Errorf("Expected %d route connections to remain, got %v", initialRoutes, nc)
+	}
+
+	// But slow consumer stats should be recorded
+	if s1.NumSlowConsumersRoutes() == 0 {
+		t.Error("Expected at least one slow consumer route to be recorded")
+	}
+
+	// Verify routes are marked as slow consumers
+	s1.mu.Lock()
+	foundSlowConsumer := false
+	for _, routeMap := range s1.routes {
+		for _, route := range routeMap {
+			route.mu.Lock()
+			if route.flags.isSet(isSlowConsumer) {
+				foundSlowConsumer = true
+			}
+			route.mu.Unlock()
+		}
+	}
+	s1.mu.Unlock()
+
+	if !foundSlowConsumer {
+		t.Error("Expected at least one route to be marked as slow consumer")
+	}
+}

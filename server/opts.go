@@ -61,29 +61,30 @@ type PinnedCertSet map[string]struct{}
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type ClusterOpts struct {
-	Name              string            `json:"-"`
-	Host              string            `json:"addr,omitempty"`
-	Port              int               `json:"cluster_port,omitempty"`
-	Username          string            `json:"-"`
-	Password          string            `json:"-"`
-	AuthTimeout       float64           `json:"auth_timeout,omitempty"`
-	Permissions       *RoutePermissions `json:"-"`
-	TLSTimeout        float64           `json:"-"`
-	TLSConfig         *tls.Config       `json:"-"`
-	TLSMap            bool              `json:"-"`
-	TLSCheckKnownURLs bool              `json:"-"`
-	TLSPinnedCerts    PinnedCertSet     `json:"-"`
-	ListenStr         string            `json:"-"`
-	Advertise         string            `json:"-"`
-	NoAdvertise       bool              `json:"-"`
-	ConnectRetries    int               `json:"-"`
-	ConnectBackoff    bool              `json:"-"`
-	PoolSize          int               `json:"-"`
-	PinnedAccounts    []string          `json:"-"`
-	Compression       CompressionOpts   `json:"-"`
-	PingInterval      time.Duration     `json:"-"`
-	MaxPingsOut       int               `json:"-"`
-	WriteDeadline     time.Duration     `json:"-"`
+	Name                    string            `json:"-"`
+	Host                    string            `json:"addr,omitempty"`
+	Port                    int               `json:"cluster_port,omitempty"`
+	Username                string            `json:"-"`
+	Password                string            `json:"-"`
+	AuthTimeout             float64           `json:"auth_timeout,omitempty"`
+	Permissions             *RoutePermissions `json:"-"`
+	TLSTimeout              float64           `json:"-"`
+	TLSConfig               *tls.Config       `json:"-"`
+	TLSMap                  bool              `json:"-"`
+	TLSCheckKnownURLs       bool              `json:"-"`
+	TLSPinnedCerts          PinnedCertSet     `json:"-"`
+	ListenStr               string            `json:"-"`
+	Advertise               string            `json:"-"`
+	NoAdvertise             bool              `json:"-"`
+	ConnectRetries          int               `json:"-"`
+	ConnectBackoff          bool              `json:"-"`
+	PoolSize                int               `json:"-"`
+	PinnedAccounts          []string          `json:"-"`
+	Compression             CompressionOpts   `json:"-"`
+	PingInterval            time.Duration     `json:"-"`
+	MaxPingsOut             int               `json:"-"`
+	WriteDeadline           time.Duration     `json:"-"`
+	CloseSlowConsumerRoutes bool              `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -2002,6 +2003,8 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			opts.Cluster.MaxPingsOut = int(mv.(int64))
 		case "write_deadline":
 			opts.Cluster.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
+		case "close_slow_consumer_routes":
+			opts.Cluster.CloseSlowConsumerRoutes = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

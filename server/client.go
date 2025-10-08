@@ -1847,7 +1847,8 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 		scState, c.out.wdl, numChunks, attempted)
 
 	// We always close CLIENT connections, or when nothing was written at all...
-	if c.kind == CLIENT || written == 0 {
+	// Also close ROUTER connections if close_slow_consumer_routes is enabled
+	if c.kind == CLIENT || written == 0 || (c.kind == ROUTER && c.srv.getOpts().Cluster.CloseSlowConsumerRoutes) {
 		c.markConnAsClosed(SlowConsumerWriteDeadline)
 		return true
 	} else {
