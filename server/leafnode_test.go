@@ -10798,3 +10798,35 @@ func TestLeafNodeDaisyChainWithAccountImportExport(t *testing.T) {
 	acc.mu.RUnlock()
 	require_Len(t, len(sr.psubs), 0)
 }
+
+func TestLeafNodeConfigureWriteDeadline(t *testing.T) {
+	o1, o2 := DefaultOptions(), DefaultOptions()
+
+	o1.LeafNode.WriteDeadline = 5 * time.Second
+	o1.LeafNode.Host = "127.0.0.1"
+	o1.LeafNode.Port = -1
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	s1URL, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port))
+	o2.Cluster.Name = "somethingelse"
+	o2.LeafNode.WriteDeadline = 6 * time.Second
+	o2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{s1URL}}}
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+
+	s1.mu.RLock()
+	s2.mu.RLock()
+	defer s1.mu.RUnlock()
+	defer s2.mu.RUnlock()
+
+	s1.forEachRemote(func(r *client) {
+		require_Equal(t, r.out.wdl, 5*time.Second)
+	})
+
+	s2.forEachRemote(func(r *client) {
+		require_Equal(t, r.out.wdl, 6*time.Second)
+	})
+}

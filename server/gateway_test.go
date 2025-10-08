@@ -7528,3 +7528,32 @@ func TestGatewayOutboundDetectsStaleConnectionIfNoInfo(t *testing.T) {
 	wg.Wait()
 	s.WaitForShutdown()
 }
+
+func TestGatewayConfigureWriteDeadline(t *testing.T) {
+	o1 := testDefaultOptionsForGateway("B")
+	o1.Gateway.WriteDeadline = 5 * time.Second
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
+	o2.Gateway.WriteDeadline = 6 * time.Second
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	waitForOutboundGateways(t, s2, 1, time.Second)
+	waitForInboundGateways(t, s1, 1, time.Second)
+	waitForOutboundGateways(t, s1, 1, time.Second)
+
+	s1.mu.RLock()
+	s2.mu.RLock()
+	defer s1.mu.RUnlock()
+	defer s2.mu.RUnlock()
+
+	s1.forEachRemote(func(r *client) {
+		require_Equal(t, r.out.wdl, 6*time.Second)
+	})
+
+	s2.forEachRemote(func(r *client) {
+		require_Equal(t, r.out.wdl, 5*time.Second)
+	})
+}

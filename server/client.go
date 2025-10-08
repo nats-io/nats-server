@@ -690,6 +690,14 @@ func (c *client) initClient() {
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
+	switch {
+	case c.kind == ROUTER && opts.Cluster.WriteDeadline > 0:
+		c.out.wdl = opts.Cluster.WriteDeadline
+	case c.kind == GATEWAY && opts.Gateway.WriteDeadline > 0:
+		c.out.wdl = opts.Gateway.WriteDeadline
+	case c.kind == LEAF && opts.LeafNode.WriteDeadline > 0:
+		c.out.wdl = opts.LeafNode.WriteDeadline
+	}
 	c.out.mp = opts.MaxPending
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
