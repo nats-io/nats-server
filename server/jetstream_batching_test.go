@@ -1551,7 +1551,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid")
+	b, err := batches.newBatchGroup(mset, "uuid", true, false)
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -1633,7 +1633,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) 
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid")
+	b, err := batches.newBatchGroup(mset, "uuid", true, false)
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -3016,6 +3016,102 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 			for _, replicas := range []int{1, 3} {
 				t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
 					test(t, storage, retention, replicas)
+				})
+			}
+		}
+	}
+}
+
+func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
+	test := func(
+		t *testing.T,
+		storage StorageType,
+		replicas int,
+		gapMode string,
+	) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           storage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo")
+		m.Reply = reply
+		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		if gapMode != _EMPTY_ {
+			m.Header.Set("Nats-Batch-Gap", gapMode)
+		}
+		require_NoError(t, nc.PublishMsg(m))
+		m.Header.Del("Nats-Batch-Gap")
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.AckMessages, 10)
+
+		// Now a message is missed and a gap should be detected.
+		m.Header.Set("Nats-Batch-Sequence", "3")
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		switch gapMode {
+		case _EMPTY_, JSFastBatchGapFail:
+			// By default, if a gap is detected, the batch is rejected.
+			// A PubAck is returned with the data that has been persisted up to that point.
+			pubAck = JSPubAckResponse{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, 1)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 1)
+		case JSFastBatchGapOk:
+			// If a gap is ok, the batch will continue to function and a
+			// flow control message with the missed sequences is published.
+			batchFlowAck = BatchFlowAck{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+			require_Equal(t, batchFlowAck.AckMessages, 10)
+			require_Equal(t, batchFlowAck.CurrentSequence, 3)
+			require_Equal(t, batchFlowAck.LastSequence, 1)
+
+			// An EOB commit should get us the PubAck for the third message.
+			m.Header.Set("Nats-Batch-Sequence", "4")
+			m.Header.Set("Nats-Batch-Commit", "eob")
+			require_NoError(t, nc.PublishMsg(m))
+			rmsg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			pubAck = JSPubAckResponse{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, 2)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 3)
+		default:
+			t.Fatalf("unexpected gap mode: %q", gapMode)
+		}
+	}
+
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		for _, replicas := range []int{1, 3} {
+			for _, gapMode := range []string{_EMPTY_, "fail", "ok"} {
+				t.Run(fmt.Sprintf("%s/R%d/%s", storage, replicas, gapMode), func(t *testing.T) {
+					test(t, storage, replicas, gapMode)
 				})
 			}
 		}

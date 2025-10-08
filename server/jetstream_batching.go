@@ -41,15 +41,20 @@ type batchGroup struct {
 	lseq  uint64
 	store StreamStore
 	timer *time.Timer
+	gapOk bool
 }
 
 // Lock should be held.
-func (batches *batching) newBatchGroup(mset *stream, batchId string) (*batchGroup, error) {
-	store, err := newBatchStore(mset, batchId)
-	if err != nil {
-		return nil, err
+func (batches *batching) newBatchGroup(mset *stream, batchId string, atomic, gapOk bool) (*batchGroup, error) {
+	b := &batchGroup{gapOk: gapOk}
+
+	if atomic {
+		store, err := newBatchStore(mset, batchId)
+		if err != nil {
+			return nil, err
+		}
+		b.store = store
 	}
-	b := &batchGroup{store: store}
 
 	// Create a timer to clean up after timeout.
 	timeout := streamMaxBatchTimeout
@@ -105,7 +110,9 @@ func (b *batchGroup) readyForCommit() bool {
 	if !b.timer.Stop() {
 		return false
 	}
-	b.store.FlushAllPending()
+	if b.store != nil {
+		b.store.FlushAllPending()
+	}
 	return true
 }
 
@@ -120,7 +127,9 @@ func (b *batchGroup) cleanup(batchId string, batches *batching) {
 func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
 	globalInflightBatches.Add(-1)
 	b.timer.Stop()
-	b.store.Delete(true)
+	if b.store != nil {
+		b.store.Delete(true)
+	}
 	delete(batches.group, batchId)
 }
 
@@ -128,7 +137,9 @@ func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
 func (b *batchGroup) stopLocked() {
 	globalInflightBatches.Add(-1)
 	b.timer.Stop()
-	b.store.Stop()
+	if b.store != nil {
+		b.store.Stop()
+	}
 }
 
 // batchStagedDiff stages all changes for consistency checks until commit.

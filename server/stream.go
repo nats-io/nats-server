@@ -280,9 +280,9 @@ type CounterSources map[string]map[string]string
 // BatchFlowAck is used for flow control when fast batch publishing into a stream.
 type BatchFlowAck struct {
 	// LastSequence is the previously highest sequence seen, this is set when a gap is detected
-	LastSequence int `json:"last_seq,omitempty"`
+	LastSequence uint64 `json:"last_seq,omitempty"`
 	// CurrentSequence is the sequence of the message that triggered the ack
-	CurrentSequence int `json:"seq,omitempty"`
+	CurrentSequence uint64 `json:"seq,omitempty"`
 	// AckMessages indicates the active per-message frequency of Flow Acks
 	AckMessages int `json:"messages,omitempty"`
 	// AckBytes indicates the active per-bytes frequency of Flow Acks in unit of bytes
@@ -576,6 +576,7 @@ const (
 	JSBatchSeq                = "Nats-Batch-Sequence"
 	JSBatchCommit             = "Nats-Batch-Commit"
 	JSFastBatchId             = "Nats-Fast-Batch-Id"
+	JSBatchGap                = "Nats-Batch-Gap"
 	JSSchedulePattern         = "Nats-Schedule"
 	JSScheduleTTL             = "Nats-Schedule-TTL"
 	JSScheduleTarget          = "Nats-Schedule-Target"
@@ -592,6 +593,12 @@ const (
 	JSScheduler         = "Nats-Scheduler"
 	JSScheduleNext      = "Nats-Schedule-Next"
 	JSScheduleNextPurge = "purge" // If it's a non-repeating/delayed message, the schedule is purged.
+)
+
+// Headers for fast batch publish.
+const (
+	JSFastBatchGapFail = "fail"
+	JSFastBatchGapOk   = "ok"
 )
 
 // Headers for republished messages and direct get responses.
@@ -6332,7 +6339,8 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 		}
 
 		var err error
-		if b, err = batches.newBatchGroup(mset, batchId); err != nil {
+		gapOk := bytesToString(sliceHeader(JSBatchGap, hdr)) == JSFastBatchGapOk
+		if b, err = batches.newBatchGroup(mset, batchId, atomic, gapOk); err != nil {
 			globalInflightBatches.Add(-1)
 			batches.mu.Unlock()
 			return respondIncompleteBatch()
@@ -6367,16 +6375,51 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 	// Detect gaps.
 	b.lseq++
 	if b.lseq != batchSeq {
-		b.cleanupLocked(batchId, batches)
-		batches.mu.Unlock()
-		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
-		return respondIncompleteBatch()
+		reject := true
+		if !atomic {
+			// If a gap is detected, but it's okay, we only report about the gap and continue without rejecting.
+			if b.gapOk {
+				reject = false
+				buf, _ := json.Marshal(&BatchFlowAck{AckMessages: 10, LastSequence: b.lseq - 1, CurrentSequence: batchSeq})
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
+				b.lseq = batchSeq
+			}
+		}
+		if reject {
+			b.cleanupLocked(batchId, batches)
+			if !atomic {
+				var buf [256]byte
+				pubAck := append(buf[:0], mset.pubAck...)
+				response := append(pubAck, strconv.FormatUint(1, 10)...)
+				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, 1)...)
+				batches.mu.Unlock()
+				if canRespond {
+					outq.sendMsg(reply, response)
+				}
+				return nil
+			}
+			batches.mu.Unlock()
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
+			return respondIncompleteBatch()
+		}
 	}
 
 	// If not atomic we care about going fast. Proposals happen immediately.
 	if !atomic {
 		if commit {
 			b.cleanupLocked(batchId, batches)
+
+			if commitEob {
+				var buf [256]byte
+				pubAck := append(buf[:0], mset.pubAck...)
+				response := append(pubAck, strconv.FormatUint(2, 10)...)
+				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, batchSeq-1)...)
+				batches.mu.Unlock()
+				if canRespond {
+					outq.sendMsg(reply, response)
+				}
+				return nil
+			}
 		}
 		batches.mu.Unlock()
 
