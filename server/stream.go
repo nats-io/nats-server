@@ -122,6 +122,9 @@ type StreamConfig struct {
 	// PersistMode allows to opt-in to different persistence mode settings.
 	PersistMode PersistModeType `json:"persist_mode,omitempty"`
 
+	// AllowBatchPublish allows fast batch publishing into the stream.
+	AllowBatchPublish bool `json:"allow_batched,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
