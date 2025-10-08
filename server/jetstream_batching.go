@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,34 +34,79 @@ var (
 )
 
 type batching struct {
-	mu    sync.Mutex
-	group map[string]*batchGroup
+	mu     sync.Mutex
+	atomic map[string]*atomicBatch
+	fast   map[string]*fastBatch
 }
 
-type batchGroup struct {
-	lseq  uint64
-	store StreamStore
-	timer *time.Timer
+type atomicBatch struct {
+	timer *time.Timer // Inactivity timer for the batch.
+	lseq  uint64      // The highest sequence for this batch.
+	store StreamStore // Where the batch is staged before committing.
 }
 
+type fastBatch struct {
+	timer          *time.Timer // Inactivity timer for the batch.
+	lseq           uint64      // The highest sequence for this batch.
+	sseq           uint64      // Last persisted stream sequence.
+	pseq           uint64      // Last persisted batch sequence (is always lower or equal to lseq).
+	fseq           uint64      // Sequence of when we last sent a flow message (is always lower or equal to pseq).
+	pending        uint32      // Number of pending messages in the batch waiting to be persisted.
+	ackMessages    uint16      // Ack will be sent every N messages.
+	maxAckMessages uint16      // Maximum ackMessages value the client allows.
+	gapOk          bool        // Whether a gap is okay, if not, the batch would be rejected.
+	commit         bool        // If the batch is committed.
+}
+
+// newAtomicBatch creates an atomic batch publish object.
 // Lock should be held.
-func (batches *batching) newBatchGroup(mset *stream, batchId string) (*batchGroup, error) {
+func (batches *batching) newAtomicBatch(mset *stream, batchId string) (*atomicBatch, error) {
 	store, err := newBatchStore(mset, batchId)
 	if err != nil {
 		return nil, err
 	}
-	b := &batchGroup{store: store}
+	b := &atomicBatch{store: store}
+	b.setupCleanupTimer(mset, batchId, batches)
+	return b, nil
+}
 
+// setupCleanupTimer sets up a timer to clean up the batch after a timeout.
+func (b *atomicBatch) setupCleanupTimer(mset *stream, batchId string, batches *batching) {
 	// Create a timer to clean up after timeout.
-	timeout := streamMaxBatchTimeout
-	if maxBatchTimeout := mset.srv.getOpts().JetStreamLimits.MaxBatchTimeout; maxBatchTimeout > 0 {
-		timeout = maxBatchTimeout
-	}
+	timeout := getCleanupTimeout(mset)
 	b.timer = time.AfterFunc(timeout, func() {
 		b.cleanup(batchId, batches)
 		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
 	})
-	return b, nil
+}
+
+// resetCleanupTimer resets the cleanup timer, allowing to extend the lifetime of the batch.
+// Returns whether the timer was reset without it having expired before.
+func (b *atomicBatch) resetCleanupTimer(mset *stream) bool {
+	timeout := getCleanupTimeout(mset)
+	return b.timer.Reset(timeout)
+}
+
+// cleanup deletes underlying resources associated with the batch and unregisters it from the stream's batches.
+func (b *atomicBatch) cleanup(batchId string, batches *batching) {
+	batches.mu.Lock()
+	defer batches.mu.Unlock()
+	b.cleanupLocked(batchId, batches)
+}
+
+// Lock should be held.
+func (b *atomicBatch) cleanupLocked(batchId string, batches *batching) {
+	globalInflightBatches.Add(-1)
+	b.timer.Stop()
+	b.store.Delete(true)
+	delete(batches.atomic, batchId)
+}
+
+// Lock should be held.
+func (b *atomicBatch) stopLocked() {
+	globalInflightBatches.Add(-1)
+	b.timer.Stop()
+	b.store.Stop()
 }
 
 func getBatchStoreDir(mset *stream, batchId string) (string, string) {
@@ -101,7 +147,7 @@ func newBatchStore(mset *stream, batchId string) (StreamStore, error) {
 // If the timer has already cleaned up the batch, we can't commit.
 // Otherwise, we ensure the timer does not clean up the batch in the meantime.
 // Lock should be held.
-func (b *batchGroup) readyForCommit() bool {
+func (b *atomicBatch) readyForCommit() bool {
 	if !b.timer.Stop() {
 		return false
 	}
@@ -109,26 +155,182 @@ func (b *batchGroup) readyForCommit() bool {
 	return true
 }
 
+// newFastBatch creates a fast batch publish object.
+// Lock should be held.
+func (batches *batching) newFastBatch(mset *stream, batchId string, gapOk bool, maxAckMessages uint16) *fastBatch {
+	// If it's the first batch, just allow what the client wants, otherwise we'll
+	// need to coordinate and slowly ramp up this publisher.
+	// TODO(mvv): fast ingest's initial flow value improvements?
+	ackMessages := min(500, maxAckMessages)
+	if len(batches.fast) > 1 {
+		ackMessages = 1
+	}
+	b := &fastBatch{gapOk: gapOk, ackMessages: ackMessages, maxAckMessages: maxAckMessages}
+	b.setupCleanupTimer(mset, batchId, batches)
+	return b
+}
+
+// fastBatchRegisterSequences registers the highest stored batch and stream sequence and returns
+// whether a PubAck should be sent if the batch has been committed.
+// Lock should be held.
+func (batches *batching) fastBatchRegisterSequences(mset *stream, reply string, batchId string, batchSeq, streamSeq uint64) bool {
+	if b, ok := batches.fast[batchId]; ok {
+		if b.pending > 0 {
+			b.pending--
+		}
+		b.sseq = streamSeq
+		// Store last persisted batch sequence.
+		// If we have no remaining pending writes, we might have had duplicate messages
+		// and need to send additional flow control messages.
+		var skipped bool
+		if b.pending == 0 {
+			skipped = true
+			b.pseq = b.lseq
+		} else {
+			b.pseq = batchSeq
+		}
+		// If the PubAck needs to be sent now as a result of a commit.
+		if b.lseq == b.pseq && b.commit {
+			b.cleanupLocked(batchId, batches)
+			// If we skipped ahead due to duplicate messages, send the PubAck with the highest sequence.
+			if skipped {
+				var buf [256]byte
+				pubAck := append(buf[:0], mset.pubAck...)
+				response := append(pubAck, strconv.FormatUint(b.sseq, 10)...)
+				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, b.lseq)...)
+				if len(reply) > 0 {
+					mset.outq.sendMsg(reply, response)
+				}
+				return false
+			}
+			return true
+		}
+		b.checkFlowControl(mset, reply, batches)
+		return false
+	}
+	return false
+}
+
+// checkFlowControl checks whether a flow control message should be sent.
+// If so, it updates the flow values to speed up or slow down the publisher if needed.
+// Returns whether a flow control message was sent.
+// Lock should be held.
+func (b *fastBatch) checkFlowControl(mset *stream, reply string, batches *batching) bool {
+	am := uint64(b.ackMessages)
+	if b.pseq >= b.fseq+am {
+		// Instead of sending multiple flow control messages, skip ahead to only send the last.
+		steps := (b.pseq - b.fseq) / am
+		b.fseq += steps * am
+
+		// TODO(mvv): fast ingest's dynamic flow value improvements?
+		//  This is currently just a simple value to have a working version. Should take average
+		//  message sizes into account and compare how much this client is contributing to the
+		//  ingest IPQ total size and messages and have publishers share based on that.
+		maxAckMessages := uint16(500 / len(batches.fast))
+		if maxAckMessages < 1 {
+			maxAckMessages = 1
+		}
+		// Limit to the client's allowed maximum.
+		if maxAckMessages > b.maxAckMessages {
+			maxAckMessages = b.maxAckMessages
+		}
+
+		if b.ackMessages < maxAckMessages {
+			// Ramp up.
+			b.ackMessages *= 2
+			if b.ackMessages > maxAckMessages {
+				b.ackMessages = maxAckMessages
+			}
+		} else if b.ackMessages > maxAckMessages {
+			// Slow down.
+			b.ackMessages /= 2
+			if b.ackMessages <= maxAckMessages {
+				b.ackMessages = maxAckMessages
+			}
+		}
+
+		// Finally, send the flow control message.
+		b.sendFlowControl(b.fseq, mset, reply)
+		return true
+	}
+	return false
+}
+
+// sendFlowControl sends a fast batch flow control message for the current highest sequence.
+// Lock should be held.
+func (b *fastBatch) sendFlowControl(batchSeq uint64, mset *stream, reply string) {
+	if len(reply) == 0 {
+		return
+	}
+	response := BatchFlowAck{Sequence: batchSeq, Messages: b.ackMessages}.MarshalJSON()
+	mset.outq.sendMsg(reply, response)
+}
+
+// fastBatchCommit ends the batch and commits the data up to that point. If all messages
+// have already been persisted, a PubAck is sent immediately. Otherwise, it will be sent
+// after the last message has been persisted.
+// Lock should be held.
+func (batches *batching) fastBatchCommit(b *fastBatch, batchId string, mset *stream, reply string) bool {
+	// Mark that this batch commits.
+	b.commit = true
+	// Either we commit now, or we clean up later, so stop the timer.
+	b.timer.Stop()
+	// If the whole batch has been persisted, we can respond with the PubAck now.
+	if b.lseq == b.pseq {
+		b.cleanupLocked(batchId, batches)
+		var buf [256]byte
+		pubAck := append(buf[:0], mset.pubAck...)
+		response := append(pubAck, strconv.FormatUint(b.sseq, 10)...)
+		response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, b.lseq)...)
+		if len(reply) > 0 {
+			mset.outq.sendMsg(reply, response)
+		}
+		return true
+	}
+	// Otherwise, we need to wait and the PubAck will be sent when the last message is persisted.
+	return false
+}
+
+// setupCleanupTimer sets up a timer to clean up the batch after a timeout.
+func (b *fastBatch) setupCleanupTimer(mset *stream, batchId string, batches *batching) {
+	// Create a timer to clean up after timeout.
+	timeout := getCleanupTimeout(mset)
+	b.timer = time.AfterFunc(timeout, func() {
+		b.cleanup(batchId, batches)
+		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
+	})
+}
+
+// resetCleanupTimer resets the cleanup timer, allowing to extend the lifetime of the batch.
+// Returns whether the timer was reset without it having expired before.
+func (b *fastBatch) resetCleanupTimer(mset *stream) bool {
+	if b.commit {
+		return true
+	}
+	timeout := getCleanupTimeout(mset)
+	return b.timer.Reset(timeout)
+}
+
 // cleanup deletes underlying resources associated with the batch and unregisters it from the stream's batches.
-func (b *batchGroup) cleanup(batchId string, batches *batching) {
+func (b *fastBatch) cleanup(batchId string, batches *batching) {
 	batches.mu.Lock()
 	defer batches.mu.Unlock()
 	b.cleanupLocked(batchId, batches)
 }
 
 // Lock should be held.
-func (b *batchGroup) cleanupLocked(batchId string, batches *batching) {
-	globalInflightBatches.Add(-1)
+func (b *fastBatch) cleanupLocked(batchId string, batches *batching) {
 	b.timer.Stop()
-	b.store.Delete(true)
-	delete(batches.group, batchId)
+	delete(batches.fast, batchId)
 }
 
-// Lock should be held.
-func (b *batchGroup) stopLocked() {
-	globalInflightBatches.Add(-1)
-	b.timer.Stop()
-	b.store.Stop()
+// getCleanupTimeout returns the timeout for the batch, taking into account the server's limits.
+func getCleanupTimeout(mset *stream) time.Duration {
+	timeout := streamMaxBatchTimeout
+	if maxBatchTimeout := mset.srv.getOpts().JetStreamLimits.MaxBatchTimeout; maxBatchTimeout > 0 {
+		timeout = maxBatchTimeout
+	}
+	return timeout
 }
 
 // batchStagedDiff stages all changes for consistency checks until commit.
@@ -655,4 +857,62 @@ func checkMsgHeadersPreClusteredProposal(
 	}
 
 	return hdr, msg, 0, nil, nil
+}
+
+// recalculateClusteredSeq initializes or updates mset.clseq, for example after a leader change.
+// This is reused for normal clustered publishing into a stream, and for atomic and fast batch publishing.
+// mset.clMu lock must be held.
+func recalculateClusteredSeq(mset *stream) (lseq uint64) {
+	// Need to unlock and re-acquire the locks in the proper order.
+	mset.clMu.Unlock()
+	// Locking order is stream -> batchMu -> clMu
+	mset.mu.RLock()
+	batch := mset.batchApply
+	var batchCount uint64
+	if batch != nil {
+		batch.mu.Lock()
+		batchCount = batch.count
+	}
+	mset.clMu.Lock()
+	// Re-capture
+	lseq = mset.lseq
+	mset.clseq = lseq + mset.clfs + batchCount
+	// Keep hold of the mset.clMu, but unlock the others.
+	if batch != nil {
+		batch.mu.Unlock()
+	}
+	mset.mu.RUnlock()
+	return lseq
+}
+
+// commitSingleMsg commits and proposes a single message to the node.
+// This is reused both for normal publishing into a stream, and for fast batch publishing.
+// mset.clMu lock must be held.
+func commitSingleMsg(
+	diff *batchStagedDiff, mset *stream, subject string, reply string, hdr []byte, msg []byte, name string,
+	jsa *jsAccount, mt *msgTrace, node RaftNode, replicas int, lseq uint64,
+) {
+	diff.commit(mset)
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), false)
+	var mtKey uint64
+	if mt != nil {
+		mtKey = mset.clseq
+		if mset.mt == nil {
+			mset.mt = make(map[uint64]*msgTrace)
+		}
+		mset.mt[mtKey] = mt
+	}
+
+	// Do proposal.
+	_ = node.Propose(esm)
+	// The proposal can fail, but we always account for trying.
+	mset.clseq++
+	mset.trackReplicationTraffic(node, len(esm), replicas)
+
+	// Check to see if we are being overrun.
+	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
+	if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
+		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
+		mset.srv.RateLimitWarnf("%s", lerr.Error())
+	}
 }
