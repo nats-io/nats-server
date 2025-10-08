@@ -83,6 +83,7 @@ type ClusterOpts struct {
 	Compression       CompressionOpts   `json:"-"`
 	PingInterval      time.Duration     `json:"-"`
 	MaxPingsOut       int               `json:"-"`
+	WriteDeadline     time.Duration     `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -1998,6 +1999,8 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			}
 		case "ping_max":
 			opts.Cluster.MaxPingsOut = int(mv.(int64))
+		case "write_deadline":
+			opts.Cluster.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

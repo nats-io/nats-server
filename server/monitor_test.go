@@ -2744,6 +2744,7 @@ func TestMonitorCluster(t *testing.T) {
 		opts.Cluster.TLSConfig != nil,
 		opts.Cluster.TLSConfig != nil,
 		DEFAULT_ROUTE_POOL_SIZE,
+		opts.Cluster.WriteDeadline,
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -2759,7 +2760,7 @@ func TestMonitorCluster(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = ClusterOptsVarz{"", "", 0, 0, nil, 2, false, false, 0}
+		_ = ClusterOptsVarz{"", "", 0, 0, nil, 2, false, false, 0, 0}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -2771,6 +2772,40 @@ func TestMonitorCluster(t *testing.T) {
 		v.Cluster.URLs = []string{"wrong"}
 		v = pollVarz(t, s, mode, varzURL, nil)
 		check(t, v)
+	}
+}
+
+func TestMonitorClusterWriteDeadline(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
+	opts.Cluster.Name = "TestCluster"
+	opts.Cluster.Port = -1
+	opts.Cluster.WriteDeadline = 2 * time.Second
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	v := pollVarz(t, s, 0, varzURL, nil)
+
+	if v.Cluster.WriteDeadline != 2*time.Second {
+		t.Fatalf("Expected cluster write deadline to be 2s, got %v", v.Cluster.WriteDeadline)
+	}
+
+	// Test that when WriteDeadline is not set (0), it doesn't appear in JSON with omitempty
+	opts2 := DefaultMonitorOptions()
+	opts2.NoSystemAccount = true
+	opts2.Cluster.Name = "TestCluster2"
+	opts2.Cluster.Port = -1
+	// opts2.Cluster.WriteDeadline is 0 by default
+	s2 := RunServer(opts2)
+	defer s2.Shutdown()
+
+	varzURL2 := fmt.Sprintf("http://127.0.0.1:%d/varz", s2.MonitorAddr().Port)
+	v2 := pollVarz(t, s2, 0, varzURL2, nil)
+
+	if v2.Cluster.WriteDeadline != 0 {
+		t.Fatalf("Expected cluster write deadline to be 0 (unset), got %v", v2.Cluster.WriteDeadline)
 	}
 }
 

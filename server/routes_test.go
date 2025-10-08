@@ -4977,3 +4977,110 @@ func TestRouteImplicitJoinsSeparateGroups(t *testing.T) {
 		})
 	}
 }
+
+func TestClusterWriteDeadlineDifferentFromClient(t *testing.T) {
+	// Test that cluster write_deadline affects routes differently from clients
+
+	// Server 1 with different write deadlines for client vs cluster
+	o1 := DefaultOptions()
+	o1.WriteDeadline = 5 * time.Second         // Normal client write deadline
+	o1.Cluster.WriteDeadline = 2 * time.Second // Different cluster write deadline
+	o1.Cluster.Name = "test"
+	o1.Port = -1
+	o1.Cluster.PoolSize = -1 // Disable route pooling to make test more reliable
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	// Server 2 that will connect to Server 1
+	o2 := DefaultOptions()
+	o2.Cluster.Name = "test"
+	o2.Port = -1
+	o2.Cluster.PoolSize = -1 // Disable route pooling to make test more reliable
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	// Wait for cluster to initially form
+	checkClusterFormed(t, s1, s2)
+
+	// Connect a client to s1 to verify client write deadline is different
+	nc, err := nats.Connect(s1.ClientURL())
+	if err != nil {
+		t.Fatalf("Failed to connect client: %v", err)
+	}
+	defer nc.Close()
+
+	// Verify client connection has the normal write deadline (5s)
+	var clientDeadline time.Duration
+	s1.mu.Lock()
+	for _, client := range s1.clients {
+		if client.kind == CLIENT {
+			client.mu.Lock()
+			clientDeadline = client.out.wdl
+			client.mu.Unlock()
+			break
+		}
+	}
+	s1.mu.Unlock()
+
+	if clientDeadline != 5*time.Second {
+		t.Fatalf("Expected client write deadline to be 5s, got %v", clientDeadline)
+	}
+
+	// Verify route connection has the cluster write deadline (2s)
+	var routeDeadline time.Duration
+	s1.mu.Lock()
+	for _, routeMap := range s1.routes {
+		for _, route := range routeMap {
+			if route.kind == ROUTER {
+				route.mu.Lock()
+				routeDeadline = route.out.wdl
+				route.mu.Unlock()
+				break
+			}
+		}
+	}
+	s1.mu.Unlock()
+
+	if routeDeadline != 2*time.Second {
+		t.Fatalf("Expected route write deadline to be 2s, got %v", routeDeadline)
+	}
+
+	// Test slow consumer behavior by artificially setting extremely short write deadline
+	// This approach follows the pattern used in TestRouteNoLeakOnSlowConsumer
+	s1.mu.Lock()
+	for _, routeMap := range s1.routes {
+		for _, route := range routeMap {
+			route.mu.Lock()
+			route.out.wdl = time.Nanosecond // Make it timeout immediately
+			route.mu.Unlock()
+			route.sendRTTPing() // Trigger a write that will timeout
+		}
+	}
+	s1.mu.Unlock()
+
+	// Check that routes go down due to slow consumer
+	checkFor(t, time.Second, 25*time.Millisecond, func() error {
+		if nc := s1.NumRoutes(); nc != 0 {
+			return fmt.Errorf("Server 1 should have no route connections, got %v", nc)
+		}
+		if nc := s2.NumRoutes(); nc != 0 {
+			return fmt.Errorf("Server 2 should have no route connections, got %v", nc)
+		}
+		return nil
+	})
+
+	// Verify the client connection is still alive
+	if err := nc.Publish("client.test", []byte("test")); err != nil {
+		t.Fatalf("Client connection should still be alive, but got error: %v", err)
+	}
+
+	// Verify slow consumer stats - should show route issues but no client issues
+	if s1.NumSlowConsumersRoutes() == 0 {
+		t.Error("Expected at least one slow consumer route")
+	}
+
+	if s1.NumSlowConsumersClients() != 0 {
+		t.Error("Expected no slow consumer clients")
+	}
+}

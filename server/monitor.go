@@ -1290,15 +1290,16 @@ type JetStreamVarz struct {
 
 // ClusterOptsVarz contains monitoring cluster information
 type ClusterOptsVarz struct {
-	Name        string   `json:"name,omitempty"`         // Name is the configured cluster name
-	Host        string   `json:"addr,omitempty"`         // Host is the host the cluster listens on for connections
-	Port        int      `json:"cluster_port,omitempty"` // Port is the port the cluster listens on for connections
-	AuthTimeout float64  `json:"auth_timeout,omitempty"` // AuthTimeout is the time cluster connections have to complete authentication
-	URLs        []string `json:"urls,omitempty"`         // URLs is the list of cluster URLs
-	TLSTimeout  float64  `json:"tls_timeout,omitempty"`  // TLSTimeout is how long TLS operations have to complete
-	TLSRequired bool     `json:"tls_required,omitempty"` // TLSRequired indicates if TLS is required for connections
-	TLSVerify   bool     `json:"tls_verify,omitempty"`   // TLSVerify indicates if full verification of TLS connections is performed
-	PoolSize    int      `json:"pool_size,omitempty"`    // PoolSize is the configured route connection pool size
+	Name          string        `json:"name,omitempty"`           // Name is the configured cluster name
+	Host          string        `json:"addr,omitempty"`           // Host is the host the cluster listens on for connections
+	Port          int           `json:"cluster_port,omitempty"`   // Port is the port the cluster listens on for connections
+	AuthTimeout   float64       `json:"auth_timeout,omitempty"`   // AuthTimeout is the time cluster connections have to complete authentication
+	URLs          []string      `json:"urls,omitempty"`           // URLs is the list of cluster URLs
+	TLSTimeout    float64       `json:"tls_timeout,omitempty"`    // TLSTimeout is how long TLS operations have to complete
+	TLSRequired   bool          `json:"tls_required,omitempty"`   // TLSRequired indicates if TLS is required for connections
+	TLSVerify     bool          `json:"tls_verify,omitempty"`     // TLSVerify indicates if full verification of TLS connections is performed
+	PoolSize      int           `json:"pool_size,omitempty"`      // PoolSize is the configured route connection pool size
+	WriteDeadline time.Duration `json:"write_deadline,omitempty"` // WriteDeadline is the maximum time writes to cluster sockets have to complete
 }
 
 // GatewayOptsVarz contains monitoring gateway information
@@ -1599,14 +1600,15 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		HTTPBasePath: opts.HTTPBasePath,
 		HTTPSPort:    opts.HTTPSPort,
 		Cluster: ClusterOptsVarz{
-			Name:        info.Cluster,
-			Host:        c.Host,
-			Port:        c.Port,
-			AuthTimeout: c.AuthTimeout,
-			TLSTimeout:  c.TLSTimeout,
-			TLSRequired: clustTlsReq,
-			TLSVerify:   clustTlsReq,
-			PoolSize:    opts.Cluster.PoolSize,
+			Name:          info.Cluster,
+			Host:          c.Host,
+			Port:          c.Port,
+			AuthTimeout:   c.AuthTimeout,
+			TLSTimeout:    c.TLSTimeout,
+			TLSRequired:   clustTlsReq,
+			TLSVerify:     clustTlsReq,
+			PoolSize:      opts.Cluster.PoolSize,
+			WriteDeadline: opts.Cluster.WriteDeadline,
 		},
 		Gateway: GatewayOptsVarz{
 			Name:           gw.Name,

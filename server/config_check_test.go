@@ -1877,6 +1877,16 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:   6,
 		},
 		{
+			name: "valid cluster write_deadline",
+			config: `
+				cluster {
+					port: -1
+					write_deadline: "2s"
+				}
+			`,
+			err: nil,
+		},
+		{
 			name: "wrong type for leafnodes compression",
 			config: `
 				leafnodes {
