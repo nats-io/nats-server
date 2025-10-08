@@ -2809,6 +2809,40 @@ func TestMonitorClusterWriteDeadline(t *testing.T) {
 	}
 }
 
+func TestMonitorGatewayWriteDeadline(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
+	opts.Gateway.Name = "TestGateway"
+	opts.Gateway.Port = -1
+	opts.Gateway.WriteDeadline = 3 * time.Second
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	v := pollVarz(t, s, 0, varzURL, nil)
+
+	if v.Gateway.WriteDeadline != 3*time.Second {
+		t.Fatalf("Expected gateway write deadline to be 3s, got %v", v.Gateway.WriteDeadline)
+	}
+
+	// Test that when WriteDeadline is not set (0), it doesn't appear in JSON with omitempty
+	opts2 := DefaultMonitorOptions()
+	opts2.NoSystemAccount = true
+	opts2.Gateway.Name = "TestGateway2"
+	opts2.Gateway.Port = -1
+	// opts2.Gateway.WriteDeadline is 0 by default
+	s2 := RunServer(opts2)
+	defer s2.Shutdown()
+
+	varzURL2 := fmt.Sprintf("http://127.0.0.1:%d/varz", s2.MonitorAddr().Port)
+	v2 := pollVarz(t, s2, 0, varzURL2, nil)
+
+	if v2.Gateway.WriteDeadline != 0 {
+		t.Fatalf("Expected gateway write deadline to be 0 (unset), got %v", v2.Gateway.WriteDeadline)
+	}
+}
+
 func TestMonitorClusterURLs(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -2949,6 +2983,7 @@ func TestMonitorGateway(t *testing.T) {
 		opts.Gateway.ConnectRetries,
 		[]RemoteGatewayOptsVarz{{"B", 1, nil}},
 		opts.Gateway.RejectUnknown,
+		opts.Gateway.WriteDeadline,
 	}
 	// Since URLs array is not guaranteed to be always the same order,
 	// we don't add it in the expected GatewayOptsVarz, instead we
@@ -2986,7 +3021,7 @@ func TestMonitorGateway(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in GatewayOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = GatewayOptsVarz{"", "", 0, 0, 0, false, false, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false}
+		_ = GatewayOptsVarz{"", "", 0, 0, 0, false, false, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false, 0}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here

@@ -126,6 +126,7 @@ type GatewayOpts struct {
 	ConnectBackoff    bool                 `json:"connect_backoff,omitempty"`
 	Gateways          []*RemoteGatewayOpts `json:"gateways,omitempty"`
 	RejectUnknown     bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
+	WriteDeadline     time.Duration        `json:"-"`
 
 	// Not exported, for tests.
 	resolver         netResolver
@@ -2189,6 +2190,8 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 			o.Gateway.Gateways = gateways
 		case "reject_unknown", "reject_unknown_cluster":
 			o.Gateway.RejectUnknown = mv.(bool)
+		case "write_deadline":
+			o.Gateway.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

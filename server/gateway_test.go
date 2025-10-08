@@ -7528,3 +7528,113 @@ func TestGatewayOutboundDetectsStaleConnectionIfNoInfo(t *testing.T) {
 	wg.Wait()
 	s.WaitForShutdown()
 }
+
+func TestGatewayWriteDeadlineDifferentFromClient(t *testing.T) {
+	// Test that gateway write_deadline affects gateways differently from clients
+
+	// Gateway A with different write deadlines for client vs gateway
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		write_deadline: "5s"
+		gateway {
+			name: "A"
+			port: -1
+			write_deadline: "2s"
+		}
+	`)))
+	sA, optsA := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+
+	// Gateway B that will connect to Gateway A
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		gateway {
+			name: "B"
+			port: -1
+			gateways: [{name: "A", urls: ["nats://127.0.0.1:%d"]}]
+		}
+	`, optsA.Gateway.Port)))
+	sB, _ := RunServerWithConfig(confB)
+	defer sB.Shutdown()
+
+	// Wait for gateways to connect
+	waitForOutboundGateways(t, sA, 1, 2*time.Second)
+	waitForOutboundGateways(t, sB, 1, 2*time.Second)
+
+	// Connect a client to sA to verify client write deadline is different
+	nc, err := nats.Connect(sA.ClientURL())
+	if err != nil {
+		t.Fatalf("Failed to connect client: %v", err)
+	}
+	defer nc.Close()
+
+	// Verify client connection has the normal write deadline (5s)
+	var clientDeadline time.Duration
+	sA.mu.Lock()
+	for _, client := range sA.clients {
+		if client.kind == CLIENT {
+			client.mu.Lock()
+			clientDeadline = client.out.wdl
+			client.mu.Unlock()
+			break
+		}
+	}
+	sA.mu.Unlock()
+
+	if clientDeadline != 5*time.Second {
+		t.Fatalf("Expected client write deadline to be 5s, got %v", clientDeadline)
+	}
+
+	// Verify gateway connection has the gateway write deadline (2s)
+	var gatewayDeadline time.Duration
+	sA.mu.Lock()
+	for _, gw := range sA.gateway.out {
+		if gw.kind == GATEWAY {
+			gw.mu.Lock()
+			gatewayDeadline = gw.out.wdl
+			gw.mu.Unlock()
+			break
+		}
+	}
+	sA.mu.Unlock()
+
+	if gatewayDeadline != 2*time.Second {
+		t.Fatalf("Expected gateway write deadline to be 2s, got %v", gatewayDeadline)
+	}
+
+	// Test slow consumer behavior by artificially setting extremely short write deadline
+	// This approach follows the pattern used in TestRouteNoLeakOnSlowConsumer
+	sA.mu.Lock()
+	for _, gw := range sA.gateway.out {
+		gw.mu.Lock()
+		gw.out.wdl = time.Nanosecond // Make it timeout immediately
+		gw.mu.Unlock()
+		gw.sendPing() // Trigger a write that will timeout
+	}
+	sA.mu.Unlock()
+
+	// Check that gateways go down due to slow consumer
+	checkFor(t, time.Second, 25*time.Millisecond, func() error {
+		if nc := sA.numOutboundGateways(); nc != 0 {
+			return fmt.Errorf("Server A should have no outbound gateway connections, got %v", nc)
+		}
+		if nc := sB.numInboundGateways(); nc != 0 {
+			return fmt.Errorf("Server B should have no inbound gateway connections, got %v", nc)
+		}
+		return nil
+	})
+
+	// Verify the client connection is still alive
+	if err := nc.Publish("client.test", []byte("test")); err != nil {
+		t.Fatalf("Client connection should still be alive, but got error: %v", err)
+	}
+
+	// Verify slow consumer stats - should show gateway issues but no client issues
+	if sA.NumSlowConsumersGateways() == 0 {
+		t.Error("Expected at least one slow consumer gateway")
+	}
+
+	if sA.NumSlowConsumersClients() != 0 {
+		t.Error("Expected no slow consumer clients")
+	}
+}

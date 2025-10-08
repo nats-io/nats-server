@@ -1887,6 +1887,16 @@ func TestConfigCheck(t *testing.T) {
 			err: nil,
 		},
 		{
+			name: "valid gateway write_deadline",
+			config: `
+				gateway {
+					port: -1
+					write_deadline: "3s"
+				}
+			`,
+			err: nil,
+		},
+		{
 			name: "wrong type for leafnodes compression",
 			config: `
 				leafnodes {

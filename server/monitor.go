@@ -1315,6 +1315,7 @@ type GatewayOptsVarz struct {
 	ConnectRetries int                     `json:"connect_retries,omitempty"` // ConnectRetries is how many connection attempts the route will make
 	Gateways       []RemoteGatewayOptsVarz `json:"gateways,omitempty"`        // Gateways is state of configured gateway remotes
 	RejectUnknown  bool                    `json:"reject_unknown,omitempty"`  // RejectUnknown indicates if unknown cluster connections will be rejected
+	WriteDeadline  time.Duration           `json:"write_deadline,omitempty"`  // WriteDeadline is the maximum time writes to gateway sockets have to complete
 }
 
 // RemoteGatewayOptsVarz contains monitoring remote gateway information
@@ -1622,6 +1623,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			ConnectRetries: gw.ConnectRetries,
 			Gateways:       []RemoteGatewayOptsVarz{},
 			RejectUnknown:  gw.RejectUnknown,
+			WriteDeadline:  gw.WriteDeadline,
 		},
 		LeafNode: LeafNodeOptsVarz{
 			Host:              ln.Host,
