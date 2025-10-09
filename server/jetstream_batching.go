@@ -40,18 +40,19 @@ type batching struct {
 type batchGroup struct {
 	lseq  uint64
 	timer *time.Timer
-	// Used for atomic publish.
-	store StreamStore
+	// Used for atomic batch publish.
+	store StreamStore // Where the batch is staged before committing.
 	// Used for fast batch publish.
-	pseq  uint64 // Last persisted batch sequence.
-	sseq  uint64 // Last persisted stream sequence.
-	gapOk bool
-	reply string // If the batch is committed through EOB, this is the reply subject used for the PubAck.
+	pseq        uint64 // Last persisted batch sequence.
+	sseq        uint64 // Last persisted stream sequence.
+	ackMessages uint64 // Ack will be sent every N messages.
+	gapOk       bool   // Whether a gap is okay, if not the batch would be rejected.
+	reply       string // If the batch is committed through EOB, this is the reply subject used for the PubAck.
 }
 
 // Lock should be held.
-func (batches *batching) newBatchGroup(mset *stream, batchId string, atomic, gapOk bool) (*batchGroup, error) {
-	b := &batchGroup{gapOk: gapOk}
+func (batches *batching) newBatchGroup(mset *stream, batchId string, atomic, gapOk bool, ackMessages uint64) (*batchGroup, error) {
+	b := &batchGroup{gapOk: gapOk, ackMessages: ackMessages}
 
 	if atomic {
 		store, err := newBatchStore(mset, batchId)
@@ -76,7 +77,7 @@ func (batches *batching) newBatchGroup(mset *stream, batchId string, atomic, gap
 // Lock should be held.
 // Registers the highest stored batch and stream sequence, and returns whether a PubAck should be sent
 // if the batch has been committed through EOB. Which also requires the reply subject to be known.
-func (batches *batching) registerStreamSeq(batchId string, batchSeq, streamSeq uint64) string {
+func (batches *batching) registerStreamSeq(batchId string, batchSeq, streamSeq uint64) (*batchGroup, string) {
 	if b, ok := batches.group[batchId]; ok {
 		b.sseq = streamSeq
 		b.pseq = batchSeq
@@ -84,10 +85,11 @@ func (batches *batching) registerStreamSeq(batchId string, batchSeq, streamSeq u
 		// Return the reply and clean up the batch now.
 		if b.lseq == batchSeq && b.reply != _EMPTY_ {
 			b.cleanupLocked(batchId, batches)
-			return b.reply
+			return b, b.reply
 		}
+		return b, _EMPTY_
 	}
-	return _EMPTY_
+	return nil, _EMPTY_
 }
 
 func getBatchStoreDir(mset *stream, batchId string) (string, string) {
@@ -136,6 +138,16 @@ func (b *batchGroup) readyForCommit() bool {
 		b.store.FlushAllPending()
 	}
 	return true
+}
+
+// resetCleanupTimer resets the cleanup timer, allowing to extend the lifetime of the batch.
+// Returns whether the timer was reset without it having expired before.
+func (b *batchGroup) resetCleanupTimer(mset *stream) bool {
+	timeout := streamMaxBatchTimeout
+	if maxBatchTimeout := mset.srv.getOpts().JetStreamLimits.MaxBatchTimeout; maxBatchTimeout > 0 {
+		timeout = maxBatchTimeout
+	}
+	return b.timer.Reset(timeout)
 }
 
 // cleanup deletes underlying resources associated with the batch and unregisters it from the stream's batches.

@@ -1551,7 +1551,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid", true, false)
+	b, err := batches.newBatchGroup(mset, "uuid", true, false, 0)
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -1633,7 +1633,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) 
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid", true, false)
+	b, err := batches.newBatchGroup(mset, "uuid", true, false, 0)
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -3118,6 +3118,110 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+func TestJetStreamFastBatchPublishFlowControl(t *testing.T) {
+	templ := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		max_mem_store: 2GB
+		max_file_store: 2GB
+		store_dir: '%s'
+		limits {
+			batch {
+				timeout: 750ms
+			}
+		}
+	}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+	test := func(
+		t *testing.T,
+		storage StorageType,
+		replicas int,
+	) {
+		c := createJetStreamClusterWithTemplate(t, templ, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           storage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo")
+		m.Reply = reply
+		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
+		m.Header.Set("Nats-Flow", "2")
+
+		lseq := uint64(5)
+		for seq := uint64(1); seq <= lseq; seq++ {
+			m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
+			if seq == lseq {
+				m.Header.Set("Nats-Batch-Commit", "1")
+			}
+			require_NoError(t, nc.PublishMsg(m))
+
+			if seq == 1 || seq%2 == 0 {
+				rmsg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				batchFlowAck = BatchFlowAck{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+				if seq > 1 {
+					require_Equal(t, batchFlowAck.CurrentSequence, seq)
+				}
+				require_Equal(t, batchFlowAck.AckMessages, 2)
+			} else if seq == lseq {
+				rmsg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				pubAck = JSPubAckResponse{}
+				require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+				require_Equal(t, pubAck.Sequence, 5)
+				require_Equal(t, pubAck.BatchId, "uuid")
+				require_Equal(t, pubAck.BatchSize, 5)
+			}
+
+			// Sleep between messages such that we'll go over the batch timeout.
+			// New messages being received should receive the timer.
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		for _, replicas := range []int{1, 3} {
+			t.Run(fmt.Sprintf("%s/R%d", storage, replicas), func(t *testing.T) {
+				test(t, storage, replicas)
+			})
 		}
 	}
 }
