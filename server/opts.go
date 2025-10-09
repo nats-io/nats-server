@@ -15,6 +15,7 @@ package server
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -2349,6 +2350,9 @@ func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
 func setJetStreamEkCipher(opts *Options, mv interface{}, tk token) error {
 	switch strings.ToLower(mv.(string)) {
 	case "chacha", "chachapoly":
+		if fips140.Enabled() {
+			return &configErr{tk, fmt.Sprintf("Cipher type %q cannot be used in FIPS-140 mode", mv)}
+		}
 		opts.JetStreamCipher = ChaCha
 	case "aes":
 		opts.JetStreamCipher = AES
@@ -4186,6 +4190,10 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 			}
 			auth.defaultPermissions = permissions
 		case "auth_callout", "auth_hook":
+			if fips140.Enabled() {
+				*errors = append(*errors, fmt.Errorf("'auth_callout' cannot be configured in FIPS-140 mode"))
+				continue
+			}
 			ac, err := parseAuthCallout(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
