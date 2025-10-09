@@ -6436,12 +6436,15 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 	b.lseq++
 	if b.lseq != batchSeq || cleanup {
 		reject := true
-		// If a gap is detected, but it's okay, we only report about the gap and continue without rejecting.
-		if !atomic && !cleanup && b.gapOk {
-			reject = false
+		// If a gap is detected, we always report about it.
+		if !atomic {
 			buf, _ := json.Marshal(&BatchFlowAck{LastSequence: b.lseq - 1, CurrentSequence: batchSeq})
 			outq.sendMsg(reply, buf)
-			b.lseq = batchSeq
+			// If the gap is okay, we can continue without rejecting.
+			if b.gapOk && !cleanup {
+				reject = false
+				b.lseq = batchSeq
+			}
 		}
 		if reject {
 			// Revert, since we incremented for the gap check.

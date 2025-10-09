@@ -3084,25 +3084,27 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 		rmsg, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
 
+		// There will always be a flow control message with the missed sequences.
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.CurrentSequence, 3)
+		require_Equal(t, batchFlowAck.LastSequence, 1)
+		// Should NOT contain ack information, as these could come in out-of-order.
+		require_Equal(t, batchFlowAck.AckMessages, 0)
+
 		switch gapMode {
 		case _EMPTY_, JSFastBatchGapFail:
 			// By default, if a gap is detected, the batch is rejected.
 			// A PubAck is returned with the data that has been persisted up to that point.
+			rmsg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
 			pubAck = JSPubAckResponse{}
 			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 			require_Equal(t, pubAck.Sequence, 1)
 			require_Equal(t, pubAck.BatchId, "uuid")
 			require_Equal(t, pubAck.BatchSize, 1)
 		case JSFastBatchGapOk:
-			// If a gap is ok, the batch will continue to function and a
-			// flow control message with the missed sequences is published.
-			batchFlowAck = BatchFlowAck{}
-			require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
-			require_Equal(t, batchFlowAck.CurrentSequence, 3)
-			require_Equal(t, batchFlowAck.LastSequence, 1)
-			// Should NOT contain ack information, as these could come in out-of-order.
-			require_Equal(t, batchFlowAck.AckMessages, 0)
-
+			// If a gap is ok, the batch will continue to function.
 			// An EOB commit should get us the PubAck for the third message.
 			m.Header.Set("Nats-Batch-Sequence", "4")
 			m.Header.Set("Nats-Batch-Commit", "eob")
