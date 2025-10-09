@@ -4054,3 +4054,68 @@ func TestWriteDeadlineConfigParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name   string
+		config string
+		expect func(t *testing.T, opts *Options)
+	}
+
+	for str, pol := range map[string]WriteTimeoutPolicy{
+		"default": WriteTimeoutPolicyDefault,
+		"retry":   WriteTimeoutPolicyRetry,
+		"close":   WriteTimeoutPolicyClose,
+	} {
+		for _, tc := range []testCase{
+			{
+				name: "LeafNode",
+				config: fmt.Sprintf(`
+					leafnodes {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.LeafNode.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Gateway",
+				config: fmt.Sprintf(`
+					gateway {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.Gateway.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Cluster",
+				config: fmt.Sprintf(`
+					cluster {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.Cluster.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Global",
+				config: fmt.Sprintf(`
+					write_timeout: %s
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.WriteTimeout, pol)
+				},
+			},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", tc.name, str), func(t *testing.T) {
+				opts, err := parseConfigTolerantly(t, tc.config)
+				require_NoError(t, err)
+				tc.expect(t, opts)
+			})
+		}
+	}
+}
