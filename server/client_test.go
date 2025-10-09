@@ -3686,3 +3686,83 @@ func TestLogConnectionAuthInfo(t *testing.T) {
 		}
 	})
 }
+
+func TestClientConfigureWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Default": WriteTimeoutPolicyDefault,
+		"Retry":   WriteTimeoutPolicyRetry,
+		"Close":   WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := DefaultOptions()
+			opts.WriteTimeout = policy
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			nc := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+			defer nc.Close()
+
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+
+			for _, r := range s.clients {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyClose)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			}
+		})
+	}
+}
+
+func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Retry": WriteTimeoutPolicyRetry,
+		"Close": WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := DefaultOptions()
+			opts.PingInterval = 250 * time.Millisecond
+			opts.WriteDeadline = 100 * time.Millisecond
+			opts.WriteTimeout = policy
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			nc1 := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+			defer nc1.Close()
+
+			_, err := nc1.Subscribe("test", func(_ *nats.Msg) {})
+			require_NoError(t, err)
+
+			nc2 := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+			defer nc2.Close()
+
+			cid, err := nc1.GetClientID()
+			require_NoError(t, err)
+
+			client := s.getClient(cid)
+			client.mu.Lock()
+			client.out.wdl = time.Nanosecond // Unrealistic on purpose.
+			client.mu.Unlock()
+
+			require_NoError(t, nc2.Publish("test", make([]byte, 1024*1024)))
+
+			checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+				switch {
+				case !client.flags.isSet(connMarkedClosed):
+					return fmt.Errorf("connection not closed yet")
+				case policy == WriteTimeoutPolicyRetry && atomic.LoadInt64(&client.srv.slowConsumers) >= 1:
+					// Retry policy should have marked the client as a slow consumer and
+					// continued to retry flushes.
+					return nil
+				case policy == WriteTimeoutPolicyClose && atomic.LoadInt64(&client.srv.slowConsumers) == 0:
+					// Close policy shouldn't have marked the client as a slow consumer.
+					return nil
+				default:
+					return fmt.Errorf("client not in correct state yet")
+				}
+			})
+		})
+	}
+}
