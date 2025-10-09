@@ -245,6 +245,18 @@ const (
 	WriteTimeoutPolicyRetry
 )
 
+// String returns a human-friendly value. Only used in varz.
+func (p WriteTimeoutPolicy) String() string {
+	switch p {
+	case WriteTimeoutPolicyClose:
+		return "close"
+	case WriteTimeoutPolicyRetry:
+		return "retry"
+	default:
+		return _EMPTY_
+	}
+}
+
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
@@ -1777,7 +1789,7 @@ func (c *client) flushOutbound() bool {
 	var gotWriteTimeout bool
 	if err != nil && err != io.ErrShortWrite {
 		// Handle timeout error (slow consumer) differently
-		if ne, ok := err.(net.Error); ok && ne.Timeout() && c.out.wtp == WriteTimeoutPolicyRetry {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			gotWriteTimeout = true
 			if closed := c.handleWriteTimeout(n, attempted, len(orig)); closed {
 				return true
@@ -1876,7 +1888,7 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 		scState, c.out.wdl, numChunks, attempted)
 
 	// We always close CLIENT connections, or when nothing was written at all...
-	if c.kind == CLIENT || written == 0 {
+	if c.out.wtp == WriteTimeoutPolicyClose || written == 0 {
 		c.markConnAsClosed(SlowConsumerWriteDeadline)
 		return true
 	} else {
