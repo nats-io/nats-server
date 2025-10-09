@@ -234,13 +234,25 @@ const (
 	pmrMsgImportedFromService
 )
 
-type WriteTimeoutPolicy int
+type WriteTimeoutPolicy uint8
 
 const (
 	WriteTimeoutPolicyDefault = iota
 	WriteTimeoutPolicyClose
 	WriteTimeoutPolicyRetry
 )
+
+// String returns a human-friendly value. Only used in varz.
+func (p WriteTimeoutPolicy) String() string {
+	switch p {
+	case WriteTimeoutPolicyClose:
+		return "close"
+	case WriteTimeoutPolicyRetry:
+		return "retry"
+	default:
+		return _EMPTY_
+	}
+}
 
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
@@ -327,9 +339,9 @@ type outbound struct {
 	wnb net.Buffers        // Working copy of "nb", reused on each flushOutbound call, partial writes may leave entries here for next iteration.
 	pb  int64              // Total pending/queued bytes.
 	fsp int32              // Flush signals that are pending per producer from readLoop's pcd.
+	wtp WriteTimeoutPolicy // What do we do on a write timeout?
 	sg  *sync.Cond         // To signal writeLoop that there is data to flush.
 	wdl time.Duration      // Snapshot of write deadline.
-	wtp WriteTimeoutPolicy // What do we do on a write timeout?
 	mp  int64              // Snapshot of max pending for client.
 	lft time.Duration      // Last flush time for Write.
 	stc chan struct{}      // Stall chan we create to slow down producers on overrun, e.g. fan-in.
@@ -1763,7 +1775,7 @@ func (c *client) flushOutbound() bool {
 	var gotWriteTimeout bool
 	if err != nil && err != io.ErrShortWrite {
 		// Handle timeout error (slow consumer) differently
-		if ne, ok := err.(net.Error); ok && ne.Timeout() && c.out.wtp == WriteTimeoutPolicyRetry {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			gotWriteTimeout = true
 			if closed := c.handleWriteTimeout(n, attempted, len(orig)); closed {
 				return true
@@ -1862,7 +1874,7 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 		scState, c.out.wdl, numChunks, attempted)
 
 	// We always close CLIENT connections, or when nothing was written at all...
-	if c.kind == CLIENT || written == 0 {
+	if c.out.wtp == WriteTimeoutPolicyClose || written == 0 {
 		c.markConnAsClosed(SlowConsumerWriteDeadline)
 		return true
 	} else {

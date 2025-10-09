@@ -7521,6 +7521,9 @@ func TestGatewayConfigureWriteTimeoutPolicy(t *testing.T) {
 			s1.mu.RLock()
 			defer s1.mu.RUnlock()
 
+			s1.gateway.RLock()
+			defer s1.gateway.RUnlock()
+
 			for _, r := range s1.gateway.out {
 				if policy == WriteTimeoutPolicyDefault {
 					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)

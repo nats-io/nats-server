@@ -3398,6 +3398,31 @@ func TestClientConfigureWriteTimeoutPolicy(t *testing.T) {
 	}
 }
 
+// TestClientFlushOutboundWriteTimeoutPolicy relies on specifically having
+// written at least one byte in order to not trip the "written == 0" close
+// condition, so just setting an unrealistically low write deadline won't
+// work. Instead what we'll do is write the first byte very quickly and then
+// slow down, so that we can trip a more honest slow consumer condition.
+type writeTimeoutPolicyWriter struct {
+	net.Conn
+	deadline time.Time
+	written  int
+}
+
+func (w *writeTimeoutPolicyWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return w.Conn.SetWriteDeadline(deadline)
+}
+
+func (w *writeTimeoutPolicyWriter) Write(b []byte) (int, error) {
+	if w.written == 0 {
+		w.written++
+		return w.Conn.Write(b[:1])
+	}
+	time.Sleep(time.Until(w.deadline) + 10*time.Millisecond)
+	return w.Conn.Write(b)
+}
+
 func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
 	for name, policy := range map[string]WriteTimeoutPolicy{
 		"Retry": WriteTimeoutPolicyRetry,
@@ -3425,21 +3450,25 @@ func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
 
 			client := s.getClient(cid)
 			client.mu.Lock()
-			client.out.wdl = time.Nanosecond // Unrealistic on purpose.
+			client.out.wdl = 100 * time.Millisecond
+			client.nc = &writeTimeoutPolicyWriter{Conn: client.nc}
 			client.mu.Unlock()
 
 			require_NoError(t, nc2.Publish("test", make([]byte, 1024*1024)))
 
 			checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+				client.mu.Lock()
+				defer client.mu.Unlock()
 				switch {
 				case !client.flags.isSet(connMarkedClosed):
 					return fmt.Errorf("connection not closed yet")
-				case policy == WriteTimeoutPolicyRetry && atomic.LoadInt64(&client.srv.slowConsumers) >= 1:
+				case policy == WriteTimeoutPolicyRetry && client.flags.isSet(isSlowConsumer):
 					// Retry policy should have marked the client as a slow consumer and
 					// continued to retry flushes.
 					return nil
-				case policy == WriteTimeoutPolicyClose && atomic.LoadInt64(&client.srv.slowConsumers) == 0:
-					// Close policy shouldn't have marked the client as a slow consumer.
+				case policy == WriteTimeoutPolicyClose && !client.flags.isSet(isSlowConsumer):
+					// Close policy shouldn't have marked the client as a slow consumer,
+					// it will just close it instead.
 					return nil
 				default:
 					return fmt.Errorf("client not in correct state yet")
