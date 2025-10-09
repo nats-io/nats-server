@@ -14,6 +14,7 @@
 package server
 
 import (
+	"crypto/fips140"
 	"crypto/tls"
 )
 
@@ -52,6 +53,16 @@ var curvePreferenceMap = map[string]tls.CurveID{
 // reorder to default to the highest level of security.  See:
 // https://blog.bracebin.com/achieving-perfect-ssl-labs-score-with-go
 func defaultCurvePreferences() []tls.CurveID {
+	if fips140.Enabled() {
+		// X25519 is not FIPS-approved by itself, but it is when
+		// combined with MLKEM768.
+		return []tls.CurveID{
+			tls.X25519MLKEM768, // post-quantum
+			tls.CurveP256,
+			tls.CurveP384,
+			tls.CurveP521,
+		}
+	}
 	return []tls.CurveID{
 		tls.X25519MLKEM768, // post-quantum
 		tls.X25519,         // faster than P256, arguably more secure
