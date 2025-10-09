@@ -38,6 +38,8 @@ builds:
       - mips64le
       - s390x
       - ppc64le
+      # RISC-V currently only supported on Linux
+      - riscv64
     goarm:
       - 6
       - 7
@@ -52,6 +54,12 @@ builds:
         goarch: arm64
       - goos: freebsd
         goarch: 386
+      - goos: darwin
+        goarch: riscv64
+      - goos: windows
+        goarch: riscv64
+      - goos: freebsd
+        goarch: riscv64
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 nfpms:
