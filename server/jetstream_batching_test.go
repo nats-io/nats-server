@@ -575,10 +575,12 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 		})
 		require_NoError(t, err)
 
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:     "S",
-			Sources:  []*nats.StreamSource{{Name: "TEST"}},
-			Replicas: replicas,
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "S",
+			Storage:            FileStorage,
+			Sources:            []*StreamSource{{Name: "TEST"}},
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
 		})
 		require_NoError(t, err)
 
@@ -3236,4 +3238,111 @@ func TestJetStreamFastBatchPublishFlowControl(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			AllowBatchPublish: true,
+			Replicas:          replicas,
+		})
+		require_NoError(t, err)
+
+		for seq := uint64(1); seq <= 3; seq++ {
+			m := nats.NewMsg("foo")
+			m.Header.Set("Nats-Fast-Batch-Id", "uuid")
+			m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
+			if seq == 1 {
+				m.Header.Set("Nats-Flow", "10")
+				m.Header.Set("Nats-Batch-Gap", "fail")
+			}
+			commit := seq == 3
+			if !commit {
+				require_NoError(t, nc.PublishMsg(m))
+				continue
+			}
+			m.Header.Set("Nats-Batch-Commit", "1")
+
+			rmsg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			var pubAck JSPubAckResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			require_Equal(t, pubAck.Sequence, 3)
+			require_Equal(t, pubAck.BatchId, "uuid")
+			require_Equal(t, pubAck.BatchSize, 3)
+		}
+
+		require_NoError(t, js.DeleteMsg("TEST", 2))
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		// Mirror can source batched messages but can't do fast batching itself.
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "M-no-batch",
+			Storage:           FileStorage,
+			Mirror:            &StreamSource{Name: "TEST"},
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_Error(t, err, NewJSMirrorWithBatchPublishError())
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "M",
+			Mirror:   &nats.StreamSource{Name: "TEST"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "S",
+			Storage:           FileStorage,
+			Sources:           []*StreamSource{{Name: "TEST"}},
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			for _, name := range []string{"M", "S"} {
+				if si, err := js.StreamInfo(name); err != nil {
+					return err
+				} else if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 messages for stream %q, got %d", name, si.State.Msgs)
+				}
+			}
+			return nil
+		})
+
+		// Ensure the batching headers were removed when ingested into the source/mirror.
+		rsm, err := js.GetMsg("M", 1)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 0)
+
+		rsm, err = js.GetMsg("M", 3)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 0)
+
+		rsm, err = js.GetMsg("S", 1)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 1)
+		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 1 > > foo")
+
+		rsm, err = js.GetMsg("S", 2)
+		require_NoError(t, err)
+		require_Len(t, len(rsm.Header), 1)
+		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 3 > > foo")
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }

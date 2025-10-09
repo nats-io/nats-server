@@ -365,6 +365,9 @@ const (
 	// JSMirrorWithAtomicPublishErr stream mirrors can not also use atomic publishing
 	JSMirrorWithAtomicPublishErr ErrorIdentifier = 10198
 
+	// JSMirrorWithBatchPublishErr stream mirrors can not also use batch publishing
+	JSMirrorWithBatchPublishErr ErrorIdentifier = 10207
+
 	// JSMirrorWithCountersErr stream mirrors can not also calculate counters
 	JSMirrorWithCountersErr ErrorIdentifier = 10173
 
@@ -743,6 +746,7 @@ var (
 		JSMirrorMultipleFiltersNotAllowed:            {Code: 400, ErrCode: 10150, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
 		JSMirrorOverlappingSubjectFilters:            {Code: 400, ErrCode: 10152, Description: "mirror subject filters can not overlap"},
 		JSMirrorWithAtomicPublishErr:                 {Code: 400, ErrCode: 10198, Description: "stream mirrors can not also use atomic publishing"},
+		JSMirrorWithBatchPublishErr:                  {Code: 400, ErrCode: 10207, Description: "stream mirrors can not also use batch publishing"},
 		JSMirrorWithCountersErr:                      {Code: 400, ErrCode: 10173, Description: "stream mirrors can not also calculate counters"},
 		JSMirrorWithFirstSeqErr:                      {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
 		JSMirrorWithMsgSchedulesErr:                  {Code: 400, ErrCode: 10186, Description: "stream mirrors can not also schedule messages"},
@@ -2159,6 +2163,16 @@ func NewJSMirrorWithAtomicPublishError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorWithAtomicPublishErr]
+}
+
+// NewJSMirrorWithBatchPublishError creates a new JSMirrorWithBatchPublishErr error: "stream mirrors can not also use batch publishing"
+func NewJSMirrorWithBatchPublishError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorWithBatchPublishErr]
 }
 
 // NewJSMirrorWithCountersError creates a new JSMirrorWithCountersErr error: "stream mirrors can not also calculate counters"
