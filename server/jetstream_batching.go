@@ -65,10 +65,10 @@ func (batches *batching) newAtomicBatchGroup(mset *stream, batchId string) (*bat
 
 // newFastBatchGroup creates a fast batch publish group.
 // Lock should be held.
-func (batches *batching) newFastBatchGroup(mset *stream, batchId string, gapOk bool, ackMessages uint64) (*batchGroup, error) {
+func (batches *batching) newFastBatchGroup(mset *stream, batchId string, gapOk bool, ackMessages uint64) *batchGroup {
 	b := &batchGroup{gapOk: gapOk, ackMessages: ackMessages}
 	b.setupCleanupTimer(mset, batchId, batches)
-	return b, nil
+	return b
 }
 
 func getBatchStoreDir(mset *stream, batchId string) (string, string) {

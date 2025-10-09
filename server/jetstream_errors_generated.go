@@ -41,6 +41,9 @@ const (
 	// JSBatchPublishInvalidBatchIDErr batch publish ID is invalid
 	JSBatchPublishInvalidBatchIDErr ErrorIdentifier = 10204
 
+	// JSBatchPublishInvalidGapModeErr batch publish gap mode is invalid
+	JSBatchPublishInvalidGapModeErr ErrorIdentifier = 10206
+
 	// JSBatchPublishMissingSeqErr batch publish sequence is missing
 	JSBatchPublishMissingSeqErr ErrorIdentifier = 10203
 
@@ -632,6 +635,7 @@ var (
 		JSBadRequestErr:                              {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSBatchPublishDisabledErr:                    {Code: 400, ErrCode: 10202, Description: "batch publish is disabled"},
 		JSBatchPublishInvalidBatchIDErr:              {Code: 400, ErrCode: 10204, Description: "batch publish ID is invalid"},
+		JSBatchPublishInvalidGapModeErr:              {Code: 400, ErrCode: 10206, Description: "batch publish gap mode is invalid"},
 		JSBatchPublishMissingSeqErr:                  {Code: 400, ErrCode: 10203, Description: "batch publish sequence is missing"},
 		JSBatchPublishUnknownBatchIDErr:              {Code: 400, ErrCode: 10205, Description: "batch publish ID unknown"},
 		JSClusterIncompleteErr:                       {Code: 503, ErrCode: 10004, Description: "incomplete results"},
@@ -979,6 +983,16 @@ func NewJSBatchPublishInvalidBatchIDError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSBatchPublishInvalidBatchIDErr]
+}
+
+// NewJSBatchPublishInvalidGapModeError creates a new JSBatchPublishInvalidGapModeErr error: "batch publish gap mode is invalid"
+func NewJSBatchPublishInvalidGapModeError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishInvalidGapModeErr]
 }
 
 // NewJSBatchPublishMissingSeqError creates a new JSBatchPublishMissingSeqErr error: "batch publish sequence is missing"

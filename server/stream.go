@@ -6380,19 +6380,26 @@ func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subjec
 		var err error
 		if atomic {
 			b, err = batches.newAtomicBatchGroup(mset, batchId)
+			if err != nil {
+				globalInflightBatches.Add(-1)
+				batches.mu.Unlock()
+				return respondIncompleteBatch()
+			}
 		} else {
-			gapOk := bytesToString(sliceHeader(JSBatchGap, hdr)) == JSFastBatchGapOk
+			var gapOk bool
+			if gapMode := bytesToString(sliceHeader(JSBatchGap, hdr)); gapMode == JSFastBatchGapOk {
+				gapOk = true
+			} else if gapMode != _EMPTY_ && gapMode != JSFastBatchGapFail {
+				globalInflightBatches.Add(-1)
+				batches.mu.Unlock()
+				return respondError(NewJSBatchPublishInvalidGapModeError())
+			}
 			ackMessages := uint64(10) // TODO(mvv): just some default for now
 			if flow := sliceHeader(JSFlow, hdr); flow != nil {
 				// TODO(mvv): error handling?
 				ackMessages = uint64(parseInt64(flow))
 			}
-			b, err = batches.newFastBatchGroup(mset, batchId, gapOk, ackMessages)
-		}
-		if err != nil {
-			globalInflightBatches.Add(-1)
-			batches.mu.Unlock()
-			return respondIncompleteBatch()
+			b = batches.newFastBatchGroup(mset, batchId, gapOk, ackMessages)
 		}
 		batches.group[batchId] = b
 	}

@@ -2038,5 +2038,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishInvalidGapModeErr",
+    "code": 400,
+    "error_code": 10206,
+    "description": "batch publish gap mode is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
