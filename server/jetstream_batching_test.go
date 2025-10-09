@@ -222,6 +222,74 @@ func TestJetStreamAtomicBatchPublishEmptyAck(t *testing.T) {
 	}
 }
 
+func TestJetStreamAtomicBatchPublishCommitEob(t *testing.T) {
+	test := func(
+		t *testing.T,
+		storage StorageType,
+		retention RetentionPolicy,
+		replicas int,
+	) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		var pubAck JSPubAckResponse
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            storage,
+			Retention:          retention,
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		require_NoError(t, nc.PublishMsg(m))
+
+		m.Header.Set("Nats-Batch-Sequence", "2")
+		require_NoError(t, nc.PublishMsg(m))
+
+		m.Header.Set("Nats-Batch-Sequence", "3")
+		m.Header.Set("Nats-Batch-Commit", "eob")
+		rmsg, err := nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, 2)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 2)
+
+		// Validate stream contents.
+		if retention != InterestPolicy {
+			for seq := uint64(1); seq <= 2; seq++ {
+				rsm, err := js.GetMsg("TEST", seq)
+				require_NoError(t, err)
+				require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
+				require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), strconv.FormatUint(seq, 10))
+				// The last message should have the commit header set, even though the commit was done via EOB.
+				if seq == 2 {
+					require_Equal(t, rsm.Header.Get("Nats-Batch-Commit"), "1")
+				}
+			}
+		}
+	}
+
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			for _, replicas := range []int{1, 3} {
+				t.Run(fmt.Sprintf("%s/%s/R%d", storage, retention, replicas), func(t *testing.T) {
+					test(t, storage, retention, replicas)
+				})
+			}
+		}
+	}
+}
+
 func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 	streamMaxBatchInflightPerStream = 1
 	streamMaxBatchInflightTotal = 1
@@ -1526,6 +1594,107 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	require_Equal(t, state.Msgs, 2)
 	require_Equal(t, state.FirstSeq, 1)
 	require_Equal(t, state.LastSeq, 2)
+
+	for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+		sm, err := mset.getMsg(seq)
+		require_NoError(t, err)
+		require_Equal(t, string(getHeader("Nats-Batch-Id", sm.Header)), "uuid")
+		require_Equal(t, string(getHeader("Nats-Batch-Sequence", sm.Header)), strconv.FormatUint(seq, 10))
+		// The last message should have the commit header set.
+		if seq == state.LastSeq {
+			require_Equal(t, string(getHeader("Nats-Batch-Commit", sm.Header)), "1")
+		}
+	}
+}
+
+func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Retention:          LimitsPolicy,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	// Manually construct and store a batch, so it doesn't immediately commit.
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	batches := &batching{}
+	mset.batches = batches
+	mset.mu.Unlock()
+	batches.mu.Lock()
+	b, err := batches.newBatchGroup(mset, "uuid")
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+	hdr1 := genHeader(nil, "Nats-Batch-Id", "uuid")
+	hdr1 = genHeader(hdr1, "Nats-Batch-Sequence", "1")
+	_, _, err = b.store.StoreMsg("foo", hdr1, nil, 0)
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+
+	hdr2 := genHeader(nil, "Nats-Batch-Id", "uuid")
+	hdr2 = genHeader(hdr2, "Nats-Batch-Sequence", "2")
+	_, _, err = b.store.StoreMsg("foo", hdr2, nil, 0)
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+
+	hdr3 := genHeader(nil, "Nats-Batch-Id", "uuid")
+	hdr3 = genHeader(hdr3, "Nats-Batch-Sequence", "3")
+	hdr3 = genHeader(hdr3, "Nats-Batch-Commit", "eob")
+	_, _, err = b.store.StoreMsg("foo", hdr3, nil, 0)
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+	commitReady := b.readyForCommit()
+	batches.mu.Unlock()
+	require_True(t, commitReady)
+
+	// Simulate the first message of the batch is committed.
+	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false, true)
+	require_NoError(t, err)
+
+	// Simulate a hard kill, upon recovery the rest of the batch should be applied.
+	port := s.opts.Port
+	sd := s.StoreDir()
+	nc.Close()
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(port, sd)
+	defer s.Shutdown()
+
+	mset, err = s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	state := mset.state()
+	require_Equal(t, state.Msgs, 2)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 2)
+
+	for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+		sm, err := mset.getMsg(seq)
+		require_NoError(t, err)
+		require_Equal(t, string(getHeader("Nats-Batch-Id", sm.Header)), "uuid")
+		require_Equal(t, string(getHeader("Nats-Batch-Sequence", sm.Header)), strconv.FormatUint(seq, 10))
+		// The last message should have the commit header set, even though the commit was done via EOB.
+		if seq == state.LastSeq {
+			require_Equal(t, string(getHeader("Nats-Batch-Commit", sm.Header)), "1")
+		}
+	}
 }
 
 func TestJetStreamAtomicBatchPublishEncode(t *testing.T) {

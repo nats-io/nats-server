@@ -1459,6 +1459,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				batchId       string
 				batchSeq      uint64
 				commit        bool
+				commitEob     bool
 				batchStoreDir string
 				store         StreamStore
 				state         StreamState
@@ -1489,6 +1490,17 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				goto SKIP
 			}
 			store.FastState(&state)
+			sm, err = store.LoadMsg(state.LastSeq, &smv)
+			if err != nil || sm == nil {
+				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: last msg not found %d",
+					mset.accName(), mset.name(), batchSeq, state.LastSeq)
+				goto SKIP
+			}
+			commitEob = bytes.Equal(sliceHeader(JSBatchCommit, sm.hdr), []byte("eob"))
+			// If the commit ends with an "End Of Batch" message, we don't store this.
+			if commitEob {
+				state.LastSeq--
+			}
 			s.Noticef("  Restoring partial batch write for stream '%s > %s' (seq %d to %d)",
 				mset.accName(), mset.name(), batchSeq, state.LastSeq)
 			// Loop through items that weren't persisted yet.
@@ -1499,7 +1511,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 						mset.accName(), mset.name(), seq, err)
 					break
 				}
-				mset.processJetStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, 0, 0, nil, false, true)
+				hdr := sm.hdr
+				// If committed by EOB, the last message must get the normal commit header.
+				if commitEob && seq == state.LastSeq {
+					hdr = genHeader(hdr, JSBatchCommit, "1")
+				}
+				mset.processJetStreamMsg(sm.subj, _EMPTY_, hdr, sm.msg, 0, 0, nil, false, true)
 			}
 			store.Delete(true)
 		SKIP:

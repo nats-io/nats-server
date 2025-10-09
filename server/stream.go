@@ -6339,10 +6339,11 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		batches.group[batchId] = b
 	}
 
-	var commit bool
+	var commit, commitEob bool
 	if c := sliceHeader(JSBatchCommit, hdr); c != nil {
+		commitEob = bytes.Equal(c, []byte("eob"))
 		// Reject the batch if the commit is not recognized.
-		if !bytes.Equal(c, []byte("1")) {
+		if !commitEob && !bytes.Equal(c, []byte("1")) {
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			err := NewJSAtomicPublishInvalidBatchCommitError()
@@ -6493,9 +6494,14 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		sz      int
 	)
 
+	// If the commit ends with an "End Of Batch" message, we don't store this.
+	if commitEob {
+		batchSeq--
+	}
+
 	diff := &batchStagedDiff{}
 	for seq := uint64(1); seq <= batchSeq; seq++ {
-		if seq == batchSeq && b.store.Type() != FileStorage {
+		if seq == batchSeq && !commitEob && b.store.Type() != FileStorage {
 			bsubj, bhdr, bmsg = subject, hdr, msg
 		} else if sm, err = b.store.LoadMsg(seq, &smv); sm != nil && err == nil {
 			bsubj, bhdr, bmsg = sm.subj, sm.hdr, sm.msg
@@ -6527,6 +6533,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			isCommit := seq == batchSeq
 			if isCommit {
 				_reply = reply
+				// If committed by EOB, the last message must get the normal commit header.
+				if commitEob {
+					bhdr = genHeader(bhdr, JSBatchCommit, "1")
+				}
 			}
 			esm := encodeStreamMsgAllowCompressAndBatch(bsubj, _reply, bhdr, bmsg, mset.clseq, ts, false, batchId, seq, isCommit)
 			entries = append(entries, newEntry(EntryNormal, esm))
@@ -6545,7 +6555,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		// can only happen after the full batch is committed.
 		mset.mu.Lock()
 		for seq := uint64(1); seq <= batchSeq; seq++ {
-			if seq == batchSeq && b.store.Type() != FileStorage {
+			if seq == batchSeq && !commitEob && b.store.Type() != FileStorage {
 				bsubj, bhdr, bmsg = subject, hdr, msg
 			} else if sm, err = b.store.LoadMsg(seq, &smv); sm != nil && err == nil {
 				bsubj, bhdr, bmsg = sm.subj, sm.hdr, sm.msg
@@ -6558,6 +6568,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			var _reply string
 			if seq == batchSeq {
 				_reply = reply
+				// If committed by EOB, the last message must get the normal commit header.
+				if commitEob {
+					bhdr = genHeader(bhdr, JSBatchCommit, "1")
+				}
 			}
 			mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false)
 		}
