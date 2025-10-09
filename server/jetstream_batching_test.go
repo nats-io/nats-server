@@ -1551,7 +1551,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid", true, false, 0)
+	b, err := batches.newAtomicBatchGroup(mset, "uuid")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -1633,7 +1633,7 @@ func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) 
 	mset.batches = batches
 	mset.mu.Unlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid", true, false, 0)
+	b, err := batches.newAtomicBatchGroup(mset, "uuid")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -3089,9 +3089,10 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 			// flow control message with the missed sequences is published.
 			batchFlowAck = BatchFlowAck{}
 			require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
-			require_Equal(t, batchFlowAck.AckMessages, 10)
 			require_Equal(t, batchFlowAck.CurrentSequence, 3)
 			require_Equal(t, batchFlowAck.LastSequence, 1)
+			// Should NOT contain ack information, as these could come in out-of-order.
+			require_Equal(t, batchFlowAck.AckMessages, 0)
 
 			// An EOB commit should get us the PubAck for the third message.
 			m.Header.Set("Nats-Batch-Sequence", "4")

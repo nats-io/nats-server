@@ -8857,25 +8857,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
-		// Need to unlock and re-acquire the locks in the proper order.
-		mset.clMu.Unlock()
-		// Locking order is stream -> batchMu -> clMu
-		mset.mu.RLock()
-		batch := mset.batchApply
-		var batchCount uint64
-		if batch != nil {
-			batch.mu.Lock()
-			batchCount = batch.count
-		}
-		mset.clMu.Lock()
-		// Re-capture
-		lseq = mset.lseq
-		mset.clseq = lseq + mset.clfs + batchCount
-		// Keep hold of the mset.clMu, but unlock the others.
-		if batch != nil {
-			batch.mu.Unlock()
-		}
-		mset.mu.RUnlock()
+		lseq = recalculateClusteredSeq(mset)
 	}
 
 	var (
@@ -8903,29 +8885,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		return err
 	}
 
-	diff.commit(mset)
-	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), sourced)
-	var mtKey uint64
-	if mt != nil {
-		mtKey = mset.clseq
-		if mset.mt == nil {
-			mset.mt = make(map[uint64]*msgTrace)
-		}
-		mset.mt[mtKey] = mt
-	}
-
-	// Do proposal.
-	_ = node.Propose(esm)
-	// The proposal can fail, but we always account for trying.
-	mset.clseq++
-	mset.trackReplicationTraffic(node, len(esm), r)
-
-	// Check to see if we are being overrun.
-	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
-	if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
-		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
-		s.RateLimitWarnf("%s", lerr.Error())
-	}
+	commitSingleMsg(diff, mset, subject, reply, hdr, msg, name, jsa, mt, node, r, lseq)
 	mset.clMu.Unlock()
 	return nil
 }
