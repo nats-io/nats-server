@@ -2404,6 +2404,10 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 			nc := clientConnectToServer(t, s)
 			defer nc.Close()
 
+			// Connect to advisory
+			sub, _ := nc.SubscribeSync(JSAdvisoryConsumerMsgInProgress + ".>")
+			defer sub.Unsubscribe()
+
 			// Now load up some messages.
 			toSend := 2
 			for i := 0; i < toSend; i++ {
@@ -2447,13 +2451,63 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 			timeout := time.Now().Add(3 * ackWait)
 			for time.Now().Before(timeout) {
 				m.Respond(AckProgress)
+
+				am, err := sub.NextMsg(time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+
+				// Tested against `m := getMsg(1, 2)`
+				var adv JSConsumerDeliveryInProgress
+				json.Unmarshal(am.Data, &adv)
+				if adv.Stream != "MY_WQ" {
+					t.Fatalf("Expected stream of %s, got %s", "MY_WQ", adv.Stream)
+				}
+				if adv.StreamSeq != 1 {
+					t.Fatalf("Expected stream sequence of %d, got %d", 2, adv.StreamSeq)
+				}
+				if adv.Consumer != "PBO" {
+					t.Fatalf("Expected consumer of %s, got %s", "PBO", adv.Consumer)
+				}
+				if adv.ConsumerSeq != 2 {
+					t.Fatalf("Expected consumer sequence of %d, got %d", 3, adv.ConsumerSeq)
+				}
+				if adv.Deliveries != 2 {
+					t.Fatalf("Expected delivery count of %d, got %d", 2, adv.Deliveries)
+				}
+
 				nc.Flush()
 				time.Sleep(ackWait / 5)
 			}
+
 			// We should get 2 here, not 1 since we have indicated we are working on it.
 			m2 := getMsg(2, 3)
 			time.Sleep(ackWait / 2)
 			m2.Respond(AckProgress)
+
+			// Tested against `m2 := getMsg(2, 3)`
+			var adv JSConsumerDeliveryInProgress
+			am, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			json.Unmarshal(am.Data, &adv)
+			if adv.Stream != "MY_WQ" {
+				t.Fatalf("Expected stream of %s, got %s", "MY_WQ", adv.Stream)
+			}
+			if adv.StreamSeq != 2 {
+				t.Fatalf("Expected stream sequence of %d, got %d", 2, adv.StreamSeq)
+			}
+			if adv.Consumer != "PBO" {
+				t.Fatalf("Expected consumer of %s, got %s", "PBO", adv.Consumer)
+			}
+			if adv.ConsumerSeq != 3 {
+				t.Fatalf("Expected consumer sequence of %d, got %d", 3, adv.ConsumerSeq)
+			}
+			if adv.Deliveries != 1 {
+				t.Fatalf("Expected delivery count of %d, got %d", 1, adv.Deliveries)
+			}
 
 			// Now should get 1 back then 2.
 			m = getMsg(1, 4)
