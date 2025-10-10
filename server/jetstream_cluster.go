@@ -7134,7 +7134,47 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 		}
 	} else {
-		isMoveRequest = newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
+		// Check if placement changed, but ignore changes where the cluster name
+		// just reflects where the stream already is (e.g., after a cluster rename).
+		// This allows updating placement.cluster along with replica changes in a single
+		// operation when the stream is already running on the target cluster.
+		if newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement) {
+			// Determine the actual cluster where the stream's peers currently reside.
+			// After a cluster rename, rg.Cluster may still have the old name, so we
+			// check what cluster the peers are actually in via live nodeInfo.
+			// Note: All peers are guaranteed to be in the same cluster (enforced by selectPeerGroup),
+			// so checking the first peer is sufficient.
+			var actualCluster string
+			if len(rg.Peers) > 0 {
+				actualCluster = s.clusterNameForNode(rg.Peers[0])
+			}
+			// Check if this is a cluster-only metadata change (not a real move).
+			// This happens when:
+			// 1. The stream is already on the actual cluster
+			// 2. The placement cluster field matches the actual cluster OR matches the stale metadata (rg.Cluster)
+			// 3. Tags and preferred haven't changed
+			isClusterOnlyChange := false
+			if actualCluster != _EMPTY_ {
+				oldP := osa.Config.Placement
+				newP := newCfg.Placement
+				
+				// Check if new placement either:
+				// - Points to where the stream actually is (actualCluster), OR
+				// - Points to the old cluster name (rg.Cluster) which is stale metadata after a rename
+				newPointsToActual := newP.Cluster == actualCluster
+				newPointsToStale := newP.Cluster == rg.Cluster && rg.Cluster != actualCluster
+				
+				// If new placement is updating to actual OR still has stale name, not a real move
+				if newPointsToActual || newPointsToStale {
+					tagsMatch := (oldP == nil && len(newP.Tags) == 0) ||
+						(oldP != nil && reflect.DeepEqual(oldP.Tags, newP.Tags))
+					prefMatch := (oldP == nil && newP.Preferred == _EMPTY_) ||
+						(oldP != nil && oldP.Preferred == newP.Preferred)
+					isClusterOnlyChange = tagsMatch && prefMatch
+				}
+			}
+			isMoveRequest = !isClusterOnlyChange
+		}
 	}
 
 	// Check for replica changes.
@@ -7206,6 +7246,13 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				} else {
 					// Fall back to the cluster assignment from the client.
 					rg.Cluster = ci.Cluster
+				}
+			}
+			// Check if rg.Cluster is stale after a cluster rename. If peers are actually
+			// in a different cluster, update rg.Cluster to match reality before peer selection.
+			if len(rg.Peers) > 0 {
+				if actualCluster := s.clusterNameForNode(rg.Peers[0]); actualCluster != _EMPTY_ && actualCluster != rg.Cluster {
+					rg.Cluster = actualCluster
 				}
 			}
 			peers, err := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0, nil)
