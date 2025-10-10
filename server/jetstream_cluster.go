@@ -158,9 +158,15 @@ type unsupportedStreamAssignment struct {
 	infoSub *subscription
 }
 
-func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment) *unsupportedStreamAssignment {
+func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, err error) *unsupportedStreamAssignment {
 	reason := "stopped"
-	if sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata) {
+	if err != nil {
+		if errstr := err.Error(); strings.HasPrefix(errstr, "json:") {
+			reason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(err.Error(), "json: "))
+		} else {
+			reason = fmt.Sprintf("stopped - %s", errstr)
+		}
+	} else if sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata) {
 		if req := getRequiredApiLevel(sa.Config.Metadata); req != _EMPTY_ {
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", req, JSApiLevel)
 		}
@@ -236,9 +242,15 @@ type unsupportedConsumerAssignment struct {
 	infoSub *subscription
 }
 
-func newUnsupportedConsumerAssignment(ca *consumerAssignment) *unsupportedConsumerAssignment {
+func newUnsupportedConsumerAssignment(ca *consumerAssignment, err error) *unsupportedConsumerAssignment {
 	reason := "stopped"
-	if ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata) {
+	if err != nil {
+		if errstr := err.Error(); strings.HasPrefix(errstr, "json:") {
+			reason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(err.Error(), "json: "))
+		} else {
+			reason = fmt.Sprintf("stopped - %s", errstr)
+		}
+	} else if ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata) {
 		if req := getRequiredApiLevel(ca.Config.Metadata); req != _EMPTY_ {
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", getRequiredApiLevel(ca.Config.Metadata), JSApiLevel)
 		}
@@ -3663,8 +3675,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	// If unsupported, we can't register any further.
 	if sa.unsupported != nil {
 		sa.unsupported.setupInfoSub(s, sa)
-		apiLevel := getRequiredApiLevel(sa.Config.Metadata)
-		s.Warnf("Detected unsupported stream '%s > %s', delete the stream or upgrade the server to API level %s", accName, stream, apiLevel)
+		s.Warnf("Detected unsupported stream '%s > %s': %s", accName, stream, sa.unsupported.reason)
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
@@ -3793,8 +3804,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	// If unsupported, we can't register any further.
 	if sa.unsupported != nil {
 		sa.unsupported.setupInfoSub(s, sa)
-		apiLevel := getRequiredApiLevel(sa.Config.Metadata)
-		s.Warnf("Detected unsupported stream '%s > %s', delete the stream or upgrade the server to API level %s", accName, stream, apiLevel)
+		s.Warnf("Detected unsupported stream '%s > %s': %s", accName, stream, sa.unsupported.reason)
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
@@ -4474,12 +4484,11 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// If unsupported, we can't register any further.
 	if ca.unsupported != nil {
 		ca.unsupported.setupInfoSub(s, ca)
-		apiLevel := getRequiredApiLevel(ca.Config.Metadata)
-		s.Warnf("Detected unsupported consumer '%s > %s > %s', delete the consumer or upgrade the server to API level %s", accName, stream, ca.Name, apiLevel)
+		s.Warnf("Detected unsupported consumer '%s > %s > %s': %s", accName, stream, ca.Name, ca.unsupported.reason)
 
 		// Mark stream as unsupported as well
 		if sa.unsupported == nil {
-			sa.unsupported = newUnsupportedStreamAssignment(s, sa)
+			sa.unsupported = newUnsupportedStreamAssignment(s, sa, fmt.Errorf("unsupported consumer %q", ca.Name))
 		}
 		sa.unsupported.setupInfoSub(s, sa)
 		js.mu.Unlock()
@@ -7608,20 +7617,21 @@ func decodeStreamAssignment(s *Server, buf []byte) (*streamAssignment, error) {
 func decodeStreamAssignmentConfig(s *Server, sa *streamAssignment) error {
 	var unsupported bool
 	var cfg StreamConfig
+	var err error
 	decoder := json.NewDecoder(bytes.NewReader(sa.ConfigJSON))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
+	if err = decoder.Decode(&cfg); err != nil {
 		unsupported = true
 		cfg = StreamConfig{}
-		if err = json.Unmarshal(sa.ConfigJSON, &cfg); err != nil {
-			return err
+		if err2 := json.Unmarshal(sa.ConfigJSON, &cfg); err2 != nil {
+			return err2
 		}
 	}
 	sa.Config = &cfg
 	fixCfgMirrorWithDedupWindow(sa.Config)
 
-	if unsupported || (sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata)) {
-		sa.unsupported = newUnsupportedStreamAssignment(s, sa)
+	if unsupported || err != nil || (sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata)) {
+		sa.unsupported = newUnsupportedStreamAssignment(s, sa, err)
 	}
 	return nil
 }
@@ -8068,18 +8078,19 @@ func decodeConsumerAssignment(buf []byte) (*consumerAssignment, error) {
 func decodeConsumerAssignmentConfig(ca *consumerAssignment) error {
 	var unsupported bool
 	var cfg ConsumerConfig
+	var err error
 	decoder := json.NewDecoder(bytes.NewReader(ca.ConfigJSON))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
+	if err = decoder.Decode(&cfg); err != nil {
 		unsupported = true
 		cfg = ConsumerConfig{}
-		if err = json.Unmarshal(ca.ConfigJSON, &cfg); err != nil {
-			return err
+		if err2 := json.Unmarshal(ca.ConfigJSON, &cfg); err2 != nil {
+			return err2
 		}
 	}
 	ca.Config = &cfg
-	if unsupported || (ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata)) {
-		ca.unsupported = newUnsupportedConsumerAssignment(ca)
+	if unsupported || err != nil || (ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata)) {
+		ca.unsupported = newUnsupportedConsumerAssignment(ca, err)
 	}
 	return nil
 }

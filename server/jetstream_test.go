@@ -20706,7 +20706,7 @@ func TestJetStreamOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 	mset, err = s.globalAccount().lookupStream("DowngradeConsumerTest")
 	require_NoError(t, err)
 	require_True(t, mset.closed.Load())
-	require_Equal(t, mset.offlineReason, "stopped")
+	require_Equal(t, mset.offlineReason, "stopped - unsupported consumer \"DowngradeConsumerTest\"")
 
 	obs := mset.getPublicConsumers()
 	require_Len(t, len(obs), 1)

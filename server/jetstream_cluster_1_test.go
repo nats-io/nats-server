@@ -9203,7 +9203,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 		// Stream should also be reported as offline.
 		// Specifically, as "stopped" because it's still supported, but can't run due to the unsupported consumer.
-		expectStreamInfo("stopped", "DowngradeConsumerTest")
+		expectStreamInfo("stopped - unsupported consumer \"DowngradeConsumerTest\"", "DowngradeConsumerTest")
 	}
 
 	// Consumer should be reported as offline, but healthz should report healthy to not block downgrades.
