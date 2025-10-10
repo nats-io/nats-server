@@ -1242,6 +1242,7 @@ func TestOptionsClone(t *testing.T) {
 		Cluster: ClusterOpts{
 			NoAdvertise:    true,
 			ConnectRetries: 2,
+			WriteDeadline:  3 * time.Second,
 		},
 		Gateway: GatewayOpts{
 			Name: "A",
@@ -3993,4 +3994,63 @@ func TestNewServerFromConfigVsLoadConfig(t *testing.T) {
 	opts2.NoSigs, opts2.NoLog = true, opts2.LogFile == _EMPTY_
 
 	checkOptionsEqual(t, opts1, opts2)
+}
+
+func TestWriteDeadlineConfigParsing(t *testing.T) {
+	type testCase struct {
+		name   string
+		config string
+		expect func(t *testing.T, opts *Options)
+	}
+
+	for _, tc := range []testCase{
+		{
+			name: "LeafNode",
+			config: `
+				leafnodes {
+					write_deadline: 5s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.LeafNode.WriteDeadline, 5*time.Second)
+			},
+		},
+		{
+			name: "Gateway",
+			config: `
+				gateway {
+					write_deadline: 6s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.Gateway.WriteDeadline, 6*time.Second)
+			},
+		},
+		{
+			name: "Cluster",
+			config: `
+				cluster {
+					write_deadline: 7s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.Cluster.WriteDeadline, 7*time.Second)
+			},
+		},
+		{
+			name: "Global",
+			config: `
+				write_deadline: 8s
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.WriteDeadline, 8*time.Second)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseConfigTolerantly(t, tc.config)
+			require_NoError(t, err)
+			tc.expect(t, opts)
+		})
+	}
 }

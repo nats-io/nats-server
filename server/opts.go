@@ -15,6 +15,7 @@ package server
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -83,6 +84,7 @@ type ClusterOpts struct {
 	Compression       CompressionOpts   `json:"-"`
 	PingInterval      time.Duration     `json:"-"`
 	MaxPingsOut       int               `json:"-"`
+	WriteDeadline     time.Duration     `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -125,6 +127,7 @@ type GatewayOpts struct {
 	ConnectBackoff    bool                 `json:"connect_backoff,omitempty"`
 	Gateways          []*RemoteGatewayOpts `json:"gateways,omitempty"`
 	RejectUnknown     bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
+	WriteDeadline     time.Duration        `json:"-"`
 
 	// Not exported, for tests.
 	resolver         netResolver
@@ -175,6 +178,7 @@ type LeafNodeOpts struct {
 	Advertise                 string        `json:"-"`
 	NoAdvertise               bool          `json:"-"`
 	ReconnectInterval         time.Duration `json:"-"`
+	WriteDeadline             time.Duration `json:"-"`
 
 	// Compression options
 	Compression CompressionOpts `json:"-"`
@@ -1998,6 +2002,8 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			}
 		case "ping_max":
 			opts.Cluster.MaxPingsOut = int(mv.(int64))
+		case "write_deadline":
+			opts.Cluster.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2186,6 +2192,8 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 			o.Gateway.Gateways = gateways
 		case "reject_unknown", "reject_unknown_cluster":
 			o.Gateway.RejectUnknown = mv.(bool)
+		case "write_deadline":
+			o.Gateway.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2477,6 +2485,9 @@ func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
 func setJetStreamEkCipher(opts *Options, mv interface{}, tk token) error {
 	switch strings.ToLower(mv.(string)) {
 	case "chacha", "chachapoly":
+		if fips140.Enabled() {
+			return &configErr{tk, fmt.Sprintf("Cipher type %q cannot be used in FIPS-140 mode", mv)}
+		}
 		opts.JetStreamCipher = ChaCha
 	case "aes":
 		opts.JetStreamCipher = AES
@@ -2706,6 +2717,8 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 			}
 		case "isolate_leafnode_interest", "isolate":
 			opts.LeafNode.IsolateLeafnodeInterest = mv.(bool)
+		case "write_deadline":
+			opts.LeafNode.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -4369,6 +4382,10 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 			}
 			auth.defaultPermissions = permissions
 		case "auth_callout", "auth_hook":
+			if fips140.Enabled() {
+				*errors = append(*errors, fmt.Errorf("'auth_callout' cannot be configured in FIPS-140 mode"))
+				continue
+			}
 			ac, err := parseAuthCallout(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)

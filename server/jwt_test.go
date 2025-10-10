@@ -6255,6 +6255,7 @@ func TestJWTClaimsUpdateWithHeaders(t *testing.T) {
 		resolver: {
 			type: full
 			dir: '%s'
+			allow_delete: true
 		}
     `, ojwt, spub, dirSrv)))
 
@@ -6280,6 +6281,27 @@ func TestJWTClaimsUpdateWithHeaders(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	var cz zapi
+	if err := json.Unmarshal(resp.Data, &cz); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if cz.Error != nil {
+		t.Fatalf("Unexpected error: %+v", cz.Error)
+	}
+
+	// Pass claims delete with headers.
+	opk, err := oKp.PublicKey()
+	require_NoError(t, err)
+	c := jwt.NewGenericClaims(opk)
+	c.Data["accounts"] = []string{apub}
+	djwt, err := c.Encode(oKp)
+	require_NoError(t, err)
+	msg.Subject = "$SYS.REQ.CLAIMS.DELETE"
+	msg.Data = []byte(djwt)
+	resp, err = sc.RequestMsg(msg, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	cz = zapi{}
 	if err := json.Unmarshal(resp.Data, &cz); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

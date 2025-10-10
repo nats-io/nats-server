@@ -345,7 +345,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 
 		numSkips := 10
 		for i := 0; i < numSkips; i++ {
-			fs.SkipMsg()
+			fs.SkipMsg(0)
 		}
 		state := fs.State()
 		if state.Msgs != 0 {
@@ -356,10 +356,10 @@ func TestFileStoreSkipMsg(t *testing.T) {
 		}
 
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
-		fs.SkipMsg()
+		fs.SkipMsg(0)
+		fs.SkipMsg(0)
 		fs.StoreMsg("zzz", nil, []byte("Hello World!"), 0)
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 
 		state = fs.State()
 		if state.Msgs != 2 {
@@ -393,7 +393,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 			t.Fatalf("Message did not match")
 		}
 
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 		nseq, _, err := fs.StoreMsg("AAA", nil, []byte("Skip?"), 0)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up seq 11: %v", err)
@@ -5080,7 +5080,7 @@ func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
 
 	fs.StoreMsg(subj, nil, msg, 0)
 	for i := 0; i < numMsgs; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg(subj, nil, msg, 0)
 	require_Equal(t, fs.numMsgBlocks(), 3)
@@ -6824,7 +6824,7 @@ func TestFileStoreEraseMsgWithDbitSlots(t *testing.T) {
 
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	fs.StoreMsg("foo", nil, []byte("abd"), 0)
 	// Now grab that first block and compact away the skips which will
@@ -6853,7 +6853,7 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	fs.StoreMsg("foo", nil, []byte("abcdefg"), 0)
 
 	for i := 0; i < 10; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 	// Now grab that first block and compact away the skips which will
 	// introduce dbits into our idx.
@@ -7200,7 +7200,7 @@ func TestFileStoreReloadAndLoseLastSequence(t *testing.T) {
 	defer fs.Stop()
 
 	for i := 0; i < 22; i++ {
-		fs.SkipMsg()
+		fs.SkipMsg(0)
 	}
 
 	// Restart 5 times.
@@ -9053,7 +9053,7 @@ func TestFileStoreLeftoverSkipMsgInDmap(t *testing.T) {
 	}
 
 	// Only skip a message.
-	fs.SkipMsg()
+	fs.SkipMsg(0)
 
 	// Confirm state.
 	state := fs.State()
@@ -10850,5 +10850,90 @@ func TestFileStoreTombstonesSelectNextFirstCleanupOnRecovery(t *testing.T) {
 		if state := fs.State(); !reflect.DeepEqual(state, before) {
 			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
 		}
+	})
+}
+
+func TestFileStoreDetectDeleteGapWithLastSkipMsg(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Skip a message at a sequence such that a gap is created.
+		// The gap should be detected later on as deleted messages.
+		require_NoError(t, fs.SkipMsgs(2, 3))
+
+		// We should have 3 deletes, one is the skip msg, the other two is the gap.
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 4)
+		require_Equal(t, before.NumDeleted, 3)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of %+v, got %+v", before, state)
+		}
+
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		defer mb.mu.RUnlock()
+		require_Equal(t, atomic.LoadUint64(&mb.first.seq), 1)
+		require_Equal(t, atomic.LoadUint64(&mb.last.seq), 4)
+		require_Len(t, mb.dmap.Size(), 3)
+	})
+}
+
+func TestFileStoreDetectDeleteGapWithOnlySkipMsg(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Skip messages with a gap.
+		_, err = fs.SkipMsg(1)
+		require_NoError(t, err)
+		require_NoError(t, fs.SkipMsgs(2, 3))
+
+		// We should have no deletes, as the SkipMsgs only move the sequences up.
+		before := fs.State()
+		require_Equal(t, before.Msgs, 0)
+		require_Equal(t, before.FirstSeq, 5)
+		require_Equal(t, before.LastSeq, 4)
+		require_Equal(t, before.NumDeleted, 0)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of %+v, got %+v", before, state)
+		}
+
+		// The block should not register the deletes between the two SkipMsgs.
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		defer mb.mu.RUnlock()
+		require_Equal(t, atomic.LoadUint64(&mb.first.seq), 5)
+		require_Equal(t, atomic.LoadUint64(&mb.last.seq), 4)
+		require_Len(t, mb.dmap.Size(), 0)
 	})
 }

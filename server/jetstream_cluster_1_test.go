@@ -10330,6 +10330,71 @@ func TestJetStreamClusterDeleteMsgEOF(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterCatchupSkipMsgDesync(t *testing.T) {
+	for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Storage:  storage,
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+
+			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+			mset, err := rs.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			sa := mset.streamAssignment()
+
+			// Make sure this server can't become the leader.
+			n := mset.raftNode().(*raft)
+			n.SetObserver(true)
+
+			sysNc, err := nats.Connect(rs.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			require_NoError(t, err)
+			defer sysNc.Close()
+
+			sjs := rs.getJetStream()
+			sjs.mu.RLock()
+			syncSubj := sa.Sync
+			sjs.mu.RUnlock()
+
+			// Respond to the catchup with an out-of-order SkipMsg.
+			var eof bool
+			sub, err := sysNc.Subscribe(syncSubj, func(msg *nats.Msg) {
+				if !eof {
+					msg.Respond(encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, 10, 0, false))
+					eof = true
+				}
+				msg.Respond(nil)
+			})
+			require_NoError(t, err)
+			defer sub.Drain()
+			require_NoError(t, sysNc.Flush()) // Must flush, otherwise our subscription could be too late.
+
+			err = mset.processSnapshot(&StreamReplicatedState{FirstSeq: 1, LastSeq: 1}, 1)
+			require_Error(t, err, errCatchupTooManyRetries)
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+
+			pubAck, err := js.Publish("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, pubAck.Sequence, 1)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "TEST")
+			})
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

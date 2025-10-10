@@ -91,7 +91,7 @@ type ProcessJetStreamMsgHandler func(*inMsg)
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
 	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64) error
-	SkipMsg() uint64
+	SkipMsg(seq uint64) (uint64, error)
 	SkipMsgs(seq uint64, num uint64) error
 	FlushAllPending()
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
