@@ -47,29 +47,6 @@ const (
 	// Will return JSON response.
 	JSApiAccountInfo = "$JS.API.INFO"
 
-	// JSApiTemplateCreate is the endpoint to create new stream templates.
-	// Will return JSON response.
-	// Deprecated: stream templates are deprecated and will be removed in a future version.
-	JSApiTemplateCreate  = "$JS.API.STREAM.TEMPLATE.CREATE.*"
-	JSApiTemplateCreateT = "$JS.API.STREAM.TEMPLATE.CREATE.%s"
-
-	// JSApiTemplates is the endpoint to list all stream template names for this account.
-	// Will return JSON response.
-	// Deprecated: stream templates are deprecated and will be removed in a future version.
-	JSApiTemplates = "$JS.API.STREAM.TEMPLATE.NAMES"
-
-	// JSApiTemplateInfo is for obtaining general information about a named stream template.
-	// Will return JSON response.
-	// Deprecated: stream templates are deprecated and will be removed in a future version.
-	JSApiTemplateInfo  = "$JS.API.STREAM.TEMPLATE.INFO.*"
-	JSApiTemplateInfoT = "$JS.API.STREAM.TEMPLATE.INFO.%s"
-
-	// JSApiTemplateDelete is the endpoint to delete stream templates.
-	// Will return JSON response.
-	// Deprecated: stream templates are deprecated and will be removed in a future version.
-	JSApiTemplateDelete  = "$JS.API.STREAM.TEMPLATE.DELETE.*"
-	JSApiTemplateDeleteT = "$JS.API.STREAM.TEMPLATE.DELETE.%s"
-
 	// JSApiStreamCreate is the endpoint to create new streams.
 	// Will return JSON response.
 	JSApiStreamCreate  = "$JS.API.STREAM.CREATE.*"
@@ -780,51 +757,6 @@ type JSApiConsumerGetNextRequest struct {
 	PriorityGroup
 }
 
-// JSApiStreamTemplateCreateResponse for creating templates.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-type JSApiStreamTemplateCreateResponse struct {
-	ApiResponse
-	*StreamTemplateInfo
-}
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-const JSApiStreamTemplateCreateResponseType = "io.nats.jetstream.api.v1.stream_template_create_response"
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-type JSApiStreamTemplateDeleteResponse struct {
-	ApiResponse
-	Success bool `json:"success,omitempty"`
-}
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-const JSApiStreamTemplateDeleteResponseType = "io.nats.jetstream.api.v1.stream_template_delete_response"
-
-// JSApiStreamTemplateInfoResponse for information about stream templates.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-type JSApiStreamTemplateInfoResponse struct {
-	ApiResponse
-	*StreamTemplateInfo
-}
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-const JSApiStreamTemplateInfoResponseType = "io.nats.jetstream.api.v1.stream_template_info_response"
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-type JSApiStreamTemplatesRequest struct {
-	ApiPagedRequest
-}
-
-// JSApiStreamTemplateNamesResponse list of templates
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-type JSApiStreamTemplateNamesResponse struct {
-	ApiResponse
-	ApiPaged
-	Templates []string `json:"streams"`
-}
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
-
 // Structure that holds state for a JetStream API request that is processed
 // in a separate long-lived go routine. This is to avoid blocking connections.
 type jsAPIRoutedReq struct {
@@ -990,10 +922,6 @@ func (s *Server) setJetStreamExportSubs() error {
 		handler msgHandler
 	}{
 		{JSApiAccountInfo, s.jsAccountInfoRequest},
-		{JSApiTemplateCreate, s.jsTemplateCreateRequest},
-		{JSApiTemplates, s.jsTemplateNamesRequest},
-		{JSApiTemplateInfo, s.jsTemplateInfoRequest},
-		{JSApiTemplateDelete, s.jsTemplateDeleteRequest},
 		{JSApiStreamCreate, s.jsStreamCreateRequest},
 		{JSApiStreamUpdate, s.jsStreamUpdateRequest},
 		{JSApiStreams, s.jsStreamNamesRequest},
@@ -1337,233 +1265,12 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, _ *Account, 
 }
 
 // Helpers for token extraction.
-func templateNameFromSubject(subject string) string {
-	return tokenAt(subject, 6)
-}
-
 func streamNameFromSubject(subject string) string {
 	return tokenAt(subject, 5)
 }
 
 func consumerNameFromSubject(subject string) string {
 	return tokenAt(subject, 6)
-}
-
-// Request to create a new template.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	if c == nil {
-		return
-	}
-	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
-	if err != nil {
-		s.Warnf(badAPIRequestT, msg)
-		return
-	}
-
-	var resp = JSApiStreamTemplateCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType}}
-	if errorOnRequiredApiLevel(hdr) {
-		resp.Error = NewJSRequiredApiLevelError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if !acc.JetStreamEnabled() {
-		resp.Error = NewJSNotEnabledForAccountError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	// Not supported for now.
-	if s.JetStreamIsClustered() {
-		resp.Error = NewJSClusterUnSupportFeatureError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	var cfg StreamTemplateConfig
-	if err := s.unmarshalRequest(c, acc, subject, msg, &cfg); err != nil {
-		resp.Error = NewJSInvalidJSONError(err)
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	templateName := templateNameFromSubject(subject)
-	if templateName != cfg.Name {
-		resp.Error = NewJSTemplateNameNotMatchSubjectError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	t, err := acc.addStreamTemplate(&cfg)
-	if err != nil {
-		resp.Error = NewJSStreamTemplateCreateError(err, Unless(err))
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	t.mu.Lock()
-	tcfg := t.StreamTemplateConfig.deepCopy()
-	streams := t.streams
-	if streams == nil {
-		streams = []string{}
-	}
-	t.mu.Unlock()
-	resp.StreamTemplateInfo = &StreamTemplateInfo{Config: tcfg, Streams: streams}
-	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-}
-
-// Request for the list of all template names.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	if c == nil {
-		return
-	}
-	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
-	if err != nil {
-		s.Warnf(badAPIRequestT, msg)
-		return
-	}
-
-	var resp = JSApiStreamTemplateNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType}}
-	if errorOnRequiredApiLevel(hdr) {
-		resp.Error = NewJSRequiredApiLevelError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if !acc.JetStreamEnabled() {
-		resp.Error = NewJSNotEnabledForAccountError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	// Not supported for now.
-	if s.JetStreamIsClustered() {
-		resp.Error = NewJSClusterUnSupportFeatureError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	var offset int
-	if isJSONObjectOrArray(msg) {
-		var req JSApiStreamTemplatesRequest
-		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
-			resp.Error = NewJSInvalidJSONError(err)
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		offset = req.Offset
-	}
-
-	ts := acc.templates()
-	slices.SortFunc(ts, func(i, j *streamTemplate) int {
-		return cmp.Compare(i.StreamTemplateConfig.Name, j.StreamTemplateConfig.Name)
-	})
-
-	tcnt := len(ts)
-	if offset > tcnt {
-		offset = tcnt
-	}
-
-	for _, t := range ts[offset:] {
-		t.mu.Lock()
-		name := t.Name
-		t.mu.Unlock()
-		resp.Templates = append(resp.Templates, name)
-		if len(resp.Templates) >= JSApiNamesLimit {
-			break
-		}
-	}
-	resp.Total = tcnt
-	resp.Limit = JSApiNamesLimit
-	resp.Offset = offset
-	if resp.Templates == nil {
-		resp.Templates = []string{}
-	}
-	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-}
-
-// Request for information about a stream template.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	if c == nil {
-		return
-	}
-	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
-	if err != nil {
-		s.Warnf(badAPIRequestT, msg)
-		return
-	}
-
-	var resp = JSApiStreamTemplateInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType}}
-	if errorOnRequiredApiLevel(hdr) {
-		resp.Error = NewJSRequiredApiLevelError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if !acc.JetStreamEnabled() {
-		resp.Error = NewJSNotEnabledForAccountError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if !isEmptyRequest(msg) {
-		resp.Error = NewJSNotEmptyRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	name := templateNameFromSubject(subject)
-	t, err := acc.lookupStreamTemplate(name)
-	if err != nil {
-		resp.Error = NewJSStreamTemplateNotFoundError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	t.mu.Lock()
-	cfg := t.StreamTemplateConfig.deepCopy()
-	streams := t.streams
-	if streams == nil {
-		streams = []string{}
-	}
-	t.mu.Unlock()
-
-	resp.StreamTemplateInfo = &StreamTemplateInfo{Config: cfg, Streams: streams}
-	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-}
-
-// Request to delete a stream template.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	if c == nil {
-		return
-	}
-	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
-	if err != nil {
-		s.Warnf(badAPIRequestT, msg)
-		return
-	}
-
-	var resp = JSApiStreamTemplateDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateDeleteResponseType}}
-	if errorOnRequiredApiLevel(hdr) {
-		resp.Error = NewJSRequiredApiLevelError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if !acc.JetStreamEnabled() {
-		resp.Error = NewJSNotEnabledForAccountError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if !isEmptyRequest(msg) {
-		resp.Error = NewJSNotEmptyRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	name := templateNameFromSubject(subject)
-	err = acc.deleteStreamTemplate(name)
-	if err != nil {
-		resp.Error = NewJSStreamTemplateDeleteError(err, Unless(err))
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	resp.Success = true
-	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 func (s *Server) jsonResponse(v any) string {

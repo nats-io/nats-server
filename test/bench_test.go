@@ -304,10 +304,6 @@ func addServiceImports(b *testing.B, s *server.Server) {
 	// Add a bunch of service exports with wildcards, similar to JS.
 	var exports = []string{
 		server.JSApiAccountInfo,
-		server.JSApiTemplateCreate,
-		server.JSApiTemplates,
-		server.JSApiTemplateInfo,
-		server.JSApiTemplateDelete,
 		server.JSApiStreamCreate,
 		server.JSApiStreamUpdate,
 		server.JSApiStreams,

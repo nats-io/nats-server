@@ -3386,64 +3386,6 @@ func TestJetStreamClusterStreamInterestOnlyPolicy(t *testing.T) {
 	})
 }
 
-// These are disabled for now.
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func TestJetStreamClusterStreamTemplates(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	// Client based API
-	s := c.randomServer()
-	nc, _ := jsClientConnect(t, s)
-	defer nc.Close()
-
-	// List API
-	var tListResp JSApiStreamTemplateNamesResponse
-	resp, err := nc.Request(JSApiTemplates, nil, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if err := json.Unmarshal(resp.Data, &tListResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if tListResp.Error == nil {
-		t.Fatalf("Expected an unsupported error, got none")
-	}
-	if !strings.Contains(tListResp.Error.Description, "not currently supported in clustered mode") {
-		t.Fatalf("Did not get correct error response: %+v", tListResp.Error)
-	}
-
-	// Create
-	// Now do templates.
-	mcfg := &StreamConfig{
-		Subjects: []string{"kv.*"},
-		Storage:  MemoryStorage,
-	}
-	template := &StreamTemplateConfig{
-		Name:       "kv",
-		Config:     mcfg,
-		MaxStreams: 4,
-	}
-	req, err := json.Marshal(template)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var stResp JSApiStreamTemplateCreateResponse
-	resp, err = nc.Request(fmt.Sprintf(JSApiTemplateCreateT, template.Name), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if stResp.Error == nil {
-		t.Fatalf("Expected an unsupported error, got none")
-	}
-	if !strings.Contains(stResp.Error.Description, "not currently supported in clustered mode") {
-		t.Fatalf("Did not get correct error response: %+v", stResp.Error)
-	}
-}
-
 func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
