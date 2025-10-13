@@ -3594,9 +3594,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	isNew := sub != nil && sub == n.aesub
 
 	// If we are/were catching up ignore old catchup subs, but only if catching up from an older server
-	// that doesn't send the leader term when catching up. We can reject old catchups from newer subs
-	// later, just by checking the append entry is on the correct term.
-	if !isNew && sub != nil && ae.lterm == 0 && (!catchingUp || sub != n.catchup.sub) {
+	// that doesn't send the leader term when catching up or if we would truncate as a result.
+	// We can reject old catchups from newer subs later, just by checking the append entry is on the correct term.
+	if !isNew && sub != nil && (ae.lterm == 0 || ae.pindex < n.pindex) && (!catchingUp || sub != n.catchup.sub) {
 		n.Unlock()
 		n.debug("AppendEntry ignoring old entry from previous catchup")
 		return
