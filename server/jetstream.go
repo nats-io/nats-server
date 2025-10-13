@@ -1348,8 +1348,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			var offlineReason string
 			if !supported {
 				apiLevel := getRequiredApiLevel(cfg.Metadata)
-				offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
-				s.Warnf("  Detected unsupported stream '%s > %s', delete the stream or upgrade the server to API level %s", a.Name, cfg.StreamConfig.Name, apiLevel)
+				if strictErr != nil {
+					offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(strictErr.Error(), "json: "))
+				} else {
+					offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
+				}
+				s.Warnf("  Detected unsupported stream '%s > %s': %s", a.Name, cfg.StreamConfig.Name, offlineReason)
 			} else {
 				offlineReason = fmt.Sprintf("decoding error: %v", strictErr)
 				s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, strictErr)
@@ -1571,8 +1575,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				var offlineReason string
 				if !supported {
 					apiLevel := getRequiredApiLevel(cfg.Metadata)
-					offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
-					s.Warnf("  Detected unsupported consumer '%s > %s > %s', delete the consumer or upgrade the server to API level %s", a.Name, e.mset.name(), cfg.Name, apiLevel)
+					if strictErr != nil {
+						offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(strictErr.Error(), "json: "))
+					} else {
+						offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
+					}
+					s.Warnf("  Detected unsupported consumer '%s > %s > %s': %s", a.Name, e.mset.name(), cfg.Name, offlineReason)
 				} else {
 					offlineReason = fmt.Sprintf("decoding error: %v", strictErr)
 					s.Warnf("  Error unmarshalling consumer metafile %q: %v", metafile, strictErr)
@@ -1582,7 +1590,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 					if !e.mset.closed.Load() {
 						s.Warnf("  Stopping unsupported stream '%s > %s'", a.Name, e.mset.name())
 						e.mset.mu.Lock()
-						e.mset.offlineReason = "stopped"
+						e.mset.offlineReason = fmt.Sprintf("stopped - unsupported consumer %q", cfg.Name)
 						e.mset.mu.Unlock()
 						e.mset.stop(false, false)
 					}
