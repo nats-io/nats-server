@@ -1349,7 +1349,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			if !supported {
 				apiLevel := getRequiredApiLevel(cfg.Metadata)
 				if strictErr != nil {
-					offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(err.Error(), "json: "))
+					offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(strictErr.Error(), "json: "))
 				} else {
 					offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
 				}
@@ -1593,7 +1593,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				if !supported {
 					apiLevel := getRequiredApiLevel(cfg.Metadata)
 					if strictErr != nil {
-						offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(err.Error(), "json: "))
+						offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(strictErr.Error(), "json: "))
 					} else {
 						offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
 					}
