@@ -9866,6 +9866,58 @@ func TestJetStreamClusterCatchupSkipMsgDesync(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterJszRaftLeaderReporting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:  "DURABLE",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			_, _, jsa := s.globalAccount().getJetStreamFromAccount()
+			if !jsa.streamAssigned("TEST") {
+				return fmt.Errorf("stream not assigned on %s", s.Name())
+			}
+			if !jsa.consumerAssigned("TEST", "DURABLE") {
+				return fmt.Errorf("consumer not assigned on %s", s.Name())
+			}
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	cl := c.consumerLeader(globalAccountName, "TEST", "DURABLE")
+
+	for _, s := range c.servers {
+		jsi, err := s.Jsz(&JSzOptions{RaftGroups: true})
+		require_NoError(t, err)
+		if s == sl {
+			require_Equal(t, jsi.StreamsLeader, 1)
+		} else {
+			require_Equal(t, jsi.StreamsLeader, 0)
+		}
+		if s == cl {
+			require_Equal(t, jsi.ConsumersLeader, 1)
+		} else {
+			require_Equal(t, jsi.ConsumersLeader, 0)
+		}
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
