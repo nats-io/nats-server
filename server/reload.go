@@ -1077,7 +1077,7 @@ func (p *proxiesReload) Apply(s *Server) {
 			c.setAuthError(ErrAuthProxyNotTrusted)
 			c.authViolation()
 		}
-		s.Noticef("Reloaded: proxies trusted keys %q were removed", p.add)
+		s.Noticef("Reloaded: proxies trusted keys %q were removed", p.del)
 	}
 	if len(p.add) > 0 {
 		s.Noticef("Reloaded: proxies trusted keys %q were added", p.add)

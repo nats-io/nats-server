@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,18 @@ func TestClientConnectInfo(t *testing.T) {
 			checkInfoOnConnect("sys", "SYS", test.hasSys)
 			checkInfoOnConnect("b", "B", false)
 		})
+	}
+}
+
+type captureProxiesReloadLogger struct {
+	dummyLogger
+	ch chan string
+}
+
+func (l *captureProxiesReloadLogger) Noticef(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "proxies trusted keys") {
+		l.ch <- msg
 	}
 }
 
@@ -343,10 +356,32 @@ func TestProxyKeyVerification(t *testing.T) {
 	cid2 := currentCID
 	checkLeafNodeConnected(t, s)
 
+	logger := &captureProxiesReloadLogger{ch: make(chan string, 10)}
+	s.SetLogger(logger, false, false)
+
 	os.WriteFile(conf, fmt.Appendf(nil, tmpl, u3Pub, u2Pub), 0660)
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
+	for range 2 {
+		select {
+		case str := <-logger.ch:
+			if strings.Contains(str, "removed") {
+				if !strings.Contains(str, u1Pub) {
+					t.Fatalf("Expected removed trace to include %q, it did not: %s", u1Pub, str)
+				}
+			} else if strings.Contains(str, "added") {
+				if !strings.Contains(str, u3Pub) {
+					t.Fatalf("Expected added trace to include %q, it did not: %s", u3Pub, str)
+				}
+			} else {
+				t.Fatalf("Unexpected log: %q", str)
+			}
+		default:
+			t.Fatal("Expected a log, did not get one")
+		}
+	}
+
 	// Connections should get disconnected.
 	// We need to consume what is sent by the server, but for leaf we may
 	// get some LS+, etc... so just consumer until we get the io.EOF
