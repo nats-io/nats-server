@@ -4841,6 +4841,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		// Grab record info.
 		ri, _, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
+			mb.mu.Unlock()
+			fsUnlock()
 			return false, err
 		}
 	}
