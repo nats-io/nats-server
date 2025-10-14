@@ -5086,10 +5086,15 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		// Grab record info, but use the pre-computed record length.
 		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 		if err != nil {
+			mb.finishedWithCache()
+			mb.mu.Unlock()
+			fsUnlock()
 			return false, err
 		}
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			mb.finishedWithCache()
+			mb.mu.Unlock()
+			fsUnlock()
 			return false, err
 		}
 	}
