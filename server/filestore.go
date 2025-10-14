@@ -2705,7 +2705,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 			if err != nil {
 				continue
 			}
-			expireOk := seq == lseq && mb.llseq == seq
+			expireOk := seq == lseq && mb.llseq != llseq && mb.llseq == seq
 			updateLLTS = false // cacheLookup already updated it.
 			if sl.HasInterest(fsm.subj) {
 				return fsm, expireOk, nil
@@ -2839,7 +2839,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			continue
 		}
 		updateLLTS = false // cacheLookup already updated it.
-		expireOk := seq == lseq && mb.llseq == seq
+		expireOk := seq == lseq && mb.llseq != llseq && mb.llseq == seq
 		if isAll {
 			return fsm, expireOk, nil
 		}
