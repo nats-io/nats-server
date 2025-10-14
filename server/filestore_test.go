@@ -10937,3 +10937,29 @@ func TestFileStoreDetectDeleteGapWithOnlySkipMsg(t *testing.T) {
 		require_Len(t, mb.dmap.Size(), 0)
 	})
 }
+
+func TestFileStoreEraseMsgErr(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.Lock()
+		if mb.cache == nil {
+			mb.mu.Unlock()
+			t.Fatal("Expected cache to be initialized")
+		}
+		// Set to a bogus value such that the file rename fails while performing the message erase.
+		mb.mfn = _EMPTY_
+		mb.mu.Unlock()
+		fs.EraseMsg(2)
+	})
+}
