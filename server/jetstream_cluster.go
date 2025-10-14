@@ -7142,11 +7142,15 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			// Determine the actual cluster where the stream's peers currently reside.
 			// After a cluster rename, rg.Cluster may still have the old name, so we
 			// check what cluster the peers are actually in via live nodeInfo.
-			// Note: All peers are guaranteed to be in the same cluster (enforced by selectPeerGroup),
-			// so checking the first peer is sufficient.
+			// Note: All peers are guaranteed to be in the same cluster (enforced by selectPeerGroup).
+			// We check all peers to find one with available nodeInfo for robustness (e.g., if first
+			// peer is temporarily unreachable or gossip hasn't propagated yet).
 			var actualCluster string
-			if len(rg.Peers) > 0 {
-				actualCluster = s.clusterNameForNode(rg.Peers[0])
+			for _, peer := range rg.Peers {
+				actualCluster = s.clusterNameForNode(peer)
+				if actualCluster != _EMPTY_ {
+					break
+				}
 			}
 			// Check if this is a cluster-only metadata change (not a real move).
 			// This happens when:
@@ -7250,9 +7254,13 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 			// Check if rg.Cluster is stale after a cluster rename. If peers are actually
 			// in a different cluster, update rg.Cluster to match reality before peer selection.
-			if len(rg.Peers) > 0 {
-				if actualCluster := s.clusterNameForNode(rg.Peers[0]); actualCluster != _EMPTY_ && actualCluster != rg.Cluster {
-					rg.Cluster = actualCluster
+			// Check all peers to find one with available nodeInfo for robustness.
+			for _, peer := range rg.Peers {
+				if actualCluster := s.clusterNameForNode(peer); actualCluster != _EMPTY_ {
+					if actualCluster != rg.Cluster {
+						rg.Cluster = actualCluster
+					}
+					break
 				}
 			}
 			peers, err := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0, nil)
