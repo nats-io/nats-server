@@ -896,6 +896,9 @@ func (js *jetStream) setupMetaGroup() error {
 		}
 		if cfg.Observer {
 			s.Noticef("Turning JetStream metadata controller Observer Mode on")
+			s.Noticef("In cases where JetStream will not be extended")
+			s.Noticef("and waiting for leader election until first contact is not acceptable,")
+			s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
 		}
 	} else {
 		s.Noticef("JetStream cluster recovering state")
