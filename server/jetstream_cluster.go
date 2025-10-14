@@ -896,7 +896,7 @@ func (js *jetStream) setupMetaGroup() error {
 		}
 		if cfg.Observer {
 			s.Noticef("Turning JetStream metadata controller Observer Mode on")
-			s.Noticef("In cases where JetStream will not be extended")
+			s.Noticef("In cases where the JetStream domain is not intended to be extended through a SYS account leaf node connection")
 			s.Noticef("and waiting for leader election until first contact is not acceptable,")
 			s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
 		}
@@ -912,7 +912,7 @@ func (js *jetStream) setupMetaGroup() error {
 				cfg.Observer = false
 			case extUndetermined:
 				s.Noticef("Turning JetStream metadata controller Observer Mode on - no previous contact")
-				s.Noticef("In cases where JetStream will not be extended")
+				s.Noticef("In cases where the JetStream domain is not intended to be extended through a SYS account leaf node connection")
 				s.Noticef("and waiting for leader election until first contact is not acceptable,")
 				s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
 			}
