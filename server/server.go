@@ -3221,6 +3221,17 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
+	// Handle PROXY protocol if enabled
+	if opts.ProxyProtocol && !inProcess {
+		var err error
+		conn, err = parseProxyProtocol(conn)
+		if err != nil {
+			s.Errorf("Failed to parse PROXY protocol: %v", err)
+			conn.Close()
+			return nil
+		}
+	}
+
 	maxPay := int32(opts.MaxPayload)
 	maxSubs := int32(opts.MaxSubs)
 	// For system, maxSubs of 0 means unlimited, so re-adjust here.

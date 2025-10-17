@@ -467,6 +467,11 @@ type Options struct {
 	// and used as a filter criteria for some system requests.
 	Tags jwt.TagList `json:"-"`
 
+	// ProxyProtocol enables PROXY protocol support for client connections.
+	// When enabled, the server will expect the PROXY protocol header before
+	// processing normal NATS protocol messages.
+	ProxyProtocol bool `json:"-"`
+
 	// Metadata describing the server. They will be included in 'Z' responses.
 	Metadata map[string]string `json:"-"`
 
@@ -1049,6 +1054,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.ClientAdvertise = v.(string)
 	case "port":
 		o.Port = int(v.(int64))
+	case "proxy_protocol":
+		o.ProxyProtocol = v.(bool)
 	case "server_name":
 		sn := v.(string)
 		if strings.Contains(sn, " ") {
