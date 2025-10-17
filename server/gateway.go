@@ -2565,6 +2565,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	if mt != nil {
 		pa := c.pa
 		msg = mt.setOriginAccountHeaderIfNeeded(c, acc, msg)
+		msg = mt.setHopHeader(c, msg)
 		defer func() { c.pa = pa }()
 	}
 
@@ -2674,10 +2675,6 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 				}
 				mreply = append(mreply, reply...)
 			}
-		}
-
-		if mt != nil {
-			msg = mt.setHopHeader(c, msg)
 		}
 
 		// Setup the message header.
