@@ -7593,7 +7593,19 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 	// Only propose message deletion to the stream if we're consumer leader, otherwise all followers would also propose.
 	// We must be the consumer leader, since we know for sure we've stored the message and don't register as pre-ack.
 	if o != nil && !o.IsLeader() {
+		// Currently, interest-based streams can race on "no interest" because consumer creates/updates go over
+		// the meta layer and published messages go over the stream layer. Some servers could then either store
+		// or not store some initial set of messages that gained new interest. To get the stream back in sync,
+		// we allow moving the first sequence up.
+		// TODO(mvv): later on only the stream leader should determine "no interest"
+		interestRaiseFirst := mset.cfg.Retention == InterestPolicy && seq == state.FirstSeq
 		mset.mu.Unlock()
+		if interestRaiseFirst {
+			if _, err := store.RemoveMsg(seq); err == ErrStoreEOF {
+				// This should not happen, but being pedantic.
+				mset.registerPreAckLock(o, seq)
+			}
+		}
 		// Must still mark as removal if follower. If we become leader later, we must be able to retry the proposal.
 		return true
 	}
