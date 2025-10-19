@@ -2889,6 +2889,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 			continue
 		}
 		remote := &RemoteLeafOpts{}
+		var proxyToken token
 		for k, v := range rm {
 			tk, v = unwrapValue(v, &lt)
 			switch strings.ToLower(k) {
@@ -3022,7 +3023,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 					continue
 				}
 				// Capture the token for the "proxy" field itself, before the map iteration
-				proxyToken := tk
+				proxyToken = tk
 				for pk, pv := range proxyMap {
 					tk, pv = unwrapValue(pv, &lt)
 					switch strings.ToLower(pk) {
@@ -3047,16 +3048,6 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 						}
 					}
 				}
-				// Use the saved proxy token for validation errors, not the last field token
-				if warns, err := validateLeafNodeProxyOptions(remote); err != nil {
-					*errors = append(*errors, &configErr{proxyToken, err.Error()})
-					continue
-				} else {
-					// Add any warnings about proxy configuration
-					for _, warn := range warns {
-						*warnings = append(*warnings, &configErr{proxyToken, warn})
-					}
-				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -3068,6 +3059,16 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 					*errors = append(*errors, err)
 					continue
 				}
+			}
+		}
+		// Use the saved proxy token for validation errors, not the last field token
+		if warns, err := validateLeafNodeProxyOptions(remote); err != nil {
+			*errors = append(*errors, &configErr{proxyToken, err.Error()})
+			continue
+		} else {
+			// Add any warnings about proxy configuration
+			for _, warn := range warns {
+				*warnings = append(*warnings, &configErr{proxyToken, warn})
 			}
 		}
 		remotes = append(remotes, remote)
