@@ -2673,7 +2673,7 @@ func (n *raft) runAsLeader() {
 
 				// Send our batch if we have one.
 				if len(batchEntries) > 0 {
-					log.Println("Batch:", len(batchEntries), "entries", sz, "bytes")
+					log.Println("Batch:", len(batchEntries), "entries", sz, "bytes", "maxBatch", n.maxBatchSize())
 					n.sendAppendEntry(batchEntries)
 				}
 
@@ -2732,31 +2732,48 @@ func (n *raft) runAsLeader() {
 	}
 }
 
+// Returns the maximum number of bytes we can safely
+// send in a single message.
+func (n *raft) maxBatchSize() int {
+	max_payload := MAX_PAYLOAD_SIZE
+	if n.s.info.MaxPayload > 0 {
+		max_payload = int(n.s.info.MaxPayload)
+	}
+	if n.acc.mpay > 0 {
+		max_payload = int(n.acc.mpay)
+	}
+	return max_payload - MAX_CONTROL_LINE_SIZE
+}
+
 // composeBatch will compose a batch from a set of proposals.
 // It will return a batch of entries to be sent and any new leftovers.
 func (n *raft) composeBatch(allProposals []*proposedEntry) ([]*Entry, []*proposedEntry, int) {
-	const maxBatch = 256 * 1024
-	const maxEntries = 512
+	const maxEntries = math.MaxUint16
+	maxBatchSize := n.maxBatchSize()
 
 	if len(allProposals) == 0 {
 		return nil, nil, 0
 	}
 
-	var sz int
 	end := 0
+	batchSize := int(appendEntryBaseLen)
+
 	for end < len(allProposals) {
 		p := allProposals[end]
+		msgSize := len(p.Data) + 1 + 4 // to encode type and size
+
 		// If we have a snapshot do not batch with anything else.
 		if p.Type == EntrySnapshot {
 			if end == 0 {
-				sz = len(p.Data) + 1
+				batchSize += msgSize
 				end = 1
 			}
 			break
 		}
-		sz += len(p.Data) + 1
-		end++
-		if sz < maxBatch && end < maxEntries {
+
+		if end == 0 || (batchSize+msgSize) < maxBatchSize && end < maxEntries {
+			batchSize += msgSize
+			end++
 			continue
 		}
 		break
@@ -2776,7 +2793,7 @@ func (n *raft) composeBatch(allProposals []*proposedEntry) ([]*Entry, []*propose
 		entries[i] = p.Entry
 	}
 
-	return entries, newLeftovers, sz
+	return entries, newLeftovers, batchSize
 }
 
 // Quorum reports the quorum status. Will be called on former leaders.
