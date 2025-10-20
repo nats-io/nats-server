@@ -39,7 +39,7 @@ jobs:
       - name: Install syft
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
         # Commit f8bdd1d8ac5e901a77a92f111440fdb1b593736b = tag v0.20.6
-        uses: anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b
+        uses: anchore/sbom-action/download-syft@aa0e114b2e19480f157109b9922bda359bd98b90
         with:
           syft-version: "v1.27.1"
 
