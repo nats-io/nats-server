@@ -1123,7 +1123,8 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		return ok
 	}
 
-	if c.kind == CLIENT {
+	// Check for the use of simple auth.
+	if c.kind == CLIENT || c.kind == LEAF {
 		if proxyRequired = opts.ProxyRequired; proxyRequired && !trustedProxy {
 			return setProxyAuthError(ErrAuthProxyRequired)
 		}
