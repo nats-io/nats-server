@@ -2806,6 +2806,11 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	s.Noticef("Listening for client connections on %s",
 		net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
+	// Alert if PROXY protocol is enabled
+	if opts.ProxyProtocol {
+		s.Noticef("PROXY protocol enabled for client connections")
+	}
+
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
 		s.Noticef("TLS required for client connections")
@@ -2834,7 +2839,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	s.clientConnectURLs = s.getClientConnectURLs()
 	s.listener = l
 
-	go s.acceptConnections(l, "Client", func(conn net.Conn) { s.createClient(conn) },
+	go s.acceptConnections(l, "Client", func(conn net.Conn) { s.handleClientConnection(conn) },
 		func(_ error) bool {
 			if s.isLameDuckMode() {
 				// Signal that we are not accepting new clients
@@ -3235,6 +3240,34 @@ func (c *tlsMixConn) Read(b []byte) (int, error) {
 		return n, err
 	}
 	return c.Conn.Read(b)
+}
+
+// handleClientConnection processes a new client connection, handling PROXY protocol if enabled
+func (s *Server) handleClientConnection(conn net.Conn) {
+	opts := s.getOpts()
+
+	// Handle PROXY protocol if enabled
+	if opts.ProxyProtocol {
+		addr, err := readProxyProtoHeader(conn)
+		if err != nil {
+			s.Errorf("Error reading PROXY protocol header from %s: %v", conn.RemoteAddr(), err)
+			conn.Close()
+			return
+		}
+
+		// If addr is nil, it was a LOCAL/UNKNOWN command (health check)
+		// Use the connection as-is
+		if addr != nil {
+			// Wrap the connection to use the extracted address
+			conn = &proxyConn{
+				Conn:       conn,
+				remoteAddr: addr,
+			}
+			s.Debugf("PROXY protocol: connection from %s (via %s)", addr, conn.(*proxyConn).Conn.RemoteAddr())
+		}
+	}
+
+	s.createClient(conn)
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
