@@ -1049,17 +1049,22 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 	// In addition, and this is to allow auth callout, set user/password or
 	// token if applicable.
 	if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
-		// For backward compatibility, if only username is provided, set both
-		// Token and User, not just Token.
 		cinfo.User = userInfo.Username()
 		var ok bool
 		cinfo.Pass, ok = userInfo.Password()
+		// For backward compatibility, if only username is provided, set both
+		// Token and User, not just Token.
 		if !ok {
 			cinfo.Token = cinfo.User
 		}
 	} else if c.leaf.remote.username != _EMPTY_ {
 		cinfo.User = c.leaf.remote.username
 		cinfo.Pass = c.leaf.remote.password
+		// For backward compatibility, if only username is provided, set both
+		// Token and User, not just Token.
+		if cinfo.Pass == _EMPTY_ {
+			cinfo.Token = cinfo.User
+		}
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {

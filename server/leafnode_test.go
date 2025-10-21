@@ -10830,3 +10830,37 @@ func TestLeafNodeConfigureWriteDeadline(t *testing.T) {
 		require_Equal(t, r.out.wdl, 6*time.Second)
 	})
 }
+
+// https://github.com/nats-io/nats-server/issues/7441
+func TestLeafNodesBasicTokenAuth(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		authorization {
+			token: secret
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	port := ohub.LeafNode.Port
+	leafTmpl := `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes: [
+				{ url: "nats://secret@localhost:%d" }
+			]
+		}
+	`
+	leafConf := createConfFile(t, fmt.Appendf(nil, leafTmpl, port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	// Verify that we have only 1 leaf
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+}
