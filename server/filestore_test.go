@@ -10963,3 +10963,44 @@ func TestFileStoreEraseMsgErr(t *testing.T) {
 		fs.EraseMsg(2)
 	})
 }
+
+func TestFileStorePurgeMsgBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 20 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		fs.mu.RLock()
+		blks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, blks, 2)
+
+		state := fs.State()
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 20)
+		require_Equal(t, state.Msgs, 20)
+		require_Equal(t, state.Bytes, 20*33)
+
+		// Purging the block should both remove the block and do the accounting.
+		fmb := fs.getFirstBlock()
+		fs.mu.Lock()
+		fs.purgeMsgBlock(fmb)
+		blks = len(fs.blks)
+		fs.mu.Unlock()
+
+		require_Equal(t, blks, 1)
+		state = fs.State()
+		require_Equal(t, state.FirstSeq, 11)
+		require_Equal(t, state.LastSeq, 20)
+		require_Equal(t, state.Msgs, 10)
+		require_Equal(t, state.Bytes, 10*33)
+	})
+}
