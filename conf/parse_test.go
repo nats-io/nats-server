@@ -166,6 +166,82 @@ func TestEnvVariableStringStartingWithNumberUsingQuotes(t *testing.T) {
 	test(t, fmt.Sprintf("foo = $%s", evar), ex)
 }
 
+func TestEnvVariableEmbedded(t *testing.T) {
+	cluster := `
+		cluster {
+			# set the variable token
+			TOKEN: abc
+			authorization {
+				user: user
+				# normal variable syntax
+				password: $TOKEN
+			}
+			# embedded variable syntax
+			routes = [ nats://user:$$TOKEN@server.example.com:6222 ]
+		}`
+	ex := map[string]any{
+		"cluster": map[string]any{
+			"TOKEN": "abc",
+			"authorization": map[string]any{
+				"user":     "user",
+				"password": "abc",
+			},
+			"routes": []any{
+				"nats://user:abc@server.example.com:6222",
+			},
+		},
+	}
+
+	// don't use test() here because we want to test the Parse function without checking pedantic mode.
+	m, err := Parse(cluster)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if m == nil {
+		t.Fatal("Received nil map")
+	}
+
+	if !reflect.DeepEqual(m, ex) {
+		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, ex)
+	}
+}
+
+func TestEnvVariableEmbeddedMissing(t *testing.T) {
+	cluster := `
+		cluster {
+			authorization {
+				user: user
+				# normal variable syntax
+				password: $TOKEN
+			}
+			# embedded variable syntax
+			routes = [ nats://user:$$TOKEN@server.example.com:6222 ]
+		}`
+
+	_, err := Parse(cluster)
+	if err == nil {
+		t.Fatalf("Expected err not being able to process embedded variable, got none")
+	}
+}
+
+func TestEnvVariableEmbeddedOutsideOfQuotes(t *testing.T) {
+	cluster := `
+		cluster {
+			authorization {
+				user: user
+				# invalid embedded variable syntax
+				password: $$TOKEN
+			}
+			# embedded variable syntax
+			routes = [ nats://user:$$TOKEN@server.example.com:6222 ]
+		}`
+
+	_, err := Parse(cluster)
+	if err == nil {
+		t.Fatalf("Expected err not being able to process embedded variable, got none")
+	}
+}
+
 func TestBcryptVariable(t *testing.T) {
 	ex := map[string]any{
 		"password": "$2a$11$ooo",
