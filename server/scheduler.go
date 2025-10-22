@@ -159,12 +159,12 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 				return false
 			}
 			// Validate the contents are correct if not, we just remove it from THW.
-			ttl, ok := getMessageScheduleTTL(sm.hdr)
+			ttl, ok := getMessageScheduleTTLNoIdx(sm.hdr)
 			if !ok {
 				ms.remove(seq)
 				return true
 			}
-			target := getMessageScheduleTarget(sm.hdr)
+			target := getMessageScheduleTargetNoIdx(sm.hdr)
 			if target == _EMPTY_ {
 				ms.remove(seq)
 				return true

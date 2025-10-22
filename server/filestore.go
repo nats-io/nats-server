@@ -1556,7 +1556,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		hasHeaders := rl&hbit != 0
 		var ttl int64
 		if mb.fs.ttls != nil && len(hdr) > 0 {
-			ttl, _ = getMessageTTL(hdr)
+			ttl, _ = getMessageTTLNoIdx(hdr)
 		}
 		// Clear any headers bit that could be set.
 		rl &^= hbit
@@ -1649,7 +1649,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 				mb.ttls++
 			}
 			if mb.fs.scheduling != nil {
-				if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+				if schedule, ok := getMessageScheduleNoIdx(hdr); ok && !schedule.IsZero() {
 					mb.fs.scheduling.add(seq, string(subj), schedule.UnixNano())
 					mb.schedules++
 				}
@@ -2092,7 +2092,7 @@ func (fs *fileStore) recoverTTLState() error {
 			if len(msg.hdr) == 0 {
 				continue
 			}
-			if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
+			if ttl, _ := getMessageTTLNoIdx(msg.hdr); ttl > 0 {
 				expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
 				fs.ttls.Add(seq, int64(expires))
 			}
@@ -2173,7 +2173,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 			if len(msg.hdr) == 0 {
 				continue
 			}
-			if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+			if schedule, ok := getMessageScheduleNoIdx(sm.hdr); ok && !schedule.IsZero() {
 				fs.scheduling.init(seq, sm.subj, schedule.UnixNano())
 			}
 		}
@@ -4455,7 +4455,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 
 	// Message scheduling.
 	if fs.scheduling != nil {
-		if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+		if schedule, ok := getMessageScheduleNoIdx(hdr); ok && !schedule.IsZero() {
 			fs.scheduling.add(seq, subj, schedule.UnixNano())
 			fs.lmb.schedules++
 		} else {
@@ -5093,7 +5093,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	mb.removeSeqPerSubject(sm.subj, seq)
 	fs.removePerSubject(sm.subj)
 	if fs.ttls != nil {
-		if ttl, err := getMessageTTL(sm.hdr); err == nil {
+		if ttl, err := getMessageTTLNoIdx(sm.hdr); err == nil {
 			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
 			fs.ttls.Remove(seq, int64(expires))
 		}
@@ -6019,7 +6019,7 @@ func (fs *fileStore) expireMsgs() {
 		var seq uint64
 		for sm, seq, _ = fs.LoadNextMsg(fwcs, true, 0, &smv); sm != nil && sm.ts <= minAge; sm, seq, _ = fs.LoadNextMsg(fwcs, true, seq+1, &smv) {
 			if len(sm.hdr) > 0 {
-				if ttl, err := getMessageTTL(sm.hdr); err == nil && ttl < 0 {
+				if ttl, err := getMessageTTLNoIdx(sm.hdr); err == nil && ttl < 0 {
 					// The message has a negative TTL, therefore it must "never expire".
 					minAge = ats.AccessTime() - maxAge
 					continue

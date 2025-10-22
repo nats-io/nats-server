@@ -1305,7 +1305,7 @@ func (mset *stream) rebuildDedupe() {
 		}
 		var msgId string
 		if len(sm.hdr) > 0 {
-			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
+			if msgId = getMsgIdNoIdx(sm.hdr); msgId != _EMPTY_ {
 				mset.storeMsgIdLocked(&ddentry{msgId, sm.seq, sm.ts})
 			}
 		}
@@ -2968,7 +2968,10 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, true))
 		}
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true, true)
+		var hdrIdx *jsHdrIndex
+		m.hdr, hdrIdx = indexJsHdr(m.hdr)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, hdrIdx, m.msg, sseq-1, ts, nil, true, true)
+		hdrIdx.returnToPool()
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -3936,13 +3939,18 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		}
 	}
 
-	var err error
+	var (
+		err    error
+		hdrIdx *jsHdrIndex
+	)
 	// If we are clustered we need to propose this message to the underlying raft group.
+	hdr, hdrIdx = indexJsHdr(hdr)
 	if node != nil {
-		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil, true)
+		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, hdrIdx, msg, nil, true)
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true, true)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, hdrIdx, msg, 0, 0, nil, true, true)
 	}
+	hdrIdx.returnToPool()
 
 	if err != nil {
 		s := mset.srv
@@ -4576,12 +4584,15 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 		}
 	})
 	mset.store.RegisterProcessJetStreamMsg(func(im *inMsg) {
+		var hdrIdx *jsHdrIndex
+		im.hdr, hdrIdx = indexJsHdr(im.hdr)
+		defer hdrIdx.returnToPool()
 		if mset.IsClustered() {
 			if mset.IsLeader() {
-				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
+				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, hdrIdx, im.msg, im.mt, false)
 			}
 		} else {
-			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, true)
+			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, hdrIdx, im.msg, 0, 0, im.mt, false, true)
 		}
 	})
 	mset.mu.Unlock()
@@ -4707,63 +4718,88 @@ func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	}
 }
 
-// Fast lookup of msgId.
-func getMsgId(hdr []byte) string {
+// Lookup of msgId without an index.
+func getMsgIdNoIdx(hdr []byte) string {
 	return string(getHeader(JSMsgId, hdr))
 }
 
+// Fast lookup of msgId.
+func getMsgId(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.msgId) == 0 {
+		return _EMPTY_
+	}
+	return string(hdrIdx.msgId)
+}
+
 // Fast lookup of expected last msgId.
-func getExpectedLastMsgId(hdr []byte) string {
-	return string(getHeader(JSExpectedLastMsgId, hdr))
+func getExpectedLastMsgId(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.expLastMsgId) == 0 {
+		return _EMPTY_
+	}
+	return string(hdrIdx.expLastMsgId)
 }
 
 // Fast lookup of expected stream.
-func getExpectedStream(hdr []byte) string {
-	return string(getHeader(JSExpectedStream, hdr))
+func getExpectedStream(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.expStream) == 0 {
+		return _EMPTY_
+	}
+	return string(hdrIdx.expStream)
 }
 
 // Fast lookup of expected last sequence.
-func getExpectedLastSeq(hdr []byte) (uint64, bool) {
-	bseq := sliceHeader(JSExpectedLastSeq, hdr)
-	if len(bseq) == 0 {
+func getExpectedLastSeq(hdrIdx *jsHdrIndex) (uint64, bool) {
+	if hdrIdx == nil || len(hdrIdx.expLastSeq) == 0 {
 		return 0, false
 	}
-	return uint64(parseInt64(bseq)), true
+	return uint64(parseInt64(hdrIdx.expLastSeq)), true
 }
 
 // Fast lookup of rollups.
-func getRollup(hdr []byte) string {
-	r := getHeader(JSMsgRollup, hdr)
-	if len(r) == 0 {
+func getRollup(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.rollup) == 0 {
 		return _EMPTY_
 	}
-	return strings.ToLower(string(r))
+	return strings.ToLower(string(hdrIdx.rollup))
 }
 
 // Fast lookup of expected stream sequence per subject.
-func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
-	bseq := sliceHeader(JSExpectedLastSubjSeq, hdr)
-	if len(bseq) == 0 {
+func getExpectedLastSeqPerSubject(hdrIdx *jsHdrIndex) (uint64, bool) {
+	if hdrIdx == nil || len(hdrIdx.expLastSubjSeq) == 0 {
 		return 0, false
 	}
-	return uint64(parseInt64(bseq)), true
+	return uint64(parseInt64(hdrIdx.expLastSubjSeq)), true
 }
 
 // Fast lookup of expected subject for the expected stream sequence per subject.
-func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
-	return bytesToString(sliceHeader(JSExpectedLastSubjSeqSubj, hdr))
+func getExpectedLastSeqPerSubjectForSubject(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.expLastSubjSeqSubj) == 0 {
+		return _EMPTY_
+	}
+	return bytesToString(hdrIdx.expLastSubjSeqSubj)
+}
+
+// Lookup of the message TTL from headers without an index:
+// - Positive return value: duration in seconds.
+// - Zero return value: no TTL or parse error.
+// - Negative return value: never expires.
+func getMessageTTLNoIdx(hdr []byte) (int64, error) {
+	ttl := getHeader(JSMessageTTL, hdr)
+	if len(ttl) == 0 {
+		return 0, nil
+	}
+	return parseMessageTTL(bytesToString(ttl))
 }
 
 // Fast lookup of the message TTL from headers:
 // - Positive return value: duration in seconds.
 // - Zero return value: no TTL or parse error.
 // - Negative return value: never expires.
-func getMessageTTL(hdr []byte) (int64, error) {
-	ttl := getHeader(JSMessageTTL, hdr)
-	if len(ttl) == 0 {
+func getMessageTTL(hdrIdx *jsHdrIndex) (int64, error) {
+	if hdrIdx == nil || len(hdrIdx.ttl) == 0 {
 		return 0, nil
 	}
-	return parseMessageTTL(bytesToString(ttl))
+	return parseMessageTTL(bytesToString(hdrIdx.ttl))
 }
 
 // - Positive return value: duration in seconds.
@@ -4793,17 +4829,16 @@ func parseMessageTTL(ttl string) (int64, error) {
 
 // Fast lookup of the message Incr from headers.
 // Return includes the value or nil, and success.
-func getMessageIncr(hdr []byte) (*big.Int, bool) {
-	incr := sliceHeader(JSMessageIncr, hdr)
-	if len(incr) == 0 {
+func getMessageIncr(hdrIdx *jsHdrIndex) (*big.Int, bool) {
+	if hdrIdx == nil || len(hdrIdx.incr) == 0 {
 		return nil, true
 	}
 	var v big.Int
-	return v.SetString(bytesToString(incr), 10)
+	return v.SetString(bytesToString(hdrIdx.incr), 10)
 }
 
-// Fast lookup of message schedule.
-func getMessageSchedule(hdr []byte) (time.Time, bool) {
+// Lookup of message schedule without an index.
+func getMessageScheduleNoIdx(hdr []byte) (time.Time, bool) {
 	if len(hdr) == 0 {
 		return time.Time{}, true
 	}
@@ -4818,9 +4853,25 @@ func getMessageSchedule(hdr []byte) (time.Time, bool) {
 	return t, err == nil
 }
 
-// Fast lookup of the message schedule TTL from headers.
+// Fast lookup of message schedule.
+func getMessageSchedule(hdrIdx *jsHdrIndex) (time.Time, bool) {
+	if hdrIdx == nil || len(hdrIdx.schedPattern) == 0 {
+		return time.Time{}, true
+	}
+	val := bytesToString(hdrIdx.schedPattern)
+	if val == _EMPTY_ {
+		return time.Time{}, true
+	}
+	if !strings.HasPrefix(val, "@at ") {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, val[4:])
+	return t, err == nil
+}
+
+// Lookup of the message schedule TTL from headers without an index.
 // The TTL is confirmed to be valid, but the raw TTL string is returned.
-func getMessageScheduleTTL(hdr []byte) (string, bool) {
+func getMessageScheduleTTLNoIdx(hdr []byte) (string, bool) {
 	ttl := getHeader(JSScheduleTTL, hdr)
 	if len(ttl) == 0 {
 		return _EMPTY_, true
@@ -4831,37 +4882,80 @@ func getMessageScheduleTTL(hdr []byte) (string, bool) {
 	return string(ttl), true
 }
 
-// Fast lookup of message schedule target.
-func getMessageScheduleTarget(hdr []byte) string {
+// Fast lookup of the message schedule TTL from headers.
+// The TTL is confirmed to be valid, but the raw TTL string is returned.
+func getMessageScheduleTTL(hdrIdx *jsHdrIndex) (string, bool) {
+	if hdrIdx == nil || len(hdrIdx.schedTtl) == 0 {
+		return _EMPTY_, true
+	}
+	if _, err := parseMessageTTL(bytesToString(hdrIdx.schedTtl)); err != nil {
+		return _EMPTY_, false
+	}
+	return string(hdrIdx.schedTtl), true
+}
+
+// Lookup of message schedule target without an index.
+func getMessageScheduleTargetNoIdx(hdr []byte) string {
 	if len(hdr) == 0 {
 		return _EMPTY_
 	}
 	return string(getHeader(JSScheduleTarget, hdr))
 }
 
-// Fast lookup of message scheduler.
-func getMessageScheduler(hdr []byte) string {
-	if len(hdr) == 0 {
+// Fast lookup of message schedule target.
+func getMessageScheduleTarget(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.schedTarget) == 0 {
 		return _EMPTY_
 	}
-	return string(getHeader(JSScheduler, hdr))
+	return string(hdrIdx.schedTarget)
 }
 
-// Fast lookup of batch ID.
-func getBatchId(hdr []byte) string {
+// Fast lookup of message scheduler.
+func getMessageScheduler(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.scheduler) == 0 {
+		return _EMPTY_
+	}
+	return bytesToString(hdrIdx.scheduler)
+}
+
+func getMessageScheduleNext(hdrIdx *jsHdrIndex) string {
+	if hdrIdx == nil || len(hdrIdx.schedNext) == 0 {
+		return _EMPTY_
+	}
+	return bytesToString(hdrIdx.schedNext)
+}
+
+// Lookup of batch ID without an index.
+func getBatchIdNoIdx(hdr []byte) string {
 	if len(hdr) == 0 {
 		return _EMPTY_
 	}
 	return string(getHeader(JSBatchId, hdr))
 }
 
-// Fast lookup of batch sequence.
-func getBatchSequence(hdr []byte) (uint64, bool) {
+// Fast lookup of batch ID.
+func getBatchId(idx *jsHdrIndex) string {
+	if idx == nil || len(idx.batchId) == 0 {
+		return _EMPTY_
+	}
+	return string(idx.batchId)
+}
+
+// Lookup of batch sequence without an index.
+func getBatchSequenceNoIdx(hdr []byte) (uint64, bool) {
 	bseq := sliceHeader(JSBatchSeq, hdr)
 	if len(bseq) == 0 {
 		return 0, false
 	}
 	return uint64(parseInt64(bseq)), true
+}
+
+// Fast lookup of batch sequence.
+func getBatchSequence(idx *jsHdrIndex) (uint64, bool) {
+	if idx == nil || len(idx.batchSeq) == 0 {
+		return 0, false
+	}
+	return uint64(parseInt64(idx.batchSeq)), true
 }
 
 // Signal if we are clustered. Will acquire rlock.
@@ -5325,7 +5419,7 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
-func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needLock bool) (retErr error) {
+func (mset *stream) processJetStreamMsg(subject, reply string, hdr []byte, hdrIdx *jsHdrIndex, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needLock bool) (retErr error) {
 	if mt != nil {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
 		// message trace event.
@@ -5389,10 +5483,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	var batchId string
 	var batchSeq uint64
-	if len(hdr) > 0 {
+	if hdrIdx != nil {
 		// Populate batch details.
-		if batchId = getBatchId(hdr); batchId != _EMPTY_ {
-			batchSeq, _ = getBatchSequence(hdr)
+		if batchId = getBatchId(hdrIdx); batchId != _EMPTY_ {
+			batchSeq, _ = getBatchSequence(hdrIdx)
 			// Disable consistency checking if this was already done
 			// earlier as part of the batch consistency check.
 			canConsistencyCheck = traceOnly
@@ -5448,18 +5542,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
-	// If we have received this message across an account we may have request information attached.
-	// For now remove. TODO(dlc) - Should this be opt-in or opt-out?
-	if len(hdr) > 0 {
-		hdr = removeHeaderIfPresent(hdr, ClientInfoHdr)
-	}
-
 	// Process additional msg headers if still present.
 	var msgId string
 	var incr *big.Int
 	var rollupSub, rollupAll bool
 
-	if len(hdr) > 0 {
+	if hdrIdx != nil {
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
 		// to do this check here since it was not done in processClusteredInboundMsg().
@@ -5467,7 +5555,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			// Counter increments.
 			// Only supported on counter streams, and payload must be empty (if not coming from a source).
 			var ok bool
-			if incr, ok = getMessageIncr(hdr); !ok {
+			if incr, ok = getMessageIncr(hdrIdx); !ok {
 				apiErr := NewJSMessageIncrInvalidError()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -5499,14 +5587,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				} else {
 					// Check for incompatible headers.
 					var doErr bool
-					if getRollup(hdr) != _EMPTY_ ||
-						getExpectedStream(hdr) != _EMPTY_ ||
-						getExpectedLastMsgId(hdr) != _EMPTY_ ||
-						getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
+					if getRollup(hdrIdx) != _EMPTY_ ||
+						getExpectedStream(hdrIdx) != _EMPTY_ ||
+						getExpectedLastMsgId(hdrIdx) != _EMPTY_ ||
+						getExpectedLastSeqPerSubjectForSubject(hdrIdx) != _EMPTY_ {
 						doErr = true
-					} else if _, ok := getExpectedLastSeq(hdr); ok {
+					} else if _, ok := getExpectedLastSeq(hdrIdx); ok {
 						doErr = true
-					} else if _, ok := getExpectedLastSeqPerSubject(hdr); ok {
+					} else if _, ok := getExpectedLastSeqPerSubject(hdrIdx); ok {
 						doErr = true
 					}
 
@@ -5524,7 +5612,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 
 			// Expected stream.
-			if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
+			if sname := getExpectedStream(hdrIdx); sname != _EMPTY_ && sname != name {
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamNotMatchError()
@@ -5537,7 +5625,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
 			// Shouldn't happen in clustered mode since we should have already caught this
 			// in processClusteredInboundMsg, but needed here for non-clustered etc.
-			if ttl, _ := getMessageTTL(hdr); !sourced && ttl != 0 && !mset.cfg.AllowMsgTTL {
+			if ttl, _ := getMessageTTL(hdrIdx); !sourced && ttl != 0 && !mset.cfg.AllowMsgTTL {
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSMessageTTLDisabledError()
@@ -5548,10 +5636,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 
 			// Expected last sequence per subject.
-			if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
+			if seq, exists := getExpectedLastSeqPerSubject(hdrIdx); exists {
 				// Allow override of the subject used for the check.
 				seqSubj := subject
-				if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
+				if optSubj := getExpectedLastSeqPerSubjectForSubject(hdrIdx); optSubj != _EMPTY_ {
 					seqSubj = optSubj
 				}
 
@@ -5574,7 +5662,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					}
 					return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
 				}
-			} else if getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
+			} else if getExpectedLastSeqPerSubjectForSubject(hdrIdx) != _EMPTY_ {
 				apiErr := NewJSStreamExpectedLastSeqPerSubjectInvalidError()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -5586,7 +5674,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 
 			// Expected last sequence.
-			if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.lseq {
+			if seq, exists := getExpectedLastSeq(hdrIdx); exists && seq != mset.lseq {
 				mlseq := mset.lseq
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -5598,7 +5686,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 
 			// Message scheduling.
-			if schedule, ok := getMessageSchedule(hdr); !ok {
+			if schedule, ok := getMessageSchedule(hdrIdx); !ok {
 				apiErr := NewJSMessageSchedulesPatternInvalidError()
 				if !allowMsgSchedules {
 					apiErr = NewJSMessageSchedulesDisabledError()
@@ -5620,7 +5708,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 						outq.sendMsg(reply, b)
 					}
 					return apiErr
-				} else if scheduleTtl, ok := getMessageScheduleTTL(hdr); !ok {
+				} else if scheduleTtl, ok := getMessageScheduleTTL(hdrIdx); !ok {
 					apiErr := NewJSMessageSchedulesTTLInvalidError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
@@ -5637,7 +5725,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 						outq.sendMsg(reply, b)
 					}
 					return errMsgTTLDisabled
-				} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
+				} else if scheduleTarget := getMessageScheduleTarget(hdrIdx); scheduleTarget == _EMPTY_ ||
 					!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
 					apiErr := NewJSMessageSchedulesTargetInvalidError()
 					if canRespond {
@@ -5664,8 +5752,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 					// Add a rollup sub header if it doesn't already exist.
 					// Otherwise, it must exist already as a rollup on the subject.
-					if rollup := getRollup(hdr); rollup == _EMPTY_ {
+					if rollup := getRollup(hdrIdx); rollup == _EMPTY_ {
 						hdr = genHeader(hdr, JSMsgRollup, JSMsgRollupSubject)
+						// We don't re-index the headers, so need to set this manually.
+						rollupSub = true
 					} else if rollup != JSMsgRollupSubject {
 						apiErr := NewJSMessageSchedulesRollupInvalidError()
 						if canRespond {
@@ -5682,7 +5772,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 		// Dedupe detection. This is done at the cluster level for dedupe detection above the
 		// lower layers. But we still need to pull out the msgId.
-		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
+		if msgId = getMsgId(hdrIdx); msgId != _EMPTY_ {
 			// Do real check only if not clustered or traceOnly flag is set.
 			if canConsistencyCheck {
 				var seq uint64
@@ -5704,7 +5794,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 
 		// Expected last msgId.
-		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ {
+		if lmsgId := getExpectedLastMsgId(hdrIdx); lmsgId != _EMPTY_ {
 			if lmsgId != mset.lmsgId {
 				last := mset.lmsgId
 				bumpCLFS()
@@ -5718,7 +5808,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 		}
 		// Check for any rollups.
-		if rollup := getRollup(hdr); rollup != _EMPTY_ {
+		if rollup := getRollup(hdrIdx); rollup != _EMPTY_ {
 			if canConsistencyCheck && (!mset.cfg.AllowRollup || mset.cfg.DenyPurge) {
 				err := errors.New("rollup not permitted")
 				if canRespond {
@@ -5999,7 +6089,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// Find the message TTL if any.
-	ttl, err := getMessageTTL(hdr)
+	ttl, err := getMessageTTL(hdrIdx)
 	if err != nil {
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
@@ -6016,8 +6106,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if ttl > 0 && mset.cfg.SubjectDeleteMarkerTTL > 0 && mset.cfg.MaxMsgsPer != 1 {
 		if minTtl := int64(mset.cfg.SubjectDeleteMarkerTTL.Seconds()); ttl < minTtl {
 			ttl = minTtl
-			hdr = removeHeaderIfPresent(hdr, JSMessageTTL)
-			hdr = genHeader(hdr, JSMessageTTL, strconv.FormatInt(ttl, 10))
+			hdr = setHeader(JSMessageTTL, strconv.FormatInt(ttl, 10), hdr)
 		}
 	}
 
@@ -6090,9 +6179,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1}, false)
 	} else if rollupAll {
 		mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: 1}, false)
-	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
+	} else if scheduleNext := getMessageScheduleNext(hdrIdx); scheduleNext == JSScheduleNextPurge {
 		// Purge the message schedule.
-		scheduler := getMessageScheduler(hdr)
+		scheduler := getMessageScheduler(hdrIdx)
 		if scheduler != _EMPTY_ {
 			mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false)
 		}
@@ -6156,7 +6245,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 // processJetStreamBatchMsg processes a JetStream message that's part of an atomic batch publish.
 // Handles constraints around the batch, storing messages, doing consistency checks, and performing the commit.
-func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
+func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr []byte, hdrIdx *jsHdrIndex, msg []byte, mt *msgTrace) (retErr error) {
 	// For possible error response.
 	var response []byte
 
@@ -6256,7 +6345,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		return err
 	}
 
-	batchSeq, exists := getBatchSequence(hdr)
+	batchSeq, exists := getBatchSequence(hdrIdx)
 	if !exists {
 		err := NewJSAtomicPublishMissingSeqError()
 		if canRespond {
@@ -6340,7 +6429,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	}
 
 	var commit, commitEob bool
-	if c := sliceHeader(JSBatchCommit, hdr); c != nil {
+	if c := hdrIdx.batchCommit; c != nil {
 		commitEob = bytes.Equal(c, []byte("eob"))
 		// Reject the batch if the commit is not recognized.
 		if !commitEob && !bytes.Equal(c, []byte("1")) {
@@ -6357,7 +6446,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	}
 
 	// The required API level can have the batch be rejected. But the header is always removed.
-	if len(sliceHeader(JSRequiredApiLevel, hdr)) != 0 {
+	if hdrIdx.reqApiLevel {
 		if errorOnRequiredApiLevel(hdr) {
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
@@ -6512,12 +6601,15 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			return respondIncompleteBatch()
 		}
 
+		bhdr, hdrIdx = indexJsHdr(bhdr)
+
 		// Reject unsupported headers.
-		if getExpectedLastMsgId(bhdr) != _EMPTY_ {
+		if getExpectedLastMsgId(hdrIdx) != _EMPTY_ {
+			hdrIdx.returnToPool()
 			return errorOnUnsupported(seq, JSExpectedLastMsgId)
 		}
-
-		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, bsubj, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, bsubj, bhdr, hdrIdx, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+			hdrIdx.returnToPool()
 			rollback(seq)
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
@@ -6527,6 +6619,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			}
 			return err
 		}
+		hdrIdx.returnToPool()
 
 		if isClustered {
 			var _reply string
@@ -6573,7 +6666,9 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 					bhdr = genHeader(bhdr, JSBatchCommit, "1")
 				}
 			}
-			mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false)
+			bhdr, hdrIdx = indexJsHdr(bhdr)
+			mset.processJetStreamMsg(bsubj, _reply, bhdr, hdrIdx, bmsg, 0, 0, mt, false, false)
+			hdrIdx.returnToPool()
 		}
 		mset.mu.Unlock()
 	} else {
@@ -6595,6 +6690,140 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	b.cleanupLocked(batchId, batches)
 	batches.mu.Unlock()
 	return nil
+}
+
+type jsHdrIndex struct {
+	msgId              []byte
+	expStream          []byte
+	expLastSeq         []byte
+	expLastSubjSeq     []byte
+	expLastSubjSeqSubj []byte
+	expLastMsgId       []byte
+	rollup             []byte
+	ttl                []byte
+	incr               []byte
+	batchId            []byte
+	batchSeq           []byte
+	batchCommit        []byte
+	schedPattern       []byte
+	schedTtl           []byte
+	schedTarget        []byte
+	scheduler          []byte
+	schedNext          []byte
+	reqApiLevel        bool
+}
+
+var jsHdrIndexPool sync.Pool
+
+func getJsHdrIndexFromPool() *jsHdrIndex {
+	idx := jsHdrIndexPool.Get()
+	if idx != nil {
+		return idx.(*jsHdrIndex)
+	}
+	return new(jsHdrIndex)
+}
+
+func (idx *jsHdrIndex) returnToPool() {
+	if idx == nil {
+		return
+	}
+	// Nil out all values.
+	*idx = jsHdrIndex{}
+	jsHdrIndexPool.Put(idx)
+}
+
+// indexJsHdr indexes the JetStream headers in the message.
+// The ClientInfoHdr (if present) is also removed, and the update header is returned.
+func indexJsHdr(hdr []byte) ([]byte, *jsHdrIndex) {
+	hdrLen, ehdrLen := len(hdr), len(emptyHdrLine)
+	if hdrLen <= ehdrLen || !bytes.HasPrefix(hdr, []byte(hdrLine)) || hdr[hdrLen-2] != '\r' || hdr[hdrLen-1] != '\n' {
+		return hdr, nil
+	}
+	var idx *jsHdrIndex
+	offset := len(hdrLine)
+	// While contains more than just CRLF.
+	for offset+2 < hdrLen {
+		colon := bytes.IndexByte(hdr[offset:], ':')
+		if colon < 0 {
+			colon = 0
+		}
+		end := bytes.IndexByte(hdr[offset+colon:], '\r')
+		if hdr[offset+colon+end+1] != '\n' {
+			// The line is incomplete, just skip over it.
+			offset += colon + end + 1
+			continue
+		}
+		// If the line is missing a ':', just skip over the value.
+		if colon == 0 {
+			offset += end + LEN_CR_LF
+			continue
+		}
+		key := hdr[offset : offset+colon]
+		valueStart := offset + colon + 1 // Right after the ':'.
+		// Skip over whitespace before the value.
+		for valueStart < hdrLen && hdr[valueStart] == ' ' {
+			valueStart++
+		}
+		valueEnd := offset + colon + end
+
+		bkey := bytesToString(key)
+
+		// If we have received this message across an account we may have request information attached.
+		// For now remove. TODO(dlc) - Should this be opt-in or opt-out?
+		if bkey == ClientInfoHdr {
+			hdr = append(hdr[:offset], hdr[valueEnd+LEN_CR_LF:]...)
+			hdrLen = len(hdr)
+			continue
+		}
+		// Move offset to the next line.
+		offset += colon + end + LEN_CR_LF
+		if idx == nil {
+			idx = getJsHdrIndexFromPool()
+		}
+		value := hdr[valueStart:valueEnd:valueEnd]
+		switch bkey {
+		case JSMsgId:
+			idx.msgId = value
+		case JSExpectedStream:
+			idx.expStream = value
+		case JSExpectedLastSeq:
+			idx.expLastSeq = value
+		case JSExpectedLastSubjSeq:
+			idx.expLastSubjSeq = value
+		case JSExpectedLastSubjSeqSubj:
+			idx.expLastSubjSeqSubj = value
+		case JSExpectedLastMsgId:
+			idx.expLastMsgId = value
+		case JSMsgRollup:
+			idx.rollup = value
+		case JSMessageTTL:
+			idx.ttl = value
+		case JSMessageIncr:
+			idx.incr = value
+		case JSBatchId:
+			idx.batchId = value
+		case JSBatchSeq:
+			idx.batchSeq = value
+		case JSBatchCommit:
+			idx.batchCommit = value
+		case JSSchedulePattern:
+			idx.schedPattern = value
+		case JSScheduleTTL:
+			idx.schedTtl = value
+		case JSScheduleTarget:
+			idx.schedTarget = value
+		case JSScheduler:
+			idx.scheduler = value
+		case JSScheduleNext:
+			idx.schedNext = value
+		case JSRequiredApiLevel:
+			idx.reqApiLevel = true
+		}
+	}
+	if hdrLen <= ehdrLen {
+		return nil, nil
+	}
+	return hdr, idx
 }
 
 // Used to signal inbound message to registered consumers.
@@ -6898,15 +7127,18 @@ func (mset *stream) internalLoop() {
 			// This can possibly change now so needs to be checked here.
 			isClustered := mset.IsClustered()
 			ims := msgs.pop()
+			var hdrIdx *jsHdrIndex
 			for _, im := range ims {
 				// If we are clustered we need to propose this message to the underlying raft group.
-				if batchId := getBatchId(im.hdr); batchId != _EMPTY_ {
-					mset.processJetStreamBatchMsg(batchId, im.subj, im.rply, im.hdr, im.msg, im.mt)
+				im.hdr, hdrIdx = indexJsHdr(im.hdr)
+				if batchId := getBatchId(hdrIdx); batchId != _EMPTY_ {
+					mset.processJetStreamBatchMsg(batchId, im.subj, im.rply, im.hdr, hdrIdx, im.msg, im.mt)
 				} else if isClustered {
-					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
+					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, hdrIdx, im.msg, im.mt, false)
 				} else {
-					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, true)
+					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, hdrIdx, im.msg, 0, 0, im.mt, false, true)
 				}
+				hdrIdx.returnToPool()
 				im.returnToPool()
 			}
 			msgs.recycle(&ims)

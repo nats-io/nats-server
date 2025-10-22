@@ -161,7 +161,7 @@ func (ms *memStore) recoverTTLState() {
 		if len(sm.hdr) == 0 {
 			continue
 		}
-		if ttl, _ := getMessageTTL(sm.hdr); ttl > 0 {
+		if ttl, _ := getMessageTTLNoIdx(sm.hdr); ttl > 0 {
 			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
 			ms.ttls.Add(seq, int64(expires))
 		}
@@ -185,7 +185,7 @@ func (ms *memStore) recoverMsgSchedulingState() {
 		if len(sm.hdr) == 0 {
 			continue
 		}
-		if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+		if schedule, ok := getMessageScheduleNoIdx(sm.hdr); ok && !schedule.IsZero() {
 			ms.scheduling.init(seq, sm.subj, schedule.UnixNano())
 		}
 	}
@@ -310,7 +310,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 
 	// Message scheduling.
 	if ms.scheduling != nil {
-		if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+		if schedule, ok := getMessageScheduleNoIdx(hdr); ok && !schedule.IsZero() {
 			ms.scheduling.add(seq, subj, schedule.UnixNano())
 		} else {
 			ms.scheduling.removeSubject(subj)
@@ -1175,7 +1175,7 @@ func (ms *memStore) expireMsgs() {
 		var seq uint64
 		for sm, seq, _ = ms.LoadNextMsg(fwcs, true, 0, &smv); sm != nil && sm.ts <= minAge; sm, seq, _ = ms.LoadNextMsg(fwcs, true, seq+1, &smv) {
 			if len(sm.hdr) > 0 {
-				if ttl, err := getMessageTTL(sm.hdr); err == nil && ttl < 0 {
+				if ttl, err := getMessageTTLNoIdx(sm.hdr); err == nil && ttl < 0 {
 					// The message has a negative TTL, therefore it must "never expire".
 					minAge = time.Now().UnixNano() - maxAge
 					continue
@@ -1975,7 +1975,7 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	// Remove any per subject tracking.
 	ms.removeSeqPerSubject(sm.subj, seq)
 	if ms.ttls != nil {
-		if ttl, err := getMessageTTL(sm.hdr); err == nil {
+		if ttl, err := getMessageTTLNoIdx(sm.hdr); err == nil {
 			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
 			ms.ttls.Remove(seq, int64(expires))
 		}
