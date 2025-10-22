@@ -5287,8 +5287,8 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 	// If batch was requested send EOB.
 	if isBatchRequest {
-		// Update if the stream's lasts sequence has moved past our validThrough.
-		if mset.lastSeq() > validThrough {
+		// Update if the stream's last sequence has moved past our validThrough.
+		if mset.lseq > validThrough {
 			np, _ = store.NumPending(seq, req.NextFor, false)
 		}
 		hdr := fmt.Appendf(nil, eob, np, lseq)
