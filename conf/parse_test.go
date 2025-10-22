@@ -242,6 +242,17 @@ func TestEnvVariableEmbeddedOutsideOfQuotes(t *testing.T) {
 	}
 }
 
+func TestEnvVariableEmbeddedSYS(t *testing.T) {
+	// https://github.com/nats-io/nats-server/pull/5544#discussion_r1641577620
+	cluster := `
+		system_account: "$SYS"
+		`
+	ex := map[string]any{
+		"system_account": "$SYS",
+	}
+	test(t, cluster, ex)
+}
+
 func TestBcryptVariable(t *testing.T) {
 	ex := map[string]any{
 		"password": "$2a$11$ooo",
