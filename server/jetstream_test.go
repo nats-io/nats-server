@@ -22254,3 +22254,65 @@ func TestJetStreamScheduledMessageNotDeactivated(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamDirectGetBatchParallelWriteDeadlock(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Storage:     nats.FileStorage,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	for range 2 {
+		require_NoError(t, mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 0, 0, nil, false, true))
+	}
+
+	// We'll lock the message blocks such that we can't read, but NumPending should still function.
+	fs := mset.store.(*fileStore)
+	fs.lockAllMsgBlocks()
+	total, validThrough := fs.NumPending(1, _EMPTY_, false)
+	require_Equal(t, total, 2)
+	require_Equal(t, validThrough, 2)
+
+	// We'll now run things in the following order:
+	// - do a read through Direct Batch Get, which is blocked by the message blocks being locked
+	// - do a write in parallel, which is blocked by the read to complete
+	// - unlock the message blocks while both read and write goroutines are active
+	// If there's no deadlock the read and write will complete, and 3 messages will end up in the stream.
+	var wg, read sync.WaitGroup
+	read.Add(1)
+	wg.Add(1)
+	go func() {
+		read.Done()
+		mset.getDirectRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 2}, _EMPTY_)
+	}()
+	go func() {
+		// Make sure we enter getDirectRequest first.
+		read.Wait()
+		<-time.After(100 * time.Millisecond)
+		wg.Done()
+		mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 0, 0, nil, false, true)
+	}()
+	go func() {
+		// Run some time after we've entered processJetStreamMsg above.
+		wg.Wait()
+		<-time.After(100 * time.Millisecond)
+		fs.unlockAllMsgBlocks()
+	}()
+	read.Wait()
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if msgs := mset.state().Msgs; msgs != 3 {
+			return fmt.Errorf("expected 3 msgs, got %d", msgs)
+		}
+		return nil
+	})
+}
