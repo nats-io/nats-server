@@ -3040,7 +3040,7 @@ func TestSliceHeader(t *testing.T) {
 	require_True(t, bytes.Equal(sliced, copied))
 }
 
-func TestSliceHeaderOrdering(t *testing.T) {
+func TestSliceHeaderOrderingPrefix(t *testing.T) {
 	hdr := []byte("NATS/1.0\r\n\r\n")
 
 	// These headers share the same prefix, the longer subject
@@ -3058,6 +3058,105 @@ func TestSliceHeaderOrdering(t *testing.T) {
 	require_Equal(t, cap(copied), len(copied))
 
 	require_True(t, bytes.Equal(sliced, copied))
+}
+
+func TestSliceHeaderOrderingSuffix(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// These headers share the same suffix, the longer subject
+	// must not invalidate the existence of the shorter one.
+	hdr = genHeader(hdr, "Previous-Nats-Msg-Id", "user")
+	hdr = genHeader(hdr, "Nats-Msg-Id", "control")
+
+	sliced := sliceHeader("Nats-Msg-Id", hdr)
+	copied := getHeader("Nats-Msg-Id", hdr)
+
+	require_NotNil(t, sliced)
+	require_NotNil(t, copied)
+	require_True(t, bytes.Equal(sliced, copied))
+	require_Equal(t, string(copied), "control")
+}
+
+func TestRemoveHeaderIfPresentOrderingPrefix(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// These headers share the same prefix, the longer subject
+	// must not invalidate the existence of the shorter one.
+	hdr = genHeader(hdr, JSExpectedLastSubjSeqSubj, "foo")
+	hdr = genHeader(hdr, JSExpectedLastSubjSeq, "24")
+
+	hdr = removeHeaderIfPresent(hdr, JSExpectedLastSubjSeq)
+	ehdr := genHeader(nil, JSExpectedLastSubjSeqSubj, "foo")
+	require_True(t, bytes.Equal(hdr, ehdr))
+}
+
+func TestRemoveHeaderIfPresentOrderingSuffix(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// These headers share the same suffix, the longer subject
+	// must not invalidate the existence of the shorter one.
+	hdr = genHeader(hdr, "Previous-Nats-Msg-Id", "user")
+	hdr = genHeader(hdr, "Nats-Msg-Id", "control")
+
+	hdr = removeHeaderIfPresent(hdr, "Nats-Msg-Id")
+	ehdr := genHeader(nil, "Previous-Nats-Msg-Id", "user")
+	require_True(t, bytes.Equal(hdr, ehdr))
+}
+
+func TestSetHeaderOrderingPrefix(t *testing.T) {
+	for _, space := range []bool{true, false} {
+		title := "Normal"
+		if !space {
+			title = "Trimmed"
+		}
+		t.Run(title, func(t *testing.T) {
+			hdr := []byte("NATS/1.0\r\n\r\n")
+
+			// These headers share the same prefix, the longer subject
+			// must not invalidate the existence of the shorter one.
+			hdr = genHeader(hdr, JSExpectedLastSubjSeqSubj, "foo")
+			hdr = genHeader(hdr, JSExpectedLastSubjSeq, "24")
+			if !space {
+				hdr = bytes.ReplaceAll(hdr, []byte(" "), nil)
+			}
+
+			hdr = setHeader(JSExpectedLastSubjSeq, "12", hdr)
+			ehdr := genHeader(nil, JSExpectedLastSubjSeqSubj, "foo")
+			ehdr = genHeader(ehdr, JSExpectedLastSubjSeq, "12")
+			if !space {
+				ehdr = bytes.ReplaceAll(ehdr, []byte(" "), nil)
+			}
+			require_True(t, bytes.Equal(hdr, ehdr))
+		})
+	}
+}
+
+func TestSetHeaderOrderingSuffix(t *testing.T) {
+	for _, space := range []bool{true, false} {
+		title := "Normal"
+		if !space {
+			title = "Trimmed"
+		}
+		t.Run(title, func(t *testing.T) {
+			hdr := []byte("NATS/1.0\r\n\r\n")
+
+			// These headers share the same suffix, the longer subject
+			// must not invalidate the existence of the shorter one.
+			hdr = genHeader(hdr, "Previous-Nats-Msg-Id", "user")
+			hdr = genHeader(hdr, "Nats-Msg-Id", "control")
+			if !space {
+				hdr = bytes.ReplaceAll(hdr, []byte(" "), nil)
+			}
+
+			hdr = setHeader("Nats-Msg-Id", "other", hdr)
+			ehdr := genHeader(nil, "Previous-Nats-Msg-Id", "user")
+			ehdr = genHeader(ehdr, "Nats-Msg-Id", "other")
+			if !space {
+				ehdr = bytes.ReplaceAll(ehdr, []byte(" "), nil)
+			}
+			require_True(t, bytes.Equal(hdr, ehdr))
+		})
+	}
 }
 
 func TestInProcessAllowedConnectionType(t *testing.T) {

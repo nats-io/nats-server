@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4257,7 +4258,7 @@ func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tra
 
 // Will remove a header if present.
 func removeHeaderIfPresent(hdr []byte, key string) []byte {
-	start := bytes.Index(hdr, []byte(key))
+	start := getHeaderKeyIndex(key, hdr)
 	// key can't be first and we want to check that it is preceded by a '\n'
 	if start < 1 || hdr[start-1] != '\n' {
 		return hdr
@@ -4375,22 +4376,13 @@ func sliceHeader(key string, hdr []byte) []byte {
 	if len(hdr) == 0 {
 		return nil
 	}
-	index := bytes.Index(hdr, stringToBytes(key+":"))
-	hdrLen := len(hdr)
-	// Check that we have enough characters, this will handle the -1 case of the key not
-	// being found and will also handle not having enough characters for trailing CRLF.
-	if index < 2 {
+	index := getHeaderKeyIndex(key, hdr)
+	if index == -1 {
 		return nil
 	}
-	// There should be a terminating CRLF.
-	if index >= hdrLen-1 || hdr[index-1] != '\n' || hdr[index-2] != '\r' {
-		return nil
-	}
-	// The key should be immediately followed by a : separator.
+	// Skip over the key and the : separator.
 	index += len(key) + 1
-	if index >= hdrLen || hdr[index-1] != ':' {
-		return nil
-	}
+	hdrLen := len(hdr)
 	// Skip over whitespace before the value.
 	for index < hdrLen && hdr[index] == ' ' {
 		index++
@@ -4404,6 +4396,65 @@ func sliceHeader(key string, hdr []byte) []byte {
 		index++
 	}
 	return hdr[start:index:index]
+}
+
+// getHeaderKeyIndex returns an index into the header slice for the given key.
+// Returns -1 if not found.
+func getHeaderKeyIndex(key string, hdr []byte) int {
+	if len(hdr) == 0 {
+		return -1
+	}
+	bkey := stringToBytes(key)
+	keyLen, hdrLen := len(key), len(hdr)
+	var offset int
+	for {
+		index := bytes.Index(hdr[offset:], bkey)
+		// Check that we have enough characters, this will handle the -1 case of the key not
+		// being found and will also handle not having enough characters for trailing CRLF.
+		if index < 2 {
+			return -1
+		}
+		index += offset
+		// There should be a terminating CRLF.
+		if index >= hdrLen-1 || hdr[index-1] != '\n' || hdr[index-2] != '\r' {
+			offset = index + keyLen
+			continue
+		}
+		// The key should be immediately followed by a : separator.
+		if index+keyLen >= hdrLen {
+			return -1
+		}
+		if hdr[index+keyLen] != ':' {
+			offset = index + keyLen
+			continue
+		}
+		return index
+	}
+}
+
+func setHeader(key, val string, hdr []byte) []byte {
+	start := getHeaderKeyIndex(key, hdr)
+	if start >= 0 {
+		valStart := start + len(key) + 1
+		// Preserve single whitespace if used.
+		hdrLen := len(hdr)
+		if valStart < hdrLen && hdr[valStart] == ' ' {
+			valStart++
+		}
+		valEnd := bytes.Index(hdr[valStart:], []byte("\r"))
+		if valEnd < 0 {
+			return hdr // malformed headers
+		}
+		valEnd += valStart
+		suffix := slices.Clone(hdr[valEnd:])
+		newHdr := append(hdr[:valStart], val...)
+		return append(newHdr, suffix...)
+	}
+	if len(hdr) > 0 && bytes.HasSuffix(hdr, []byte("\r\n")) {
+		hdr = hdr[:len(hdr)-2]
+		val += "\r\n"
+	}
+	return fmt.Appendf(hdr, "%s: %s\r\n", key, val)
 }
 
 // For bytes.HasPrefix below.
