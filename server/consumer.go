@@ -4519,7 +4519,8 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 	var pre *waitingRequest
 	for wr := wq.head; wr != nil; {
 		// Check expiration.
-		if (eos && wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
+		expires := !wr.expires.IsZero() && now.After(wr.expires)
+		if (eos && wr.noWait) || expires {
 			rdWait := o.replicateDeliveries()
 			if rdWait {
 				// Check if we need to send the timeout after pending replicated deliveries, or can do so immediately.
@@ -4528,13 +4529,26 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 				} else {
 					wd.pn, wd.pb = wr.n, wr.b
 				}
+				// If we still need to wait for replicated deliveries, remove from waiting list.
+				if rdWait {
+					wr = remove(pre, wr)
+					continue
+				}
 			}
-			if !rdWait {
+			// Normally it's a timeout.
+			if expires || !wr.noWait || wr.d > 0 {
 				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				wr = remove(pre, wr)
+				continue
+			} else if wr.expires.IsZero() {
+				// But if we're NoWait without expiry, we've reached the end of the stream, and we've not delivered any messages.
+				// Return no messages instead, which is the same as if we'd rejected the pull request initially.
+				hdr := fmt.Appendf(nil, "NATS/1.0 404 No Messages\r\n\r\n")
+				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				wr = remove(pre, wr)
+				continue
 			}
-			wr = remove(pre, wr)
-			continue
 		}
 		// Now check interest.
 		interest := wr.acc.sl.HasInterest(wr.interest)
