@@ -4536,12 +4536,12 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 				}
 			}
 			// Normally it's a timeout.
-			if expires || !wr.noWait || wr.d > 0 {
+			if expires {
 				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 				wr = remove(pre, wr)
 				continue
-			} else if wr.expires.IsZero() {
+			} else if wr.expires.IsZero() || wr.d > 0 {
 				// But if we're NoWait without expiry, we've reached the end of the stream, and we've not delivered any messages.
 				// Return no messages instead, which is the same as if we'd rejected the pull request initially.
 				hdr := fmt.Appendf(nil, "NATS/1.0 404 No Messages\r\n\r\n")
