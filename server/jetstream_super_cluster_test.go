@@ -4411,7 +4411,7 @@ func TestJetStreamSuperClusterMixedModeSwitchToInterestOnlyOperatorConfig(t *tes
 			if gw.Name == opts.Gateway.Name {
 				continue
 			}
-			checkGWInterestOnlyMode(t, s, gw.Name, apub)
+			checkGWInterestOnlyModeOrNotPresent(t, s, gw.Name, apub, true)
 		}
 	}
 	s = sc.serverByName(si.Cluster.Leader)
