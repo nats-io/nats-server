@@ -44,6 +44,8 @@ import (
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 
+	"expvar"
+
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/logger"
@@ -3017,6 +3019,7 @@ const (
 	HealthzPath      = "/healthz"
 	IPQueuesPath     = "/ipqueuesz"
 	RaftzPath        = "/raftz"
+	ExpvarzPath      = "/debug/vars"
 )
 
 func (s *Server) basePath(p string) string {
@@ -3135,6 +3138,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(IPQueuesPath), s.HandleIPQueuesz)
 	// Raftz
 	mux.HandleFunc(s.basePath(RaftzPath), s.HandleRaftz)
+	// Expvarz
+	mux.Handle(s.basePath(ExpvarzPath), expvar.Handler())
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
