@@ -353,6 +353,7 @@ type Options struct {
 	Username                   string        `json:"-"`
 	Password                   string        `json:"-"`
 	ProxyRequired              bool          `json:"-"`
+	ProxyProtocol              bool          `json:"-"`
 	Authorization              string        `json:"-"`
 	AuthCallout                *AuthCallout  `json:"-"`
 	PingInterval               time.Duration `json:"ping_interval"`
@@ -1253,6 +1254,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.MaxPayload = int32(v.(int64))
 	case "max_pending":
 		o.MaxPending = v.(int64)
+	case "proxy_protocol":
+		o.ProxyProtocol = v.(bool)
 	case "max_connections", "max_conn":
 		o.MaxConn = int(v.(int64))
 	case "max_traced_msg_len":
