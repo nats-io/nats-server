@@ -33,13 +33,13 @@ jobs:
 
       - name: Install cosign
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit d7543c93d881b35a8faa02e8e3605f69b7a1ce62 = tag v3.10.0
-        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62
+        # Commit faadad0cce49287aee09b3a48701e75088a2c6ad = tag v4.0.0
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
 
       - name: Install syft
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit f8bdd1d8ac5e901a77a92f111440fdb1b593736b = tag v0.20.6
-        uses: anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b
+        # Commit 8e94d75ddd33f69f691467e42275782e4bfefe84 = tag v0.20.9
+        uses: anchore/sbom-action/download-syft@8e94d75ddd33f69f691467e42275782e4bfefe84
         with:
           syft-version: "v1.27.1"
 
