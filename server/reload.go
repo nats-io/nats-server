@@ -834,6 +834,15 @@ func (o *mqttStreamReplicasReload) Apply(s *Server) {
 	s.Noticef("Reloaded: MQTT stream_replicas = %v", o.newValue)
 }
 
+type mqttStreamMemoryStorageReload struct {
+	noopOption
+	newValue bool
+}
+
+func (o *mqttStreamMemoryStorageReload) Apply(s *Server) {
+	s.Noticef("Reloaded: MQTT stream_memory_storage = %v", o.newValue)
+}
+
 type mqttConsumerReplicasReload struct {
 	noopOption
 	newValue int
@@ -1675,6 +1684,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &mqttAckWaitReload{newValue: newValue.(MQTTOpts).AckWait})
 			diffOpts = append(diffOpts, &mqttMaxAckPendingReload{newValue: newValue.(MQTTOpts).MaxAckPending})
 			diffOpts = append(diffOpts, &mqttStreamReplicasReload{newValue: newValue.(MQTTOpts).StreamReplicas})
+			diffOpts = append(diffOpts, &mqttStreamMemoryStorageReload{newValue: newValue.(MQTTOpts).StreamMemoryStorage})
 			diffOpts = append(diffOpts, &mqttConsumerReplicasReload{newValue: newValue.(MQTTOpts).ConsumerReplicas})
 			diffOpts = append(diffOpts, &mqttConsumerMemoryStorageReload{newValue: newValue.(MQTTOpts).ConsumerMemoryStorage})
 			diffOpts = append(diffOpts, &mqttInactiveThresholdReload{newValue: newValue.(MQTTOpts).ConsumerInactiveThreshold})
@@ -1683,9 +1693,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// we only fail reload if some that we don't support are changed.
 			tmpOld := oldValue.(MQTTOpts)
 			tmpNew := newValue.(MQTTOpts)
-			tmpOld.TLSConfig, tmpOld.tlsConfigOpts, tmpOld.AckWait, tmpOld.MaxAckPending, tmpOld.StreamReplicas, tmpOld.ConsumerReplicas, tmpOld.ConsumerMemoryStorage = nil, nil, 0, 0, 0, 0, false
+			tmpOld.TLSConfig, tmpOld.tlsConfigOpts, tmpOld.AckWait, tmpOld.MaxAckPending, tmpOld.StreamReplicas, tmpOld.StreamMemoryStorage, tmpOld.ConsumerReplicas, tmpOld.ConsumerMemoryStorage = nil, nil, 0, 0, 0, false, 0, false
 			tmpOld.ConsumerInactiveThreshold = 0
-			tmpNew.TLSConfig, tmpNew.tlsConfigOpts, tmpNew.AckWait, tmpNew.MaxAckPending, tmpNew.StreamReplicas, tmpNew.ConsumerReplicas, tmpNew.ConsumerMemoryStorage = nil, nil, 0, 0, 0, 0, false
+			tmpNew.TLSConfig, tmpNew.tlsConfigOpts, tmpNew.AckWait, tmpNew.MaxAckPending, tmpNew.StreamReplicas, tmpNew.StreamMemoryStorage, tmpNew.ConsumerReplicas, tmpNew.ConsumerMemoryStorage = nil, nil, 0, 0, 0, false, 0, false
 			tmpNew.ConsumerInactiveThreshold = 0
 
 			if !reflect.DeepEqual(tmpOld, tmpNew) {

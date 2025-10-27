@@ -1167,6 +1167,12 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	if replicas <= 0 {
 		replicas = s.mqttDetermineReplicas()
 	}
+
+	streamStorage := FileStorage
+	if opts.MQTT.StreamMemoryStorage {
+		streamStorage = MemoryStorage
+	}
+
 	qname := fmt.Sprintf("[ACC:%s] MQTT ", accName)
 	as := &mqttAccountSessionManager{
 		sessions:   make(map[string]*mqttSession),
@@ -1316,7 +1322,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		cfg := &StreamConfig{
 			Name:       mqttSessStreamName,
 			Subjects:   []string{mqttSessStreamSubjectPrefix + as.domainTk + ">"},
-			Storage:    FileStorage,
+			Storage:    streamStorage,
 			Retention:  LimitsPolicy,
 			Replicas:   replicas,
 			MaxMsgsPer: 1,
@@ -1335,7 +1341,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		cfg := &StreamConfig{
 			Name:      mqttStreamName,
 			Subjects:  []string{mqttStreamSubjectPrefix + ">"},
-			Storage:   FileStorage,
+			Storage:   streamStorage,
 			Retention: InterestPolicy,
 			Replicas:  replicas,
 		}
@@ -1354,7 +1360,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		cfg := &StreamConfig{
 			Name:          mqttQoS2IncomingMsgsStreamName,
 			Subjects:      []string{mqttQoS2IncomingMsgsStreamSubjectPrefix + ">"},
-			Storage:       FileStorage,
+			Storage:       streamStorage,
 			Retention:     LimitsPolicy,
 			Discard:       DiscardNew,
 			MaxMsgsPer:    1,
@@ -1375,7 +1381,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		cfg := &StreamConfig{
 			Name:      mqttOutStreamName,
 			Subjects:  []string{mqttOutSubjectPrefix + ">"},
-			Storage:   FileStorage,
+			Storage:   streamStorage,
 			Retention: InterestPolicy,
 			Replicas:  replicas,
 		}
@@ -1396,7 +1402,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		cfg := &StreamConfig{
 			Name:       mqttRetainedMsgsStreamName,
 			Subjects:   []string{mqttRetainedMsgsStreamSubject + ">"},
-			Storage:    FileStorage,
+			Storage:    streamStorage,
 			Retention:  LimitsPolicy,
 			Replicas:   replicas,
 			MaxMsgsPer: 1,

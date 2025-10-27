@@ -623,6 +623,10 @@ type MQTTOpts struct {
 	// count is not modified. Use the NATS CLI to update the count if desired.
 	StreamReplicas int
 
+	// Indicate if the streams should be created with memory storage.
+	// Note that existing streams are not modified.
+	StreamMemoryStorage bool
+
 	// Number of replicas for MQTT consumers.
 	// Negative or 0 value means that there is no override and the consumer
 	// will have the same replica factor that the stream it belongs to.
