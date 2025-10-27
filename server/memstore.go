@@ -1802,30 +1802,82 @@ func (ms *memStore) loadNextMsgLocked(filter string, wc bool, start uint64, smp 
 }
 
 // Will load the next non-deleted msg starting at the start sequence and walking backwards.
-func (ms *memStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err error) {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
+func (ms *memStore) LoadPrevMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	return ms.loadPrevMsgLocked(filter, wc, start, smp)
+}
 
-	if ms.msgs == nil {
-		return nil, ErrStoreClosed
-	}
-	if ms.state.Msgs == 0 || start < ms.state.FirstSeq {
-		return nil, ErrStoreEOF
-	}
+func (ms *memStore) loadPrevMsgLocked(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
 	if start > ms.state.LastSeq {
 		start = ms.state.LastSeq
 	}
 
-	for seq := start; seq >= ms.state.FirstSeq; seq-- {
-		if sm, ok := ms.msgs[seq]; ok {
+	// If before the beginning no results.
+	if start < ms.state.FirstSeq || ms.state.Msgs == 0 {
+		return nil, ms.state.FirstSeq, ErrStoreEOF
+	}
+
+	if filter == _EMPTY_ {
+		filter = fwcs
+	}
+	isAll := filter == fwcs
+
+	// Skip scan of ms.fss if number of messages in the block are less than
+	// 1/2 the number of subjects in ms.fss. Or we have a wc and lots of fss entries.
+	const linearScanMaxFSS = 256
+	doLinearScan := isAll || 2*int(start-ms.state.FirstSeq) < ms.fss.Size() || (wc && ms.fss.Size() > linearScanMaxFSS)
+
+	// Initial setup.
+	fseq, lseq := ms.state.FirstSeq, start
+
+	if !doLinearScan {
+		subs := []string{filter}
+		if wc || isAll {
+			subs = subs[:0]
+			ms.fss.Match(stringToBytes(filter), func(subj []byte, val *SimpleState) {
+				subs = append(subs, string(subj))
+			})
+		}
+		fseq, lseq = ms.state.LastSeq, uint64(0)
+		for _, subj := range subs {
+			ss, ok := ms.fss.Find(stringToBytes(subj))
+			if !ok {
+				continue
+			}
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				ms.recalculateForSubj(subj, ss)
+			}
+			if ss.Last > lseq {
+				lseq = ss.Last
+			}
+			if ss.First < fseq {
+				fseq = ss.First
+			}
+		}
+		if lseq > start {
+			lseq = start
+		}
+	}
+
+	eq := subjectsEqual
+	if wc {
+		eq = subjectIsSubsetMatch
+	}
+
+	for nseq := lseq; nseq >= fseq; nseq-- {
+		if sm, ok := ms.msgs[nseq]; ok && (isAll || eq(sm.subj, filter)) {
 			if smp == nil {
 				smp = new(StoreMsg)
 			}
 			sm.copy(smp)
-			return smp, nil
+			return smp, nseq, nil
+		}
+		if nseq == fseq {
+			break
 		}
 	}
-	return nil, ErrStoreEOF
+	return nil, ms.state.FirstSeq, ErrStoreEOF
 }
 
 // RemoveMsg will remove the message from this store.

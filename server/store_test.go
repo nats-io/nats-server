@@ -115,6 +115,37 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 	)
 }
 
+func TestStoreMsgLoadPrevMsg(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}},
+		func(t *testing.T, fs StreamStore) {
+			// Put 1k msgs in
+			for i := 0; i < 1000; i++ {
+				subj := fmt.Sprintf("foo.%d", i%10)
+				fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+			}
+
+			var sm StoreMsg
+			var count int
+			var state StreamState
+			fs.FastState(&state)
+
+			for seq := state.LastSeq; seq > 5; seq-- {
+				var err error
+				_, seq, err = fs.LoadPrevMsg("foo.5", false, seq, &sm)
+				require_NoError(t, err)
+				require_Equal(t, sm.subj, "foo.5")
+				count++
+			}
+
+			_, _, err := fs.LoadPrevMsg("foo.5", false, 5, &sm)
+			require_Error(t, err, ErrStoreEOF)
+			require_Equal(t, count, 100)
+		},
+	)
+}
+
 func TestStoreDeleteSlice(t *testing.T) {
 	ds := DeleteSlice{2}
 	var deletes []uint64

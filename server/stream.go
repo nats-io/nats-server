@@ -4076,7 +4076,7 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 
 	var smv StoreMsg
 	for seq := state.LastSeq; seq >= state.FirstSeq; {
-		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+		sm, _, err := mset.store.LoadPrevMsg(fwcs, true, seq, &smv)
 		if err == ErrStoreEOF || err != nil {
 			break
 		}
@@ -4196,7 +4196,7 @@ func (mset *stream) startingSequenceForSources() {
 
 	var smv StoreMsg
 	for seq := state.LastSeq; ; {
-		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+		sm, _, err := mset.store.LoadPrevMsg(fwcs, true, seq, &smv)
 		if err == ErrStoreEOF || err != nil {
 			break
 		}
