@@ -3794,7 +3794,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	// If JetStream is enabled for this server we will call into configJetStream for the account
 	// regardless of enabled or disabled. It handles both cases.
 	if jsEnabled {
-		if err := s.configJetStream(a); err != nil {
+		if err := s.configJetStream(a, nil); err != nil {
 			s.Errorf("Error configuring jetstream for account [%s]: %v", tl, err.Error())
 			a.mu.Lock()
 			// Absent reload of js server cfg, this is going to be broken until js is disabled
@@ -4371,7 +4371,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 							s.Warnf("DirResolver - Error checking for JetStream support for account %q: %v", pubKey, err)
 						}
 					} else if jsa == nil {
-						if err = s.configJetStream(acc); err != nil {
+						if err = s.configJetStream(acc, nil); err != nil {
 							s.Errorf("DirResolver - Error configuring JetStream for account %q: %v", pubKey, err)
 						}
 					}
