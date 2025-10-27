@@ -2944,7 +2944,7 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 		seq, seen := ss.LastSeq, 0
 		start = time.Now()
 		for {
-			sm, err := store.LoadPrevMsg(seq, &smv)
+			sm, _, err := store.LoadPrevMsg(fwcs, true, seq, &smv)
 			if err == ErrStoreEOF {
 				break
 			}
