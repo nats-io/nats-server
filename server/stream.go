@@ -4168,7 +4168,7 @@ func (mset *stream) startingSequenceForSources() {
 	}
 
 	// For short circuiting return.
-	expected := len(mset.cfg.Sources)
+	// expected := len(mset.cfg.Sources)
 	seqs := make(map[string]uint64)
 
 	// Stamp our si seq records on the way out.
@@ -4194,33 +4194,38 @@ func (mset *stream) startingSequenceForSources() {
 		}
 	}
 
-	var smv StoreMsg
-	for seq := state.LastSeq; ; {
-		sm, _, err := mset.store.LoadPrevMsg(fwcs, true, seq, &smv)
-		if err == ErrStoreEOF || err != nil {
-			break
-		}
-		seq = sm.seq - 1
-		if len(sm.hdr) == 0 {
-			continue
-		}
-		ss := getHeader(JSStreamSource, sm.hdr)
-		if len(ss) == 0 {
-			continue
-		}
+sources:
+	for _, src := range mset.cfg.Sources {
+		subj := src.FilterSubject
+		wc := subjectHasWildcard(subj)
+		ss := mset.store.FilteredState(0, subj)
 
-		streamName, iName, sseq := streamAndSeq(bytesToString(ss))
-		if iName == _EMPTY_ { // Pre-2.10 message header means it's a match for any source using that stream name
-			for _, ssi := range mset.cfg.Sources {
-				if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
-					update(ssi.iname, sseq)
-				}
+		var sm StoreMsg
+		for seq := ss.Last; seq >= ss.First; {
+			sm, _, err := mset.store.LoadPrevMsg(subj, wc, seq, &sm)
+			if err == ErrStoreEOF || err != nil {
+				break
 			}
-		} else {
-			update(iName, sseq)
-		}
-		if len(seqs) == expected {
-			return
+			seq = sm.seq - 1
+			if len(sm.hdr) == 0 {
+				continue
+			}
+			ss := sliceHeader(JSStreamSource, sm.hdr)
+			if len(ss) == 0 {
+				continue
+			}
+			streamName, iName, sseq := streamAndSeq(bytesToString(ss))
+			if iName == _EMPTY_ { // Pre-2.10 message header means it's a match for any source using that stream name
+				for _, ssi := range mset.cfg.Sources {
+					if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
+						update(ssi.iname, sseq)
+						continue sources
+					}
+				}
+			} else {
+				update(iName, sseq)
+				continue sources
+			}
 		}
 	}
 }
