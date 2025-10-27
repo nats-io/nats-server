@@ -4074,42 +4074,47 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 		return
 	}
 
-	var smv StoreMsg
-	for seq := state.LastSeq; seq >= state.FirstSeq; {
-		sm, _, err := mset.store.LoadPrevMsg(fwcs, true, seq, &smv)
-		if err == ErrStoreEOF || err != nil {
-			break
-		}
-		seq = sm.seq - 1
-		if len(sm.hdr) == 0 {
-			continue
-		}
+sources:
+	for _, src := range mset.cfg.Sources {
+		subj := src.FilterSubject
+		wc := subjectHasWildcard(subj)
+		ss := mset.store.FilteredState(0, subj)
 
-		ss := getHeader(JSStreamSource, sm.hdr)
-		if len(ss) == 0 {
-			continue
-		}
-		streamName, indexName, sseq := streamAndSeq(bytesToString(ss))
-
-		if _, ok := iNames[indexName]; ok {
-			si := mset.sources[indexName]
-			si.sseq = sseq
-			si.dseq = 0
-			delete(iNames, indexName)
-		} else if indexName == _EMPTY_ && streamName != _EMPTY_ {
-			for iName := range iNames {
-				// TODO streamSource is a linear walk, to optimize later
-				if si := mset.sources[iName]; si != nil && streamName == si.name ||
-					(mset.streamSource(iName).External != nil && streamName == si.name+":"+getHash(mset.streamSource(iName).External.ApiPrefix)) {
-					si.sseq = sseq
-					si.dseq = 0
-					delete(iNames, iName)
-					break
+		var sm StoreMsg
+		for seq := ss.Last; seq >= ss.First; {
+			sm, _, err := mset.store.LoadPrevMsg(subj, wc, seq, &sm)
+			if err == ErrStoreEOF || err != nil {
+				break
+			}
+			seq = sm.seq - 1
+			if len(sm.hdr) == 0 {
+				continue
+			}
+			ss := sliceHeader(JSStreamSource, sm.hdr)
+			if len(ss) == 0 {
+				continue
+			}
+			streamName, iName, sseq := streamAndSeq(bytesToString(ss))
+			if _, ok := iNames[iName]; ok {
+				si := mset.sources[iName]
+				si.sseq = sseq
+				si.dseq = 0
+				delete(iNames, iName)
+			} else if iName == _EMPTY_ && streamName != _EMPTY_ {
+				for iName := range iNames {
+					// TODO streamSource is a linear walk, to optimize later
+					if si := mset.sources[iName]; si != nil && streamName == si.name ||
+						(mset.streamSource(iName).External != nil && streamName == si.name+":"+getHash(mset.streamSource(iName).External.ApiPrefix)) {
+						si.sseq = sseq
+						si.dseq = 0
+						delete(iNames, iName)
+						continue sources
+					}
 				}
 			}
-		}
-		if len(iNames) == 0 {
-			break
+			if len(iNames) == 0 {
+				return
+			}
 		}
 	}
 }
