@@ -2347,7 +2347,20 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 			// check to be consistent and future proof. but will be same domain
 			if s.sameDomain(info.Domain) {
 				s.nodeToInfo.Store(rHash,
-					nodeInfo{rn, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, nil, false, info.JetStream, false, false})
+					nodeInfo{
+						name:            rn,
+						version:         s.info.Version,
+						cluster:         s.info.Cluster,
+						domain:          info.Domain,
+						id:              id,
+						tags:            nil,
+						cfg:             nil,
+						stats:           nil,
+						offline:         false,
+						js:              info.JetStream,
+						binarySnapshots: true,
+						accountNRG:      false,
+					})
 			}
 		}
 
