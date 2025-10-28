@@ -33,6 +33,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/ocsp"
 
 	. "github.com/nats-io/nats-server/v2/internal/ocsp"
@@ -7556,4 +7557,60 @@ func TestGatewayConfigureWriteDeadline(t *testing.T) {
 	s2.forEachRemote(func(r *client) {
 		require_Equal(t, r.out.wdl, 5*time.Second)
 	})
+}
+
+func TestGatewayProcessRSubNoBlockingAccountFetch(t *testing.T) {
+	createAccountPubKey := func() string {
+		kp, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		pubkey, err := kp.PublicKey()
+		require_NoError(t, err)
+		return pubkey
+	}
+	sysPub := createAccountPubKey()
+	accPub := createAccountPubKey()
+	dir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: srv
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: cache
+			dir: '%s'
+			timeout: "2s"
+		}
+		gateway: {
+			name: "clust-B"
+			listen: 127.0.0.1:-1
+		}
+       `, ojwt, sysPub, dir)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Set up a mock gateway client.
+	c := s.createInternalAccountClient()
+	c.mu.Lock()
+	c.gw = &gateway{}
+	c.gw.outsim = &sync.Map{}
+	c.nc = &net.IPConn{}
+	c.mu.Unlock()
+
+	// Receiving a R+ should not be blocking, since we're in the gateway's readLoop.
+	start := time.Now()
+	require_NoError(t, c.processGatewayRSub(fmt.Appendf(nil, "%s subj queue 0", accPub)))
+	c.mu.Lock()
+	subs := len(c.subs)
+	c.mu.Unlock()
+	require_Len(t, subs, 1)
+	require_LessThan(t, time.Since(start), 100*time.Millisecond)
+
+	// Receiving a R- should not be blocking, since we're in the gateway's readLoop.
+	start = time.Now()
+	require_NoError(t, c.processGatewayRUnsub(fmt.Appendf(nil, "%s subj queue", accPub)))
+	c.mu.Lock()
+	subs = len(c.subs)
+	c.mu.Unlock()
+	require_Len(t, subs, 0)
+	require_LessThan(t, time.Since(start), 100*time.Millisecond)
 }

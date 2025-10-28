@@ -2426,7 +2426,8 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 
 // updateInterestForAccountOnGateway called from gateway code when processing RS+ and RS-.
 func (s *Server) updateInterestForAccountOnGateway(accName string, sub *subscription, delta int32) {
-	acc, err := s.LookupAccount(accName)
+	// Since we're in the gateway's readLoop, and we would otherwise block, don't allow fetching.
+	acc, err := s.lookupOrFetchAccount(accName, false)
 	if acc == nil || err != nil {
 		s.Debugf("No or bad account for %q, failed to update interest from gateway", accName)
 		return
