@@ -2652,9 +2652,6 @@ func (n *raft) runAsLeader() {
 		n.unsubscribe(rpsub)
 		n.Unlock()
 	}()
-
-	// To send out our initial peer state.
-	n.sendPeerState()
 	n.Unlock()
 
 	hb := time.NewTicker(hbInterval)
@@ -4627,37 +4624,19 @@ func (n *raft) switchToLeader() {
 	}
 
 	n.Lock()
+	defer n.Unlock()
 
 	n.debug("Switching to leader")
 
-	// Check if we have items pending as we are taking over.
-	sendHB := n.pindex > n.commit
-
 	n.lxfer = false
 	n.updateLeader(n.id)
-	leadChange := n.switchState(Leader)
+	n.switchState(Leader)
 
-	if leadChange {
-		// Wait for messages to be applied if we've stored more, otherwise signal immediately.
-		// It's important to wait signaling we're leader if we're not up-to-date yet, as that
-		// would mean we're in a consistent state compared with the previous leader.
-		if n.pindex > n.applied {
-			n.aflr = n.pindex
-		} else {
-			// We know we have applied all entries in our log and can signal immediately.
-			// For sanity reset applied floor back down to 0, so we aren't able to signal twice.
-			n.aflr = 0
-			if !n.leaderState.Swap(true) {
-				// Only update timestamp if leader state actually changed.
-				nowts := time.Now().UTC()
-				n.leaderSince.Store(&nowts)
-			}
-			n.updateLeadChange(true)
-		}
-	}
-	n.Unlock()
-
-	if sendHB {
-		n.sendHeartbeat()
-	}
+	// To send out our initial peer state.
+	// In our implementation this is equivalent to sending a NOOP-entry upon becoming leader.
+	// Wait for this message (and potentially more) to be applied.
+	// It's important to wait signaling we're leader if we're not up-to-date yet, as that
+	// would mean we're in a consistent state compared with the previous leader.
+	n.sendPeerState()
+	n.aflr = n.pindex
 }
