@@ -8769,6 +8769,7 @@ func (mset *stream) stateSnapshotLocked() []byte {
 		Deleted:  state.Deleted,
 	}
 	b, _ := json.Marshal(snap)
+	mset.srv.RateLimitWarnf("Stream %q: Using legacy JSON snapshot format. Snapshot length: %d bytes", mset.cfg.Name, len(b))
 	return b
 }
 
