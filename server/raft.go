@@ -2615,9 +2615,6 @@ func (n *raft) runAsLeader() {
 		n.unsubscribe(rpsub)
 		n.Unlock()
 	}()
-
-	// To send out our initial peer state.
-	n.sendPeerState()
 	n.Unlock()
 
 	hb := time.NewTicker(hbInterval)
@@ -2692,7 +2689,6 @@ func (n *raft) runAsLeader() {
 				n.stepdown(noLeader)
 				return
 			}
-			n.trackPeer(vresp.peer)
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			if voteReq, ok := n.reqs.popOne(); ok {
@@ -3056,7 +3052,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 			if lp, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
-				n.peers[newPeer] = &lps{time.Now(), 0, true}
+				n.peers[newPeer] = &lps{time.Time{}, 0, true}
 			} else {
 				// Mark as added.
 				lp.kp = true
@@ -3440,6 +3436,17 @@ func (n *raft) updateLeader(newLeader string) {
 			}
 		}
 	}
+	// Reset last seen timestamps.
+	// If we're the leader we track everyone, and don't reset.
+	// But if we're a follower we only track the leader, and reset all others.
+	if newLeader != n.id {
+		for peer, ps := range n.peers {
+			if peer == newLeader {
+				continue
+			}
+			ps.ts = time.Time{}
+		}
+	}
 }
 
 // processAppendEntry will process an appendEntry. This is called either
@@ -3530,19 +3537,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// sub, rather than a catch-up sub.
 	isNew := sub != nil && sub == n.aesub
 
-	// Track leader directly
-	if isNew && ae.leader != noLeader {
-		if ps := n.peers[ae.leader]; ps != nil {
-			ps.ts = time.Now()
-		} else {
-			n.peers[ae.leader] = &lps{time.Now(), 0, true}
-		}
-	}
-
 	// If we are/were catching up ignore old catchup subs, but only if catching up from an older server
-	// that doesn't send the leader term when catching up. We can reject old catchups from newer subs
-	// later, just by checking the append entry is on the correct term.
-	if !isNew && sub != nil && ae.lterm == 0 && (!catchingUp || sub != n.catchup.sub) {
+	// that doesn't send the leader term when catching up or if we would truncate as a result.
+	// We can reject old catchups from newer subs later, just by checking the append entry is on the correct term.
+	if !isNew && sub != nil && (ae.lterm == 0 || ae.pindex < n.pindex) && (!catchingUp || sub != n.catchup.sub) {
 		n.Unlock()
 		n.debug("AppendEntry ignoring old entry from previous catchup")
 		return
@@ -3608,6 +3606,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.writeTermVote()
 		n.resetElectionTimeout()
 		n.updateLeadChange(false)
+	}
+
+	// Track leader directly
+	// But, do so after all consistency checks so we don't track an old leader.
+	if isNew && ae.leader != noLeader && ae.leader == n.leader {
+		if ps := n.peers[ae.leader]; ps != nil {
+			ps.ts = time.Now()
+		} else {
+			n.peers[ae.leader] = &lps{time.Now(), 0, true}
+		}
 	}
 
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
@@ -3776,10 +3784,8 @@ CONTINUE:
 		case EntryAddPeer:
 			if newPeer := string(e.Data); len(newPeer) == idLen {
 				// Track directly, but wait for commit to be official
-				if ps := n.peers[newPeer]; ps != nil {
-					ps.ts = time.Now()
-				} else {
-					n.peers[newPeer] = &lps{time.Now(), 0, false}
+				if _, ok := n.peers[newPeer]; !ok {
+					n.peers[newPeer] = &lps{time.Time{}, 0, false}
 				}
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
@@ -4316,10 +4322,6 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 	n.debug("Received a voteRequest %+v", vr)
 
-	if err := n.trackPeer(vr.candidate); err != nil {
-		return err
-	}
-
 	n.Lock()
 
 	vresp := &voteResponse{n.term, n.id, false}
@@ -4544,37 +4546,19 @@ func (n *raft) switchToLeader() {
 	}
 
 	n.Lock()
+	defer n.Unlock()
 
 	n.debug("Switching to leader")
 
-	// Check if we have items pending as we are taking over.
-	sendHB := n.pindex > n.commit
-
 	n.lxfer = false
 	n.updateLeader(n.id)
-	leadChange := n.switchState(Leader)
+	n.switchState(Leader)
 
-	if leadChange {
-		// Wait for messages to be applied if we've stored more, otherwise signal immediately.
-		// It's important to wait signaling we're leader if we're not up-to-date yet, as that
-		// would mean we're in a consistent state compared with the previous leader.
-		if n.pindex > n.applied {
-			n.aflr = n.pindex
-		} else {
-			// We know we have applied all entries in our log and can signal immediately.
-			// For sanity reset applied floor back down to 0, so we aren't able to signal twice.
-			n.aflr = 0
-			if !n.leaderState.Swap(true) {
-				// Only update timestamp if leader state actually changed.
-				nowts := time.Now().UTC()
-				n.leaderSince.Store(&nowts)
-			}
-			n.updateLeadChange(true)
-		}
-	}
-	n.Unlock()
-
-	if sendHB {
-		n.sendHeartbeat()
-	}
+	// To send out our initial peer state.
+	// In our implementation this is equivalent to sending a NOOP-entry upon becoming leader.
+	// Wait for this message (and potentially more) to be applied.
+	// It's important to wait signaling we're leader if we're not up-to-date yet, as that
+	// would mean we're in a consistent state compared with the previous leader.
+	n.sendPeerState()
+	n.aflr = n.pindex
 }

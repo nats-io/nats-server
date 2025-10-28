@@ -880,6 +880,9 @@ func (js *jetStream) setupMetaGroup() error {
 		}
 		if cfg.Observer {
 			s.Noticef("Turning JetStream metadata controller Observer Mode on")
+			s.Noticef("In cases where the JetStream domain is not intended to be extended through a SYS account leaf node connection")
+			s.Noticef("and waiting for leader election until first contact is not acceptable,")
+			s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
 		}
 	} else {
 		s.Noticef("JetStream cluster recovering state")
@@ -893,7 +896,7 @@ func (js *jetStream) setupMetaGroup() error {
 				cfg.Observer = false
 			case extUndetermined:
 				s.Noticef("Turning JetStream metadata controller Observer Mode on - no previous contact")
-				s.Noticef("In cases where JetStream will not be extended")
+				s.Noticef("In cases where the JetStream domain is not intended to be extended through a SYS account leaf node connection")
 				s.Noticef("and waiting for leader election until first contact is not acceptable,")
 				s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
 			}
@@ -1325,13 +1328,17 @@ func (js *jetStream) monitorCluster() {
 	js.setMetaRecovering()
 
 	// Snapshotting function.
-	doSnapshot := func() {
+	doSnapshot := func(force bool) {
 		// Suppress during recovery.
 		if js.isMetaRecovering() {
 			return
 		}
-		// For the meta layer we want to snapshot when asked if we need one or have any entries that we can compact.
-		if ne, _ := n.Size(); ne > 0 || n.NeedSnapshot() {
+		// Look up what the threshold is for compaction. Re-reading from config here as it is reloadable.
+		js.srv.optsMu.RLock()
+		thresh := js.srv.opts.JetStreamMetaCompact
+		js.srv.optsMu.RUnlock()
+		// For the meta layer we want to snapshot when over the above threshold (which could be 0 by default).
+		if ne, _ := n.Size(); force || ne > thresh || n.NeedSnapshot() {
 			snap, err := js.metaSnapshot()
 			if err != nil {
 				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
@@ -1360,15 +1367,15 @@ func (js *jetStream) monitorCluster() {
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
-			doSnapshot()
+			doSnapshot(false)
 			return
 		case <-rqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
-			doSnapshot()
+			doSnapshot(false)
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
-			doSnapshot()
+			doSnapshot(false)
 			// Return the signal back since shutdown will be waiting.
 			close(qch)
 			return
@@ -1404,6 +1411,8 @@ func (js *jetStream) monitorCluster() {
 					// Clear.
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
+					// Snapshot now so we start with freshly compacted log.
+					doSnapshot(true)
 					oc = time.AfterFunc(30*time.Second, js.checkForOrphans)
 					// Do a health check here as well.
 					go checkHealth()
@@ -1416,9 +1425,9 @@ func (js *jetStream) monitorCluster() {
 						_, nb = n.Applied(ce.Index)
 					}
 					if js.hasPeerEntries(ce.Entries) || (didSnap && !isLeader) {
-						doSnapshot()
+						doSnapshot(true)
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
-						doSnapshot()
+						doSnapshot(false)
 					}
 				} else {
 					s.Warnf("Error applying JetStream cluster entries: %v", err)
@@ -1434,11 +1443,11 @@ func (js *jetStream) monitorCluster() {
 				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
 				// Install a snapshot as we become leader.
 				js.checkClusterSize()
-				doSnapshot()
+				doSnapshot(false)
 			}
 
 		case <-t.C:
-			doSnapshot()
+			doSnapshot(false)
 			// Periodically check the cluster size.
 			if n.Leader() {
 				js.checkClusterSize()
@@ -3149,7 +3158,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Messages to be skipped have no subject or timestamp or msg or hdr.
 				if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
 					// Skip and update our lseq.
-					last := mset.store.SkipMsg()
+					last, _ := mset.store.SkipMsg(0)
 					mset.mu.Lock()
 					mset.setLastSeq(last)
 					mset.clearAllPreAcks(last)
@@ -9165,7 +9174,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	// Messages to be skipped have no subject or timestamp.
 	// TODO(dlc) - formalize with skipMsgOp
 	if subj == _EMPTY_ && ts == 0 {
-		if lseq := mset.store.SkipMsg(); lseq != seq {
+		if _, err = mset.store.SkipMsg(seq); err != nil {
 			return 0, errCatchupWrongSeqForSkip
 		}
 	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl); err != nil {

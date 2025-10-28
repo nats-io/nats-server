@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -41,6 +42,8 @@ import (
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
+
+	"expvar"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
@@ -670,8 +673,12 @@ func NewServer(opts *Options) (*Server, error) {
 	pub, _ := kp.PublicKey()
 
 	// Create an xkey for encrypting messages from this server.
-	xkp, _ := nkeys.CreateCurveKeys()
-	xpub, _ := xkp.PublicKey()
+	var xkp nkeys.KeyPair
+	var xpub string
+	if !fips140.Enabled() {
+		xkp, _ = nkeys.CreateCurveKeys()
+		xpub, _ = xkp.PublicKey()
+	}
 
 	serverName := pub
 	if opts.ServerName != _EMPTY_ {
@@ -778,15 +785,18 @@ func NewServer(opts *Options) (*Server, error) {
 	if opts.JetStream {
 		ourNode := getHash(serverName)
 		s.nodeToInfo.Store(ourNode, nodeInfo{
-			serverName,
-			VERSION,
-			opts.Cluster.Name,
-			opts.JetStreamDomain,
-			info.ID,
-			opts.Tags,
-			&JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
-			nil,
-			false, true, true, true,
+			name:            serverName,
+			version:         VERSION,
+			cluster:         opts.Cluster.Name,
+			domain:          opts.JetStreamDomain,
+			id:              info.ID,
+			tags:            opts.Tags,
+			cfg:             &JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
+			stats:           nil,
+			offline:         false,
+			js:              true,
+			binarySnapshots: true,
+			accountNRG:      true,
 		})
 	}
 
@@ -2950,6 +2960,7 @@ const (
 	HealthzPath      = "/healthz"
 	IPQueuesPath     = "/ipqueuesz"
 	RaftzPath        = "/raftz"
+	ExpvarzPath      = "/debug/vars"
 )
 
 func (s *Server) basePath(p string) string {
@@ -3068,6 +3079,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(IPQueuesPath), s.HandleIPQueuesz)
 	// Raftz
 	mux.HandleFunc(s.basePath(RaftzPath), s.HandleRaftz)
+	// Expvarz
+	mux.Handle(s.basePath(ExpvarzPath), expvar.Handler())
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the

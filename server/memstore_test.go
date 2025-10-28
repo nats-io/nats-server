@@ -1349,7 +1349,7 @@ func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesScan(b *testing.B) {
 	msg := []byte("abc")
 	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 	for i := 1; i <= 1_000_000; i++ {
-		ms.SkipMsg()
+		ms.SkipMsg(0)
 	}
 	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 
@@ -1376,7 +1376,7 @@ func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesExclude(b *testing.B) {
 	msg := []byte("abc")
 	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 	for i := 1; i <= 1_000_000; i++ {
-		ms.SkipMsg()
+		ms.SkipMsg(0)
 	}
 	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 

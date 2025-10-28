@@ -15,6 +15,7 @@ package server
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -342,6 +343,7 @@ type Options struct {
 	JetStreamTpm               JSTpmOpts
 	JetStreamMaxCatchup        int64
 	JetStreamRequestQueueLimit int64
+	JetStreamMetaCompact       uint64
 	StreamMaxBufferedMsgs      int               `json:"-"`
 	StreamMaxBufferedSize      int64             `json:"-"`
 	StoreDir                   string            `json:"-"`
@@ -2349,6 +2351,9 @@ func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
 func setJetStreamEkCipher(opts *Options, mv interface{}, tk token) error {
 	switch strings.ToLower(mv.(string)) {
 	case "chacha", "chachapoly":
+		if fips140.Enabled() {
+			return &configErr{tk, fmt.Sprintf("Cipher type %q cannot be used in FIPS-140 mode", mv)}
+		}
 		opts.JetStreamCipher = ChaCha
 	case "aes":
 		opts.JetStreamCipher = AES
@@ -2464,6 +2469,12 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				opts.JetStreamRequestQueueLimit = lim
+			case "meta_compact":
+				thres, ok := mv.(int64)
+				if !ok || thres < 0 {
+					return &configErr{tk, fmt.Sprintf("Expected an absolute size for %q, got %v", mk, mv)}
+				}
+				opts.JetStreamMetaCompact = uint64(thres)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -4186,6 +4197,10 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 			}
 			auth.defaultPermissions = permissions
 		case "auth_callout", "auth_hook":
+			if fips140.Enabled() {
+				*errors = append(*errors, fmt.Errorf("'auth_callout' cannot be configured in FIPS-140 mode"))
+				continue
+			}
 			ac, err := parseAuthCallout(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
