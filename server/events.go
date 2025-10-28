@@ -1735,18 +1735,18 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 	node := getHash(si.Name)
 	accountNRG := si.AccountNRG()
 	oldInfo, _ := s.nodeToInfo.Swap(node, nodeInfo{
-		si.Name,
-		si.Version,
-		si.Cluster,
-		si.Domain,
-		si.ID,
-		si.Tags,
-		cfg,
-		stats,
-		false,
-		si.JetStreamEnabled(),
-		si.BinaryStreamSnapshot(),
-		accountNRG,
+		name:            si.Name,
+		version:         si.Version,
+		cluster:         si.Cluster,
+		domain:          si.Domain,
+		id:              si.ID,
+		tags:            si.Tags,
+		cfg:             cfg,
+		stats:           stats,
+		offline:         false,
+		js:              si.JetStreamEnabled(),
+		binarySnapshots: si.BinaryStreamSnapshot(),
+		accountNRG:      accountNRG,
 	})
 	if oldInfo == nil || accountNRG != oldInfo.(nodeInfo).accountNRG {
 		// One of the servers we received statsz from changed its mind about
@@ -1789,18 +1789,18 @@ func (s *Server) processNewServer(si *ServerInfo) {
 		// Only update if non-existent
 		if _, ok := s.nodeToInfo.Load(node); !ok {
 			s.nodeToInfo.Store(node, nodeInfo{
-				si.Name,
-				si.Version,
-				si.Cluster,
-				si.Domain,
-				si.ID,
-				si.Tags,
-				nil,
-				nil,
-				false,
-				si.JetStreamEnabled(),
-				si.BinaryStreamSnapshot(),
-				si.AccountNRG(),
+				name:            si.Name,
+				version:         si.Version,
+				cluster:         si.Cluster,
+				domain:          si.Domain,
+				id:              si.ID,
+				tags:            si.Tags,
+				cfg:             nil,
+				stats:           nil,
+				offline:         false,
+				js:              si.JetStreamEnabled(),
+				binarySnapshots: si.BinaryStreamSnapshot(),
+				accountNRG:      si.AccountNRG(),
 			})
 		}
 	}
