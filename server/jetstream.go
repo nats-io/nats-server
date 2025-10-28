@@ -1520,7 +1520,10 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				if commitEob && seq == state.LastSeq {
 					hdr = genHeader(hdr, JSBatchCommit, "1")
 				}
-				mset.processJetStreamMsg(sm.subj, _EMPTY_, hdr, sm.msg, 0, 0, nil, false, true)
+				var hdrIdx *jsHdrIndex
+				hdr, hdrIdx = indexJsHdr(hdr)
+				mset.processJetStreamMsg(sm.subj, _EMPTY_, hdr, hdrIdx, sm.msg, 0, 0, nil, false, true)
+				hdrIdx.returnToPool()
 			}
 			store.Delete(true)
 		SKIP:
