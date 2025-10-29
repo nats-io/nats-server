@@ -11658,6 +11658,7 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
 	o.state.Delivered.Stream = sseq
+	o.state.AckFloor.Stream = sseq
 	buf, err := o.encodeState()
 	o.mu.Unlock()
 	if err != nil {
@@ -11680,6 +11681,14 @@ func (o *consumerFileStore) UpdateStarting(sseq uint64) {
 	}
 	// Make sure we flush to disk.
 	o.kickFlusher()
+}
+
+// Reset all values in the store, and reset the starting sequence.
+func (o *consumerFileStore) Reset(sseq uint64) error {
+	o.mu.Lock()
+	o.state = ConsumerState{}
+	o.mu.Unlock()
+	return o.SetStarting(sseq)
 }
 
 // HasState returns if this store has a recorded state.
