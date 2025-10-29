@@ -25,7 +25,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"io/fs"
 	"math"
@@ -194,7 +193,7 @@ type fileStore struct {
 	psim        *stree.SubjectTree[psi]
 	tsl         int
 	adml        int
-	hh          hash.Hash64
+	hh          *highwayhash.Digest64
 	qch         chan struct{}
 	fsld        chan struct{}
 	cmu         sync.RWMutex
@@ -239,7 +238,7 @@ type msgBlock struct {
 	lrts       int64
 	lsts       int64
 	llseq      uint64
-	hh         hash.Hash64
+	hh         *highwayhash.Digest64
 	ecache     elastic.Pointer[cache]
 	cache      *cache
 	cloads     uint64
@@ -7664,7 +7663,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	buf := mb.cache.buf[li:]
 
 	// We use the high bit to denote we have already checked the checksum.
-	var hh hash.Hash64
+	var hh *highwayhash.Digest64
 	if !hashChecked {
 		hh = mb.hh // This will force the hash check in msgFromBuf.
 	}
@@ -7763,7 +7762,7 @@ func (fs *fileStore) msgForSeqLocked(seq uint64, sm *StoreMsg, needFSLock bool) 
 // Internal function to return msg parts from a raw buffer.
 // Raw buffer will be copied into sm.
 // Lock should be held.
-func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*StoreMsg, error) {
+func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh *highwayhash.Digest64) (*StoreMsg, error) {
 	return mb.msgFromBufEx(buf, sm, hh, true)
 }
 
@@ -7771,14 +7770,14 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 // Raw buffer will NOT be copied into sm.
 // Only use for internal use, any message that is passed to upper layers should use mb.msgFromBuf.
 // Lock should be held.
-func (mb *msgBlock) msgFromBufNoCopy(buf []byte, sm *StoreMsg, hh hash.Hash64) (*StoreMsg, error) {
+func (mb *msgBlock) msgFromBufNoCopy(buf []byte, sm *StoreMsg, hh *highwayhash.Digest64) (*StoreMsg, error) {
 	return mb.msgFromBufEx(buf, sm, hh, false)
 }
 
 // Internal function to return msg parts from a raw buffer.
 // copy boolean will determine if we make a copy or not.
 // Lock should be held.
-func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCopy bool) (*StoreMsg, error) {
+func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Digest64, doCopy bool) (*StoreMsg, error) {
 	if len(buf) < emptyRecordLen {
 		return nil, errBadMsg{mb.mfn, "record too short"}
 	}
@@ -10609,7 +10608,7 @@ type consumerFileStore struct {
 	name    string
 	odir    string
 	ifn     string
-	hh      hash.Hash64
+	hh      *highwayhash.Digest64
 	state   ConsumerState
 	fch     chan struct{}
 	qch     chan struct{}
@@ -11671,7 +11670,7 @@ func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
 // Deprecated: stream templates are deprecated and will be removed in a future version.
 type templateFileStore struct {
 	dir string
-	hh  hash.Hash64
+	hh  *highwayhash.Digest64
 }
 
 // Deprecated: stream templates are deprecated and will be removed in a future version.

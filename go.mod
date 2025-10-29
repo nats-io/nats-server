@@ -18,3 +18,5 @@ require (
 	golang.org/x/sys v0.37.0
 	golang.org/x/time v0.14.0
 )
+
+replace github.com/minio/highwayhash => github.com/neilalexander/highwayhash v0.0.0-20251029150140-b7066a097dc0
