@@ -8765,6 +8765,13 @@ func (mset *stream) stateSnapshotLocked() []byte {
 	}
 
 	// Older v1 version with deleted as a sorted []uint64.
+	// For a stream with millions or billions of interior deletes, this will be huge.
+	// Now that all server versions 2.10.+ support binary snapshots, we should never fall back.
+	assert.Unreachable("Legacy JSON stream snapshot used", map[string]any{
+		"stream":  mset.cfg.Name,
+		"account": mset.acc.Name,
+	})
+
 	state := mset.store.State()
 	snap := &streamSnapshot{
 		Msgs:     state.Msgs,
