@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"os"
@@ -1556,10 +1557,13 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 			wsa := writeableStreamAssignment{
 				Client:     sa.Client.forAssignmentSnap(),
 				Created:    sa.Created,
-				ConfigJSON: sa.ConfigJSON,
-				Group:      sa.Group,
+				ConfigJSON: slices.Clone(sa.ConfigJSON),
 				Sync:       sa.Sync,
 				Consumers:  make([]*writeableConsumerAssignment, 0, len(sa.consumers)),
+			}
+			if sa.Group != nil {
+				grp := *sa.Group
+				wsa.Group = &grp
 			}
 			for _, ca := range sa.consumers {
 				// Skip if the consumer is pending, we can't include it in our snapshot.
@@ -1572,9 +1576,17 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 					Created:    ca.Created,
 					Name:       ca.Name,
 					Stream:     ca.Stream,
-					ConfigJSON: ca.ConfigJSON,
-					Group:      ca.Group,
-					State:      ca.State,
+					ConfigJSON: slices.Clone(ca.ConfigJSON),
+				}
+				if ca.Group != nil {
+					grp := *ca.Group
+					wca.Group = &grp
+				}
+				if ca.State != nil {
+					state := *ca.State
+					state.Pending = maps.Clone(state.Pending)
+					state.Redelivered = maps.Clone(state.Redelivered)
+					wca.State = &state
 				}
 				wsa.Consumers = append(wsa.Consumers, &wca)
 				nca++
@@ -1582,9 +1594,9 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 			streams = append(streams, wsa)
 		}
 	}
+	js.mu.RUnlock()
 
 	if len(streams) == 0 {
-		js.mu.RUnlock()
 		return nil, nil
 	}
 
@@ -1592,8 +1604,6 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	mstart := time.Now()
 	b, err := json.Marshal(streams)
 	mend := time.Since(mstart)
-
-	js.mu.RUnlock()
 
 	// Must not be possible for a JSON marshaling error to result
 	// in an empty snapshot.
