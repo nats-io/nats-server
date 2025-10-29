@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 	"unsafe"
@@ -743,13 +744,14 @@ func isClusterResetErr(err error) bool {
 
 // Copy all fields.
 func (smo *StoreMsg) copy(sm *StoreMsg) {
-	if sm.buf != nil {
-		sm.buf = sm.buf[:0]
+	if sm == smo {
+		sm.buf = slices.Clone(smo.buf)
+	} else {
+		sm.buf = append(sm.buf[:0], smo.buf...)
 	}
-	sm.buf = append(sm.buf, smo.buf...)
 	// We set cap on header in case someone wants to expand it.
 	sm.hdr, sm.msg = sm.buf[:len(smo.hdr):len(smo.hdr)], sm.buf[len(smo.hdr):]
-	sm.subj, sm.seq, sm.ts = smo.subj, smo.seq, smo.ts
+	sm.subj, sm.seq, sm.ts = copyString(smo.subj), smo.seq, smo.ts
 }
 
 // Clear all fields except underlying buffer but reset that if present to [:0].

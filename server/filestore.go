@@ -2643,6 +2643,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 	if uint64(mb.fss.Size()) < lseq-start {
 		// If there are no subject matches then this is effectively no-op.
 		hseq := uint64(math.MaxUint64)
+		var matched *StoreMsg
 		gsl.IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				// mb is already loaded into the cache so should be fast-ish.
@@ -2658,8 +2659,8 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 			if first == ss.First {
 				// If the start floor is below where this subject starts then we can
 				// short-circuit, avoiding needing to scan for the next message.
-				if fsm, err := mb.cacheLookup(ss.First, sm); err == nil {
-					sm = fsm
+				if fsm, err := mb.cacheLookupEx(ss.First, sm, false); err == nil {
+					matched = fsm
 					hseq = ss.First
 				}
 				return
@@ -2675,21 +2676,22 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 					continue
 				}
 				llseq := mb.llseq
-				fsm, err := mb.cacheLookup(seq, sm)
+				fsm, err := mb.cacheLookupEx(seq, sm, false)
 				if err != nil {
 					continue
 				}
 				updateLLTS = false // cacheLookup already updated it.
 				if sl.HasInterest(fsm.subj) {
 					hseq = seq
-					sm = fsm
+					matched = fsm
 					break
 				}
 				// If we are here we did not match, so put the llseq back.
 				mb.llseq = llseq
 			}
 		})
-		if hseq < uint64(math.MaxUint64) && sm != nil {
+		if hseq < uint64(math.MaxUint64) && matched != nil {
+			matched.copy(sm)
 			return sm, didLoad && start == lseq, nil
 		}
 	} else {
@@ -2701,14 +2703,15 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 				continue
 			}
 			llseq := mb.llseq
-			fsm, err := mb.cacheLookup(seq, sm)
+			fsm, err := mb.cacheLookupEx(seq, sm, false)
 			if err != nil {
 				continue
 			}
 			expireOk := seq == lseq && mb.llseq != llseq && mb.llseq == seq
 			updateLLTS = false // cacheLookup already updated it.
 			if sl.HasInterest(fsm.subj) {
-				return fsm, expireOk, nil
+				fsm.copy(sm)
+				return sm, expireOk, nil
 			}
 			// If we are here we did not match, so put the llseq back.
 			mb.llseq = llseq
@@ -2831,7 +2834,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			continue
 		}
 		llseq := mb.llseq
-		fsm, err := mb.cacheLookup(seq, sm)
+		fsm, err := mb.cacheLookupEx(seq, sm, false)
 		if err != nil {
 			if err == errPartialCache || err == errNoCache {
 				return nil, false, err
@@ -2841,12 +2844,15 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		updateLLTS = false // cacheLookup already updated it.
 		expireOk := seq == lseq && mb.llseq != llseq && mb.llseq == seq
 		if isAll {
-			return fsm, expireOk, nil
+			fsm.copy(sm)
+			return sm, expireOk, nil
 		}
 		if wc && isMatch(sm.subj) {
-			return fsm, expireOk, nil
+			fsm.copy(sm)
+			return sm, expireOk, nil
 		} else if !wc && fsm.subj == filter {
-			return fsm, expireOk, nil
+			fsm.copy(sm)
+			return sm, expireOk, nil
 		}
 		// If we are here we did not match, so put the llseq back.
 		mb.llseq = llseq
@@ -7863,6 +7869,7 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCop
 		if mlen > len(sm.buf) {
 			return nil, errBadMsg{mb.mfn, "invalid message length greater than buffer length"}
 		}
+		sm.hdr = nil
 		sm.msg = sm.buf[0:mlen]
 	}
 	sm.seq, sm.ts = seq, ts
@@ -7977,7 +7984,7 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 				}
 				didLoad = true
 			}
-			lsm, err = mb.cacheLookup(l, sm)
+			lsm, err = mb.cacheLookupEx(l, sm, false)
 		}
 		if didLoad {
 			mb.finishedWithCache()
@@ -7986,6 +7993,10 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 		if l > 0 {
 			break
 		}
+	}
+	if lsm != nil {
+		// Make a copy as we asked cacheLookupEx not to copy the backing stores.
+		lsm.copy(sm)
 	}
 	return lsm, err
 }
@@ -8151,9 +8162,11 @@ func (fs *fileStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err
 				if mb.dmap.Exists(seq) {
 					continue
 				}
-				if sm, err := mb.cacheLookup(seq, smp); err == nil {
+				if sm, err := mb.cacheLookupEx(seq, smp, false); err == nil {
 					mb.finishedWithCache()
 					mb.mu.Unlock()
+					// Make a copy as we asked cacheLookupEx not to copy the backing stores.
+					sm.copy(sm)
 					return sm, nil
 				}
 			}
