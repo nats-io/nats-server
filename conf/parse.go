@@ -288,7 +288,10 @@ func (p *parser) processItem(it item, fp string) error {
 		setValue(it, p.popContext())
 	case itemString:
 		// FIXME(dlc) sanitize string?
-		p.checkForEmbeddedVariables(&it)
+		err := p.checkForEmbeddedVariables(&it)
+		if err != nil {
+			return err
+		}
 		setValue(it, it.val)
 	case itemInteger:
 		lastDigit := 0
@@ -433,17 +436,18 @@ const pkey = "pk"
 const bcryptPrefix = "2a$"
 
 // To match embedded variables.
-var varPat = regexp.MustCompile(`\$\$[^@\s]+`)
+var varPat = regexp.MustCompile(`\$\{[^@\s]+\}`)
 
 // checkForEmbeddedVariable will check for embedded variables in an itemString.
 // If they are found and we can look them up we will replace them in item, otherwise will error.
 func (p *parser) checkForEmbeddedVariables(it *item) error {
-	if !strings.ContainsAny(it.val, "$$") {
+	if !strings.ContainsAny(it.val, "${") {
 		return nil
 	}
 	// We have some embedded variables.
 	for _, m := range varPat.FindAllString(it.val, -1) {
-		value, found, err := p.lookupVariable(m[2:]) // Strip leading $$ for lookup.
+		ref := m[2 : len(m)-1] // Strip leading ${ and trailing }
+		value, found, err := p.lookupVariable(ref)
 		if err != nil {
 			return fmt.Errorf("variable reference for '%s' on line %d could not be parsed: %s",
 				m, it.line, err)

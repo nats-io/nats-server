@@ -84,6 +84,19 @@ func TestSimpleVariable(t *testing.T) {
 	test(t, varSample, ex)
 }
 
+var varSampleWithBraces = `
+  index = 22
+  foo = ${index}
+`
+
+func TestSimpleVariableWithBraces(t *testing.T) {
+	ex := map[string]any{
+		"index": int64(22),
+		"foo":   int64(22),
+	}
+	test(t, varSampleWithBraces, ex)
+}
+
 var varNestedSample = `
   index = 22
   nest {
@@ -107,6 +120,14 @@ func TestNestedVariable(t *testing.T) {
 
 func TestMissingVariable(t *testing.T) {
 	_, err := Parse("foo=$index")
+	if err == nil {
+		t.Fatalf("Expected an error for a missing variable, got none")
+	}
+	if !strings.HasPrefix(err.Error(), "variable reference") {
+		t.Fatalf("Wanted a variable reference err, got %q\n", err)
+	}
+
+	_, err = Parse("foo=${index}")
 	if err == nil {
 		t.Fatalf("Expected an error for a missing variable, got none")
 	}
@@ -173,11 +194,9 @@ func TestEnvVariableEmbedded(t *testing.T) {
 			TOKEN: abc
 			authorization {
 				user: user
-				# normal variable syntax
-				password: $TOKEN
+				password: "${TOKEN}"
 			}
-			# embedded variable syntax
-			routes = [ nats://user:$$TOKEN@server.example.com:6222 ]
+			routes = [ "nats://user:${TOKEN}@server.example.com:6222" ]
 		}`
 	ex := map[string]any{
 		"cluster": map[string]any{
@@ -211,11 +230,8 @@ func TestEnvVariableEmbeddedMissing(t *testing.T) {
 		cluster {
 			authorization {
 				user: user
-				# normal variable syntax
-				password: $TOKEN
+				password: ${TOKEN}
 			}
-			# embedded variable syntax
-			routes = [ nats://user:$$TOKEN@server.example.com:6222 ]
 		}`
 
 	_, err := Parse(cluster)
@@ -227,13 +243,15 @@ func TestEnvVariableEmbeddedMissing(t *testing.T) {
 func TestEnvVariableEmbeddedOutsideOfQuotes(t *testing.T) {
 	cluster := `
 		cluster {
+			# set the variable token
+			TOKEN: abc
 			authorization {
 				user: user
-				# invalid embedded variable syntax
-				password: $$TOKEN
+				# ok
+				password: ${TOKEN}
 			}
-			# embedded variable syntax
-			routes = [ nats://user:$$TOKEN@server.example.com:6222 ]
+			# not ok
+			routes = [ nats://user:${TOKEN}@server.example.com:6222 ]
 		}`
 
 	_, err := Parse(cluster)
