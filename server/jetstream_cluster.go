@@ -3490,6 +3490,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					return 0, err
 				}
 			} else {
+				// Older v1 version with deleted as a sorted []uint64.
+				// For a stream with millions or billions of interior deletes, this will be huge.
+				// Now that all server versions 2.10.+ support binary snapshots, we should never fall back.
+				assert.Unreachable("Legacy JSON stream snapshot unmarshalled", map[string]any{
+					"stream":  mset.cfg.Name,
+					"account": mset.acc.Name,
+				})
+
 				var snap streamSnapshot
 				if err := json.Unmarshal(e.Data, &snap); err != nil {
 					onBadState(err)
@@ -8751,7 +8759,8 @@ func (mset *stream) supportsBinarySnapshotLocked() bool {
 }
 
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
-// Legacy, replace with binary stream snapshots.
+//
+// Deprecated: replaced with binary stream snapshots.
 type streamSnapshot struct {
 	Msgs     uint64   `json:"messages"`
 	Bytes    uint64   `json:"bytes"`
