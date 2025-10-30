@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/url"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -339,4 +340,26 @@ func generateInfoJSON(info *Info) []byte {
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	return bytes.Join(pcs, []byte(" "))
+}
+
+// parallelTaskQueue starts a number of goroutines and returns a channel
+// which functions can be sent to for queued parallel execution. The
+// goroutines will stop running when the returned channel is closed and
+// all queued tasks have completed. The passed in mp limits concurrency,
+// or a value <= 0 will default to GOMAXPROCS.
+func parallelTaskQueue(mp int) chan<- func() {
+	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
+		mp = rmp
+	} else {
+		mp = max(rmp, mp)
+	}
+	tq := make(chan func(), mp)
+	for range mp {
+		go func() {
+			for fn := range tq {
+				fn()
+			}
+		}()
+	}
+	return tq
 }
