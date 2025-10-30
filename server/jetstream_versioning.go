@@ -163,6 +163,11 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig) {
 		requires(1)
 	}
 
+	// Added in 2.14
+	if cfg.AckPolicy == AckFlowControl {
+		requires(4)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
