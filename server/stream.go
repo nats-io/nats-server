@@ -345,6 +345,7 @@ type StreamSource struct {
 	FilterSubject     string                   `json:"filter_subject,omitempty"`
 	SubjectTransforms []SubjectTransformConfig `json:"subject_transforms,omitempty"`
 	External          *ExternalStream          `json:"external,omitempty"`
+	ConsumerName      string                   `json:"consumer_name,omitempty"`
 
 	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
@@ -516,20 +517,21 @@ type sourceInfo struct {
 	cname string        // The name of the current consumer for this source.
 	sub   *subscription // The subscription to the consumer.
 
-	msgs  *ipQueue[*inMsg]    // Intra-process queue for incoming messages.
-	sseq  uint64              // Last stream message sequence number seen from the source.
-	dseq  uint64              // Last delivery (i.e. consumer's) sequence number.
-	lag   uint64              // 0 or number of messages pending (as last reported by the consumer) - 1.
-	err   *ApiError           // The API error that caused the last consumer setup to fail.
-	fails int                 // The number of times trying to setup the consumer failed.
-	last  atomic.Int64        // Time the consumer was created or of last message it received.
-	lreq  time.Time           // The last time setupMirrorConsumer/setupSourceConsumer was called.
-	qch   chan struct{}       // Quit channel.
-	sip   bool                // Setup in progress.
-	wg    sync.WaitGroup      // WaitGroup for the consumer's go routine.
-	sf    string              // The subject filter.
-	sfs   []string            // The subject filters.
-	trs   []*subjectTransform // The subject transforms.
+	msgs    *ipQueue[*inMsg]    // Intra-process queue for incoming messages.
+	sseq    uint64              // Last stream message sequence number seen from the source.
+	dseq    uint64              // Last delivery (i.e. consumer's) sequence number.
+	lag     uint64              // 0 or number of messages pending (as last reported by the consumer) - 1.
+	err     *ApiError           // The API error that caused the last consumer setup to fail.
+	fails   int                 // The number of times trying to setup the consumer failed.
+	last    atomic.Int64        // Time the consumer was created or of last message it received.
+	lreq    time.Time           // The last time setupMirrorConsumer/setupSourceConsumer was called.
+	qch     chan struct{}       // Quit channel.
+	sip     bool                // Setup in progress.
+	wg      sync.WaitGroup      // WaitGroup for the consumer's go routine.
+	sf      string              // The subject filter.
+	sfs     []string            // The subject filters.
+	trs     []*subjectTransform // The subject transforms.
+	durable bool                // Whether a durable consumer is used.
 }
 
 // For mirrors and direct get
@@ -2895,6 +2897,10 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 
 	sseq, dseq, dc, ts, pending := replyInfo(m.rply)
 
+	sendAck := func() {
+		mset.outq.sendMsg(m.rply, nil)
+	}
+
 	if dc > 1 {
 		mset.mu.Unlock()
 		return false
@@ -2908,6 +2914,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	} else if sseq <= mset.mirror.sseq {
 		// Ignore older messages.
 		mset.mu.Unlock()
+		sendAck()
 		return true
 	} else if mset.mirror.cname == _EMPTY_ {
 		mset.mirror.cname = tokenAt(m.rply, 4)
@@ -2969,6 +2976,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		}
 	} else {
 		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true, true)
+		if err == nil {
+			sendAck()
+		}
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -3152,6 +3162,11 @@ func (mset *stream) setupMirrorConsumer() error {
 		return nil
 	}
 	mirror.lreq = time.Now()
+	mirror.durable = false
+	if mset.cfg.Mirror.ConsumerName != _EMPTY_ {
+		mirror.cname = mset.cfg.Mirror.ConsumerName
+		mirror.durable = true
+	}
 
 	// Determine subjects etc.
 	var deliverSubject string
@@ -3255,7 +3270,9 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	var subject string
-	if req.Config.FilterSubject != _EMPTY_ {
+	if mirror.durable {
+		subject = fmt.Sprintf(JSApiConsumerResetT, mset.cfg.Mirror.Name, mirror.cname)
+	} else if req.Config.FilterSubject != _EMPTY_ {
 		req.Config.Name = fmt.Sprintf("mirror-%s", createConsumerName())
 		subject = fmt.Sprintf(JSApiConsumerCreateExT, mset.cfg.Mirror.Name, req.Config.Name, req.Config.FilterSubject)
 	} else {
@@ -3266,16 +3283,23 @@ func (mset *stream) setupMirrorConsumer() error {
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
 
-	// Marshal now that we are done with `req`.
-	b, _ := json.Marshal(req)
-
 	// Reset
 	mirror.msgs = nil
 	mirror.err = nil
 	mirror.sip = true
 
-	// Send the consumer create request
-	mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
+	if mirror.durable {
+		// Send the consumer reset request
+		resetReq := JSApiConsumerResetRequest{Seq: 0}
+		b, _ := json.Marshal(resetReq)
+		mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
+	} else {
+		// Marshal now that we are done with `req`.
+		b, _ := json.Marshal(req)
+
+		// Send the consumer create request
+		mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
+	}
 
 	go func() {
 
@@ -3328,6 +3352,7 @@ func (mset *stream) setupMirrorConsumer() error {
 				// Create a new queue each time
 				mirror.msgs = newIPQueue[*inMsg](mset.srv, qname)
 				msgs := mirror.msgs
+				deliverSubject = ccr.ConsumerInfo.Config.DeliverSubject
 				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 					hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
 					if len(hdr) > 0 {
@@ -3348,13 +3373,8 @@ func (mset *stream) setupMirrorConsumer() error {
 				// Save our sub.
 				mirror.sub = sub
 
-				// When an upstream stream expires messages or in general has messages that we want
-				// that are no longer available we need to adjust here.
-				var state StreamState
-				mset.store.FastState(&state)
-
 				// Check if we need to skip messages.
-				if state.LastSeq != ccr.ConsumerInfo.Delivered.Stream {
+				if !mirror.durable && state.LastSeq != ccr.ConsumerInfo.Delivered.Stream {
 					// Check to see if delivered is past our last and we have no msgs. This will help the
 					// case when mirroring a stream that has a very high starting sequence number.
 					if state.Msgs == 0 && ccr.ConsumerInfo.Delivered.Stream > state.LastSeq {
@@ -3368,7 +3388,11 @@ func (mset *stream) setupMirrorConsumer() error {
 				// Capture consumer name.
 				mirror.cname = ccr.ConsumerInfo.Name
 				mirror.dseq = 0
-				mirror.sseq = ccr.ConsumerInfo.Delivered.Stream
+				if mirror.durable {
+					mirror.sseq = state.LastSeq
+				} else {
+					mirror.sseq = ccr.ConsumerInfo.Delivered.Stream
+				}
 				mirror.qch = make(chan struct{})
 				mirror.wg.Add(1)
 				ready.Add(1)

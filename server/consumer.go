@@ -2605,10 +2605,14 @@ func (o *consumer) updateSkipped(seq uint64) {
 	o.propose(b[:])
 }
 
-func (o *consumer) resetStartingSeq(seq uint64, reply string) {
+func (o *consumer) resetStartingSeq(seq uint64, reply string) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	// Reset to a specific sequence, or back to the ack floor.
+	if seq == 0 {
+		seq = o.asflr + 1
+	}
 	// Must be a minimum of 1.
 	if seq <= 0 {
 		seq = 1
@@ -2622,11 +2626,9 @@ func (o *consumer) resetStartingSeq(seq uint64, reply string) {
 		le.PutUint64(b[1:], seq)
 		copy(b[1+8:], reply)
 		o.propose(b[:])
+		return false
 	} else if o.store != nil {
 		o.store.Reset(seq - 1)
-		if reply != _EMPTY_ {
-			o.outq.sendMsg(reply, nil)
-		}
 		// Cleanup messages that lost interest.
 		if o.retention == InterestPolicy {
 			if mset := o.mset; mset != nil {
@@ -2640,7 +2642,9 @@ func (o *consumer) resetStartingSeq(seq uint64, reply string) {
 		// Recalculate pending, and re-trigger message delivery.
 		o.streamNumPending()
 		o.signalNewMessages()
+		return true
 	}
+	return false
 }
 
 // Lock should be held.
@@ -4176,32 +4180,32 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 }
 
 // processResetReq will reset a consumer to a new starting sequence.
-func (o *consumer) processResetReq(_ *subscription, c *client, _ *Account, _, reply string, rmsg []byte) {
+func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, reply string, rmsg []byte) {
 	if reply == _EMPTY_ {
 		return
 	}
 
-	sendErr := func(status int, description string) {
-		hdr := fmt.Appendf(nil, "NATS/1.0 %d %s\r\n\r\n", status, description)
-		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-	}
+	s := o.srv
+	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 
 	hdr, msg := c.msgParts(rmsg)
 	if errorOnRequiredApiLevel(hdr) {
-		sendErr(412, "Required Api Level")
+		resp.Error = NewJSRequiredApiLevelError()
+		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
 		return
 	}
 
 	var req JSApiConsumerResetRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
-		sendErr(400, "Bad Request")
+		resp.Error = NewJSInvalidJSONError(err)
+		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
 		return
 	}
-	if req.Seq == 0 {
-		sendErr(400, "Bad Request - Zero Seq")
-		return
+	canRespond := o.resetStartingSeq(req.Seq, reply)
+	if canRespond {
+		resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
 	}
-	o.resetStartingSeq(req.Seq, reply)
 }
 
 func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
