@@ -9234,13 +9234,11 @@ func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	// Confirm above write is pending.
 	require_Equal(t, lmb.pendingWriteSize(), 33)
 
-	// Stop stream monitor routine, which will install a snapshot on shutdown.
-	mset.mu.Lock()
-	if mset.mqch != nil {
-		close(mset.mqch)
-		mset.mqch = nil
-	}
-	mset.mu.Unlock()
+	// Make the upper layer snapshot by sending leader change signal.
+	// It doesn't matter that we're already leader, it still gets handled.
+	// Previously this used the mqch, but that now only snapshots on shutdown.
+	n.leadc <- true
+
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		n.Lock()
 		snap, err := n.loadLastSnapshot()
