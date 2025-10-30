@@ -151,7 +151,7 @@ func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 	}
 
 	acc, _ := s.LookupOrRegisterAccount("$FOO")
-	if err := acc.EnableJetStream(nil); err != nil {
+	if err := acc.EnableJetStream(nil, nil); err != nil {
 		t.Fatalf("Did not expect error on enabling account: %v", err)
 	}
 	if na := s.JetStreamNumAccounts(); na != 1 {
@@ -170,7 +170,7 @@ func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 	}
 	// Should get an error for trying to enable a non-registered account.
 	acc = NewAccount("$BAZ")
-	if err := acc.EnableJetStream(nil); err == nil {
+	if err := acc.EnableJetStream(nil, nil); err == nil {
 		t.Fatalf("Expected error on enabling account that was not registered")
 	}
 }
@@ -4872,20 +4872,20 @@ func TestJetStreamSystemLimits(t *testing.T) {
 		}
 	}
 
-	if err := facc.EnableJetStream(limits(24, 192)); err != nil {
+	if err := facc.EnableJetStream(limits(24, 192), nil); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Use up rest of our resources in memory
-	if err := bacc.EnableJetStream(limits(1000, 0)); err != nil {
+	if err := bacc.EnableJetStream(limits(1000, 0), nil); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	// Now ask for more memory. Should error.
-	if err := zacc.EnableJetStream(limits(1000, 0)); err == nil {
+	if err := zacc.EnableJetStream(limits(1000, 0), nil); err == nil {
 		t.Fatalf("Expected an error when exhausting memory resource limits")
 	}
 	// Disk too.
-	if err := zacc.EnableJetStream(limits(0, 10000)); err == nil {
+	if err := zacc.EnableJetStream(limits(0, 10000), nil); err == nil {
 		t.Fatalf("Expected an error when exhausting memory resource limits")
 	}
 	facc.DisableJetStream()
@@ -4899,7 +4899,7 @@ func TestJetStreamSystemLimits(t *testing.T) {
 		t.Fatalf("Expected reserved memory and store to be 0, got %v and %v", friendlyBytes(rm), friendlyBytes(rd))
 	}
 
-	if err := facc.EnableJetStream(limits(24, 192)); err != nil {
+	if err := facc.EnableJetStream(limits(24, 192), nil); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Test Adjust
@@ -7412,7 +7412,7 @@ func TestJetStreamCanNotEnableOnSystemAccount(t *testing.T) {
 	defer s.Shutdown()
 
 	sa := s.SystemAccount()
-	if err := sa.EnableJetStream(nil); err == nil {
+	if err := sa.EnableJetStream(nil, nil); err == nil {
 		t.Fatalf("Expected an error trying to enable on the system account")
 	}
 }

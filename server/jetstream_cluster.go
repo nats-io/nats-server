@@ -2593,11 +2593,19 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot()
+			// Don't snapshot if not shutting down, monitor goroutine could be going away
+			// on a scale down or a remove for example.
+			if s.isShuttingDown() {
+				doSnapshot()
+			}
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot()
+			// Don't snapshot if not shutting down, Raft node could be going away on a
+			// scale down or remove for example.
+			if s.isShuttingDown() {
+				doSnapshot()
+			}
 			return
 		case <-aq.ch:
 			var ne, nb uint64
@@ -5170,11 +5178,19 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot(false)
+			// Don't snapshot if not shutting down, monitor goroutine could be going away
+			// on a scale down or a remove for example.
+			if s.isShuttingDown() {
+				doSnapshot(false)
+			}
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot(false)
+			// Don't snapshot if not shutting down, Raft node could be going away on a
+			// scale down or remove for example.
+			if s.isShuttingDown() {
+				doSnapshot(false)
+			}
 			return
 		case <-aq.ch:
 			ces := aq.pop()
