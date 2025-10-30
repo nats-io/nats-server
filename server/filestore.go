@@ -9913,12 +9913,17 @@ func timestampNormalized(t time.Time) int64 {
 // writeFullState will proceed to write the full meta state iff not complex and time consuming.
 // Since this is for quick recovery it is optional and should not block/stall normal operations.
 func (fs *fileStore) writeFullState() error {
-	return fs._writeFullState(false)
+	return fs._writeFullState(false, true)
 }
 
-// forceWriteFullState will proceed to write the full meta state. This should only be called by stop()
+// forceWriteFullState will proceed to write the full meta state.
 func (fs *fileStore) forceWriteFullState() error {
-	return fs._writeFullState(true)
+	return fs._writeFullState(true, true)
+}
+
+// forceWriteFullStateLocked will proceed to write the full meta state. This should only be called by stop()
+func (fs *fileStore) forceWriteFullStateLocked() error {
+	return fs._writeFullState(true, false)
 }
 
 // This will write the full binary state for the stream.
@@ -9928,11 +9933,22 @@ func (fs *fileStore) forceWriteFullState() error {
 // 2. PSIM - Per Subject Index Map - Tracks first and last blocks with subjects present.
 // 3. MBs - Index, Bytes, First and Last Sequence and Timestamps, and the deleted map (avl.seqset).
 // 4. Last block index and hash of record inclusive to this stream state.
-func (fs *fileStore) _writeFullState(force bool) error {
+func (fs *fileStore) _writeFullState(force, needLock bool) error {
+	fsLock := func() {
+		if needLock {
+			fs.mu.Lock()
+		}
+	}
+	fsUnlock := func() {
+		if needLock {
+			fs.mu.Unlock()
+		}
+	}
+
 	start := time.Now()
-	fs.mu.Lock()
+	fsLock()
 	if fs.closed || fs.dirty == 0 {
-		fs.mu.Unlock()
+		fsUnlock()
 		return nil
 	}
 
@@ -9951,7 +9967,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 			numDeleted = int((fs.state.LastSeq - fs.state.FirstSeq + 1) - fs.state.Msgs)
 		}
 		if numSubjects > numThreshold || numDeleted > numThreshold {
-			fs.mu.Unlock()
+			fsUnlock()
 			return errStateTooBig
 		}
 	}
@@ -10059,13 +10075,15 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	// Encrypt if needed.
 	if fs.prf != nil {
 		if err := fs.setupAEK(); err != nil {
-			fs.mu.Unlock()
+			fsUnlock()
 			return err
 		}
 		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(buf)+fs.aek.Overhead())
 		if n, err := rand.Read(nonce); err != nil {
+			fsUnlock()
 			return err
 		} else if n != len(nonce) {
+			fsUnlock()
 			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 		}
 		buf = fs.aek.Seal(nonce, nonce, buf, nil)
@@ -10082,13 +10100,17 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 	statesEqual := trackingStatesEqual(&fs.state, &mstate)
 	// Release lock.
-	fs.mu.Unlock()
+	fsUnlock()
 
 	// Check consistency here.
 	if !statesEqual {
 		fs.warn("Stream state encountered internal inconsistency on write")
 		// Rebuild our fs state from the mb state.
-		fs.rebuildState(nil)
+		if needLock {
+			fs.rebuildState(nil)
+		} else {
+			fs.rebuildStateLocked(nil)
+		}
 		return errCorruptState
 	}
 
@@ -10113,14 +10135,14 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 	// Update dirty if successful.
 	if err == nil {
-		fs.mu.Lock()
+		fsLock()
 		fs.dirty -= priorDirty
-		fs.mu.Unlock()
+		fsUnlock()
 	}
 
 	// Attempt to write both files, an error in one should not prevent the other from being written.
-	ttlErr := fs.writeTTLState()
-	schedErr := fs.writeMsgSchedulingState()
+	ttlErr := fs.writeTTLState(needLock)
+	schedErr := fs.writeMsgSchedulingState(needLock)
 	if ttlErr != nil {
 		return ttlErr
 	} else if schedErr != nil {
@@ -10129,30 +10151,42 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	return nil
 }
 
-func (fs *fileStore) writeTTLState() error {
-	fs.mu.RLock()
+func (fs *fileStore) writeTTLState(needLock bool) error {
+	if needLock {
+		fs.mu.RLock()
+	}
 	if fs.ttls == nil {
-		fs.mu.RUnlock()
+		if needLock {
+			fs.mu.RUnlock()
+		}
 		return nil
 	}
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
 	// Must be lseq+1 to identify up to which sequence the TTLs are valid.
 	buf := fs.ttls.Encode(fs.state.LastSeq + 1)
-	fs.mu.RUnlock()
+	if needLock {
+		fs.mu.RUnlock()
+	}
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
 }
 
-func (fs *fileStore) writeMsgSchedulingState() error {
-	fs.mu.RLock()
+func (fs *fileStore) writeMsgSchedulingState(needLock bool) error {
+	if needLock {
+		fs.mu.RLock()
+	}
 	if fs.scheduling == nil {
-		fs.mu.RUnlock()
+		if needLock {
+			fs.mu.RUnlock()
+		}
 		return nil
 	}
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, msgSchedulingStreamStateFile)
 	// Must be lseq+1 to identify up to which sequence the schedules are valid.
 	buf := fs.scheduling.encode(fs.state.LastSeq + 1)
-	fs.mu.RUnlock()
+	if needLock {
+		fs.mu.RUnlock()
+	}
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
 }
@@ -10170,17 +10204,9 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 		return ErrStoreClosed
 	}
 
-	// Mark as closing. Do before releasing the lock to writeFullState
+	// Mark as closing. Do before releasing the lock to wait on the state flush loop
 	// so we don't end up with this function running more than once.
 	fs.closing = true
-
-	if writeState {
-		fs.checkAndFlushLastBlock()
-	}
-	fs.closeAllMsgBlocks(false)
-
-	fs.cancelSyncTimer()
-	fs.cancelAgeChk()
 
 	// Release the state flusher loop.
 	if fs.qch != nil {
@@ -10193,9 +10219,18 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 		fsld := fs.fsld
 		fs.mu.Unlock()
 		<-fsld
-		// Write full state if needed. If not dirty this is a no-op.
-		fs.forceWriteFullState()
 		fs.mu.Lock()
+
+		fs.checkAndFlushLastBlock()
+	}
+	fs.closeAllMsgBlocks(false)
+
+	fs.cancelSyncTimer()
+	fs.cancelAgeChk()
+
+	if writeState {
+		// Write full state if needed. If not dirty this is a no-op.
+		fs.forceWriteFullStateLocked()
 	}
 
 	// Mark as closed. Last message block needs to be cleared after
