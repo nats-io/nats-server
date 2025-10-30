@@ -1238,7 +1238,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	s.EnableJetStream(&JetStreamConfig{StoreDir: t.TempDir()})
 	unusedAcc, _ := createAccount(s)
 	acc, akp := createAccount(s)
-	acc.EnableJetStream(nil)
+	acc.EnableJetStream(nil, nil)
 	subsz := fmt.Sprintf(accDirectReqSubj, acc.Name, "SUBSZ")
 	connz := fmt.Sprintf(accDirectReqSubj, acc.Name, "CONNZ")
 	jsz := fmt.Sprintf(accDirectReqSubj, acc.Name, "JSZ")

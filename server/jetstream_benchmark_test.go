@@ -19,8 +19,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"math/rand"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2181,6 +2186,61 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 						})
 				}
 			})
+	}
+}
+
+func BenchmarkJetStreamParallelStartup(b *testing.B) {
+	omp := runtime.GOMAXPROCS(-1)
+	streams, msgs, cardinality := omp, 100_000, 10_000
+
+	_, s, shutdown, nc, js := startJSClusterAndConnect(b, 1)
+	defer shutdown()
+	jsc := *s.JetStreamConfig()
+	sd := strings.TrimSuffix(jsc.StoreDir, "/jetstream")
+
+	b.Logf("Building %d streams with %d messages, %d subjects...", streams, msgs, cardinality)
+	start := time.Now()
+	for i := range streams {
+		jsStreamCreate(b, nc, &StreamConfig{
+			Name:     fmt.Sprintf("stream_%d", i),
+			Subjects: []string{fmt.Sprintf("%d.>", i)},
+			Storage:  FileStorage,
+		})
+		for n := range msgs {
+			subj := fmt.Sprintf("%d.%d", i, n%cardinality)
+			_, err := js.Publish(subj, nil)
+			require_NoError(b, err)
+		}
+	}
+	b.Logf("Streams built in %s", time.Since(start))
+
+	bench := func(b *testing.B) {
+		s.shutdownJetStream()
+		jsc.StoreDir = sd
+		require_NoError(b, filepath.Walk(jsc.StoreDir, func(path string, info os.FileInfo, err error) error {
+			require_NoError(b, err)
+			if info.Mode().IsRegular() && info.Name() == "index.db" {
+				return os.Truncate(path, 0)
+			}
+			return nil
+		}))
+		b.ResetTimer()
+		s.EnableJetStream(&jsc)
+	}
+
+	// Try to step down GOMAXPROCS in common CPU core counts.
+	mp := 1 << (bits.Len(uint(omp)) - 1)
+	if omp > mp {
+		b.Run(fmt.Sprintf("GOMAXPROCS=%d", omp), func(b *testing.B) {
+			bench(b)
+		})
+	}
+	for ; mp >= 1; mp >>= 1 {
+		b.Run(fmt.Sprintf("GOMAXPROCS=%d", mp), func(b *testing.B) {
+			runtime.GOMAXPROCS(mp)
+			defer runtime.GOMAXPROCS(omp)
+			bench(b)
+		})
 	}
 }
 

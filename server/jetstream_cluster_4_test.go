@@ -7078,3 +7078,56 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
+	for _, thres := range []uint64{0, 5, 10} {
+		t.Run(fmt.Sprintf("%d", thres), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R1TEST", 3)
+			defer c.shutdown()
+			for _, s := range c.servers {
+				s.optsMu.Lock()
+				s.opts.JetStreamMetaCompact = thres
+				s.optsMu.Unlock()
+			}
+
+			nc, _ := jsClientConnect(t, c.servers[0])
+			defer nc.Close()
+
+			leader := c.leader()
+			_, cc := leader.getJetStreamCluster()
+			rg := cc.meta.(*raft)
+
+			for i := range uint64(15) {
+				rg.RLock()
+				papplied := rg.papplied
+				rg.RUnlock()
+
+				jsStreamCreate(t, nc, &StreamConfig{
+					Name:     fmt.Sprintf("test_%d", i),
+					Subjects: []string{fmt.Sprintf("test.%d", i)},
+					Storage:  MemoryStorage,
+				})
+
+				// Kicking the leader change channel is the easiest way to
+				// trick monitorCluster() into calling doSnapshot().
+				entries, _ := cc.meta.Size()
+				cc.meta.(*raft).leadc <- true
+
+				// Should we have compacted on this iteration?
+				if entries > thres {
+					checkFor(t, time.Second, 5*time.Millisecond, func() error {
+						rg.RLock()
+						npapplied := rg.papplied
+						rg.RUnlock()
+						if npapplied <= papplied {
+							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+						}
+						return nil
+					})
+					entries, _ = cc.meta.Size()
+					require_Equal(t, entries, 0)
+				}
+			}
+		})
+	}
+}

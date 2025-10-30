@@ -896,6 +896,9 @@ func (js *jetStream) setupMetaGroup() error {
 		}
 		if cfg.Observer {
 			s.Noticef("Turning JetStream metadata controller Observer Mode on")
+			s.Noticef("In cases where the JetStream domain is not intended to be extended through a SYS account leaf node connection")
+			s.Noticef("and waiting for leader election until first contact is not acceptable,")
+			s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
 		}
 	} else {
 		s.Noticef("JetStream cluster recovering state")
@@ -909,7 +912,7 @@ func (js *jetStream) setupMetaGroup() error {
 				cfg.Observer = false
 			case extUndetermined:
 				s.Noticef("Turning JetStream metadata controller Observer Mode on - no previous contact")
-				s.Noticef("In cases where JetStream will not be extended")
+				s.Noticef("In cases where the JetStream domain is not intended to be extended through a SYS account leaf node connection")
 				s.Noticef("and waiting for leader election until first contact is not acceptable,")
 				s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
 			}
@@ -1341,13 +1344,17 @@ func (js *jetStream) monitorCluster() {
 	js.setMetaRecovering()
 
 	// Snapshotting function.
-	doSnapshot := func() {
+	doSnapshot := func(force bool) {
 		// Suppress during recovery.
 		if js.isMetaRecovering() {
 			return
 		}
-		// For the meta layer we want to snapshot when asked if we need one or have any entries that we can compact.
-		if ne, _ := n.Size(); ne > 0 || n.NeedSnapshot() {
+		// Look up what the threshold is for compaction. Re-reading from config here as it is reloadable.
+		js.srv.optsMu.RLock()
+		thresh := js.srv.opts.JetStreamMetaCompact
+		js.srv.optsMu.RUnlock()
+		// For the meta layer we want to snapshot when over the above threshold (which could be 0 by default).
+		if ne, _ := n.Size(); force || ne > thresh || n.NeedSnapshot() {
 			snap, err := js.metaSnapshot()
 			if err != nil {
 				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
@@ -1376,15 +1383,15 @@ func (js *jetStream) monitorCluster() {
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
-			doSnapshot()
+			doSnapshot(false)
 			return
 		case <-rqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
-			doSnapshot()
+			doSnapshot(false)
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
-			doSnapshot()
+			doSnapshot(false)
 			// Return the signal back since shutdown will be waiting.
 			close(qch)
 			return
@@ -1420,6 +1427,8 @@ func (js *jetStream) monitorCluster() {
 					// Clear.
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
+					// Snapshot now so we start with freshly compacted log.
+					doSnapshot(true)
 					oc = time.AfterFunc(30*time.Second, js.checkForOrphans)
 					// Do a health check here as well.
 					go checkHealth()
@@ -1432,9 +1441,9 @@ func (js *jetStream) monitorCluster() {
 						_, nb = n.Applied(ce.Index)
 					}
 					if js.hasPeerEntries(ce.Entries) || (didSnap && !isLeader) {
-						doSnapshot()
+						doSnapshot(true)
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
-						doSnapshot()
+						doSnapshot(false)
 					}
 				} else {
 					s.Warnf("Error applying JetStream cluster entries: %v", err)
@@ -1450,11 +1459,11 @@ func (js *jetStream) monitorCluster() {
 				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
 				// Install a snapshot as we become leader.
 				js.checkClusterSize()
-				doSnapshot()
+				doSnapshot(false)
 			}
 
 		case <-t.C:
-			doSnapshot()
+			doSnapshot(false)
 			// Periodically check the cluster size.
 			if n.Leader() {
 				js.checkClusterSize()
@@ -2614,11 +2623,19 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot()
+			// Don't snapshot if not shutting down, monitor goroutine could be going away
+			// on a scale down or a remove for example.
+			if s.isShuttingDown() {
+				doSnapshot()
+			}
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot()
+			// Don't snapshot if not shutting down, Raft node could be going away on a
+			// scale down or remove for example.
+			if s.isShuttingDown() {
+				doSnapshot()
+			}
 			return
 		case <-aq.ch:
 			var ne, nb uint64
@@ -5512,11 +5529,19 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot(false)
+			// Don't snapshot if not shutting down, monitor goroutine could be going away
+			// on a scale down or a remove for example.
+			if s.isShuttingDown() {
+				doSnapshot(false)
+			}
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot(false)
+			// Don't snapshot if not shutting down, Raft node could be going away on a
+			// scale down or remove for example.
+			if s.isShuttingDown() {
+				doSnapshot(false)
+			}
 			return
 		case <-aq.ch:
 			ces := aq.pop()
@@ -8756,6 +8781,13 @@ func (mset *stream) stateSnapshotLocked() []byte {
 	}
 
 	// Older v1 version with deleted as a sorted []uint64.
+	// For a stream with millions or billions of interior deletes, this will be huge.
+	// Now that all server versions 2.10.+ support binary snapshots, we should never fall back.
+	assert.Unreachable("Legacy JSON stream snapshot used", map[string]any{
+		"stream":  mset.cfg.Name,
+		"account": mset.acc.Name,
+	})
+
 	state := mset.store.State()
 	snap := &streamSnapshot{
 		Msgs:     state.Msgs,

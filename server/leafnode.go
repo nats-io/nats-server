@@ -1049,17 +1049,22 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 	// In addition, and this is to allow auth callout, set user/password or
 	// token if applicable.
 	if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
-		// For backward compatibility, if only username is provided, set both
-		// Token and User, not just Token.
 		cinfo.User = userInfo.Username()
 		var ok bool
 		cinfo.Pass, ok = userInfo.Password()
+		// For backward compatibility, if only username is provided, set both
+		// Token and User, not just Token.
 		if !ok {
 			cinfo.Token = cinfo.User
 		}
 	} else if c.leaf.remote.username != _EMPTY_ {
 		cinfo.User = c.leaf.remote.username
 		cinfo.Pass = c.leaf.remote.password
+		// For backward compatibility, if only username is provided, set both
+		// Token and User, not just Token.
+		if cinfo.Pass == _EMPTY_ {
+			cinfo.Token = cinfo.User
+		}
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
@@ -2421,7 +2426,8 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 
 // updateInterestForAccountOnGateway called from gateway code when processing RS+ and RS-.
 func (s *Server) updateInterestForAccountOnGateway(accName string, sub *subscription, delta int32) {
-	acc, err := s.LookupAccount(accName)
+	// Since we're in the gateway's readLoop, and we would otherwise block, don't allow fetching.
+	acc, err := s.lookupOrFetchAccount(accName, false)
 	if acc == nil || err != nil {
 		s.Debugf("No or bad account for %q, failed to update interest from gateway", accName)
 		return

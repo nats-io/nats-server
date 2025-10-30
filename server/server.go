@@ -44,6 +44,8 @@ import (
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 
+	"expvar"
+
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/logger"
@@ -841,15 +843,18 @@ func NewServer(opts *Options) (*Server, error) {
 	if opts.JetStream {
 		ourNode := getHash(serverName)
 		s.nodeToInfo.Store(ourNode, nodeInfo{
-			serverName,
-			VERSION,
-			opts.Cluster.Name,
-			opts.JetStreamDomain,
-			info.ID,
-			opts.Tags,
-			&JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
-			nil,
-			false, true, true, true,
+			name:            serverName,
+			version:         VERSION,
+			cluster:         opts.Cluster.Name,
+			domain:          opts.JetStreamDomain,
+			id:              info.ID,
+			tags:            opts.Tags,
+			cfg:             &JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
+			stats:           nil,
+			offline:         false,
+			js:              true,
+			binarySnapshots: true,
+			accountNRG:      true,
 		})
 	}
 
@@ -2049,6 +2054,13 @@ func (s *Server) setRouteInfo(acc *Account) {
 // associated with an account name.
 // Lock MUST NOT be held upon entry.
 func (s *Server) lookupAccount(name string) (*Account, error) {
+	return s.lookupOrFetchAccount(name, true)
+}
+
+// lookupOrFetchAccount is a function to return the account structure
+// associated with an account name.
+// Lock MUST NOT be held upon entry.
+func (s *Server) lookupOrFetchAccount(name string, fetch bool) (*Account, error) {
 	var acc *Account
 	if v, ok := s.accounts.Load(name); ok {
 		acc = v.(*Account)
@@ -2058,7 +2070,7 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 		// return the latest information from the resolver.
 		if acc.IsExpired() {
 			s.Debugf("Requested account [%s] has expired", name)
-			if s.AccountResolver() != nil {
+			if s.AccountResolver() != nil && fetch {
 				if err := s.updateAccount(acc); err != nil {
 					// This error could mask expired, so just return expired here.
 					return nil, ErrAccountExpired
@@ -2070,7 +2082,7 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 		return acc, nil
 	}
 	// If we have a resolver see if it can fetch the account.
-	if s.AccountResolver() == nil {
+	if s.AccountResolver() == nil || !fetch {
 		return nil, ErrMissingAccount
 	}
 	return s.fetchAccount(name)
@@ -3017,6 +3029,7 @@ const (
 	HealthzPath      = "/healthz"
 	IPQueuesPath     = "/ipqueuesz"
 	RaftzPath        = "/raftz"
+	ExpvarzPath      = "/debug/vars"
 )
 
 func (s *Server) basePath(p string) string {
@@ -3135,6 +3148,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(IPQueuesPath), s.HandleIPQueuesz)
 	// Raftz
 	mux.HandleFunc(s.basePath(RaftzPath), s.HandleRaftz)
+	// Expvarz
+	mux.Handle(s.basePath(ExpvarzPath), expvar.Handler())
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
