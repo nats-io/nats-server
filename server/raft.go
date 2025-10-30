@@ -42,6 +42,8 @@ type RaftNode interface {
 	ProposeMulti(entries []*Entry) error
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
+	PrepareSnapshot(snap []byte, ch chan<- PreparedSnapshot) error
+	InstallPreparedSnapshot(ps PreparedSnapshot) error
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
@@ -1239,6 +1241,98 @@ func (n *raft) SendSnapshot(data []byte) error {
 	defer n.Unlock()
 	// Don't check if we're leader before sending and storing, this is used on scaleup.
 	n.sendAppendEntryLocked([]*Entry{{EntrySnapshot, data}}, false)
+	return nil
+}
+
+type PreparedSnapshot struct {
+	Term  uint64
+	Index uint64
+	Path  string
+	Err   error
+}
+
+// Prepare a snapshot on disk. Writing the file will happen in a separate
+// go routine. The caller supplies a channel that will be notified when
+// the snapshot is ready to be installed using InstallPreparedSnapshot.
+func (n *raft) PrepareSnapshot(snap []byte, ch chan<- PreparedSnapshot) error {
+	if n.State() == Closed {
+		return errNodeClosed
+	}
+
+	n.Lock()
+	defer n.Unlock()
+
+	if n.werr != nil {
+		return n.werr
+	}
+
+	// Check that a catchup isn't already taking place. If it is then we
+	// won't allow installing snapshots until it is done.
+	if len(n.progress) > 0 || n.paused {
+		return errCatchupsRunning
+	}
+
+	if n.applied == 0 {
+		n.debug("Not snapshotting as there are no applied entries")
+		return errNoSnapAvailable
+	}
+
+	ae, _ := n.loadEntry(n.applied)
+	if ae == nil {
+		n.debug("Not snapshotting as entry %d is not available", n.applied)
+		return errNoSnapAvailable
+	}
+
+	peers := encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+	encoded := n.encodeSnapshot(&snapshot{
+		lastTerm:  ae.term,
+		lastIndex: n.applied,
+		peerstate: peers,
+		data:      snap})
+
+	snapDir := filepath.Join(n.sd, snapshotsDir)
+	sn := fmt.Sprintf(snapFileT, ae.term, n.applied)
+	sfile := filepath.Join(snapDir, sn)
+	prepSnap := PreparedSnapshot{Term: ae.term, Index: n.applied, Path: sfile}
+
+	go func(data []byte, p PreparedSnapshot) {
+		p.Err = writeFileWithSync(p.Path, data, defaultFilePerms)
+		ch <- p
+	}(encoded, prepSnap)
+
+	return nil
+}
+
+// InstallPreparedSnapshot will install a snapshot that
+// was prepared by PrepareSnapshot
+func (n *raft) InstallPreparedSnapshot(ps PreparedSnapshot) error {
+	if n.State() == Closed {
+		os.Remove(ps.Path)
+		return errNodeClosed
+	}
+
+	n.Lock()
+	defer n.Unlock()
+
+	n.debug("Installing prepared snapshot for term %d and index %d", ps.Term, ps.Index)
+
+	// Delete our previous snapshot file if it exists.
+	if n.snapfile != _EMPTY_ && n.snapfile != ps.Path {
+		os.Remove(n.snapfile)
+	}
+
+	// Remember our latest snapshot file.
+	n.snapfile = ps.Path
+
+	if _, err := n.wal.Compact(ps.Index + 1); err != nil {
+		n.setWriteErrLocked(err)
+		return err
+	}
+
+	var state StreamState
+	n.wal.FastState(&state)
+	n.papplied = ps.Index
+	n.bytes = state.Bytes
 	return nil
 }
 
