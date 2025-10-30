@@ -71,6 +71,21 @@ const (
 	// JSClusterUnSupportFeatureErr not currently supported in clustered mode
 	JSClusterUnSupportFeatureErr ErrorIdentifier = 10036
 
+	// JSConsumerAckFCRequiresFCErr flow control ack policy requires flow control
+	JSConsumerAckFCRequiresFCErr ErrorIdentifier = 10207
+
+	// JSConsumerAckFCRequiresMaxAckPendingErr flow control ack policy requires max ack pending
+	JSConsumerAckFCRequiresMaxAckPendingErr ErrorIdentifier = 10208
+
+	// JSConsumerAckFCRequiresNoAckWaitErr flow control ack policy requires unset ack wait
+	JSConsumerAckFCRequiresNoAckWaitErr ErrorIdentifier = 10209
+
+	// JSConsumerAckFCRequiresNoMaxDeliverErr flow control ack policy requires unset max deliver
+	JSConsumerAckFCRequiresNoMaxDeliverErr ErrorIdentifier = 10210
+
+	// JSConsumerAckFCRequiresPushErr flow control ack policy requires a push based consumer
+	JSConsumerAckFCRequiresPushErr ErrorIdentifier = 10206
+
 	// JSConsumerAckPolicyInvalidErr consumer ack policy invalid
 	JSConsumerAckPolicyInvalidErr ErrorIdentifier = 10181
 
@@ -332,6 +347,9 @@ const (
 	// JSMessageTTLInvalidErr invalid per-message TTL
 	JSMessageTTLInvalidErr ErrorIdentifier = 10165
 
+	// JSMirrorConsumerRequiresAckFCErr stream mirror consumer requires flow control ack policy
+	JSMirrorConsumerRequiresAckFCErr ErrorIdentifier = 10204
+
 	// JSMirrorConsumerSetupFailedErrF generic mirror consumer setup failure string ({err})
 	JSMirrorConsumerSetupFailedErrF ErrorIdentifier = 10029
 
@@ -418,6 +436,9 @@ const (
 
 	// JSSnapshotDeliverSubjectInvalidErr deliver subject not valid
 	JSSnapshotDeliverSubjectInvalidErr ErrorIdentifier = 10015
+
+	// JSSourceConsumerRequiresAckFCErr stream source consumer requires flow control ack policy
+	JSSourceConsumerRequiresAckFCErr ErrorIdentifier = 10205
 
 	// JSSourceConsumerSetupFailedErrF General source consumer setup failure string ({err})
 	JSSourceConsumerSetupFailedErrF ErrorIdentifier = 10045
@@ -636,6 +657,11 @@ var (
 		JSClusterServerNotMemberErr:                  {Code: 400, ErrCode: 10044, Description: "server is not a member of the cluster"},
 		JSClusterTagsErr:                             {Code: 400, ErrCode: 10011, Description: "tags placement not supported for operation"},
 		JSClusterUnSupportFeatureErr:                 {Code: 503, ErrCode: 10036, Description: "not currently supported in clustered mode"},
+		JSConsumerAckFCRequiresFCErr:                 {Code: 400, ErrCode: 10207, Description: "flow control ack policy requires flow control"},
+		JSConsumerAckFCRequiresMaxAckPendingErr:      {Code: 400, ErrCode: 10208, Description: "flow control ack policy requires max ack pending"},
+		JSConsumerAckFCRequiresNoAckWaitErr:          {Code: 400, ErrCode: 10209, Description: "flow control ack policy requires unset ack wait"},
+		JSConsumerAckFCRequiresNoMaxDeliverErr:       {Code: 400, ErrCode: 10210, Description: "flow control ack policy requires unset max deliver"},
+		JSConsumerAckFCRequiresPushErr:               {Code: 400, ErrCode: 10206, Description: "flow control ack policy requires a push based consumer"},
 		JSConsumerAckPolicyInvalidErr:                {Code: 400, ErrCode: 10181, Description: "consumer ack policy invalid"},
 		JSConsumerAckWaitNegativeErr:                 {Code: 400, ErrCode: 10183, Description: "consumer ack wait needs to be positive"},
 		JSConsumerAlreadyExists:                      {Code: 400, ErrCode: 10148, Description: "consumer already exists"},
@@ -723,6 +749,7 @@ var (
 		JSMessageSchedulesTargetInvalidErr:           {Code: 400, ErrCode: 10190, Description: "message schedules target is invalid"},
 		JSMessageTTLDisabledErr:                      {Code: 400, ErrCode: 10166, Description: "per-message TTL is disabled"},
 		JSMessageTTLInvalidErr:                       {Code: 400, ErrCode: 10165, Description: "invalid per-message TTL"},
+		JSMirrorConsumerRequiresAckFCErr:             {Code: 400, ErrCode: 10204, Description: "stream mirror consumer requires flow control ack policy"},
 		JSMirrorConsumerSetupFailedErrF:              {Code: 500, ErrCode: 10029, Description: "{err}"},
 		JSMirrorInvalidStreamName:                    {Code: 400, ErrCode: 10142, Description: "mirrored stream name is invalid"},
 		JSMirrorInvalidSubjectFilter:                 {Code: 400, ErrCode: 10151, Description: "mirror transform source: {err}"},
@@ -752,6 +779,7 @@ var (
 		JSRestoreSubscribeFailedErrF:                 {Code: 500, ErrCode: 10042, Description: "JetStream unable to subscribe to restore snapshot {subject}: {err}"},
 		JSSequenceNotFoundErrF:                       {Code: 400, ErrCode: 10043, Description: "sequence {seq} not found"},
 		JSSnapshotDeliverSubjectInvalidErr:           {Code: 400, ErrCode: 10015, Description: "deliver subject not valid"},
+		JSSourceConsumerRequiresAckFCErr:             {Code: 400, ErrCode: 10205, Description: "stream source consumer requires flow control ack policy"},
 		JSSourceConsumerSetupFailedErrF:              {Code: 500, ErrCode: 10045, Description: "{err}"},
 		JSSourceDuplicateDetected:                    {Code: 400, ErrCode: 10140, Description: "duplicate source configuration detected"},
 		JSSourceInvalidStreamName:                    {Code: 400, ErrCode: 10141, Description: "sourced stream name is invalid"},
@@ -1077,6 +1105,56 @@ func NewJSClusterUnSupportFeatureError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSClusterUnSupportFeatureErr]
+}
+
+// NewJSConsumerAckFCRequiresFCError creates a new JSConsumerAckFCRequiresFCErr error: "flow control ack policy requires flow control"
+func NewJSConsumerAckFCRequiresFCError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAckFCRequiresFCErr]
+}
+
+// NewJSConsumerAckFCRequiresMaxAckPendingError creates a new JSConsumerAckFCRequiresMaxAckPendingErr error: "flow control ack policy requires max ack pending"
+func NewJSConsumerAckFCRequiresMaxAckPendingError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAckFCRequiresMaxAckPendingErr]
+}
+
+// NewJSConsumerAckFCRequiresNoAckWaitError creates a new JSConsumerAckFCRequiresNoAckWaitErr error: "flow control ack policy requires unset ack wait"
+func NewJSConsumerAckFCRequiresNoAckWaitError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAckFCRequiresNoAckWaitErr]
+}
+
+// NewJSConsumerAckFCRequiresNoMaxDeliverError creates a new JSConsumerAckFCRequiresNoMaxDeliverErr error: "flow control ack policy requires unset max deliver"
+func NewJSConsumerAckFCRequiresNoMaxDeliverError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAckFCRequiresNoMaxDeliverErr]
+}
+
+// NewJSConsumerAckFCRequiresPushError creates a new JSConsumerAckFCRequiresPushErr error: "flow control ack policy requires a push based consumer"
+func NewJSConsumerAckFCRequiresPushError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAckFCRequiresPushErr]
 }
 
 // NewJSConsumerAckPolicyInvalidError creates a new JSConsumerAckPolicyInvalidErr error: "consumer ack policy invalid"
@@ -2027,6 +2105,16 @@ func NewJSMessageTTLInvalidError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSMessageTTLInvalidErr]
 }
 
+// NewJSMirrorConsumerRequiresAckFCError creates a new JSMirrorConsumerRequiresAckFCErr error: "stream mirror consumer requires flow control ack policy"
+func NewJSMirrorConsumerRequiresAckFCError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorConsumerRequiresAckFCErr]
+}
+
 // NewJSMirrorConsumerSetupFailedError creates a new JSMirrorConsumerSetupFailedErrF error: "{err}"
 func NewJSMirrorConsumerSetupFailedError(err error, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -2357,6 +2445,16 @@ func NewJSSnapshotDeliverSubjectInvalidError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSSnapshotDeliverSubjectInvalidErr]
+}
+
+// NewJSSourceConsumerRequiresAckFCError creates a new JSSourceConsumerRequiresAckFCErr error: "stream source consumer requires flow control ack policy"
+func NewJSSourceConsumerRequiresAckFCError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSSourceConsumerRequiresAckFCErr]
 }
 
 // NewJSSourceConsumerSetupFailedError creates a new JSSourceConsumerSetupFailedErrF error: "{err}"

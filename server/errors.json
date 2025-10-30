@@ -2018,5 +2018,75 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorConsumerRequiresAckFCErr",
+    "code": 400,
+    "error_code": 10204,
+    "description": "stream mirror consumer requires flow control ack policy",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceConsumerRequiresAckFCErr",
+    "code": 400,
+    "error_code": 10205,
+    "description": "stream source consumer requires flow control ack policy",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAckFCRequiresPushErr",
+    "code": 400,
+    "error_code": 10206,
+    "description": "flow control ack policy requires a push based consumer",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAckFCRequiresFCErr",
+    "code": 400,
+    "error_code": 10207,
+    "description": "flow control ack policy requires flow control",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAckFCRequiresMaxAckPendingErr",
+    "code": 400,
+    "error_code": 10208,
+    "description": "flow control ack policy requires max ack pending",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAckFCRequiresNoAckWaitErr",
+    "code": 400,
+    "error_code": 10209,
+    "description": "flow control ack policy requires unset ack wait",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAckFCRequiresNoMaxDeliverErr",
+    "code": 400,
+    "error_code": 10210,
+    "description": "flow control ack policy requires unset max deliver",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

@@ -22440,3 +22440,82 @@ func TestJetStreamCleanupNoInterestAboveThreshold(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamDurableStreamMirrorAndSourceIncorrectConsumerConfig(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "O",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+
+	_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+		Durable:        "C",
+		DeliverSubject: "deliver-subject",
+		AckPolicy:      AckExplicit,
+	}, false)
+	require_NoError(t, err)
+
+	// Mirror.
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name: "M",
+		Mirror: &StreamSource{
+			Name:                   "O",
+			ConsumerName:           "C",
+			ConsumerDeliverSubject: "deliver-subject",
+		},
+		Storage: FileStorage,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		if err != nil {
+			return err
+		}
+		if si.Mirror == nil {
+			return errors.New("no mirror")
+		}
+		if si.Mirror.Error == nil {
+			return errors.New("expected mirror error")
+		}
+		if si.Mirror.Error.Description != NewJSMirrorConsumerRequiresAckFCError().Description {
+			return si.Mirror.Error
+		}
+		return nil
+	})
+
+	// Source.
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name: "S",
+		Sources: []*StreamSource{{
+			Name:                   "O",
+			ConsumerName:           "C",
+			ConsumerDeliverSubject: "deliver-subject",
+		}},
+		Storage: FileStorage,
+	})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		if err != nil {
+			return err
+		}
+		if len(si.Sources) != 1 {
+			return errors.New("no source")
+		}
+		sourceErr := si.Sources[0].Error
+		if sourceErr == nil {
+			return errors.New("expected source error")
+		}
+		if sourceErr.Description != NewJSSourceConsumerRequiresAckFCError().Description {
+			return sourceErr
+		}
+		return nil
+	})
+}
