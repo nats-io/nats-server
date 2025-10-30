@@ -772,6 +772,7 @@ type JSApiConsumerResetRequest struct {
 	Seq uint64 `json:"seq,omitempty"`
 }
 
+// JSApiConsumerResetResponse is a superset of JSApiConsumerCreateResponse, but including an explicit ResetSeq.
 type JSApiConsumerResetResponse struct {
 	ApiResponse
 	*ConsumerInfo
