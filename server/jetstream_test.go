@@ -23199,3 +23199,207 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 	require_Equal(t, string(msgp.Data), "1")
 
 }
+
+func TestJetStreamDurableStreamMirrorAndSourceIncorrectConsumerConfig(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:      "O",
+		Subjects:  []string{"foo"},
+		Storage:   FileStorage,
+		Retention: WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+		Durable:        "C",
+		DeliverSubject: "deliver-subject",
+		AckPolicy:      AckExplicit,
+	}, false)
+	require_NoError(t, err)
+
+	checkMirror := func(expected string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror == nil {
+				return errors.New("no mirror")
+			}
+			if si.Mirror.Error == nil {
+				return errors.New("expected mirror error")
+			}
+			if si.Mirror.Error.Description != expected {
+				return si.Mirror.Error
+			}
+			return nil
+		})
+	}
+
+	// Mirror.
+	cfg := &StreamConfig{
+		Name:    "M",
+		Mirror:  &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "", DeliverSubject: "deliver-subject"}},
+		Storage: FileStorage,
+	}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+	cfg.Mirror = &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: ""}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+	// Reject invalid consumer name.
+	cfg.Mirror = &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C.b", DeliverSubject: "deliver-subject"}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+	// Reject invalid deliver subject.
+	cfg.Mirror = &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "deliver.."}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+	cfg.Mirror = &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "deliver-subject"}}
+
+	// Setting start seq shouldn't be allowed.
+	cfg.Mirror.OptStartSeq = 1
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+	// Setting start time shouldn't be allowed.
+	now := time.Now()
+	cfg.Mirror.OptStartSeq = 0
+	cfg.Mirror.OptStartTime = &now
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+	// Setting filter subject shouldn't be allowed.
+	cfg.Mirror.OptStartTime = nil
+	cfg.Mirror.FilterSubject = "filter"
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+	cfg.Mirror = &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "deliver-subject"}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	checkMirror(NewJSMirrorConsumerRequiresAckFCError().Description)
+
+	// Check mirror config is not updatable.
+	cfg.Mirror.SubjectTransforms = []SubjectTransformConfig{{Source: ">", Destination: "a.>"}}
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamMirrorNotUpdatableError())
+
+	checkSource := func(expected string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("S")
+			if err != nil {
+				return err
+			}
+			if len(si.Sources) != 1 {
+				return errors.New("no source")
+			}
+			sourceErr := si.Sources[0].Error
+			if sourceErr == nil {
+				return errors.New("expected source error")
+			}
+			if sourceErr.Description != expected {
+				return sourceErr
+			}
+			return nil
+		})
+	}
+
+	// Source.
+	cfg = &StreamConfig{
+		Name:    "S",
+		Sources: []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "", DeliverSubject: "deliver-subject"}}},
+		Storage: FileStorage,
+	}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+	cfg.Sources = []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: ""}}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+	// Reject invalid consumer name.
+	cfg.Sources = []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "C.b", DeliverSubject: "deliver-subject"}}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+	// Reject invalid deliver subject.
+	cfg.Sources = []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "deliver.."}}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+	cfg.Sources = []*StreamSource{
+		{Name: "O", SubjectTransforms: []SubjectTransformConfig{{Source: ">", Destination: "a.>"}}, Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "a"}},
+		{Name: "O", SubjectTransforms: []SubjectTransformConfig{{Source: ">", Destination: "b.>"}}, Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "b"}},
+	}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerDuplicateDetectedError())
+
+	cfg.Sources = []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "deliver-subject"}}}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	checkSource(NewJSSourceConsumerRequiresAckFCError().Description)
+	require_NoError(t, js.DeleteStream("S"))
+
+	// Setting start seq shouldn't be allowed.
+	cfg.Sources[0].OptStartSeq = 1
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+	// Setting start time shouldn't be allowed.
+	cfg.Sources[0].OptStartSeq = 0
+	cfg.Sources[0].OptStartTime = &now
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+	// Setting filter subject shouldn't be allowed.
+	cfg.Sources[0].OptStartTime = nil
+	cfg.Sources[0].FilterSubject = "filter"
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+}
+
+func TestJetStreamDurableStreamSourcesWithUniqueConsumerNames(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "O",
+		Subjects:  []string{"a", "b"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "S",
+		Sources: []*nats.StreamSource{
+			{Name: "O", FilterSubject: "a"},
+			{Name: "O", FilterSubject: "b"},
+		},
+	})
+	require_NoError(t, err)
+
+	// Expect two separate sourcing consumers to be created for the above sourcing stream.
+	mset, err := s.globalAccount().lookupStream("O")
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if c := mset.numConsumers(); c != 2 {
+			return fmt.Errorf("expected 2 consumers, got %d", c)
+		}
+		return nil
+	})
+}
