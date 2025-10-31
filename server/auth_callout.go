@@ -23,6 +23,7 @@ import (
 	"unicode"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats.go/micro"
 	"github.com/nats-io/nkeys"
 )
 
@@ -79,7 +80,14 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 
 	decodeResponse := func(rc *client, rmsg []byte, acc *Account) (*jwt.UserClaims, error) {
 		account := acc.Name
-		_, msg := rc.msgParts(rmsg)
+		hdr, msg := rc.msgParts(rmsg)
+		if hdr != nil {
+			code := sliceHeader(micro.ErrorCodeHeader, hdr)
+			desc := sliceHeader(micro.ErrorHeader, hdr)
+			if code != nil || desc != nil {
+				return nil, fmt.Errorf("auth callout service returned an error: %s: %s", code, desc)
+			}
+		}
 
 		// This signals not authorized.
 		// Since this is an account subscription will always have "\r\n".
