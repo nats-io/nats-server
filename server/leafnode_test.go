@@ -10810,7 +10810,6 @@ func TestLeafNodeConfigureWriteDeadline(t *testing.T) {
 
 	s1URL, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port))
 	o2.Cluster.Name = "somethingelse"
-	o2.LeafNode.WriteDeadline = 6 * time.Second
 	o2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{s1URL}}}
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
@@ -10818,17 +10817,45 @@ func TestLeafNodeConfigureWriteDeadline(t *testing.T) {
 	checkLeafNodeConnected(t, s2)
 
 	s1.mu.RLock()
-	s2.mu.RLock()
 	defer s1.mu.RUnlock()
-	defer s2.mu.RUnlock()
 
-	s1.forEachRemote(func(r *client) {
+	for _, r := range s1.leafs {
 		require_Equal(t, r.out.wdl, 5*time.Second)
-	})
+	}
+}
 
-	s2.forEachRemote(func(r *client) {
-		require_Equal(t, r.out.wdl, 6*time.Second)
-	})
+func TestLeafNodeConfigureWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Default": WriteTimeoutPolicyDefault,
+		"Retry":   WriteTimeoutPolicyRetry,
+		"Close":   WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			o1 := testDefaultOptionsForGateway("B")
+			o1.Gateway.WriteTimeout = policy
+			s1 := runGatewayServer(o1)
+			defer s1.Shutdown()
+
+			o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
+			s2 := runGatewayServer(o2)
+			defer s2.Shutdown()
+
+			waitForOutboundGateways(t, s2, 1, time.Second)
+			waitForInboundGateways(t, s1, 1, time.Second)
+			waitForOutboundGateways(t, s1, 1, time.Second)
+
+			s1.mu.RLock()
+			defer s1.mu.RUnlock()
+
+			for _, r := range s1.leafs {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			}
+		})
+	}
 }
 
 // https://github.com/nats-io/nats-server/issues/7441
