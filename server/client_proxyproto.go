@@ -71,9 +71,10 @@ const (
 
 var (
 	// Errors
-	errProxyProtoInvalid     = errors.New("invalid PROXY protocol header")
-	errProxyProtoUnsupported = errors.New("unsupported PROXY protocol feature")
-	errProxyProtoTimeout     = errors.New("timeout reading PROXY protocol header")
+	errProxyProtoInvalid      = errors.New("invalid PROXY protocol header")
+	errProxyProtoUnsupported  = errors.New("unsupported PROXY protocol feature")
+	errProxyProtoTimeout      = errors.New("timeout reading PROXY protocol header")
+	errProxyProtoUnrecognized = errors.New("unrecognized PROXY protocol format")
 )
 
 // proxyProtoAddr contains the address information extracted from PROXY protocol header
@@ -118,18 +119,14 @@ func detectProxyProtoVersion(conn net.Conn) (version int, header []byte, err err
 	if _, err = io.ReadFull(conn, header); err != nil {
 		return 0, nil, fmt.Errorf("failed to read protocol version: %w", err)
 	}
-
-	// Check for v1 text format: "PROXY "
-	if string(header) == proxyProtoV1Prefix {
+	switch bytesToString(header) {
+	case proxyProtoV1Prefix:
 		return 1, header, nil
-	}
-
-	// Check for v2 signature (first 6 bytes of 12-byte signature)
-	if string(header) == proxyProtoV2Sig[:6] {
+	case proxyProtoV2Sig[:6]:
 		return 2, header, nil
+	default:
+		return 0, nil, errProxyProtoUnrecognized
 	}
-
-	return 0, nil, fmt.Errorf("unrecognized PROXY protocol format")
 }
 
 // readProxyProtoV1Header parses PROXY protocol v1 text format.
@@ -155,7 +152,7 @@ func readProxyProtoV1Header(conn net.Conn) (*proxyProtoAddr, error) {
 		for i := 0; i < len(line)-1; i++ {
 			if line[i] == '\r' && line[i+1] == '\n' {
 				// Found CRLF - extract just the line portion
-				line = line[:i+2]
+				line = line[:i]
 				goto foundCRLF
 			}
 		}
@@ -165,13 +162,7 @@ func readProxyProtoV1Header(conn net.Conn) (*proxyProtoAddr, error) {
 	return nil, fmt.Errorf("%w: v1 line too long", errProxyProtoInvalid)
 
 foundCRLF:
-	// Line is properly terminated with CRLF
-	if len(line) < 2 {
-		return nil, fmt.Errorf("%w: v1 line too short", errProxyProtoInvalid)
-	}
-
-	// Remove CRLF and parse
-	line = line[:len(line)-2]
+	// Get parts from the protocol
 	parts := strings.Fields(string(line))
 
 	// Validate format
@@ -330,7 +321,7 @@ func parseProxyProtoV2Header(conn net.Conn, header []byte) (*proxyProtoAddr, err
 		// For LOCAL, we should skip the address data if any
 		if addrLen > 0 {
 			// Discard the address data
-			if err := discardBytes(conn, int(addrLen)); err != nil {
+			if _, err := io.CopyN(io.Discard, conn, int64(addrLen)); err != nil {
 				return nil, fmt.Errorf("failed to discard LOCAL command address data: %w", err)
 			}
 		}
@@ -350,7 +341,6 @@ func parseProxyProtoV2Header(conn net.Conn, header []byte) (*proxyProtoAddr, err
 	// Parse address data based on family
 	var addr *proxyProtoAddr
 	var err error
-
 	switch family {
 	case proxyProtoFamilyInet:
 		addr, err = parseIPv4Addr(conn, addrLen)
@@ -360,20 +350,15 @@ func parseProxyProtoV2Header(conn net.Conn, header []byte) (*proxyProtoAddr, err
 		// UNSPEC family with PROXY command is valid but rare
 		// Just skip the address data
 		if addrLen > 0 {
-			if err := discardBytes(conn, int(addrLen)); err != nil {
-				return nil, fmt.Errorf("failed to discard UNSPEC address data: %w", err)
+			if _, err := io.CopyN(io.Discard, conn, int64(addrLen)); err != nil {
+				return nil, fmt.Errorf("failed to discard UNSPEC address address data: %w", err)
 			}
 		}
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported address family 0x%02x", errProxyProtoUnsupported, family)
 	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	return addr, nil
+	return addr, err
 }
 
 // parseIPv4Addr parses IPv4 address data from PROXY protocol header
@@ -382,21 +367,16 @@ func parseIPv4Addr(conn net.Conn, addrLen uint16) (*proxyProtoAddr, error) {
 	if addrLen < proxyProtoAddrSizeIPv4 {
 		return nil, fmt.Errorf("IPv4 address data too short: %d bytes", addrLen)
 	}
-
-	// Read address data
 	addrData := make([]byte, addrLen)
 	if _, err := io.ReadFull(conn, addrData); err != nil {
 		return nil, fmt.Errorf("failed to read IPv4 address data: %w", err)
 	}
-
-	addr := &proxyProtoAddr{
+	return &proxyProtoAddr{
 		srcIP:   net.IP(addrData[0:4]),
 		dstIP:   net.IP(addrData[4:8]),
 		srcPort: binary.BigEndian.Uint16(addrData[8:10]),
 		dstPort: binary.BigEndian.Uint16(addrData[10:12]),
-	}
-
-	return addr, nil
+	}, nil
 }
 
 // parseIPv6Addr parses IPv6 address data from PROXY protocol header
@@ -405,33 +385,14 @@ func parseIPv6Addr(conn net.Conn, addrLen uint16) (*proxyProtoAddr, error) {
 	if addrLen < proxyProtoAddrSizeIPv6 {
 		return nil, fmt.Errorf("IPv6 address data too short: %d bytes", addrLen)
 	}
-
-	// Read address data
 	addrData := make([]byte, addrLen)
 	if _, err := io.ReadFull(conn, addrData); err != nil {
 		return nil, fmt.Errorf("failed to read IPv6 address data: %w", err)
 	}
-
-	addr := &proxyProtoAddr{
+	return &proxyProtoAddr{
 		srcIP:   net.IP(addrData[0:16]),
 		dstIP:   net.IP(addrData[16:32]),
 		srcPort: binary.BigEndian.Uint16(addrData[32:34]),
 		dstPort: binary.BigEndian.Uint16(addrData[34:36]),
-	}
-
-	return addr, nil
-}
-
-// discardBytes reads and discards n bytes from the connection
-func discardBytes(conn net.Conn, n int) error {
-	if n <= 0 {
-		return nil
-	}
-	// Limit to prevent excessive memory allocation
-	if n > 65535 {
-		return fmt.Errorf("%w: address data too long (%d bytes)", errProxyProtoInvalid, n)
-	}
-	buf := make([]byte, n)
-	_, err := io.ReadFull(conn, buf)
-	return err
+	}, nil
 }
