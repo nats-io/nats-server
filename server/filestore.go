@@ -7095,10 +7095,11 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 					}
 				}
 			}
-			// Add to our index.
-			idx = append(idx, index)
-			// Adjust if we guessed wrong.
-			if seq != 0 && seq < fseq {
+
+			// Add to our index. Set fseq only for the first indexed message. This should
+			// guarantee that slotInfo offsets based off fseq are always relative to idx,
+			// even with leading tombstoned messages etc.
+			if idx = append(idx, index); len(idx) == 1 {
 				fseq = seq
 			}
 
