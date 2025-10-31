@@ -3893,6 +3893,9 @@ CHECK:
 	// running servers that this session is being used.
 	if err := es.save(); err != nil {
 		asm.removeSession(es, true)
+
+		// when saving of the session fails, we need to clear it
+		_ = es.clear(false)
 		return err
 	}
 	c.mu.Lock()
