@@ -1219,9 +1219,12 @@ func TestNRGPendingAppendEntryCacheInvalidation(t *testing.T) {
 			rg.lockAll()
 			for _, s := range rg {
 				n := s.node().(*raft)
+				pae := map[uint64]*appendEntry{}
 				for i := 0; i < test.entries; i++ {
-					n.pae[n.pindex+uint64(1+i)] = newAppendEntry("", 0, 0, 0, 0, nil)
+					pae[n.pindex+uint64(1+i)] = newAppendEntry("", 0, 0, 0, 0, nil)
 				}
+				n.pae.Set(&pae)
+				n.pae.Strengthen()
 			}
 			rg.unlockAll()
 

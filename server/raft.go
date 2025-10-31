@@ -33,6 +33,7 @@ import (
 
 	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
+	"github.com/nats-io/nats-server/v2/server/elastic"
 
 	"github.com/minio/highwayhash"
 )
@@ -160,9 +161,9 @@ type raft struct {
 	qn    int             // Number of nodes needed to establish quorum
 	peers map[string]*lps // Other peers in the Raft group
 
-	removed map[string]time.Time           // Peers that were removed from the group
-	acks    map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
-	pae     map[uint64]*appendEntry        // Pending append entries
+	removed map[string]time.Time                     // Peers that were removed from the group
+	acks    map[uint64]map[string]struct{}           // Append entry responses/acks, map of entry index -> peer ID
+	pae     elastic.Pointer[map[uint64]*appendEntry] // Pending append entries
 
 	elect  *time.Timer // Election timer, normally accessed via electTimer
 	etlr   time.Time   // Election timer last reset time, for unit tests only
@@ -417,7 +418,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		qn:       ps.clusterSize/2 + 1,
 		peers:    make(map[string]*lps),
 		acks:     make(map[uint64]map[string]struct{}),
-		pae:      make(map[uint64]*appendEntry),
 		s:        s,
 		js:       s.getJetStream(),
 		quit:     make(chan struct{}),
@@ -3034,7 +3034,11 @@ func (n *raft) applyCommit(index uint64) error {
 		delete(n.acks, index)
 	}
 
-	ae := n.pae[index]
+	var ae *appendEntry
+	pae := n.pae.Value()
+	if pae != nil {
+		ae = (*pae)[index]
+	}
 	if ae == nil {
 		if index < n.papplied {
 			return nil
@@ -3052,8 +3056,8 @@ func (n *raft) applyCommit(index uint64) error {
 			}
 			return errEntryLoadFailed
 		}
-	} else {
-		defer delete(n.pae, index)
+	} else if pae != nil {
+		defer delete(*pae, index)
 	}
 
 	n.commit = index
@@ -4053,15 +4057,22 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
 // cachePendingEntry saves append entries in memory for faster processing during applyCommit.
 // Only save so many however to avoid memory bloat.
 func (n *raft) cachePendingEntry(ae *appendEntry) {
-	if l := len(n.pae); l < paeDropThreshold {
-		n.pae[n.pindex], l = ae, l+1
+	var pae map[uint64]*appendEntry
+	if npae := n.pae.Value(); npae == nil || *npae == nil {
+		pae = map[uint64]*appendEntry{}
+		n.pae.Set(&pae)
+	} else {
+		pae = *npae
+	}
+	if l := len(pae); l < paeDropThreshold {
+		pae[n.pindex], l = ae, l+1
 		if l >= paeWarnThreshold && l%paeWarnModulo == 0 {
-			n.warn("%d append entries pending", len(n.pae))
+			n.warn("%d append entries pending", len(pae))
 		}
 	} else {
 		// Invalidate cache entry at this index, we might have
 		// stored it previously with a different value.
-		delete(n.pae, n.pindex)
+		delete(pae, n.pindex)
 	}
 }
 
@@ -4547,9 +4558,7 @@ retry:
 	} else if state == Leader && pstate != Leader {
 		// Don't updateLeadChange here, it will be done in switchToLeader or after initial messages are applied.
 		leadChange = true
-		if len(n.pae) > 0 {
-			n.pae = make(map[uint64]*appendEntry)
-		}
+		n.pae.Set(nil)
 	}
 
 	n.writeTermVote()
