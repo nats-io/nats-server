@@ -178,6 +178,9 @@ const (
 	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
 
+	// JSApiConsumerResetT is the prefix for resetting a given consumer to a new starting sequence.
+	JSApiConsumerResetT = "$JS.API.CONSUMER.RESET.%s.%s"
+
 	// JSApiConsumerUnpinT is the prefix for unpinning subscription for a given consumer.
 	JSApiConsumerUnpin  = "$JS.API.CONSUMER.UNPIN.*.*"
 	JSApiConsumerUnpinT = "$JS.API.CONSUMER.UNPIN.%s.%s"
@@ -778,6 +781,11 @@ type JSApiConsumerGetNextRequest struct {
 	NoWait    bool          `json:"no_wait,omitempty"`
 	Heartbeat time.Duration `json:"idle_heartbeat,omitempty"`
 	PriorityGroup
+}
+
+// JSApiConsumerResetRequest is for resetting a consumer to a specific sequence.
+type JSApiConsumerResetRequest struct {
+	Seq uint64 `json:"seq"`
 }
 
 // JSApiStreamTemplateCreateResponse for creating templates.

@@ -119,6 +119,8 @@ const (
 	// Batch stream ops.
 	batchMsgOp
 	batchCommitMsgOp
+	// Consumer rest to specific starting sequence.
+	resetSeqOp
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -5791,6 +5793,33 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 				if o.store != nil {
 					o.store.UpdateStarting(sseq - 1)
+				}
+				o.mu.Unlock()
+			case resetSeqOp:
+				o.mu.Lock()
+				var le = binary.LittleEndian
+				sseq := le.Uint64(buf[1:9])
+				reply := string(buf[9:])
+				o.resetLocalStartingSeq(sseq)
+				if o.store != nil {
+					o.store.Reset(sseq - 1)
+				}
+				if reply != _EMPTY_ {
+					o.outq.sendMsg(reply, nil)
+				}
+				// Cleanup messages that lost interest.
+				if o.retention == InterestPolicy {
+					if mset := o.mset; mset != nil {
+						o.mu.Unlock()
+						ss := mset.state()
+						o.checkStateForInterestStream(&ss)
+						o.mu.Lock()
+					}
+				}
+				// Recalculate pending, and re-trigger message delivery.
+				if o.isLeader() {
+					o.streamNumPending()
+					o.signalNewMessages()
 				}
 				o.mu.Unlock()
 			case addPendingRequest:

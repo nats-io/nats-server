@@ -437,11 +437,13 @@ type consumer struct {
 	lss               *lastSeqSkipList
 	rlimit            *rate.Limiter
 	reqSub            *subscription
+	resetSub          *subscription
 	ackSub            *subscription
 	ackReplyT         string
 	ackSubj           string
 	nextMsgSubj       string
 	nextMsgReqs       *ipQueue[*nextMsgReq]
+	resetSubj         string
 	maxp              int
 	pblimit           int
 	maxpb             int
@@ -1263,6 +1265,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
+	o.resetSubj = fmt.Sprintf(JSApiConsumerResetT, mn, o.name)
 
 	// Check/update the inactive threshold
 	o.updateInactiveThreshold(&o.cfg)
@@ -1547,6 +1550,11 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.deleteWithoutAdvisory()
 			return
 		}
+		if o.resetSub, err = o.subscribeInternal(o.resetSubj, o.processResetReq); err != nil {
+			o.mu.Unlock()
+			o.deleteWithoutAdvisory()
+			return
+		}
 
 		// Check on flow control settings.
 		if o.cfg.FlowControl {
@@ -1667,8 +1675,9 @@ func (o *consumer) setLeader(isLeader bool) {
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
+		o.unsubscribe(o.resetSub)
 		o.unsubscribe(o.fcSub)
-		o.ackSub, o.reqSub, o.fcSub = nil, nil, nil
+		o.ackSub, o.reqSub, o.resetSub, o.fcSub = nil, nil, nil, nil
 		if o.infoSub != nil {
 			o.srv.sysUnsubscribe(o.infoSub)
 			o.infoSub = nil
@@ -2594,6 +2603,53 @@ func (o *consumer) updateSkipped(seq uint64) {
 	var le = binary.LittleEndian
 	le.PutUint64(b[1:], seq)
 	o.propose(b[:])
+}
+
+func (o *consumer) resetStartingSeq(seq uint64, reply string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// Must be a minimum of 1.
+	if seq <= 0 {
+		seq = 1
+	}
+	o.resetLocalStartingSeq(seq)
+	// Clustered mode and R>1.
+	if o.node != nil {
+		b := make([]byte, 1+8+len(reply))
+		b[0] = byte(resetSeqOp)
+		var le = binary.LittleEndian
+		le.PutUint64(b[1:], seq)
+		copy(b[1+8:], reply)
+		o.propose(b[:])
+	} else if o.store != nil {
+		o.store.Reset(seq - 1)
+		if reply != _EMPTY_ {
+			o.outq.sendMsg(reply, nil)
+		}
+		// Cleanup messages that lost interest.
+		if o.retention == InterestPolicy {
+			if mset := o.mset; mset != nil {
+				o.mu.Unlock()
+				ss := mset.state()
+				o.checkStateForInterestStream(&ss)
+				o.mu.Lock()
+			}
+		}
+
+		// Recalculate pending, and re-trigger message delivery.
+		o.streamNumPending()
+		o.signalNewMessages()
+	}
+}
+
+// Lock should be held.
+func (o *consumer) resetLocalStartingSeq(seq uint64) {
+	o.pending, o.rdc = nil, nil
+	o.rdq = nil
+	o.rdqi.Empty()
+	o.sseq, o.dseq = seq, 1
+	o.adflr, o.asflr = o.dseq-1, o.sseq-1
 }
 
 func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
@@ -4117,6 +4173,35 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		return
 	}
 	o.nextMsgReqs.push(newNextMsgReq(reply, copyBytes(msg)))
+}
+
+// processResetReq will reset a consumer to a new starting sequence.
+func (o *consumer) processResetReq(_ *subscription, c *client, _ *Account, _, reply string, rmsg []byte) {
+	if reply == _EMPTY_ {
+		return
+	}
+
+	sendErr := func(status int, description string) {
+		hdr := fmt.Appendf(nil, "NATS/1.0 %d %s\r\n\r\n", status, description)
+		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+	}
+
+	hdr, msg := c.msgParts(rmsg)
+	if errorOnRequiredApiLevel(hdr) {
+		sendErr(412, "Required Api Level")
+		return
+	}
+
+	var req JSApiConsumerResetRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		sendErr(400, "Bad Request")
+		return
+	}
+	if req.Seq == 0 {
+		sendErr(400, "Bad Request - Zero Seq")
+		return
+	}
+	o.resetStartingSeq(req.Seq, reply)
 }
 
 func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
@@ -6059,9 +6144,11 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	o.active = false
 	o.unsubscribe(o.ackSub)
 	o.unsubscribe(o.reqSub)
+	o.unsubscribe(o.resetSub)
 	o.unsubscribe(o.fcSub)
 	o.ackSub = nil
 	o.reqSub = nil
+	o.resetSub = nil
 	o.fcSub = nil
 	if o.infoSub != nil {
 		o.srv.sysUnsubscribe(o.infoSub)
