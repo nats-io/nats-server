@@ -1390,10 +1390,16 @@ func (ms *memStore) runMsgScheduling() {
 	}
 	ms.scheduling.running = true
 
-	scheduledMsgs := ms.scheduling.getScheduledMessages(func(seq uint64, smv *StoreMsg) *StoreMsg {
-		sm, _ := ms.loadMsgLocked(seq, smv, false)
-		return sm
-	})
+	scheduledMsgs := ms.scheduling.getScheduledMessages(
+		func(seq uint64, smv *StoreMsg) *StoreMsg {
+			sm, _ := ms.loadMsgLocked(seq, smv, false)
+			return sm
+		},
+		func(subj string, smv *StoreMsg) *StoreMsg {
+			sm, _ := ms.loadLastLocked(subj, smv)
+			return sm
+		},
+	)
 	if len(scheduledMsgs) > 0 {
 		ms.mu.Unlock()
 		for _, msg := range scheduledMsgs {
@@ -1710,13 +1716,17 @@ func (ms *memStore) loadMsgLocked(seq uint64, smp *StoreMsg, needMSLock bool) (*
 // LoadLastMsg will return the last message we have that matches a given subject.
 // The subject can be a wildcard.
 func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error) {
-	var sm *StoreMsg
-	var ok bool
-
 	// This needs to be a write lock, as filteredStateLocked can
 	// mutate the per-subject state.
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
+	return ms.loadLastLocked(subject, smp)
+}
+
+// Lock should be held.
+func (ms *memStore) loadLastLocked(subject string, smp *StoreMsg) (*StoreMsg, error) {
+	var sm *StoreMsg
+	var ok bool
 
 	if subject == _EMPTY_ || subject == fwcs {
 		sm, ok = ms.msgs[ms.state.LastSeq]
