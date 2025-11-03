@@ -9486,6 +9486,56 @@ func TestJetStreamClusterScheduledDelayedMessageReversedHeaderOrder(t *testing.T
 	}
 }
 
+func TestJetStreamClusterScheduledIntervalMessage(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				cfg := &StreamConfig{
+					Name:              "SchedulesEnabled",
+					Subjects:          []string{"foo.*"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+				}
+				_, err := jsStreamCreate(t, nc, cfg)
+				require_NoError(t, err)
+
+				// Schedule with an interval that triggers often.
+				m := nats.NewMsg("foo.schedule")
+				m.Header.Set("Nats-Schedule", "@every 1s")
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				pubAck, err := js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, 1)
+
+				sl := c.streamLeader(globalAccountName, "SchedulesEnabled")
+				mset, err := sl.globalAccount().lookupStream("SchedulesEnabled")
+				require_NoError(t, err)
+
+				// Waiting for the repeated message to be published enough times.
+				checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+					total := mset.Store().SubjectsTotals("foo.publish")["foo.publish"]
+					if total < 3 {
+						return fmt.Errorf("expected at least 3 messages, got %d", total)
+					}
+					return nil
+				})
+
+				// Servers should be synced.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					return checkState(t, c, globalAccountName, "SchedulesEnabled")
+				})
+			})
+		}
+	}
+}
+
 func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *testing.T) {
 	clusterName := "R3S"
 	c := createJetStreamClusterExplicit(t, clusterName, 3)
