@@ -21978,6 +21978,32 @@ func TestJetStreamScheduledMessageNotDeactivated(t *testing.T) {
 	}
 }
 
+func TestJetStreamScheduledMessageParse(t *testing.T) {
+	// @at <ts>
+	ts := time.Now().UTC()
+	sts, repeat, ok := parseMsgSchedule(fmt.Sprintf("@at %s", ts.Format(time.RFC3339Nano)), 0)
+	require_True(t, ok)
+	require_False(t, repeat)
+	require_Equal(t, ts, sts)
+
+	// @every <duration>
+	now := time.Now().UTC().Round(time.Second)
+	sts, repeat, ok = parseMsgSchedule("@every 5s", now.UnixNano())
+	require_True(t, ok)
+	require_True(t, repeat)
+	require_Equal(t, now.Add(5*time.Second), sts)
+
+	// A schedule on an interval should not spam loads of times if it hasn't run in a long while.
+	sts, repeat, ok = parseMsgSchedule("@every 5s", 0)
+	require_True(t, ok)
+	require_True(t, repeat)
+	require_True(t, sts.After(time.Unix(0, 0).UTC().Add(5*time.Second)))
+
+	// A schedule can only run at least once every second.
+	_, _, ok = parseMsgSchedule("@every 999ms", 0)
+	require_False(t, ok)
+}
+
 func TestJetStreamDirectGetBatchParallelWriteDeadlock(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

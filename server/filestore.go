@@ -1646,7 +1646,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 				mb.ttls++
 			}
 			if mb.fs.scheduling != nil {
-				if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+				if schedule, ok := nextMessageSchedule(hdr, ts); ok && !schedule.IsZero() {
 					mb.fs.scheduling.add(seq, string(subj), schedule.UnixNano())
 					mb.schedules++
 				}
@@ -2170,7 +2170,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 			if len(msg.hdr) == 0 {
 				continue
 			}
-			if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+			if schedule, ok := nextMessageSchedule(sm.hdr, sm.ts); ok && !schedule.IsZero() {
 				fs.scheduling.init(seq, sm.subj, schedule.UnixNano())
 			}
 		}
@@ -4566,11 +4566,19 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 
 	// Message scheduling.
 	if fs.scheduling != nil {
-		if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+		if schedule, ok := nextMessageSchedule(hdr, ts); ok && !schedule.IsZero() {
 			fs.scheduling.add(seq, subj, schedule.UnixNano())
 			fs.lmb.schedules++
 		} else {
 			fs.scheduling.removeSubject(subj)
+		}
+
+		// Check for a repeating schedule and update such that it triggers again.
+		if scheduleNext := bytesToString(sliceHeader(JSScheduleNext, hdr)); scheduleNext != _EMPTY_ && scheduleNext != JSScheduleNextPurge {
+			scheduler := getMessageScheduler(hdr)
+			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
+				fs.scheduling.update(scheduler, next.UnixNano())
+			}
 		}
 	}
 
