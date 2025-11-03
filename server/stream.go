@@ -4876,14 +4876,18 @@ func getMessageSchedule(hdr []byte) (time.Time, bool) {
 		return time.Time{}, true
 	}
 	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
-	if val == _EMPTY_ {
+	schedule, _, ok := parseMsgSchedule(val, time.Now().UTC().UnixNano())
+	return schedule, ok
+}
+
+// Fast lookup and calculation of next message schedule.
+func nextMessageSchedule(hdr []byte, ts int64) (time.Time, bool) {
+	if len(hdr) == 0 {
 		return time.Time{}, true
 	}
-	if !strings.HasPrefix(val, "@at ") {
-		return time.Time{}, false
-	}
-	t, err := time.Parse(time.RFC3339, val[4:])
-	return t, err == nil
+	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
+	schedule, _, ok := parseMsgSchedule(val, ts)
+	return schedule, ok
 }
 
 // Fast lookup of the message schedule TTL from headers.
