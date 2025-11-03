@@ -19,15 +19,18 @@ import (
 	"time"
 )
 
-func TestNotRunningPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("Expected function to panic, but it did not")
-		}
-	}()
+func TestNotRunningValue(t *testing.T) {
 	// Set back to zero in case this test gets run multiple times via --count.
 	utime.Store(0)
-	_ = AccessTime()
+	at := AccessTime()
+	if at == 0 {
+		t.Fatal("Expected non-zero access time")
+	}
+
+	atn := AccessTime()
+	if atn != at {
+		t.Fatal("Did not expect updates to access time")
+	}
 }
 
 func TestRegisterAndUnregister(t *testing.T) {
