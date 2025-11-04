@@ -7097,10 +7097,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			}
 			// Add to our index.
 			idx = append(idx, index)
-			// Adjust if we guessed wrong.
-			if seq != 0 && seq < fseq {
-				fseq = seq
-			}
 
 			// Make sure our dmap has this entry if it was erased.
 			if erased && dms == 0 && seq != 0 {
