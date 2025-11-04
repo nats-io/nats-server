@@ -4537,11 +4537,11 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 		needsRecord = true
 		mb.dmap.Insert(seq)
 	}
-	mb.mu.Unlock()
-
 	if needsRecord {
-		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now, true)
-	} else {
+		mb.writeMsgRecordLocked(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now, true, true)
+	}
+	mb.mu.Unlock()
+	if !needsRecord {
 		mb.kickFlusher()
 	}
 }
@@ -4629,10 +4629,9 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 			mb.dmap.Insert(seq)
 		}
 	}
-	mb.mu.Unlock()
-
 	// Write out our placeholder.
-	mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true)
+	mb.writeMsgRecordLocked(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true, true)
+	mb.mu.Unlock()
 
 	// Now update FS accounting.
 	// Update fs state.
@@ -6399,11 +6398,10 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		mb.updateAccounting(seq, ts, rl)
 		// Strip ebit if set.
 		seq = seq &^ ebit
-		if mb.cache.fseq == 0 {
+		// Write index
+		if mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit); len(mb.cache.idx) == 1 {
 			mb.cache.fseq = seq
 		}
-		// Write index
-		mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit)
 	} else {
 		// Make sure to account for tombstones in rbytes.
 		mb.rbytes += rl
@@ -7097,10 +7095,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			}
 			// Add to our index.
 			idx = append(idx, index)
-			// Adjust if we guessed wrong.
-			if seq != 0 && seq < fseq {
-				fseq = seq
-			}
 
 			// Make sure our dmap has this entry if it was erased.
 			if erased && dms == 0 && seq != 0 {
@@ -7143,8 +7137,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	// earlier loop if we've ran out of block file to look at, but should
 	// be easily noticed because the seq will be below the last seq from
 	// the index.
-	if seq > 0 && seq < mbLastSeq {
-		for dseq := seq; dseq < mbLastSeq; dseq++ {
+	if seq > 0 && seq+1 <= mbLastSeq {
+		for dseq := seq + 1; dseq <= mbLastSeq; dseq++ {
 			idx = append(idx, dbit)
 			if dms == 0 {
 				mb.dmap.Insert(dseq)
