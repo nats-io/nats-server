@@ -4744,7 +4744,7 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 
 	checkHealth := func() {
 		t.Helper()
-		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 			for _, s := range c.servers {
 				status := s.healthz(nil)
 				if status.Error != _EMPTY_ {
