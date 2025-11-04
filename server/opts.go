@@ -3757,18 +3757,24 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			continue
 		}
 		if stream.pre != _EMPTY_ {
-			if err := stream.acc.addStreamImportWithClaim(ta, stream.sub, stream.pre, stream.atrc, nil); err != nil {
+			if err := stream.acc.addStreamImportWithClaimNoCycleCheck(ta, stream.sub, stream.pre, stream.atrc, nil); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 				*errors = append(*errors, &configErr{tk, msg})
 				continue
 			}
 		} else {
-			if err := stream.acc.addMappedStreamImportWithClaim(ta, stream.sub, stream.to, stream.atrc, nil); err != nil {
+			if err := stream.acc.addMappedStreamImportWithClaimNoCycleCheck(ta, stream.sub, stream.to, stream.atrc, nil); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 				*errors = append(*errors, &configErr{tk, msg})
 				continue
 			}
 		}
+	}
+
+	// Check for cycles after all stream imports have been added
+	if err := checkAllAccountsForStreamImportCycles(am); err != nil {
+		*errors = append(*errors, &configErr{tk, err.Error()})
+		return err
 	}
 	for _, service := range importServices {
 		ta := am[service.an]

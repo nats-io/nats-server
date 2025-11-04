@@ -1680,6 +1680,29 @@ func (a *Account) checkStreamImportsForCycles(to string, visited map[string]bool
 	return nil
 }
 
+// checkAllAccountsForStreamImportCycles checks all accounts for import cycles
+// This should be called after all stream imports have been added during config processing
+func checkAllAccountsForStreamImportCycles(accounts map[string]*Account) error {
+	for _, acc := range accounts {
+		acc.mu.RLock()
+		// Check each stream import for cycles
+		for _, si := range acc.imports.streams {
+			acc.mu.RUnlock()
+			// Check if this import forms a cycle
+			if err := acc.streamImportFormsCycle(si.acc, si.to); err != nil {
+				return fmt.Errorf("Error adding stream import %q: %v", si.from, err)
+			}
+			// Also check the 'from' subject path
+			if err := acc.streamImportFormsCycle(si.acc, si.from); err != nil {
+				return fmt.Errorf("Error adding stream import %q: %v", si.from, err)
+			}
+			acc.mu.RLock()
+		}
+		acc.mu.RUnlock()
+	}
+	return nil
+}
+
 // SetServiceImportSharing will allow sharing of information about requests with the export account.
 // Used for service latency tracking at the moment.
 func (a *Account) SetServiceImportSharing(destination *Account, to string, allow bool) error {
@@ -2702,6 +2725,81 @@ func (a *Account) isStreamImportDuplicate(acc *Account, from string) bool {
 // AddStreamImport will add in the stream import from a specific account.
 func (a *Account) AddStreamImport(account *Account, from, prefix string) error {
 	return a.addStreamImportWithClaim(account, from, prefix, false, nil)
+}
+
+// addStreamImportWithClaimNoCycleCheck is used during config parsing to defer cycle checking
+func (a *Account) addStreamImportWithClaimNoCycleCheck(account *Account, from, prefix string, allowTrace bool, imClaim *jwt.Import) error {
+	if account == nil {
+		return ErrMissingAccount
+	}
+
+	// First check to see if the account has authorized export of the subject.
+	if !account.checkStreamImportAuthorized(a, from, imClaim) {
+		return ErrStreamImportAuthorization
+	}
+
+	// Check prefix if it exists and make sure its a literal.
+	// Append token separator if not already present.
+	if prefix != _EMPTY_ {
+		// Make sure there are no wildcards here, this prefix needs to be a literal
+		// since it will be prepended to a publish subject.
+		if !subjectIsLiteral(prefix) {
+			return ErrStreamImportBadPrefix
+		}
+		if prefix[len(prefix)-1] != btsep {
+			prefix = prefix + string(btsep)
+		}
+	}
+
+	return a.addMappedStreamImportWithClaimNoCycleCheck(account, from, prefix+from, allowTrace, imClaim)
+}
+
+// addMappedStreamImportWithClaimNoCycleCheck is used during config parsing to defer cycle checking
+func (a *Account) addMappedStreamImportWithClaimNoCycleCheck(account *Account, from, to string, allowTrace bool, imClaim *jwt.Import) error {
+	if account == nil {
+		return ErrMissingAccount
+	}
+
+	// First check to see if the account has authorized export of the subject.
+	if !account.checkStreamImportAuthorized(a, from, imClaim) {
+		return ErrStreamImportAuthorization
+	}
+
+	if to == _EMPTY_ {
+		to = from
+	}
+
+	// NOTE: Skipping cycle check here - will be done after all imports are added
+
+	var (
+		usePub bool
+		tr     *subjectTransform
+		err    error
+	)
+	if subjectHasWildcard(from) {
+		if to == from {
+			usePub = true
+		} else {
+			// Create a transform
+			if tr, err = NewSubjectTransformStrict(from, transformTokenize(to)); err != nil {
+				return fmt.Errorf("failed to create mapping transform for stream import subject from %q to %q: %v",
+					from, to, err)
+			}
+			to, _ = transformUntokenize(to)
+		}
+	}
+
+	a.mu.Lock()
+	if a.isStreamImportDuplicate(account, from) {
+		a.mu.Unlock()
+		return ErrStreamImportDuplicate
+	}
+	if imClaim != nil {
+		allowTrace = imClaim.AllowTrace
+	}
+	a.imports.streams = append(a.imports.streams, &streamImport{account, from, to, tr, nil, imClaim, usePub, false, allowTrace})
+	a.mu.Unlock()
+	return nil
 }
 
 // IsPublicExport is a placeholder to denote a public export.
