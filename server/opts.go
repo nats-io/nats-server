@@ -3681,12 +3681,15 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 		am[a.Name] = a
 	}
 	// Do stream exports
-	for _, stream := range exportStreams {
+	fmt.Printf("\n>> CONFIG: Processing %d stream exports...\n", len(exportStreams))
+	for i, stream := range exportStreams {
+		fmt.Printf(">> CONFIG: Stream export %d: %s exports %s\n", i, stream.acc.Name, stream.sub)
 		// Make array of accounts if applicable.
 		var accounts []*Account
 		for _, an := range stream.accs {
 			ta := am[an]
 			if ta == nil {
+				fmt.Printf("❌ CONFIG: Target account %s not found for export\n", an)
 				msg := fmt.Sprintf("%q account not defined for stream export", an)
 				*errors = append(*errors, &configErr{tk, msg})
 				continue
@@ -3694,10 +3697,12 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			accounts = append(accounts, ta)
 		}
 		if err := stream.acc.addStreamExportWithAccountPos(stream.sub, accounts, stream.tPos); err != nil {
+			fmt.Printf("❌ CONFIG: Error adding stream export: %v\n", err)
 			msg := fmt.Sprintf("Error adding stream export %q: %v", stream.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
+		fmt.Printf("■ CONFIG: Successfully added stream export %d\n", i)
 	}
 	for _, service := range exportServices {
 		// Make array of accounts if applicable.
@@ -3749,26 +3754,36 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			}
 		}
 	}
-	for _, stream := range importStreams {
+	fmt.Printf("\n<< CONFIG: Processing %d stream imports...\n", len(importStreams))
+	for i, stream := range importStreams {
+		fmt.Printf("<< CONFIG: Stream import %d: %s imports %s from %s (to: %s)\n", i, stream.acc.Name, stream.sub, stream.an, stream.to)
+		
 		ta := am[stream.an]
 		if ta == nil {
+			fmt.Printf("❌ CONFIG: Target account %s not found for import\n", stream.an)
 			msg := fmt.Sprintf("%q account not defined for stream import", stream.an)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
+		
 		if stream.pre != _EMPTY_ {
+			fmt.Printf("    ■ CONFIG: Adding stream import with prefix: %s -> %s (prefix: %s)\n", stream.sub, ta.Name, stream.pre)
 			if err := stream.acc.addStreamImportWithClaim(ta, stream.sub, stream.pre, stream.atrc, nil); err != nil {
+				fmt.Printf("    ❌ CONFIG: Error adding stream import: %v\n", err)
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 				*errors = append(*errors, &configErr{tk, msg})
 				continue
 			}
 		} else {
+			fmt.Printf("    ■ CONFIG: Adding mapped stream import: %s -> %s (to: %s)\n", stream.sub, ta.Name, stream.to)
 			if err := stream.acc.addMappedStreamImportWithClaim(ta, stream.sub, stream.to, stream.atrc, nil); err != nil {
+				fmt.Printf("    ❌ CONFIG: Error adding mapped stream import: %v\n", err)
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 				*errors = append(*errors, &configErr{tk, msg})
 				continue
 			}
 		}
+		fmt.Printf("    ■ CONFIG: Successfully added stream import %d\n", i)
 	}
 	for _, service := range importServices {
 		ta := am[service.an]

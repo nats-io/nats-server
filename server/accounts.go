@@ -1639,44 +1639,72 @@ func (a *Account) hasServiceExportMatching(to string) bool {
 
 // Lock should be held.
 func (a *Account) hasStreamExportMatching(to string) bool {
+	fmt.Printf("    ■ EXPORT CHECK: Account %s checking if exports match subject %s\n", a.Name, to)
+	fmt.Printf("    ■ EXPORT CHECK: Account %s has %d stream exports\n", a.Name, len(a.exports.streams))
+	
 	for subj := range a.exports.streams {
+		fmt.Printf("        ■ EXPORT CHECK: Checking export %s against %s\n", subj, to)
 		if subjectIsSubsetMatch(to, subj) {
+			fmt.Printf("        ■ EXPORT CHECK: Match found! %s matches export %s\n", to, subj)
 			return true
 		}
 	}
+	fmt.Printf("    ■ EXPORT CHECK: No exports in %s match subject %s\n", a.Name, to)
 	return false
 }
 
 func (a *Account) checkStreamImportsForCycles(to string, visited map[string]bool) error {
+	fmt.Printf("■ CYCLE CHECK: Account %s checking subject %s (visited: %v)\n", a.Name, to, visited)
+	
 	if len(visited) >= MaxAccountCycleSearchDepth {
+		fmt.Printf("❌ CYCLE CHECK: Search depth exhausted for %s\n", a.Name)
 		return ErrCycleSearchDepth
 	}
 
 	a.mu.RLock()
 
 	if !a.hasStreamExportMatching(to) {
+		fmt.Printf("■ CYCLE CHECK: Account %s has no stream exports matching %s\n", a.Name, to)
 		a.mu.RUnlock()
 		return nil
 	}
 
-	for _, si := range a.imports.streams {
+	fmt.Printf("■ CYCLE CHECK: Account %s has exports matching %s, checking %d imports\n", a.Name, to, len(a.imports.streams))
+
+	for i, si := range a.imports.streams {
+		fmt.Printf("    ■ CYCLE CHECK: Import %d: %s imports %s from %s (mapped to %s)\n", i, a.Name, si.from, si.acc.Name, si.to)
+		
 		if SubjectsCollide(to, si.to) {
+			fmt.Printf("    ■ CYCLE CHECK: Subject collision detected! %s collides with import %s\n", to, si.to)
 			a.mu.RUnlock()
+			
 			if visited[si.acc.Name] {
+				fmt.Printf("    🔄 CYCLE DETECTED: Already visited account %s! Path: %v -> %s\n", si.acc.Name, visited, si.acc.Name)
 				return ErrImportFormsCycle
 			}
+			
 			// Push ourselves and check si.acc
 			visited[a.Name] = true
+			fmt.Printf("    ■ CYCLE CHECK: Adding %s to visited, recursing to %s\n", a.Name, si.acc.Name)
+			
 			if subjectIsSubsetMatch(si.to, to) {
+				fmt.Printf("    ■ CYCLE CHECK: Subject %s is subset of %s, using %s for recursion\n", si.to, to, si.to)
 				to = si.to
 			}
+			
 			if err := si.acc.checkStreamImportsForCycles(to, visited); err != nil {
+				fmt.Printf("    ❌ CYCLE CHECK: Recursion returned error: %v\n", err)
 				return err
 			}
+			
+			fmt.Printf("    ■ CYCLE CHECK: Recursion to %s completed successfully\n", si.acc.Name)
 			a.mu.RLock()
+		} else {
+			fmt.Printf("    ■ CYCLE CHECK: No collision between %s and import %s\n", to, si.to)
 		}
 	}
 	a.mu.RUnlock()
+	fmt.Printf("■ CYCLE CHECK: Account %s completed successfully for subject %s\n", a.Name, to)
 	return nil
 }
 
@@ -2635,12 +2663,15 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 }
 
 func (a *Account) addMappedStreamImportWithClaim(account *Account, from, to string, allowTrace bool, imClaim *jwt.Import) error {
+	fmt.Printf("■ IMPORT: Adding mapped stream import: %s imports %s from %s (to: %s)\n", a.Name, from, account.Name, to)
+	
 	if account == nil {
 		return ErrMissingAccount
 	}
 
 	// First check to see if the account has authorized export of the subject.
 	if !account.checkStreamImportAuthorized(a, from, imClaim) {
+		fmt.Printf("❌ IMPORT: Import not authorized for %s importing %s from %s\n", a.Name, from, account.Name)
 		return ErrStreamImportAuthorization
 	}
 
@@ -2648,14 +2679,22 @@ func (a *Account) addMappedStreamImportWithClaim(account *Account, from, to stri
 		to = from
 	}
 
+	fmt.Printf("■ IMPORT: Starting cycle check for %s importing from %s\n", a.Name, account.Name)
+	
 	// Check if this forms a cycle.
+	fmt.Printf("    ■ IMPORT: Checking cycle for 'to' subject: %s\n", to)
 	if err := a.streamImportFormsCycle(account, to); err != nil {
+		fmt.Printf("    🔄 IMPORT: Cycle detected on 'to' subject %s: %v\n", to, err)
 		return err
 	}
 
+	fmt.Printf("    ■ IMPORT: Checking cycle for 'from' subject: %s\n", from)
 	if err := a.streamImportFormsCycle(account, from); err != nil {
+		fmt.Printf("    🔄 IMPORT: Cycle detected on 'from' subject %s: %v\n", from, err)
 		return err
 	}
+	
+	fmt.Printf("■ IMPORT: No cycles detected for %s importing %s from %s\n", a.Name, from, account.Name)
 
 	var (
 		usePub bool
