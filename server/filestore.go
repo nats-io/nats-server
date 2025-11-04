@@ -4302,11 +4302,11 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 		needsRecord = true
 		mb.dmap.Insert(seq)
 	}
-	mb.mu.Unlock()
-
 	if needsRecord {
-		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now, true)
-	} else {
+		mb.writeMsgRecordLocked(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now, true, true)
+	}
+	mb.mu.Unlock()
+	if !needsRecord {
 		mb.kickFlusher()
 	}
 }
@@ -4394,10 +4394,9 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 			mb.dmap.Insert(seq)
 		}
 	}
-	mb.mu.Unlock()
-
 	// Write out our placeholder.
-	mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true)
+	mb.writeMsgRecordLocked(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true, true)
+	mb.mu.Unlock()
 
 	// Now update FS accounting.
 	// Update fs state.
