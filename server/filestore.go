@@ -6398,11 +6398,10 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		mb.updateAccounting(seq, ts, rl)
 		// Strip ebit if set.
 		seq = seq &^ ebit
-		if mb.cache.fseq == 0 {
+		// Write index
+		if mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit); len(mb.cache.idx) == 1 {
 			mb.cache.fseq = seq
 		}
-		// Write index
-		mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit)
 	} else {
 		// Make sure to account for tombstones in rbytes.
 		mb.rbytes += rl
