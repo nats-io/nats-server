@@ -7143,8 +7143,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	// earlier loop if we've ran out of block file to look at, but should
 	// be easily noticed because the seq will be below the last seq from
 	// the index.
-	if seq > 0 && seq < mbLastSeq {
-		for dseq := seq; dseq < mbLastSeq; dseq++ {
+	if seq > 0 && seq+1 <= mbLastSeq {
+		for dseq := seq + 1; dseq <= mbLastSeq; dseq++ {
 			idx = append(idx, dbit)
 			if dms == 0 {
 				mb.dmap.Insert(dseq)
