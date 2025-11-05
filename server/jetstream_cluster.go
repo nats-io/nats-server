@@ -2683,6 +2683,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case isLeader = <-lch:
+			// Process our leader change.
+			js.processStreamLeaderChange(mset, isLeader)
+
 			if isLeader {
 				if mset != nil && n != nil && sendSnapshot && !isRecovering {
 					// If we *are* recovering at the time then this will get done when the apply queue
@@ -2699,13 +2702,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				}
 				// Always cancel if this was running.
 				stopDirectMonitoring()
-
 			} else if !n.Leaderless() {
 				js.setStreamAssignmentRecovering(sa)
 			}
-
-			// Process our leader change.
-			js.processStreamLeaderChange(mset, isLeader)
 
 			// We may receive a leader change after the stream assignment which would cancel us
 			// monitoring for this closely. So re-assess our state here as well.
