@@ -7547,12 +7547,21 @@ func TestGatewayConfigureWriteDeadline(t *testing.T) {
 	s1.mu.RLock()
 	defer s1.mu.RUnlock()
 
+	s1.gateway.RLock()
+	defer s1.gateway.RUnlock()
+
 	for _, r := range s1.gateway.out {
-		require_Equal(t, r.out.wdl, 5*time.Second)
+		r.mu.Lock()
+		wdl := r.out.wdl
+		r.mu.Unlock()
+		require_Equal(t, wdl, 5*time.Second)
 	}
 
 	for _, r := range s1.gateway.in {
-		require_Equal(t, r.out.wdl, 5*time.Second)
+		r.mu.Lock()
+		wdl := r.out.wdl
+		r.mu.Unlock()
+		require_Equal(t, wdl, 5*time.Second)
 	}
 }
 
