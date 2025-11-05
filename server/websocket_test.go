@@ -4317,17 +4317,17 @@ func TestWSWithPartialWrite(t *testing.T) {
 			no_tls: true
 		}
 	`))
-	s, o := RunServerWithConfig(conf)
+	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	nc1 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o.Websocket.Port))
+	nc1 := natsConnect(t, s.WebsocketURL())
 	defer nc1.Close()
 
 	sub := natsSubSync(t, nc1, "foo")
 	sub.SetPendingLimits(-1, -1)
 	natsFlush(t, nc1)
 
-	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o.Websocket.Port))
+	nc2 := natsConnect(t, s.WebsocketURL())
 	defer nc2.Close()
 
 	// Replace websocket connections with ones that will produce short writes.
@@ -4375,19 +4375,19 @@ func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
 
 	routes := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
 	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, routes)))
-	s2, o2 := RunServerWithConfig(conf2)
+	s2, _ := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
 
 	conf3 := createConfFile(t, []byte(fmt.Sprintf(tmpl, routes)))
-	s3, o3 := RunServerWithConfig(conf3)
+	s3, _ := RunServerWithConfig(conf3)
 	defer s3.Shutdown()
 
 	checkClusterFormed(t, s1, s2, s3)
 
-	nc3 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o3.Websocket.Port))
+	nc3 := natsConnect(t, s3.WebsocketURL())
 	defer nc3.Close()
 
-	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o2.Websocket.Port))
+	nc2 := natsConnect(t, s2.WebsocketURL())
 	defer nc2.Close()
 
 	payload := make([]byte, 2*wsFrameSizeForBrowsers+123)
@@ -4432,7 +4432,7 @@ func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
 
 	checkSubInterest(t, s1, globalAccountName, "foo", time.Second)
 
-	nc1 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o1.Websocket.Port))
+	nc1 := natsConnect(t, s1.WebsocketURL())
 	defer nc1.Close()
 	natsFlush(t, nc1)
 
