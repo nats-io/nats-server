@@ -2012,6 +2012,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
+	// Check the subject transform if any
+	if cfg.SubjectTransform != nil {
+		if cfg.SubjectTransform.Source != _EMPTY_ && !IsValidSubject(cfg.SubjectTransform.Source) {
+			return StreamConfig{}, NewJSStreamTransformInvalidSourceError(fmt.Errorf("%w %s", ErrBadSubject, cfg.SubjectTransform.Source))
+		}
+
+		err := ValidateMapping(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
+		if err != nil {
+			return StreamConfig{}, NewJSStreamTransformInvalidDestinationError(err)
+		}
+	}
+
 	// If we have a republish directive check if we can create a transform here.
 	if cfg.RePublish != nil {
 		// Check to make sure source is a valid subset of the subjects we have.
@@ -2022,6 +2034,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("republish source can not be empty"))
 			}
 			cfg.RePublish.Source = fwcs
+		}
+		// A RePublish from '>' to '>' could be used, normally this would form a cycle with the stream subjects.
+		// But if this aligns to a different subject based on the transform, we allow it still.
+		// The RePublish will be implicit based on the transform, but only if the transform's source
+		// is the only stream subject.
+		if cfg.RePublish.Destination == fwcs && cfg.RePublish.Source == fwcs && cfg.SubjectTransform != nil &&
+			len(cfg.Subjects) == 1 && cfg.SubjectTransform.Source == cfg.Subjects[0] {
+			if pedantic {
+				return StreamConfig{}, NewJSPedanticError(fmt.Errorf("implicit republish based on subject transform"))
+			}
+			// RePublish all messages with the transformed subject.
+			cfg.RePublish.Source, cfg.RePublish.Destination = cfg.SubjectTransform.Destination, cfg.SubjectTransform.Destination
 		}
 		var formsCycle bool
 		for _, subj := range cfg.Subjects {
@@ -2035,18 +2059,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 		if _, err := NewSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish with transform from '%s' to '%s' not valid", cfg.RePublish.Source, cfg.RePublish.Destination))
-		}
-	}
-
-	// Check the subject transform if any
-	if cfg.SubjectTransform != nil {
-		if cfg.SubjectTransform.Source != _EMPTY_ && !IsValidSubject(cfg.SubjectTransform.Source) {
-			return StreamConfig{}, NewJSStreamTransformInvalidSourceError(fmt.Errorf("%w %s", ErrBadSubject, cfg.SubjectTransform.Source))
-		}
-
-		err := ValidateMapping(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
-		if err != nil {
-			return StreamConfig{}, NewJSStreamTransformInvalidDestinationError(err)
 		}
 	}
 
