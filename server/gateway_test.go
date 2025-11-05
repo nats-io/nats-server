@@ -7471,3 +7471,83 @@ func TestGatewayOutboundDetectsStaleConnectionIfNoInfo(t *testing.T) {
 	wg.Wait()
 	s.WaitForShutdown()
 }
+
+func TestGatewayConfigureWriteDeadline(t *testing.T) {
+	o1 := testDefaultOptionsForGateway("B")
+	o1.Gateway.WriteDeadline = 5 * time.Second
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	waitForOutboundGateways(t, s2, 1, time.Second)
+	waitForInboundGateways(t, s1, 1, time.Second)
+	waitForOutboundGateways(t, s1, 1, time.Second)
+
+	s1.mu.RLock()
+	defer s1.mu.RUnlock()
+
+	s1.gateway.RLock()
+	defer s1.gateway.RUnlock()
+
+	for _, r := range s1.gateway.out {
+		r.mu.Lock()
+		wdl := r.out.wdl
+		r.mu.Unlock()
+		require_Equal(t, wdl, 5*time.Second)
+	}
+
+	for _, r := range s1.gateway.in {
+		r.mu.Lock()
+		wdl := r.out.wdl
+		r.mu.Unlock()
+		require_Equal(t, wdl, 5*time.Second)
+	}
+}
+
+func TestGatewayConfigureWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Default": WriteTimeoutPolicyDefault,
+		"Retry":   WriteTimeoutPolicyRetry,
+		"Close":   WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			o1 := testDefaultOptionsForGateway("B")
+			o1.Gateway.WriteTimeout = policy
+			s1 := runGatewayServer(o1)
+			defer s1.Shutdown()
+
+			o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
+			s2 := runGatewayServer(o2)
+			defer s2.Shutdown()
+
+			waitForOutboundGateways(t, s2, 1, time.Second)
+			waitForInboundGateways(t, s1, 1, time.Second)
+			waitForOutboundGateways(t, s1, 1, time.Second)
+
+			s1.mu.RLock()
+			defer s1.mu.RUnlock()
+
+			s1.gateway.RLock()
+			defer s1.gateway.RUnlock()
+
+			for _, r := range s1.gateway.out {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			}
+
+			for _, r := range s1.gateway.in {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			}
+		})
+	}
+}

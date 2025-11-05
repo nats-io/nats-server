@@ -158,9 +158,15 @@ type unsupportedStreamAssignment struct {
 	infoSub *subscription
 }
 
-func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment) *unsupportedStreamAssignment {
+func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, err error) *unsupportedStreamAssignment {
 	reason := "stopped"
-	if sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata) {
+	if err != nil {
+		if errstr := err.Error(); strings.HasPrefix(errstr, "json:") {
+			reason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(err.Error(), "json: "))
+		} else {
+			reason = fmt.Sprintf("stopped - %s", errstr)
+		}
+	} else if sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata) {
 		if req := getRequiredApiLevel(sa.Config.Metadata); req != _EMPTY_ {
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", req, JSApiLevel)
 		}
@@ -236,9 +242,15 @@ type unsupportedConsumerAssignment struct {
 	infoSub *subscription
 }
 
-func newUnsupportedConsumerAssignment(ca *consumerAssignment) *unsupportedConsumerAssignment {
+func newUnsupportedConsumerAssignment(ca *consumerAssignment, err error) *unsupportedConsumerAssignment {
 	reason := "stopped"
-	if ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata) {
+	if err != nil {
+		if errstr := err.Error(); strings.HasPrefix(errstr, "json:") {
+			reason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(err.Error(), "json: "))
+		} else {
+			reason = fmt.Sprintf("stopped - %s", errstr)
+		}
+	} else if ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata) {
 		if req := getRequiredApiLevel(ca.Config.Metadata); req != _EMPTY_ {
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", getRequiredApiLevel(ca.Config.Metadata), JSApiLevel)
 		}
@@ -1204,6 +1216,52 @@ type recoveryUpdates struct {
 	updateConsumers map[string]map[string]*consumerAssignment
 }
 
+func (ru *recoveryUpdates) removeStream(sa *streamAssignment) {
+	key := sa.recoveryKey()
+	ru.removeStreams[key] = sa
+	delete(ru.addStreams, key)
+	delete(ru.updateStreams, key)
+	delete(ru.updateConsumers, key)
+	delete(ru.removeConsumers, key)
+}
+
+func (ru *recoveryUpdates) addStream(sa *streamAssignment) {
+	key := sa.recoveryKey()
+	ru.addStreams[key] = sa
+	delete(ru.removeStreams, key)
+}
+
+func (ru *recoveryUpdates) updateStream(sa *streamAssignment) {
+	key := sa.recoveryKey()
+	ru.updateStreams[key] = sa
+	delete(ru.addStreams, key)
+	delete(ru.removeStreams, key)
+}
+
+func (ru *recoveryUpdates) removeConsumer(ca *consumerAssignment) {
+	key := ca.recoveryKey()
+	skey := ca.streamRecoveryKey()
+	if _, ok := ru.removeConsumers[skey]; !ok {
+		ru.removeConsumers[skey] = map[string]*consumerAssignment{}
+	}
+	ru.removeConsumers[skey][key] = ca
+	if consumers, ok := ru.updateConsumers[skey]; ok {
+		delete(consumers, key)
+	}
+}
+
+func (ru *recoveryUpdates) addOrUpdateConsumer(ca *consumerAssignment) {
+	key := ca.recoveryKey()
+	skey := ca.streamRecoveryKey()
+	if consumers, ok := ru.removeConsumers[skey]; ok {
+		delete(consumers, key)
+	}
+	if _, ok := ru.updateConsumers[skey]; !ok {
+		ru.updateConsumers[skey] = map[string]*consumerAssignment{}
+	}
+	ru.updateConsumers[skey][key] = ca
+}
+
 // Called after recovery of the cluster on startup to check for any orphans.
 // Streams and consumers are recovered from disk, and the meta layer's mappings
 // should clean them up, but under crash scenarios there could be orphans.
@@ -1698,12 +1756,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	for _, sa := range saDel {
 		js.setStreamAssignmentRecovering(sa)
 		if isRecovering {
-			key := sa.recoveryKey()
-			ru.removeStreams[key] = sa
-			delete(ru.addStreams, key)
-			delete(ru.updateStreams, key)
-			delete(ru.updateConsumers, key)
-			delete(ru.removeConsumers, key)
+			ru.removeStream(sa)
 		} else {
 			js.processStreamRemoval(sa)
 		}
@@ -1711,12 +1764,20 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
 		js.setStreamAssignmentRecovering(sa)
-		js.processStreamAssignment(sa)
+		if isRecovering {
+			ru.addStream(sa)
+		} else {
+			js.processStreamAssignment(sa)
+		}
 
 		// We can simply process the consumers.
 		for _, ca := range sa.consumers {
 			js.setConsumerAssignmentRecovering(ca)
-			js.processConsumerAssignment(ca)
+			if isRecovering {
+				ru.addOrUpdateConsumer(ca)
+			} else {
+				js.processConsumerAssignment(ca)
+			}
 		}
 	}
 
@@ -1725,10 +1786,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	for _, sa := range saChk {
 		js.setStreamAssignmentRecovering(sa)
 		if isRecovering {
-			key := sa.recoveryKey()
-			ru.updateStreams[key] = sa
-			delete(ru.addStreams, key)
-			delete(ru.removeStreams, key)
+			ru.updateStream(sa)
 		} else {
 			js.processUpdateStreamAssignment(sa)
 		}
@@ -1738,15 +1796,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	for _, ca := range caDel {
 		js.setConsumerAssignmentRecovering(ca)
 		if isRecovering {
-			key := ca.recoveryKey()
-			skey := ca.streamRecoveryKey()
-			if _, ok := ru.removeConsumers[skey]; !ok {
-				ru.removeConsumers[skey] = map[string]*consumerAssignment{}
-			}
-			ru.removeConsumers[skey][key] = ca
-			if consumers, ok := ru.updateConsumers[skey]; ok {
-				delete(consumers, key)
-			}
+			ru.removeConsumer(ca)
 		} else {
 			js.processConsumerRemoval(ca)
 		}
@@ -1754,15 +1804,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	for _, ca := range caAdd {
 		js.setConsumerAssignmentRecovering(ca)
 		if isRecovering {
-			key := ca.recoveryKey()
-			skey := ca.streamRecoveryKey()
-			if consumers, ok := ru.removeConsumers[skey]; ok {
-				delete(consumers, key)
-			}
-			if _, ok := ru.updateConsumers[skey]; !ok {
-				ru.updateConsumers[skey] = map[string]*consumerAssignment{}
-			}
-			ru.updateConsumers[skey][key] = ca
+			ru.addOrUpdateConsumer(ca)
 		} else {
 			js.processConsumerAssignment(ca)
 		}
@@ -2028,9 +2070,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
-					key := sa.recoveryKey()
-					ru.addStreams[key] = sa
-					delete(ru.removeStreams, key)
+					ru.addStream(sa)
 				} else {
 					js.processStreamAssignment(sa)
 				}
@@ -2042,12 +2082,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
-					key := sa.recoveryKey()
-					ru.removeStreams[key] = sa
-					delete(ru.addStreams, key)
-					delete(ru.updateStreams, key)
-					delete(ru.updateConsumers, key)
-					delete(ru.removeConsumers, key)
+					ru.removeStream(sa)
 				} else {
 					js.processStreamRemoval(sa)
 				}
@@ -2059,15 +2094,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
-					key := ca.recoveryKey()
-					skey := ca.streamRecoveryKey()
-					if consumers, ok := ru.removeConsumers[skey]; ok {
-						delete(consumers, key)
-					}
-					if _, ok := ru.updateConsumers[skey]; !ok {
-						ru.updateConsumers[skey] = map[string]*consumerAssignment{}
-					}
-					ru.updateConsumers[skey][key] = ca
+					ru.addOrUpdateConsumer(ca)
 				} else {
 					js.processConsumerAssignment(ca)
 				}
@@ -2099,15 +2126,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
-					key := ca.recoveryKey()
-					skey := ca.streamRecoveryKey()
-					if _, ok := ru.removeConsumers[skey]; !ok {
-						ru.removeConsumers[skey] = map[string]*consumerAssignment{}
-					}
-					ru.removeConsumers[skey][key] = ca
-					if consumers, ok := ru.updateConsumers[skey]; ok {
-						delete(consumers, key)
-					}
+					ru.removeConsumer(ca)
 				} else {
 					js.processConsumerRemoval(ca)
 				}
@@ -2119,10 +2138,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
-					key := sa.recoveryKey()
-					ru.updateStreams[key] = sa
-					delete(ru.addStreams, key)
-					delete(ru.removeStreams, key)
+					ru.updateStream(sa)
 				} else {
 					js.processUpdateStreamAssignment(sa)
 				}
@@ -2581,11 +2597,19 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot()
+			// Don't snapshot if not shutting down, monitor goroutine could be going away
+			// on a scale down or a remove for example.
+			if s.isShuttingDown() {
+				doSnapshot()
+			}
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot()
+			// Don't snapshot if not shutting down, Raft node could be going away on a
+			// scale down or remove for example.
+			if s.isShuttingDown() {
+				doSnapshot()
+			}
 			return
 		case <-aq.ch:
 			var ne, nb uint64
@@ -3663,8 +3687,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	// If unsupported, we can't register any further.
 	if sa.unsupported != nil {
 		sa.unsupported.setupInfoSub(s, sa)
-		apiLevel := getRequiredApiLevel(sa.Config.Metadata)
-		s.Warnf("Detected unsupported stream '%s > %s', delete the stream or upgrade the server to API level %s", accName, stream, apiLevel)
+		s.Warnf("Detected unsupported stream '%s > %s': %s", accName, stream, sa.unsupported.reason)
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
@@ -3793,8 +3816,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	// If unsupported, we can't register any further.
 	if sa.unsupported != nil {
 		sa.unsupported.setupInfoSub(s, sa)
-		apiLevel := getRequiredApiLevel(sa.Config.Metadata)
-		s.Warnf("Detected unsupported stream '%s > %s', delete the stream or upgrade the server to API level %s", accName, stream, apiLevel)
+		s.Warnf("Detected unsupported stream '%s > %s': %s", accName, stream, sa.unsupported.reason)
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
@@ -4474,12 +4496,11 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// If unsupported, we can't register any further.
 	if ca.unsupported != nil {
 		ca.unsupported.setupInfoSub(s, ca)
-		apiLevel := getRequiredApiLevel(ca.Config.Metadata)
-		s.Warnf("Detected unsupported consumer '%s > %s > %s', delete the consumer or upgrade the server to API level %s", accName, stream, ca.Name, apiLevel)
+		s.Warnf("Detected unsupported consumer '%s > %s > %s': %s", accName, stream, ca.Name, ca.unsupported.reason)
 
 		// Mark stream as unsupported as well
 		if sa.unsupported == nil {
-			sa.unsupported = newUnsupportedStreamAssignment(s, sa)
+			sa.unsupported = newUnsupportedStreamAssignment(s, sa, fmt.Errorf("unsupported consumer %q", ca.Name))
 		}
 		sa.unsupported.setupInfoSub(s, sa)
 		js.mu.Unlock()
@@ -5161,11 +5182,19 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot(false)
+			// Don't snapshot if not shutting down, monitor goroutine could be going away
+			// on a scale down or a remove for example.
+			if s.isShuttingDown() {
+				doSnapshot(false)
+			}
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
-			doSnapshot(false)
+			// Don't snapshot if not shutting down, Raft node could be going away on a
+			// scale down or remove for example.
+			if s.isShuttingDown() {
+				doSnapshot(false)
+			}
 			return
 		case <-aq.ch:
 			ces := aq.pop()
@@ -7608,20 +7637,21 @@ func decodeStreamAssignment(s *Server, buf []byte) (*streamAssignment, error) {
 func decodeStreamAssignmentConfig(s *Server, sa *streamAssignment) error {
 	var unsupported bool
 	var cfg StreamConfig
+	var err error
 	decoder := json.NewDecoder(bytes.NewReader(sa.ConfigJSON))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
+	if err = decoder.Decode(&cfg); err != nil {
 		unsupported = true
 		cfg = StreamConfig{}
-		if err = json.Unmarshal(sa.ConfigJSON, &cfg); err != nil {
-			return err
+		if err2 := json.Unmarshal(sa.ConfigJSON, &cfg); err2 != nil {
+			return err2
 		}
 	}
 	sa.Config = &cfg
 	fixCfgMirrorWithDedupWindow(sa.Config)
 
-	if unsupported || (sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata)) {
-		sa.unsupported = newUnsupportedStreamAssignment(s, sa)
+	if unsupported || err != nil || (sa.Config != nil && !supportsRequiredApiLevel(sa.Config.Metadata)) {
+		sa.unsupported = newUnsupportedStreamAssignment(s, sa, err)
 	}
 	return nil
 }
@@ -8068,18 +8098,19 @@ func decodeConsumerAssignment(buf []byte) (*consumerAssignment, error) {
 func decodeConsumerAssignmentConfig(ca *consumerAssignment) error {
 	var unsupported bool
 	var cfg ConsumerConfig
+	var err error
 	decoder := json.NewDecoder(bytes.NewReader(ca.ConfigJSON))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
+	if err = decoder.Decode(&cfg); err != nil {
 		unsupported = true
 		cfg = ConsumerConfig{}
-		if err = json.Unmarshal(ca.ConfigJSON, &cfg); err != nil {
-			return err
+		if err2 := json.Unmarshal(ca.ConfigJSON, &cfg); err2 != nil {
+			return err2
 		}
 	}
 	ca.Config = &cfg
-	if unsupported || (ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata)) {
-		ca.unsupported = newUnsupportedConsumerAssignment(ca)
+	if unsupported || err != nil || (ca.Config != nil && !supportsRequiredApiLevel(ca.Config.Metadata)) {
+		ca.unsupported = newUnsupportedConsumerAssignment(ca, err)
 	}
 	return nil
 }
@@ -8292,6 +8323,13 @@ func (mset *stream) stateSnapshotLocked() []byte {
 	}
 
 	// Older v1 version with deleted as a sorted []uint64.
+	// For a stream with millions or billions of interior deletes, this will be huge.
+	// Now that all server versions 2.10.+ support binary snapshots, we should never fall back.
+	assert.Unreachable("Legacy JSON stream snapshot used", map[string]any{
+		"stream":  mset.cfg.Name,
+		"account": mset.acc.Name,
+	})
+
 	state := mset.store.State()
 	snap := &streamSnapshot{
 		Msgs:     state.Msgs,
@@ -9562,6 +9600,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		}
 	}
 
+	start := time.Now()
 	mset.setCatchupPeer(sreq.Peer, last-seq)
 
 	var spb int
@@ -9570,7 +9609,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	sendNextBatchAndContinue := func(qch chan struct{}) bool {
 		// Check if we know we will not enter the loop because we are done.
 		if seq > last {
-			s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
+			s.Noticef("Catchup for stream '%s > %s' complete (took %v)", mset.account(), mset.name(), time.Since(start))
 			// EOF
 			s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
 			return false
@@ -9639,7 +9678,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 		// See if we should use LoadNextMsg instead of walking sequence by sequence if we have an order magnitude more interior deletes.
 		// Only makes sense with delete range capabilities.
-		useLoadNext := drOk && (uint64(state.NumDeleted) > 10*state.Msgs)
+		useLoadNext := drOk && (uint64(state.NumDeleted) > 2*state.Msgs || state.NumDeleted > 1_000_000)
 
 		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbBelowMax(); seq++ {
@@ -9679,8 +9718,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						// The snapshot has a larger last sequence then we have. This could be due to a truncation
 						// when trying to recover after corruption, still not 100% sure. Could be off by 1 too somehow,
 						// but tested a ton of those with no success.
-						s.Warnf("Catchup for stream '%s > %s' completed, but requested sequence %d was larger than current state: %+v",
-							mset.account(), mset.name(), seq, state)
+						s.Warnf("Catchup for stream '%s > %s' completed (took %v), but requested sequence %d was larger than current state: %+v",
+							mset.account(), mset.name(), time.Since(start), seq, state)
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {
 							if snap := mset.stateSnapshot(); snap != nil {
@@ -9726,7 +9765,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				if drOk && dr.First > 0 {
 					sendDR()
 				}
-				s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
+				s.Noticef("Catchup for stream '%s > %s' complete (took %v)", mset.account(), mset.name(), time.Since(start))
 				// EOF
 				s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
 				return false

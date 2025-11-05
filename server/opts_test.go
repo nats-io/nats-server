@@ -3746,3 +3746,127 @@ func parseConfigTolerantly(t *testing.T, data string) (*Options, error) {
 
 	return o, nil
 }
+
+func TestWriteDeadlineConfigParsing(t *testing.T) {
+	type testCase struct {
+		name   string
+		config string
+		expect func(t *testing.T, opts *Options)
+	}
+
+	for _, tc := range []testCase{
+		{
+			name: "LeafNode",
+			config: `
+				leafnodes {
+					write_deadline: 5s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.LeafNode.WriteDeadline, 5*time.Second)
+			},
+		},
+		{
+			name: "Gateway",
+			config: `
+				gateway {
+					write_deadline: 6s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.Gateway.WriteDeadline, 6*time.Second)
+			},
+		},
+		{
+			name: "Cluster",
+			config: `
+				cluster {
+					write_deadline: 7s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.Cluster.WriteDeadline, 7*time.Second)
+			},
+		},
+		{
+			name: "Global",
+			config: `
+				write_deadline: 8s
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.WriteDeadline, 8*time.Second)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseConfigTolerantly(t, tc.config)
+			require_NoError(t, err)
+			tc.expect(t, opts)
+		})
+	}
+}
+
+func TestWriteTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name   string
+		config string
+		expect func(t *testing.T, opts *Options)
+	}
+
+	for str, pol := range map[string]WriteTimeoutPolicy{
+		"default": WriteTimeoutPolicyDefault,
+		"retry":   WriteTimeoutPolicyRetry,
+		"close":   WriteTimeoutPolicyClose,
+	} {
+		for _, tc := range []testCase{
+			{
+				name: "LeafNode",
+				config: fmt.Sprintf(`
+					leafnodes {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.LeafNode.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Gateway",
+				config: fmt.Sprintf(`
+					gateway {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.Gateway.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Cluster",
+				config: fmt.Sprintf(`
+					cluster {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.Cluster.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Global",
+				config: fmt.Sprintf(`
+					write_timeout: %s
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.WriteTimeout, pol)
+				},
+			},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", tc.name, str), func(t *testing.T) {
+				opts, err := parseConfigTolerantly(t, tc.config)
+				require_NoError(t, err)
+				tc.expect(t, opts)
+			})
+		}
+	}
+}

@@ -4105,6 +4105,88 @@ func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T
 	}
 }
 
+func TestJetStreamClusterMetaSnapshotReCreateConsistency(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	scfg := &nats.StreamConfig{Name: "TEST", Replicas: 3}
+	_, err := js.AddStream(scfg)
+	require_NoError(t, err)
+
+	ccfg := &nats.ConsumerConfig{Name: "consumer", Replicas: 3}
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	ca := mjs.consumerAssignment(globalAccountName, "TEST", "consumer")
+
+	oldStreamGroup := sa.Group.Name
+	oldConsumerGroup := ca.Group.Name
+	streamDelete := encodeDeleteStreamAssignment(sa)
+
+	csa := sa.copyGroup()
+	cca := ca.copyGroup()
+	csa.Group.Name, csa.Config.Replicas = "new-group", 1
+	cca.Group.Name, cca.Config.Replicas = "new-group", 1
+	mjs.mu.Unlock()
+
+	// Get the snapshot before removing the stream below so we can recover fresh.
+	snap, err := mjs.metaSnapshot()
+	require_NoError(t, err)
+	require_NoError(t, js.DeleteStream("TEST"))
+	nc.Close()
+
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+
+	// Simulate recovering:
+	// - snapshot with a stream and consumer
+	// - normal entry deleting the stream
+	// - normal entry re-adding the stream and consumer under different configs
+	// This should result in a consistent state.
+	mjs.mu.Lock()
+	mjs.metaRecovering = true
+	mjs.mu.Unlock()
+	_, err = mjs.applyMetaEntries([]*Entry{
+		newEntry(EntrySnapshot, snap),
+		newEntry(EntryNormal, streamDelete),
+		newEntry(EntryNormal, encodeAddStreamAssignment(csa)),
+		newEntry(EntryNormal, encodeAddConsumerAssignment(cca)),
+	}, ru)
+	require_NoError(t, err)
+
+	// Recovery should contain the stream and consumer create.
+	require_Len(t, len(ru.addStreams), 1)
+	require_Len(t, len(ru.updateConsumers), 1)
+
+	// Process those updates.
+	for _, sa = range ru.addStreams {
+		mjs.processStreamAssignment(sa)
+	}
+	for _, cas := range ru.updateConsumers {
+		for _, ca = range cas {
+			mjs.processConsumerAssignment(ca)
+		}
+	}
+
+	// Should not have created old Raft nodes during recovery.
+	n1 := ml.lookupRaftNode(oldStreamGroup)
+	n2 := ml.lookupRaftNode(oldConsumerGroup)
+	require_True(t, n1 == nil)
+	require_True(t, n2 == nil)
+}
+
 func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

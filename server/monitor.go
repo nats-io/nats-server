@@ -1219,6 +1219,7 @@ type Varz struct {
 	JetStream             JetStreamVarz          `json:"jetstream,omitempty"`               // JetStream is the JetStream state
 	TLSTimeout            float64                `json:"tls_timeout"`                       // TLSTimeout is how long TLS operations have to complete
 	WriteDeadline         time.Duration          `json:"write_deadline"`                    // WriteDeadline is the maximum time writes to sockets have to complete
+	WriteTimeout          string                 `json:"write_timeout,omitempty"`           // WriteTimeout is the closure policy for write deadline errors
 	Start                 time.Time              `json:"start"`                             // Start is time when the server was started
 	Now                   time.Time              `json:"now"`                               // Now is the current time of the server
 	Uptime                string                 `json:"uptime"`                            // Uptime is how long the server has been running
@@ -1261,15 +1262,17 @@ type JetStreamVarz struct {
 
 // ClusterOptsVarz contains monitoring cluster information
 type ClusterOptsVarz struct {
-	Name        string   `json:"name,omitempty"`         // Name is the configured cluster name
-	Host        string   `json:"addr,omitempty"`         // Host is the host the cluster listens on for connections
-	Port        int      `json:"cluster_port,omitempty"` // Port is the port the cluster listens on for connections
-	AuthTimeout float64  `json:"auth_timeout,omitempty"` // AuthTimeout is the time cluster connections have to complete authentication
-	URLs        []string `json:"urls,omitempty"`         // URLs is the list of cluster URLs
-	TLSTimeout  float64  `json:"tls_timeout,omitempty"`  // TLSTimeout is how long TLS operations have to complete
-	TLSRequired bool     `json:"tls_required,omitempty"` // TLSRequired indicates if TLS is required for connections
-	TLSVerify   bool     `json:"tls_verify,omitempty"`   // TLSVerify indicates if full verification of TLS connections is performed
-	PoolSize    int      `json:"pool_size,omitempty"`    // PoolSize is the configured route connection pool size
+	Name          string        `json:"name,omitempty"`           // Name is the configured cluster name
+	Host          string        `json:"addr,omitempty"`           // Host is the host the cluster listens on for connections
+	Port          int           `json:"cluster_port,omitempty"`   // Port is the port the cluster listens on for connections
+	AuthTimeout   float64       `json:"auth_timeout,omitempty"`   // AuthTimeout is the time cluster connections have to complete authentication
+	URLs          []string      `json:"urls,omitempty"`           // URLs is the list of cluster URLs
+	TLSTimeout    float64       `json:"tls_timeout,omitempty"`    // TLSTimeout is how long TLS operations have to complete
+	TLSRequired   bool          `json:"tls_required,omitempty"`   // TLSRequired indicates if TLS is required for connections
+	TLSVerify     bool          `json:"tls_verify,omitempty"`     // TLSVerify indicates if full verification of TLS connections is performed
+	PoolSize      int           `json:"pool_size,omitempty"`      // PoolSize is the configured route connection pool size
+	WriteDeadline time.Duration `json:"write_deadline,omitempty"` // WriteDeadline is the maximum time writes to sockets have to complete
+	WriteTimeout  string        `json:"write_timeout,omitempty"`  // WriteTimeout is the closure policy for write deadline errors
 }
 
 // GatewayOptsVarz contains monitoring gateway information
@@ -1285,6 +1288,8 @@ type GatewayOptsVarz struct {
 	ConnectRetries int                     `json:"connect_retries,omitempty"` // ConnectRetries is how many connection attempts the route will make
 	Gateways       []RemoteGatewayOptsVarz `json:"gateways,omitempty"`        // Gateways is state of configured gateway remotes
 	RejectUnknown  bool                    `json:"reject_unknown,omitempty"`  // RejectUnknown indicates if unknown cluster connections will be rejected
+	WriteDeadline  time.Duration           `json:"write_deadline,omitempty"`  // WriteDeadline is the maximum time writes to sockets have to complete
+	WriteTimeout   string                  `json:"write_timeout,omitempty"`   // WriteTimeout is the closure policy for write deadline errors
 }
 
 // RemoteGatewayOptsVarz contains monitoring remote gateway information
@@ -1304,6 +1309,8 @@ type LeafNodeOptsVarz struct {
 	TLSVerify         bool                 `json:"tls_verify,omitempty"`           // TLSVerify indicates if full verification of TLS connections is performed
 	Remotes           []RemoteLeafOptsVarz `json:"remotes,omitempty"`              // Remotes is state of configured Leafnode remotes
 	TLSOCSPPeerVerify bool                 `json:"tls_ocsp_peer_verify,omitempty"` // TLSOCSPPeerVerify indicates if OCSP verification will be performed
+	WriteDeadline     time.Duration        `json:"write_deadline,omitempty"`       // WriteDeadline is the maximum time writes to sockets have to complete
+	WriteTimeout      string               `json:"write_timeout,omitempty"`        // WriteTimeout is the closure policy for write deadline errors
 }
 
 // DenyRules Contains lists of subjects not allowed to be imported/exported
@@ -1554,14 +1561,16 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		HTTPBasePath: opts.HTTPBasePath,
 		HTTPSPort:    opts.HTTPSPort,
 		Cluster: ClusterOptsVarz{
-			Name:        info.Cluster,
-			Host:        c.Host,
-			Port:        c.Port,
-			AuthTimeout: c.AuthTimeout,
-			TLSTimeout:  c.TLSTimeout,
-			TLSRequired: clustTlsReq,
-			TLSVerify:   clustTlsReq,
-			PoolSize:    opts.Cluster.PoolSize,
+			Name:          info.Cluster,
+			Host:          c.Host,
+			Port:          c.Port,
+			AuthTimeout:   c.AuthTimeout,
+			TLSTimeout:    c.TLSTimeout,
+			TLSRequired:   clustTlsReq,
+			TLSVerify:     clustTlsReq,
+			PoolSize:      opts.Cluster.PoolSize,
+			WriteDeadline: opts.Cluster.WriteDeadline,
+			WriteTimeout:  opts.Cluster.WriteTimeout.String(),
 		},
 		Gateway: GatewayOptsVarz{
 			Name:           gw.Name,
@@ -1575,6 +1584,8 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			ConnectRetries: gw.ConnectRetries,
 			Gateways:       []RemoteGatewayOptsVarz{},
 			RejectUnknown:  gw.RejectUnknown,
+			WriteDeadline:  opts.Cluster.WriteDeadline,
+			WriteTimeout:   opts.Cluster.WriteTimeout.String(),
 		},
 		LeafNode: LeafNodeOptsVarz{
 			Host:              ln.Host,
@@ -1585,6 +1596,8 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSVerify:         leafTlsVerify,
 			TLSOCSPPeerVerify: leafTlsOCSPPeerVerify,
 			Remotes:           []RemoteLeafOptsVarz{},
+			WriteDeadline:     opts.Cluster.WriteDeadline,
+			WriteTimeout:      opts.Cluster.WriteTimeout.String(),
 		},
 		MQTT: MQTTOptsVarz{
 			Host:              mqtt.Host,
@@ -1702,6 +1715,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.MaxPending = opts.MaxPending
 	v.TLSTimeout = opts.TLSTimeout
 	v.WriteDeadline = opts.WriteDeadline
+	v.WriteTimeout = opts.WriteTimeout.String()
 	v.ConfigLoadTime = s.configTime.UTC()
 	v.ConfigDigest = opts.configDigest
 	// Update route URLs if applicable

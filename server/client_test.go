@@ -3368,3 +3368,112 @@ func TestClientRejectsNRGSubjects(t *testing.T) {
 		require_True(t, strings.HasPrefix(err.Error(), "nats: permissions violation"))
 	})
 }
+
+func TestClientConfigureWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Default": WriteTimeoutPolicyDefault,
+		"Retry":   WriteTimeoutPolicyRetry,
+		"Close":   WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := DefaultOptions()
+			opts.WriteTimeout = policy
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			nc := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+			defer nc.Close()
+
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+
+			for _, r := range s.clients {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyClose)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			}
+		})
+	}
+}
+
+// TestClientFlushOutboundWriteTimeoutPolicy relies on specifically having
+// written at least one byte in order to not trip the "written == 0" close
+// condition, so just setting an unrealistically low write deadline won't
+// work. Instead what we'll do is write the first byte very quickly and then
+// slow down, so that we can trip a more honest slow consumer condition.
+type writeTimeoutPolicyWriter struct {
+	net.Conn
+	deadline time.Time
+	written  int
+}
+
+func (w *writeTimeoutPolicyWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return w.Conn.SetWriteDeadline(deadline)
+}
+
+func (w *writeTimeoutPolicyWriter) Write(b []byte) (int, error) {
+	if w.written == 0 {
+		w.written++
+		return w.Conn.Write(b[:1])
+	}
+	time.Sleep(time.Until(w.deadline) + 10*time.Millisecond)
+	return w.Conn.Write(b)
+}
+
+func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Retry": WriteTimeoutPolicyRetry,
+		"Close": WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := DefaultOptions()
+			opts.PingInterval = 250 * time.Millisecond
+			opts.WriteDeadline = 100 * time.Millisecond
+			opts.WriteTimeout = policy
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			nc1 := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+			defer nc1.Close()
+
+			_, err := nc1.Subscribe("test", func(_ *nats.Msg) {})
+			require_NoError(t, err)
+
+			nc2 := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+			defer nc2.Close()
+
+			cid, err := nc1.GetClientID()
+			require_NoError(t, err)
+
+			client := s.getClient(cid)
+			client.mu.Lock()
+			client.out.wdl = 100 * time.Millisecond
+			client.nc = &writeTimeoutPolicyWriter{Conn: client.nc}
+			client.mu.Unlock()
+
+			require_NoError(t, nc2.Publish("test", make([]byte, 1024*1024)))
+
+			checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+				client.mu.Lock()
+				defer client.mu.Unlock()
+				switch {
+				case !client.flags.isSet(connMarkedClosed):
+					return fmt.Errorf("connection not closed yet")
+				case policy == WriteTimeoutPolicyRetry && client.flags.isSet(isSlowConsumer):
+					// Retry policy should have marked the client as a slow consumer and
+					// continued to retry flushes.
+					return nil
+				case policy == WriteTimeoutPolicyClose && !client.flags.isSet(isSlowConsumer):
+					// Close policy shouldn't have marked the client as a slow consumer,
+					// it will just close it instead.
+					return nil
+				default:
+					return fmt.Errorf("client not in correct state yet")
+				}
+			})
+		})
+	}
+}

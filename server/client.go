@@ -234,6 +234,26 @@ const (
 	pmrMsgImportedFromService
 )
 
+type WriteTimeoutPolicy uint8
+
+const (
+	WriteTimeoutPolicyDefault = iota
+	WriteTimeoutPolicyClose
+	WriteTimeoutPolicyRetry
+)
+
+// String returns a human-friendly value. Only used in varz.
+func (p WriteTimeoutPolicy) String() string {
+	switch p {
+	case WriteTimeoutPolicyClose:
+		return "close"
+	case WriteTimeoutPolicyRetry:
+		return "retry"
+	default:
+		return _EMPTY_
+	}
+}
+
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
@@ -315,15 +335,16 @@ type pinfo struct {
 
 // outbound holds pending data for a socket.
 type outbound struct {
-	nb  net.Buffers   // Pending buffers for send, each has fixed capacity as per nbPool below.
-	wnb net.Buffers   // Working copy of "nb", reused on each flushOutbound call, partial writes may leave entries here for next iteration.
-	pb  int64         // Total pending/queued bytes.
-	fsp int32         // Flush signals that are pending per producer from readLoop's pcd.
-	sg  *sync.Cond    // To signal writeLoop that there is data to flush.
-	wdl time.Duration // Snapshot of write deadline.
-	mp  int64         // Snapshot of max pending for client.
-	lft time.Duration // Last flush time for Write.
-	stc chan struct{} // Stall chan we create to slow down producers on overrun, e.g. fan-in.
+	nb  net.Buffers        // Pending buffers for send, each has fixed capacity as per nbPool below.
+	wnb net.Buffers        // Working copy of "nb", reused on each flushOutbound call, partial writes may leave entries here for next iteration.
+	pb  int64              // Total pending/queued bytes.
+	fsp int32              // Flush signals that are pending per producer from readLoop's pcd.
+	wtp WriteTimeoutPolicy // What do we do on a write timeout?
+	sg  *sync.Cond         // To signal writeLoop that there is data to flush.
+	wdl time.Duration      // Snapshot of write deadline.
+	mp  int64              // Snapshot of max pending for client.
+	lft time.Duration      // Last flush time for Write.
+	stc chan struct{}      // Stall chan we create to slow down producers on overrun, e.g. fan-in.
 	cw  *s2.Writer
 }
 
@@ -676,6 +697,32 @@ func (c *client) initClient() {
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
+	switch {
+	case c.kind == ROUTER && opts.Cluster.WriteDeadline > 0:
+		c.out.wdl = opts.Cluster.WriteDeadline
+	case c.kind == GATEWAY && opts.Gateway.WriteDeadline > 0:
+		c.out.wdl = opts.Gateway.WriteDeadline
+	case c.kind == LEAF && opts.LeafNode.WriteDeadline > 0:
+		c.out.wdl = opts.LeafNode.WriteDeadline
+	}
+	switch c.kind {
+	case ROUTER:
+		if c.out.wtp = opts.Cluster.WriteTimeout; c.out.wtp == WriteTimeoutPolicyDefault {
+			c.out.wtp = WriteTimeoutPolicyRetry
+		}
+	case LEAF:
+		if c.out.wtp = opts.LeafNode.WriteTimeout; c.out.wtp == WriteTimeoutPolicyDefault {
+			c.out.wtp = WriteTimeoutPolicyRetry
+		}
+	case GATEWAY:
+		if c.out.wtp = opts.Gateway.WriteTimeout; c.out.wtp == WriteTimeoutPolicyDefault {
+			c.out.wtp = WriteTimeoutPolicyRetry
+		}
+	default:
+		if c.out.wtp = opts.WriteTimeout; c.out.wtp == WriteTimeoutPolicyDefault {
+			c.out.wtp = WriteTimeoutPolicyClose
+		}
+	}
 	c.out.mp = opts.MaxPending
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
@@ -1827,7 +1874,7 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 		scState, c.out.wdl, numChunks, attempted)
 
 	// We always close CLIENT connections, or when nothing was written at all...
-	if c.kind == CLIENT || written == 0 {
+	if c.out.wtp == WriteTimeoutPolicyClose || written == 0 {
 		c.markConnAsClosed(SlowConsumerWriteDeadline)
 		return true
 	} else {
