@@ -1118,11 +1118,11 @@ func (n *raft) ResumeApply() {
 func (n *raft) DrainAndReplaySnapshot() bool {
 	n.Lock()
 	defer n.Unlock()
-	n.warn("Draining and replaying snapshot")
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
 		return false
 	}
+	n.warn("Draining and replaying snapshot")
 	n.pauseApplyLocked()
 	n.apply.drain()
 	n.commit = snap.lastIndex
@@ -3069,6 +3069,15 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, newEntry(EntrySnapshot, e.Data))
 		case EntrySnapshot:
 			committed = append(committed, e)
+			// If we have no snapshot, install the leader's snapshot as our own.
+			if len(ae.entries) == 1 && n.snapfile == _EMPTY_ && ae.commit > 0 {
+				n.installSnapshot(&snapshot{
+					lastTerm:  ae.pterm,
+					lastIndex: ae.commit,
+					peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+					data:      e.Data,
+				})
+			}
 		case EntryPeerState:
 			if n.State() != Leader {
 				if ps, err := decodePeerState(e.Data); err == nil {
