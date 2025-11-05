@@ -5005,3 +5005,37 @@ func TestRouteConfigureWriteDeadline(t *testing.T) {
 		require_Equal(t, r.out.wdl, 6*time.Second)
 	})
 }
+
+func TestRouteConfigureWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Default": WriteTimeoutPolicyDefault,
+		"Retry":   WriteTimeoutPolicyRetry,
+		"Close":   WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			o1 := testDefaultOptionsForGateway("B")
+			o1.Gateway.WriteTimeout = policy
+			s1 := runGatewayServer(o1)
+			defer s1.Shutdown()
+
+			o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
+			s2 := runGatewayServer(o2)
+			defer s2.Shutdown()
+
+			waitForOutboundGateways(t, s2, 1, time.Second)
+			waitForInboundGateways(t, s1, 1, time.Second)
+			waitForOutboundGateways(t, s1, 1, time.Second)
+
+			s1.mu.RLock()
+			defer s1.mu.RUnlock()
+
+			s1.forEachRoute(func(r *client) {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			})
+		})
+	}
+}

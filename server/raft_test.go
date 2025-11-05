@@ -3764,6 +3764,45 @@ func TestNRGReportLeaderAfterNoopEntry(t *testing.T) {
 	require_True(t, n.Leader())
 }
 
+func TestNRGSendSnapshotInstallsSnapshot(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	require_Equal(t, n.pindex, 0)
+	require_Equal(t, n.snapfile, _EMPTY_)
+
+	// Switch to candidate, to become leader.
+	require_Equal(t, n.term, 0)
+	n.switchToCandidate()
+	require_Equal(t, n.term, 1)
+
+	// When switching to leader a NOOP-entry is sent.
+	n.switchToLeader()
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.snapfile, _EMPTY_)
+	require_NoError(t, n.applyCommit(1))
+	require_Equal(t, n.snapfile, _EMPTY_)
+
+	// On scaleup, we send a snapshot.
+	require_NoError(t, n.SendSnapshot([]byte("snapshot_data")))
+	require_Equal(t, n.pindex, 2)
+	require_Equal(t, n.snapfile, _EMPTY_)
+
+	// When applying the entry, the sent snapshot should be installed.
+	require_NoError(t, n.applyCommit(2))
+	require_NotEqual(t, n.snapfile, _EMPTY_)
+
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_NotNil(t, snap)
+	require_Equal(t, snap.lastTerm, 1)
+	require_Equal(t, snap.lastIndex, 1)
+	require_Equal(t, string(snap.data), "snapshot_data")
+
+	// Draining and replaying the snapshot should work.
+	require_True(t, n.DrainAndReplaySnapshot())
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
