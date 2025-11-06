@@ -3803,6 +3803,67 @@ func TestNRGSendSnapshotInstallsSnapshot(t *testing.T) {
 	require_True(t, n.DrainAndReplaySnapshot())
 }
 
+func TestNRGQuorumAfterLeaderStepdown(t *testing.T) {
+	origMinTimeout, origMaxTimeout, origHBInterval := minElectionTimeout, maxElectionTimeout, hbInterval
+	minElectionTimeout, maxElectionTimeout, hbInterval = minElectionTimeoutDefault, maxElectionTimeoutDefault, hbIntervalDefault
+	defer func() {
+		minElectionTimeout, maxElectionTimeout, hbInterval = origMinTimeout, origMaxTimeout, origHBInterval
+	}()
+
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	// Become leader.
+	n.switchToCandidate()
+	n.switchToLeader()
+
+	// Should not report having quorum, unless at least 1 peer is seen.
+	require_False(t, n.Quorum())
+	n.s.nodeToInfo.Store(nats0, nodeInfo{})
+	require_NoError(t, n.trackPeer(nats0))
+	require_True(t, n.Quorum())
+	n.s.nodeToInfo.Store(nats1, nodeInfo{})
+	require_NoError(t, n.trackPeer(nats1))
+	require_True(t, n.Quorum())
+	require_Len(t, len(n.peers), 3)
+	for _, ps := range n.peers {
+		ps.kp = true
+	}
+
+	// If we hand off leadership to another server, we should
+	// still be reporting we have quorum.
+	require_NoError(t, n.StepDown())
+	require_True(t, n.Quorum())
+	require_Len(t, len(n.peers), 3)
+	for peer, ps := range n.peers {
+		if peer == n.id {
+			continue
+		}
+		// All peer timestamps should be preserved.
+		require_False(t, ps.ts.IsZero())
+	}
+
+	// After our new leader comes online, we should still have quorum,
+	// but the other follower's timestamp should be cleared.
+	n.updateLeader(nats0)
+	require_Equal(t, n.leader, nats0)
+	require_True(t, n.Quorum())
+	require_Len(t, len(n.peers), 3)
+	for peer, ps := range n.peers {
+		if peer == n.id {
+			continue
+		}
+		if peer == nats0 {
+			require_False(t, ps.ts.IsZero()) // Leader is preserved.
+		} else {
+			require_True(t, ps.ts.IsZero()) // Other follower is cleared.
+		}
+	}
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
