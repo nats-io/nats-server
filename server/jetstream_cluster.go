@@ -1767,15 +1767,19 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	}
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
+		consumers := sa.consumers
 		js.setStreamAssignmentRecovering(sa)
 		if isRecovering {
+			// Since we're recovering and storing up changes, we'll need to clear out these consumers.
+			// Some might be removed, and we'll recover those later, must not be able to remember them.
+			sa.consumers = nil
 			ru.addStream(sa)
 		} else {
 			js.processStreamAssignment(sa)
 		}
 
 		// We can simply process the consumers.
-		for _, ca := range sa.consumers {
+		for _, ca := range consumers {
 			js.setConsumerAssignmentRecovering(ca)
 			if isRecovering {
 				ru.addOrUpdateConsumer(ca)
