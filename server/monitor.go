@@ -2969,14 +2969,23 @@ type AccountDetail struct {
 	Streams []StreamDetail `json:"stream_detail,omitempty"`
 }
 
+// MetaSnapshotStats shows information about meta snapshots.
+type MetaSnapshotStats struct {
+	PendingEntries uint64        `json:"pending_entries"`         // PendingEntries is the count of pending entries in the meta layer
+	PendingSize    uint64        `json:"pending_size"`            // PendingSize is the size in bytes of pending entries in the meta layer
+	LastTime       time.Time     `json:"last_time,omitempty"`     // LastTime is when the last meta snapshot was taken
+	LastDuration   time.Duration `json:"last_duration,omitempty"` // LastDuration is how long the last meta snapshot took
+}
+
 // MetaClusterInfo shows information about the meta group.
 type MetaClusterInfo struct {
-	Name     string      `json:"name,omitempty"`     // Name is the name of the cluster
-	Leader   string      `json:"leader,omitempty"`   // Leader is the server name of the cluster leader
-	Peer     string      `json:"peer,omitempty"`     // Peer is unique ID of the leader
-	Replicas []*PeerInfo `json:"replicas,omitempty"` // Replicas is a list of known peers
-	Size     int         `json:"cluster_size"`       // Size is the known size of the cluster
-	Pending  int         `json:"pending"`            // Pending is how many RAFT messages are not yet processed
+	Name     string             `json:"name,omitempty"`     // Name is the name of the cluster
+	Leader   string             `json:"leader,omitempty"`   // Leader is the server name of the cluster leader
+	Peer     string             `json:"peer,omitempty"`     // Peer is unique ID of the leader
+	Replicas []*PeerInfo        `json:"replicas,omitempty"` // Replicas is a list of known peers
+	Size     int                `json:"cluster_size"`       // Size is the known size of the cluster
+	Pending  int                `json:"pending"`            // Pending is how many RAFT messages are not yet processed
+	Snapshot *MetaSnapshotStats `json:"snapshot"`           // Snapshot contains meta snapshot statistics
 }
 
 // JSInfo has detailed information on JetStream.
@@ -3181,12 +3190,31 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
+			entries, bytes := mg.Size()
 			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize()}
 			if isLeader {
 				jsi.Meta.Replicas = ci.Replicas
 			}
 			if ipq := s.jsAPIRoutedReqs; ipq != nil {
 				jsi.Meta.Pending = ipq.len()
+			}
+			// Add meta snapshot stats
+			jsi.Meta.Snapshot = &MetaSnapshotStats{
+				PendingEntries: entries,
+				PendingSize:    bytes,
+			}
+			js.mu.RLock()
+			cluster := js.cluster
+			js.mu.RUnlock()
+			if cluster != nil {
+				timeNanos := atomic.LoadInt64(&cluster.lastMetaSnapTime)
+				durationNanos := atomic.LoadInt64(&cluster.lastMetaSnapDuration)
+				if timeNanos > 0 {
+					jsi.Meta.Snapshot.LastTime = time.Unix(0, timeNanos).UTC()
+				}
+				if durationNanos > 0 {
+					jsi.Meta.Snapshot.LastDuration = time.Duration(durationNanos)
+				}
 			}
 		}
 	}
