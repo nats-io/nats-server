@@ -70,6 +70,9 @@ type jetStreamCluster struct {
 	peerStreamCancelMove *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
+	// Track last meta snapshot time and duration for monitoring (atomic)
+	lastMetaSnapTime     int64 // Unix nanoseconds, accessed atomically
+	lastMetaSnapDuration int64 // Duration in nanoseconds, accessed atomically
 }
 
 // Used to track inflight stream add requests to properly re-use same group and sync subject.
@@ -1397,11 +1400,20 @@ func (js *jetStream) monitorCluster() {
 		js.srv.optsMu.RUnlock()
 		// For the meta layer we want to snapshot when over the above threshold (which could be 0 by default).
 		if ne, _ := n.Size(); force || ne > thresh || n.NeedSnapshot() {
+			snapStart := time.Now()
 			snap, err := js.metaSnapshot()
 			if err != nil {
 				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
 			} else if err = n.InstallSnapshot(snap); err == nil {
 				lastSnapTime = time.Now()
+				snapDuration := lastSnapTime.Sub(snapStart)
+				// Update cluster-level last snap time and duration for monitoring (atomic)
+				js.mu.RLock()
+				if js.cluster != nil {
+					atomic.StoreInt64(&js.cluster.lastMetaSnapTime, lastSnapTime.UnixNano())
+					atomic.StoreInt64(&js.cluster.lastMetaSnapDuration, int64(snapDuration))
+				}
+				js.mu.RUnlock()
 			} else if err != errNoSnapAvailable && err != errNodeClosed {
 				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
 			}

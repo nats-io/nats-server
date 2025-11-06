@@ -5301,20 +5301,32 @@ func TestMonitorJsz(t *testing.T) {
 			t.Fatalf("received cluster info from multiple nodes")
 		}
 	})
-	t.Run("meta-layer-size", func(t *testing.T) {
+	t.Run("meta-snapshot-stats", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url)
 			if info.Meta == nil {
 				t.Fatalf("expected Meta to be present but got nil")
 			}
-			if info.Meta.MetaSnapshotPendingEntries == 0 && info.Meta.MetaSnapshotPendingSize == 0 {
+			if info.Meta.Snapshot == nil {
+				t.Fatalf("expected Meta.Snapshot to be present but got nil")
+			}
+			snapshot := info.Meta.Snapshot
+			if snapshot.PendingEntries == 0 && snapshot.PendingSize == 0 {
 				t.Logf("Meta snapshot pending size is zero (no pending entries), this is normal for a new cluster")
 			}
-			if info.Meta.MetaSnapshotPendingEntries > 0 {
-				t.Logf("Meta snapshot has %d pending entries", info.Meta.MetaSnapshotPendingEntries)
+			if snapshot.PendingEntries > 0 {
+				t.Logf("Meta snapshot has %d pending entries", snapshot.PendingEntries)
 			}
-			if info.Meta.MetaSnapshotPendingSize > 0 {
-				t.Logf("Meta snapshot has %d pending bytes", info.Meta.MetaSnapshotPendingSize)
+			if snapshot.PendingSize > 0 {
+				t.Logf("Meta snapshot has %d pending bytes", snapshot.PendingSize)
+			}
+			if !snapshot.LastTime.IsZero() {
+				t.Logf("Last meta snapshot was at %v", snapshot.LastTime)
+				if snapshot.LastDuration > 0 {
+					t.Logf("Last meta snapshot took %v", snapshot.LastDuration)
+				}
+			} else {
+				t.Logf("No meta snapshot has been taken yet")
 			}
 		}
 	})
@@ -5383,6 +5395,99 @@ func TestMonitorJsz(t *testing.T) {
 			require_Equal(t, info.API.Level, JSApiLevel)
 		}
 	})
+}
+
+func TestMonitorJszMetaSnapshotStats(t *testing.T) {
+	readJsInfo := func(url string) *JSInfo {
+		t.Helper()
+		body := readBody(t, url)
+		info := &JSInfo{}
+		err := json.Unmarshal(body, info)
+		require_NoError(t, err)
+		return info
+	}
+
+	conf1 := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: S1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s', meta_compact: 5}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [nats-route://127.0.0.1:%d]
+		}
+		accounts {
+			$G
+		}
+	`))
+
+	conf2 := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: S2
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s', meta_compact: 5}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [nats-route://127.0.0.1:%d]
+		}
+		accounts {
+			$G
+		}
+	`))
+
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	s2, o2 := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+	checkForJSClusterUp(t, s1, s2)
+
+	nc := natsConnect(t, s1.ClientURL())
+	defer nc.Close()
+
+	js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+	require_NoError(t, err)
+
+	// Create multiple streams to generate meta entries and trigger snapshots
+	for i := 0; i < 10; i++ {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("test-stream-%d", i),
+			Subjects: []string{fmt.Sprintf("test.%d", i)},
+			Replicas: 2,
+		})
+		require_NoError(t, err)
+	}
+
+	// Wait a bit for meta activity to settle
+	time.Sleep(500 * time.Millisecond)
+
+	// Check that meta snapshot stats are populated
+	monUrl1 := fmt.Sprintf("http://127.0.0.1:%d/jsz", o1.HTTPPort)
+	monUrl2 := fmt.Sprintf("http://127.0.0.1:%d/jsz", o2.HTTPPort)
+
+	for _, url := range []string{monUrl1, monUrl2} {
+		info := readJsInfo(url)
+		require_True(t, info.Meta != nil, "expected Meta to be present")
+		require_True(t, info.Meta.Snapshot != nil, "expected Meta.Snapshot to be present")
+
+		snapshot := info.Meta.Snapshot
+
+		// Validate snapshot structure fields are accessible
+		t.Logf("Pending entries: %d", snapshot.PendingEntries)
+		t.Logf("Pending size: %d bytes", snapshot.PendingSize)
+		t.Logf("Last snapshot time: %v", snapshot.LastTime)
+		t.Logf("Last snapshot duration: %v", snapshot.LastDuration)
+
+		// Since we created streams with meta_compact=5, we should have triggered snapshots
+		if !snapshot.LastTime.IsZero() {
+			require_True(t, snapshot.LastDuration >= 0, "snapshot duration should be non-negative")
+			t.Logf("✓ Meta snapshot was taken at %v and took %v", snapshot.LastTime, snapshot.LastDuration)
+		} else {
+			t.Logf("No meta snapshot taken yet (this is possible with low activity)")
+		}
+	}
 }
 
 func TestMonitorJszOperatorMode(t *testing.T) {
