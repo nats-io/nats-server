@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	"iter"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -357,16 +358,6 @@ func (s *Sublist) chkForRemoveNotification(subject, queue string) {
 func (s *Sublist) Insert(sub *subscription) error {
 	// copy the subject since we hold this and this might be part of a large byte slice.
 	subject := string(sub.subject)
-	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
 
 	s.Lock()
 
@@ -374,7 +365,7 @@ func (s *Sublist) Insert(sub *subscription) error {
 	var n *node
 	l := s.root
 
-	for _, t := range tokens {
+	for t := range strings.SplitSeq(subject, tsep) {
 		lt := len(t)
 		if lt == 0 || sfwc {
 			s.Unlock()
@@ -851,16 +842,6 @@ type lnt struct {
 // Raw low level remove, can do batches with lock held outside.
 func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool) error {
 	subject := string(sub.subject)
-	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
 
 	if shouldLock {
 		s.Lock()
@@ -875,7 +856,7 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool
 	var lnts [32]lnt
 	levels := lnts[:0]
 
-	for _, t := range tokens {
+	for t := range strings.SplitSeq(subject, tsep) {
 		lt := len(t)
 		if lt == 0 || sfwc {
 			return ErrInvalidSubject
@@ -1230,8 +1211,7 @@ func isValidSubject(subject string, checkRunes bool) bool {
 		}
 	}
 	sfwc := false
-	tokens := strings.Split(subject, tsep)
-	for _, t := range tokens {
+	for t := range strings.SplitSeq(subject, tsep) {
 		length := len(t)
 		if length == 0 || sfwc {
 			return false
@@ -1254,12 +1234,12 @@ func isValidSubject(subject string, checkRunes bool) bool {
 
 // IsValidLiteralSubject returns true if a subject is valid and literal (no wildcards), false otherwise
 func IsValidLiteralSubject(subject string) bool {
-	return isValidLiteralSubject(strings.Split(subject, tsep))
+	return isValidLiteralSubject(strings.SplitSeq(subject, tsep))
 }
 
 // isValidLiteralSubject returns true if the tokens are valid and literal (no wildcards), false otherwise
-func isValidLiteralSubject(tokens []string) bool {
-	for _, t := range tokens {
+func isValidLiteralSubject(tokens iter.Seq[string]) bool {
+	for t := range tokens {
 		if len(t) == 0 {
 			return false
 		}
@@ -1279,9 +1259,8 @@ func ValidateMapping(src string, dest string) error {
 	if dest == _EMPTY_ {
 		return nil
 	}
-	subjectTokens := strings.Split(dest, tsep)
 	sfwc := false
-	for _, t := range subjectTokens {
+	for t := range strings.SplitSeq(dest, tsep) {
 		length := len(t)
 		if length == 0 || sfwc {
 			return &mappingDestinationErr{t, ErrInvalidMappingDestinationSubject}
