@@ -7213,3 +7213,49 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 		})
 	}
 }
+func TestJetStreamClusterNoQuorumLostOnShutdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3C", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.servers[0])
+	defer nc.Close()
+
+	snc, _ := jsClientConnect(t, c.servers[0], nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	ch := make(chan *nats.Msg, 5)
+	_, err := snc.ChanSubscribe(JSAdvisoryConsumerQuorumLostPre+".>", ch)
+	require_NoError(t, err)
+	_, err = snc.ChanSubscribe(JSAdvisoryStreamQuorumLostPre+".>", ch)
+	require_NoError(t, err)
+
+	// Issue only reproduces with enough assets.
+	for i := range 20 {
+		sname := fmt.Sprintf("stream_%d", i)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     sname,
+			Replicas: 3,
+			Subjects: []string{fmt.Sprintf("foo.%d", i)},
+			Storage:  nats.MemoryStorage,
+		})
+		require_NoError(t, err)
+		for j := range 10 {
+			_, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+				Name:          fmt.Sprintf("consumer_%d", j),
+				Replicas:      3,
+				MemoryStorage: true,
+			})
+			require_NoError(t, err)
+		}
+	}
+
+	// Wait for everything to stabilize, then shutdown all JetStream
+	// nodes at once.
+	c.waitOnAllCurrent()
+	for _, s := range c.servers {
+		go s.shutdownJetStream()
+	}
+
+	// Should not have received any quorum lost advisories.
+	require_NoChanRead(t, ch, 5*time.Second)
+}

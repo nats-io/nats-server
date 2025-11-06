@@ -3784,11 +3784,18 @@ func (s *Server) replicas(node RaftNode) []*PeerInfo {
 
 // Process a leader change for the clustered stream.
 func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
-	if mset == nil {
+	stepDownIfLeader := func() {
+		if node := mset.raftNode(); node != nil && isLeader {
+			node.StepDown()
+		}
+	}
+	if mset == nil || mset.closed.Load() || js.isShuttingDown() {
+		stepDownIfLeader()
 		return
 	}
 	sa := mset.streamAssignment()
 	if sa == nil {
+		stepDownIfLeader()
 		return
 	}
 
@@ -3861,6 +3868,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 
 	acc, _ := s.LookupAccount(account)
 	if acc == nil {
+		stepDownIfLeader()
 		return
 	}
 
@@ -5918,7 +5926,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 		return errors.New("failed to update consumer leader status")
 	}
 
-	if o == nil || o.isClosed() {
+	if o == nil || o.isClosed() || js.isShuttingDown() {
 		return stepDownIfLeader()
 	}
 
