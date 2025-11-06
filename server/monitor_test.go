@@ -5301,6 +5301,23 @@ func TestMonitorJsz(t *testing.T) {
 			t.Fatalf("received cluster info from multiple nodes")
 		}
 	})
+	t.Run("meta-layer-size", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url)
+			if info.Meta == nil {
+				t.Fatalf("expected Meta to be present but got nil")
+			}
+			if info.Meta.MetaSnapshotPendingEntries == 0 && info.Meta.MetaSnapshotPendingSize == 0 {
+				t.Logf("Meta snapshot pending size is zero (no pending entries), this is normal for a new cluster")
+			}
+			if info.Meta.MetaSnapshotPendingEntries > 0 {
+				t.Logf("Meta snapshot has %d pending entries", info.Meta.MetaSnapshotPendingEntries)
+			}
+			if info.Meta.MetaSnapshotPendingSize > 0 {
+				t.Logf("Meta snapshot has %d pending bytes", info.Meta.MetaSnapshotPendingSize)
+			}
+		}
+	})
 	t.Run("account-non-existing", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "?acc=DOES_NOT_EXIST")

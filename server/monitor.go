@@ -2894,12 +2894,14 @@ type AccountDetail struct {
 
 // MetaClusterInfo shows information about the meta group.
 type MetaClusterInfo struct {
-	Name     string      `json:"name,omitempty"`     // Name is the name of the cluster
-	Leader   string      `json:"leader,omitempty"`   // Leader is the server name of the cluster leader
-	Peer     string      `json:"peer,omitempty"`     // Peer is unique ID of the leader
-	Replicas []*PeerInfo `json:"replicas,omitempty"` // Replicas is a list of known peers
-	Size     int         `json:"cluster_size"`       // Size is the known size of the cluster
-	Pending  int         `json:"pending"`            // Pending is how many RAFT messages are not yet processed
+	Name                       string      `json:"name,omitempty"`                         // Name is the name of the cluster
+	Leader                     string      `json:"leader,omitempty"`                       // Leader is the server name of the cluster leader
+	Peer                       string      `json:"peer,omitempty"`                         // Peer is unique ID of the leader
+	Replicas                   []*PeerInfo `json:"replicas,omitempty"`                     // Replicas is a list of known peers
+	Size                       int         `json:"cluster_size"`                           // Size is the known size of the cluster
+	Pending                    int         `json:"pending"`                                // Pending is how many RAFT messages are not yet processed
+	MetaSnapshotPendingEntries uint64      `json:"meta_snapshot_pending_entries"`         // MetaSnapshotPendingEntries is the count of pending entries in the meta layer
+	MetaSnapshotPendingSize    uint64      `json:"meta_snapshot_pending_size"`            // MetaSnapshotPendingSize is the size in bytes of pending entries in the meta layer
 }
 
 // JSInfo has detailed information on JetStream.
@@ -3104,7 +3106,8 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
-			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize()}
+			entries, bytes := mg.Size()
+			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize(), MetaSnapshotPendingEntries: entries, MetaSnapshotPendingSize: bytes}
 			if isLeader {
 				jsi.Meta.Replicas = ci.Replicas
 			}
