@@ -387,6 +387,7 @@ type Options struct {
 	JetStreamMaxCatchup        int64
 	JetStreamRequestQueueLimit int64
 	JetStreamMetaCompact       uint64
+	JetStreamMetaCompactSize   uint64
 	StreamMaxBufferedMsgs      int               `json:"-"`
 	StreamMaxBufferedSize      int64             `json:"-"`
 	StoreDir                   string            `json:"-"`
@@ -2635,6 +2636,15 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("Expected an absolute size for %q, got %v", mk, mv)}
 				}
 				opts.JetStreamMetaCompact = uint64(thres)
+			case "meta_compact_size":
+				s, err := getStorageSize(mv)
+				if err != nil {
+					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
+				}
+				if s < 0 {
+					return &configErr{tk, fmt.Sprintf("Expected an absolute size for %q, got %v", mk, mv)}
+				}
+				opts.JetStreamMetaCompactSize = uint64(s)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
