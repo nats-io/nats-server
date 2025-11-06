@@ -6238,6 +6238,15 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		return nil, errors.New("solicited routes require cluster capabilities, e.g. --cluster")
 	}
 
+	// Check if the Host field contains a Unix socket URL and handle accordingly
+	if opts.Host != _EMPTY_ && strings.HasPrefix(opts.Host, "unix://") {
+		opts.UnixSocket = strings.TrimPrefix(opts.Host, "unix://")
+		if opts.UnixSocket == _EMPTY_ {
+			return nil, fmt.Errorf("unix socket path cannot be empty")
+		}
+		opts.Host = _EMPTY_
+	}
+
 	return opts, nil
 }
 
