@@ -1393,10 +1393,14 @@ func (js *jetStream) monitorCluster() {
 		}
 		// Look up what the threshold is for compaction. Re-reading from config here as it is reloadable.
 		js.srv.optsMu.RLock()
-		thresh := js.srv.opts.JetStreamMetaCompact
+		ethresh := js.srv.opts.JetStreamMetaCompact
+		szthresh := js.srv.opts.JetStreamMetaCompactSize
 		js.srv.optsMu.RUnlock()
+		// Work out our criteria for snapshotting.
+		byEntries, bySize := ethresh > 0, szthresh > 0
+		byNeither := !byEntries && !bySize
 		// For the meta layer we want to snapshot when over the above threshold (which could be 0 by default).
-		if ne, _ := n.Size(); force || ne > thresh || n.NeedSnapshot() {
+		if ne, nsz := n.Size(); force || byNeither || (byEntries && ne > ethresh) || (bySize && nsz > szthresh) || n.NeedSnapshot() {
 			snap, err := js.metaSnapshot()
 			if err != nil {
 				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
