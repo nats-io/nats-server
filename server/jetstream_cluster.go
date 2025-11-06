@@ -70,6 +70,9 @@ type jetStreamCluster struct {
 	peerStreamCancelMove *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
+	// Track last meta snapshot time and duration for monitoring.
+	lastMetaSnapTime     int64 // Unix nanoseconds
+	lastMetaSnapDuration int64 // Duration in nanoseconds
 }
 
 // Used to track inflight stream add requests to properly re-use same group and sync subject.
@@ -1663,15 +1666,23 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 		return nil, err
 	}
 
-	// Track how long it took to compress the JSON
+	// Track how long it took to compress the JSON.
 	cstart := time.Now()
 	snap := s2.Encode(nil, b)
 	cend := time.Since(cstart)
+	took := time.Since(start)
 
-	if took := time.Since(start); took > time.Second {
+	if took > time.Second {
 		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
 			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
 	}
+
+	// Track in jsz monitoring as well.
+	if cc != nil {
+		atomic.StoreInt64(&cc.lastMetaSnapTime, start.UnixNano())
+		atomic.StoreInt64(&cc.lastMetaSnapDuration, int64(took))
+	}
+
 	return snap, nil
 }
 
