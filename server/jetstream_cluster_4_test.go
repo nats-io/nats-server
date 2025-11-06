@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"math/rand"
 	"os"
@@ -7162,13 +7163,13 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 }
 
 func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
-	for _, thres := range []uint64{0, 5, 10} {
-		t.Run(fmt.Sprintf("%d", thres), func(t *testing.T) {
+	for _, thresh := range []uint64{0, 5, 10} {
+		t.Run(fmt.Sprintf("%d", thresh), func(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "R1TEST", 3)
 			defer c.shutdown()
 			for _, s := range c.servers {
 				s.optsMu.Lock()
-				s.opts.JetStreamMetaCompact = thres
+				s.opts.JetStreamMetaCompact = thresh
 				s.optsMu.Unlock()
 			}
 
@@ -7179,7 +7180,9 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
-			for i := range uint64(15) {
+			// We will get nowhere near math.MaxInt, as we will hit the
+			// compaction threshold and return early, but keeps "i" moving up.
+			for i := range math.MaxInt {
 				rg.RLock()
 				papplied := rg.papplied
 				rg.RUnlock()
@@ -7196,7 +7199,7 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				cc.meta.(*raft).leadc <- true
 
 				// Should we have compacted on this iteration?
-				if entries > thres {
+				if entries > thresh {
 					checkFor(t, time.Second, 5*time.Millisecond, func() error {
 						rg.RLock()
 						npapplied := rg.papplied
@@ -7208,6 +7211,67 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 					})
 					entries, _ = cc.meta.Size()
 					require_Equal(t, entries, 0)
+					return
+				}
+			}
+		})
+	}
+}
+
+func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
+	for _, othresh := range []any{int64(1), "4K", "32K", "1M"} {
+		t.Run(fmt.Sprintf("%v", othresh), func(t *testing.T) {
+			it, err := getStorageSize(othresh)
+			require_NoError(t, err)
+			thresh := uint64(it)
+
+			c := createJetStreamClusterExplicit(t, "R1TEST", 3)
+			defer c.shutdown()
+			for _, s := range c.servers {
+				s.optsMu.Lock()
+				s.opts.JetStreamMetaCompactSize = thresh
+				s.optsMu.Unlock()
+			}
+
+			nc, _ := jsClientConnect(t, c.servers[0])
+			defer nc.Close()
+
+			leader := c.leader()
+			_, cc := leader.getJetStreamCluster()
+			rg := cc.meta.(*raft)
+
+			// We will get nowhere near math.MaxInt, as we will hit the
+			// compaction threshold and return early, but keeps "i" moving up.
+			for i := range math.MaxInt {
+				rg.RLock()
+				papplied := rg.papplied
+				rg.RUnlock()
+
+				jsStreamCreate(t, nc, &StreamConfig{
+					Name:     fmt.Sprintf("test_%d", i),
+					Subjects: []string{fmt.Sprintf("test.%d", i)},
+					Storage:  MemoryStorage,
+				})
+
+				// Kicking the leader change channel is the easiest way to
+				// trick monitorCluster() into calling doSnapshot().
+				_, size := cc.meta.Size()
+				cc.meta.(*raft).leadc <- true
+
+				// Should we have compacted on this iteration?
+				if size > thresh {
+					checkFor(t, time.Second, 5*time.Millisecond, func() error {
+						rg.RLock()
+						npapplied := rg.papplied
+						rg.RUnlock()
+						if npapplied <= papplied {
+							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+						}
+						return nil
+					})
+					_, size = cc.meta.Size()
+					require_Equal(t, size, 0)
+					return
 				}
 			}
 		})
