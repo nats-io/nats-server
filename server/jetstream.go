@@ -693,7 +693,7 @@ func (s *Server) DisableJetStream() error {
 func (s *Server) enableJetStreamAccounts() error {
 	// Reuse the same task workers across all accounts, so that we don't explode
 	// with a large number of goroutines on multi-account systems.
-	tq := parallelTaskQueue(0)
+	tq := parallelTaskQueue(len(dios))
 	defer close(tq)
 
 	// If we have no configured accounts setup then setup imports on global account.
