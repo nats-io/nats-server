@@ -70,6 +70,9 @@ type jetStreamCluster struct {
 	peerStreamCancelMove *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
+	// Track last meta snapshot time and duration for monitoring.
+	lastMetaSnapTime     int64 // Unix nanoseconds
+	lastMetaSnapDuration int64 // Duration in nanoseconds
 }
 
 // Used to track inflight stream add requests to properly re-use same group and sync subject.
@@ -1397,10 +1400,14 @@ func (js *jetStream) monitorCluster() {
 		}
 		// Look up what the threshold is for compaction. Re-reading from config here as it is reloadable.
 		js.srv.optsMu.RLock()
-		thresh := js.srv.opts.JetStreamMetaCompact
+		ethresh := js.srv.opts.JetStreamMetaCompact
+		szthresh := js.srv.opts.JetStreamMetaCompactSize
 		js.srv.optsMu.RUnlock()
+		// Work out our criteria for snapshotting.
+		byEntries, bySize := ethresh > 0, szthresh > 0
+		byNeither := !byEntries && !bySize
 		// For the meta layer we want to snapshot when over the above threshold (which could be 0 by default).
-		if ne, _ := n.Size(); force || ne > thresh || n.NeedSnapshot() {
+		if ne, nsz := n.Size(); force || byNeither || (byEntries && ne > ethresh) || (bySize && nsz > szthresh) || n.NeedSnapshot() {
 			snap, err := js.metaSnapshot()
 			if err != nil {
 				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
@@ -1663,15 +1670,23 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 		return nil, err
 	}
 
-	// Track how long it took to compress the JSON
+	// Track how long it took to compress the JSON.
 	cstart := time.Now()
 	snap := s2.Encode(nil, b)
 	cend := time.Since(cstart)
+	took := time.Since(start)
 
-	if took := time.Since(start); took > time.Second {
+	if took > time.Second {
 		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
 			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
 	}
+
+	// Track in jsz monitoring as well.
+	if cc != nil {
+		atomic.StoreInt64(&cc.lastMetaSnapTime, start.UnixNano())
+		atomic.StoreInt64(&cc.lastMetaSnapDuration, int64(took))
+	}
+
 	return snap, nil
 }
 
@@ -1767,15 +1782,19 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	}
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
+		consumers := sa.consumers
 		js.setStreamAssignmentRecovering(sa)
 		if isRecovering {
+			// Since we're recovering and storing up changes, we'll need to clear out these consumers.
+			// Some might be removed, and we'll recover those later, must not be able to remember them.
+			sa.consumers = nil
 			ru.addStream(sa)
 		} else {
 			js.processStreamAssignment(sa)
 		}
 
 		// We can simply process the consumers.
-		for _, ca := range sa.consumers {
+		for _, ca := range consumers {
 			js.setConsumerAssignmentRecovering(ca)
 			if isRecovering {
 				ru.addOrUpdateConsumer(ca)
@@ -2734,6 +2753,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case isLeader = <-lch:
+			// Process our leader change.
+			js.processStreamLeaderChange(mset, isLeader)
+
 			if isLeader {
 				if mset != nil && n != nil && sendSnapshot && !isRecovering {
 					// If we *are* recovering at the time then this will get done when the apply queue
@@ -2750,13 +2772,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				}
 				// Always cancel if this was running.
 				stopDirectMonitoring()
-
 			} else if !n.Leaderless() {
 				js.setStreamAssignmentRecovering(sa)
 			}
-
-			// Process our leader change.
-			js.processStreamLeaderChange(mset, isLeader)
 
 			// We may receive a leader change after the stream assignment which would cancel us
 			// monitoring for this closely. So re-assess our state here as well.

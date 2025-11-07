@@ -3483,6 +3483,7 @@ func (n *raft) resetWAL() {
 
 // Lock should be held
 func (n *raft) updateLeader(newLeader string) {
+	wasLeader := n.leader == n.id
 	n.leader = newLeader
 	n.hasleader.Store(newLeader != _EMPTY_)
 	if !n.pleader.Load() && newLeader != noLeader {
@@ -3499,9 +3500,9 @@ func (n *raft) updateLeader(newLeader string) {
 		}
 	}
 	// Reset last seen timestamps.
-	// If we're the leader we track everyone, and don't reset.
+	// If we are (or were) the leader we track(ed) everyone, and don't reset.
 	// But if we're a follower we only track the leader, and reset all others.
-	if newLeader != n.id {
+	if newLeader != n.id && !wasLeader {
 		for peer, ps := range n.peers {
 			if peer == newLeader {
 				continue

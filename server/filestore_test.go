@@ -11004,3 +11004,86 @@ func TestFileStorePurgeMsgBlock(t *testing.T) {
 		require_Equal(t, state.Bytes, 10*33)
 	})
 }
+
+func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Generate a block with 6 messages and then delete the first and last, as well as a larger gap in the middle.
+		for range 6 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(3)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(4)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(6)
+		require_NoError(t, err)
+
+		// We'll compact the deletes later, but shouldn't be lmb.
+		fmb := fs.getFirstBlock()
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+
+		// Confirm the block's state.
+		fmb.mu.Lock()
+		defer fmb.mu.Unlock()
+		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
+		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 6)
+		require_Equal(t, fmb.msgs, 2)
+		require_Len(t, fmb.dmap.Size(), 3)
+		require_True(t, fmb.dmap.Exists(3))
+		require_True(t, fmb.dmap.Exists(4))
+		require_True(t, fmb.dmap.Exists(6))
+
+		// Now compact and reload and the block should still have the correct deletes.
+		fmb.compact()
+		fmb.clearCache()
+		fmb.dmap.Empty()
+		require_NoError(t, fmb.loadMsgsWithLock())
+		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
+		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 6)
+		require_Equal(t, fmb.msgs, 2)
+		require_Len(t, fmb.dmap.Size(), 3)
+		require_True(t, fmb.dmap.Exists(3))
+		require_True(t, fmb.dmap.Exists(4))
+		require_True(t, fmb.dmap.Exists(6))
+
+		// Rebuilding should update the last sequence.
+		_, _, err = fmb.rebuildStateLocked()
+		require_NoError(t, err)
+		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
+		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 5)
+		require_Equal(t, fmb.msgs, 2)
+
+		// Delete at sequence 5 such that the block can be compacted to a single message.
+		fmb.mu.Unlock()
+		_, err = fs.RemoveMsg(5)
+		fmb.mu.Lock()
+		require_NoError(t, err)
+		fmb.compact()
+		fmb.clearCache()
+		fmb.dmap.Empty()
+		require_NoError(t, fmb.loadMsgsWithLock())
+		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
+		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 5)
+		require_Equal(t, fmb.msgs, 1)
+		require_Len(t, fmb.dmap.Size(), 3)
+		require_True(t, fmb.dmap.Exists(3))
+		require_True(t, fmb.dmap.Exists(4))
+		require_True(t, fmb.dmap.Exists(5))
+
+		// Rebuilding should update the first/last sequences to a single message.
+		_, _, err = fmb.rebuildStateLocked()
+		require_NoError(t, err)
+		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
+		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 2)
+	})
+}
