@@ -3691,6 +3691,73 @@ func TestAccountUpdateRemoteServerDisconnectsNewestFirst(t *testing.T) {
 	require_True(t, disconnected[byStartTime[2].cid])
 }
 
+func TestAccountMaxConnectionsDuringLameDuckMode(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+        port: -1
+        accounts {
+                TEST {
+                        users = [
+                          {user: user, password: user}
+                        ]
+                        limits {
+                                max_connections: 3
+                        }
+                }
+        }
+		cluster {
+		  listen: 127.0.0.1:7248
+		  name: "abc"
+		}
+		no_auth_user: user
+		lame_duck_grace_period: 1s
+        `))
+
+	optsA, err := ProcessConfigFile(cf)
+	require_NoError(t, err)
+	optsA.NoSigs, optsA.NoLog = true, true
+	optsA.ServerName = "A"
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+	optsB := nextServerOpts(optsA)
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	optsB.ServerName = "B"
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	disconnects := make([]chan error, 0)
+	for range 3 {
+		disconnectCh := make(chan error)
+		c, err := nats.Connect(
+			srvA.ClientURL(),
+			nats.UserInfo("user", "user"),
+			nats.DisconnectErrHandler(func(c *nats.Conn, err error) {
+				disconnectCh <- err
+			}),
+		)
+		require_NoError(t, err)
+		defer c.Close()
+		disconnects = append(disconnects, disconnectCh)
+		// Small delay to ensure distinct start times.
+		time.Sleep(10 * time.Millisecond)
+	}
+	acc, err := srvA.lookupAccount("TEST")
+	require_NoError(t, err)
+	require_Equal(t, acc.NumConnections(), 3)
+
+	go srvA.LameDuckShutdown()
+
+	for _, disconnectCh := range disconnects {
+		select {
+		case err := <-disconnectCh:
+			require_Equal(t, err.Error(), "EOF")
+		case <-time.After(5 * time.Second):
+			t.Fatal("Expected LDM reconnect")
+		}
+	}
+}
+
 func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
 	cf := createConfFile(t, []byte(`
 	listen: 127.0.0.1:-1
