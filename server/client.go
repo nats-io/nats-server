@@ -5760,7 +5760,8 @@ func (c *client) closeConnection(reason ClosedState) {
 	}
 
 	// If we are shutting down, no need to do all the accounting on subs, etc.
-	if reason == ServerShutdown {
+	// During LDM we'll still do the accounting, otherwise account limits could close others after this reconnects.
+	if reason == ServerShutdown && c.srv.isShuttingDown() {
 		s := c.srv
 		c.mu.Unlock()
 		if s != nil {

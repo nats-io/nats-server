@@ -5301,6 +5301,52 @@ func TestMonitorJsz(t *testing.T) {
 			t.Fatalf("received cluster info from multiple nodes")
 		}
 	})
+	t.Run("meta-snapshot-stats", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url)
+			require_True(t, info.Meta != nil)
+			require_True(t, info.Meta.Snapshot != nil)
+
+			snapshot := info.Meta.Snapshot
+
+			// In case no snapshots have happened there would be some pending entries.
+			if snapshot.LastTime.IsZero() {
+				require_True(t, snapshot.PendingEntries >= 1)
+				require_True(t, snapshot.PendingSize >= 1)
+			}
+
+			// Force meta snapshots on both servers to test snapshot timing.
+			for _, srv := range srvs {
+				if js := srv.getJetStream(); js != nil {
+					if mg := js.getMetaGroup(); mg != nil {
+						if snap, err := js.metaSnapshot(); err == nil {
+							mg.InstallSnapshot(snap)
+						}
+					}
+				}
+			}
+			// Wait for snapshot timing to be recorded
+			time.Sleep(100 * time.Millisecond)
+
+			// Get latest stats again.
+			info = readJsInfo(url)
+			require_True(t, info.Meta != nil)
+			require_True(t, info.Meta.Snapshot != nil)
+
+			snapshot = info.Meta.Snapshot
+
+			require_True(t, !snapshot.LastTime.IsZero())
+			// Assert that snapshot time is in UTC
+			require_Equal(t, snapshot.LastTime.Location(), time.UTC)
+
+			// Assert that duration is non-negative and reasonable
+			require_True(t, snapshot.LastDuration >= 0)
+			require_True(t, snapshot.LastDuration < 30*time.Second)
+
+			// Assert that snapshot time is recent.
+			require_True(t, time.Since(snapshot.LastTime) < 5*time.Minute)
+		}
+	})
 	t.Run("account-non-existing", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "?acc=DOES_NOT_EXIST")

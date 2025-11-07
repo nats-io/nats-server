@@ -15,6 +15,7 @@ package gsl
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -87,24 +88,13 @@ func NewSublist[T comparable]() *GenericSublist[T] {
 
 // Insert adds a subscription into the sublist
 func (s *GenericSublist[T]) Insert(subject string, value T) error {
-	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
-
 	s.Lock()
 
 	var sfwc bool
 	var n *node[T]
 	l := s.root
 
-	for _, t := range tokens {
+	for t := range strings.SplitSeq(subject, tsep) {
 		lt := len(t)
 		if lt == 0 || sfwc {
 			s.Unlock()
@@ -312,17 +302,6 @@ type lnt[T comparable] struct {
 
 // Raw low level remove, can do batches with lock held outside.
 func (s *GenericSublist[T]) remove(subject string, value T, shouldLock bool) error {
-	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
-
 	if shouldLock {
 		s.Lock()
 		defer s.Unlock()
@@ -336,7 +315,7 @@ func (s *GenericSublist[T]) remove(subject string, value T, shouldLock bool) err
 	var lnts [32]lnt[T]
 	levels := lnts[:0]
 
-	for _, t := range tokens {
+	for t := range strings.SplitSeq(subject, tsep) {
 		lt := len(t)
 		if lt == 0 || sfwc {
 			return ErrInvalidSubject

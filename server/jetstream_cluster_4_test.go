@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path"
@@ -4134,6 +4135,8 @@ func TestJetStreamClusterMetaSnapshotReCreateConsistency(t *testing.T) {
 	cca := ca.copyGroup()
 	csa.Group.Name, csa.Config.Replicas = "new-group", 1
 	cca.Group.Name, cca.Config.Replicas = "new-group", 1
+	streamAdd := encodeAddStreamAssignment(csa)
+	consumerAdd := encodeAddConsumerAssignment(cca)
 	mjs.mu.Unlock()
 
 	// Get the snapshot before removing the stream below so we can recover fresh.
@@ -4161,8 +4164,8 @@ func TestJetStreamClusterMetaSnapshotReCreateConsistency(t *testing.T) {
 	_, err = mjs.applyMetaEntries([]*Entry{
 		newEntry(EntrySnapshot, snap),
 		newEntry(EntryNormal, streamDelete),
-		newEntry(EntryNormal, encodeAddStreamAssignment(csa)),
-		newEntry(EntryNormal, encodeAddConsumerAssignment(cca)),
+		newEntry(EntryNormal, streamAdd),
+		newEntry(EntryNormal, consumerAdd),
 	}, ru)
 	require_NoError(t, err)
 
@@ -4185,6 +4188,84 @@ func TestJetStreamClusterMetaSnapshotReCreateConsistency(t *testing.T) {
 	n2 := ml.lookupRaftNode(oldConsumerGroup)
 	require_True(t, n1 == nil)
 	require_True(t, n2 == nil)
+}
+
+func TestJetStreamClusterMetaSnapshotConsumerDeleteConsistency(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	scfg := &nats.StreamConfig{Name: "TEST", Replicas: 1}
+	_, err := js.AddStream(scfg)
+	require_NoError(t, err)
+
+	ccfg := &nats.ConsumerConfig{Name: "consumer", Replicas: 1}
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mjs := sl.getJetStream()
+	mjs.mu.Lock()
+	ca := mjs.consumerAssignment(globalAccountName, "TEST", "consumer")
+	ca.Created = time.Time{} // Simulate this consumer existed for a while already.
+	deleteConsumer := encodeDeleteConsumerAssignment(ca)
+	mjs.mu.Unlock()
+
+	// Get the snapshot before removing the stream below so we can recover fresh.
+	snap, err := mjs.metaSnapshot()
+	require_NoError(t, err)
+	require_NoError(t, js.DeleteStream("TEST"))
+	nc.Close()
+
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+
+	// Simulate recovering:
+	// - snapshot with a stream and consumer
+	// - normal entry deleting the consumer
+	// This should result in a consistent state.
+	mjs.mu.Lock()
+	mjs.metaRecovering = true
+	mjs.mu.Unlock()
+	_, err = mjs.applyMetaEntries([]*Entry{
+		newEntry(EntrySnapshot, snap),
+		newEntry(EntryNormal, deleteConsumer),
+	}, ru)
+	require_NoError(t, err)
+
+	// Recovery should contain the stream create and the consumer delete.
+	require_Len(t, len(ru.updateConsumers), 1)
+	require_Len(t, len(ru.removeConsumers), 1)
+	require_Len(t, len(ru.addStreams), 1)
+
+	// Process those updates.
+	for _, cas := range ru.updateConsumers {
+		require_Len(t, len(cas), 0)
+	}
+	for _, cas := range ru.removeConsumers {
+		for _, ca = range cas {
+			mjs.processConsumerRemoval(ca)
+		}
+	}
+	for _, sa := range ru.addStreams {
+		mjs.processStreamAssignment(sa)
+	}
+	mjs.clearMetaRecovering()
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		hs := sl.healthz(&HealthzOptions{})
+		if hs.Error != _EMPTY_ {
+			return errors.New(hs.Error) // Would previously error with "consumer not found".
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
@@ -6907,13 +6988,13 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 }
 
 func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
-	for _, thres := range []uint64{0, 5, 10} {
-		t.Run(fmt.Sprintf("%d", thres), func(t *testing.T) {
+	for _, thresh := range []uint64{0, 5, 10} {
+		t.Run(fmt.Sprintf("%d", thresh), func(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "R1TEST", 3)
 			defer c.shutdown()
 			for _, s := range c.servers {
 				s.optsMu.Lock()
-				s.opts.JetStreamMetaCompact = thres
+				s.opts.JetStreamMetaCompact = thresh
 				s.optsMu.Unlock()
 			}
 
@@ -6924,7 +7005,9 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
-			for i := range uint64(15) {
+			// We will get nowhere near math.MaxInt, as we will hit the
+			// compaction threshold and return early, but keeps "i" moving up.
+			for i := range math.MaxInt {
 				rg.RLock()
 				papplied := rg.papplied
 				rg.RUnlock()
@@ -6941,7 +7024,7 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				cc.meta.(*raft).leadc <- true
 
 				// Should we have compacted on this iteration?
-				if entries > thres {
+				if entries > thresh {
 					checkFor(t, time.Second, 5*time.Millisecond, func() error {
 						rg.RLock()
 						npapplied := rg.papplied
@@ -6953,6 +7036,67 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 					})
 					entries, _ = cc.meta.Size()
 					require_Equal(t, entries, 0)
+					return
+				}
+			}
+		})
+	}
+}
+
+func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
+	for _, othresh := range []any{int64(1), "4K", "32K", "1M"} {
+		t.Run(fmt.Sprintf("%v", othresh), func(t *testing.T) {
+			it, err := getStorageSize(othresh)
+			require_NoError(t, err)
+			thresh := uint64(it)
+
+			c := createJetStreamClusterExplicit(t, "R1TEST", 3)
+			defer c.shutdown()
+			for _, s := range c.servers {
+				s.optsMu.Lock()
+				s.opts.JetStreamMetaCompactSize = thresh
+				s.optsMu.Unlock()
+			}
+
+			nc, _ := jsClientConnect(t, c.servers[0])
+			defer nc.Close()
+
+			leader := c.leader()
+			_, cc := leader.getJetStreamCluster()
+			rg := cc.meta.(*raft)
+
+			// We will get nowhere near math.MaxInt, as we will hit the
+			// compaction threshold and return early, but keeps "i" moving up.
+			for i := range math.MaxInt {
+				rg.RLock()
+				papplied := rg.papplied
+				rg.RUnlock()
+
+				jsStreamCreate(t, nc, &StreamConfig{
+					Name:     fmt.Sprintf("test_%d", i),
+					Subjects: []string{fmt.Sprintf("test.%d", i)},
+					Storage:  MemoryStorage,
+				})
+
+				// Kicking the leader change channel is the easiest way to
+				// trick monitorCluster() into calling doSnapshot().
+				_, size := cc.meta.Size()
+				cc.meta.(*raft).leadc <- true
+
+				// Should we have compacted on this iteration?
+				if size > thresh {
+					checkFor(t, time.Second, 5*time.Millisecond, func() error {
+						rg.RLock()
+						npapplied := rg.papplied
+						rg.RUnlock()
+						if npapplied <= papplied {
+							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+						}
+						return nil
+					})
+					_, size = cc.meta.Size()
+					require_Equal(t, size, 0)
+					return
 				}
 			}
 		})
