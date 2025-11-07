@@ -3870,3 +3870,64 @@ func TestWriteTimeoutConfigParsing(t *testing.T) {
 		}
 	}
 }
+
+func TestWebsocketPingIntervalConfig(t *testing.T) {
+	// Test with string format (duration string)
+	confFile := createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+			ping_interval: "30s"
+		}
+	`))
+	opts, err := ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 30*time.Second {
+		t.Fatalf("Expected websocket ping_interval to be 30s, got %v", opts.Websocket.PingInterval)
+	}
+
+	// Test with integer format (seconds)
+	confFile = createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+			ping_interval: 45
+		}
+	`))
+	opts, err = ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 45*time.Second {
+		t.Fatalf("Expected websocket ping_interval to be 45s, got %v", opts.Websocket.PingInterval)
+	}
+
+	// Test with different duration format
+	confFile = createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+			ping_interval: "2m"
+		}
+	`))
+	opts, err = ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 2*time.Minute {
+		t.Fatalf("Expected websocket ping_interval to be 2m, got %v", opts.Websocket.PingInterval)
+	}
+
+	// Test without ping_interval (should be zero/unset)
+	confFile = createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+		}
+	`))
+	opts, err = ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 0 {
+		t.Fatalf("Expected websocket ping_interval to be 0 (unset), got %v", opts.Websocket.PingInterval)
+	}
+}

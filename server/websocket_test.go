@@ -4841,6 +4841,34 @@ func Benchmark_WS_Subx5_CY__4096b(b *testing.B) {
 	wsBenchSub(b, 5, true, s)
 }
 
+func TestWebsocketPingInterval(t *testing.T) {
+	opts := testWSOptions()
+	opts.Websocket.PingInterval = 200 * time.Millisecond
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	wsc, br := testWSCreateClient(t, false, false, opts.Websocket.Host, opts.Websocket.Port)
+	defer wsc.Close()
+
+	pingCount := 0
+	deadline := time.Now().Add(1 * time.Second)
+
+	for time.Now().Before(deadline) {
+		wsc.SetReadDeadline(time.Now().Add(1 * time.Second))
+
+		msg := testWSReadFrame(t, br)
+		if bytes.Contains(msg, []byte("PING\r\n")) {
+			pingCount++
+			pongMsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("PONG\r\n"))
+			wsc.Write(pongMsg)
+		}
+	}
+	if pingCount < 2 {
+		t.Fatalf("Expected at least 2 PINGs, got %d", pingCount)
+	}
+}
+
 func Benchmark_WS_Subx5_CN__8192b(b *testing.B) {
 	s := sizedString(8192)
 	wsBenchSub(b, 5, false, s)
