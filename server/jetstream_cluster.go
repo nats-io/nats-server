@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -219,16 +220,17 @@ func (usa *unsupportedStreamAssignment) closeInfoSub(s *Server) {
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
 type consumerAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
-	Created    time.Time       `json:"created"`
-	Name       string          `json:"name"`
-	Stream     string          `json:"stream"`
-	ConfigJSON json.RawMessage `json:"consumer"`
-	Config     *ConsumerConfig `json:"-"`
-	Group      *raftGroup      `json:"group"`
-	Subject    string          `json:"subject,omitempty"`
-	Reply      string          `json:"reply,omitempty"`
-	State      *ConsumerState  `json:"state,omitempty"`
+	Client           *ClientInfo     `json:"client,omitempty"`
+	Created          time.Time       `json:"created"`
+	Name             string          `json:"name"`
+	Stream           string          `json:"stream"`
+	ConfigJSON       json.RawMessage `json:"consumer,omitempty"`
+	ConfigCompressed []byte          `json:"consumer_compressed,omitempty"`
+	Config           *ConsumerConfig `json:"-"`
+	Group            *raftGroup      `json:"group"`
+	Subject          string          `json:"subject,omitempty"`
+	Reply            string          `json:"reply,omitempty"`
+	State            *ConsumerState  `json:"state,omitempty"`
 	// Internal
 	responded   bool
 	recovering  bool
@@ -8085,7 +8087,22 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
 	cca := *ca
 	cca.Client = cca.Client.forProposal()
-	cca.ConfigJSON, _ = json.Marshal(ca.Config)
+	
+	// Use compressed config if it would save space
+	if ca.Config != nil {
+		configJSON, _ := json.Marshal(ca.Config)
+		compressed := s2.Encode(nil, configJSON)
+		
+		// Only use compression if it actually reduces size significantly
+		if len(compressed) < len(configJSON)*3/4 {
+			cca.ConfigCompressed = compressed
+			cca.ConfigJSON = nil
+		} else {
+			cca.ConfigJSON = configJSON
+			cca.ConfigCompressed = nil
+		}
+	}
+	
 	var bb bytes.Buffer
 	bb.WriteByte(byte(assignConsumerOp))
 	json.NewEncoder(&bb).Encode(cca)
@@ -8095,34 +8112,181 @@ func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
 func encodeDeleteConsumerAssignment(ca *consumerAssignment) []byte {
 	cca := *ca
 	cca.Client = cca.Client.forProposal()
-	cca.ConfigJSON, _ = json.Marshal(ca.Config)
+	
+	// Use compressed config if it would save space
+	if ca.Config != nil {
+		configJSON, _ := json.Marshal(ca.Config)
+		compressed := s2.Encode(nil, configJSON)
+		
+		// Only use compression if it actually reduces size significantly
+		if len(compressed) < len(configJSON)*3/4 {
+			cca.ConfigCompressed = compressed
+			cca.ConfigJSON = nil
+		} else {
+			cca.ConfigJSON = configJSON
+			cca.ConfigCompressed = nil
+		}
+	}
+	
 	var bb bytes.Buffer
 	bb.WriteByte(byte(removeConsumerOp))
 	json.NewEncoder(&bb).Encode(cca)
 	return bb.Bytes()
 }
 
+var consumerAssignmentPool = sync.Pool{
+	New: func() interface{} { 
+		return &consumerAssignment{}
+	},
+}
+
+func releaseConsumerAssignment(ca *consumerAssignment) {
+	if ca != nil {
+		// Clear references to help GC
+		ca.Client = nil
+		ca.Config = nil
+		ca.Group = nil
+		ca.State = nil
+		ca.ConfigJSON = nil
+		ca.ConfigCompressed = nil
+		ca.unsupported = nil
+		consumerAssignmentPool.Put(ca)
+	}
+}
+
 func decodeConsumerAssignment(buf []byte) (*consumerAssignment, error) {
-	var ca consumerAssignment
-	if err := json.Unmarshal(buf, &ca); err != nil {
+	ca := consumerAssignmentPool.Get().(*consumerAssignment)
+	// Reset the struct to ensure clean state
+	*ca = consumerAssignment{}
+	
+	// Use streaming JSON parsing to reduce memory allocations
+	decoder := json.NewDecoder(bytes.NewReader(buf))
+	if err := decodeConsumerAssignmentStreaming(decoder, ca); err != nil {
+		consumerAssignmentPool.Put(ca)
 		return nil, err
 	}
-	if err := decodeConsumerAssignmentConfig(&ca); err != nil {
+	
+	if err := decodeConsumerAssignmentConfig(ca); err != nil {
+		consumerAssignmentPool.Put(ca)
 		return nil, err
 	}
-	return &ca, nil
+	return ca, nil
+}
+
+func decodeConsumerAssignmentStreaming(decoder *json.Decoder, ca *consumerAssignment) error {
+	// Read opening brace
+	t, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := t.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("expected opening brace, got %v", t)
+	}
+	
+	for decoder.More() {
+		// Read field name
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		fieldName, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("expected field name, got %v", token)
+		}
+		
+		switch fieldName {
+		case "client":
+			ca.Client = &ClientInfo{}
+			if err := decoder.Decode(ca.Client); err != nil {
+				return err
+			}
+		case "created":
+			if err := decoder.Decode(&ca.Created); err != nil {
+				return err
+			}
+		case "name":
+			if err := decoder.Decode(&ca.Name); err != nil {
+				return err
+			}
+		case "stream":
+			if err := decoder.Decode(&ca.Stream); err != nil {
+				return err
+			}
+		case "consumer":
+			// Keep consumer config as raw JSON for later processing
+			var rawConfig json.RawMessage
+			if err := decoder.Decode(&rawConfig); err != nil {
+				return err
+			}
+			ca.ConfigJSON = rawConfig
+		case "consumer_compressed":
+			if err := decoder.Decode(&ca.ConfigCompressed); err != nil {
+				return err
+			}
+		case "group":
+			ca.Group = &raftGroup{}
+			if err := decoder.Decode(ca.Group); err != nil {
+				return err
+			}
+		case "subject":
+			if err := decoder.Decode(&ca.Subject); err != nil {
+				return err
+			}
+		case "reply":
+			if err := decoder.Decode(&ca.Reply); err != nil {
+				return err
+			}
+		case "state":
+			ca.State = &ConsumerState{}
+			if err := decoder.Decode(ca.State); err != nil {
+				return err
+			}
+		default:
+			// Skip unknown fields without allocating
+			var ignored json.RawMessage
+			if err := decoder.Decode(&ignored); err != nil {
+				return err
+			}
+		}
+	}
+	
+	// Read closing brace
+	t, err = decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := t.(json.Delim); !ok || delim != '}' {
+		return fmt.Errorf("expected closing brace, got %v", t)
+	}
+	
+	return nil
 }
 
 func decodeConsumerAssignmentConfig(ca *consumerAssignment) error {
 	var unsupported bool
 	var cfg ConsumerConfig
 	var err error
-	decoder := json.NewDecoder(bytes.NewReader(ca.ConfigJSON))
+	var configData []byte
+	
+	// Check if we have compressed config data
+	if len(ca.ConfigCompressed) > 0 {
+		configData, err = s2.Decode(nil, ca.ConfigCompressed)
+		if err != nil {
+			return fmt.Errorf("failed to decompress consumer config: %w", err)
+		}
+	} else if len(ca.ConfigJSON) > 0 {
+		configData = ca.ConfigJSON
+	} else {
+		// No config data available
+		return nil
+	}
+	
+	decoder := json.NewDecoder(bytes.NewReader(configData))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&cfg); err != nil {
 		unsupported = true
 		cfg = ConsumerConfig{}
-		if err2 := json.Unmarshal(ca.ConfigJSON, &cfg); err2 != nil {
+		if err2 := json.Unmarshal(configData, &cfg); err2 != nil {
 			return err2
 		}
 	}
