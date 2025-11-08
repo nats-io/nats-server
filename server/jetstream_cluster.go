@@ -220,17 +220,16 @@ func (usa *unsupportedStreamAssignment) closeInfoSub(s *Server) {
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
 type consumerAssignment struct {
-	Client           *ClientInfo     `json:"client,omitempty"`
-	Created          time.Time       `json:"created"`
-	Name             string          `json:"name"`
-	Stream           string          `json:"stream"`
-	ConfigJSON       json.RawMessage `json:"consumer,omitempty"`
-	ConfigCompressed []byte          `json:"consumer_compressed,omitempty"`
-	Config           *ConsumerConfig `json:"-"`
-	Group            *raftGroup      `json:"group"`
-	Subject          string          `json:"subject,omitempty"`
-	Reply            string          `json:"reply,omitempty"`
-	State            *ConsumerState  `json:"state,omitempty"`
+	Client     *ClientInfo     `json:"client,omitempty"`
+	Created    time.Time       `json:"created"`
+	Name       string          `json:"name"`
+	Stream     string          `json:"stream"`
+	ConfigJSON json.RawMessage `json:"consumer"`
+	Config     *ConsumerConfig `json:"-"`
+	Group      *raftGroup      `json:"group"`
+	Subject    string          `json:"subject,omitempty"`
+	Reply      string          `json:"reply,omitempty"`
+	State      *ConsumerState  `json:"state,omitempty"`
 	// Internal
 	responded   bool
 	recovering  bool
@@ -8087,22 +8086,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
 	cca := *ca
 	cca.Client = cca.Client.forProposal()
-	
-	// Use compressed config if it would save space
-	if ca.Config != nil {
-		configJSON, _ := json.Marshal(ca.Config)
-		compressed := s2.Encode(nil, configJSON)
-		
-		// Only use compression if it actually reduces size significantly
-		if len(compressed) < len(configJSON)*3/4 {
-			cca.ConfigCompressed = compressed
-			cca.ConfigJSON = nil
-		} else {
-			cca.ConfigJSON = configJSON
-			cca.ConfigCompressed = nil
-		}
-	}
-	
+	cca.ConfigJSON, _ = json.Marshal(ca.Config)
 	var bb bytes.Buffer
 	bb.WriteByte(byte(assignConsumerOp))
 	json.NewEncoder(&bb).Encode(cca)
@@ -8112,22 +8096,7 @@ func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
 func encodeDeleteConsumerAssignment(ca *consumerAssignment) []byte {
 	cca := *ca
 	cca.Client = cca.Client.forProposal()
-	
-	// Use compressed config if it would save space
-	if ca.Config != nil {
-		configJSON, _ := json.Marshal(ca.Config)
-		compressed := s2.Encode(nil, configJSON)
-		
-		// Only use compression if it actually reduces size significantly
-		if len(compressed) < len(configJSON)*3/4 {
-			cca.ConfigCompressed = compressed
-			cca.ConfigJSON = nil
-		} else {
-			cca.ConfigJSON = configJSON
-			cca.ConfigCompressed = nil
-		}
-	}
-	
+	cca.ConfigJSON, _ = json.Marshal(ca.Config)
 	var bb bytes.Buffer
 	bb.WriteByte(byte(removeConsumerOp))
 	json.NewEncoder(&bb).Encode(cca)
@@ -8148,7 +8117,6 @@ func releaseConsumerAssignment(ca *consumerAssignment) {
 		ca.Group = nil
 		ca.State = nil
 		ca.ConfigJSON = nil
-		ca.ConfigCompressed = nil
 		ca.unsupported = nil
 		consumerAssignmentPool.Put(ca)
 	}
@@ -8159,11 +8127,15 @@ func decodeConsumerAssignment(buf []byte) (*consumerAssignment, error) {
 	// Reset the struct to ensure clean state
 	*ca = consumerAssignment{}
 	
-	// Use streaming JSON parsing to reduce memory allocations
+	// Try streaming JSON parsing first to reduce memory allocations
 	decoder := json.NewDecoder(bytes.NewReader(buf))
 	if err := decodeConsumerAssignmentStreaming(decoder, ca); err != nil {
-		consumerAssignmentPool.Put(ca)
-		return nil, err
+		// Fallback to standard JSON unmarshaling for compatibility
+		*ca = consumerAssignment{}
+		if err2 := json.Unmarshal(buf, ca); err2 != nil {
+			consumerAssignmentPool.Put(ca)
+			return nil, err2
+		}
 	}
 	
 	if err := decodeConsumerAssignmentConfig(ca); err != nil {
@@ -8219,10 +8191,6 @@ func decodeConsumerAssignmentStreaming(decoder *json.Decoder, ca *consumerAssign
 				return err
 			}
 			ca.ConfigJSON = rawConfig
-		case "consumer_compressed":
-			if err := decoder.Decode(&ca.ConfigCompressed); err != nil {
-				return err
-			}
 		case "group":
 			ca.Group = &raftGroup{}
 			if err := decoder.Decode(ca.Group); err != nil {
@@ -8266,27 +8234,12 @@ func decodeConsumerAssignmentConfig(ca *consumerAssignment) error {
 	var unsupported bool
 	var cfg ConsumerConfig
 	var err error
-	var configData []byte
-	
-	// Check if we have compressed config data
-	if len(ca.ConfigCompressed) > 0 {
-		configData, err = s2.Decode(nil, ca.ConfigCompressed)
-		if err != nil {
-			return fmt.Errorf("failed to decompress consumer config: %w", err)
-		}
-	} else if len(ca.ConfigJSON) > 0 {
-		configData = ca.ConfigJSON
-	} else {
-		// No config data available
-		return nil
-	}
-	
-	decoder := json.NewDecoder(bytes.NewReader(configData))
+	decoder := json.NewDecoder(bytes.NewReader(ca.ConfigJSON))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&cfg); err != nil {
 		unsupported = true
 		cfg = ConsumerConfig{}
-		if err2 := json.Unmarshal(configData, &cfg); err2 != nil {
+		if err2 := json.Unmarshal(ca.ConfigJSON, &cfg); err2 != nil {
 			return err2
 		}
 	}
@@ -9308,7 +9261,7 @@ RETRY:
 				notifyLeaderStopCatchup(mrec, errCatchupStalled)
 				msgsQ.recycle(&mrecs)
 			}
-			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
+			s.Warnf("Catchup for stream '%s > %s' to peer %s stalled", mset.account(), mset.name(), sreq.Peer)
 			goto RETRY
 		case <-s.quitCh:
 			return ErrServerNotRunning
@@ -9729,8 +9682,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	ackReply := syncAckSubject()
 	ackSub, _ := s.sysSubscribe(ackReply, func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 		if len(msg) > 0 {
-			s.Warnf("Catchup for stream '%s > %s' was aborted on the remote due to: %q",
-				mset.account(), mset.name(), msg)
+			s.Warnf("Catchup for stream '%s > %s' to peer %s was aborted on the remote due to: %q",
+				mset.account(), mset.name(), sreq.Peer, msg)
 			s.sysUnsubscribe(sub)
 			close(remoteQuitCh)
 			return
@@ -9775,8 +9728,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// Do another quick sanity check that we actually have enough data to satisfy the request.
 		// If not, let's step down and hope a new leader can correct this.
 		if state.LastSeq < last {
-			s.Warnf("Catchup for stream '%s > %s' skipped, requested sequence %d was larger than current state: %+v",
-				mset.account(), mset.name(), seq, state)
+			s.Warnf("Catchup for stream '%s > %s' to peer %s skipped, requested sequence %d was larger than current state: %+v",
+				mset.account(), mset.name(), sreq.Peer, seq, state)
 			node.StepDown()
 			return
 		}
@@ -9791,7 +9744,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	sendNextBatchAndContinue := func(qch chan struct{}) bool {
 		// Check if we know we will not enter the loop because we are done.
 		if seq > last {
-			s.Noticef("Catchup for stream '%s > %s' complete (took %v)", mset.account(), mset.name(), time.Since(start))
+			s.Noticef("Catchup for stream '%s > %s' to peer %s complete (took %v)", mset.account(), mset.name(), sreq.Peer, time.Since(start))
 			// EOF
 			s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
 			return false
@@ -9900,8 +9853,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						// The snapshot has a larger last sequence then we have. This could be due to a truncation
 						// when trying to recover after corruption, still not 100% sure. Could be off by 1 too somehow,
 						// but tested a ton of those with no success.
-						s.Warnf("Catchup for stream '%s > %s' completed (took %v), but requested sequence %d was larger than current state: %+v",
-							mset.account(), mset.name(), time.Since(start), seq, state)
+						s.Warnf("Catchup for stream '%s > %s' to peer %s completed (took %v), but requested sequence %d was larger than current state: %+v",
+							mset.account(), mset.name(), sreq.Peer, time.Since(start), seq, state)
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {
 							if snap := mset.stateSnapshot(); snap != nil {
@@ -9947,7 +9900,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				if drOk && dr.First > 0 {
 					sendDR()
 				}
-				s.Noticef("Catchup for stream '%s > %s' complete (took %v)", mset.account(), mset.name(), time.Since(start))
+				s.Noticef("Catchup for stream '%s > %s' to peer %s complete (took %v)", mset.account(), mset.name(), sreq.Peer, time.Since(start))
 				// EOF
 				s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
 				return false
@@ -9987,7 +9940,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			mset.clearCatchupPeer(sreq.Peer)
 			return
 		case <-notActive.C:
-			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
+			s.Warnf("Catchup for stream '%s > %s' to peer %s stalled", mset.account(), mset.name(), sreq.Peer)
 			mset.clearCatchupPeer(sreq.Peer)
 			return
 		case <-nextBatchC:
