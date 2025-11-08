@@ -15,7 +15,9 @@ package stree
 
 import (
 	"bytes"
+	"math/rand"
 	"slices"
+	"time"
 )
 
 // SubjectTree is an adaptive radix trie (ART) for storing subject information on literal subjects.
@@ -23,13 +25,17 @@ import (
 // The reason this exists is to not only save some memory in our filestore but to greatly optimize matching
 // a wildcard subject to certain members, e.g. consumer NumPending calculations.
 type SubjectTree[T any] struct {
-	root node
-	size int
+	root         node
+	size         int
+	deletions    int
+	lastCompact  time.Time
 }
 
 // NewSubjectTree creates a new SubjectTree with values T.
 func NewSubjectTree[T any]() *SubjectTree[T] {
-	return &SubjectTree[T]{}
+	// Add random jitter to initial compact time to spread out compaction load
+	jitter := time.Duration(rand.Intn(300)) * time.Second // 0-5 minutes of jitter
+	return &SubjectTree[T]{lastCompact: time.Now().Add(jitter)}
 }
 
 // Size returns the number of elements stored.
@@ -45,7 +51,10 @@ func (t *SubjectTree[T]) Empty() *SubjectTree[T] {
 	if t == nil {
 		return NewSubjectTree[T]()
 	}
-	t.root, t.size = nil, 0
+	t.root, t.size, t.deletions = nil, 0, 0
+	// Add jitter when resetting to spread out compaction schedules
+	jitter := time.Duration(rand.Intn(300)) * time.Second // 0-5 minutes of jitter  
+	t.lastCompact = time.Now().Add(jitter)
 	return t
 }
 
@@ -108,6 +117,8 @@ func (t *SubjectTree[T]) Delete(subject []byte) (*T, bool) {
 	val, deleted := t.delete(&t.root, subject, 0)
 	if deleted {
 		t.size--
+		t.deletions++
+		t.maybeCompact()
 	}
 	return val, deleted
 }
@@ -421,6 +432,150 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, ordered bool, cb func(subject 
 		}
 	}
 	return true
+}
+
+// Compact removes unnecessary internal nodes and optimizes tree structure.
+// Returns true if any compaction was performed.
+func (t *SubjectTree[T]) Compact() bool {
+	if t == nil || t.root == nil {
+		return false
+	}
+	
+	compacted := false
+	t.root, compacted = t.compactNode(t.root)
+	// Always reset counters when compaction is attempted, even if no structural changes were made
+	// Add jitter to spread out future compaction times across cluster
+	jitter := time.Duration(rand.Intn(180)) * time.Second // 0-3 minutes of jitter
+	t.lastCompact = time.Now().Add(jitter)
+	t.deletions = 0
+	return compacted
+}
+
+// maybeCompact triggers compaction based on deletion threshold or time.
+func (t *SubjectTree[T]) maybeCompact() {
+	if t == nil {
+		return
+	}
+	
+	// Compact if we have many deletions relative to tree size
+	size := t.size
+	if size < 1 {
+		size = 1
+	}
+	deletionRatio := float64(t.deletions) / float64(size)
+	
+	// Add jitter to time threshold to avoid thundering herd of compactions
+	baseThreshold := 10 * time.Minute
+	jitter := time.Duration(rand.Intn(120)) * time.Second // 0-2 minutes of additional jitter
+	timeThreshold := time.Since(t.lastCompact) > (baseThreshold + jitter)
+	
+	if deletionRatio > 0.25 || timeThreshold {
+		t.Compact()
+	}
+}
+
+// compactNode recursively compacts a node and its children.
+func (t *SubjectTree[T]) compactNode(n node) (node, bool) {
+	if n == nil || n.isLeaf() {
+		return n, false
+	}
+	
+	compacted := false
+	
+	// First, compact all children
+	children := n.children()
+	for i, child := range children {
+		if child != nil {
+			newChild, childCompacted := t.compactNode(child)
+			if childCompacted {
+				// Update the child in place - need to find which key maps to this child
+				t.updateChildAt(n, i, newChild)
+				compacted = true
+			}
+		}
+	}
+	
+	// Now check if this node can be compacted
+	// Case 1: Node with single child can be collapsed into parent
+	if n.numChildren() == 1 {
+		child := children[0]
+		if child != nil {
+			// Merge prefixes
+			bn := n.base()
+			if child.isLeaf() {
+				ln := child.(*leaf[T])
+				// Create new leaf with merged prefix + suffix
+				merged := append([]byte(nil), bn.prefix...)
+				merged = append(merged, ln.suffix...)
+				return newLeaf(merged, ln.value), true
+			} else {
+				// Merge with child node's prefix
+				childBase := child.base()
+				merged := append([]byte(nil), bn.prefix...)
+				merged = append(merged, childBase.prefix...)
+				child.setPrefix(merged)
+				return child, true
+			}
+		}
+	}
+	
+	// Case 2: Node can be shrunk to smaller type
+	if shrunk := n.shrink(); shrunk != nil && shrunk != n {
+		compacted = true
+		n = shrunk
+	}
+	
+	return n, compacted
+}
+
+// updateChildAt updates the child at the given index in the node's children slice
+func (t *SubjectTree[T]) updateChildAt(n node, index int, newChild node) {
+	// This is tricky because we need to maintain the key-child relationship
+	// For now, we'll use the node's internal methods to find and update
+	children := n.children()
+	if index < len(children) {
+		oldChild := children[index]
+		if oldChild != nil {
+			// Find the key for this child and update it
+			switch tn := n.(type) {
+			case *node4:
+				for i := uint16(0); i < tn.size; i++ {
+					if tn.child[i] == oldChild {
+						tn.child[i] = newChild
+						break
+					}
+				}
+			case *node10:
+				for i := uint16(0); i < tn.size; i++ {
+					if tn.child[i] == oldChild {
+						tn.child[i] = newChild
+						break
+					}
+				}
+			case *node16:
+				for i := uint16(0); i < tn.size; i++ {
+					if tn.child[i] == oldChild {
+						tn.child[i] = newChild
+						break
+					}
+				}
+			case *node48:
+				for i := uint16(0); i < tn.size; i++ {
+					if tn.child[i] == oldChild {
+						tn.child[i] = newChild
+						break
+					}
+				}
+			case *node256:
+				for i := 0; i < 256; i++ {
+					if tn.child[i] == oldChild {
+						tn.child[i] = newChild
+						break
+					}
+				}
+			}
+		}
+	}
 }
 
 // LazyIntersect iterates the smaller of the two provided subject trees and
