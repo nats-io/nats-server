@@ -1124,6 +1124,8 @@ func (n *raft) DrainAndReplaySnapshot() bool {
 	n.warn("Draining and replaying snapshot")
 	n.pauseApplyLocked()
 	n.apply.drain()
+	// Cancel after draining, we might have sent EntryCatchup and need to get them the nil entry.
+	n.cancelCatchup()
 	n.commit = snap.lastIndex
 	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	return true
@@ -2378,6 +2380,10 @@ const (
 	EntryRemovePeer
 	EntryLeaderTransfer
 	EntrySnapshot
+	// EntryCatchup signals an internal type used to signal a Raft-level catchup has started.
+	// After the catchup completes (or is canceled), a nil entry will be sent to signal this.
+	// This type of entry is purely internal and not transmitted between peers or stored in the log.
+	EntryCatchup
 )
 
 func (t EntryType) String() string {
@@ -3374,6 +3380,8 @@ func (n *raft) cancelCatchup() {
 
 	if n.catchup != nil && n.catchup.sub != nil {
 		n.unsubscribe(n.catchup.sub)
+		// Send nil entry to signal the upper layers we are done catching up.
+		n.apply.push(nil)
 	}
 	n.catchup = nil
 }
@@ -3401,6 +3409,9 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 	// Cleanup any old ones.
 	if n.catchup != nil && n.catchup.sub != nil {
 		n.unsubscribe(n.catchup.sub)
+	} else {
+		// Signal to the upper layer that the following entries are catchup entries, up until the nil guard.
+		n.apply.push(newCommittedEntry(0, []*Entry{{EntryCatchup, nil}}))
 	}
 	// Snapshot term and index.
 	n.catchup = &catchupState{
