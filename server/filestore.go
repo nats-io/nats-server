@@ -25,7 +25,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"io/fs"
 	"math"
@@ -193,7 +192,7 @@ type fileStore struct {
 	psim        *stree.SubjectTree[psi]
 	tsl         int
 	adml        int
-	hh          hash.Hash64
+	hh          *highwayhash.Digest64
 	qch         chan struct{}
 	fsld        chan struct{}
 	cmu         sync.RWMutex
@@ -237,7 +236,7 @@ type msgBlock struct {
 	lrts       int64
 	lsts       int64
 	llseq      uint64
-	hh         hash.Hash64
+	hh         *highwayhash.Digest64
 	cache      *cache
 	cloads     uint64
 	cexp       time.Duration
@@ -455,7 +454,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// Create highway hash for message blocks. Use sha256 of directory as key.
 	key := sha256.Sum256([]byte(cfg.Name))
-	fs.hh, err = highwayhash.New64(key[:])
+	fs.hh, err = highwayhash.NewDigest64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
@@ -879,7 +878,8 @@ func (fs *fileStore) writeStreamMeta() error {
 	}
 	fs.hh.Reset()
 	fs.hh.Write(b)
-	checksum := hex.EncodeToString(fs.hh.Sum(nil))
+	var hb [highwayhash.Size64]byte
+	checksum := hex.EncodeToString(fs.hh.Sum(hb[:0]))
 	sum := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
 	err = fs.writeFileWithOptionalSync(sum, []byte(checksum), defaultFilePerms)
 	if err != nil {
@@ -966,7 +966,7 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 
 	if mb.hh == nil {
 		key := sha256.Sum256(fs.hashKeyForBlock(index))
-		mb.hh, _ = highwayhash.New64(key[:])
+		mb.hh, _ = highwayhash.NewDigest64(key[:])
 	}
 	return mb
 }
@@ -4031,7 +4031,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	// Now do local hash.
 	key := sha256.Sum256(fs.hashKeyForBlock(index))
-	hh, err := highwayhash.New64(key[:])
+	hh, err := highwayhash.NewDigest64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
@@ -7330,7 +7330,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	buf := mb.cache.buf[li:]
 
 	// We use the high bit to denote we have already checked the checksum.
-	var hh hash.Hash64
+	var hh *highwayhash.Digest64
 	if !hashChecked {
 		hh = mb.hh // This will force the hash check in msgFromBuf.
 	}
@@ -7430,7 +7430,7 @@ func (fs *fileStore) msgForSeqLocked(seq uint64, sm *StoreMsg, needFSLock bool) 
 // Internal function to return msg parts from a raw buffer.
 // Raw buffer will be copied into sm.
 // Lock should be held.
-func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*StoreMsg, error) {
+func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh *highwayhash.Digest64) (*StoreMsg, error) {
 	return mb.msgFromBufEx(buf, sm, hh, true)
 }
 
@@ -7438,14 +7438,14 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 // Raw buffer will NOT be copied into sm.
 // Only use for internal use, any message that is passed to upper layers should use mb.msgFromBuf.
 // Lock should be held.
-func (mb *msgBlock) msgFromBufNoCopy(buf []byte, sm *StoreMsg, hh hash.Hash64) (*StoreMsg, error) {
+func (mb *msgBlock) msgFromBufNoCopy(buf []byte, sm *StoreMsg, hh *highwayhash.Digest64) (*StoreMsg, error) {
 	return mb.msgFromBufEx(buf, sm, hh, false)
 }
 
 // Internal function to return msg parts from a raw buffer.
 // copy boolean will determine if we make a copy or not.
 // Lock should be held.
-func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh hash.Hash64, doCopy bool) (*StoreMsg, error) {
+func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Digest64, doCopy bool) (*StoreMsg, error) {
 	if len(buf) < emptyRecordLen {
 		return nil, errBadMsg{mb.mfn, "record too short"}
 	}
@@ -9920,7 +9920,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 	hh := fs.hh
 	hh.Reset()
 	hh.Write(meta)
-	sum := []byte(hex.EncodeToString(fs.hh.Sum(nil)))
+	var hb [highwayhash.Size64]byte
+	sum := []byte(hex.EncodeToString(fs.hh.Sum(hb[:0])))
 	fs.mu.Unlock()
 
 	// Meta first.
@@ -10023,7 +10024,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		}
 		o.hh.Reset()
 		o.hh.Write(meta)
-		sum := []byte(hex.EncodeToString(o.hh.Sum(nil)))
+		var hb [highwayhash.Size64]byte
+		sum := []byte(hex.EncodeToString(o.hh.Sum(hb[:0])))
 
 		// We can have the running state directly encoded now.
 		state, err := o.encodeState()
@@ -10240,7 +10242,7 @@ type consumerFileStore struct {
 	name    string
 	odir    string
 	ifn     string
-	hh      hash.Hash64
+	hh      *highwayhash.Digest64
 	state   ConsumerState
 	fch     chan struct{}
 	qch     chan struct{}
@@ -10283,7 +10285,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 		ifn:  filepath.Join(odir, consumerState),
 	}
 	key := sha256.Sum256([]byte(fs.cfg.Name + "/" + name))
-	hh, err := highwayhash.New64(key[:])
+	hh, err := highwayhash.NewDigest64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
@@ -10918,7 +10920,8 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	}
 	cfs.hh.Reset()
 	cfs.hh.Write(b)
-	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
+	var hb [highwayhash.Size64]byte
+	checksum := hex.EncodeToString(cfs.hh.Sum(hb[:0]))
 	sum := filepath.Join(cfs.odir, JetStreamMetaFileSum)
 
 	err = cfs.fs.writeFileWithOptionalSync(sum, []byte(checksum), defaultFilePerms)
@@ -11301,13 +11304,13 @@ func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
 
 type templateFileStore struct {
 	dir string
-	hh  hash.Hash64
+	hh  *highwayhash.Digest64
 }
 
 func newTemplateFileStore(storeDir string) *templateFileStore {
 	tdir := filepath.Join(storeDir, tmplsDir)
 	key := sha256.Sum256([]byte("templates"))
-	hh, err := highwayhash.New64(key[:])
+	hh, err := highwayhash.NewDigest64(key[:])
 	if err != nil {
 		return nil
 	}
@@ -11335,7 +11338,8 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 	// FIXME(dlc) - Do checksum
 	ts.hh.Reset()
 	ts.hh.Write(b)
-	checksum := hex.EncodeToString(ts.hh.Sum(nil))
+	var hb [highwayhash.Size64]byte
+	checksum := hex.EncodeToString(ts.hh.Sum(hb[:0]))
 	sum := filepath.Join(dir, JetStreamMetaFileSum)
 	if err := os.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
 		return err
