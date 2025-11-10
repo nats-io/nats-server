@@ -41,6 +41,7 @@ type RaftNode interface {
 	ProposeMulti(entries []*Entry) error
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
+	InstallSnapshotForIndex(snap []byte, applied uint64) error
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
@@ -1242,17 +1243,34 @@ func (n *raft) SendSnapshot(data []byte) error {
 	return nil
 }
 
-// Used to install a snapshot for the given term and applied index. This will release
+// Used to install a snapshot for the current term and applied index. This will release
 // all of the log entries up to and including index. This should not be called with
 // entries that have been applied to the FSM but have not been applied to the raft state.
+// This MUST NOT be called if the upper layer may have continued to make progress since
+// the snapshot was taken, use InstallSnapshotForIndex with an applied index instead.
 func (n *raft) InstallSnapshot(data []byte) error {
 	if n.State() == Closed {
 		return errNodeClosed
 	}
-
 	n.Lock()
 	defer n.Unlock()
+	return n.installSnapshotForIndexLocked(data, n.applied)
+}
 
+// Used to install a snapshot for the given term and applied index. This will release
+// all of the log entries up to and including index. This should be used if you have
+// captured a snapshot but the upper layer may have since made progress, in which case
+// you must supply the applied index from the time of the snapshot.
+func (n *raft) InstallSnapshotForIndex(data []byte, applied uint64) error {
+	if n.State() == Closed {
+		return errNodeClosed
+	}
+	n.Lock()
+	defer n.Unlock()
+	return n.installSnapshotForIndexLocked(data, applied)
+}
+
+func (n *raft) installSnapshotForIndexLocked(data []byte, applied uint64) error {
 	// If a write error has occurred already then stop here.
 	if werr := n.werr; werr != nil {
 		return werr
@@ -1264,24 +1282,24 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errCatchupsRunning
 	}
 
-	if n.applied == 0 {
+	if applied == 0 {
 		n.debug("Not snapshotting as there are no applied entries")
 		return errNoSnapAvailable
 	}
 
 	var term uint64
-	if ae, _ := n.loadEntry(n.applied); ae != nil {
+	if ae, _ := n.loadEntry(applied); ae != nil {
 		term = ae.term
 	} else {
-		n.debug("Not snapshotting as entry %d is not available", n.applied)
+		n.debug("Not snapshotting as entry %d is not available", applied)
 		return errNoSnapAvailable
 	}
 
-	n.debug("Installing snapshot of %d bytes [%d:%d]", len(data), term, n.applied)
+	n.debug("Installing snapshot of %d bytes [%d:%d]", len(data), term, applied)
 
 	return n.installSnapshot(&snapshot{
 		lastTerm:  term,
-		lastIndex: n.applied,
+		lastIndex: applied,
 		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
 		data:      data,
 	})

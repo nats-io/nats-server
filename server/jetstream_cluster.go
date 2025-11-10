@@ -428,12 +428,12 @@ func (s *Server) JetStreamSnapshotMeta() error {
 		return errNotLeader
 	}
 
-	snap, err := js.metaSnapshot()
+	snap, applied, err := js.metaSnapshot()
 	if err != nil {
 		return err
 	}
 
-	return meta.InstallSnapshot(snap)
+	return meta.InstallSnapshotForIndex(snap, applied)
 }
 
 func (s *Server) JetStreamStepdownStream(account, stream string) error {
@@ -1429,10 +1429,10 @@ func (js *jetStream) monitorCluster() {
 		byNeither := !byEntries && !bySize
 		// For the meta layer we want to snapshot when over the above threshold (which could be 0 by default).
 		if ne, nsz := n.Size(); force || byNeither || (byEntries && ne > ethresh) || (bySize && nsz > szthresh) || n.NeedSnapshot() {
-			snap, err := js.metaSnapshot()
+			snap, applied, err := js.metaSnapshot()
 			if err != nil {
 				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
-			} else if err = n.InstallSnapshot(snap); err == nil {
+			} else if err = n.InstallSnapshotForIndex(snap, applied); err == nil {
 				lastSnapTime = time.Now()
 			} else if err != errNoSnapAvailable && err != errNodeClosed {
 				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
@@ -1628,13 +1628,17 @@ func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConf
 	return StreamConfig{}, false
 }
 
-func (js *jetStream) metaSnapshot() ([]byte, error) {
+func (js *jetStream) metaSnapshot() ([]byte, uint64, error) {
 	start := time.Now()
 	js.mu.RLock()
 	s := js.srv
 	cc := js.cluster
+	if cc.meta == nil {
+		return nil, 0, errNodeClosed
+	}
 	nsa := 0
 	nca := 0
+	_, _, applied := cc.meta.Progress()
 	for _, asa := range cc.streams {
 		nsa += len(asa)
 	}
@@ -1673,7 +1677,7 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	js.mu.RUnlock()
 
 	if len(streams) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	// Track how long it took to marshal the JSON
@@ -1684,7 +1688,7 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	// Must not be possible for a JSON marshaling error to result
 	// in an empty snapshot.
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Track how long it took to compress the JSON.
@@ -1704,7 +1708,7 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 		atomic.StoreInt64(&cc.lastMetaSnapDuration, int64(took))
 	}
 
-	return snap, nil
+	return snap, applied, nil
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
@@ -2699,6 +2703,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						n.SendSnapshot(mset.stateSnapshot())
 						sendSnapshot = false
 					}
+					continue
+				} else if mset == nil {
+					// If the stream is not set up yet, we cannot handle these, else applyStreamEntries
+					// will panic on mset access.
+					ce.ReturnToPool()
 					continue
 				} else if len(ce.Entries) == 0 {
 					// If we have a partial batch, it needs to be rejected to ensure CLFS is correct.

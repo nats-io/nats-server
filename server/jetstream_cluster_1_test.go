@@ -8213,12 +8213,12 @@ func TestJetStreamClusterRecreateConsumerFromMetaSnapshot(t *testing.T) {
 		if s != rs {
 			sjs := s.getJetStream()
 			require_NotNil(t, sjs)
-			snap, err := sjs.metaSnapshot()
+			snap, index, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			sjs.mu.RLock()
 			meta := sjs.cluster.meta
 			sjs.mu.RUnlock()
-			require_NoError(t, meta.InstallSnapshot(snap))
+			require_NoError(t, meta.InstallSnapshotForIndex(snap, index))
 		}
 	}
 
@@ -9548,10 +9548,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 		t.Helper()
 		for _, s := range c.servers {
 			sjs = s.getJetStream()
-			snap, err := sjs.metaSnapshot()
+			snap, index, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			meta := sjs.getMetaGroup()
-			meta.InstallSnapshot(snap)
+			meta.InstallSnapshotForIndex(snap, index)
 		}
 
 		c.stopAll()
@@ -9574,7 +9574,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
 		t.Helper()
-		snap, err := sjs.metaSnapshot()
+		snap, _, err := sjs.metaSnapshot()
 		require_NoError(t, err)
 		require_True(t, len(snap) > 0)
 		dec, err := s2.Decode(nil, snap)
@@ -9684,7 +9684,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	// Deleting a stream should always work, even if it is unsupported.
 	require_NoError(t, js.DeleteStream("DowngradeStreamTest"))
-	snap, err := sjs.metaSnapshot()
+	snap, _, err := sjs.metaSnapshot()
 	require_NoError(t, err)
 	require_True(t, snap == nil)
 
@@ -9853,10 +9853,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 		t.Helper()
 		for _, s := range c.servers {
 			sjs = s.getJetStream()
-			snap, err := sjs.metaSnapshot()
+			snap, index, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			meta := sjs.getMetaGroup()
-			meta.InstallSnapshot(snap)
+			meta.InstallSnapshotForIndex(snap, index)
 		}
 
 		c.stopAll()
@@ -9879,7 +9879,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
 		t.Helper()
-		snap, err := sjs.metaSnapshot()
+		snap, _, err := sjs.metaSnapshot()
 		require_NoError(t, err)
 		require_True(t, len(snap) > 0)
 		dec, err := s2.Decode(nil, snap)
@@ -9973,7 +9973,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	// Deleting a stream should always work, even if it is unsupported.
 	require_NoError(t, js.DeleteStream("DowngradeStreamTest"))
-	snap, err := sjs.metaSnapshot()
+	snap, _, err := sjs.metaSnapshot()
 	require_NoError(t, err)
 	require_True(t, snap == nil)
 
@@ -10101,7 +10101,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerUpdate(t *testing.T) {
 
 	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
 		t.Helper()
-		snap, err := sjs.metaSnapshot()
+		snap, _, err := sjs.metaSnapshot()
 		require_NoError(t, err)
 		require_True(t, len(snap) > 0)
 		dec, err := s2.Decode(nil, snap)
