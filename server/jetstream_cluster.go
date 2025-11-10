@@ -4070,7 +4070,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
-		acc, err := s.LookupAccount(accName)
+		acc, err := s.lookupOrFetchAccount(accName, isMember)
 		if err != nil {
 			return
 		}
@@ -4084,7 +4084,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	}
 	js.mu.Unlock()
 
-	acc, err := s.LookupAccount(accName)
+	acc, err := s.lookupOrFetchAccount(accName, isMember)
 	if err != nil {
 		ll := fmt.Sprintf("Account [%s] lookup for stream create failed: %v", accName, err)
 		if isMember {
@@ -4199,7 +4199,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
-		acc, err := s.LookupAccount(accName)
+		acc, err := s.lookupOrFetchAccount(accName, isMember)
 		if err != nil {
 			return
 		}
@@ -4213,9 +4213,14 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	}
 	js.mu.Unlock()
 
-	acc, err := s.LookupAccount(accName)
+	acc, err := s.lookupOrFetchAccount(accName, isMember)
 	if err != nil {
-		s.Warnf("Update Stream Account %s, error on lookup: %v", accName, err)
+		ll := fmt.Sprintf("Update Stream Account %s, error on lookup: %v", accName, err)
+		if isMember {
+			s.Warnf(ll)
+		} else {
+			s.Debugf(ll)
+		}
 		return
 	}
 
@@ -4888,7 +4893,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		// Be conservative by protecting the whole stream, even if just one consumer is unsupported.
 		// This ensures it's safe, even with Interest-based retention where it would otherwise
 		// continue accepting but dropping messages.
-		acc, err := s.LookupAccount(accName)
+		acc, err := s.lookupOrFetchAccount(accName, isMember)
 		if err != nil {
 			return
 		}
@@ -4902,7 +4907,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	}
 	js.mu.Unlock()
 
-	acc, err := s.LookupAccount(accName)
+	acc, err := s.lookupOrFetchAccount(accName, isMember)
 	if err != nil {
 		ll := fmt.Sprintf("Account [%s] lookup for consumer create failed: %v", accName, err)
 		if isMember {
@@ -5044,7 +5049,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 
 	acc, err := s.LookupAccount(accName)
 	if err != nil {
-		s.Warnf("JetStream cluster failed to lookup axccount %q: %v", accName, err)
+		s.Warnf("JetStream cluster failed to lookup account %q: %v", accName, err)
 		return
 	}
 
