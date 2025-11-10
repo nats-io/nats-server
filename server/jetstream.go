@@ -1218,7 +1218,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 	tdir := filepath.Join(jsa.storeDir, tmplsDir)
 	if stat, err := os.Stat(tdir); err == nil && stat.IsDir() {
 		key := sha256.Sum256([]byte("templates"))
-		hh, err := highwayhash.New64(key[:])
+		hh, err := highwayhash.NewDigest64(key[:])
 		if err != nil {
 			return err
 		}
@@ -1242,7 +1242,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			}
 			hh.Reset()
 			hh.Write(buf)
-			checksum := hex.EncodeToString(hh.Sum(nil))
+			var hb [highwayhash.Size64]byte
+			checksum := hex.EncodeToString(hh.Sum(hb[:0]))
 			if checksum != string(sum) {
 				s.Warnf("  StreamTemplate checksums do not match %q vs %q", sum, checksum)
 				continue
@@ -1395,7 +1396,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			return nil
 		}
 		key := sha256.Sum256([]byte(fi.Name()))
-		hh, err := highwayhash.New64(key[:])
+		hh, err := highwayhash.NewDigest64(key[:])
 		if err != nil {
 			return err
 		}
@@ -1420,7 +1421,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			return nil
 		}
 		hh.Write(buf)
-		checksum := hex.EncodeToString(hh.Sum(nil))
+		var hb [highwayhash.Size64]byte
+		checksum := hex.EncodeToString(hh.Sum(hb[:0]))
 		if checksum != string(sum) {
 			s.Warnf("  Stream metafile %q: checksums do not match %q vs %q", metafile, sum, checksum)
 			return nil
