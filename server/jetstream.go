@@ -1023,11 +1023,11 @@ func (s *Server) shutdownJetStream() {
 	js.accounts = nil
 
 	var qch chan struct{}
-
+	var stopped chan struct{}
 	if cc := js.cluster; cc != nil {
 		if cc.qch != nil {
-			qch = cc.qch
-			cc.qch = nil
+			qch, stopped = cc.qch, cc.stopped
+			cc.qch, cc.stopped = nil, nil
 		}
 		js.stopUpdatesSub()
 		if cc.c != nil {
@@ -1044,14 +1044,11 @@ func (s *Server) shutdownJetStream() {
 	// We will wait for a bit for it to close.
 	// Do this without the lock.
 	if qch != nil {
+		close(qch) // Must be close() to signal *all* listeners
 		select {
-		case qch <- struct{}{}:
-			select {
-			case <-qch:
-			case <-time.After(2 * time.Second):
-				s.Warnf("Did not receive signal for successful shutdown of cluster routine")
-			}
-		default:
+		case <-stopped:
+		case <-time.After(10 * time.Second):
+			s.Warnf("Did not receive signal for successful shutdown of cluster routine")
 		}
 	}
 }
