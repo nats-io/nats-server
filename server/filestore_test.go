@@ -11087,3 +11087,49 @@ func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 2)
 	})
 }
+
+func TestFileStoreIdxAccountingForSkipMsgs(t *testing.T) {
+	test := func(t *testing.T, skipMany bool) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+			created := time.Now()
+			fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			if skipMany {
+				require_NoError(t, fs.SkipMsgs(2, 10))
+			} else {
+				for i := range 10 {
+					_, err = fs.SkipMsg(uint64(i + 2))
+					require_NoError(t, err)
+				}
+			}
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+
+			fmb := fs.getFirstBlock()
+			fmb.mu.Lock()
+			defer fmb.mu.Unlock()
+
+			for i := range 12 {
+				seq := uint64(i + 1)
+				_, err = fmb.cacheLookupNoCopy(seq, nil)
+				if seq >= 2 && seq <= 11 {
+					require_Error(t, err, errDeletedMsg)
+				} else {
+					require_NoError(t, err)
+				}
+			}
+
+			cache := fmb.cache
+			require_NotNil(t, cache)
+			require_Len(t, len(cache.idx), 12)
+		})
+	}
+
+	t.Run("SkipMsg", func(t *testing.T) { test(t, false) })
+	t.Run("SkipMsgs", func(t *testing.T) { test(t, true) })
+}

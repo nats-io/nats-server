@@ -6394,10 +6394,17 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 
 	// Only update index and do accounting if not a delete tombstone.
 	if seq&tbit == 0 {
+		last := atomic.LoadUint64(&mb.last.seq)
 		// Accounting, do this before stripping ebit, it is ebit aware.
 		mb.updateAccounting(seq, ts, rl)
 		// Strip ebit if set.
 		seq = seq &^ ebit
+		// If we have a hole due to skipping many messages, fill it.
+		if len(mb.cache.idx) > 0 && last+1 < seq {
+			for dseq := last + 1; dseq < seq; dseq++ {
+				mb.cache.idx = append(mb.cache.idx, dbit)
+			}
+		}
 		// Write index
 		if mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit); len(mb.cache.idx) == 1 {
 			mb.cache.fseq = seq
