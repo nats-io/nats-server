@@ -6583,13 +6583,13 @@ func TestJetStreamClusterMetaRecoveryUpdatesDeletesConsumers(t *testing.T) {
 	}
 
 	// Push recovery entries that create the stream & consumer.
-	_, err := js.applyMetaEntries(create, ru)
+	_, _, err := js.applyMetaEntries(create, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.updateConsumers), 1)
 
 	// Now push another recovery entry that deletes the stream. The
 	// entry that creates the consumer should now be gone.
-	_, err = js.applyMetaEntries(delete, ru)
+	_, _, err = js.applyMetaEntries(delete, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.removeStreams), 1)
 	require_Len(t, len(ru.updateConsumers), 0)
@@ -6637,27 +6637,27 @@ func TestJetStreamClusterMetaRecoveryRecreateFileStreamAsMemory(t *testing.T) {
 	}
 
 	// We created a file-based stream first, but deleted it shortly after.
-	_, err := js.applyMetaEntries(createFileStream, ru)
+	_, _, err := js.applyMetaEntries(createFileStream, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
 	require_Len(t, len(ru.removeStreams), 0)
 
 	// Now push another recovery entry that deletes the stream.
 	// The file-based stream should not have been created.
-	_, err = js.applyMetaEntries(deleteFileStream, ru)
+	_, _, err = js.applyMetaEntries(deleteFileStream, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 0)
 	require_Len(t, len(ru.removeStreams), 1)
 
 	// Now stage a memory-based stream to be created.
-	_, err = js.applyMetaEntries(createMemoryStream, ru)
+	_, _, err = js.applyMetaEntries(createMemoryStream, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
 	require_Len(t, len(ru.removeStreams), 0)
 	require_Len(t, len(ru.updateConsumers), 0)
 
 	// Also create a consumer on that memory-based stream.
-	_, err = js.applyMetaEntries(createConsumer, ru)
+	_, _, err = js.applyMetaEntries(createConsumer, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
 	require_Len(t, len(ru.removeStreams), 0)
@@ -6694,19 +6694,19 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 			}
 
 			// Creating the consumer should append to update consumers list.
-			_, err := js.applyMetaEntries(createConsumer, ru)
+			_, _, err := js.applyMetaEntries(createConsumer, ru)
 			require_NoError(t, err)
 			require_Len(t, len(ru.updateConsumers[":TEST"]), 1)
 			require_Len(t, len(ru.removeConsumers), 0)
 
 			// Deleting the consumer should append to remove consumers list and remove from update list.
-			_, err = js.applyMetaEntries(deleteConsumer, ru)
+			_, _, err = js.applyMetaEntries(deleteConsumer, ru)
 			require_NoError(t, err)
 			require_Len(t, len(ru.removeConsumers[":TEST"]), 1)
 			require_Len(t, len(ru.updateConsumers[":TEST"]), 0)
 
 			// When re-creating the consumer, add to update list and remove from remove list.
-			_, err = js.applyMetaEntries(createConsumer, ru)
+			_, _, err = js.applyMetaEntries(createConsumer, ru)
 			require_NoError(t, err)
 			require_Len(t, len(ru.updateConsumers[":TEST"]), 1)
 			require_Len(t, len(ru.removeConsumers[":TEST"]), 0)
@@ -10538,6 +10538,60 @@ func TestJetStreamClusterNoInterestDesyncOnConsumerCreate(t *testing.T) {
 			mset.checkInterestState()
 		}
 		return checkState(t, c, globalAccountName, "TEST")
+	})
+}
+
+func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	rs := c.randomNonLeader()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if !rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			return errors.New("not assigned")
+		}
+		return nil
+	})
+
+	sjs := rs.getJetStream()
+	sjs.mu.Lock()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	encodedDelete := encodeDeleteStreamAssignment(sa)
+	sjs.mu.Unlock()
+	meta := sjs.getMetaGroup().(*raft)
+	apply := meta.ApplyQ()
+
+	// Should not panic if we receive a nil entry "randomly".
+	_, err = apply.push(nil)
+	require_NoError(t, err)
+
+	// Should put us in upper-layer recovery mode.
+	// For this test using two large values so we remain in catchup.
+	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+
+	// Deleting a stream should be staged, not immediately performed.
+	_, err = apply.push(newCommittedEntry(1, []*Entry{{EntryNormal, encodedDelete}}))
+	require_NoError(t, err)
+	time.Sleep(200 * time.Millisecond)
+	require_True(t, rs.JetStreamIsStreamAssigned(globalAccountName, "TEST"))
+
+	// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
+	meta.cancelCatchup()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			return errors.New("still assigned")
+		}
+		return nil
 	})
 }
 
