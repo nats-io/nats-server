@@ -4709,17 +4709,29 @@ func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 
 // Fast lookup of msgId.
 func getMsgId(hdr []byte) string {
-	return string(getHeader(JSMsgId, hdr))
+	v := sliceHeader(JSMsgId, hdr)
+	if v == nil {
+		return _EMPTY_
+	}
+	return string(v)
 }
 
 // Fast lookup of expected last msgId.
 func getExpectedLastMsgId(hdr []byte) string {
-	return string(getHeader(JSExpectedLastMsgId, hdr))
+	v := sliceHeader(JSExpectedLastMsgId, hdr)
+	if v == nil {
+		return _EMPTY_
+	}
+	return string(v)
 }
 
 // Fast lookup of expected stream.
 func getExpectedStream(hdr []byte) string {
-	return string(getHeader(JSExpectedStream, hdr))
+	v := sliceHeader(JSExpectedStream, hdr)
+	if v == nil {
+		return _EMPTY_
+	}
+	return string(v)
 }
 
 // Fast lookup of expected last sequence.
@@ -4836,7 +4848,11 @@ func getMessageScheduleTarget(hdr []byte) string {
 	if len(hdr) == 0 {
 		return _EMPTY_
 	}
-	return string(getHeader(JSScheduleTarget, hdr))
+	v := sliceHeader(JSScheduleTarget, hdr)
+	if v == nil {
+		return _EMPTY_
+	}
+	return string(v)
 }
 
 // Fast lookup of message scheduler.
@@ -4844,7 +4860,11 @@ func getMessageScheduler(hdr []byte) string {
 	if len(hdr) == 0 {
 		return _EMPTY_
 	}
-	return string(getHeader(JSScheduler, hdr))
+	v := sliceHeader(JSScheduler, hdr)
+	if v == nil {
+		return _EMPTY_
+	}
+	return string(v)
 }
 
 // Fast lookup of batch ID.
@@ -4852,7 +4872,11 @@ func getBatchId(hdr []byte) string {
 	if len(hdr) == 0 {
 		return _EMPTY_
 	}
-	return string(getHeader(JSBatchId, hdr))
+	v := sliceHeader(JSBatchId, hdr)
+	if v == nil {
+		return _EMPTY_
+	}
+	return string(v)
 }
 
 // Fast lookup of batch sequence.
