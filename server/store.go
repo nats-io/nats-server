@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -389,6 +390,16 @@ type ConsumerState struct {
 	Pending map[uint64]*Pending `json:"pending,omitempty"`
 	// This is for messages that have been redelivered, so count > 1.
 	Redelivered map[uint64]uint64 `json:"redelivered,omitempty"`
+}
+
+func (cs *ConsumerState) copy() *ConsumerState {
+	if cs == nil {
+		return nil
+	}
+	ccs := *cs
+	ccs.Pending = maps.Clone(ccs.Pending)
+	ccs.Redelivered = maps.Clone(ccs.Redelivered)
+	return &ccs
 }
 
 // Encode consumer state.

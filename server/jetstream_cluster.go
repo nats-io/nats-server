@@ -139,6 +139,13 @@ type raftGroup struct {
 	node RaftNode
 }
 
+func (rg *raftGroup) forAssignmentSnap() *raftGroup {
+	crg := *rg
+	crg.Peers = slices.Clone(crg.Peers)
+	crg.node = nil
+	return &crg
+}
+
 // streamAssignment is what the meta controller uses to assign streams to peers.
 type streamAssignment struct {
 	Client     *ClientInfo     `json:"client,omitempty"`
@@ -1609,7 +1616,7 @@ type writeableStreamAssignment struct {
 	ConfigJSON json.RawMessage `json:"stream"`
 	Group      *raftGroup      `json:"group"`
 	Sync       string          `json:"sync"`
-	Consumers  []*writeableConsumerAssignment
+	Consumers  []writeableConsumerAssignment
 }
 
 func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConfig, bool) {
@@ -1638,9 +1645,9 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 				Client:     sa.Client.forAssignmentSnap(),
 				Created:    sa.Created,
 				ConfigJSON: sa.ConfigJSON,
-				Group:      sa.Group,
+				Group:      sa.Group.forAssignmentSnap(),
 				Sync:       sa.Sync,
-				Consumers:  make([]*writeableConsumerAssignment, 0, len(sa.consumers)),
+				Consumers:  make([]writeableConsumerAssignment, 0, len(sa.consumers)),
 			}
 			for _, ca := range sa.consumers {
 				// Skip if the consumer is pending, we can't include it in our snapshot.
@@ -1654,18 +1661,18 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 					Name:       ca.Name,
 					Stream:     ca.Stream,
 					ConfigJSON: ca.ConfigJSON,
-					Group:      ca.Group,
-					State:      ca.State,
+					Group:      ca.Group.forAssignmentSnap(),
+					State:      ca.State.copy(),
 				}
-				wsa.Consumers = append(wsa.Consumers, &wca)
+				wsa.Consumers = append(wsa.Consumers, wca)
 				nca++
 			}
 			streams = append(streams, wsa)
 		}
 	}
+	js.mu.RUnlock()
 
 	if len(streams) == 0 {
-		js.mu.RUnlock()
 		return nil, nil
 	}
 
@@ -1673,8 +1680,6 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	mstart := time.Now()
 	b, err := json.Marshal(streams)
 	mend := time.Since(mstart)
-
-	js.mu.RUnlock()
 
 	// Must not be possible for a JSON marshaling error to result
 	// in an empty snapshot.
