@@ -2031,3 +2031,62 @@ func TestJetStreamJWTUpdateWithPreExistingStream(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamAccountResolverNoFetchIfNotMember(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "SYS"
+	sysJwt := encodeClaim(t, sysClaim, spub)
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+
+	templ := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Write([]byte("ok"))
+		} else if strings.HasSuffix(r.URL.Path, spub) {
+			w.Write([]byte(sysJwt))
+		} else {
+			// Simulate some time being spent, but doesn't respond.
+			time.Sleep(250 * time.Millisecond)
+		}
+	}))
+	defer ts.Close()
+
+	c := createJetStreamClusterWithTemplateAndModHook(t, templ, "R3S", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return conf + fmt.Sprintf(`
+				operator: %s
+				system_account: %s
+				resolver: URL("%s")`, ojwt, spub, ts.URL)
+		})
+	defer c.shutdown()
+
+	s := c.leader()
+	js := s.getJetStream()
+	ci := &ClientInfo{Cluster: "R3S", Account: aPub}
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo"}}
+	sa := &streamAssignment{Client: ci, Config: cfg}
+	start := time.Now()
+	// Simulate some meta operations where this server is not a member.
+	// The server should not fetch the account from the resolver.
+	for range 5 {
+		js.processStreamAssignment(sa)
+	}
+	require_LessThan(t, time.Since(start), 100*time.Millisecond)
+}
