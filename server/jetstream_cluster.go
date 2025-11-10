@@ -29,6 +29,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1374,8 +1375,14 @@ func (js *jetStream) monitorCluster() {
 	s.Debugf("Starting metadata monitor")
 	defer s.Debugf("Exiting metadata monitor")
 
+	var snapWg sync.WaitGroup
+
 	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
-	defer n.Stop()
+	defer func() {
+		n.Stop()
+		snapWg.Wait()
+		js.cluster.meta = nil
+	}()
 	defer s.isMetaLeader.Store(false)
 
 	const compactInterval = time.Minute
@@ -1414,7 +1421,7 @@ func (js *jetStream) monitorCluster() {
 	js.setMetaRecovering()
 
 	// Snapshotting function.
-	doSnapshot := func(force bool) {
+	doSnapshot := func(force, async bool) {
 		// Suppress during recovery.
 		if js.isMetaRecovering() {
 			return
@@ -1429,13 +1436,21 @@ func (js *jetStream) monitorCluster() {
 		byNeither := !byEntries && !bySize
 		// For the meta layer we want to snapshot when over the above threshold (which could be 0 by default).
 		if ne, nsz := n.Size(); force || byNeither || (byEntries && ne > ethresh) || (bySize && nsz > szthresh) || n.NeedSnapshot() {
-			snap, applied, err := js.metaSnapshot()
-			if err != nil {
-				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
-			} else if err = n.InstallSnapshotForIndex(snap, applied); err == nil {
-				lastSnapTime = time.Now()
-			} else if err != errNoSnapAvailable && err != errNodeClosed {
-				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
+			_doSnapshot := func() {
+				defer snapWg.Done()
+				if snap, applied, err := js.metaSnapshot(); err != nil {
+					s.Warnf("Error generating JetStream cluster snapshot: %v", err)
+				} else if err = n.InstallSnapshotForIndex(snap, applied); err == nil {
+					lastSnapTime = time.Now()
+				} else if err != errNoSnapAvailable && err != errNodeClosed {
+					s.Warnf("Error snapshotting JetStream cluster state: %v", err)
+				}
+			}
+			snapWg.Add(1)
+			if async && false {
+				s.startGoRoutine(_doSnapshot)
+			} else {
+				_doSnapshot()
 			}
 		}
 	}
@@ -1457,15 +1472,15 @@ func (js *jetStream) monitorCluster() {
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
-			doSnapshot(false)
+			doSnapshot(false, false)
 			return
 		case <-rqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
-			doSnapshot(false)
+			doSnapshot(false, false)
 			return
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
-			doSnapshot(false)
+			doSnapshot(false, false)
 			return
 		case <-aq.ch:
 			ces := aq.pop()
@@ -1500,7 +1515,7 @@ func (js *jetStream) monitorCluster() {
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
 					// Snapshot now so we start with freshly compacted log.
-					doSnapshot(true)
+					doSnapshot(true, false)
 					oc = time.AfterFunc(30*time.Second, js.checkForOrphans)
 					// Do a health check here as well.
 					go checkHealth()
@@ -1513,9 +1528,9 @@ func (js *jetStream) monitorCluster() {
 						_, nb = n.Applied(ce.Index)
 					}
 					if js.hasPeerEntries(ce.Entries) || (didSnap && !isLeader) {
-						doSnapshot(true)
+						doSnapshot(true, false)
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
-						doSnapshot(false)
+						doSnapshot(false, true)
 					}
 				} else {
 					s.Warnf("Error applying JetStream cluster entries: %v", err)
@@ -1531,11 +1546,11 @@ func (js *jetStream) monitorCluster() {
 				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
 				// Install a snapshot as we become leader.
 				js.checkClusterSize()
-				doSnapshot(false)
+				doSnapshot(false, false)
 			}
 
 		case <-t.C:
-			doSnapshot(false)
+			doSnapshot(false, true)
 			// Periodically check the cluster size.
 			if n.Leader() {
 				js.checkClusterSize()

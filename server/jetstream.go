@@ -1034,7 +1034,6 @@ func (s *Server) shutdownJetStream() {
 			cc.c.closeConnection(ClientClosed)
 			cc.c = nil
 		}
-		cc.meta = nil
 		// Set our atomic bool to false.
 		s.jsClustered.Store(false)
 	}
