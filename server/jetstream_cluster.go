@@ -641,11 +641,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	case !mset.isMonitorRunning():
 		return errors.New("monitor goroutine not running")
 
-	case !node.Healthy():
-		return errors.New("group node unhealthy")
-
 	case mset.isCatchingUp():
 		return errors.New("stream catching up")
+
+	case !node.Healthy():
+		return errors.New("group node unhealthy")
 
 	default:
 		return nil
