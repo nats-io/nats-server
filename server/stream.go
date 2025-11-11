@@ -7198,6 +7198,20 @@ func (mset *stream) getPublicConsumers() []*consumer {
 	return obs
 }
 
+// This returns all consumers that are DIRECT.
+func (mset *stream) getDirectConsumers() []*consumer {
+	mset.clsMu.RLock()
+	defer mset.clsMu.RUnlock()
+
+	var obs []*consumer
+	for _, o := range mset.cList {
+		if o.cfg.Direct {
+			obs = append(obs, o)
+		}
+	}
+	return obs
+}
+
 // 2 minutes plus up to 30s jitter.
 const (
 	defaultCheckInterestStateT = 2 * time.Minute
