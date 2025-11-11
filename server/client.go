@@ -2587,9 +2587,11 @@ func (c *client) sendPing() {
 // Generates the INFO to be sent to the client with the client ID included.
 // info arg will be copied since passed by value.
 // Assume lock is held.
-func (c *client) generateClientInfoJSON(info Info) []byte {
+func (c *client) generateClientInfoJSON(info Info, includeClientIP bool) []byte {
 	info.CID = c.cid
-	info.ClientIP = c.host
+	if includeClientIP {
+		info.ClientIP = c.host
+	}
 	info.MaxPayload = c.mpay
 	if c.isWebsocket() {
 		info.ClientConnectURLs = info.WSConnectURLs
@@ -2670,7 +2672,7 @@ func (c *client) processPing() {
 		info.RemoteAccount = c.acc.Name
 		info.IsSystemAccount = c.acc == srv.SystemAccount()
 		info.ConnectInfo = true
-		c.enqueueProto(c.generateClientInfoJSON(info))
+		c.enqueueProto(c.generateClientInfoJSON(info, true))
 		c.mu.Unlock()
 		srv.mu.Unlock()
 	}
