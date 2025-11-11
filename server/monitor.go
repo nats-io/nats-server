@@ -2902,6 +2902,7 @@ type JSzOptions struct {
 	Accounts         bool   `json:"accounts,omitempty"`
 	Streams          bool   `json:"streams,omitempty"`
 	Consumer         bool   `json:"consumer,omitempty"`
+	DirectConsumer   bool   `json:"direct_consumer,omitempty"`
 	Config           bool   `json:"config,omitempty"`
 	LeaderOnly       bool   `json:"leader_only,omitempty"`
 	Offset           int    `json:"offset,omitempty"`
@@ -2950,6 +2951,7 @@ type StreamDetail struct {
 	Config             *StreamConfig       `json:"config,omitempty"`
 	State              StreamState         `json:"state,omitempty"`
 	Consumer           []*ConsumerInfo     `json:"consumer_detail,omitempty"`
+	DirectConsumer     []*ConsumerInfo     `json:"direct_consumer_detail,omitempty"`
 	Mirror             *StreamSourceInfo   `json:"mirror,omitempty"`
 	Sources            []*StreamSourceInfo `json:"sources,omitempty"`
 	RaftGroup          string              `json:"stream_raft_group,omitempty"`
@@ -3007,7 +3009,7 @@ type JSInfo struct {
 	Total           int              `json:"total"`
 }
 
-func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg, optRaft, optStreamLeader bool) *AccountDetail {
+func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDirectConsumers, optCfg, optRaft, optStreamLeader bool) *AccountDetail {
 	jsa.mu.RLock()
 	acc := jsa.account
 	name := acc.GetName()
@@ -3089,6 +3091,18 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg,
 						}
 					}
 				}
+				if optDirectConsumers {
+					for _, consumer := range stream.getDirectConsumers() {
+						cInfo := consumer.info()
+						if cInfo == nil {
+							continue
+						}
+						if !optCfg {
+							cInfo.Config = nil
+						}
+						sdet.DirectConsumer = append(sdet.Consumer, cInfo)
+					}
+				}
 			}
 			detail.Streams = append(detail.Streams, sdet)
 		}
@@ -3112,7 +3126,7 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("account %q not jetstream enabled", acc)
 	}
-	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly), nil
+	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.DirectConsumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly), nil
 }
 
 // helper to get cluster info from node via dummy group
@@ -3280,7 +3294,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		jsi.AccountDetails = make([]*AccountDetail, 0, len(accounts))
 
 		for _, jsa := range accounts {
-			detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly)
+			detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.DirectConsumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly)
 			jsi.AccountDetails = append(jsi.AccountDetails, detail)
 		}
 	}
@@ -3302,6 +3316,10 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	consumers, err := decodeBool(w, r, "consumers")
+	if err != nil {
+		return
+	}
+	directConsumers, err := decodeBool(w, r, "direct-consumers")
 	if err != nil {
 		return
 	}
@@ -3336,6 +3354,7 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 		Accounts:         accounts,
 		Streams:          streams,
 		Consumer:         consumers,
+		DirectConsumer:   directConsumers,
 		Config:           config,
 		LeaderOnly:       leader,
 		Offset:           offset,
