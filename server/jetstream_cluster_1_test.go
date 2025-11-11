@@ -10577,7 +10577,9 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
 
 	// Should put us in upper-layer recovery mode.
 	// For this test using two large values so we remain in catchup.
+	meta.Lock()
 	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+	meta.Unlock()
 
 	// Deleting a stream should be staged, not immediately performed.
 	_, err = apply.push(newCommittedEntry(1, []*Entry{{EntryNormal, encodedDelete}}))
@@ -10586,7 +10588,9 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
 	require_True(t, rs.JetStreamIsStreamAssigned(globalAccountName, "TEST"))
 
 	// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
+	meta.Lock()
 	meta.cancelCatchup()
+	meta.Unlock()
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		if rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
 			return errors.New("still assigned")
