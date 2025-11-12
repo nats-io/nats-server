@@ -30,8 +30,10 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+	"sync/atomic"
 
 	"github.com/nats-io/nuid"
+	"github.com/nats-io/jwt/v2"
 )
 
 // References to "spec" here is from https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.pdf
@@ -4134,6 +4136,26 @@ func mqttNewDeliverablePubRel(pi uint16) (natsMsg []byte, headerLen int) {
 // No lock held on entry.
 func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 	qos := mqttGetQoS(pp.flags)
+
+	// Enforce max_payload using existing client max payload logic (mpay) by
+	// checking the total NATS message size that would be processed.
+	if maxPayload := atomic.LoadInt32(&c.mpay); maxPayload != jwt.NoLimit {
+		// Compute the encoded NATS message length as mqttNewDeliverableMessage does.
+		headerOnlyLen := len(hdrLine) + len(mqttNatsHeader) + 2 + 2 + 2 // header + CRLFs
+		if qos == 2 {
+			// When QoS2 is stored, we still encode PP when storing, but initial delivery path
+			// for QoS2 uses store path; we conservatively include possible subject/mapped headers too
+			headerOnlyLen += len(mqttNatsHeaderSubject) + 1 + len(pp.subject) + 2
+			if len(pp.mapped) > 0 {
+				headerOnlyLen += len(mqttNatsHeaderMapped) + 1 + len(pp.mapped) + 2
+			}
+		}
+		total := headerOnlyLen + pp.sz
+		if int64(total) > int64(maxPayload) {
+			c.maxPayloadViolation(total, maxPayload)
+			return ErrMaxPayload
+		}
+	}
 
 	switch qos {
 	case 0:
