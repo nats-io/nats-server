@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
@@ -5462,6 +5463,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		mset.clMu.Lock()
 		mset.clfs++
+		mset.srv.Noticef("DEBUG: bump CLFS to %d", mset.clfs)
 		mset.clMu.Unlock()
 	}
 
@@ -5529,7 +5531,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	var clfs uint64
 	if lseq > 0 {
 		clfs = mset.getCLFS()
-		if lseq != (mset.lseq + clfs) {
+		mismatch := lseq != (mset.lseq + clfs)
+		assert.Sometimes(mismatch, "last sequence mismatch", map[string]any{
+			"lseq": lseq,
+			"mset.lseq": mset.lseq,
+			"clfs": clfs,
+		})
+		if mismatch {
 			isMisMatch := true
 			// We may be able to recover here if we have no state whatsoever, or we are a mirror.
 			// See if we have to adjust our starting sequence.
@@ -6153,6 +6161,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			return err
 		}
 		// If we did not succeed increment clfs in case we are clustered.
+		mset.srv.Noticef("DEBUG: bump CLFS due to err %v", err)
 		bumpCLFS()
 
 		switch err {
@@ -6562,6 +6571,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		// Re-capture
 		lseq = mset.lseq
 		mset.clseq = lseq + mset.clfs + batchCount
+		s.Noticef("DEBUG: set CLSEQ %d (lseq %d, clfs %d batch %d)", mset.clseq, lseq, mset.clfs, batchCount)
 		// Keep hold of the mset.clMu, but unlock the others.
 		if batch != nil {
 			batch.mu.Unlock()
