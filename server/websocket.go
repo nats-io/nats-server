@@ -1294,7 +1294,7 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket) *client {
 	}
 	c.initClient()
 	c.Debugf("Client connection created")
-	c.sendProtoNow(c.generateClientInfoJSON(info))
+	c.sendProtoNow(c.generateClientInfoJSON(info, true))
 	c.mu.Unlock()
 
 	s.mu.Lock()

@@ -19,7 +19,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash"
 	"math"
 	"math/rand"
 	"net"
@@ -153,7 +152,7 @@ type raft struct {
 	state       atomic.Int32              // RaftState
 	leaderState atomic.Bool               // Is in (complete) leader state.
 	leaderSince atomic.Pointer[time.Time] // How long since becoming leader.
-	hh          hash.Hash64               // Highwayhash, used for snapshots
+	hh          *highwayhash.Digest64     // Highwayhash, used for snapshots
 	snapfile    string                    // Snapshot filename
 
 	csz   int             // Cluster size
@@ -447,7 +446,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	// Set up the highwayhash for the snapshots.
 	key := sha256.Sum256([]byte(n.group))
-	n.hh, _ = highwayhash.New64(key[:])
+	n.hh, _ = highwayhash.NewDigest64(key[:])
 
 	// If we have a term and vote file (tav.idx on the filesystem) then read in
 	// what we think the term and vote was. It's possible these are out of date
@@ -1225,7 +1224,8 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 	// Now do the hash for the end.
 	n.hh.Reset()
 	n.hh.Write(buf[:wi])
-	checksum := n.hh.Sum(nil)
+	var hb [highwayhash.Size64]byte
+	checksum := n.hh.Sum(hb[:0])
 	copy(buf[wi:], checksum)
 	wi += len(checksum)
 	return buf[:wi]
@@ -1450,7 +1450,8 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 	lchk := buf[hoff:]
 	n.hh.Reset()
 	n.hh.Write(buf[:hoff])
-	if !bytes.Equal(lchk[:], n.hh.Sum(nil)) {
+	var hb [highwayhash.Size64]byte
+	if !bytes.Equal(lchk[:], n.hh.Sum(hb[:0])) {
 		n.warn("Snapshot corrupt, checksums did not match")
 		os.Remove(n.snapfile)
 		n.snapfile = _EMPTY_

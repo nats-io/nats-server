@@ -1031,7 +1031,7 @@ func (s *Server) sendAsyncInfoToClients(regCli, wsCli bool) {
 			c.flags.isSet(firstPongSent) {
 			// sendInfo takes care of checking if the connection is still
 			// valid or not, so don't duplicate tests here.
-			c.enqueueProto(c.generateClientInfoJSON(info))
+			c.enqueueProto(c.generateClientInfoJSON(info, true))
 		}
 		c.mu.Unlock()
 	}

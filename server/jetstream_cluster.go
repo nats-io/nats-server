@@ -70,6 +70,8 @@ type jetStreamCluster struct {
 	peerStreamCancelMove *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
+	// To notify others that monitorCluster has actually stopped.
+	stopped chan struct{}
 	// Track last meta snapshot time and duration for monitoring.
 	lastMetaSnapTime     int64 // Unix nanoseconds
 	lastMetaSnapDuration int64 // Duration in nanoseconds
@@ -641,11 +643,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	case !mset.isMonitorRunning():
 		return errors.New("monitor goroutine not running")
 
-	case !node.Healthy():
-		return errors.New("group node unhealthy")
-
 	case mset.isCatchingUp():
 		return errors.New("stream catching up")
+
+	case !node.Healthy():
+		return errors.New("group node unhealthy")
 
 	default:
 		return nil
@@ -954,6 +956,7 @@ func (js *jetStream) setupMetaGroup() error {
 		s:       s,
 		c:       c,
 		qch:     make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
@@ -1190,6 +1193,16 @@ func (js *jetStream) clusterQuitC() chan struct{} {
 	return nil
 }
 
+// Return the cluster stopped chan.
+func (js *jetStream) clusterStoppedC() chan struct{} {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	if js.cluster != nil {
+		return js.cluster.stopped
+	}
+	return nil
+}
+
 // Mark that the meta layer is recovering.
 func (js *jetStream) setMetaRecovering() {
 	js.mu.Lock()
@@ -1346,9 +1359,10 @@ func (js *jetStream) checkForOrphans() {
 
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
-	qch, rqch, lch, aq := js.clusterQuitC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+	qch, stopped, rqch, lch, aq := js.clusterQuitC(), js.clusterStoppedC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	defer s.grWG.Done()
+	defer close(stopped)
 
 	s.Debugf("Starting metadata monitor")
 	defer s.Debugf("Exiting metadata monitor")
@@ -1445,8 +1459,6 @@ func (js *jetStream) monitorCluster() {
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
 			doSnapshot(false)
-			// Return the signal back since shutdown will be waiting.
-			close(qch)
 			return
 		case <-aq.ch:
 			ces := aq.pop()
@@ -4058,7 +4070,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
-		acc, err := s.LookupAccount(accName)
+		acc, err := s.lookupOrFetchAccount(accName, isMember)
 		if err != nil {
 			return
 		}
@@ -4072,7 +4084,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	}
 	js.mu.Unlock()
 
-	acc, err := s.LookupAccount(accName)
+	acc, err := s.lookupOrFetchAccount(accName, isMember)
 	if err != nil {
 		ll := fmt.Sprintf("Account [%s] lookup for stream create failed: %v", accName, err)
 		if isMember {
@@ -4187,7 +4199,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		js.mu.Unlock()
 
 		// Need to stop the stream, we can't keep running with an old config.
-		acc, err := s.LookupAccount(accName)
+		acc, err := s.lookupOrFetchAccount(accName, isMember)
 		if err != nil {
 			return
 		}
@@ -4201,9 +4213,14 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	}
 	js.mu.Unlock()
 
-	acc, err := s.LookupAccount(accName)
+	acc, err := s.lookupOrFetchAccount(accName, isMember)
 	if err != nil {
-		s.Warnf("Update Stream Account %s, error on lookup: %v", accName, err)
+		ll := fmt.Sprintf("Update Stream Account %s, error on lookup: %v", accName, err)
+		if isMember {
+			s.Warnf(ll)
+		} else {
+			s.Debugf(ll)
+		}
 		return
 	}
 
@@ -4876,7 +4893,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		// Be conservative by protecting the whole stream, even if just one consumer is unsupported.
 		// This ensures it's safe, even with Interest-based retention where it would otherwise
 		// continue accepting but dropping messages.
-		acc, err := s.LookupAccount(accName)
+		acc, err := s.lookupOrFetchAccount(accName, isMember)
 		if err != nil {
 			return
 		}
@@ -4890,7 +4907,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	}
 	js.mu.Unlock()
 
-	acc, err := s.LookupAccount(accName)
+	acc, err := s.lookupOrFetchAccount(accName, isMember)
 	if err != nil {
 		ll := fmt.Sprintf("Account [%s] lookup for consumer create failed: %v", accName, err)
 		if isMember {
@@ -5032,7 +5049,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 
 	acc, err := s.LookupAccount(accName)
 	if err != nil {
-		s.Warnf("JetStream cluster failed to lookup axccount %q: %v", accName, err)
+		s.Warnf("JetStream cluster failed to lookup account %q: %v", accName, err)
 		return
 	}
 

@@ -5241,6 +5241,23 @@ func TestMonitorJsz(t *testing.T) {
 			}
 		}
 	})
+	t.Run("direct-consumers", func(t *testing.T) {
+		// It could take time for the sourcing to set up.
+		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+			for _, url := range []string{monUrl1, monUrl2} {
+				info := readJsInfo(url + "?acc=ACC&consumers=true&direct-consumers=true")
+				if len(info.AccountDetails) != 1 {
+					t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+				}
+				if slices.ContainsFunc(info.AccountDetails[0].Streams, func(stream StreamDetail) bool {
+					return len(stream.DirectConsumer) > 0
+				}) {
+					return nil
+				}
+			}
+			return fmt.Errorf("expected direct consumer info to be present on one of the servers")
+		})
+	})
 	t.Run("config", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "?acc=ACC&consumers=true&config=true")

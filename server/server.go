@@ -2806,6 +2806,11 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	s.Noticef("Listening for client connections on %s",
 		net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
+	// Alert if PROXY protocol is enabled
+	if opts.ProxyProtocol {
+		s.Noticef("PROXY protocol enabled for client connections")
+	}
+
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
 		s.Noticef("TLS required for client connections")
@@ -3335,8 +3340,11 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	}
 
 	// Decide if we are going to require TLS or not and generate INFO json.
+	// If we have ProxyProtocol enabled then we won't include the client
+	// IP in the initial INFO, as that would leak the proxy IP itself.
+	// In that case we'll send another INFO after the client introduces itself.
 	tlsRequired := info.TLSRequired
-	infoBytes := c.generateClientInfoJSON(info)
+	infoBytes := c.generateClientInfoJSON(info, !opts.ProxyProtocol)
 
 	// Send our information, except if TLS and TLSHandshakeFirst is requested.
 	if !tlsFirst {
@@ -3407,7 +3415,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 			// different that the current value and regenerate infoBytes.
 			if orgInfoTLSReq != info.TLSRequired {
 				info.TLSRequired = orgInfoTLSReq
-				infoBytes = c.generateClientInfoJSON(info)
+				infoBytes = c.generateClientInfoJSON(info, !opts.ProxyProtocol)
 			}
 			c.sendProtoNow(infoBytes)
 			// Set the boolean to false for the rest of the function.
@@ -3420,7 +3428,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	// one the client wants. We'll always allow this for in-process
 	// connections.
 	if !isClosed && !tlsFirst && opts.TLSConfig != nil && (inProcess || opts.AllowNonTLS) {
-		pre = make([]byte, 4)
+		pre = make([]byte, 6) // Minimum 6 bytes for proxy proto in next step.
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
 		n, _ := io.ReadFull(c.nc, pre[:])
 		c.nc.SetReadDeadline(time.Time{})
@@ -3430,6 +3438,55 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		} else {
 			tlsRequired = false
 		}
+	}
+
+	// Check for proxy protocol if enabled.
+	if !isClosed && !tlsRequired && opts.ProxyProtocol {
+		if len(pre) == 0 {
+			// There has been no pre-read yet, do so so we can work out
+			// if the client is trying to negotiate PROXY.
+			pre = make([]byte, 6)
+			c.nc.SetReadDeadline(time.Now().Add(proxyProtoReadTimeout))
+			n, _ := io.ReadFull(c.nc, pre)
+			c.nc.SetReadDeadline(time.Time{})
+			pre = pre[:n]
+		}
+		conn = &tlsMixConn{conn, bytes.NewBuffer(pre)}
+		addr, err := readProxyProtoHeader(conn)
+		if err != nil && err != errProxyProtoUnrecognized {
+			// err != errProxyProtoUnrecognized implies that we detected a proxy
+			// protocol header but we failed to parse it, so don't continue.
+			c.mu.Unlock()
+			s.Warnf("Error reading PROXY protocol header from %s: %v", conn.RemoteAddr(), err)
+			c.closeConnection(ProtocolViolation)
+			return nil
+		}
+		// If addr is nil, it was a LOCAL/UNKNOWN command (health check)
+		// Use the connection as-is
+		if addr != nil {
+			c.nc = &proxyConn{
+				Conn:       conn,
+				remoteAddr: addr,
+			}
+			// These were set already by initClient, override them.
+			c.host = addr.srcIP.String()
+			c.port = addr.srcPort
+		}
+		// At this point, err is either:
+		//  - nil => we parsed the proxy protocol header successfully
+		//  - errProxyProtoUnrecognized => we didn't detect proxy protocol at all
+		// We only clear the pre-read if we successfully read the protocol header
+		// so that the next step doesn't re-read it. Otherwise we have to assume
+		// that it's a non-proxied connection and we want the pre-read to remain
+		// for the next step.
+		if err == nil {
+			pre = nil
+		}
+		// Because we have ProxyProtocol enabled, our earlier INFO message didn't
+		// include the client_ip. If we need to send it again then we will include
+		// it, but sending it here immediately can confuse clients who have just
+		// PING'd.
+		infoBytes = c.generateClientInfoJSON(info, true)
 	}
 
 	// Check for TLS
@@ -4716,7 +4773,7 @@ func (s *Server) LDMClientByID(id uint64) error {
 		// sendInfo takes care of checking if the connection is still
 		// valid or not, so don't duplicate tests here.
 		c.Debugf("Sending Lame Duck Mode info to client")
-		c.enqueueProto(c.generateClientInfoJSON(info))
+		c.enqueueProto(c.generateClientInfoJSON(info, true))
 		return nil
 	} else {
 		return errors.New("client does not support Lame Duck Mode or is not ready to receive the notification")
