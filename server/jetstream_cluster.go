@@ -70,6 +70,8 @@ type jetStreamCluster struct {
 	peerStreamCancelMove *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
+	// To notify others that monitorCluster has actually stopped.
+	stopped chan struct{}
 	// Track last meta snapshot time and duration for monitoring.
 	lastMetaSnapTime     int64 // Unix nanoseconds
 	lastMetaSnapDuration int64 // Duration in nanoseconds
@@ -637,11 +639,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	case !mset.isMonitorRunning():
 		return errors.New("monitor goroutine not running")
 
-	case !node.Healthy():
-		return errors.New("group node unhealthy")
-
 	case mset.isCatchingUp():
 		return errors.New("stream catching up")
+
+	case !node.Healthy():
+		return errors.New("group node unhealthy")
 
 	default:
 		return nil
@@ -950,6 +952,7 @@ func (js *jetStream) setupMetaGroup() error {
 		s:       s,
 		c:       c,
 		qch:     make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
@@ -1186,6 +1189,16 @@ func (js *jetStream) clusterQuitC() chan struct{} {
 	return nil
 }
 
+// Return the cluster stopped chan.
+func (js *jetStream) clusterStoppedC() chan struct{} {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	if js.cluster != nil {
+		return js.cluster.stopped
+	}
+	return nil
+}
+
 // Mark that the meta layer is recovering.
 func (js *jetStream) setMetaRecovering() {
 	js.mu.Lock()
@@ -1342,9 +1355,10 @@ func (js *jetStream) checkForOrphans() {
 
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
-	qch, rqch, lch, aq := js.clusterQuitC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+	qch, stopped, rqch, lch, aq := js.clusterQuitC(), js.clusterStoppedC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	defer s.grWG.Done()
+	defer close(stopped)
 
 	s.Debugf("Starting metadata monitor")
 	defer s.Debugf("Exiting metadata monitor")
@@ -1441,8 +1455,6 @@ func (js *jetStream) monitorCluster() {
 		case <-qch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
 			doSnapshot(false)
-			// Return the signal back since shutdown will be waiting.
-			close(qch)
 			return
 		case <-aq.ch:
 			ces := aq.pop()
