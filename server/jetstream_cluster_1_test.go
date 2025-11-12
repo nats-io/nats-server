@@ -6714,6 +6714,64 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMetaRecoveryAddAndUpdateStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	js := c.leader().getJetStream()
+	ci := &ClientInfo{Account: globalAccountName, Cluster: "R3S"}
+	cfg := &StreamConfig{Name: "TEST", Storage: FileStorage, Replicas: 3}
+	rg, perr := js.createGroupForStream(ci, cfg)
+	if perr != nil {
+		require_NoError(t, perr)
+	}
+	sa := &streamAssignment{Client: ci, Config: cfg, Group: rg}
+
+	// Need to be recovering so that we accumulate recoveryUpdates.
+	js.setMetaRecovering()
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+
+	// We create a new stream, and we'll update it shortly after.
+	entries := []*Entry{{EntryNormal, encodeAddStreamAssignment(sa)}}
+	_, _, err := js.applyMetaEntries(entries, ru)
+	require_NoError(t, err)
+	require_Len(t, len(ru.addStreams), 1)
+	require_Len(t, len(ru.updateStreams), 0)
+	require_Len(t, len(ru.removeStreams), 0)
+
+	// Now update the stream. The recovery updates should contain both the add and update.
+	// If only the update would exist, the stream would not be created below.
+	sa.Config.Subjects = []string{"foo"}
+	entries = []*Entry{{EntryNormal, encodeUpdateStreamAssignment(sa)}}
+	_, _, err = js.applyMetaEntries(entries, ru)
+	require_NoError(t, err)
+	require_Len(t, len(ru.addStreams), 1)
+	require_Len(t, len(ru.updateStreams), 1)
+	require_Len(t, len(ru.removeStreams), 0)
+
+	// Check the stream is properly added.
+	for _, sa := range ru.addStreams {
+		js.processStreamAssignment(sa)
+	}
+	sa = js.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	require_Len(t, len(sa.Config.Subjects), 0)
+
+	// Check the stream is properly updated.
+	for _, sa := range ru.updateStreams {
+		js.processUpdateStreamAssignment(sa)
+	}
+	sa = js.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	require_Len(t, len(sa.Config.Subjects), 1)
+}
+
 // Make sure if we received acks that are out of bounds, meaning past our
 // last sequence or before our first that they are ignored and errored if applicable.
 func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
