@@ -4426,6 +4426,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		// Clear clseq. If we become leader again, it will be fixed up
 		// automatically on the next mset.setLeader call.
 		mset.clMu.Lock()
+		s.Noticef("DEBUG: clear CLSEQ")
 		if mset.clseq > 0 {
 			mset.clseq = 0
 		}
@@ -10051,6 +10052,7 @@ var (
 // Process a stream snapshot.
 func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
 	// Update any deletes, etc.
+	//mset.srv.Noticef("DEBUG: set CLFS from snapshot %v", snap)
 	if err := mset.processSnapshotDeletes(snap); err != nil {
 		return err
 	}
@@ -10277,9 +10279,9 @@ RETRY:
 						// Because the snapshot needs to represent what has been persisted.
 						err = mset.flushAllPending()
 						if err == nil {
-							s.Noticef("Catchup for stream '%s > %s' complete (took %v)", mset.account(), mset.name(), time.Since(start).Round(time.Millisecond))
+							s.Noticef("Catchup for stream '%s > %s' complete (took %v) (lseq %d, snap.LastSeq %d)", mset.account(), mset.name(), time.Since(start).Round(time.Millisecond), lseq, snap.LastSeq)
 						} else {
-							s.Noticef("Catchup for stream '%s > %s' errored: %v (took %v)", mset.account(), mset.name(), err, time.Since(start).Round(time.Millisecond))
+							s.Noticef("Catchup for stream '%s > %s' errored: %v (took %v) (lseq %d, snap.LastSeq %d)", mset.account(), mset.name(), err, time.Since(start).Round(time.Millisecond), lseq, snap.LastSeq)
 						}
 						return err
 					}

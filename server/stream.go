@@ -6094,6 +6094,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 		mset.clMu.Lock()
 		mset.clfs++
+		//mset.srv.Noticef("DEBUG: bump CLFS to %d", mset.clfs)
 		mset.clMu.Unlock()
 	}
 
@@ -6177,7 +6178,13 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	var clfs uint64
 	if lseq > 0 {
 		clfs = mset.getCLFS()
-		if lseq != (mset.lseq + clfs) {
+		mismatch := lseq != (mset.lseq + clfs)
+		assert.Sometimes(mismatch, "last sequence mismatch", map[string]any{
+			"lseq":      lseq,
+			"mset.lseq": mset.lseq,
+			"clfs":      clfs,
+		})
+		if mismatch {
 			isMisMatch := true
 			// We may be able to recover here if we have no state whatsoever, or we are a mirror.
 			// See if we have to adjust our starting sequence.
@@ -6200,6 +6207,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 					b, _ := json.Marshal(resp)
 					outq.sendMsg(reply, b)
 				}
+				s.Noticef("DEBUG: last seq mismatch (lseq %d, mset.lseq %d clfs %d)", lseq, mset.lseq, mset.clfs)
 				return errLastSeqMismatch
 			}
 		}
@@ -6891,6 +6899,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 
 		// If we did not succeed increment clfs in case we are clustered.
+		//mset.srv.Noticef("DEBUG: bump CLFS due to err %v", err)
 		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}

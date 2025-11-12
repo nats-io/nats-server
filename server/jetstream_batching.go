@@ -1013,6 +1013,7 @@ func recalculateClusteredSeq(mset *stream, needStreamLock bool) (lseq uint64) {
 	// Re-capture
 	lseq = mset.lseq
 	mset.clseq = lseq + mset.clfs + batchCount
+	mset.srv.Noticef("DEBUG: set CLSEQ %d (lseq %d, clfs %d batch %d)", mset.clseq, lseq, mset.clfs, batchCount)
 	// Keep hold of the mset.clMu, but unlock the others.
 	if batch != nil {
 		batch.mu.Unlock()

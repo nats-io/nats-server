@@ -1141,6 +1141,7 @@ func (n *raft) pauseApplyLocked() {
 	n.debug("Pausing our apply channel")
 	n.paused = true
 	if n.hcommit < n.commit {
+		n.debug("DEBUG: set hcommit %d, prev %d", n.commit, n.hcommit)
 		n.hcommit = n.commit
 	}
 	// Also prevent us from trying to become a leader while paused and catching up.
