@@ -3888,6 +3888,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		// Clear clseq. If we become leader again, it will be fixed up
 		// automatically on the next mset.setLeader call.
 		mset.clMu.Lock()
+		s.Noticef("DEBUG: clear CLSEQ")
 		if mset.clseq > 0 {
 			mset.clseq = 0
 		}
@@ -8996,6 +8997,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Re-capture
 		lseq = mset.lseq
 		mset.clseq = lseq + mset.clfs + batchCount
+		s.Noticef("DEBUG: set CLSEQ %d (lseq %d, clfs %d batch %d)", mset.clseq, lseq, mset.clfs, batchCount)
 		// Keep hold of the mset.clMu, but unlock the others.
 		if batch != nil {
 			batch.mu.Unlock()
@@ -9245,6 +9247,7 @@ var (
 // Process a stream snapshot.
 func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
 	// Update any deletes, etc.
+	mset.srv.Noticef("DEBUG: set CLFS from snapshot %v", snap)
 	mset.processSnapshotDeletes(snap)
 	mset.setCLFS(snap.Failed)
 
