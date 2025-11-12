@@ -4164,7 +4164,7 @@ func TestNoRaceJetStreamConsumerFileStoreConcurrentDiskIO(t *testing.T) {
 
 	for i := 1; i <= n; i++ {
 		name := fmt.Sprintf("o%d", i)
-		o, err := fs.ConsumerStore(name, &ConsumerConfig{AckPolicy: AckExplicit})
+		o, err := fs.ConsumerStore(name, time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
 		require_NoError(t, err)
 		wg.Add(1)
 		swg.Done()

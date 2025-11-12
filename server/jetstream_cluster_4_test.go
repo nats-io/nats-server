@@ -4170,7 +4170,7 @@ func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T
 		updateStreams:   make(map[string]*streamAssignment),
 		updateConsumers: make(map[string]map[string]*consumerAssignment),
 	}
-	err = mjs.applyMetaSnapshot(snap, ru, true)
+	err = mjs.applyMetaSnapshot(snap, ru, true, true)
 	require_NoError(t, err)
 	require_Len(t, len(ru.updateStreams), 1)
 	for _, sa := range ru.updateStreams {
