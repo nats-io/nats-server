@@ -1254,7 +1254,6 @@ func (ru *recoveryUpdates) addStream(sa *streamAssignment) {
 func (ru *recoveryUpdates) updateStream(sa *streamAssignment) {
 	key := sa.recoveryKey()
 	ru.updateStreams[key] = sa
-	delete(ru.addStreams, key)
 	delete(ru.removeStreams, key)
 }
 
