@@ -3114,11 +3114,11 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	for _, osa := range streams {
 		for _, oca := range osa.consumers {
 			oca.deleted = true
-			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client}
+			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client, Created: oca.Created}
 			meta.Propose(encodeDeleteConsumerAssignment(ca))
 			nc++
 		}
-		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client}
+		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client, Created: osa.Created}
 		meta.Propose(encodeDeleteStreamAssignment(sa))
 		ns++
 	}
