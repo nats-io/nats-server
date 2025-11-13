@@ -456,7 +456,7 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	storeDir := t.TempDir()
 	fcfg := FileStoreConfig{
 		StoreDir:  storeDir,
-		BlockSize: 512, // Small on purpose to create alot of blks.
+		BlockSize: 512, // Small on purpose to create a lot of blks.
 	}
 	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage})
 	require_NoError(t, err)
@@ -473,19 +473,22 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	}
 	fs.StoreMsg(subj, nil, msg, 0)
 
+	// The tombstones from above will only be cleaned up when syncing blocks.
+	fs.syncBlocks()
+
 	snap, err := fs.EncodedStreamState(0)
 	require_NoError(t, err)
-	require_True(t, len(snap) < 512)
+	require_LessThan(t, len(snap), 512)
 
 	// Now decode the snapshot.
 	ss, err := DecodeStreamState(snap)
 	require_NoError(t, err)
 
-	require_True(t, ss.FirstSeq == 1)
-	require_True(t, ss.LastSeq == 20_000)
-	require_True(t, ss.Msgs == 2)
-	require_True(t, len(ss.Deleted) <= 2)
-	require_True(t, ss.Deleted.NumDeleted() == 19_998)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 20_000)
+	require_Equal(t, ss.Msgs, 2)
+	require_Equal(t, len(ss.Deleted), 2)
+	require_Equal(t, ss.Deleted.NumDeleted(), 19_998)
 }
 
 func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {

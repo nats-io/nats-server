@@ -10682,6 +10682,74 @@ func TestFileStoreEraseMsgDoesNotLoseTombstones(t *testing.T) {
 	})
 }
 
+func TestFileStoreEraseMsgDoesNotLoseTombstonesInEmptyBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// The first message will remain throughout.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		// The second message wil be removed, so a tombstone will be placed.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		mb, err := fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+
+		secret := []byte("secret!")
+		// The third message is secret and will be erased.
+		_, _, err = fs.StoreMsg("foo", nil, secret, 0)
+		require_NoError(t, err)
+
+		// Removing the second message places a tombstone.
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		// Now we erase the third message.
+		// This erases this message and should not lose the tombstone that comes after it.
+		// It should do the erase, even if the block would be empty afterward as it could contain tombstones.
+		_, err = fs.EraseMsg(3)
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 3)
+		require_True(t, slices.Equal(before.Deleted, []uint64{2, 3}))
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, ErrStoreMsgNotFound)
+
+		// The message should be erased.
+		buf, err := mb.loadBlock(nil)
+		require_NoError(t, err)
+		require_False(t, bytes.Contains(buf, secret))
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, ErrStoreMsgNotFound)
+	})
+}
+
 func TestFileStoreTombstonesNoFirstSeqRollback(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 10 * 33 // 10 messages per block.
@@ -11132,4 +11200,161 @@ func TestFileStoreIdxAccountingForSkipMsgs(t *testing.T) {
 
 	t.Run("SkipMsg", func(t *testing.T) { test(t, false) })
 	t.Run("SkipMsgs", func(t *testing.T) { test(t, true) })
+}
+
+func TestFileStoreEmptyBlockContainsPriorTombstones(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// 2.blk
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(3) // Will create a new lmb with this as tombstone.
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 3)
+		require_True(t, slices.Equal(before.Deleted, []uint64{2, 3}))
+
+		fs.mu.RLock()
+		lblks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 3)
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, ErrStoreMsgNotFound)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+
+		fs.mu.RLock()
+		lblks = len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 3)
+
+		_, err = fs.LoadMsg(2, nil)
+		require_Error(t, err, errDeletedMsg)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, ErrStoreMsgNotFound)
+
+		// 3.blk
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		fs.mu.RLock()
+		lblks = len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 3)
+
+		// Removing the first message moves the first seq up.
+		// Should also remove blocks without any messages and (invalidated) tombstones.
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+
+		fs.mu.RLock()
+		lblks = len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 1)
+	})
+}
+
+func TestFileStoreCompactTombstonesBelowFirstSeq(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// 2.blk
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(3)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 2)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 4)
+		require_True(t, slices.Equal(state.Deleted, []uint64{2, 3}))
+
+		fs.mu.RLock()
+		lblks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 2)
+
+		// Block should report the two prior tombstones.
+		fs.mu.Lock()
+		lmb := fs.lmb
+		lmb.mu.Lock()
+		priorTombs := lmb.numPriorTombsLocked()
+		lmb.mu.Unlock()
+		fs.mu.Unlock()
+		require_Equal(t, priorTombs, 2)
+
+		// The first sequence moves up as a result of the removal.
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+
+		// Block should now report no prior tombstones, since they are now invalid.
+		fs.mu.Lock()
+		lmb.mu.Lock()
+		priorTombs = lmb.numPriorTombsLocked()
+		lmb.mu.Unlock()
+		fs.mu.Unlock()
+		require_Equal(t, priorTombs, 0)
+
+		// Make sure we have a new last block such that we can compact.
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+
+		lmb.mu.RLock()
+		rbytes := lmb.rbytes
+		lmb.mu.RUnlock()
+		require_True(t, lmb.shouldCompactSync())
+		fs.syncBlocks()
+
+		lmb.mu.RLock()
+		defer lmb.mu.RUnlock()
+		require_NotEqual(t, lmb.rbytes, rbytes)
+	})
 }
