@@ -99,7 +99,7 @@ type ConsumerConfig struct {
 	BackOff         []time.Duration `json:"backoff,omitempty"`
 	FilterSubject   string          `json:"filter_subject,omitempty"`
 	FilterSubjects  []string        `json:"filter_subjects,omitempty"`
-	ReplayPolicy    ReplayPolicy    `json:"replay_policy"`
+	ReplayPolicy    ReplayPolicy    `json:"replay_policy,omitempty"`
 	RateLimit       uint64          `json:"rate_limit_bps,omitempty"` // Bits per sec
 	SampleFrequency string          `json:"sample_freq,omitempty"`
 	MaxWaiting      int             `json:"max_waiting,omitempty"`
