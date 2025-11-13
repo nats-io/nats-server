@@ -5662,7 +5662,8 @@ func (o *consumer) hasNoLocalInterest() bool {
 
 // This is when the underlying stream has been purged.
 // sseq is the new first seq for the stream after purge.
-// Lock should NOT be held.
+// Consumer lock should NOT be held but the parent stream
+// lock MUST be held.
 func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 	// Do not update our state unless we know we are the leader.
 	if !o.isLeader() {
@@ -5743,7 +5744,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 	o.mu.Unlock()
 
 	if err := o.writeStoreState(); err != nil && s != nil && mset != nil {
-		s.Warnf("Consumer '%s > %s > %s' error on write store state from purge: %v", acc, mset.name(), name, err)
+		s.Warnf("Consumer '%s > %s > %s' error on write store state from purge: %v", acc, mset.nameLocked(false), name, err)
 	}
 }
 
