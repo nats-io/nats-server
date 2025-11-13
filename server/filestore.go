@@ -313,9 +313,6 @@ const (
 	consumerState = "o.dat"
 	// The suffix that will be given to a new temporary block for compression or when rewriting the full file.
 	blkTmpSuffix = ".tmp"
-	// This is where we keep state on templates.
-	// Deprecated: stream templates are deprecated and will be removed in a future version.
-	tmplsDir = "templates"
 	// default cache buffer expiration
 	defaultCacheBufferExpiration = 10 * time.Second
 	// default sync interval
@@ -11792,63 +11789,6 @@ func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
 		}
 	}
 	return nil
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Templates
-////////////////////////////////////////////////////////////////////////////////
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-type templateFileStore struct {
-	dir string
-	hh  *highwayhash.Digest64
-}
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func newTemplateFileStore(storeDir string) *templateFileStore {
-	tdir := filepath.Join(storeDir, tmplsDir)
-	key := sha256.Sum256([]byte("templates"))
-	hh, err := highwayhash.NewDigest64(key[:])
-	if err != nil {
-		return nil
-	}
-	return &templateFileStore{dir: tdir, hh: hh}
-}
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func (ts *templateFileStore) Store(t *streamTemplate) error {
-	dir := filepath.Join(ts.dir, t.Name)
-	if err := os.MkdirAll(dir, defaultDirPerms); err != nil {
-		return fmt.Errorf("could not create templates storage directory for %q- %v", t.Name, err)
-	}
-	meta := filepath.Join(dir, JetStreamMetaFile)
-	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
-		return err
-	}
-	t.mu.Lock()
-	b, err := json.Marshal(t)
-	t.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(meta, b, defaultFilePerms); err != nil {
-		return err
-	}
-	// FIXME(dlc) - Do checksum
-	ts.hh.Reset()
-	ts.hh.Write(b)
-	var hb [highwayhash.Size64]byte
-	checksum := hex.EncodeToString(ts.hh.Sum(hb[:0]))
-	sum := filepath.Join(dir, JetStreamMetaFileSum)
-	if err := os.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Deprecated: stream templates are deprecated and will be removed in a future version.
-func (ts *templateFileStore) Delete(t *streamTemplate) error {
-	return os.RemoveAll(filepath.Join(ts.dir, t.Name))
 }
 
 ////////////////////////////////////////////////////////////////////////////////

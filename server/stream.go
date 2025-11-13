@@ -63,7 +63,6 @@ type StreamConfig struct {
 	Storage      StorageType      `json:"storage"`
 	Replicas     int              `json:"num_replicas"`
 	NoAck        bool             `json:"no_ack,omitempty"`
-	Template     string           `json:"template_owner,omitempty"` // Deprecated: stream templates are deprecated and will be removed in a future version.
 	Duplicates   time.Duration    `json:"duplicate_window,omitempty"`
 	Placement    *Placement       `json:"placement,omitempty"`
 	Mirror       *StreamSource    `json:"mirror,omitempty"`
@@ -725,13 +724,6 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 	js.mu.RUnlock()
 	jsa.mu.Lock()
-	// Check for template ownership if present.
-	if cfg.Template != _EMPTY_ && jsa.account != nil {
-		if !jsa.checkTemplateOwnership(cfg.Template, cfg.Name) {
-			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream not owned by template")
-		}
-	}
 
 	// If mirror, check if the transforms (if any) are valid.
 	if cfg.Mirror != nil {
@@ -1350,7 +1342,6 @@ func (mset *stream) setLastSeq(lseq uint64) {
 func (mset *stream) sendCreateAdvisory() {
 	mset.mu.RLock()
 	name := mset.cfg.Name
-	template := mset.cfg.Template
 	outq := mset.outq
 	srv := mset.srv
 	mset.mu.RUnlock()
@@ -1366,10 +1357,9 @@ func (mset *stream) sendCreateAdvisory() {
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
-		Stream:   name,
-		Action:   CreateEvent,
-		Template: template,
-		Domain:   srv.getOpts().JetStreamDomain,
+		Stream: name,
+		Action: CreateEvent,
+		Domain: srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(m)
@@ -1392,10 +1382,9 @@ func (mset *stream) sendDeleteAdvisoryLocked() {
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
-		Stream:   mset.cfg.Name,
-		Action:   DeleteEvent,
-		Template: mset.cfg.Template,
-		Domain:   mset.srv.getOpts().JetStreamDomain,
+		Stream: mset.cfg.Name,
+		Action: DeleteEvent,
+		Domain: mset.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(m)
@@ -2115,13 +2104,6 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 		if old.Retention == WorkQueuePolicy || cfg.Retention == WorkQueuePolicy {
 			return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change retention policy to/from workqueue"))
 		}
-	}
-	// Can not have a template owner for now.
-	if old.Template != _EMPTY_ {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update not allowed on template owned stream"))
-	}
-	if cfg.Template != _EMPTY_ {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not be owned by a template"))
 	}
 	// Can not change from true to false.
 	if !cfg.Sealed && old.Sealed {
@@ -7801,11 +7783,6 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, err
 	}
 
-	if cfg.Template != _EMPTY_ {
-		if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
-			return nil, err
-		}
-	}
 	mset, err := a.addStream(&cfg)
 	if err != nil {
 		// Make sure to clean up after ourselves here.

@@ -2535,14 +2535,3 @@ func (o *consumerMemStore) copyRedelivered() map[uint64]uint64 {
 
 // Type returns the type of the underlying store.
 func (o *consumerMemStore) Type() StorageType { return MemoryStorage }
-
-// Templates
-type templateMemStore struct{}
-
-func newTemplateMemStore() *templateMemStore {
-	return &templateMemStore{}
-}
-
-// No-ops for memstore.
-func (ts *templateMemStore) Store(t *streamTemplate) error  { return nil }
-func (ts *templateMemStore) Delete(t *streamTemplate) error { return nil }
