@@ -5508,7 +5508,9 @@ func (c *client) processPingTimer() {
 	}
 	pingInterval = adjustPingInterval(c.kind, pingInterval)
 	now := time.Now()
-	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
+	// Determine RTT measurement interval from options.
+	rttInterval := opts.RTTMeasurementInterval
+	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > rttInterval
 
 	// Do not delay PINGs for ROUTER, GATEWAY or spoke LEAF connections.
 	if c.kind == ROUTER || c.kind == GATEWAY || c.isSpokeLeafNode() {
