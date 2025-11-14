@@ -719,3 +719,39 @@ func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreMsgLoadPrevMsgMulti(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}},
+		func(t *testing.T, fs StreamStore) {
+			// Put 1k msgs in
+			for i := range 1000 {
+				subj := fmt.Sprintf("foo.%d", i+1)
+				fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+			}
+
+			var sm StoreMsg
+			var count int
+			var state StreamState
+			fs.FastState(&state)
+
+			sl := gsl.NewSimpleSublist()
+			sl.Insert("foo.5", struct{}{})
+			sl.Insert("foo.15", struct{}{})
+			sl.Insert("foo.105", struct{}{})
+
+			for seq := state.LastSeq; seq > 5; seq-- {
+				var err error
+				_, seq, err = fs.LoadPrevMsgMulti(sl, seq, &sm)
+				require_NoError(t, err)
+				require_Equal(t, sm.subj, fmt.Sprintf("foo.%d", sm.seq))
+				count++
+			}
+
+			_, _, err := fs.LoadPrevMsgMulti(sl, 4, &sm)
+			require_Error(t, err, ErrStoreEOF)
+			require_Equal(t, count, 3)
+		},
+	)
+}

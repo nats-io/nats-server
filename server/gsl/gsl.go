@@ -51,6 +51,11 @@ var (
 // unnecessary allocations.
 type SimpleSublist = GenericSublist[struct{}]
 
+// NewSimpleSublist will create a simple sublist.
+func NewSimpleSublist() *SimpleSublist {
+	return &GenericSublist[struct{}]{root: newLevel[struct{}]()}
+}
+
 // A GenericSublist stores and efficiently retrieves subscriptions.
 type GenericSublist[T comparable] struct {
 	sync.RWMutex
