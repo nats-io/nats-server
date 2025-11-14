@@ -360,6 +360,7 @@ type Options struct {
 	Authorization              string        `json:"-"`
 	AuthCallout                *AuthCallout  `json:"-"`
 	PingInterval               time.Duration `json:"ping_interval"`
+	RTTMeasurementInterval     time.Duration `json:"rtt_measurement_interval"`
 	MaxPingsOut                int           `json:"ping_max"`
 	HTTPHost                   string        `json:"http_host"`
 	HTTPPort                   int           `json:"http_port"`
@@ -1282,6 +1283,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		}
 	case "ping_interval":
 		o.PingInterval = parseDuration("ping_interval", tk, v, errors, warnings)
+	case "rtt_measurement_interval":
+		o.RTTMeasurementInterval = parseDuration("rtt_measurement_interval", tk, v, errors, warnings)
 	case "ping_max":
 		o.MaxPingsOut = int(v.(int64))
 	case "tls":
@@ -5828,6 +5831,9 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.PingInterval == 0 {
 		opts.PingInterval = DEFAULT_PING_INTERVAL
+	}
+	if opts.RTTMeasurementInterval == 0 {
+		opts.RTTMeasurementInterval = DEFAULT_RTT_MEASUREMENT_INTERVAL
 	}
 	if opts.MaxPingsOut == 0 {
 		opts.MaxPingsOut = DEFAULT_PING_MAX_OUT
