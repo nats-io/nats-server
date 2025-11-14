@@ -107,292 +107,206 @@ func setServerProtoForTest(wantedProto int) int {
 // Info is the information sent to clients, routes, gateways, and leaf nodes,
 // to help them understand information about this server.
 type Info struct {
-	ID                string   `json:"server_id"`
-	Name              string   `json:"server_name"`
-	Version           string   `json:"version"`
-	Proto             int      `json:"proto"`
-	GitCommit         string   `json:"git_commit,omitempty"`
-	GoVersion         string   `json:"go"`
-	Host              string   `json:"host"`
-	Port              int      `json:"port"`
-	Headers           bool     `json:"headers"`
-	AuthRequired      bool     `json:"auth_required,omitempty"`
-	TLSRequired       bool     `json:"tls_required,omitempty"`
-	TLSVerify         bool     `json:"tls_verify,omitempty"`
-	TLSAvailable      bool     `json:"tls_available,omitempty"`
-	MaxPayload        int32    `json:"max_payload"`
-	JetStream         bool     `json:"jetstream,omitempty"`
-	IP                string   `json:"ip,omitempty"`
-	CID               uint64   `json:"client_id,omitempty"`
-	ClientIP          string   `json:"client_ip,omitempty"`
-	Nonce             string   `json:"nonce,omitempty"`
-	Cluster           string   `json:"cluster,omitempty"`
-	Dynamic           bool     `json:"cluster_dynamic,omitempty"`
-	Domain            string   `json:"domain,omitempty"`
-	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
-	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
-	LameDuckMode      bool     `json:"ldm,omitempty"`
-	Compression       string   `json:"compression,omitempty"`
-	ConnectInfo       bool     `json:"connect_info,omitempty"`   // When true this is the server INFO response to CONNECT
-	RemoteAccount     string   `json:"remote_account,omitempty"` // Lets the client or leafnode side know the remote account that they bind to.
-	IsSystemAccount   bool     `json:"acc_is_sys,omitempty"`     // Indicates if the account is a system account.
-	JSApiLevel        int      `json:"api_lvl,omitempty"`
-
-	// Route Specific
-	Import        *SubjectPermission `json:"import,omitempty"`
-	Export        *SubjectPermission `json:"export,omitempty"`
-	LNOC          bool               `json:"lnoc,omitempty"`
-	LNOCU         bool               `json:"lnocu,omitempty"`
-	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
-	RoutePoolSize int                `json:"route_pool_size,omitempty"`
-	RoutePoolIdx  int                `json:"route_pool_idx,omitempty"`
-	RouteAccount  string             `json:"route_account,omitempty"`
-	RouteAccReqID string             `json:"route_acc_add_reqid,omitempty"`
-	GossipMode    byte               `json:"gossip_mode,omitempty"`
-
-	// Gateways Specific
-	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
-	GatewayURLs       []string `json:"gateway_urls,omitempty"`        // Gateway URLs in the originating cluster (sent by gateway's INFO)
-	GatewayURL        string   `json:"gateway_url,omitempty"`         // Gateway URL on that server (sent by route's INFO)
-	GatewayCmd        byte     `json:"gateway_cmd,omitempty"`         // Command code for the receiving server to know what to do
-	GatewayCmdPayload []byte   `json:"gateway_cmd_payload,omitempty"` // Command payload when needed
-	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses new $GNR. prefix for mapped replies
-	GatewayIOM        bool     `json:"gateway_iom,omitempty"`         // Indicate that all accounts will be switched to InterestOnly mode "right away"
-
-	// LeafNode Specific
-	LeafNodeURLs []string `json:"leafnode_urls,omitempty"` // LeafNode URLs that the server can reconnect to.
-
-	XKey string `json:"xkey,omitempty"` // Public server's x25519 key.
+	Import            *SubjectPermission `json:"import,omitempty"`
+	Export            *SubjectPermission `json:"export,omitempty"`
+	RouteAccReqID     string             `json:"route_acc_add_reqid,omitempty"`
+	GatewayURL        string             `json:"gateway_url,omitempty"`
+	GitCommit         string             `json:"git_commit,omitempty"`
+	GoVersion         string             `json:"go"`
+	Host              string             `json:"host"`
+	Name              string             `json:"server_name"`
+	XKey              string             `json:"xkey,omitempty"`
+	Version           string             `json:"version"`
+	RemoteAccount     string             `json:"remote_account,omitempty"`
+	Gateway           string             `json:"gateway,omitempty"`
+	ID                string             `json:"server_id"`
+	RouteAccount      string             `json:"route_account,omitempty"`
+	Compression       string             `json:"compression,omitempty"`
+	IP                string             `json:"ip,omitempty"`
+	Nonce             string             `json:"nonce,omitempty"`
+	ClientIP          string             `json:"client_ip,omitempty"`
+	Domain            string             `json:"domain,omitempty"`
+	Cluster           string             `json:"cluster,omitempty"`
+	GatewayCmdPayload []byte             `json:"gateway_cmd_payload,omitempty"`
+	ClientConnectURLs []string           `json:"connect_urls,omitempty"`
+	WSConnectURLs     []string           `json:"ws_connect_urls,omitempty"`
+	GatewayURLs       []string           `json:"gateway_urls,omitempty"`
+	LeafNodeURLs      []string           `json:"leafnode_urls,omitempty"`
+	RoutePoolSize     int                `json:"route_pool_size,omitempty"`
+	Proto             int                `json:"proto"`
+	CID               uint64             `json:"client_id,omitempty"`
+	RoutePoolIdx      int                `json:"route_pool_idx,omitempty"`
+	JSApiLevel        int                `json:"api_lvl,omitempty"`
+	Port              int                `json:"port"`
+	MaxPayload        int32              `json:"max_payload"`
+	TLSAvailable      bool               `json:"tls_available,omitempty"`
+	LNOCU             bool               `json:"lnocu,omitempty"`
+	InfoOnConnect     bool               `json:"info_on_connect,omitempty"`
+	LNOC              bool               `json:"lnoc,omitempty"`
+	IsSystemAccount   bool               `json:"acc_is_sys,omitempty"`
+	ConnectInfo       bool               `json:"connect_info,omitempty"`
+	LameDuckMode      bool               `json:"ldm,omitempty"`
+	GossipMode        byte               `json:"gossip_mode,omitempty"`
+	Dynamic           bool               `json:"cluster_dynamic,omitempty"`
+	JetStream         bool               `json:"jetstream,omitempty"`
+	TLSVerify         bool               `json:"tls_verify,omitempty"`
+	GatewayCmd        byte               `json:"gateway_cmd,omitempty"`
+	TLSRequired       bool               `json:"tls_required,omitempty"`
+	GatewayNRP        bool               `json:"gateway_nrp,omitempty"`
+	GatewayIOM        bool               `json:"gateway_iom,omitempty"`
+	AuthRequired      bool               `json:"auth_required,omitempty"`
+	Headers           bool               `json:"headers"`
 }
 
 // Server is our main struct.
 type Server struct {
-	// Fields accessed with atomic operations need to be 64-bit aligned
-	gcid uint64
-	// How often user logon fails due to the issuer account not being pinned.
-	pinnedAccFail uint64
-	stats
-	scStats
-	staleStats
-	mu                  sync.RWMutex
-	reloadMu            sync.RWMutex // Write-locked when a config reload is taking place ONLY
-	kp                  nkeys.KeyPair
-	xkp                 nkeys.KeyPair
-	xpub                string
-	info                Info
-	configFile          string
-	optsMu              sync.RWMutex
-	opts                *Options
-	running             atomic.Bool
-	shutdown            atomic.Bool
-	listener            net.Listener
-	listenerErr         error
-	gacc                *Account
-	sys                 *internal
-	sysAcc              atomic.Pointer[Account]
-	js                  atomic.Pointer[jetStream]
-	isMetaLeader        atomic.Bool
-	jsClustered         atomic.Bool
-	accounts            sync.Map
-	tmpAccounts         sync.Map // Temporarily stores accounts that are being built
-	activeAccounts      int32
-	accResolver         AccountResolver
-	clients             map[uint64]*client
-	routes              map[string][]*client
-	remoteRoutePoolSize map[string]int                // Map for remote's configure route pool size
-	routesPoolSize      int                           // Configured pool size
-	routesReject        bool                          // During reload, we may want to reject adding routes until some conditions are met
-	routesNoPool        int                           // Number of routes that don't use pooling (connecting to older server for instance)
-	accRoutes           map[string]map[string]*client // Key is account name, value is key=remoteID/value=route connection
-	accRouteByHash      sync.Map                      // Key is account name, value is nil or a pool index
-	accAddedCh          chan struct{}
-	accAddedReqID       string
-	leafs               map[uint64]*client
-	users               map[string]*User
-	nkeys               map[string]*NkeyUser
-	totalClients        uint64
-	closed              *closedRingBuffer
-	done                chan bool
-	start               time.Time
-	http                net.Listener
-	httpHandler         http.Handler
-	httpBasePath        string
-	profiler            net.Listener
-	httpReqStats        map[string]uint64
-	routeListener       net.Listener
-	routeListenerErr    error
-	routeInfo           Info
-	routeResolver       netResolver
-	routesToSelf        map[string]struct{}
-	routeTLSName        string
-	leafNodeListener    net.Listener
-	leafNodeListenerErr error
-	leafNodeInfo        Info
-	leafNodeInfoJSON    []byte
-	leafURLsMap         refCountedUrlSet
-	leafNodeOpts        struct {
+	configTime            time.Time
+	rerrLast              time.Time
+	start                 time.Time
+	xkp                   nkeys.KeyPair
+	routeResolver         netResolver
+	gatewayListenerErr    error
+	leafNodeListenerErr   error
+	kp                    nkeys.KeyPair
+	accResolver           AccountResolver
+	leafNodeListener      net.Listener
+	gatewayListener       net.Listener
+	routeListenerErr      error
+	routeListener         net.Listener
+	profiler              net.Listener
+	httpHandler           http.Handler
+	http                  net.Listener
+	listener              net.Listener
+	listenerErr           error
+	ocsprc                OCSPResponseCache
+	closed                *closedRingBuffer
+	startupComplete       chan struct{}
+	js                    atomic.Pointer[jetStream]
+	proxiedConns          map[string]map[uint64]*client
+	profilingServer       *http.Server
+	monitoringServer      *http.Server
+	gateway               *srvGateway
+	delayedAPIResponses   *ipQueue[*delayedAPIResponse]
+	sys                   *internal
+	clients               map[uint64]*client
+	routes                map[string][]*client
+	remoteRoutePoolSize   map[string]int
+	jsAPIRoutedReqs       *ipQueue[*jsAPIRoutedReq]
+	syncOutSem            chan struct{}
+	gcbKick               chan struct{}
+	accRoutes             map[string]map[string]*client
+	strictSigningKeyUsage map[string]struct{}
+	accAddedCh            chan struct{}
+	varz                  *Varz
+	leafURLsMap           refCountedUrlSet
+	users                 map[string]*User
+	nkeys                 map[string]*NkeyUser
+	rateLimitLoggingCh    chan time.Duration
+	gwLeafSubs            *Sublist
+	done                  chan bool
+	gacc                  *Account
+	clientConnectURLsMap  refCountedUrlSet
+	eventIds              *nuid.NUID
+	sysAcc                atomic.Pointer[Account]
+	opts                  *Options
+	httpReqStats          map[string]uint64
+	grTmpClients          map[uint64]*client
+	shutdownComplete      chan struct{}
+	leafs                 map[uint64]*client
+	ldmCh                 chan bool
+	routesToSelf          map[string]struct{}
+	quitCh                chan struct{}
+	raftNodes             map[string]RaftNode
+	connRateCounter       *rateCounter
+	gwrm                  struct {
+		ch chan time.Duration
+		m  sync.Map
+		w  int32
+	}
+	accRouteByHash           sync.Map
+	incompleteAccExporterMap sync.Map
+	rateLimitLogging         sync.Map
+	ipQueues                 sync.Map
+	accounts                 sync.Map
+	leafRemoteAccounts       sync.Map
+	nodeToInfo               sync.Map
+	tmpAccounts              sync.Map
+	leafNodeOpts             struct {
 		resolver    netResolver
 		dialTimeout time.Duration
 	}
-	leafRemoteCfgs     []*leafNodeCfg
-	leafRemoteAccounts sync.Map
-	leafNodeEnabled    bool
-	leafDisableConnect bool // Used in test only
-	leafNoCluster      bool // Indicate that this server has only remotes and no cluster defined
-
-	quitCh           chan struct{}
-	startupComplete  chan struct{}
-	shutdownComplete chan struct{}
-
-	// Tracking Go routines
-	grMu         sync.Mutex
-	grTmpClients map[uint64]*client
-	grRunning    bool
-	grWG         sync.WaitGroup // to wait on various go routines
-
-	cproto     int64     // number of clients supporting async INFO
-	configTime time.Time // last time config was loaded
-
-	logging struct {
+	cn                   string
+	accAddedReqID        string
+	configFile           string
+	sysAccOnlyNoAuthUser string
+	routeTLSName         string
+	httpBasePath         string
+	xpub                 string
+	logging              struct {
+		logger Logger
 		sync.RWMutex
-		logger      Logger
 		trace       int32
 		debug       int32
 		traceSysAcc int32
 	}
-
+	trustedKeys       []string
+	ocsps             []*OCSPMonitor
 	clientConnectURLs []string
-
-	// Used internally for quick look-ups.
-	clientConnectURLsMap refCountedUrlSet
-
-	// For Gateways
-	gatewayListener    net.Listener // Accept listener
-	gatewayListenerErr error
-	gateway            *srvGateway
-
-	// Used by tests to check that http.Servers do
-	// not set any timeout.
-	monitoringServer *http.Server
-	profilingServer  *http.Server
-
-	// LameDuck mode
-	ldm   bool
-	ldmCh chan bool
-
-	// Trusted public operator keys.
-	trustedKeys []string
-	// map of trusted keys to operator setting StrictSigningKeyUsage
-	strictSigningKeyUsage map[string]struct{}
-
-	// We use this to minimize mem copies for requests to monitoring
-	// endpoint /varz (when it comes from http).
-	varzMu sync.Mutex
-	varz   *Varz
-	// This is set during a config reload if we detect that we have
-	// added/removed routes. The monitoring code then check that
-	// to know if it should update the cluster's URLs array.
+	leafNodeInfoJSON  []byte
+	leafRemoteCfgs    []*leafNodeCfg
+	proxiesKeyPairs   []nkeys.KeyPair
+	mqtt              srvMQTT
+	websocket         srvWebsocket
+	leafNodeInfo      Info
+	routeInfo         Info
+	info              Info
+	stats
+	scStats
+	staleStats
+	grWG                sync.WaitGroup
+	gcbOut              int64
+	totalClients        uint64
+	cproto              int64
+	gcid                uint64
+	routesPoolSize      int
+	routesNoPool        int
+	gcbOutMax           int64
+	pinnedAccFail       uint64
+	mu                  sync.RWMutex
+	cnMu                sync.RWMutex
+	gcbMu               sync.RWMutex
+	rnMu                sync.RWMutex
+	optsMu              sync.RWMutex
+	reloadMu            sync.RWMutex
+	grMu                sync.Mutex
+	varzMu              sync.Mutex
+	rerrMu              sync.Mutex
+	activeAccounts      int32
+	running             atomic.Bool
+	shutdown            atomic.Bool
+	isMetaLeader        atomic.Bool
+	jsClustered         atomic.Bool
+	accountNRGAllowed   atomic.Bool
+	grRunning           bool
+	ocspPeerVerify      bool
+	routesReject        bool
 	varzUpdateRouteURLs bool
-
-	// Keeps a sublist of of subscriptions attached to leafnode connections
-	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
-	// gateway reply.
-	gwLeafSubs *Sublist
-
-	// Used for expiration of mapped GW replies
-	gwrm struct {
-		w  int32
-		ch chan time.Duration
-		m  sync.Map
-	}
-
-	// For eventIDs
-	eventIds *nuid.NUID
-
-	// Websocket structure
-	websocket srvWebsocket
-
-	// MQTT structure
-	mqtt srvMQTT
-
-	// OCSP monitoring
-	ocsps []*OCSPMonitor
-
-	// OCSP peer verification (at least one TLS block)
-	ocspPeerVerify bool
-
-	// OCSP response cache
-	ocsprc OCSPResponseCache
-
-	// exporting account name the importer experienced issues with
-	incompleteAccExporterMap sync.Map
-
-	// Holds cluster name under different lock for mapping
-	cnMu sync.RWMutex
-	cn   string
-
-	// For registering raft nodes with the server.
-	rnMu      sync.RWMutex
-	raftNodes map[string]RaftNode
-
-	// For mapping from a raft node name back to a server name and cluster. Node has to be in the same domain.
-	nodeToInfo sync.Map
-
-	// For out of resources to not log errors too fast.
-	rerrMu   sync.Mutex
-	rerrLast time.Time
-
-	connRateCounter *rateCounter
-
-	// If there is a system account configured, to still support the $G account,
-	// the server will create a fake user and add it to the list of users.
-	// Keep track of what that user name is for config reload purposes.
-	sysAccOnlyNoAuthUser string
-
-	// IPQueues map
-	ipQueues sync.Map
-
-	// To limit logging frequency
-	rateLimitLogging   sync.Map
-	rateLimitLoggingCh chan time.Duration
-
-	// Total outstanding catchup bytes in flight.
-	gcbMu     sync.RWMutex
-	gcbOut    int64
-	gcbOutMax int64 // Taken from JetStreamMaxCatchup or defaultMaxTotalCatchupOutBytes
-	// A global chanel to kick out stalled catchup sequences.
-	gcbKick chan struct{}
-
-	// Total outbound syncRequests
-	syncOutSem chan struct{}
-
-	// Queue to process JS API requests that come from routes (or gateways)
-	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
-
-	// Delayed API responses.
-	delayedAPIResponses *ipQueue[*delayedAPIResponse]
-
-	// Whether moving NRG traffic into accounts is permitted on this server.
-	// Controls whether or not the account NRG capability is set in statsz.
-	// Currently used by unit tests to simulate nodes not supporting account NRG.
-	accountNRGAllowed atomic.Bool
-
-	// List of proxies trusted keys in `KeyPair` form so we can do signature
-	// verification when processing incoming proxy connections.
-	proxiesKeyPairs []nkeys.KeyPair
-	proxiedConns    map[string]map[uint64]*client
+	leafNodeEnabled     bool
+	ldm                 bool
+	leafDisableConnect  bool
+	leafNoCluster       bool
 }
 
 // For tracking JS nodes.
 type nodeInfo struct {
+	cfg             *JetStreamConfig
+	stats           *JetStreamStats
 	name            string
 	version         string
 	cluster         string
 	domain          string
 	id              string
 	tags            jwt.TagList
-	cfg             *JetStreamConfig
-	stats           *JetStreamStats
 	offline         bool
 	js              bool
 	binarySnapshots bool
@@ -3958,8 +3872,8 @@ func (s *Server) readyForConnections(d time.Duration) error {
 	opts := s.getOpts()
 
 	type info struct {
-		ok  bool
 		err error
+		ok  bool
 	}
 	chk := make(map[string]info)
 

@@ -132,56 +132,33 @@ func GatewayDoNotForceInterestOnlyMode(doNotForce bool) {
 }
 
 type srvGateway struct {
-	totalQSubs int64 //total number of queue subs in all remote gateways (used with atomic operations)
-	sync.RWMutex
-	enabled  bool                   // Immutable, true if both a name and port are configured
-	name     string                 // Name of the Gateway on this server
-	out      map[string]*client     // outbound gateways
-	outo     []*client              // outbound gateways maintained in an order suitable for sending msgs (currently based on RTT)
-	in       map[uint64]*client     // inbound gateways
-	remotes  map[string]*gatewayCfg // Config of remote gateways
-	URLs     refCountedUrlSet       // Set of all Gateway URLs in the cluster
-	URL      string                 // This server gateway URL (after possible random port is resolved)
-	info     *Info                  // Gateway Info protocol
-	infoJSON []byte                 // Marshal'ed Info protocol
-	runknown bool                   // Rejects unknown (not configured) gateway connections
-	replyPfx []byte                 // Will be "$GNR.<1:reserved>.<8:cluster hash>.<8:server hash>."
-
-	// For backward compatibility
-	oldReplyPfx []byte
-	oldHash     []byte
-
-	// We maintain the interest of subjects and queues per account.
-	// For a given account, entries in the map could be something like this:
-	// foo.bar {n: 3} 			// 3 subs on foo.bar
-	// foo.>   {n: 6}			// 6 subs on foo.>
-	// foo bar {n: 1, q: true}  // 1 qsub on foo, queue bar
-	// foo baz {n: 3, q: true}  // 3 qsubs on foo, queue baz
 	pasi struct {
-		// Protect map since accessed from different go-routine and avoid
-		// possible race resulting in RS+ being sent before RS- resulting
-		// in incorrect interest suppression.
-		// Will use while sending QSubs (on GW connection accept) and when
-		// switching to the send-all-subs mode.
-		sync.Mutex
 		m map[string]map[string]*sitally
+		sync.Mutex
 	}
-
-	// This is to track recent subscriptions for a given account
-	rsubs sync.Map
-
-	resolver  netResolver   // Used to resolve host name before calling net.Dial()
-	sqbsz     int           // Max buffer size to send queue subs protocol. Used for testing.
-	recSubExp time.Duration // For how long do we check if there is a subscription match for a message with reply
-
-	// These are used for routing of mapped replies.
-	sIDHash        []byte   // Server ID hash (6 bytes)
-	routesIDByHash sync.Map // Route's server ID is hashed (6 bytes) and stored in this map.
-
-	// If a server has its own configuration in the "Gateways" remotes configuration
-	// we will keep track of the URLs that are defined in the config so they can
-	// be reported in monitoring.
-	ownCfgURLs []string
+	resolver       netResolver
+	in             map[uint64]*client
+	out            map[string]*client
+	remotes        map[string]*gatewayCfg
+	URLs           refCountedUrlSet
+	info           *Info
+	routesIDByHash sync.Map
+	rsubs          sync.Map
+	name           string
+	URL            string
+	replyPfx       []byte
+	oldReplyPfx    []byte
+	infoJSON       []byte
+	oldHash        []byte
+	sIDHash        []byte
+	outo           []*client
+	ownCfgURLs     []string
+	totalQSubs     int64
+	sqbsz          int
+	recSubExp      time.Duration
+	sync.RWMutex
+	runknown bool
+	enabled  bool
 }
 
 // Subject interest tally. Also indicates if the key in the map is a
@@ -192,57 +169,38 @@ type sitally struct {
 }
 
 type gatewayCfg struct {
-	sync.RWMutex
 	*RemoteGatewayOpts
-	hash           []byte
-	oldHash        []byte
-	urls           map[string]*url.URL
-	connAttempts   int
-	tlsName        string
+	urls         map[string]*url.URL
+	tlsName      string
+	hash         []byte
+	oldHash      []byte
+	connAttempts int
+	sync.RWMutex
 	implicit       bool
-	varzUpdateURLs bool // Tells monitoring code to update URLs when varz is inspected.
+	varzUpdateURLs bool
 }
 
 // Struct for client's gateway related fields
 type gateway struct {
-	name       string
-	cfg        *gatewayCfg
-	connectURL *url.URL          // Needed when sending CONNECT after receiving INFO from remote
-	outsim     *sync.Map         // Per-account subject interest (or no-interest) (outbound conn)
-	insim      map[string]*insie // Per-account subject no-interest sent or modeInterestOnly mode (inbound conn)
-
-	// This is an outbound GW connection
-	outbound bool
-	// Set/check in readLoop without lock. This is to know that an inbound has sent the CONNECT protocol first
-	connected bool
-	// Set to true if outbound is to a server that only knows about $GR, not $GNR
-	useOldPrefix bool
-	// If true, it indicates that the inbound side will switch any account to
-	// interest-only mode "immediately", so the outbound should disregard
-	// the optimistic mode when checking for interest.
+	cfg              *gatewayCfg
+	connectURL       *url.URL
+	outsim           *sync.Map
+	insim            map[string]*insie
+	name             string
+	remoteName       string
+	outbound         bool
+	connected        bool
+	useOldPrefix     bool
 	interestOnlyMode bool
-	// Name of the remote server
-	remoteName string
 }
 
 // Outbound subject interest entry.
 type outsie struct {
-	sync.RWMutex
-	// Indicate that all subs should be stored. This is
-	// set to true when receiving the command from the
-	// remote that we are about to receive all its subs.
-	mode GatewayInterestMode
-	// If not nil, used for no-interest for plain subs.
-	// If a subject is present in this map, it means that
-	// the remote is not interested in that subject.
-	// When we have received the command that says that
-	// the remote has sent all its subs, this is set to nil.
-	ni map[string]struct{}
-	// Contains queue subscriptions when in optimistic mode,
-	// and all subs when pk is > 0.
-	sl *Sublist
-	// Number of queue subs
+	ni    map[string]struct{}
+	sl    *Sublist
 	qsubs int
+	sync.RWMutex
+	mode GatewayInterestMode
 }
 
 // Inbound subject interest entry.
@@ -264,13 +222,8 @@ type gwReplyMap struct {
 }
 
 type gwReplyMapping struct {
-	// Indicate if we should check the map or not. Since checking the map is done
-	// when processing inbound messages and requires the lock we want to
-	// check only when needed. This is set/get using atomic, so needs to
-	// be memory aligned.
-	check int32
-	// To keep track of gateway replies mapping
 	mapping map[string]*gwReplyMap
+	check   int32
 }
 
 // Returns the corresponding gw routed subject, and `true` to indicate that a
