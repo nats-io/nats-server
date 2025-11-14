@@ -35,11 +35,11 @@ type MsgScheduling struct {
 	run       func()
 	ttls      *thw.HashWheel
 	timer     *time.Timer
-	running   bool
-	deadline  int64
 	schedules map[string]*MsgSchedule
 	seqToSubj map[uint64]string
 	inflight  map[string]struct{}
+	deadline  int64
+	running   bool
 }
 
 type MsgSchedule struct {

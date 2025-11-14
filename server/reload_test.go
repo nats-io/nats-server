@@ -3491,11 +3491,11 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 	var err error
 
 	for _, test := range []struct {
+		val      func() bool
 		name     string
 		content  string
 		cmdLine  []string
 		expected bool
-		val      func() bool
 	}{
 		// Logtime
 		{

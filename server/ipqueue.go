@@ -23,23 +23,23 @@ const ipQueueDefaultMaxRecycleSize = 4 * 1024
 
 // This is a generic intra-process queue.
 type ipQueue[T any] struct {
-	inprogress int64
-	sync.Mutex
 	ch   chan struct{}
-	elts []T
-	pos  int
 	pool *sync.Pool
-	sz   uint64 // Calculated size (only if calc != nil)
-	name string
 	m    *sync.Map
+	name string
 	ipQueueOpts[T]
+	elts       []T
+	inprogress int64
+	pos        int
+	sz         uint64
+	sync.Mutex
 }
 
 type ipQueueOpts[T any] struct {
-	mrs  int              // Max recycle size
-	calc func(e T) uint64 // Calc function for tracking size
-	msz  uint64           // Limit by total calculated size
-	mlen int              // Limit by number of entries
+	calc func(e T) uint64
+	mrs  int
+	msz  uint64
+	mlen int
 }
 
 type ipQueueOpt[T any] func(*ipQueueOpts[T])

@@ -65,17 +65,17 @@ type SublistResult struct {
 
 // A Sublist stores and efficiently retrieves subscriptions.
 type Sublist struct {
-	sync.RWMutex
+	root      *level
+	cache     map[string]*SublistResult
+	notify    *notifyMaps
 	genid     uint64
 	matches   uint64
 	cacheHits uint64
 	inserts   uint64
 	removes   uint64
-	root      *level
-	cache     map[string]*SublistResult
-	ccSweep   int32
-	notify    *notifyMaps
-	count     uint32
+	sync.RWMutex
+	ccSweep int32
+	count   uint32
 }
 
 // notifyMaps holds maps of arrays of channels for notifications

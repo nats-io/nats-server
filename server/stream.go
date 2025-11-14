@@ -49,80 +49,43 @@ type StreamConfigRequest struct {
 // StreamConfig will determine the name, subjects and retention policy
 // for a given stream. If subjects is empty the name will be used.
 type StreamConfig struct {
-	Name         string           `json:"name"`
-	Description  string           `json:"description,omitempty"`
-	Subjects     []string         `json:"subjects,omitempty"`
-	Retention    RetentionPolicy  `json:"retention"`
-	MaxConsumers int              `json:"max_consumers,omitempty"`
-	MaxMsgs      int64            `json:"max_msgs,omitempty"`
-	MaxBytes     int64            `json:"max_bytes,omitempty"`
-	MaxAge       time.Duration    `json:"max_age,omitempty"`
-	MaxMsgsPer   int64            `json:"max_msgs_per_subject,omitempty"`
-	MaxMsgSize   int32            `json:"max_msg_size,omitempty"`
-	Discard      DiscardPolicy    `json:"discard"`
-	Storage      StorageType      `json:"storage"`
-	Replicas     int              `json:"num_replicas"`
-	NoAck        bool             `json:"no_ack,omitempty"`
-	Duplicates   time.Duration    `json:"duplicate_window,omitempty"`
-	Placement    *Placement       `json:"placement,omitempty"`
-	Mirror       *StreamSource    `json:"mirror,omitempty"`
-	Sources      []*StreamSource  `json:"sources,omitempty"`
-	Compression  StoreCompression `json:"compression,omitempty"`
-	FirstSeq     uint64           `json:"first_seq,omitempty"`
-
-	// Allow applying a subject transform to incoming messages before doing anything else
-	SubjectTransform *SubjectTransformConfig `json:"subject_transform,omitempty"`
-
-	// Allow republish of the message after being sequenced and stored.
-	RePublish *RePublish `json:"republish,omitempty"`
-
-	// Allow higher performance, direct access to get individual messages. E.g. KeyValue
-	AllowDirect bool `json:"allow_direct,omitempty"`
-	// Allow higher performance and unified direct access for mirrors as well.
-	MirrorDirect bool `json:"mirror_direct,omitempty"`
-
-	// Allow KV like semantics to also discard new on a per subject basis
-	DiscardNewPer bool `json:"discard_new_per_subject,omitempty"`
-
-	// Optional qualifiers. These can not be modified after set to true.
-
-	// Sealed will seal a stream so no messages can get out or in.
-	Sealed bool `json:"sealed,omitempty"`
-	// DenyDelete will restrict the ability to delete messages.
-	DenyDelete bool `json:"deny_delete,omitempty"`
-	// DenyPurge will restrict the ability to purge messages.
-	DenyPurge bool `json:"deny_purge,omitempty"`
-	// AllowRollup allows messages to be placed into the system and purge
-	// all older messages using a special msg header.
-	AllowRollup bool `json:"allow_rollup_hdrs,omitempty"`
-
-	// The following defaults will apply to consumers when created against
-	// this stream, unless overridden manually.
-	// TODO(nat): Can/should we name these better?
-	ConsumerLimits StreamConsumerLimits `json:"consumer_limits,omitempty"`
-
-	// AllowMsgTTL allows header initiated per-message TTLs. If disabled,
-	// then the `NATS-TTL` header will be ignored.
-	AllowMsgTTL bool `json:"allow_msg_ttl,omitempty"`
-
-	// SubjectDeleteMarkerTTL sets the TTL of delete marker messages left behind by
-	// subject delete markers.
-	SubjectDeleteMarkerTTL time.Duration `json:"subject_delete_marker_ttl,omitempty"`
-
-	// AllowMsgCounter allows a stream to use (only) counter CRDTs.
-	AllowMsgCounter bool `json:"allow_msg_counter,omitempty"`
-
-	// AllowAtomicPublish allows atomic batch publishing into the stream.
-	AllowAtomicPublish bool `json:"allow_atomic,omitempty"`
-
-	// AllowMsgSchedules allows the scheduling of messages.
-	AllowMsgSchedules bool `json:"allow_msg_schedules,omitempty"`
-
-	// PersistMode allows to opt-in to different persistence mode settings.
-	PersistMode PersistModeType `json:"persist_mode,omitempty"`
-
-	// Metadata is additional metadata for the Stream.
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Metadata               map[string]string       `json:"metadata,omitempty"`
+	RePublish              *RePublish              `json:"republish,omitempty"`
+	SubjectTransform       *SubjectTransformConfig `json:"subject_transform,omitempty"`
+	Mirror                 *StreamSource           `json:"mirror,omitempty"`
+	Placement              *Placement              `json:"placement,omitempty"`
+	Description            string                  `json:"description,omitempty"`
+	Name                   string                  `json:"name"`
+	Subjects               []string                `json:"subjects,omitempty"`
+	Sources                []*StreamSource         `json:"sources,omitempty"`
+	ConsumerLimits         StreamConsumerLimits    `json:"consumer_limits,omitempty"`
+	MaxBytes               int64                   `json:"max_bytes,omitempty"`
+	MaxAge                 time.Duration           `json:"max_age,omitempty"`
+	Replicas               int                     `json:"num_replicas"`
+	Discard                DiscardPolicy           `json:"discard"`
+	Duplicates             time.Duration           `json:"duplicate_window,omitempty"`
+	SubjectDeleteMarkerTTL time.Duration           `json:"subject_delete_marker_ttl,omitempty"`
+	MaxMsgsPer             int64                   `json:"max_msgs_per_subject,omitempty"`
+	Storage                StorageType             `json:"storage"`
+	MaxMsgs                int64                   `json:"max_msgs,omitempty"`
+	FirstSeq               uint64                  `json:"first_seq,omitempty"`
+	MaxConsumers           int                     `json:"max_consumers,omitempty"`
+	Retention              RetentionPolicy         `json:"retention"`
+	PersistMode            PersistModeType         `json:"persist_mode,omitempty"`
+	MaxMsgSize             int32                   `json:"max_msg_size,omitempty"`
+	Compression            StoreCompression        `json:"compression,omitempty"`
+	Sealed                 bool                    `json:"sealed,omitempty"`
+	DenyDelete             bool                    `json:"deny_delete,omitempty"`
+	DenyPurge              bool                    `json:"deny_purge,omitempty"`
+	AllowRollup            bool                    `json:"allow_rollup_hdrs,omitempty"`
+	DiscardNewPer          bool                    `json:"discard_new_per_subject,omitempty"`
+	AllowMsgTTL            bool                    `json:"allow_msg_ttl,omitempty"`
+	MirrorDirect           bool                    `json:"mirror_direct,omitempty"`
+	AllowMsgCounter        bool                    `json:"allow_msg_counter,omitempty"`
+	AllowAtomicPublish     bool                    `json:"allow_atomic,omitempty"`
+	AllowMsgSchedules      bool                    `json:"allow_msg_schedules,omitempty"`
+	AllowDirect            bool                    `json:"allow_direct,omitempty"`
+	NoAck                  bool                    `json:"no_ack,omitempty"`
 }
 
 // clone performs a deep copy of the StreamConfig struct, returning a new clone with
@@ -255,12 +218,12 @@ func (r *JSPubAckResponse) ToError() error {
 // e.g. +OK {"stream": "Orders", "seq": 22}
 type PubAck struct {
 	Stream    string `json:"stream"`
-	Sequence  uint64 `json:"seq"`
 	Domain    string `json:"domain,omitempty"`
-	Duplicate bool   `json:"duplicate,omitempty"`
 	Value     string `json:"val,omitempty"`
 	BatchId   string `json:"batch,omitempty"`
+	Sequence  uint64 `json:"seq"`
 	BatchSize int    `json:"count,omitempty"`
+	Duplicate bool   `json:"duplicate,omitempty"`
 }
 
 // CounterValue is the body of a message when used as a counter.
@@ -277,14 +240,13 @@ type CounterSources map[string]map[string]string
 type StreamInfo struct {
 	Config     StreamConfig        `json:"config"`
 	Created    time.Time           `json:"created"`
-	State      StreamState         `json:"state"`
-	Domain     string              `json:"domain,omitempty"`
+	TimeStamp  time.Time           `json:"ts"`
 	Cluster    *ClusterInfo        `json:"cluster,omitempty"`
 	Mirror     *StreamSourceInfo   `json:"mirror,omitempty"`
+	State      StreamState         `json:"state"`
+	Domain     string              `json:"domain,omitempty"`
 	Sources    []*StreamSourceInfo `json:"sources,omitempty"`
 	Alternates []StreamAlternate   `json:"alternates,omitempty"`
-	// TimeStamp indicates when the info was gathered
-	TimeStamp time.Time `json:"ts"`
 }
 
 // streamInfoClusterResponse is a response used in a cluster to communicate the stream info
@@ -303,50 +265,47 @@ type StreamAlternate struct {
 // ClusterInfo shows information about the underlying set of servers
 // that make up the stream or consumer.
 type ClusterInfo struct {
+	LeaderSince *time.Time  `json:"leader_since,omitempty"`
 	Name        string      `json:"name,omitempty"`
 	RaftGroup   string      `json:"raft_group,omitempty"`
 	Leader      string      `json:"leader,omitempty"`
-	LeaderSince *time.Time  `json:"leader_since,omitempty"`
-	SystemAcc   bool        `json:"system_account,omitempty"`
 	TrafficAcc  string      `json:"traffic_account,omitempty"`
 	Replicas    []*PeerInfo `json:"replicas,omitempty"`
+	SystemAcc   bool        `json:"system_account,omitempty"`
 }
 
 // PeerInfo shows information about all the peers in the cluster that
 // are supporting the stream or consumer.
 type PeerInfo struct {
-	Name    string        `json:"name"`              // Name is the unique name for the peer
-	Current bool          `json:"current"`           // Current indicates if it was seen recently and fully caught up
-	Offline bool          `json:"offline,omitempty"` // Offline indicates if it has not been seen recently
-	Active  time.Duration `json:"active"`            // Active is the timestamp it was last active
-	Lag     uint64        `json:"lag,omitempty"`     // Lag is how many operations behind it is
-	Peer    string        `json:"peer"`              // Peer is the unique ID for the peer
-	// For migrations.
+	Name    string `json:"name"`
+	Peer    string `json:"peer"`
 	cluster string
+	Active  time.Duration `json:"active"`
+	Lag     uint64        `json:"lag,omitempty"`
+	Current bool          `json:"current"`
+	Offline bool          `json:"offline,omitempty"`
 }
 
 // StreamSourceInfo shows information about an upstream stream source.
 type StreamSourceInfo struct {
-	Name              string                   `json:"name"`
 	External          *ExternalStream          `json:"external,omitempty"`
-	Lag               uint64                   `json:"lag"`
-	Active            time.Duration            `json:"active"`
 	Error             *ApiError                `json:"error,omitempty"`
+	Name              string                   `json:"name"`
 	FilterSubject     string                   `json:"filter_subject,omitempty"`
 	SubjectTransforms []SubjectTransformConfig `json:"subject_transforms,omitempty"`
+	Lag               uint64                   `json:"lag"`
+	Active            time.Duration            `json:"active"`
 }
 
 // StreamSource dictates how streams can source from other streams.
 type StreamSource struct {
-	Name              string                   `json:"name"`
-	OptStartSeq       uint64                   `json:"opt_start_seq,omitempty"`
-	OptStartTime      *time.Time               `json:"opt_start_time,omitempty"`
-	FilterSubject     string                   `json:"filter_subject,omitempty"`
+	OptStartTime      *time.Time      `json:"opt_start_time,omitempty"`
+	External          *ExternalStream `json:"external,omitempty"`
+	Name              string          `json:"name"`
+	FilterSubject     string          `json:"filter_subject,omitempty"`
+	iname             string
 	SubjectTransforms []SubjectTransformConfig `json:"subject_transforms,omitempty"`
-	External          *ExternalStream          `json:"external,omitempty"`
-
-	// Internal
-	iname string // For indexing when stream names are the same for multiple sources.
+	OptStartSeq       uint64                   `json:"opt_start_seq,omitempty"`
 }
 
 // ExternalStream allows you to qualify access to a stream source in another account or domain.
@@ -387,112 +346,78 @@ var (
 // Stream is a jetstream stream of messages. When we receive a message internally destined
 // for a Stream we will direct link from the client to this structure.
 type stream struct {
-	mu     sync.RWMutex // Read/write lock for the stream.
-	js     *jetStream   // The internal *jetStream for the account.
-	jsa    *jsAccount   // The JetStream account-level information.
-	acc    *Account     // The account this stream is defined in.
-	srv    *Server      // The server we are running in.
-	client *client      // The internal JetStream client.
-	sysc   *client      // The internal JetStream system client.
-
-	// The current last subscription ID for the subscriptions through `client`.
-	// Those subscriptions are for the subjects filters being listened to and captured by the stream.
-	sid atomic.Uint64
-
-	pubAck    []byte                  // The template (prefix) to generate the pubAck responses for this stream quickly.
-	outq      *jsOutQ                 // Queue of *jsPubMsg for sending messages.
-	msgs      *ipQueue[*inMsg]        // Intra-process queue for the ingress of messages.
-	gets      *ipQueue[*directGetReq] // Intra-process queue for the direct get requests.
-	store     StreamStore             // The storage for this stream.
-	ackq      *ipQueue[uint64]        // Intra-process queue for acks.
-	lseq      uint64                  // The sequence number of the last message stored in the stream.
-	lmsgId    string                  // The de-duplication message ID of the last message stored in the stream.
-	consumers map[string]*consumer    // The consumers for this stream.
-	numFilter int                     // The number of filtered consumers.
-	cfg       StreamConfig            // The stream's config.
-	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
-	created   time.Time               // Time the stream was created.
-	stype     StorageType             // The storage type.
-	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
-	ddMu      sync.Mutex              // Lock for dedupe state.
-	ddmap     map[string]*ddentry     // The dedupe map.
-	ddarr     []*ddentry              // The dedupe array.
-	ddindex   int                     // The dedupe index.
-	ddtmr     *time.Timer             // The dedupe timer.
-	qch       chan struct{}           // The quit channel.
-	mqch      chan struct{}           // The monitor's quit channel.
-	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
-	// and/or mirror/sources consumers are scheduled to be established or already started.
-	closed atomic.Bool // Set to true when stop() is called on the stream.
-
-	// Mirror
-	mirror *sourceInfo
-
-	// Sources
-	sources              map[string]*sourceInfo
-	sourceSetupSchedules map[string]*time.Timer
-	sourcesConsumerSetup *time.Timer
-	smsgs                *ipQueue[*inMsg] // Intra-process queue for all incoming sourced messages.
-
-	// Indicates we have direct consumers.
-	directs int
-
-	// For input subject transform.
-	itr *subjectTransform
-
-	// For republishing.
-	tr *subjectTransform
-
-	// For processing consumers without main stream lock.
-	clsMu sync.RWMutex
-	cList []*consumer                    // Consumer list.
-	sch   chan struct{}                  // Channel to signal consumers.
-	sigq  *ipQueue[*cMsg]                // Intra-process queue for the messages to signal to the consumers.
-	csl   *gsl.GenericSublist[*consumer] // Consumer subscription list.
-
-	// Leader will store seq/msgTrace in clustering mode. Used in applyStreamEntries
-	// to know if trace event should be sent after processing.
-	mt map[uint64]*msgTrace
-
-	// For non limits policy streams when they process an ack before the actual msg.
-	// Can happen in stretch clusters, multi-cloud, or during catchup for a restarted server.
-	preAcks map[uint64]map[*consumer]struct{}
-
-	// TODO(dlc) - Hide everything below behind two pointers.
-	// Clustered mode.
-	sa        *streamAssignment // What the meta controller uses to assign streams to peers.
-	node      RaftNode          // Our RAFT node for the stream's group.
-	catchup   atomic.Bool       // Used to signal we are in catchup mode.
-	catchups  map[string]uint64 // The number of messages that need to be caught per peer.
-	syncSub   *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
-	infoSub   *subscription     // Internal subscription for stream info requests.
-	clMu      sync.Mutex        // The mutex for clseq and clfs.
-	clseq     uint64            // The current last seq being proposed to the NRG layer.
-	clfs      uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
-	uch       chan struct{}     // The channel to signal updates to the monitor routine.
-	inMonitor bool              // True if the monitor routine has been started.
-
-	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
-	clusteredCounterTotal       map[string]*msgCounterRunningTotal      // Inflight counter totals.
-	expectedPerSubjectSequence  map[uint64]string                       // Inflight 'expected per subject' subjects per clseq.
-	expectedPerSubjectInProcess map[string]struct{}                     // Current 'expected per subject' subjects in process.
-
-	// Direct get subscription.
-	directLeaderSub *subscription
-	directSub       *subscription
-	lastBySub       *subscription
-	mirrorDirectSub *subscription // Mirrors only.
-	mirrorLastBySub *subscription // Mirrors only.
-
-	monitorWg sync.WaitGroup // Wait group for the monitor routine.
-
-	// If standalone/single-server, the offline reason needs to be stored directly in the stream.
-	// Otherwise, if clustered it will be part of the stream assignment.
-	offlineReason string
-
-	batches    *batching   // Inflight batches prior to committing them.
-	batchApply *batchApply // State to check for batch completeness before applying it.
+	cfg                         StreamConfig
+	lqsent                      time.Time
+	created                     time.Time
+	store                       StreamStore
+	node                        RaftNode
+	ddtmr                       *time.Timer
+	sa                          *streamAssignment
+	batchApply                  *batchApply
+	uch                         chan struct{}
+	outq                        *jsOutQ
+	msgs                        *ipQueue[*inMsg]
+	gets                        *ipQueue[*directGetReq]
+	client                      *client
+	ackq                        *ipQueue[uint64]
+	batches                     *batching
+	inflight                    map[string]*inflightSubjectRunningTotal
+	consumers                   map[string]*consumer
+	infoSub                     *subscription
+	srv                         *Server
+	syncSub                     *subscription
+	acc                         *Account
+	mirrorLastBySub             *subscription
+	catchups                    map[string]uint64
+	mirrorDirectSub             *subscription
+	ddmap                       map[string]*ddentry
+	clusteredCounterTotal       map[string]*msgCounterRunningTotal
+	lastBySub                   *subscription
+	jsa                         *jsAccount
+	qch                         chan struct{}
+	sysc                        *client
+	mqch                        chan struct{}
+	directLeaderSub             *subscription
+	mirror                      *sourceInfo
+	sources                     map[string]*sourceInfo
+	sourceSetupSchedules        map[string]*time.Timer
+	sourcesConsumerSetup        *time.Timer
+	smsgs                       *ipQueue[*inMsg]
+	expectedPerSubjectInProcess map[string]struct{}
+	itr                         *subjectTransform
+	tr                          *subjectTransform
+	expectedPerSubjectSequence  map[uint64]string
+	js                          *jetStream
+	sch                         chan struct{}
+	sigq                        *ipQueue[*cMsg]
+	csl                         *gsl.GenericSublist[*consumer]
+	mt                          map[uint64]*msgTrace
+	preAcks                     map[uint64]map[*consumer]struct{}
+	directSub                   *subscription
+	tier                        string
+	offlineReason               string
+	lmsgId                      string
+	cList                       []*consumer
+	ddarr                       []*ddentry
+	pubAck                      []byte
+	monitorWg                   sync.WaitGroup
+	numFilter                   int
+	clseq                       uint64
+	sid                         atomic.Uint64
+	clfs                        uint64
+	directs                     int
+	lseq                        uint64
+	ddindex                     int
+	stype                       StorageType
+	cfgMu                       sync.RWMutex
+	clsMu                       sync.RWMutex
+	mu                          sync.RWMutex
+	clMu                        sync.Mutex
+	ddMu                        sync.Mutex
+	catchup                     atomic.Bool
+	closed                      atomic.Bool
+	active                      bool
+	inMonitor                   bool
 }
 
 // inflightSubjectRunningTotal stores a running total of inflight messages for a specific subject.
@@ -510,25 +435,24 @@ type msgCounterRunningTotal struct {
 }
 
 type sourceInfo struct {
-	name  string        // The name of the stream being sourced.
-	iname string        // The unique index name of this particular source.
-	cname string        // The name of the current consumer for this source.
-	sub   *subscription // The subscription to the consumer.
-
-	msgs  *ipQueue[*inMsg]    // Intra-process queue for incoming messages.
-	sseq  uint64              // Last stream message sequence number seen from the source.
-	dseq  uint64              // Last delivery (i.e. consumer's) sequence number.
-	lag   uint64              // 0 or number of messages pending (as last reported by the consumer) - 1.
-	err   *ApiError           // The API error that caused the last consumer setup to fail.
-	fails int                 // The number of times trying to setup the consumer failed.
-	last  atomic.Int64        // Time the consumer was created or of last message it received.
-	lreq  time.Time           // The last time setupMirrorConsumer/setupSourceConsumer was called.
-	qch   chan struct{}       // Quit channel.
-	sip   bool                // Setup in progress.
-	wg    sync.WaitGroup      // WaitGroup for the consumer's go routine.
-	sf    string              // The subject filter.
-	sfs   []string            // The subject filters.
-	trs   []*subjectTransform // The subject transforms.
+	lreq  time.Time
+	err   *ApiError
+	qch   chan struct{}
+	sub   *subscription
+	msgs  *ipQueue[*inMsg]
+	iname string
+	name  string
+	cname string
+	sf    string
+	trs   []*subjectTransform
+	sfs   []string
+	wg    sync.WaitGroup
+	dseq  uint64
+	fails int
+	last  atomic.Int64
+	lag   uint64
+	sseq  uint64
+	sip   bool
 }
 
 // For mirrors and direct get
@@ -4872,13 +4796,13 @@ func (mset *stream) isClustered() bool {
 
 // Used if we have to queue things internally to avoid the route/gw path.
 type inMsg struct {
+	si   *sourceInfo
+	mt   *msgTrace
 	subj string
 	rply string
 	hdr  []byte
 	msg  []byte
-	si   *sourceInfo
-	mt   *msgTrace
-	seq  uint64 // seq that can be optionally used for sorting out-of-band.
+	seq  uint64
 }
 
 var inMsgPool = sync.Pool{
@@ -6593,8 +6517,8 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 
 // Used to signal inbound message to registered consumers.
 type cMsg struct {
-	seq  uint64
 	subj string
+	seq  uint64
 }
 
 // Pool to recycle consumer bound msgs.
@@ -6663,10 +6587,10 @@ func (mset *stream) signalConsumers(subj string, seq uint64) {
 
 // Internal message for use by jetstream subsystem.
 type jsPubMsg struct {
-	dsubj string // Subject to send to, e.g. _INBOX.xxx
+	o     *consumer
+	dsubj string
 	reply string
 	StoreMsg
-	o *consumer
 }
 
 var jsPubMsgPool sync.Pool
@@ -6749,11 +6673,11 @@ func (q *jsOutQ) unregister() {
 
 // StoredMsg is for raw access to messages in a stream.
 type StoredMsg struct {
+	Time     time.Time `json:"time"`
 	Subject  string    `json:"subject"`
-	Sequence uint64    `json:"seq"`
 	Header   []byte    `json:"hdrs,omitempty"`
 	Data     []byte    `json:"data,omitempty"`
-	Time     time.Time `json:"time"`
+	Sequence uint64    `json:"seq"`
 }
 
 // This is similar to system semantics but did not want to overload the single system sendq,

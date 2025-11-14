@@ -1064,14 +1064,14 @@ func TestSubjectTreeLazyIntersectComprehensive(t *testing.T) {
 	st2.Insert(b("only.in.st2"), "two")
 
 	results := make(map[string]struct {
-		v1 int
 		v2 string
+		v1 int
 	})
 
 	LazyIntersect(st1, st2, func(key []byte, v1 *int, v2 *string) {
 		results[string(key)] = struct {
-			v1 int
 			v2 string
+			v1 int
 		}{v1: *v1, v2: *v2}
 	})
 

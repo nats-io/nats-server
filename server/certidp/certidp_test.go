@@ -19,8 +19,8 @@ import "testing"
 func TestGetStatusAssertionStr(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    int
 		expected string
+		input    int
 	}{
 		{
 			name:     "GoodStatus",

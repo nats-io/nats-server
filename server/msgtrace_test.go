@@ -79,9 +79,9 @@ func TestMsgTraceConnName(t *testing.T) {
 
 func TestMsgTraceGenHeaderMap(t *testing.T) {
 	for _, test := range []struct {
+		expected map[string][]string
 		name     string
 		header   []byte
-		expected map[string][]string
 		external bool
 	}{
 		{name: "missing header line", header: []byte("Nats-Trace-Dest: val\r\n"), expected: nil, external: false},
@@ -4506,8 +4506,8 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 
 	var msgCount int
 	for _, test := range []struct {
-		name           string
 		setHeaders     func(h nats.Header)
+		name           string
 		traceTriggered bool
 		traceOnly      bool
 		expectedAccSub bool

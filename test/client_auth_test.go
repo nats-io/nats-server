@@ -162,8 +162,8 @@ func TestClientConnectInfo(t *testing.T) {
 }
 
 type captureProxiesReloadLogger struct {
-	dummyLogger
 	ch chan string
+	dummyLogger
 }
 
 func (l *captureProxiesReloadLogger) Noticef(format string, args ...any) {
@@ -274,8 +274,8 @@ func TestProxyKeyVerification(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name string
 		kp   nkeys.KeyPair
+		name string
 		bsig bool
 		ok   bool
 	}{

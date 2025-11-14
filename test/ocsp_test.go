@@ -421,12 +421,12 @@ func TestOCSPClient(t *testing.T) {
 	defer ocspr.Shutdown(ctx)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "OCSP Stapling makes server fail to boot if status is unknown",
@@ -2634,12 +2634,12 @@ func TestOCSPCustomConfig(t *testing.T) {
 	)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "OCSP Stapling in auto mode makes server fail to boot if status is revoked",
@@ -3463,13 +3463,13 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 	)
 
 	for _, test := range []struct {
+		err         error
+		rerr        error
+		configure   func()
 		name        string
 		config      string
 		opts        []nats.Option
-		err         error
-		rerr        error
 		serverStart bool
-		configure   func()
 	}{
 		{
 			name: "Correct issuer configured in cert bundle",

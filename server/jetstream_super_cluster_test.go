@@ -804,9 +804,9 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 
 	for i, test := range []struct {
 		placement *nats.Placement
+		cluster   string
 		replicas  int
 		fail      bool
-		cluster   string
 	}{
 		// these pass because replica count is 1
 		{placement: &nats.Placement{Tags: []string{"az:same"}}, replicas: 1, fail: false, cluster: "C1"},
@@ -1602,9 +1602,9 @@ func TestJetStreamSuperClusterEphemeralCleanup(t *testing.T) {
 
 	for _, test := range []struct {
 		name            string
-		sourceInCluster int
 		streamName      string
 		sourceName      string
+		sourceInCluster int
 	}{
 		{name: "local", sourceInCluster: 0, streamName: "TEST1", sourceName: "S1"},
 		{name: "remote", sourceInCluster: 1, streamName: "TEST2", sourceName: "S2"},
@@ -4094,9 +4094,9 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 
 	cases := []struct {
 		name           string
+		serverTag      string
 		storage        nats.StorageType
 		createMaxBytes int64
-		serverTag      string
 		wantErr        bool
 	}{
 		{
@@ -4441,8 +4441,8 @@ func TestJetStreamSuperClusterMixedModeSwitchToInterestOnlyOperatorConfig(t *tes
 }
 
 type captureGWRewriteLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *captureGWRewriteLogger) Tracef(format string, args ...any) {

@@ -1060,8 +1060,8 @@ func TestNRGRemoveLeaderPeerDeadlockBug(t *testing.T) {
 
 func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 	tests := []struct {
-		title  string
 		modify func(rg smGroup)
+		title  string
 	}{
 		{
 			// state equals, only need to remove the entry
@@ -2324,8 +2324,8 @@ func TestNRGRevalidateQuorumAfterLeaderChange(t *testing.T) {
 
 func TestNRGSignalLeadChangeFalseIfCampaignImmediately(t *testing.T) {
 	tests := []struct {
-		title      string
 		switchNode func(n *raft)
+		title      string
 	}{
 		{
 			title: "Follower",

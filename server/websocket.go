@@ -105,40 +105,37 @@ var wsGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 var wsTestRejectNoMasking = false
 
 type websocket struct {
+	compressor     *flate.Writer
+	clientIP       string
+	cookieToken    string
+	cookiePassword string
+	cookieUsername string
+	cookieJwt      string
+	closeMsg       []byte
 	frames         net.Buffers
 	fs             int64
-	closeMsg       []byte
 	compress       bool
-	closeSent      bool
-	browser        bool
-	nocompfrag     bool // No fragment for compressed frames
-	maskread       bool
 	maskwrite      bool
-	compressor     *flate.Writer
-	cookieJwt      string
-	cookieUsername string
-	cookiePassword string
-	cookieToken    string
-	clientIP       string
+	maskread       bool
+	nocompfrag     bool
+	browser        bool
+	closeSent      bool
 }
 
 type srvWebsocket struct {
-	mu             sync.RWMutex
-	server         *http.Server
 	listener       net.Listener
 	listenerErr    error
-	allowedOrigins map[string]*allowedOrigin // host will be the key
-	sameOrigin     bool
-	connectURLs    []string
 	connectURLsMap refCountedUrlSet
-	authOverride   bool   // indicate if there is auth override in websocket config
-	rawHeaders     string // raw headers to be used in the upgrade response.
-
-	// These are immutable and can be accessed without lock.
-	// This is the case when generating the client INFO.
-	tls  bool   // True if TLS is required (TLSConfig is specified).
-	host string // Host/IP the webserver is listening on (shortcut to opts.Websocket.Host).
-	port int    // Port the webserver is listening on. This is after an ephemeral port may have been selected (shortcut to opts.Websocket.Port).
+	server         *http.Server
+	allowedOrigins map[string]*allowedOrigin
+	rawHeaders     string
+	host           string
+	connectURLs    []string
+	port           int
+	mu             sync.RWMutex
+	sameOrigin     bool
+	authOverride   bool
+	tls            bool
 }
 
 type allowedOrigin struct {
@@ -153,15 +150,15 @@ type wsUpgradeResult struct {
 }
 
 type wsReadInfo struct {
+	cbufs [][]byte
 	rem   int
+	coff  int
+	mkey  [4]byte
 	fs    bool
 	ff    bool
 	fc    bool
-	mask  bool // Incoming leafnode connections may not have masking.
+	mask  bool
 	mkpos byte
-	mkey  [4]byte
-	cbufs [][]byte
-	coff  int
 }
 
 func (r *wsReadInfo) init() {

@@ -242,8 +242,8 @@ func TestParsePubArg(t *testing.T) {
 		arg     string
 		subject string
 		reply   string
-		size    int
 		szb     string
+		size    int
 	}{
 		{arg: "a 2", subject: "a", reply: "", size: 2, szb: "2"},
 		{arg: "a 222", subject: "a", reply: "", size: 222, szb: "222"},
@@ -386,9 +386,9 @@ func TestParseHeaderPubArg(t *testing.T) {
 		arg     string
 		subject string
 		reply   string
+		szb     string
 		hdr     int
 		size    int
-		szb     string
 	}{
 		{arg: "a 2 4", subject: "a", reply: "", hdr: 2, size: 4, szb: "4"},
 		{arg: "a 22 222", subject: "a", reply: "", hdr: 22, size: 222, szb: "222"},
@@ -716,8 +716,8 @@ func TestProtoSnippet(t *testing.T) {
 	sample := []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 	tests := []struct {
-		input    int
 		expected string
+		input    int
 	}{
 		{input: 0, expected: `"abcdefghijklmnopqrstuvwxyzABCDEF"`},
 		{input: 1, expected: `"bcdefghijklmnopqrstuvwxyzABCDEFG"`},

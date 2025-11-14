@@ -623,10 +623,10 @@ func TestParseWithNoValuesIncludes(t *testing.T) {
 
 func TestJSONParseCompat(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		input    string
 		includes map[string]string
 		expected map[string]any
+		name     string
+		input    string
 	}{
 		{
 			name: "JSON with nested blocks",

@@ -22,26 +22,13 @@ import (
 
 func TestConfigCheck(t *testing.T) {
 	tests := []struct {
-		// name is the name of the test.
-		name string
-
-		// config is content of the configuration file.
-		config string
-
-		// warningErr is an error that does not prevent server from starting.
 		warningErr error
-
-		// errorLine is the location of the error.
-		errorLine int
-
-		// errorPos is the position of the error.
-		errorPos int
-
-		// warning errors also include a reason optionally.
-		reason string
-
-		// newDefaultErr is a configuration error that includes source of error.
-		err error
+		err        error
+		name       string
+		config     string
+		reason     string
+		errorLine  int
+		errorPos   int
 	}{
 		{
 			name: "when unknown field is used at top level",

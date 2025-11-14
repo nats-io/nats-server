@@ -6666,8 +6666,8 @@ func TestJetStreamClusterMetaRecoveryRecreateFileStreamAsMemory(t *testing.T) {
 
 func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 	tests := []struct {
-		title                       string
 		encodeAddConsumerAssignment func(ca *consumerAssignment) []byte
+		title                       string
 	}{
 		{title: "simple", encodeAddConsumerAssignment: encodeAddConsumerAssignment},
 		{title: "compressed", encodeAddConsumerAssignment: encodeAddConsumerAssignmentCompressed},
@@ -6773,10 +6773,10 @@ func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
 
 func TestJetStreamClusterCatchupLoadNextMsgTooManyDeletes(t *testing.T) {
 	tests := []struct {
-		title          string
 		catchupRequest *streamSyncRequest
 		setup          func(js nats.JetStreamContext)
 		assert         func(sub *nats.Subscription)
+		title          string
 	}{
 		{
 			title: "within-delete-gap",

@@ -159,17 +159,17 @@ const (
 
 // StreamState is information about the given stream.
 type StreamState struct {
+	FirstTime   time.Time         `json:"first_ts"`
+	LastTime    time.Time         `json:"last_ts"`
+	Subjects    map[string]uint64 `json:"subjects,omitempty"`
+	Lost        *LostStreamData   `json:"lost,omitempty"`
+	Deleted     []uint64          `json:"deleted,omitempty"`
 	Msgs        uint64            `json:"messages"`
 	Bytes       uint64            `json:"bytes"`
 	FirstSeq    uint64            `json:"first_seq"`
-	FirstTime   time.Time         `json:"first_ts"`
 	LastSeq     uint64            `json:"last_seq"`
-	LastTime    time.Time         `json:"last_ts"`
 	NumSubjects int               `json:"num_subjects,omitempty"`
-	Subjects    map[string]uint64 `json:"subjects,omitempty"`
 	NumDeleted  int               `json:"num_deleted,omitempty"`
-	Deleted     []uint64          `json:"deleted,omitempty"`
-	Lost        *LostStreamData   `json:"lost,omitempty"`
 	Consumers   int               `json:"consumer_count"`
 }
 
@@ -194,8 +194,8 @@ type LostStreamData struct {
 // SnapshotResult contains information about the snapshot.
 type SnapshotResult struct {
 	Reader io.ReadCloser
-	State  StreamState
 	errCh  chan string
+	State  StreamState
 }
 
 const (
@@ -224,12 +224,12 @@ type DeleteBlocks []DeleteBlock
 // StreamReplicatedState represents what is encoded in a binary stream snapshot used
 // for stream replication in an NRG.
 type StreamReplicatedState struct {
+	Deleted  DeleteBlocks
 	Msgs     uint64
 	Bytes    uint64
 	FirstSeq uint64
 	LastSeq  uint64
 	Failed   uint64
-	Deleted  DeleteBlocks
 }
 
 // Determine if this is an encoded stream state.
@@ -379,16 +379,10 @@ type SequencePair struct {
 
 // ConsumerState represents a stored state for a consumer.
 type ConsumerState struct {
-	// Delivered keeps track of last delivered sequence numbers for both the stream and the consumer.
-	Delivered SequencePair `json:"delivered"`
-	// AckFloor keeps track of the ack floors for both the stream and the consumer.
-	AckFloor SequencePair `json:"ack_floor"`
-	// These are both in stream sequence context.
-	// Pending is for all messages pending and the timestamp for the delivered time.
-	// This will only be present when the AckPolicy is ExplicitAck.
-	Pending map[uint64]*Pending `json:"pending,omitempty"`
-	// This is for messages that have been redelivered, so count > 1.
-	Redelivered map[uint64]uint64 `json:"redelivered,omitempty"`
+	Pending     map[uint64]*Pending `json:"pending,omitempty"`
+	Redelivered map[uint64]uint64   `json:"redelivered,omitempty"`
+	Delivered   SequencePair        `json:"delivered"`
+	AckFloor    SequencePair        `json:"ack_floor"`
 }
 
 // Encode consumer state.

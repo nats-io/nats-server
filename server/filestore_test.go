@@ -9151,9 +9151,9 @@ func TestFileStoreRecoverOnlyBlkFiles(t *testing.T) {
 
 func TestFileStoreRecoverAfterRemoveOperation(t *testing.T) {
 	tests := []struct {
-		title    string
 		action   func(fs *fileStore)
 		validate func(state StreamState)
+		title    string
 	}{
 		{
 			title:  "None",
@@ -9973,8 +9973,8 @@ func TestFileStoreAsyncFlushOnSkipMsgs(t *testing.T) {
 
 func TestFileStoreCompressionAfterTruncate(t *testing.T) {
 	tests := []struct {
-		title  string
 		action func(fs *fileStore, seq uint64)
+		title  string
 	}{
 		{
 			title: "RemoveMsg",

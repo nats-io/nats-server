@@ -446,9 +446,9 @@ func TestMQTTValidateOptions(t *testing.T) {
 	nmqtto := DefaultOptions()
 	mqtto := testMQTTDefaultOptions()
 	for _, test := range []struct {
-		name    string
-		getOpts func() *Options
 		err     error
+		getOpts func() *Options
+		name    string
 	}{
 		{name: "mqtt disabled", getOpts: func() *Options { return nmqtto.Clone() }, err: nil},
 		{name: "mqtt username not allowed if users specified", getOpts: func() *Options {
@@ -668,7 +668,7 @@ func TestMQTTStart(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	nc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port))
+	nc, err := net.Dial("tcp", net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port)))
 	if err != nil {
 		t.Fatalf("Unable to create tcp connection to mqtt port: %v", err)
 	}
@@ -754,7 +754,7 @@ func TestMQTTTLS(t *testing.T) {
 	s = testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	nc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port))
+	nc, err := net.Dial("tcp", net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port)))
 	if err != nil {
 		t.Fatalf("Unable to create tcp connection to mqtt port: %v", err)
 	}
@@ -768,15 +768,15 @@ func TestMQTTTLS(t *testing.T) {
 }
 
 type mqttConnInfo struct {
-	clientID  string
-	cleanSess bool
-	keepAlive uint16
 	will      *mqttWill
+	tlsc      *tls.Config
+	clientID  string
 	user      string
 	pass      string
+	keepAlive uint16
+	cleanSess bool
 	ws        bool
 	tls       bool
-	tlsc      *tls.Config
 }
 
 func testMQTTGetClient(t testing.TB, s *Server, clientID string) *client {
@@ -846,7 +846,7 @@ func testMQTTConnectRetryWithError(t testing.TB, ci *mqttConnInfo, host string, 
 		return true
 	}
 
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	var c net.Conn
 	var err error
 RETRY:
@@ -1005,7 +1005,7 @@ func TestMQTTRequiresJSEnabled(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	addr := fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port)
+	addr := net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port))
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Error creating mqtt connection: %v", err)
@@ -1261,7 +1261,7 @@ func TestMQTTAuthTimeout(t *testing.T) {
 			s := testMQTTRunServer(t, o)
 			defer testMQTTShutdownServer(s)
 
-			mc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port))
+			mc, err := net.Dial("tcp", net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port)))
 			if err != nil {
 				t.Fatalf("Error connecting: %v", err)
 			}
@@ -1556,10 +1556,10 @@ func TestMQTTNoAuthUserValidation(t *testing.T) {
 func TestMQTTNoAuthUser(t *testing.T) {
 	for _, test := range []struct {
 		name         string
-		override     bool
-		useAuth      bool
 		expectedUser string
 		expectedAcc  string
+		override     bool
+		useAuth      bool
 	}{
 		{name: "no override, no user provided", override: false, useAuth: false, expectedUser: "noauth", expectedAcc: "normal"},
 		{name: "no override, user povided", override: false, useAuth: true, expectedUser: "user", expectedAcc: "normal"},
@@ -1619,7 +1619,7 @@ func TestMQTTConnectNotFirstPacket(t *testing.T) {
 	l := &captureErrorLogger{errCh: make(chan string, 10)}
 	s.SetLogger(l, false, false)
 
-	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port))
+	c, err := net.Dial("tcp", net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port)))
 	if err != nil {
 		t.Fatalf("Error on dial: %v", err)
 	}
@@ -1657,8 +1657,8 @@ func TestMQTTSecondConnect(t *testing.T) {
 func TestMQTTParseConnect(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		proto []byte
 		err   string
+		proto []byte
 	}{
 		{name: "packet in buffer error", proto: []byte{0}, err: io.ErrUnexpectedEOF.Error()},
 		{name: "bad proto name", proto: []byte{0, 4, 'B', 'A', 'D'}, err: "protocol name"},
@@ -1703,7 +1703,7 @@ func TestMQTTConnectFailsOnParse(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	addr := fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port)
+	addr := net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port))
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Error creating mqtt connection: %v", err)
@@ -1894,10 +1894,10 @@ func TestMQTTFilterConversion(t *testing.T) {
 func TestMQTTParseSub(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		proto []byte
-		b     byte
-		pl    int
 		err   string
+		proto []byte
+		pl    int
+		b     byte
 	}{
 		{name: "reserved flag", proto: nil, b: 3, pl: 0, err: "wrong subscribe reserved flags"},
 		{name: "ensure packet loaded", proto: []byte{1, 2}, b: mqttSubscribeFlags, pl: 10, err: io.ErrUnexpectedEOF.Error()},
@@ -2211,10 +2211,10 @@ func testMQTTPublish(t testing.TB, c net.Conn, r *mqttReader, qos byte, dup, ret
 func TestMQTTParsePub(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		flags byte
+		err   string
 		proto []byte
 		pl    int
-		err   string
+		flags byte
 	}{
 		{name: "qos not supported", flags: (3 << 1), proto: nil, pl: 0, err: "QoS=3 is invalid in MQTT"},
 		{name: "packet in buffer error", flags: 0, proto: nil, pl: 10, err: io.ErrUnexpectedEOF.Error()},
@@ -2240,8 +2240,8 @@ func TestMQTTParsePub(t *testing.T) {
 func TestMQTTParsePIMsg(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		proto []byte
 		err   string
+		proto []byte
 	}{
 		{name: "packet in buffer error", proto: nil, err: io.ErrUnexpectedEOF.Error()},
 		{name: "error reading packet identifier", proto: []byte{0}, err: "packet identifier"},
@@ -3787,8 +3787,8 @@ func TestMQTTSessionMovingDomains(t *testing.T) {
 }
 
 type remoteConnSameClientIDLogger struct {
-	DummyLogger
 	warn chan string
+	DummyLogger
 }
 
 func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...any) {
@@ -3850,10 +3850,10 @@ func TestMQTTSessionsDifferentDomains(t *testing.T) {
 func TestMQTTParseUnsub(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		proto []byte
-		b     byte
-		pl    int
 		err   string
+		proto []byte
+		pl    int
+		b     byte
 	}{
 		{name: "reserved flag", proto: nil, b: 3, pl: 0, err: "wrong unsubscribe reserved flags"},
 		{name: "ensure packet loaded", proto: []byte{1, 2}, b: mqttUnsubscribeFlags, pl: 10, err: io.ErrUnexpectedEOF.Error()},
@@ -4300,9 +4300,9 @@ func TestMQTTPublishRetain(t *testing.T) {
 
 	for _, test := range []struct {
 		name          string
-		retained      bool
 		sentValue     string
 		expectedValue string
+		retained      bool
 		subGetsIt     bool
 	}{
 		{name: "publish large retained", retained: true, sentValue: large, expectedValue: large, subGetsIt: true},
@@ -4912,7 +4912,7 @@ func TestMQTTFlappingSession(t *testing.T) {
 
 	// Now try to reconnect "c" and we should fail. We have to do this manually,
 	// since we expect it to fail.
-	addr := fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port)
+	addr := net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port))
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Error creating mqtt connection: %v", err)
@@ -5000,7 +5000,7 @@ func TestMQTTLockedSession(t *testing.T) {
 
 	// Now try to connect another client that wants to use "sub".
 	// We can't use testMQTTConnect() because it is going to fail.
-	addr := fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port)
+	addr := net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port))
 	c2, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Error creating mqtt connection: %v", err)
@@ -7121,8 +7121,8 @@ func TestMQTTSubRetainedRace(t *testing.T) {
 	o := testMQTTDefaultOptions()
 
 	useCases := []struct {
-		name string
 		f    func(t *testing.T, s *Server, o *Options, subTopic, pubTopic string, QOS byte)
+		name string
 	}{
 		{name: "new top level", f: testMQTTNewSubRetainedRace},
 		{name: "existing top level", f: testMQTTNewSubWithExistingTopLevelRetainedRace},
@@ -7642,11 +7642,11 @@ func TestMQTTSparkbBirthHandling(t *testing.T) {
 	const DBORN = "DEVICE BORN FAKE MESSAGE"
 
 	tests := []*struct {
+		mc      net.Conn
+		r       *mqttReader
 		topic   string
 		payload string
 		flags   byte
-		mc      net.Conn
-		r       *mqttReader
 	}{
 		{
 			topic:   "spBv1.0/ggg/NBIRTH/nnn",

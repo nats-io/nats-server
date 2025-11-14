@@ -33,11 +33,8 @@ import (
 
 // Static options (but may be useful to tweak when debugging)
 var RCOBOptions = struct {
-	verbose bool
-	// Proposed block [data] size is random between 1 and maxBlockSize
-	maxBlockSize int
-	// If set to true, the state machine will not take snapshots while in recovery
-	// (corresponding to the 'ready' state machine member variable)
+	maxBlockSize  int
+	verbose       bool
 	safeSnapshots bool
 }{
 	verbose:       false,
@@ -49,19 +46,19 @@ var RCOBOptions = struct {
 // Each value delivered is hashed, N-th value hash should match on all replicas or something went wrong.
 // If even a single value in the chain of hash differs on one replica, hashes will diverge.
 type RCOBStateMachine struct {
-	sync.Mutex
-	s                          *Server
 	n                          RaftNode
+	hash                       hash.Hash
+	rng                        *rand.Rand
+	s                          *Server
 	cfg                        *RaftConfig
 	wg                         sync.WaitGroup
-	leader                     bool
 	proposalSequence           uint64
-	rng                        *rand.Rand
-	hash                       hash.Hash
 	blocksApplied              uint64
 	blocksAppliedSinceSnapshot uint64
-	stopped                    bool
-	ready                      bool
+	sync.Mutex
+	leader  bool
+	stopped bool
+	ready   bool
 }
 
 func (sm *RCOBStateMachine) waitGroup() *sync.WaitGroup {
@@ -76,8 +73,8 @@ func (sm *RCOBStateMachine) waitGroup() *sync.WaitGroup {
 // in the hash).
 type RCOBBlock struct {
 	Proposer         string
-	ProposerSequence uint64
 	Data             []byte
+	ProposerSequence uint64
 }
 
 // logDebug is for fine-grained event logging, useful for debugging but default off

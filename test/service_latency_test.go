@@ -1103,8 +1103,9 @@ func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
 	}
 
 	cases := []struct {
-		ci, si int
-		desc   string
+		desc string
+		ci   int
+		si   int
 	}{
 		{ci: 0, si: 0, desc: "same server"},
 		{ci: 0, si: 1, desc: "same cluster, different server"},
@@ -1342,8 +1343,9 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 	}
 
 	cases := []struct {
-		ci, si int
-		desc   string
+		desc string
+		ci   int
+		si   int
 	}{
 		{ci: 0, si: 0, desc: "same server"},
 		{ci: 0, si: 1, desc: "same cluster, different server"},
@@ -1665,8 +1667,8 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 		return sl
 	}
 	for _, v := range []struct {
-		shared bool
 		header nats.Header
+		shared bool
 	}{
 		{shared: true, header: nats.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
 		{shared: true, header: nats.Header{"X-B3-Sampled": []string{"1"}}},

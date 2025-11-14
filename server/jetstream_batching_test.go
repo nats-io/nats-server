@@ -834,14 +834,17 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 
 func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	type BatchItem struct {
-		subject string
-		header  nats.Header
-		msg     []byte
 		err     error
+		header  nats.Header
+		subject string
+		msg     []byte
 	}
 
 	type BatchTest struct {
+		init              func(mset *stream)
+		validate          func(mset *stream, commit bool)
 		title             string
+		batch             []BatchItem
 		allowRollup       bool
 		denyPurge         bool
 		allowTTL          bool
@@ -849,9 +852,6 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 		allowMsgSchedules bool
 		discardNew        bool
 		discardNewPerSubj bool
-		init              func(mset *stream)
-		batch             []BatchItem
-		validate          func(mset *stream, commit bool)
 	}
 
 	tests := []BatchTest{

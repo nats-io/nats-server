@@ -1875,15 +1875,15 @@ func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 
 // Net Proxy - For introducing RTT and BW constraints.
 type netProxy struct {
-	sync.RWMutex
 	listener net.Listener
+	url      string
+	surl     string
 	conns    []net.Conn
 	rtt      time.Duration
 	up       int
 	down     int
-	url      string
-	surl     string
 	port     int
+	sync.RWMutex
 }
 
 func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *netProxy {

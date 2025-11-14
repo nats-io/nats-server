@@ -75,15 +75,15 @@ type JWTChanged func(publicKey string)
 // DirJWTStore implements the JWT Store interface, keeping JWTs in an optionally sharded
 // directory structure
 type DirJWTStore struct {
-	sync.Mutex
-	directory  string
-	shard      bool
-	readonly   bool
-	deleteType deleteType
 	operator   map[string]struct{}
 	expiration *expirationTracker
 	changed    JWTChanged
 	deleted    JWTChanged
+	directory  string
+	deleteType deleteType
+	sync.Mutex
+	shard    bool
+	readonly bool
 }
 
 func newDir(dirPath string, create bool) (string, error) {
@@ -565,23 +565,23 @@ func (store *DirJWTStore) Hash() [sha256.Size]byte {
 
 // An jwtItem is something managed by the priority queue
 type jwtItem struct {
-	index      int
 	publicKey  string
-	expiration int64 // consists of unix time of expiration (ttl when set or jwt expiration) in seconds
+	index      int
+	expiration int64
 	hash       [sha256.Size]byte
 }
 
 // A expirationTracker implements heap.Interface and holds Items.
 type expirationTracker struct {
-	heap         []*jwtItem // sorted by jwtItem.expiration
 	idx          map[string]*list.Element
-	lru          *list.List // keep which jwt are least used
-	limit        int64      // limit how many jwt are being tracked
-	evictOnLimit bool       // when limit is hit, error or evict using lru
-	ttl          time.Duration
-	hash         [sha256.Size]byte // xor of all jwtItem.hash in idx
+	lru          *list.List
 	quit         chan struct{}
+	heap         []*jwtItem
 	wg           sync.WaitGroup
+	limit        int64
+	ttl          time.Duration
+	hash         [sha256.Size]byte
+	evictOnLimit bool
 }
 
 func (q *expirationTracker) Len() int { return len(q.heap) }

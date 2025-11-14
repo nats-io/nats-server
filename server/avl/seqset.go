@@ -405,11 +405,10 @@ const (
 )
 
 type node struct {
-	//v dvalue
-	base uint64
-	bits [numBuckets]uint64
 	l    *node
 	r    *node
+	bits [numBuckets]uint64
+	base uint64
 	h    int
 }
 

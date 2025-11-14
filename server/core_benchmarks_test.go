@@ -397,16 +397,11 @@ func BenchmarkCoreFanOut(b *testing.B) {
 func BenchmarkCoreFanIn(b *testing.B) {
 
 	type BenchPublisher struct {
-		// nats connection for this publisher
-		conn *nats.Conn
-		// number of publishing errors encountered
-		publishErrors int
-		// number of messages published
+		conn           *nats.Conn
+		quitCh         chan bool
+		messageData    []byte
+		publishErrors  int
 		publishCounter int
-		// quit channel which will terminate publishing
-		quitCh chan bool
-		// message data buffer
-		messageData []byte
 	}
 
 	const subjectBaseName = "test-subject"

@@ -177,8 +177,8 @@ func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 
 func TestJetStreamAddStream(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -235,8 +235,8 @@ func TestJetStreamAddStream(t *testing.T) {
 
 func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -405,8 +405,8 @@ func TestJetStreamNextReqFromMsg(t *testing.T) {
 
 func TestJetStreamNoPanicOnRaceBetweenShutdownAndConsumerDelete(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_STREAM", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_STREAM", Storage: FileStorage}},
@@ -449,8 +449,8 @@ func TestJetStreamNoPanicOnRaceBetweenShutdownAndConsumerDelete(t *testing.T) {
 
 func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -736,8 +736,8 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) *PubAck {
 
 func TestJetStreamBasicAckPublish(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -769,8 +769,8 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 
 func TestJetStreamStateTimestamps(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -808,8 +808,8 @@ func TestJetStreamStateTimestamps(t *testing.T) {
 
 func TestJetStreamNoAckStream(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, NoAck: true}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, NoAck: true}},
@@ -843,8 +843,8 @@ func TestJetStreamNoAckStream(t *testing.T) {
 
 func TestJetStreamBasicDeliverSubject(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MSET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MSET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -999,8 +999,8 @@ func workerModeConfig(name string) *ConsumerConfig {
 
 func TestJetStreamBasicWorkQueue(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
@@ -1093,8 +1093,8 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 
 func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
@@ -1184,8 +1184,8 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 
 func TestJetStreamWorkQueueWrapWaiting(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
@@ -1266,8 +1266,8 @@ func TestJetStreamWorkQueueWrapWaiting(t *testing.T) {
 
 func TestJetStreamWorkQueueRequest(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
@@ -1384,8 +1384,8 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 
 func TestJetStreamSubjectFiltering(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MSET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MSET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -1454,8 +1454,8 @@ func TestJetStreamSubjectFiltering(t *testing.T) {
 
 func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -1521,8 +1521,8 @@ func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 
 func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "ORDERS", Storage: MemoryStorage, Subjects: []string{"orders.*.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "ORDERS", Storage: FileStorage, Subjects: []string{"orders.*.*"}}},
@@ -1633,8 +1633,8 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 
 func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
@@ -1702,8 +1702,8 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 
 func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
@@ -1787,8 +1787,8 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 
 func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:      "MWQ",
@@ -1920,8 +1920,8 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 
 func TestJetStreamAckAllRedelivery(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_S22", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_S22", Storage: FileStorage}},
@@ -2002,8 +2002,8 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 	fsc.Storage = FileStorage
 
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &msc},
 		{name: "FileStore", mconfig: &fsc},
@@ -2145,8 +2145,8 @@ func TestJetStreamAckReplyStreamPendingWithAcks(t *testing.T) {
 	fsc.Storage = FileStorage
 
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &msc},
 		{name: "FileStore", mconfig: &fsc},
@@ -2212,8 +2212,8 @@ func TestJetStreamAckReplyStreamPendingWithAcks(t *testing.T) {
 
 func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
@@ -2310,8 +2310,8 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 
 func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
@@ -2383,8 +2383,8 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 
 func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
@@ -2464,8 +2464,8 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 
 func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
@@ -3725,8 +3725,8 @@ func TestJetStreamSnapshotsAPIPerf(t *testing.T) {
 
 func TestJetStreamActiveDelivery(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "ADS", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "ADS", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -3780,8 +3780,8 @@ func TestJetStreamActiveDelivery(t *testing.T) {
 
 func TestJetStreamEphemeralConsumers(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "EP", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "EP", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -3854,8 +3854,8 @@ func TestJetStreamEphemeralConsumers(t *testing.T) {
 
 func TestJetStreamMetadata(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Retention: WorkQueuePolicy, Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Retention: WorkQueuePolicy, Storage: FileStorage}},
@@ -3958,8 +3958,8 @@ func TestJetStreamMetadata(t *testing.T) {
 }
 func TestJetStreamRedeliverCount(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4108,8 +4108,8 @@ func TestJetStreamPendingNextTimer(t *testing.T) {
 
 func TestJetStreamCanNotNakAckd(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4181,8 +4181,8 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 
 func TestJetStreamStreamPurge(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4237,8 +4237,8 @@ func TestJetStreamStreamPurge(t *testing.T) {
 
 func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4327,8 +4327,8 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 
 func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4410,8 +4410,8 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 
 func TestJetStreamInterestRetentionStream(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage, Retention: InterestPolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage, Retention: InterestPolicy}},
@@ -4552,8 +4552,8 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 
 func TestJetStreamInterestRetentionStreamWithFilteredConsumers(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: MemoryStorage, Retention: InterestPolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: FileStorage, Retention: InterestPolicy}},
@@ -4638,8 +4638,8 @@ func TestJetStreamInterestRetentionWithWildcardsAndFilteredConsumers(t *testing.
 	fsc.Storage = FileStorage
 
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &msc},
 		{name: "FileStore", mconfig: &fsc},
@@ -4690,8 +4690,8 @@ func TestJetStreamInterestRetentionWithWildcardsAndFilteredConsumers(t *testing.
 
 func TestJetStreamInterestRetentionStreamWithDurableRestart(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "IK", Storage: MemoryStorage, Retention: InterestPolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "IK", Storage: FileStorage, Retention: InterestPolicy}},
@@ -5098,9 +5098,9 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 
 	cases := []struct {
 		name           string
+		serverTag      string
 		storage        nats.StorageType
 		createMaxBytes int64
-		serverTag      string
 		wantErr        bool
 	}{
 		{
@@ -6408,8 +6408,8 @@ func TestJetStreamFilteredStreamNames(t *testing.T) {
 
 func TestJetStreamUpdateStream(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -6621,8 +6621,8 @@ func TestJetStreamUpdateStream(t *testing.T) {
 
 func TestJetStreamDeleteMsg(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -6782,8 +6782,8 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 // https://github.com/nats-io/jetstream/issues/396
 func TestJetStreamLimitLockBug(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -6831,8 +6831,8 @@ func TestJetStreamLimitLockBug(t *testing.T) {
 
 func TestJetStreamNextMsgNoInterest(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -6920,8 +6920,8 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 
 func TestJetStreamMsgHeaders(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
@@ -8609,8 +8609,8 @@ func TestJetStreamMaxMsgsPerSubject(t *testing.T) {
 	fsc.Storage = FileStorage
 
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &msc},
 		{name: "FileStore", mconfig: &fsc},
@@ -11554,8 +11554,8 @@ func TestJetStreamMaxMsgsPerSubjectWithDiscardNew(t *testing.T) {
 	fsc.Storage = FileStorage
 
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &msc},
 		{name: "FileStore", mconfig: &fsc},
@@ -12351,8 +12351,8 @@ func TestJetStreamAddStreamWithFilestoreFailure(t *testing.T) {
 }
 
 type checkFastState struct {
-	count int64
 	StreamStore
+	count int64
 }
 
 func (s *checkFastState) FastState(state *StreamState) {
@@ -15342,8 +15342,8 @@ func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 
 func TestJetStreamPurgeExAndAccounting(t *testing.T) {
 	cases := []struct {
-		name string
 		cfg  *nats.StreamConfig
+		name string
 	}{
 		{name: "MemoryStore",
 			cfg: &nats.StreamConfig{
@@ -16938,8 +16938,8 @@ func jsTestPause_PauseConsumer(t *testing.T, nc *nats.Conn, stream, consumer str
 
 func TestJetStreamDirectGetMulti(t *testing.T) {
 	cases := []struct {
-		name string
 		cfg  *nats.StreamConfig
+		name string
 	}{
 		{name: "MemoryStore",
 			cfg: &nats.StreamConfig{
@@ -17840,8 +17840,8 @@ func TestJetStreamStrictMode(t *testing.T) {
 	tests := []struct {
 		name        string
 		subject     string
-		payload     []byte
 		expectedErr string
+		payload     []byte
 	}{
 		{
 			name:        "Stream Create",
@@ -19087,8 +19087,8 @@ func TestJetStreamInterestMaxDeliveryReached(t *testing.T) {
 	maxWait := 250 * time.Millisecond
 	for _, useNak := range []bool{true, false} {
 		for _, test := range []struct {
-			title  string
 			action func(s *Server, sub *nats.Subscription)
+			title  string
 		}{
 			{
 				title: "fetch",
@@ -21205,9 +21205,9 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 
 	scfg := StreamConfig{Name: "TEST"}
 	streamTests := []struct {
-		name     string
 		setValue func(value int)
 		getValue func() int
+		name     string
 	}{
 		{
 			name:     "max_msgs",
@@ -21283,9 +21283,9 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 
 	ccfg = &ConsumerConfig{AckPolicy: AckExplicit}
 	consumerTests := []struct {
-		name         string
 		setValue     func(value int)
 		getValue     func() int
+		name         string
 		defaultValue int
 	}{
 		{

@@ -54,43 +54,29 @@ var (
 )
 
 type route struct {
-	remoteID     string
-	remoteName   string
-	didSolicit   bool
-	retry        bool
-	lnoc         bool
-	lnocu        bool
-	routeType    RouteType
-	url          *url.URL
-	authRequired bool
-	tlsRequired  bool
-	jetstream    bool
-	connectURLs  []string
-	wsConnURLs   []string
-	gatewayURL   string
-	leafnodeURL  string
-	hash         string
-	idHash       string
-	// Location of the route in the slice: s.routes[remoteID][]*client.
-	// Initialized to -1 on creation, as to indicate that it is not
-	// added to the list.
-	poolIdx int
-	// If this is set, it means that the route is dedicated for this
-	// account and the account name will not be included in protocols.
-	accName []byte
-	// This is set to true if this is a route connection to an old
-	// server or a server that has pooling completely disabled.
-	noPool bool
-	// Selected compression mode, which may be different from the
-	// server configured mode.
-	compression string
-	// Transient value used to set the Info.GossipMode when initiating
-	// an implicit route and sending to the remote.
-	gossipMode byte
-	// This will be set in case of pooling so that a route can trigger
-	// the creation of the next after receiving the first PONG, ensuring
-	// that authentication did not fail.
 	startNewRoute *routeInfo
+	url           *url.URL
+	idHash        string
+	compression   string
+	remoteID      string
+	remoteName    string
+	leafnodeURL   string
+	hash          string
+	gatewayURL    string
+	accName       []byte
+	connectURLs   []string
+	wsConnURLs    []string
+	routeType     RouteType
+	poolIdx       int
+	lnocu         bool
+	jetstream     bool
+	tlsRequired   bool
+	authRequired  bool
+	lnoc          bool
+	noPool        bool
+	retry         bool
+	gossipMode    byte
+	didSolicit    bool
 }
 
 // This contains the information required to create a new route.
@@ -108,19 +94,19 @@ const (
 )
 
 type connectInfo struct {
-	Echo     bool   `json:"echo"`
-	Verbose  bool   `json:"verbose"`
-	Pedantic bool   `json:"pedantic"`
+	Name     string `json:"name"`
+	Gateway  string `json:"gateway,omitempty"`
+	Cluster  string `json:"cluster"`
 	User     string `json:"user,omitempty"`
 	Pass     string `json:"pass,omitempty"`
-	TLS      bool   `json:"tls_required"`
 	Headers  bool   `json:"headers"`
-	Name     string `json:"name"`
-	Cluster  string `json:"cluster"`
+	Echo     bool   `json:"echo"`
+	TLS      bool   `json:"tls_required"`
+	Pedantic bool   `json:"pedantic"`
 	Dynamic  bool   `json:"cluster_dynamic,omitempty"`
 	LNOC     bool   `json:"lnoc,omitempty"`
-	LNOCU    bool   `json:"lnocu,omitempty"` // Support for LS- with origin cluster name
-	Gateway  string `json:"gateway,omitempty"`
+	LNOCU    bool   `json:"lnocu,omitempty"`
+	Verbose  bool   `json:"verbose"`
 }
 
 // Route protocol constants

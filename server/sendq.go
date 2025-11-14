@@ -26,10 +26,10 @@ type outMsg struct {
 }
 
 type sendq struct {
-	mu sync.Mutex
 	q  *ipQueue[*outMsg]
 	s  *Server
 	a  *Account
+	mu sync.Mutex
 }
 
 func (s *Server) newSendQ(acc *Account) *sendq {

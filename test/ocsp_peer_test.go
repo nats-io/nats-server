@@ -96,12 +96,12 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
@@ -233,12 +233,12 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 	defer intermediateCA1Responder.Shutdown(ctx)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "Default cache, mTLS OCSP peer check on inbound client connection, client unknown to intermediate CA 1",
@@ -307,12 +307,12 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1",
@@ -457,12 +457,12 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "mTLS OCSP peer check on inbound client connection, client's intermediate is revoked",
@@ -869,12 +869,12 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 	deleteLocalStore(t, "")
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "None cache explicit long form: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
@@ -993,12 +993,12 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
@@ -1609,6 +1609,8 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
+		err       error
+		rerr      error
 		name      string
 		config    string
 		opts      []nats.Option
@@ -1616,8 +1618,6 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 		revokes   int64
 		goods     int64
 		unknowns  int64
-		err       error
-		rerr      error
 		clean     bool
 	}{
 		{
@@ -1766,12 +1766,12 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "Interop: Both Good: mTLS OCSP peer check on inbound client connection and server's OCSP staple validated at client",
@@ -1915,12 +1915,12 @@ func TestOCSPPeerWarnOnlyOption(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "Revoked NATS client with warn_only explicitly set to false",
@@ -2016,12 +2016,12 @@ func TestOCSPPeerUnknownIsGoodOption(t *testing.T) {
 	defer intermediateCA1Responder.Shutdown(ctx)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "Unknown NATS client with no unknown_is_good option set (default false)",
@@ -2110,12 +2110,12 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name           string
-		config         string
-		opts           []nats.Option
-		cachedResponse string
 		err            error
 		rerr           error
+		name           string
+		config         string
+		cachedResponse string
+		opts           []nats.Option
 	}{
 		{
 			name: "Expired Revoked response in cache for UserA1 -- should be rejected connection (expired revoke honored)",
@@ -2316,13 +2316,13 @@ func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name           string
-		config         string
-		opts           []nats.Option
-		cachedResponse string
 		err            error
 		rerr           error
+		name           string
+		config         string
+		cachedResponse string
 		storeLocation  string
+		opts           []nats.Option
 	}{
 		{
 			name: "Test load from non-default local store _custom_; connect will reject only if cache file found and loaded",
@@ -2466,12 +2466,12 @@ func TestOCSPPeerIncrementalSaveLocalCache(t *testing.T) {
 	var err error
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      [][]nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      [][]nats.Option
 	}{
 		{
 			name: "Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
@@ -2608,12 +2608,12 @@ func TestOCSPPeerUndelegatedCAResponseSigner(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "mTLS OCSP peer check on inbound client connection, responder is CA (undelegated)",
@@ -2680,12 +2680,12 @@ func TestOCSPPeerDelegatedCAResponseSigner(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "mTLS OCSP peer check on inbound client connection, responder is CA (undelegated)",
@@ -2752,12 +2752,12 @@ func TestOCSPPeerBadDelegatedCAResponseSigner(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
-		name      string
-		config    string
-		opts      []nats.Option
 		err       error
 		rerr      error
 		configure func()
+		name      string
+		config    string
+		opts      []nats.Option
 	}{
 		{
 			name: "mTLS OCSP peer check on inbound client connection, responder is not a legal delegate",
@@ -2827,13 +2827,13 @@ func TestOCSPPeerNextUpdateUnset(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
+		err            error
+		rerr           error
+		configure      func()
 		name           string
 		config         string
 		opts           []nats.Option
-		err            error
-		rerr           error
 		expectedMisses int64
-		configure      func()
 	}{
 		{
 			name: "TTL set to 4 seconds with second client connection leveraging cache from first client connect",
@@ -2969,11 +2969,11 @@ func TestOCSPMonitoringPort(t *testing.T) {
 	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem", ocsp.Good)
 
 	for _, test := range []struct {
+		err    error
+		rerr   error
 		name   string
 		config string
 		opts   []nats.Option
-		err    error
-		rerr   error
 	}{
 		{
 			name: "https with ocsp_peer",

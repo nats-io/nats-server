@@ -61,8 +61,8 @@ func BenchmarkPublish(b *testing.B) {
 
 	// All the cases above are run for each of the subscriber cases below
 	subscribersCases := []struct {
-		numSubs int
 		subType SubscriberType
+		numSubs int
 	}{
 		{numSubs: 0, subType: None},
 		{numSubs: 1, subType: Async},

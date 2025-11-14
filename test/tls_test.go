@@ -866,7 +866,7 @@ func TestTLSConnectionTimeout(t *testing.T) {
 	defer srv.Shutdown()
 
 	// Dial with normal TCP
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 	conn, err := net.Dial("tcp", endpoint)
 	if err != nil {
 		t.Fatalf("Could not connect to %q", endpoint)
@@ -1107,8 +1107,8 @@ func TestTLSConnectionCurvePref(t *testing.T) {
 }
 
 type captureSlowConsumerLogger struct {
+	ch chan string
 	dummyLogger
-	ch    chan string
 	gotIt bool
 }
 
@@ -1241,11 +1241,11 @@ func TestTLSHandshakeFailureMemUsage(t *testing.T) {
 
 func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		config string
-		certs  nats.Option
 		err    error
 		rerr   error
+		certs  nats.Option
+		name   string
+		config string
 	}{
 		// To generate certs for these tests:
 		// USE `regenerate_rdns_svid.sh` TO REGENERATE
@@ -1576,11 +1576,11 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		config string
-		certs  nats.Option
 		err    error
 		rerr   error
+		certs  nats.Option
+		name   string
+		config string
 	}{
 		{
 			name: "connect with tls and DN includes a multi value RDN that are reordered",
@@ -1694,11 +1694,11 @@ func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 
 func TestTLSClientSVIDAuth(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		config string
-		certs  nats.Option
 		err    error
 		rerr   error
+		certs  nats.Option
+		name   string
+		config string
 	}{
 		{
 			name: "connect with tls using certificate with URIs",
@@ -1870,8 +1870,8 @@ func TestTLSPinnedCertsClient(t *testing.T) {
 }
 
 type captureWarnLogger struct {
-	dummyLogger
 	receive chan string
+	dummyLogger
 }
 
 func newCaptureWarnLogger() *captureWarnLogger {

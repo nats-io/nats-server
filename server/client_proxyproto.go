@@ -80,8 +80,8 @@ var (
 // proxyProtoAddr contains the address information extracted from PROXY protocol header
 type proxyProtoAddr struct {
 	srcIP   net.IP
-	srcPort uint16
 	dstIP   net.IP
+	srcPort uint16
 	dstPort uint16
 }
 

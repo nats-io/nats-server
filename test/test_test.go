@@ -46,9 +46,9 @@ func checkFor(t testing.TB, totalWait, sleepDur time.Duration, f func() error) {
 // Slow Proxy - For introducing RTT and BW constraints.
 type slowProxy struct {
 	listener net.Listener
-	conns    []net.Conn
 	o        *server.Options
 	u        string
+	conns    []net.Conn
 }
 
 func newSlowProxy(rtt time.Duration, up, down int, opts *server.Options) *slowProxy {
@@ -127,8 +127,8 @@ func (sp *slowProxy) stop() {
 
 // Dummy Logger
 type dummyLogger struct {
-	sync.Mutex
 	msg string
+	sync.Mutex
 }
 
 func (d *dummyLogger) Fatalf(format string, args ...any) {

@@ -103,10 +103,10 @@ type WAL interface {
 }
 
 type Peer struct {
-	ID      string
-	Current bool
 	Last    time.Time
+	ID      string
 	Lag     uint64
+	Current bool
 }
 
 type RaftState uint8
@@ -134,101 +134,81 @@ func (state RaftState) String() string {
 }
 
 type raft struct {
+	created     time.Time
+	lsut        time.Time
+	llqrt       time.Time
+	active      time.Time
+	etlr        time.Time
+	wal         WAL
+	werr        error
+	leaderSince atomic.Pointer[time.Time]
+	sq          *sendq
+	resp        *ipQueue[*appendEntryResponse]
+	entry       *ipQueue[*appendEntry]
+	reqs        *ipQueue[*voteRequest]
+	prop        *ipQueue[*proposedEntry]
+	progress    map[string]*ipQueue[uint64]
+	s           *Server
+	hh          *highwayhash.Digest64
+	catchup     *catchupState
+	aesub       *subscription
+	apply       *ipQueue[*CommittedEntry]
+	peers       map[string]*lps
+	removed     map[string]time.Time
+	acks        map[uint64]map[string]struct{}
+	pae         map[uint64]*appendEntry
+	elect       *time.Timer
+	votes       *ipQueue[*voteResponse]
+	leadc       chan bool
+	acc         *Account
+	quit        chan struct{}
+	js          *jetStream
+	c           *client
+	vote        string
+	vreply      string
+	accName     string
+	group       string
+	sd          string
+	id          string
+	leader      string
+	rpsubj      string
+	snapfile    string
+	vsubj       string
+	psubj       string
+	areply      string
+	asubj       string
+	wtv         []byte
+	wps         []byte
+	wg          sync.WaitGroup
+	qn          int
+	bytes       uint64
+	processed   uint64
+	applied     uint64
+	papplied    uint64
+	aflr        uint64
+	wtype       StorageType
+	commit      uint64
+	csz         int
+	term        uint64
+	pterm       uint64
+	pindex      uint64
+	hcommit     uint64
 	sync.RWMutex
-
-	created time.Time      // Time that the group was created
-	accName string         // Account name of the asset this raft group is for
-	acc     *Account       // Account that NRG traffic will be sent/received in
-	group   string         // Raft group
-	sd      string         // Store directory
-	id      string         // Node ID
-	wg      sync.WaitGroup // Wait for running goroutines to exit on shutdown
-
-	wal   WAL         // WAL store (filestore or memstore)
-	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
-	bytes uint64      // Total amount of bytes stored in the WAL. (Saves us from needing to call wal.FastState very often)
-	werr  error       // Last write error
-
-	state       atomic.Int32              // RaftState
-	leaderState atomic.Bool               // Is in (complete) leader state.
-	leaderSince atomic.Pointer[time.Time] // How long since becoming leader.
-	hh          *highwayhash.Digest64     // Highwayhash, used for snapshots
-	snapfile    string                    // Snapshot filename
-
-	csz   int             // Cluster size
-	qn    int             // Number of nodes needed to establish quorum
-	peers map[string]*lps // Other peers in the Raft group
-
-	removed map[string]time.Time           // Peers that were removed from the group
-	acks    map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
-	pae     map[uint64]*appendEntry        // Pending append entries
-
-	elect  *time.Timer // Election timer, normally accessed via electTimer
-	etlr   time.Time   // Election timer last reset time, for unit tests only
-	active time.Time   // Last activity time, i.e. for heartbeats
-	llqrt  time.Time   // Last quorum lost time
-	lsut   time.Time   // Last scale-up time
-
-	term      uint64 // The current vote term
-	pterm     uint64 // Previous term from the last snapshot
-	pindex    uint64 // Previous index from the last snapshot
-	commit    uint64 // Index of the most recent commit
-	processed uint64 // Index of the most recently processed commit
-	applied   uint64 // Index of the most recently applied commit
-	papplied  uint64 // First sequence of our log, matches when we last installed a snapshot.
-
-	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
-
-	leader string // The ID of the leader
-	vote   string // Our current vote state
-
-	s  *Server    // Reference to top-level server
-	c  *client    // Internal client for subscriptions
-	js *jetStream // JetStream, if running, to see if we are out of resources
-
-	hasleader atomic.Bool // Is there a group leader right now?
-	pleader   atomic.Bool // Has the group ever had a leader?
-	isSysAcc  atomic.Bool // Are we utilizing the system account?
-
-	extSt extensionState // Extension state
-
-	track bool // Whether out of resources checking is enabled.
-	dflag bool // Debug flag
-
-	psubj  string // Proposals subject
-	rpsubj string // Remove peers subject
-	vsubj  string // Vote requests subject
-	vreply string // Vote responses subject
-	asubj  string // Append entries subject
-	areply string // Append entries responses subject
-
-	sq    *sendq        // Send queue for outbound RPC messages
-	aesub *subscription // Subscription for handleAppendEntry callbacks
-
-	wtv []byte // Term and vote to be written
-	wps []byte // Peer state to be written
-
-	catchup  *catchupState               // For when we need to catch up as a follower.
-	progress map[string]*ipQueue[uint64] // For leader or server catching up a follower.
-
-	hcommit uint64 // The commit at the time that applies were paused
-
-	prop  *ipQueue[*proposedEntry]       // Proposals
-	entry *ipQueue[*appendEntry]         // Append entries
-	resp  *ipQueue[*appendEntryResponse] // Append entries responses
-	apply *ipQueue[*CommittedEntry]      // Apply queue (committed entries to be passed to upper layer)
-	reqs  *ipQueue[*voteRequest]         // Vote requests
-	votes *ipQueue[*voteResponse]        // Vote responses
-	leadc chan bool                      // Leader changes
-	quit  chan struct{}                  // Raft group shutdown
-
-	lxfer        bool // Are we doing a leadership transfer?
-	hcbehind     bool // Were we falling behind at the last health check? (see: isCurrent)
-	maybeLeader  bool // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
-	paused       bool // Whether or not applies are paused
-	observer     bool // The node is observing, i.e. not able to become leader
-	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
-	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
+	state        atomic.Int32
+	leaderState  atomic.Bool
+	hasleader    atomic.Bool
+	pleader      atomic.Bool
+	isSysAcc     atomic.Bool
+	extSt        extensionState
+	track        bool
+	dflag        bool
+	lxfer        bool
+	hcbehind     bool
+	maybeLeader  bool
+	paused       bool
+	observer     bool
+	initializing bool
+	scaleUp      bool
 }
 
 type proposedEntry struct {
@@ -239,12 +219,12 @@ type proposedEntry struct {
 // cacthupState structure that holds our subscription, and catchup term and index
 // as well as starting term and index and how many updates we have seen.
 type catchupState struct {
-	sub    *subscription // Subscription that catchup messages will arrive on
-	cterm  uint64        // Catchup term
-	cindex uint64        // Catchup index
-	pterm  uint64        // Starting term
-	pindex uint64        // Starting index
-	active time.Time     // Last time we received a message for this catchup
+	active time.Time
+	sub    *subscription
+	cterm  uint64
+	cindex uint64
+	pterm  uint64
+	pindex uint64
 }
 
 // lps holds peer state of last time and last index replicated.
@@ -279,21 +259,13 @@ var (
 )
 
 type RaftConfig struct {
-	Name     string
-	Store    string
-	Log      WAL
-	Track    bool
-	Observer bool
-
-	// Recovering must be set for a Raft group that's recovering after a restart, or if it's
-	// first seen after a catchup from another server. If a server recovers with an empty log,
-	// we know to protect against data loss.
+	Log        WAL
+	Name       string
+	Store      string
+	Track      bool
+	Observer   bool
 	Recovering bool
-
-	// ScaleUp identifies the Raft peer set is being scaled up.
-	// We need to protect against losing state due to the new peers starting with an empty log.
-	// Therefore, these empty servers can't try to become leader until they at least have _some_ state.
-	ScaleUp bool
+	ScaleUp    bool
 }
 
 var (
@@ -1194,10 +1166,10 @@ func (n *raft) Processed(index uint64, applied uint64) (entries uint64, bytes ui
 
 // For capturing data needed by snapshot.
 type snapshot struct {
-	lastTerm  uint64
-	lastIndex uint64
 	peerstate []byte
 	data      []byte
+	lastTerm  uint64
+	lastIndex uint64
 }
 
 const minSnapshotLen = 28
@@ -2270,8 +2242,8 @@ var cePool = sync.Pool{
 
 // CommittedEntry is handed back to the user to apply a commit to their upper layer.
 type CommittedEntry struct {
-	Index   uint64
 	Entries []*Entry
+	Index   uint64
 }
 
 // Create a new CommittedEntry. When the returned entry is no longer needed, it
@@ -2321,17 +2293,16 @@ var aePool = sync.Pool{
 
 // appendEntry is the main struct that is used to sync raft peers.
 type appendEntry struct {
-	leader  string   // The leader that this append entry came from.
-	term    uint64   // The term when this entry was stored.
-	commit  uint64   // The commit index of the leader when this append entry was sent.
-	pterm   uint64   // The previous term, for checking consistency.
-	pindex  uint64   // The previous commit index, for checking consistency.
-	entries []*Entry // Entries to process.
-	// Below fields are for internal use only:
-	lterm uint64        // The highest term for catchups only, as the leader understands it. (If lterm=0, use term instead)
-	reply string        // Reply subject to respond to once committed.
-	sub   *subscription // The subscription that the append entry came in on.
-	buf   []byte
+	sub     *subscription
+	leader  string
+	reply   string
+	entries []*Entry
+	buf     []byte
+	term    uint64
+	commit  uint64
+	pterm   uint64
+	pindex  uint64
+	lterm   uint64
 }
 
 // Create a new appendEntry.
@@ -2401,8 +2372,8 @@ func (t EntryType) String() string {
 }
 
 type Entry struct {
-	Type EntryType
 	Data []byte
+	Type EntryType
 }
 
 func (ae *appendEntry) String() string {
@@ -2511,10 +2482,10 @@ const appendEntryResponseLen = 24 + 1
 
 // appendEntryResponse is our response to a received appendEntry.
 type appendEntryResponse struct {
+	peer    string
+	reply   string
 	term    uint64
 	index   uint64
-	peer    string
-	reply   string // internal usage.
 	success bool
 }
 
@@ -4164,12 +4135,11 @@ func (n *raft) sendHeartbeat() {
 }
 
 type voteRequest struct {
+	candidate string
+	reply     string
 	term      uint64
 	lastTerm  uint64
 	lastIndex uint64
-	candidate string
-	// internal only.
-	reply string
 }
 
 const voteRequestLen = 24 + idLen
@@ -4345,10 +4315,10 @@ func (n *raft) writeTermVote() {
 
 // voteResponse is a response to a vote request.
 type voteResponse struct {
-	term    uint64
 	peer    string
+	term    uint64
 	granted bool
-	empty   bool // "Empty vote", whether this peer's log is empty.
+	empty   bool
 }
 
 const voteResponseLen = 8 + 8 + 1

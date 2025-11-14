@@ -6861,8 +6861,8 @@ func TestJetStreamClusterStreamCatchupInteriorNilMsgs(t *testing.T) {
 }
 
 type captureCatchupWarnLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *captureCatchupWarnLogger) Warnf(format string, args ...any) {

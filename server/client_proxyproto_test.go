@@ -26,11 +26,11 @@ import (
 
 // mockConn is a mock net.Conn for testing
 type mockConn struct {
+	deadline time.Time
 	net.Conn
 	readBuf  *bytes.Buffer
 	writeBuf *bytes.Buffer
 	closed   bool
-	deadline time.Time
 }
 
 func newMockConn(data []byte) *mockConn {

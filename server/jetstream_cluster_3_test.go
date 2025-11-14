@@ -894,8 +894,8 @@ func TestJetStreamClusterConsumerInactiveThreshold(t *testing.T) {
 
 // To capture our false warnings for clustered stream lag.
 type testStreamLagWarnLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *testStreamLagWarnLogger) Warnf(format string, v ...any) {
@@ -1113,10 +1113,10 @@ func TestJetStreamClusterSourceWithOptStartTime(t *testing.T) {
 
 type networkCableUnplugged struct {
 	net.Conn
+	wb bytes.Buffer
+	wg sync.WaitGroup
 	sync.Mutex
 	unplugged bool
-	wb        bytes.Buffer
-	wg        sync.WaitGroup
 }
 
 func (c *networkCableUnplugged) Write(b []byte) (int, error) {
@@ -3000,8 +3000,8 @@ func TestJetStreamClusterStreamMaxAgeScaleUp(t *testing.T) {
 
 	for _, test := range []struct {
 		name    string
-		storage nats.StorageType
 		stream  string
+		storage nats.StorageType
 		purge   bool
 	}{
 		{name: "file", storage: nats.FileStorage, stream: "A", purge: false},

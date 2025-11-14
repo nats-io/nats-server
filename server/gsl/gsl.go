@@ -53,8 +53,8 @@ type SimpleSublist = GenericSublist[struct{}]
 
 // A GenericSublist stores and efficiently retrieves subscriptions.
 type GenericSublist[T comparable] struct {
+	root *level[T]
 	sync.RWMutex
-	root  *level[T]
 	count uint32
 }
 

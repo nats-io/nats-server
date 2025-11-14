@@ -12,8 +12,8 @@ import (
 )
 
 type defaultRand struct {
-	mu  sync.Mutex
 	src rand.Source64
+	mu  sync.Mutex
 }
 
 func newDefaultRand() *defaultRand {

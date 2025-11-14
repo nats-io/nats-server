@@ -40,55 +40,36 @@ import (
 
 // jetStreamCluster holds information about the meta group and stream assignments.
 type jetStreamCluster struct {
-	// The metacontroller raftNode.
-	meta RaftNode
-	// For stream and consumer assignments. All servers will have this be the same.
-	// ACCOUNT -> STREAM -> Stream Assignment -> Consumers
-	streams map[string]map[string]*streamAssignment
-	// These are inflight proposals and used to apply limits when there are
-	// concurrent requests that would otherwise be accepted.
-	// We also record the group for the stream. This is needed since if we have
-	// concurrent requests for same account and stream we need to let it process to get
-	// a response but they need to be same group, peers etc. and sync subjects.
-	inflight map[string]map[string]*inflightInfo
-	// Signals meta-leader should check the stream assignments.
-	streamsCheck bool
-	// Server.
-	s *Server
-	// Internal client.
-	c *client
-	// Processing assignment results.
-	streamResults   *subscription
-	consumerResults *subscription
-	// System level request to have the leader stepdown.
-	stepdown *subscription
-	// System level requests to remove a peer.
-	peerRemove *subscription
-	// System level request to move a stream
-	peerStreamMove *subscription
-	// System level request to cancel a stream move
+	meta                 RaftNode
+	stepdown             *subscription
 	peerStreamCancelMove *subscription
-	// To pop out the monitorCluster before the raft layer.
-	qch chan struct{}
-	// To notify others that monitorCluster has actually stopped.
-	stopped chan struct{}
-	// Track last meta snapshot time and duration for monitoring.
-	lastMetaSnapTime     int64 // Unix nanoseconds
-	lastMetaSnapDuration int64 // Duration in nanoseconds
+	stopped              chan struct{}
+	s                    *Server
+	c                    *client
+	streamResults        *subscription
+	inflight             map[string]map[string]*inflightInfo
+	peerRemove           *subscription
+	consumerResults      *subscription
+	peerStreamMove       *subscription
+	streams              map[string]map[string]*streamAssignment
+	qch                  chan struct{}
+	lastMetaSnapTime     int64
+	lastMetaSnapDuration int64
+	streamsCheck         bool
 }
 
 // Used to track inflight stream add requests to properly re-use same group and sync subject.
 type inflightInfo struct {
 	rg   *raftGroup
-	sync string
 	cfg  *StreamConfig
+	sync string
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
 type Placement struct {
 	Cluster   string   `json:"cluster,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
 	Preferred string   `json:"preferred,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
 }
 
 // Define types of the entry.
@@ -129,42 +110,40 @@ const (
 // raftGroups are controlled by the metagroup controller.
 // The raftGroups will house streams and consumers.
 type raftGroup struct {
+	node      RaftNode
 	Name      string      `json:"name"`
-	Peers     []string    `json:"peers"`
-	Storage   StorageType `json:"store"`
 	Cluster   string      `json:"cluster,omitempty"`
 	Preferred string      `json:"preferred,omitempty"`
+	Peers     []string    `json:"peers"`
+	Storage   StorageType `json:"store"`
 	ScaleUp   bool        `json:"scale_up,omitempty"`
-	// Internal
-	node RaftNode
 }
 
 // streamAssignment is what the meta controller uses to assign streams to peers.
 type streamAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
-	Created    time.Time       `json:"created"`
-	ConfigJSON json.RawMessage `json:"stream"`
-	Config     *StreamConfig   `json:"-"`
-	Group      *raftGroup      `json:"group"`
-	Sync       string          `json:"sync"`
-	Subject    string          `json:"subject,omitempty"`
-	Reply      string          `json:"reply,omitempty"`
-	Restore    *StreamState    `json:"restore_state,omitempty"`
-	// Internal
+	Created     time.Time `json:"created"`
+	err         error
+	Restore     *StreamState `json:"restore_state,omitempty"`
+	Client      *ClientInfo  `json:"client,omitempty"`
+	Group       *raftGroup   `json:"group"`
+	unsupported *unsupportedStreamAssignment
+	Config      *StreamConfig `json:"-"`
 	consumers   map[string]*consumerAssignment
+	Subject     string          `json:"subject,omitempty"`
+	Reply       string          `json:"reply,omitempty"`
+	Sync        string          `json:"sync"`
+	ConfigJSON  json.RawMessage `json:"stream"`
 	responded   bool
 	recovering  bool
-	reassigning bool // i.e. due to placement issues, lack of resources, etc.
-	resetting   bool // i.e. there was an error, and we're stopping and starting the stream
-	err         error
-	unsupported *unsupportedStreamAssignment
+	reassigning bool
+	resetting   bool
 }
 
 type unsupportedStreamAssignment struct {
-	reason  string
 	info    StreamInfo
 	sysc    *client
 	infoSub *subscription
+	reason  string
 }
 
 func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, err error) *unsupportedStreamAssignment {
@@ -225,30 +204,29 @@ func (usa *unsupportedStreamAssignment) closeInfoSub(s *Server) {
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
 type consumerAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
-	Created    time.Time       `json:"created"`
-	Name       string          `json:"name"`
-	Stream     string          `json:"stream"`
-	ConfigJSON json.RawMessage `json:"consumer"`
-	Config     *ConsumerConfig `json:"-"`
-	Group      *raftGroup      `json:"group"`
-	Subject    string          `json:"subject,omitempty"`
-	Reply      string          `json:"reply,omitempty"`
-	State      *ConsumerState  `json:"state,omitempty"`
-	// Internal
-	responded   bool
-	recovering  bool
+	Created     time.Time `json:"created"`
+	err         error
+	Client      *ClientInfo     `json:"client,omitempty"`
+	Config      *ConsumerConfig `json:"-"`
+	Group       *raftGroup      `json:"group"`
+	State       *ConsumerState  `json:"state,omitempty"`
+	unsupported *unsupportedConsumerAssignment
+	Name        string          `json:"name"`
+	Stream      string          `json:"stream"`
+	Subject     string          `json:"subject,omitempty"`
+	Reply       string          `json:"reply,omitempty"`
+	ConfigJSON  json.RawMessage `json:"consumer"`
 	pending     bool
 	deleted     bool
-	err         error
-	unsupported *unsupportedConsumerAssignment
+	recovering  bool
+	responded   bool
 }
 
 type unsupportedConsumerAssignment struct {
-	reason  string
-	info    ConsumerInfo
 	sysc    *client
 	infoSub *subscription
+	reason  string
+	info    ConsumerInfo
 }
 
 func newUnsupportedConsumerAssignment(ca *consumerAssignment, err error) *unsupportedConsumerAssignment {
@@ -309,33 +287,33 @@ func (uca *unsupportedConsumerAssignment) closeInfoSub(s *Server) {
 }
 
 type writeableConsumerAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
 	Created    time.Time       `json:"created"`
+	Client     *ClientInfo     `json:"client,omitempty"`
+	Group      *raftGroup      `json:"group"`
+	State      *ConsumerState  `json:"state,omitempty"`
 	Name       string          `json:"name"`
 	Stream     string          `json:"stream"`
 	ConfigJSON json.RawMessage `json:"consumer"`
-	Group      *raftGroup      `json:"group"`
-	State      *ConsumerState  `json:"state,omitempty"`
 }
 
 // streamPurge is what the stream leader will replicate when purging a stream.
 type streamPurge struct {
 	Client  *ClientInfo              `json:"client,omitempty"`
+	Request *JSApiStreamPurgeRequest `json:"request,omitempty"`
 	Stream  string                   `json:"stream"`
-	LastSeq uint64                   `json:"last_seq"`
 	Subject string                   `json:"subject"`
 	Reply   string                   `json:"reply"`
-	Request *JSApiStreamPurgeRequest `json:"request,omitempty"`
+	LastSeq uint64                   `json:"last_seq"`
 }
 
 // streamMsgDelete is what the stream leader will replicate when deleting a message.
 type streamMsgDelete struct {
 	Client  *ClientInfo `json:"client,omitempty"`
 	Stream  string      `json:"stream"`
-	Seq     uint64      `json:"seq"`
-	NoErase bool        `json:"no_erase,omitempty"`
 	Subject string      `json:"subject"`
 	Reply   string      `json:"reply"`
+	Seq     uint64      `json:"seq"`
+	NoErase bool        `json:"no_erase,omitempty"`
 }
 
 const (
@@ -5028,10 +5006,10 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 }
 
 type consumerAssignmentResult struct {
+	Response *JSApiConsumerCreateResponse `json:"response,omitempty"`
 	Account  string                       `json:"account"`
 	Stream   string                       `json:"stream"`
 	Consumer string                       `json:"consumer"`
-	Response *JSApiConsumerCreateResponse `json:"response,omitempty"`
 }
 
 // processClusterCreateConsumer is when we are a member of the group and need to create the consumer.
@@ -6104,10 +6082,10 @@ func (s *Server) sendConsumerLeaderElectAdvisory(o *consumer) {
 }
 
 type streamAssignmentResult struct {
-	Account  string                      `json:"account"`
-	Stream   string                      `json:"stream"`
 	Response *JSApiStreamCreateResponse  `json:"create_response,omitempty"`
 	Restore  *JSApiStreamRestoreResponse `json:"restore_response,omitempty"`
+	Account  string                      `json:"account"`
+	Stream   string                      `json:"stream"`
 	Update   bool                        `json:"is_update,omitempty"`
 }
 
@@ -6434,14 +6412,14 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 }
 
 type selectPeerError struct {
+	noMatchTags map[string]struct{}
+	excludeTags map[string]struct{}
 	excludeTag  bool
 	offline     bool
 	noStorage   bool
 	uniqueTag   bool
 	misc        bool
 	noJsClust   bool
-	noMatchTags map[string]struct{}
-	excludeTags map[string]struct{}
 }
 
 func (e *selectPeerError) Error() string {
@@ -8792,12 +8770,12 @@ func (mset *stream) supportsBinarySnapshotLocked() bool {
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
 // Legacy, replace with binary stream snapshots.
 type streamSnapshot struct {
+	Deleted  []uint64 `json:"deleted,omitempty"`
 	Msgs     uint64   `json:"messages"`
 	Bytes    uint64   `json:"bytes"`
 	FirstSeq uint64   `json:"first_seq"`
 	LastSeq  uint64   `json:"last_seq"`
 	Failed   uint64   `json:"clfs"`
-	Deleted  []uint64 `json:"deleted,omitempty"`
 }
 
 // Grab a snapshot of a stream for clustered mode.
@@ -9356,8 +9334,8 @@ RETRY:
 
 	// Used to transfer message from the wire to another Go routine internally.
 	type im struct {
-		msg   []byte
 		reply string
+		msg   []byte
 	}
 	// This is used to notify the leader that it should stop the runCatchup
 	// because we are either bailing out or going to retry due to an error.

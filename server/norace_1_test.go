@@ -1008,8 +1008,8 @@ func TestNoRaceQueueAutoUnsubscribe(t *testing.T) {
 
 func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 	for _, test := range []struct {
-		name string
 		url  func(o *Options) (string, int)
+		name string
 	}{
 		{name: "client", url: func(o *Options) (string, int) { return o.Host, o.Port }},
 		{name: "route", url: func(o *Options) (string, int) { return o.Cluster.Host, o.Cluster.Port }},
@@ -1038,7 +1038,7 @@ func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 			defer s.Shutdown()
 
 			host, port := test.url(o)
-			url := fmt.Sprintf("%s:%d", host, port)
+			url := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 			var conns []net.Conn
 
 			wg := sync.WaitGroup{}
@@ -4354,8 +4354,8 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 	msg := []byte("ok")
 
 	cases := []struct {
-		name    string
 		mconfig *nats.StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &nats.StreamConfig{Name: "TEST", Storage: nats.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
 			Subjects: []string{"*"}}},

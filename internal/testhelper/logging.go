@@ -26,9 +26,9 @@ import (
 )
 
 type DummyLogger struct {
-	sync.Mutex
 	Msg     string
 	AllMsgs []string
+	sync.Mutex
 }
 
 func (l *DummyLogger) CheckContent(t *testing.T, expectedStr string) {

@@ -31,8 +31,8 @@ import (
 // Nonce has to be a string since we used different encoding by default than json.Unmarshal.
 type nonceInfo struct {
 	Id    string `json:"server_id"`
-	CID   uint64 `json:"client_id,omitempty"`
 	Nonce string `json:"nonce,omitempty"`
+	CID   uint64 `json:"client_id,omitempty"`
 }
 
 // This is a seed for a user. We can extract public and private keys from this for testing.

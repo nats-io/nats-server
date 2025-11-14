@@ -23,34 +23,34 @@ import (
 
 type parserState int
 type parseState struct {
-	state   parserState
-	op      byte
-	as      int
-	drop    int
+	header  http.Header
 	pa      pubArg
 	argBuf  []byte
 	msgBuf  []byte
-	header  http.Header // access via getHeader
+	state   parserState
+	as      int
+	drop    int
 	scratch [MAX_CONTROL_LINE_SIZE]byte
+	op      byte
 }
 
 type pubArg struct {
+	trace     *msgTrace
+	szb       []byte
 	arg       []byte
-	pacache   []byte
-	origin    []byte
 	account   []byte
 	subject   []byte
 	deliver   []byte
 	mapped    []byte
+	origin    []byte
+	pacache   []byte
 	reply     []byte
-	szb       []byte
-	hdb       []byte
 	queues    [][]byte
-	size      int
-	hdr       int
+	hdb       []byte
 	psi       []*serviceImport
-	trace     *msgTrace
-	delivered bool // Only used for service imports
+	hdr       int
+	size      int
+	delivered bool
 }
 
 // Parser constants

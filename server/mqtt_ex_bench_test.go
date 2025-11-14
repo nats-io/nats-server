@@ -35,14 +35,13 @@ type mqttBenchMatrix struct {
 }
 
 type mqttBenchContext struct {
+	Host        string
 	QOS         int
 	MessageSize int
 	Topics      int
 	Publishers  int
 	Subscribers int
-
-	Host string
-	Port int
+	Port        int
 }
 
 var mqttBenchDefaultMatrix = mqttBenchMatrix{
@@ -54,8 +53,8 @@ var mqttBenchDefaultMatrix = mqttBenchMatrix{
 }
 
 type MQTTBenchmarkResult struct {
-	Ops   int                      `json:"ops"`
 	NS    map[string]time.Duration `json:"ns"`
+	Ops   int                      `json:"ops"`
 	Bytes int64                    `json:"bytes"`
 }
 

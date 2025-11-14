@@ -406,9 +406,9 @@ func (u *nkeysOption) Apply(server *Server) {
 type clusterOption struct {
 	authOption
 	newValue        ClusterOpts
-	permsChanged    bool
 	accsAdded       []string
 	accsRemoved     []string
+	permsChanged    bool
 	poolSizeChanged bool
 	compressChanged bool
 }

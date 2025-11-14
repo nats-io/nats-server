@@ -41,15 +41,15 @@ import (
 type serverInfo struct {
 	ID           string   `json:"server_id"`
 	Host         string   `json:"host"`
-	Port         uint     `json:"port"`
 	Version      string   `json:"version"`
+	ConnectURLs  []string `json:"connect_urls,omitempty"`
+	Port         uint     `json:"port"`
+	MaxPayload   int64    `json:"max_payload"`
+	CID          uint64   `json:"client_id,omitempty"`
 	AuthRequired bool     `json:"auth_required"`
 	TLSRequired  bool     `json:"tls_required"`
-	MaxPayload   int64    `json:"max_payload"`
 	Headers      bool     `json:"headers"`
-	ConnectURLs  []string `json:"connect_urls,omitempty"`
 	LameDuckMode bool     `json:"ldm,omitempty"`
-	CID          uint64   `json:"client_id,omitempty"`
 }
 
 type testAsyncClient struct {
@@ -849,8 +849,8 @@ func TestSplitSubjectQueue(t *testing.T) {
 
 func TestTypeString(t *testing.T) {
 	cases := []struct {
-		intType    int
 		stringType string
+		intType    int
 	}{
 		{
 			intType:    CLIENT,
@@ -1263,7 +1263,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	s := RunServer(serverOptions)
 	defer s.Shutdown()
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", serverOptions.Host, serverOptions.Port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(serverOptions.Host, fmt.Sprintf("%d", serverOptions.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
@@ -1357,7 +1357,7 @@ func TestClientCloseTLSConnection(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)
@@ -1640,8 +1640,8 @@ func TestClientUserInfo(t *testing.T) {
 }
 
 type captureWarnLogger struct {
-	DummyLogger
 	warn chan string
+	DummyLogger
 }
 
 func (l *captureWarnLogger) Warnf(format string, v ...any) {
@@ -1704,8 +1704,8 @@ func TestTraceMsg(t *testing.T) {
 
 	cases := []struct {
 		Desc            string
-		Msg             []byte
 		Wanted          string
+		Msg             []byte
 		MaxTracedMsgLen int
 	}{
 		{
@@ -1759,9 +1759,9 @@ func TestTraceMsgHeadersOnly(t *testing.T) {
 
 	cases := []struct {
 		Desc            string
+		Wanted          string
 		Msg             []byte
 		Hdr             int
-		Wanted          string
 		MaxTracedMsgLen int
 	}{
 		{
@@ -1890,11 +1890,11 @@ func TestTraceMsgDeliveryWithHeaders(t *testing.T) {
 
 	cases := []struct {
 		name         string
+		expected     string
 		msg          []byte
 		hdr          int
 		traceDeliver bool
 		traceHeaders bool
-		expected     string
 	}{
 		{
 			name:         "delivery with headers enabled",
@@ -1988,8 +1988,8 @@ func TestClientMaxPending(t *testing.T) {
 
 func TestResponsePermissions(t *testing.T) {
 	for i, test := range []struct {
-		name  string
 		perms *ResponsePermission
+		name  string
 	}{
 		{name: "max_msgs", perms: &ResponsePermission{MaxMsgs: 2, Expires: time.Hour}},
 		{name: "no_expire_limit", perms: &ResponsePermission{MaxMsgs: 3, Expires: -1 * time.Millisecond}},
@@ -2182,7 +2182,7 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	c, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
 	if err != nil {
 		t.Fatalf("Error connecting: %v", err)
 	}
@@ -2338,8 +2338,8 @@ func TestPBNotIncreasedOnMaxPending(t *testing.T) {
 
 type testConnWritePartial struct {
 	net.Conn
-	partial bool
 	buf     bytes.Buffer
+	partial bool
 }
 
 func (c *testConnWritePartial) Write(p []byte) (int, error) {
@@ -2522,8 +2522,8 @@ func TestClientConnectionName(t *testing.T) {
 
 	for _, test := range []struct {
 		name    string
-		kind    int
 		kindStr string
+		kind    int
 		ws      bool
 		mqtt    bool
 	}{

@@ -71,8 +71,8 @@ func TestXMQTTRetainedMessages(t *testing.T) {
 	}
 
 	for _, topo := range []struct {
-		name  string
 		makef func(testing.TB) *mqttTarget
+		name  string
 	}{
 		{
 			name:  "single server",

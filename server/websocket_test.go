@@ -41,10 +41,10 @@ import (
 )
 
 type testReader struct {
+	err error
 	buf []byte
 	pos int
 	max int
-	err error
 }
 
 func (tr *testReader) Read(p []byte) (int, error) {
@@ -73,11 +73,11 @@ func TestWSGet(t *testing.T) {
 
 	for _, test := range []struct {
 		name   string
+		result string
 		pos    int
 		needed int
 		newpos int
 		trmax  int
-		result string
 		reterr bool
 	}{
 		{name: "fromrb1", pos: 0, needed: 3, newpos: 3, trmax: 4, result: "012", reterr: false},    // Partial from read buffer
@@ -647,8 +647,8 @@ func TestWSReadPongFrame(t *testing.T) {
 func TestWSReadCloseFrame(t *testing.T) {
 	for _, test := range []struct {
 		name     string
-		noStatus bool
 		payload  []byte
+		noStatus bool
 	}{
 		{name: "status without payload", noStatus: false, payload: nil},
 		{name: "status with payload", noStatus: false, payload: []byte("optional payload")},
@@ -1051,11 +1051,11 @@ func TestWSEnqueueCloseMsg(t *testing.T) {
 
 type testResponseWriter struct {
 	http.ResponseWriter
-	buf     bytes.Buffer
-	headers http.Header
 	err     error
+	headers http.Header
 	brw     *bufio.ReadWriter
 	conn    *testWSFakeNetConn
+	buf     bytes.Buffer
 }
 
 func (trw *testResponseWriter) Write(p []byte) (int, error) {
@@ -1075,8 +1075,8 @@ func (trw *testResponseWriter) Header() http.Header {
 
 type testWSFakeNetConn struct {
 	net.Conn
-	wbuf            bytes.Buffer
 	err             error
+	wbuf            bytes.Buffer
 	wsOpened        bool
 	isClosed        bool
 	deadlineCleared bool
@@ -1152,12 +1152,12 @@ func TestWSCheckOrigin(t *testing.T) {
 
 	for _, test := range []struct {
 		name       string
-		sameOrigin bool
-		origins    []string
 		reqHost    string
-		reqTLS     bool
 		origin     string
 		err        string
+		origins    []string
+		sameOrigin bool
+		reqTLS     bool
 	}{
 		{name: "any", sameOrigin: notSameOrigin, origins: allowedListEmpty, reqHost: "", reqTLS: false, origin: "http://any.host.com", err: ""},
 		{name: "same origin ok", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "host.com", reqTLS: false, origin: "http://host.com:80", err: ""},
@@ -1816,8 +1816,8 @@ func TestWSSetOriginOptions(t *testing.T) {
 }
 
 type captureFatalLogger struct {
-	DummyLogger
 	fatalCh chan string
+	DummyLogger
 }
 
 func (l *captureFatalLogger) Fatalf(format string, v ...any) {
@@ -1906,13 +1906,14 @@ func TestWSAbnormalFailureOfWebServer(t *testing.T) {
 }
 
 type testWSClientOptions struct {
-	compress, web        bool
-	host                 string
-	port                 int
 	extraHeaders         map[string][]string
-	noTLS                bool
-	path                 string
 	extraResponseHeaders map[string]string
+	host                 string
+	path                 string
+	port                 int
+	compress             bool
+	web                  bool
+	noTLS                bool
 }
 
 func testNewWSClient(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Reader, []byte) {
@@ -1925,7 +1926,7 @@ func testNewWSClient(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Read
 }
 
 func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Reader, []byte, error) {
-	addr := fmt.Sprintf("%s:%d", o.host, o.port)
+	addr := net.JoinHostPort(o.host, fmt.Sprintf("%d", o.port))
 	wsc, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("Error creating ws connection: %v", err)
@@ -1991,11 +1992,11 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 }
 
 type testClaimsOptions struct {
+	connectRequest any
 	nac            *jwt.AccountClaims
 	nuc            *jwt.UserClaims
-	connectRequest any
-	dontSign       bool
 	expectAnswer   string
+	dontSign       bool
 }
 
 func testWSWithClaims(t *testing.T, s *Server, o testWSClientOptions, tclm testClaimsOptions) (kp nkeys.KeyPair, conn net.Conn, rdr *bufio.Reader, auth_was_required bool) {
@@ -2225,7 +2226,7 @@ func TestWSTLSConnection(t *testing.T) {
 	s := RunServer(o)
 	defer s.Shutdown()
 
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 
 	for _, test := range []struct {
 		name   string
@@ -2285,7 +2286,7 @@ func TestWSTLSVerifyClientCert(t *testing.T) {
 	s := RunServer(o)
 	defer s.Shutdown()
 
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 
 	for _, test := range []struct {
 		name        string
@@ -2398,7 +2399,7 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 			s := RunServer(o)
 			defer s.Shutdown()
 
-			addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+			addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 			wsc, err := net.Dial("tcp", addr)
 			if err != nil {
 				t.Fatalf("Error creating ws connection: %v", err)
@@ -2499,7 +2500,7 @@ func TestWSHandshakeTimeout(t *testing.T) {
 	logger := &captureErrorLogger{errCh: make(chan string, 1)}
 	s.SetLogger(logger, false, false)
 
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 	wsc, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Error creating ws connection: %v", err)
@@ -2971,8 +2972,8 @@ func TestWSWebrowserClient(t *testing.T) {
 
 type testWSWrappedConn struct {
 	net.Conn
-	mu      sync.RWMutex
 	buf     *bytes.Buffer
+	mu      sync.RWMutex
 	partial bool
 }
 
@@ -3433,9 +3434,9 @@ func TestWSBasicAuth(t *testing.T) {
 func TestWSAuthTimeout(t *testing.T) {
 	for _, test := range []struct {
 		name string
+		err  string
 		at   float64
 		wat  float64
-		err  string
 	}{
 		{name: "use top-level auth timeout", at: 10.0, wat: 0.0, err: ""},
 		{name: "use websocket auth timeout", at: 10.0, wat: 0.05, err: "-ERR 'Authentication Timeout'"},
@@ -3720,10 +3721,10 @@ func TestWSNoAuthUserValidation(t *testing.T) {
 func TestWSNoAuthUser(t *testing.T) {
 	for _, test := range []struct {
 		name         string
-		override     bool
-		useAuth      bool
 		expectedUser string
 		expectedAcc  string
+		override     bool
+		useAuth      bool
 	}{
 		{name: "no override, no user provided", override: false, useAuth: false, expectedUser: "noauth", expectedAcc: "normal"},
 		{name: "no override, user povided", override: false, useAuth: true, expectedUser: "user", expectedAcc: "normal"},
@@ -3926,8 +3927,8 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 
 	for _, test := range []struct {
 		name            string
-		connectionTypes []string
 		expectedAnswer  string
+		connectionTypes []string
 	}{
 		{name: "not allowed", connectionTypes: []string{jwt.ConnectionTypeStandard}, expectedAnswer: "-ERR"},
 		{name: "allowed", connectionTypes: []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeWebsocket)}, expectedAnswer: "+OK"},
@@ -4196,8 +4197,8 @@ func TestWSReloadTLSConfig(t *testing.T) {
 }
 
 type captureClientConnectedLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *captureClientConnectedLogger) Debugf(format string, v ...any) {
@@ -4220,10 +4221,10 @@ func TestWSXForwardedFor(t *testing.T) {
 	s.SetLogger(l, true, false)
 
 	for _, test := range []struct {
-		name          string
 		headers       func() map[string][]string
-		useHdrValue   bool
+		name          string
 		expectedValue string
+		useHdrValue   bool
 	}{
 		{name: "nil map", headers: func() map[string][]string {
 			return nil

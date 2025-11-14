@@ -365,8 +365,8 @@ const JSDefaultRequestQueueLimit = 10_000
 
 // ApiResponse is a standard response from the JetStream JSON API
 type ApiResponse struct {
-	Type  string    `json:"type"`
 	Error *ApiError `json:"error,omitempty"`
+	Type  string    `json:"type"`
 }
 
 const JSApiSystemResponseType = "io.nats.jetstream.api.v1.system_response"
@@ -430,15 +430,15 @@ const JSApiStreamDeleteResponseType = "io.nats.jetstream.api.v1.stream_delete_re
 const JSMaxSubjectDetails = 100_000
 
 type JSApiStreamInfoRequest struct {
-	ApiPagedRequest
-	DeletedDetails bool   `json:"deleted_details,omitempty"`
 	SubjectsFilter string `json:"subjects_filter,omitempty"`
+	ApiPagedRequest
+	DeletedDetails bool `json:"deleted_details,omitempty"`
 }
 
 type JSApiStreamInfoResponse struct {
 	ApiResponse
-	ApiPaged
 	*StreamInfo
+	ApiPaged
 }
 
 const JSApiStreamInfoResponseType = "io.nats.jetstream.api.v1.stream_info_response"
@@ -449,35 +449,33 @@ const JSApiNamesLimit = 1024
 const JSApiListLimit = 256
 
 type JSApiStreamNamesRequest struct {
-	ApiPagedRequest
-	// These are filters that can be applied to the list.
 	Subject string `json:"subject,omitempty"`
+	ApiPagedRequest
 }
 
 // JSApiStreamNamesResponse list of streams.
 // A nil request is valid and means all streams.
 type JSApiStreamNamesResponse struct {
 	ApiResponse
-	ApiPaged
 	Streams []string `json:"streams"`
+	ApiPaged
 }
 
 const JSApiStreamNamesResponseType = "io.nats.jetstream.api.v1.stream_names_response"
 
 type JSApiStreamListRequest struct {
-	ApiPagedRequest
-	// These are filters that can be applied to the list.
 	Subject string `json:"subject,omitempty"`
+	ApiPagedRequest
 }
 
 // JSApiStreamListResponse list of detailed stream information.
 // A nil request is valid and means all streams.
 type JSApiStreamListResponse struct {
 	ApiResponse
-	ApiPaged
+	Offline map[string]string `json:"offline,omitempty"`
 	Streams []*StreamInfo     `json:"streams"`
 	Missing []string          `json:"missing,omitempty"`
-	Offline map[string]string `json:"offline,omitempty"`
+	ApiPaged
 }
 
 const JSApiStreamListResponseType = "io.nats.jetstream.api.v1.stream_list_response"
@@ -488,12 +486,9 @@ const JSApiStreamListResponseType = "io.nats.jetstream.api.v1.stream_list_respon
 // Keep will specify how many messages to keep. This can also be combined with subject filtering.
 // Note that Sequence and Keep are mutually exclusive, so both can not be set at the same time.
 type JSApiStreamPurgeRequest struct {
-	// Purge up to but not including sequence.
+	Subject  string `json:"filter,omitempty"`
 	Sequence uint64 `json:"seq,omitempty"`
-	// Subject to match against messages for the purge command.
-	Subject string `json:"filter,omitempty"`
-	// Number of messages to keep.
-	Keep uint64 `json:"keep,omitempty"`
+	Keep     uint64 `json:"keep,omitempty"`
 }
 
 type JSApiStreamPurgeResponse struct {
@@ -536,15 +531,10 @@ type JSApiMsgDeleteResponse struct {
 const JSApiMsgDeleteResponseType = "io.nats.jetstream.api.v1.stream_msg_delete_response"
 
 type JSApiStreamSnapshotRequest struct {
-	// Subject to deliver the chunks to for the snapshot.
 	DeliverSubject string `json:"deliver_subject"`
-	// Do not include consumers in the snapshot.
-	NoConsumers bool `json:"no_consumers,omitempty"`
-	// Optional chunk size preference.
-	// Best to just let server select.
-	ChunkSize int `json:"chunk_size,omitempty"`
-	// Check all message's checksums prior to snapshot.
-	CheckMsgs bool `json:"jsck,omitempty"`
+	ChunkSize      int    `json:"chunk_size,omitempty"`
+	NoConsumers    bool   `json:"no_consumers,omitempty"`
+	CheckMsgs      bool   `json:"jsck,omitempty"`
 }
 
 // JSApiStreamSnapshotResponse is the direct response to the snapshot request.
@@ -658,27 +648,16 @@ type JSApiAccountPurgeResponse struct {
 
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
-	Seq     uint64 `json:"seq,omitempty"`
-	LastFor string `json:"last_by_subj,omitempty"`
-	NextFor string `json:"next_by_subj,omitempty"`
-
-	// Batch support. Used to request more than one msg at a time.
-	// Can be used with simple starting seq, but also NextFor with wildcards.
-	Batch int `json:"batch,omitempty"`
-	// This will make sure we limit how much data we blast out. If not set we will
-	// inherit the slow consumer default max setting of the server. Default is MAX_PENDING_SIZE.
-	MaxBytes int `json:"max_bytes,omitempty"`
-	// Return messages as of this start time.
-	StartTime *time.Time `json:"start_time,omitempty"`
-
-	// Multiple response support. Will get the last msgs matching the subjects. These can include wildcards.
-	MultiLastFor []string `json:"multi_last,omitempty"`
-	// Only return messages up to this sequence. If not set, will be last sequence for the stream.
-	UpToSeq uint64 `json:"up_to_seq,omitempty"`
-	// Only return messages up to this time.
-	UpToTime *time.Time `json:"up_to_time,omitempty"`
-	// Only return the message payload, excluding headers if present.
-	NoHeaders bool `json:"no_hdr,omitempty"`
+	StartTime    *time.Time `json:"start_time,omitempty"`
+	UpToTime     *time.Time `json:"up_to_time,omitempty"`
+	LastFor      string     `json:"last_by_subj,omitempty"`
+	NextFor      string     `json:"next_by_subj,omitempty"`
+	MultiLastFor []string   `json:"multi_last,omitempty"`
+	Seq          uint64     `json:"seq,omitempty"`
+	Batch        int        `json:"batch,omitempty"`
+	MaxBytes     int        `json:"max_bytes,omitempty"`
+	UpToSeq      uint64     `json:"up_to_seq,omitempty"`
+	NoHeaders    bool       `json:"no_hdr,omitempty"`
 }
 
 type JSApiMsgGetResponse struct {
@@ -713,9 +692,9 @@ const JSApiConsumerPauseResponseType = "io.nats.jetstream.api.v1.consumer_pause_
 
 type JSApiConsumerPauseResponse struct {
 	ApiResponse
-	Paused         bool          `json:"paused"`
 	PauseUntil     time.Time     `json:"pause_until"`
 	PauseRemaining time.Duration `json:"pause_remaining,omitempty"`
+	Paused         bool          `json:"paused"`
 }
 
 type JSApiConsumerInfoResponse struct {
@@ -731,30 +710,30 @@ type JSApiConsumersRequest struct {
 
 type JSApiConsumerNamesResponse struct {
 	ApiResponse
-	ApiPaged
 	Consumers []string `json:"consumers"`
+	ApiPaged
 }
 
 const JSApiConsumerNamesResponseType = "io.nats.jetstream.api.v1.consumer_names_response"
 
 type JSApiConsumerListResponse struct {
 	ApiResponse
-	ApiPaged
+	Offline   map[string]string `json:"offline,omitempty"`
 	Consumers []*ConsumerInfo   `json:"consumers"`
 	Missing   []string          `json:"missing,omitempty"`
-	Offline   map[string]string `json:"offline,omitempty"`
+	ApiPaged
 }
 
 const JSApiConsumerListResponseType = "io.nats.jetstream.api.v1.consumer_list_response"
 
 // JSApiConsumerGetNextRequest is for getting next messages for pull based consumers.
 type JSApiConsumerGetNextRequest struct {
+	PriorityGroup
 	Expires   time.Duration `json:"expires,omitempty"`
 	Batch     int           `json:"batch,omitempty"`
 	MaxBytes  int           `json:"max_bytes,omitempty"`
-	NoWait    bool          `json:"no_wait,omitempty"`
 	Heartbeat time.Duration `json:"idle_heartbeat,omitempty"`
-	PriorityGroup
+	NoWait    bool          `json:"no_wait,omitempty"`
 }
 
 // Structure that holds state for a JetStream API request that is processed
@@ -763,10 +742,10 @@ type jsAPIRoutedReq struct {
 	jsub    *subscription
 	sub     *subscription
 	acc     *Account
+	pa      pubArg
 	subject string
 	reply   string
 	msg     []byte
-	pa      pubArg
 }
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
@@ -918,8 +897,8 @@ func (s *Server) setJetStreamExportSubs() error {
 
 	// API handles themselves.
 	pairs := []struct {
-		subject string
 		handler msgHandler
+		subject string
 	}{
 		{subject: JSApiAccountInfo, handler: s.jsAccountInfoRequest},
 		{subject: JSApiStreamCreate, handler: s.jsStreamCreateRequest},
@@ -979,17 +958,17 @@ func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply
 const errRespDelay = 500 * time.Millisecond
 
 type delayedAPIResponse struct {
+	deadline time.Time
 	ci       *ClientInfo
 	acc      *Account
+	rg       *raftGroup
+	next     *delayedAPIResponse
 	subject  string
 	reply    string
 	request  string
-	hdr      []byte
 	response string
-	rg       *raftGroup
-	deadline time.Time
+	hdr      []byte
 	noJs     bool
-	next     *delayedAPIResponse
 }
 
 // Add `r` in the list that is maintained ordered by the `delayedAPIResponse.deadline` time.

@@ -30,17 +30,17 @@ const defaultLogPerms = os.FileMode(0640)
 
 // Logger is the server logger
 type Logger struct {
-	sync.Mutex
 	logger     *log.Logger
-	debug      bool
-	trace      bool
+	fl         *fileLogger
 	infoLabel  string
 	warnLabel  string
 	errorLabel string
 	fatalLabel string
 	debugLabel string
 	traceLabel string
-	fl         *fileLogger
+	sync.Mutex
+	debug bool
+	trace bool
 }
 
 type LogOption interface {
@@ -130,17 +130,17 @@ type writerAndCloser interface {
 }
 
 type fileLogger struct {
-	out       int64
-	canRotate int32
-	sync.Mutex
-	l           *Logger
 	f           writerAndCloser
+	l           *Logger
+	pid         string
+	out         int64
 	limit       int64
 	olimit      int64
-	pid         string
-	time        bool
-	closed      bool
 	maxNumFiles int
+	sync.Mutex
+	canRotate int32
+	time      bool
+	closed    bool
 }
 
 func newFileLogger(filename, pidPrefix string, time bool) (*fileLogger, error) {

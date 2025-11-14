@@ -54,97 +54,79 @@ var (
 const JsPullRequestRemainingBytesT = "NATS/1.0 409 Batch Completed\r\n%s: %d\r\n%s: %d\r\n\r\n"
 
 type ConsumerInfo struct {
-	Stream         string          `json:"stream_name"`
-	Name           string          `json:"name"`
-	Created        time.Time       `json:"created"`
-	Config         *ConsumerConfig `json:"config,omitempty"`
-	Delivered      SequenceInfo    `json:"delivered"`
-	AckFloor       SequenceInfo    `json:"ack_floor"`
-	NumAckPending  int             `json:"num_ack_pending"`
-	NumRedelivered int             `json:"num_redelivered"`
-	NumWaiting     int             `json:"num_waiting"`
-	NumPending     uint64          `json:"num_pending"`
-	Cluster        *ClusterInfo    `json:"cluster,omitempty"`
-	PushBound      bool            `json:"push_bound,omitempty"`
-	Paused         bool            `json:"paused,omitempty"`
-	PauseRemaining time.Duration   `json:"pause_remaining,omitempty"`
-	// TimeStamp indicates when the info was gathered
+	Created        time.Time            `json:"created"`
+	Delivered      SequenceInfo         `json:"delivered"`
+	AckFloor       SequenceInfo         `json:"ack_floor"`
 	TimeStamp      time.Time            `json:"ts"`
+	Cluster        *ClusterInfo         `json:"cluster,omitempty"`
+	Config         *ConsumerConfig      `json:"config,omitempty"`
+	Name           string               `json:"name"`
+	Stream         string               `json:"stream_name"`
 	PriorityGroups []PriorityGroupState `json:"priority_groups,omitempty"`
+	NumWaiting     int                  `json:"num_waiting"`
+	NumPending     uint64               `json:"num_pending"`
+	PauseRemaining time.Duration        `json:"pause_remaining,omitempty"`
+	NumRedelivered int                  `json:"num_redelivered"`
+	NumAckPending  int                  `json:"num_ack_pending"`
+	PushBound      bool                 `json:"push_bound,omitempty"`
+	Paused         bool                 `json:"paused,omitempty"`
 }
 
 // consumerInfoClusterResponse is a response used in a cluster to communicate the consumer info
 // back to the meta leader as part of a consumer list request.
 type consumerInfoClusterResponse struct {
+	OfflineReason string `json:"offline_reason,omitempty"`
 	ConsumerInfo
-	OfflineReason string `json:"offline_reason,omitempty"` // Reporting when a consumer is offline.
 }
 
 type PriorityGroupState struct {
+	PinnedTS       time.Time `json:"pinned_ts,omitempty"`
 	Group          string    `json:"group"`
 	PinnedClientID string    `json:"pinned_client_id,omitempty"`
-	PinnedTS       time.Time `json:"pinned_ts,omitempty"`
 }
 
 type ConsumerConfig struct {
-	Durable         string          `json:"durable_name,omitempty"`
-	Name            string          `json:"name,omitempty"`
-	Description     string          `json:"description,omitempty"`
-	DeliverPolicy   DeliverPolicy   `json:"deliver_policy"`
-	OptStartSeq     uint64          `json:"opt_start_seq,omitempty"`
-	OptStartTime    *time.Time      `json:"opt_start_time,omitempty"`
-	AckPolicy       AckPolicy       `json:"ack_policy"`
-	AckWait         time.Duration   `json:"ack_wait,omitempty"`
-	MaxDeliver      int             `json:"max_deliver,omitempty"`
-	BackOff         []time.Duration `json:"backoff,omitempty"`
-	FilterSubject   string          `json:"filter_subject,omitempty"`
-	FilterSubjects  []string        `json:"filter_subjects,omitempty"`
-	ReplayPolicy    ReplayPolicy    `json:"replay_policy,omitempty"`
-	RateLimit       uint64          `json:"rate_limit_bps,omitempty"` // Bits per sec
-	SampleFrequency string          `json:"sample_freq,omitempty"`
-	MaxWaiting      int             `json:"max_waiting,omitempty"`
-	MaxAckPending   int             `json:"max_ack_pending,omitempty"`
-	FlowControl     bool            `json:"flow_control,omitempty"`
-	HeadersOnly     bool            `json:"headers_only,omitempty"`
-
-	// Pull based options.
-	MaxRequestBatch    int           `json:"max_batch,omitempty"`
-	MaxRequestExpires  time.Duration `json:"max_expires,omitempty"`
-	MaxRequestMaxBytes int           `json:"max_bytes,omitempty"`
-
-	// Push based consumers.
-	DeliverSubject string        `json:"deliver_subject,omitempty"`
-	DeliverGroup   string        `json:"deliver_group,omitempty"`
-	Heartbeat      time.Duration `json:"idle_heartbeat,omitempty"`
-
-	// Ephemeral inactivity threshold.
-	InactiveThreshold time.Duration `json:"inactive_threshold,omitempty"`
-
-	// Generally inherited by parent stream and other markers, now can be configured directly.
-	Replicas int `json:"num_replicas"`
-	// Force memory storage.
-	MemoryStorage bool `json:"mem_storage,omitempty"`
-
-	// Don't add to general clients.
-	Direct bool `json:"direct,omitempty"`
-
-	// Metadata is additional metadata for the Consumer.
-	Metadata map[string]string `json:"metadata,omitempty"`
-
-	// PauseUntil is for suspending the consumer until the deadline.
-	PauseUntil *time.Time `json:"pause_until,omitempty"`
-
-	// Priority groups
-	PriorityGroups []string       `json:"priority_groups,omitempty"`
-	PriorityPolicy PriorityPolicy `json:"priority_policy,omitempty"`
-	PinnedTTL      time.Duration  `json:"priority_timeout,omitempty"`
+	PauseUntil         *time.Time        `json:"pause_until,omitempty"`
+	OptStartTime       *time.Time        `json:"opt_start_time,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
+	FilterSubject      string            `json:"filter_subject,omitempty"`
+	Name               string            `json:"name,omitempty"`
+	Description        string            `json:"description,omitempty"`
+	SampleFrequency    string            `json:"sample_freq,omitempty"`
+	DeliverGroup       string            `json:"deliver_group,omitempty"`
+	DeliverSubject     string            `json:"deliver_subject,omitempty"`
+	Durable            string            `json:"durable_name,omitempty"`
+	PriorityGroups     []string          `json:"priority_groups,omitempty"`
+	FilterSubjects     []string          `json:"filter_subjects,omitempty"`
+	BackOff            []time.Duration   `json:"backoff,omitempty"`
+	MaxAckPending      int               `json:"max_ack_pending,omitempty"`
+	Heartbeat          time.Duration     `json:"idle_heartbeat,omitempty"`
+	MaxWaiting         int               `json:"max_waiting,omitempty"`
+	ReplayPolicy       ReplayPolicy      `json:"replay_policy,omitempty"`
+	PinnedTTL          time.Duration     `json:"priority_timeout,omitempty"`
+	PriorityPolicy     PriorityPolicy    `json:"priority_policy,omitempty"`
+	MaxRequestBatch    int               `json:"max_batch,omitempty"`
+	MaxRequestExpires  time.Duration     `json:"max_expires,omitempty"`
+	MaxRequestMaxBytes int               `json:"max_bytes,omitempty"`
+	MaxDeliver         int               `json:"max_deliver,omitempty"`
+	AckWait            time.Duration     `json:"ack_wait,omitempty"`
+	RateLimit          uint64            `json:"rate_limit_bps,omitempty"`
+	InactiveThreshold  time.Duration     `json:"inactive_threshold,omitempty"`
+	Replicas           int               `json:"num_replicas"`
+	DeliverPolicy      DeliverPolicy     `json:"deliver_policy"`
+	OptStartSeq        uint64            `json:"opt_start_seq,omitempty"`
+	AckPolicy          AckPolicy         `json:"ack_policy"`
+	Direct             bool              `json:"direct,omitempty"`
+	MemoryStorage      bool              `json:"mem_storage,omitempty"`
+	HeadersOnly        bool              `json:"headers_only,omitempty"`
+	FlowControl        bool              `json:"flow_control,omitempty"`
 }
 
 // SequenceInfo has both the consumer and the stream sequence and last activity.
 type SequenceInfo struct {
+	Last     *time.Time `json:"last_active,omitempty"`
 	Consumer uint64     `json:"consumer_seq"`
 	Stream   uint64     `json:"stream_seq"`
-	Last     *time.Time `json:"last_active,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -408,120 +390,97 @@ func (consCfg ConsumerConfig) replicas(strCfg *StreamConfig) int {
 
 // Consumer is a jetstream consumer.
 type consumer struct {
-	// Atomic used to notify that we want to process an ack.
-	// This will be checked in checkPending to abort processing
-	// and let ack be processed in priority.
-	awl               int64
-	leader            atomic.Bool
-	mu                sync.RWMutex
-	js                *jetStream
-	mset              *stream
-	acc               *Account
-	srv               *Server
-	client            *client
-	sysc              *client
-	sid               int
-	name              string
-	stream            string
-	sseq              uint64             // next stream sequence
-	subjf             subjectFilters     // subject filters and their sequences
-	filters           *gsl.SimpleSublist // When we have multiple filters we will use LoadNextMsgMulti and pass this in.
-	dseq              uint64             // delivered consumer sequence
-	adflr             uint64             // ack delivery floor
-	asflr             uint64             // ack store floor
-	chkflr            uint64             // our check floor, interest streams only.
-	npc               int64              // Num Pending Count
-	npf               uint64             // Num Pending Floor Sequence
-	dsubj             string
-	qgroup            string
-	lss               *lastSeqSkipList
-	rlimit            *rate.Limiter
-	reqSub            *subscription
-	ackSub            *subscription
-	ackReplyT         string
-	ackSubj           string
-	nextMsgSubj       string
-	nextMsgReqs       *ipQueue[*nextMsgReq]
-	maxp              int
-	pblimit           int
-	maxpb             int
-	pbytes            int
-	fcsz              int
-	fcid              string
-	fcSub             *subscription
-	outq              *jsOutQ
-	pending           map[uint64]*Pending
-	ptmr              *time.Timer
+	lqsent            time.Time
+	pinnedTS          time.Time
 	ptmrEnd           time.Time
-	rdq               []uint64
-	rdqi              avl.SequenceSet
-	rdc               map[uint64]uint64
-	replies           map[uint64]string
-	pendingDeliveries map[uint64]*jsPubMsg        // Messages that can be delivered after achieving quorum.
-	waitingDeliveries map[string]*waitingDelivery // (Optional) request timeout messages that need to wait for replicated deliveries first.
-	maxdc             uint64
-	waiting           *waitQueue
-	cfg               ConsumerConfig
-	ici               *ConsumerInfo
-	store             ConsumerStore
-	active            bool
-	replay            bool
-	dtmr              *time.Timer
-	uptmr             *time.Timer // Unpause timer
-	gwdtmr            *time.Timer
-	dthresh           time.Duration
-	mch               chan struct{} // Message channel
-	qch               chan struct{} // Quit channel
-	mqch              chan struct{} // The monitor's quit channel.
-	inch              chan bool     // Interest change channel
-	sfreq             int32
-	ackEventT         string
-	nakEventT         string
-	deliveryExcEventT string
 	created           time.Time
 	ldt               time.Time
 	lat               time.Time
 	lwqic             time.Time
+	store             ConsumerStore
+	node              RaftNode
+	phead             *proposal
+	inch              chan bool
+	waitingDeliveries map[string]*waitingDelivery
+	pch               chan struct{}
+	uch               chan struct{}
+	filters           *gsl.SimpleSublist
+	prm               map[string]struct{}
+	ackMsgs           *ipQueue[*jsAckMsg]
+	infoSub           *subscription
+	sysc              *client
+	ca                *consumerAssignment
+	client            *client
+	srv               *Server
+	acc               *Account
+	lss               *lastSeqSkipList
+	rlimit            *rate.Limiter
+	reqSub            *subscription
+	ackSub            *subscription
+	mset              *stream
+	ptail             *proposal
+	mqch              chan struct{}
+	nextMsgReqs       *ipQueue[*nextMsgReq]
+	qch               chan struct{}
+	mch               chan struct{}
+	gwdtmr            *time.Timer
+	uptmr             *time.Timer
+	dtmr              *time.Timer
+	js                *jetStream
+	fcSub             *subscription
+	outq              *jsOutQ
+	pending           map[uint64]*Pending
+	ptmr              *time.Timer
+	pinnedTtl         *time.Timer
+	ici               *ConsumerInfo
+	waiting           *waitQueue
+	rdc               map[uint64]uint64
+	replies           map[uint64]string
+	pendingDeliveries map[uint64]*jsPubMsg
+	dsubj             string
+	nextMsgSubj       string
+	offlineReason     string
+	currentPinId      string
+	name              string
+	fcid              string
+	stream            string
+	qgroup            string
+	ackReplyT         string
+	deliveryExcEventT string
+	nakEventT         string
+	ackEventT         string
+	ackSubj           string
+	subjf             subjectFilters
+	sigSubs           []string
+	rdq               []uint64
+	rdqi              avl.SequenceSet
+	cfg               ConsumerConfig
+	monitorWg         sync.WaitGroup
+	sseq              uint64
+	retention         RetentionPolicy
+	pblimit           int
+	awl               int64
+	npf               uint64
+	dthresh           time.Duration
+	npc               int64
+	chkflr            uint64
+	asflr             uint64
+	adflr             uint64
+	dseq              uint64
+	sid               int
+	maxdc             uint64
+	fcsz              int
+	pbytes            int
+	maxpb             int
+	maxp              int
+	mu                sync.RWMutex
+	sfreq             int32
+	leader            atomic.Bool
+	active            bool
+	inMonitor         bool
+	prOk              bool
 	closed            bool
-
-	// Clustered.
-	ca        *consumerAssignment
-	node      RaftNode
-	infoSub   *subscription
-	lqsent    time.Time
-	prm       map[string]struct{}
-	prOk      bool
-	uch       chan struct{}
-	retention RetentionPolicy
-
-	monitorWg sync.WaitGroup
-	inMonitor bool
-
-	// R>1 proposals
-	pch   chan struct{}
-	phead *proposal
-	ptail *proposal
-
-	// Ack queue
-	ackMsgs *ipQueue[*jsAckMsg]
-
-	// for stream signaling when multiple filters are set.
-	sigSubs []string
-
-	// Priority groups
-	// Details described in ADR-42.
-
-	// currentPinId is the current nuid for the pinned consumer.
-	// If the  Consumer is running in `PriorityPinnedClient` mode, server will
-	// pick up a new nuid and assign it to first pending pull request.
-	currentPinId string
-	/// pinnedTtl is the remaining time before the current PinId expires.
-	pinnedTtl *time.Timer
-	pinnedTS  time.Time
-
-	// If standalone/single-server, the offline reason needs to be stored directly in the consumer.
-	// Otherwise, if clustered it will be part of the consumer assignment.
-	offlineReason string
+	replay            bool
 }
 
 // A single subject filter.
@@ -544,8 +503,8 @@ func (s subjectFilters) subjects() []string {
 }
 
 type proposal struct {
-	data []byte
 	next *proposal
+	data []byte
 }
 
 const (
@@ -2490,8 +2449,8 @@ func (o *consumer) sendAckReply(subj string) {
 type jsAckMsg struct {
 	subject string
 	reply   string
-	hdr     int
 	msg     []byte
+	hdr     int
 }
 
 var jsAckMsgPool sync.Pool
@@ -3531,9 +3490,9 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 
 type PriorityGroup struct {
 	Group         string `json:"group,omitempty"`
+	Id            string `json:"id,omitempty"`
 	MinPending    int64  `json:"min_pending,omitempty"`
 	MinAckPending int64  `json:"min_ack_pending,omitempty"`
-	Id            string `json:"id,omitempty"`
 	Priority      int    `json:"priority,omitempty"`
 }
 
@@ -3585,19 +3544,19 @@ func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.
 
 // Represents a request that is on the internal waiting queue
 type waitingRequest struct {
-	next          *waitingRequest
+	received      time.Time
+	hbt           time.Time
+	expires       time.Time
 	acc           *Account
+	priorityGroup *PriorityGroup
+	next          *waitingRequest
 	interest      string
 	reply         string
-	n             int // For batching
-	d             int // num delivered
-	b             int // For max bytes tracking
-	expires       time.Time
-	received      time.Time
+	b             int
 	hb            time.Duration
-	hbt           time.Time
+	d             int
+	n             int
 	noWait        bool
-	priorityGroup *PriorityGroup
 }
 
 // sync.Pool for waiting requests.
@@ -3648,10 +3607,11 @@ func (wd *waitingDelivery) recycle() {
 
 // waiting queue for requests that are waiting for new messages to arrive.
 type waitQueue struct {
-	n, max int
-	last   time.Time
-	head   *waitingRequest
-	tail   *waitingRequest
+	last time.Time
+	head *waitingRequest
+	tail *waitingRequest
+	n    int
+	max  int
 }
 
 // Create a new ring buffer with at most max items.
@@ -5686,8 +5646,8 @@ func (o *consumer) nextSeq() uint64 {
 
 // Used to hold skip list when deliver policy is last per subject.
 type lastSeqSkipList struct {
-	resume uint64
 	seqs   []uint64
+	resume uint64
 }
 
 // Let's us know we have a skip list, which is for deliver last per subject and we are just starting.

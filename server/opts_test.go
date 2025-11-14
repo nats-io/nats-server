@@ -1417,8 +1417,10 @@ func TestConfigureOptions(t *testing.T) {
 	usage := func() { panic("should not get there") }
 	var fs *flag.FlagSet
 	type testPrint struct {
-		args                   []string
-		version, help, tlsHelp func()
+		version func()
+		help    func()
+		tlsHelp func()
+		args    []string
 	}
 	testFuncs := []testPrint{
 		{args: []string{"-v"}, version: checkPrintInvoked, help: usage, tlsHelp: PrintTLSHelpAndDie},
@@ -1753,9 +1755,9 @@ func TestClusterPermissionsConfig(t *testing.T) {
 
 func TestParseServiceLatency(t *testing.T) {
 	cases := []struct {
+		want    *serviceLatency
 		name    string
 		conf    string
-		want    *serviceLatency
 		wantErr bool
 	}{
 		{
@@ -3504,9 +3506,9 @@ func TestAuthorizationTimeoutConfigParsing(t *testing.T) {
 	type testCase struct {
 		name                string
 		config              string
+		expectErrorContains string
 		expectParsed        float64
 		expectRunning       float64
-		expectErrorContains string
 	}
 
 	for _, tc := range []testCase{{
@@ -3617,8 +3619,8 @@ func TestLeafnodeAuthorizationTimeoutConfigParsing(t *testing.T) {
 	type testCase struct {
 		name                string
 		config              string
-		expect              float64
 		expectErrorContains string
+		expect              float64
 	}
 
 	for _, tc := range []testCase{{
@@ -3998,9 +4000,9 @@ func TestNewServerFromConfigVsLoadConfig(t *testing.T) {
 
 func TestWriteDeadlineConfigParsing(t *testing.T) {
 	type testCase struct {
+		expect func(t *testing.T, opts *Options)
 		name   string
 		config string
-		expect func(t *testing.T, opts *Options)
 	}
 
 	for _, tc := range []testCase{
@@ -4057,9 +4059,9 @@ func TestWriteDeadlineConfigParsing(t *testing.T) {
 
 func TestWriteTimeoutConfigParsing(t *testing.T) {
 	type testCase struct {
+		expect func(t *testing.T, opts *Options)
 		name   string
 		config string
-		expect func(t *testing.T, opts *Options)
 	}
 
 	for str, pol := range map[string]WriteTimeoutPolicy{

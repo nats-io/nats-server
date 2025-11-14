@@ -621,10 +621,10 @@ func TestLeafNodeHeaderSupport(t *testing.T) {
 
 // Used to setup clusters of clusters for tests.
 type cluster struct {
+	t       *testing.T
+	name    string
 	servers []*server.Server
 	opts    []*server.Options
-	name    string
-	t       *testing.T
 }
 
 func testDefaultClusterOptionsForLeafNodes() *server.Options {
@@ -1264,8 +1264,8 @@ func TestLeafNodeTLSConnCloseEarly(t *testing.T) {
 }
 
 type captureLeafNodeErrLogger struct {
-	dummyLogger
 	ch chan string
+	dummyLogger
 }
 
 func (c *captureLeafNodeErrLogger) Errorf(format string, v ...any) {

@@ -55,21 +55,21 @@ func IsNatsErr(err error, ids ...ErrorIdentifier) bool {
 
 // ApiError is included in all responses if there was an error.
 type ApiError struct {
+	Description string `json:"description,omitempty"`
 	Code        int    `json:"code"`
 	ErrCode     uint16 `json:"err_code,omitempty"`
-	Description string `json:"description,omitempty"`
 }
 
 // ErrorsData is the source data for generated errors as found in errors.json
 type ErrorsData struct {
 	Constant    string `json:"constant"`
-	Code        int    `json:"code"`
-	ErrCode     uint16 `json:"error_code"`
 	Description string `json:"description"`
 	Comment     string `json:"comment"`
 	Help        string `json:"help"`
 	URL         string `json:"url"`
 	Deprecates  string `json:"deprecates"`
+	Code        int    `json:"code"`
+	ErrCode     uint16 `json:"error_code"`
 }
 
 func (e *ApiError) Error() string {

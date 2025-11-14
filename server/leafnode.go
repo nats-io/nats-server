@@ -69,52 +69,32 @@ const (
 )
 
 type leaf struct {
-	// We have any auth stuff here for solicited connections.
-	remote *leafNodeCfg
-	// isSpoke tells us what role we are playing.
-	// Used when we receive a connection but otherside tells us they are a hub.
-	isSpoke bool
-	// remoteCluster is when we are a hub but the spoke leafnode is part of a cluster.
+	remote        *leafNodeCfg
+	smap          map[string]int32
+	tsub          map[*subscription]struct{}
+	tsubt         *time.Timer
+	gwSub         *subscription
 	remoteCluster string
-	// remoteServer holds onto the remote server's name or ID.
-	remoteServer string
-	// domain name of remote server
-	remoteDomain string
-	// account name of remote server
+	remoteServer  string
+	remoteDomain  string
 	remoteAccName string
-	// Whether or not we want to propagate east-west interest from other LNs.
-	isolated bool
-	// Used to suppress sub and unsub interest. Same as routes but our audience
-	// here is tied to this leaf node. This will hold all subscriptions except this
-	// leaf nodes. This represents all the interest we want to send to the other side.
-	smap map[string]int32
-	// This map will contain all the subscriptions that have been added to the smap
-	// during initLeafNodeSmapAndSendSubs. It is short lived and is there to avoid
-	// race between processing of a sub where sub is added to account sublist but
-	// updateSmap has not be called on that "thread", while in the LN readloop,
-	// when processing CONNECT, initLeafNodeSmapAndSendSubs is invoked and add
-	// this subscription to smap. When processing of the sub then calls updateSmap,
-	// we would add it a second time in the smap causing later unsub to suppress the LS-.
-	tsub  map[*subscription]struct{}
-	tsubt *time.Timer
-	// Selected compression mode, which may be different from the server configured mode.
-	compression string
-	// This is for GW map replies.
-	gwSub *subscription
+	compression   string
+	isSpoke       bool
+	isolated      bool
 }
 
 // Used for remote (solicited) leafnodes.
 type leafNodeCfg struct {
-	sync.RWMutex
 	*RemoteLeafOpts
-	urls           []*url.URL
 	curURL         *url.URL
+	perms          *Permissions
+	jsMigrateTimer *time.Timer
 	tlsName        string
 	username       string
 	password       string
-	perms          *Permissions
-	connDelay      time.Duration // Delay before a connect, could be used while detecting loop condition, etc..
-	jsMigrateTimer *time.Timer
+	urls           []*url.URL
+	connDelay      time.Duration
+	sync.RWMutex
 }
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
@@ -1999,42 +1979,26 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 
 // Connect information for solicited leafnodes.
 type leafConnectInfo struct {
-	Version   string   `json:"version,omitempty"`
-	Nkey      string   `json:"nkey,omitempty"`
-	JWT       string   `json:"jwt,omitempty"`
-	Sig       string   `json:"sig,omitempty"`
-	User      string   `json:"user,omitempty"`
-	Pass      string   `json:"pass,omitempty"`
-	Token     string   `json:"auth_token,omitempty"`
-	ID        string   `json:"server_id,omitempty"`
-	Domain    string   `json:"domain,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	Hub       bool     `json:"is_hub,omitempty"`
-	Cluster   string   `json:"cluster,omitempty"`
-	Headers   bool     `json:"headers,omitempty"`
-	JetStream bool     `json:"jetstream,omitempty"`
-	DenyPub   []string `json:"deny_pub,omitempty"`
-	Isolate   bool     `json:"isolate,omitempty"`
-
-	// There was an existing field called:
-	// >> Comp bool `json:"compression,omitempty"`
-	// that has never been used. With support for compression, we now need
-	// a field that is a string. So we use a different json tag:
-	Compression string `json:"compress_mode,omitempty"`
-
-	// Just used to detect wrong connection attempts.
-	Gateway string `json:"gateway,omitempty"`
-
-	// Tells the accept side which account the remote is binding to.
-	RemoteAccount string `json:"remote_account,omitempty"`
-
-	// The accept side of a LEAF connection, unlike ROUTER and GATEWAY, receives
-	// only the CONNECT protocol, and no INFO. So we need to send the protocol
-	// version as part of the CONNECT. It will indicate if a connection supports
-	// some features, such as message tracing.
-	// We use `protocol` as the JSON tag, so this is automatically unmarshal'ed
-	// in the low level process CONNECT.
-	Proto int `json:"protocol,omitempty"`
+	Domain        string   `json:"domain,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	JWT           string   `json:"jwt,omitempty"`
+	Sig           string   `json:"sig,omitempty"`
+	User          string   `json:"user,omitempty"`
+	Pass          string   `json:"pass,omitempty"`
+	Nkey          string   `json:"nkey,omitempty"`
+	Token         string   `json:"auth_token,omitempty"`
+	Compression   string   `json:"compress_mode,omitempty"`
+	ID            string   `json:"server_id,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	Cluster       string   `json:"cluster,omitempty"`
+	Gateway       string   `json:"gateway,omitempty"`
+	RemoteAccount string   `json:"remote_account,omitempty"`
+	DenyPub       []string `json:"deny_pub,omitempty"`
+	Proto         int      `json:"protocol,omitempty"`
+	Hub           bool     `json:"is_hub,omitempty"`
+	Isolate       bool     `json:"isolate,omitempty"`
+	JetStream     bool     `json:"jetstream,omitempty"`
+	Headers       bool     `json:"headers,omitempty"`
 }
 
 // processLeafNodeConnect will process the inbound connect args.

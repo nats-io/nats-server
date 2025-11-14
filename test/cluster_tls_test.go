@@ -68,8 +68,8 @@ func TestBasicTLSClusterPubSub(t *testing.T) {
 }
 
 type captureTLSError struct {
-	dummyLogger
 	ch chan struct{}
+	dummyLogger
 }
 
 func (c *captureTLSError) Errorf(format string, v ...any) {
@@ -83,8 +83,8 @@ func (c *captureTLSError) Errorf(format string, v ...any) {
 }
 
 type captureClusterTLSInsecureLogger struct {
-	dummyLogger
 	ch chan struct{}
+	dummyLogger
 }
 
 func (c *captureClusterTLSInsecureLogger) Warnf(format string, v ...any) {

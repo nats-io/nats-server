@@ -32,24 +32,24 @@ import (
 
 // TODO(dlc) - This is a fairly simplistic approach but should do for now.
 type memStore struct {
-	mu          sync.RWMutex
 	cfg         StreamConfig
-	state       StreamState
+	rmcb        StorageRemoveMsgHandler
+	ttls        *thw.HashWheel
 	msgs        map[uint64]*StoreMsg
 	fss         *stree.SubjectTree[SimpleState]
+	sdm         *SDMMeta
+	scb         StorageUpdateHandler
+	scheduling  *MsgScheduling
+	ageChk      *time.Timer
+	pmsgcb      ProcessJetStreamMsgHandler
+	state       StreamState
 	dmap        avl.SequenceSet
 	maxp        int64
-	scb         StorageUpdateHandler
-	rmcb        StorageRemoveMsgHandler
-	pmsgcb      ProcessJetStreamMsgHandler
-	ageChk      *time.Timer // Timer to expire messages.
-	ageChkRun   bool        // Whether message expiration is currently running.
-	ageChkTime  int64       // When the message expiration is scheduled to run.
 	consumers   int
+	ageChkTime  int64
+	mu          sync.RWMutex
 	receivedAny bool
-	ttls        *thw.HashWheel
-	scheduling  *MsgScheduling
-	sdm         *SDMMeta
+	ageChkRun   bool
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -2122,10 +2122,10 @@ func (ms *memStore) isClosed() bool {
 }
 
 type consumerMemStore struct {
-	mu     sync.Mutex
+	state  ConsumerState
 	ms     StreamStore
 	cfg    ConsumerConfig
-	state  ConsumerState
+	mu     sync.Mutex
 	closed bool
 }
 

@@ -31,8 +31,8 @@ const (
 
 type ClientHelloInjector struct {
 	sock       io.ReadWriteCloser
-	tlsVersion uint16
 	buf        []byte
+	tlsVersion uint16
 }
 
 func NewClientHelloInjector(s io.ReadWriteCloser, tlsVer uint16, b []byte) *ClientHelloInjector {
@@ -112,10 +112,10 @@ func (i *ClientHelloInjector) Close() error {
 }
 
 type FakeSocket struct {
-	sockName string
-	buf      []byte
 	data     chan []byte
 	done     chan struct{}
+	sockName string
+	buf      []byte
 }
 
 func NewFakeSocket(name string, capacity int) *FakeSocket {
@@ -345,10 +345,10 @@ func FuzzServerTLS(f *testing.F) {
 	tlsVer := uint16(0x0303)
 
 	corpuses := []struct {
-		useTls13          bool
-		clientHelloTlsVer uint16
 		buf               []byte
+		clientHelloTlsVer uint16
 		corruptCertOffset uint16
+		useTls13          bool
 	}{
 		{useTls13: false, clientHelloTlsVer: tlsVer, buf: []byte{}, corruptCertOffset: math.MaxUint16},
 		{useTls13: true, clientHelloTlsVer: tlsVer, buf: []byte{}, corruptCertOffset: math.MaxUint16},

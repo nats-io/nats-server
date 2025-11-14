@@ -591,8 +591,8 @@ func TestStoreUpdateConfigTTLState(t *testing.T) {
 
 func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
 	tests := []struct {
-		title  string
 		action func(s StreamStore, lseq uint64)
+		title  string
 	}{
 		{
 			title: "TruncateWithRemove",

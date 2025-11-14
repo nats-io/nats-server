@@ -54,10 +54,10 @@ var OCSPResponseCacheTypeMap = map[string]OCSPResponseCacheType{
 }
 
 type OCSPResponseCacheConfig struct {
-	Type            OCSPResponseCacheType
 	LocalStore      string
-	PreserveRevoked bool
+	Type            OCSPResponseCacheType
 	SaveInterval    float64
+	PreserveRevoked bool
 }
 
 func NewOCSPResponseCacheConfig() *OCSPResponseCacheConfig {
@@ -79,11 +79,11 @@ type OCSPResponseCacheStats struct {
 }
 
 type OCSPResponseCacheItem struct {
-	Subject     string                  `json:"subject,omitempty"`
 	CachedAt    time.Time               `json:"cached_at"`
-	RespStatus  certidp.StatusAssertion `json:"resp_status"`
 	RespExpires time.Time               `json:"resp_expires,omitempty"`
+	Subject     string                  `json:"subject,omitempty"`
 	Resp        []byte                  `json:"resp"`
+	RespStatus  certidp.StatusAssertion `json:"resp_status"`
 }
 
 type OCSPResponseCache interface {
@@ -102,8 +102,8 @@ type OCSPResponseCache interface {
 type NoOpCache struct {
 	config *OCSPResponseCacheConfig
 	stats  *OCSPResponseCacheStats
-	online bool
 	mu     *sync.RWMutex
+	online bool
 }
 
 func (c *NoOpCache) Put(_ string, _ *ocsp.Response, _ string, _ *certidp.Log) {}
@@ -155,12 +155,12 @@ func (c *NoOpCache) Stats() *OCSPResponseCacheStats {
 type LocalCache struct {
 	config       *OCSPResponseCacheConfig
 	stats        *OCSPResponseCacheStats
-	online       bool
 	cache        map[string]OCSPResponseCacheItem
 	mu           *sync.RWMutex
-	saveInterval time.Duration
-	dirty        bool
 	timer        *time.Timer
+	saveInterval time.Duration
+	online       bool
+	dirty        bool
 }
 
 // Put captures a CA OCSP response to the OCSP peer cache indexed by response fingerprint (a hash)

@@ -1897,8 +1897,8 @@ func TestJWTAccountURLResolverFetchFailurePushReorder(t *testing.T) {
 }
 
 type captureDebugLogger struct {
-	DummyLogger
 	dbgCh chan string
+	DummyLogger
 }
 
 func (l *captureDebugLogger) Debugf(format string, v ...any) {
@@ -3868,8 +3868,8 @@ func TestJWTUserLimits(t *testing.T) {
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 	for _, v := range []struct {
-		pass bool
 		f    func(*jwt.UserPermissionLimits)
+		pass bool
 	}{
 		{pass: true, f: nil},
 		{pass: false, f: func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8") }},
@@ -6954,8 +6954,8 @@ func TestJWTAccountNATSResolverWrongCreds(t *testing.T) {
 // Issue 5480: https://github.com/nats-io/nats-server/issues/5480
 func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 	type namedCreds struct {
-		name  string
 		creds nats.Option
+		name  string
 	}
 	preload := make(map[string]string)
 	users := make(map[string]*namedCreds)
@@ -7041,8 +7041,8 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 	// Have a connection ready for each one of the accounts.
 	type namedSub struct {
-		name string
 		sub  *nats.Subscription
+		name string
 	}
 	subs := make(map[string]*namedSub)
 	for acc, user := range users {
@@ -7277,10 +7277,10 @@ func TestJWTUpdateAccountClaimsStreamAndServiceImportDeadlock(t *testing.T) {
 			require_NoError(t, err)
 
 			type Acc struct {
-				pub string
 				ac  *jwt.AccountClaims
 				a   *Account
 				c   *client
+				pub string
 			}
 
 			// Create accounts.

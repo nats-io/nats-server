@@ -201,13 +201,13 @@ func smLoop(sm stateMachine) {
 // Simple implementation of a replicated state.
 // The adder state just sums up int64 values.
 type stateAdder struct {
-	sync.Mutex
-	s   *Server
 	n   RaftNode
-	wg  sync.WaitGroup
+	s   *Server
 	cfg *RaftConfig
-	sum int64
 	lch chan bool
+	wg  sync.WaitGroup
+	sum int64
+	sync.Mutex
 }
 
 // Simple getters for server and the raft node.

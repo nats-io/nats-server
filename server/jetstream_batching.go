@@ -33,14 +33,14 @@ var (
 )
 
 type batching struct {
-	mu    sync.Mutex
 	group map[string]*batchGroup
+	mu    sync.Mutex
 }
 
 type batchGroup struct {
-	lseq  uint64
 	store StreamStore
 	timer *time.Timer
+	lseq  uint64
 }
 
 // Lock should be held.
@@ -196,12 +196,12 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 }
 
 type batchApply struct {
+	id         string
+	entries    []*CommittedEntry
+	count      uint64
+	entryStart int
+	maxApplied uint64
 	mu         sync.Mutex
-	id         string            // ID of the current batch.
-	count      uint64            // Number of entries in the batch, for consistency checks.
-	entries    []*CommittedEntry // Previous entries that are part of this batch.
-	entryStart int               // The index into an entry indicating the first message of the batch.
-	maxApplied uint64            // Applied value before the entry containing the first message of the batch.
 }
 
 // clearBatchStateLocked clears in-memory apply-batch-related state.

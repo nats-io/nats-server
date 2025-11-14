@@ -57,9 +57,9 @@ func metadataPrevious() map[string]string {
 
 func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 	for _, test := range []struct {
-		desc             string
 		cfg              *StreamConfig
 		expectedMetadata map[string]string
+		desc             string
 	}{
 		{
 			desc:             "empty",
@@ -147,9 +147,9 @@ func TestJetStreamSetDynamicStreamMetadata(t *testing.T) {
 
 func TestJetStreamCopyStreamMetadata(t *testing.T) {
 	for _, test := range []struct {
-		desc string
 		cfg  *StreamConfig
 		prev *StreamConfig
+		desc string
 	}{
 		{
 			desc: "no-previous-ignore",
@@ -219,9 +219,9 @@ func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 	pauseUntil := time.Unix(0, 0)
 	pauseUntilZero := time.Time{}
 	for _, test := range []struct {
-		desc             string
 		cfg              *ConsumerConfig
 		expectedMetadata map[string]string
+		desc             string
 	}{
 		{
 			desc:             "empty",
@@ -304,9 +304,9 @@ func TestJetStreamSetDynamicConsumerInfoMetadata(t *testing.T) {
 
 func TestJetStreamCopyConsumerMetadata(t *testing.T) {
 	for _, test := range []struct {
-		desc string
 		cfg  *ConsumerConfig
 		prev *ConsumerConfig
+		desc string
 	}{
 		{
 			desc: "no-previous-ignore",
@@ -373,9 +373,9 @@ func TestJetStreamCopyConsumerMetadataRemoveDynamicFields(t *testing.T) {
 }
 
 type server struct {
-	replicas int
 	js       nats.JetStreamContext
 	nc       *nats.Conn
+	replicas int
 }
 
 const (

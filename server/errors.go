@@ -246,8 +246,8 @@ var (
 
 // mappingDestinationErr is a type of subject mapping destination error
 type mappingDestinationErr struct {
-	token string
 	err   error
+	token string
 }
 
 func (e *mappingDestinationErr) Error() string {

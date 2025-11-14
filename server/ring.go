@@ -16,15 +16,15 @@ package server
 // We wrap to hold onto optional items for /connz.
 type closedClient struct {
 	ConnInfo
-	subs []SubDetail
 	user string
 	acc  string
+	subs []SubDetail
 }
 
 // Fixed sized ringbuffer for closed connections.
 type closedRingBuffer struct {
-	total uint64
 	conns []*closedClient
+	total uint64
 }
 
 // Create a new ring buffer with at most max items.

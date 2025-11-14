@@ -60,23 +60,23 @@ type ClientAuthentication interface {
 
 // NkeyUser is for multiple nkey based users
 type NkeyUser struct {
-	Nkey                   string              `json:"user"`
-	Issued                 int64               `json:"issued,omitempty"` // this is a copy of the issued at (iat) field in the jwt
 	Permissions            *Permissions        `json:"permissions,omitempty"`
 	Account                *Account            `json:"account,omitempty"`
-	SigningKey             string              `json:"signing_key,omitempty"`
 	AllowedConnectionTypes map[string]struct{} `json:"connection_types,omitempty"`
+	Nkey                   string              `json:"user"`
+	SigningKey             string              `json:"signing_key,omitempty"`
+	Issued                 int64               `json:"issued,omitempty"`
 	ProxyRequired          bool                `json:"proxy_required,omitempty"`
 }
 
 // User is for multiple accounts/users.
 type User struct {
-	Username               string              `json:"user"`
-	Password               string              `json:"password"`
+	ConnectionDeadline     time.Time           `json:"connection_deadline,omitempty"`
 	Permissions            *Permissions        `json:"permissions,omitempty"`
 	Account                *Account            `json:"account,omitempty"`
-	ConnectionDeadline     time.Time           `json:"connection_deadline,omitempty"`
 	AllowedConnectionTypes map[string]struct{} `json:"connection_types,omitempty"`
+	Username               string              `json:"user"`
+	Password               string              `json:"password"`
 	ProxyRequired          bool                `json:"proxy_required,omitempty"`
 }
 

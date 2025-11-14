@@ -238,8 +238,8 @@ func TestNoAuthUser(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		usrInfo string
-		ok      bool
 		account string
+		ok      bool
 	}{
 		{name: "valid user/pwd", usrInfo: "bar:pwd2@", ok: true, account: "BAR"},
 		{name: "invalid pwd", usrInfo: "bar:wrong@", ok: false, account: _EMPTY_},
@@ -369,7 +369,7 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 		}
 	}
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(o.Host, fmt.Sprintf("%d", o.Port)))
 	require_NoError(t, err)
 	defer conn.Close()
 	checkClientsCount(t, s, 1)
@@ -382,7 +382,7 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 	conn.Close()
 
 	// Now make sure we still do get timed out though.
-	conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
+	conn, err = net.Dial("tcp", net.JoinHostPort(o.Host, fmt.Sprintf("%d", o.Port)))
 	require_NoError(t, err)
 	defer conn.Close()
 	checkClientsCount(t, s, 1)
@@ -392,8 +392,8 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 }
 
 type captureProxyRequiredLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *captureProxyRequiredLogger) Debugf(format string, args ...any) {

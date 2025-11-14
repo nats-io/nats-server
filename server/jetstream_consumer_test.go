@@ -855,8 +855,8 @@ func filterSubjects(n int) []string {
 func TestJetStreamConsumerIsFilteredMatch(t *testing.T) {
 	for _, test := range []struct {
 		name           string
-		filterSubjects []string
 		subject        string
+		filterSubjects []string
 		result         bool
 	}{
 		{name: "no filter", filterSubjects: []string{}, subject: "foo.bar", result: true},
@@ -920,8 +920,8 @@ func TestJetStreamConsumerWorkQueuePolicyOverlap(t *testing.T) {
 func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 	for _, test := range []struct {
 		name           string
-		filterSubjects []string
 		subject        string
+		filterSubjects []string
 		result         bool
 	}{
 		{name: "no filter", filterSubjects: []string{}, subject: "foo.bar", result: false},
@@ -955,8 +955,8 @@ func TestJetStreamConsumerBackOff(t *testing.T) {
 	defer nc.Close()
 
 	for _, test := range []struct {
-		name      string
 		config    nats.ConsumerConfig
+		name      string
 		shouldErr bool
 	}{
 		{
@@ -1299,13 +1299,13 @@ func TestJetStreamConsumerPedanticMode(t *testing.T) {
 
 	tests := []struct {
 		name                  string
-		givenConfig           ConsumerConfig
-		givenLimits           nats.StreamConsumerLimits
 		serverTemplateSingle  string
 		serverTemplateCluster string
+		givenConfig           ConsumerConfig
+		givenLimits           nats.StreamConsumerLimits
+		replicas              int
 		shouldError           bool
 		pedantic              bool
-		replicas              int
 	}{
 		{
 			name: "default_non_pedantic",
@@ -1436,8 +1436,8 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	defer nc.Close()
 
 	type ActiveWorkItem struct {
-		ID     int
 		Expiry time.Time
+		ID     int
 	}
 
 	_, err := js.AddStream(&nats.StreamConfig{
@@ -2053,9 +2053,9 @@ func TestJetStreamConsumerUnpin(t *testing.T) {
 
 	// Create a stream and consumer for both single server and clustered mode.
 	for _, server := range []struct {
-		replicas int
 		js       nats.JetStreamContext
 		nc       *nats.Conn
+		replicas int
 	}{
 		{replicas: 1, js: js, nc: nc},
 		{replicas: 3, js: cjs, nc: cnc},
@@ -2107,12 +2107,12 @@ func TestJetStreamConsumerUnpin(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name     string
 		nc       *nats.Conn
+		err      *ApiError
+		name     string
 		stream   string
 		consumer string
 		group    string
-		err      *ApiError
 	}{
 		{name: "unpin non-existing group", nc: nc, stream: "TEST", consumer: "C", group: "B", err: &ApiError{ErrCode: uint16(JSConsumerInvalidPriorityGroupErr)}},
 		{name: "unpin on missing stream", nc: nc, stream: "NOT_EXIST", consumer: "C", group: "A", err: &ApiError{ErrCode: uint16(JSStreamNotFoundErr)}},
@@ -2153,8 +2153,8 @@ func TestJetStreamConsumerWithPriorityGroups(t *testing.T) {
 
 	// Create a stream and consumer for both single server and clustered mode.
 	for _, server := range []struct {
-		replicas int
 		js       nats.JetStreamContext
+		replicas int
 	}{
 		{replicas: 1, js: js},
 		{replicas: 3, js: cjs},
@@ -2170,14 +2170,14 @@ func TestJetStreamConsumerWithPriorityGroups(t *testing.T) {
 	cluster.waitOnStreamLeader("$G", "TEST")
 
 	for _, test := range []struct {
-		name           string
 		nc             *nats.Conn
+		err            *ApiError
+		name           string
 		stream         string
 		consumer       string
+		deliverSubject string
 		groups         []string
 		mode           PriorityPolicy
-		deliverSubject string
-		err            *ApiError
 	}{
 		{name: "Pinned Consumer with Priority Group", nc: nc, stream: "TEST", consumer: "PINNED", groups: []string{"A"}, mode: PriorityPinnedClient, deliverSubject: "", err: nil},
 		{name: "Pinned Consumer with Priority Group, clustered", nc: cnc, stream: "TEST", consumer: "PINNED", groups: []string{"A"}, mode: PriorityPinnedClient, deliverSubject: "", err: nil},
@@ -2297,11 +2297,11 @@ func TestJetStreamConsumerPriorityPullRequests(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name        string
 		nc          *nats.Conn
+		name        string
 		consumer    string
-		request     JSApiConsumerGetNextRequest
 		description string
+		request     JSApiConsumerGetNextRequest
 	}{
 		{name: "Pinned Pull Request", nc: nc, consumer: "PINNED", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A"}}, description: ""},
 		{name: "Pinned Pull Request, no group", nc: nc, consumer: "PINNED", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{}}, description: "Bad Request - Priority Group missing"},
@@ -2450,9 +2450,9 @@ func TestJetStreamConsumerMultipleFitersWithStartDate(t *testing.T) {
 	sendStreamMsg(t, nc, "events.biz", "msg-7")
 
 	for _, test := range []struct {
+		startTime              time.Time
 		name                   string
 		filterSubjects         []string
-		startTime              time.Time
 		expectedMessages       uint64
 		expectedStreamSequence uint64
 	}{
@@ -2629,8 +2629,8 @@ func TestJetStreamConsumerBackoffWhenBackoffLengthIsEqualToMaxDeliverConfig(t *t
 
 func TestJetStreamConsumerRetryAckAfterTimeout(t *testing.T) {
 	for _, ack := range []struct {
-		title  string
 		policy nats.SubOpt
+		title  string
 	}{
 		{title: "AckExplicit", policy: nats.AckExplicit()},
 		{title: "AckAll", policy: nats.AckAll()},
@@ -2862,8 +2862,8 @@ func TestJetStreamConsumerDeliveryCount(t *testing.T) {
 
 func TestJetStreamConsumerCreate(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
@@ -3056,8 +3056,8 @@ func TestJetStreamConsumerWithNameAndDurable(t *testing.T) {
 func TestJetStreamConsumerWithStartTime(t *testing.T) {
 	subj := "my_stream"
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: subj, Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: subj, Storage: FileStorage}},
@@ -3119,8 +3119,8 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 func TestJetStreamConsumerWithMultipleStartOptions(t *testing.T) {
 	subj := "my_stream"
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: FileStorage}},
@@ -3160,8 +3160,8 @@ func TestJetStreamConsumerWithMultipleStartOptions(t *testing.T) {
 
 func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage}},
@@ -3256,8 +3256,8 @@ func TestJetStreamConsumerSingleTokenSubject(t *testing.T) {
 
 func TestJetStreamConsumerPullDelayedFirstPullWithReplayOriginal(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage}},
@@ -3299,8 +3299,8 @@ func TestJetStreamConsumerPullDelayedFirstPullWithReplayOriginal(t *testing.T) {
 
 func TestJetStreamConsumerAckFloorFill(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MQ", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "MQ", Storage: FileStorage}},
@@ -3773,8 +3773,8 @@ func TestJetStreamConsumerDeleteAndServerRestart(t *testing.T) {
 
 func TestJetStreamConsumerDurableReconnectWithOnlyPending(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -3870,8 +3870,8 @@ func TestJetStreamConsumerDurableReconnectWithOnlyPending(t *testing.T) {
 
 func TestJetStreamConsumerDurableFilteredSubjectReconnect(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -4013,8 +4013,8 @@ func TestJetStreamConsumerDurableFilteredSubjectReconnect(t *testing.T) {
 
 func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4068,8 +4068,8 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 
 func TestJetStreamConsumerReconnect(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "ET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "ET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -4175,8 +4175,8 @@ func TestJetStreamConsumerReconnect(t *testing.T) {
 
 func TestJetStreamConsumerDurableReconnect(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
@@ -4283,8 +4283,8 @@ func TestJetStreamConsumerDurableReconnect(t *testing.T) {
 
 func TestJetStreamConsumerReplayRate(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4400,8 +4400,8 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 
 func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4458,8 +4458,8 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 
 func TestJetStreamConsumerReplayQuit(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
 		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
@@ -4686,8 +4686,8 @@ func TestJetStreamConsumerFilterSubject(t *testing.T) {
 
 func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:      "MY_STREAM",
@@ -4856,8 +4856,8 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 
 func TestJetStreamConsumerMaxAckPending(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
@@ -4978,8 +4978,8 @@ func TestJetStreamConsumerMaxAckPending(t *testing.T) {
 
 func TestJetStreamConsumerPullMaxAckPending(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
@@ -5070,8 +5070,8 @@ func TestJetStreamConsumerPullMaxAckPending(t *testing.T) {
 
 func TestJetStreamConsumerPullMaxAckPendingRedeliveries(t *testing.T) {
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
@@ -5303,8 +5303,8 @@ func TestJetStreamConsumerPendingBugWithKV(t *testing.T) {
 	fsc.Storage = FileStorage
 
 	cases := []struct {
-		name    string
 		mconfig *StreamConfig
+		name    string
 	}{
 		{name: "MemoryStore", mconfig: &msc},
 		{name: "FileStore", mconfig: &fsc},

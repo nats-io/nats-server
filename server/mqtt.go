@@ -237,59 +237,59 @@ var (
 )
 
 type srvMQTT struct {
+	sessmgr      mqttSessionManager
 	listener     net.Listener
 	listenerErr  error
 	authOverride bool
-	sessmgr      mqttSessionManager
 }
 
 type mqttSessionManager struct {
+	sessions map[string]*mqttAccountSessionManager
 	mu       sync.RWMutex
-	sessions map[string]*mqttAccountSessionManager // key is account name
 }
 
 var testDisableRMSCache = false
 
 type mqttAccountSessionManager struct {
-	mu         sync.RWMutex
-	sessions   map[string]*mqttSession        // key is MQTT client ID
-	sessByHash map[string]*mqttSession        // key is MQTT client ID hash
-	sessLocked map[string]struct{}            // key is MQTT client ID and indicate that a session can not be taken by a new client at this time
-	flappers   map[string]int64               // When connection connects with client ID already in use
-	flapTimer  *time.Timer                    // Timer to perform some cleanup of the flappers map
-	sl         *Sublist                       // sublist allowing to find retained messages for given subscription
-	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
-	rmsCache   *sync.Map                      // map[subject]mqttRetainedMsg
+	sl         *Sublist
+	sessions   map[string]*mqttSession
+	sessByHash map[string]*mqttSession
+	sessLocked map[string]struct{}
+	flappers   map[string]int64
+	flapTimer  *time.Timer
+	retmsgs    map[string]*mqttRetainedMsgRef
+	rmsCache   *sync.Map
+	rrmDoneCh  chan struct{}
+	domainTk   string
 	jsa        mqttJSA
-	rrmLastSeq uint64        // Restore retained messages expected last sequence
-	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded
-	domainTk   string        // Domain (with trailing "."), or possibly empty. This is added to session subject.
+	rrmLastSeq uint64
+	mu         sync.RWMutex
 }
 
 type mqttJSAResponse struct {
-	reply string // will be used to map to the original request in jsa.NewRequestExMulti
 	value any
+	reply string
 }
 
 type mqttJSA struct {
-	mu        sync.Mutex
-	id        string
 	c         *client
 	sendq     *ipQueue[*mqttJSPubMsg]
-	rplyr     string
-	replies   sync.Map // [string]chan *mqttJSAResponse
 	nuid      *nuid.NUID
 	quitCh    chan struct{}
-	domain    string // Domain or possibly empty. This is added to session subject.
-	domainSet bool   // covers if domain was set, even to empty
+	replies   sync.Map
+	id        string
+	rplyr     string
+	domain    string
 	timeout   time.Duration
+	mu        sync.Mutex
+	domainSet bool
 }
 
 type mqttJSPubMsg struct {
 	subj  string
 	reply string
-	hdr   int
 	msg   []byte
+	hdr   int
 }
 
 type mqttRetMsgDel struct {
@@ -298,72 +298,53 @@ type mqttRetMsgDel struct {
 }
 
 type mqttSession struct {
-	// subsMu is a "quick" version of the session lock, sufficient for the QoS0
-	// callback. It only guarantees that a new subscription is initialized, and
-	// its retained messages if any have been queued up for delivery. The QoS12
-	// callback uses the session lock.
-	mu     sync.Mutex
-	subsMu sync.RWMutex
-
-	id                     string // client ID
-	idHash                 string // client ID hash
+	pendingPubRel          map[uint16]*mqttPending
+	cpending               map[string]map[uint64]uint16
+	pendingPublish         map[uint16]*mqttPending
+	pubRelConsumer         *ConsumerConfig
 	c                      *client
 	jsa                    *mqttJSA
-	subs                   map[string]byte // Key is MQTT SUBSCRIBE filter, value is the subscription QoS
+	subs                   map[string]byte
 	cons                   map[string]*ConsumerConfig
-	pubRelConsumer         *ConsumerConfig
-	pubRelSubscribed       bool
+	idHash                 string
+	pubRelSubject          string
+	domainTk               string
+	id                     string
 	pubRelDeliverySubject  string
 	pubRelDeliverySubjectB []byte
-	pubRelSubject          string
 	seq                    uint64
-
-	// pendingPublish maps packet identifiers (PI) to JetStream ACK subjects for
-	// QoS1 and 2 PUBLISH messages pending delivery to the session's client.
-	pendingPublish map[uint16]*mqttPending
-
-	// pendingPubRel maps PIs to JetStream ACK subjects for QoS2 PUBREL
-	// messages pending delivery to the session's client.
-	pendingPubRel map[uint16]*mqttPending
-
-	// cpending maps delivery attempts (that come with a JS ACK subject) to
-	// existing PIs.
-	cpending map[string]map[uint64]uint16 // composite key: jsDur, sseq
-
-	// "Last used" publish packet identifier (PI). starting point searching for the next available.
-	last_pi uint16
-
-	// Maximum number of pending acks for this session.
-	maxp     uint16
-	tmaxack  int
-	clean    bool
-	domainTk string
+	tmaxack                int
+	subsMu                 sync.RWMutex
+	mu                     sync.Mutex
+	last_pi                uint16
+	maxp                   uint16
+	pubRelSubscribed       bool
+	clean                  bool
 }
 
 type mqttPersistedSession struct {
-	Origin string                     `json:"origin,omitempty"`
-	ID     string                     `json:"id,omitempty"`
-	Clean  bool                       `json:"clean,omitempty"`
 	Subs   map[string]byte            `json:"subs,omitempty"`
 	Cons   map[string]*ConsumerConfig `json:"cons,omitempty"`
 	PubRel *ConsumerConfig            `json:"pubrel,omitempty"`
+	Origin string                     `json:"origin,omitempty"`
+	ID     string                     `json:"id,omitempty"`
+	Clean  bool                       `json:"clean,omitempty"`
 }
 
 type mqttRetainedMsg struct {
-	Origin  string `json:"origin,omitempty"`
-	Subject string `json:"subject,omitempty"`
-	Topic   string `json:"topic,omitempty"`
-	Msg     []byte `json:"msg,omitempty"`
-	Flags   byte   `json:"flags,omitempty"`
-	Source  string `json:"source,omitempty"`
-
 	expiresFromCache time.Time
+	Origin           string `json:"origin,omitempty"`
+	Subject          string `json:"subject,omitempty"`
+	Topic            string `json:"topic,omitempty"`
+	Source           string `json:"source,omitempty"`
+	Msg              []byte `json:"msg,omitempty"`
+	Flags            byte   `json:"flags,omitempty"`
 }
 
 type mqttRetainedMsgRef struct {
+	sub   *subscription
 	sseq  uint64
 	floor uint64
-	sub   *subscription
 }
 
 // mqttSub contains fields associated with a MQTT subscription, and is added to
@@ -371,20 +352,9 @@ type mqttRetainedMsgRef struct {
 // delivery callbacks may get invoked before sub.mqtt is set up, so they should
 // acquire either sess.mu or sess.subsMu before accessing it.
 type mqttSub struct {
-	// The sub's QOS and the JS durable name. They can change when
-	// re-subscribing, and are used in the delivery callbacks. They can be
-	// quickly accessed using sess.subsMu.RLock, or under the main session lock.
-	qos   byte
-	jsDur string
-
-	// Pending serialization of retained messages to be sent when subscription
-	// is registered. The sub's delivery callbacks must wait until `prm` is
-	// ready (can block on sess.mu for that, too).
-	prm [][]byte
-
-	// If this subscription needs to be checked for being reserved. E.g. '#' or
-	// '*' or '*/'.  It is set up at the time of subscription and is immutable
-	// after that.
+	jsDur    string
+	prm      [][]byte
+	qos      byte
 	reserved bool
 }
 
@@ -406,14 +376,14 @@ type mqtt struct {
 }
 
 type mqttPending struct {
-	sseq         uint64 // stream sequence
-	jsAckSubject string // the ACK subject to send the ack to
-	jsDur        string // JS durable name
+	jsAckSubject string
+	jsDur        string
+	sseq         uint64
 }
 
 type mqttConnectProto struct {
-	rd    time.Duration
 	will  *mqttWill
+	rd    time.Duration
 	flags byte
 }
 
@@ -425,9 +395,9 @@ type mqttIOReader interface {
 type mqttReader struct {
 	reader mqttIOReader
 	buf    []byte
+	pbuf   []byte
 	pos    int
 	pstart int
-	pbuf   []byte
 }
 
 type mqttWriter struct {
@@ -445,9 +415,8 @@ type mqttWill struct {
 
 type mqttFilter struct {
 	filter string
-	qos    byte
-	// Used only for tracing and should not be used after parsing of (un)sub protocols.
 	ttopic []byte
+	qos    byte
 }
 
 type mqttPublish struct {
@@ -491,9 +460,9 @@ const (
 )
 
 type mqttParsedPublishNATSHeader struct {
-	qos     byte
 	subject []byte
 	mapped  []byte
+	qos     byte
 }
 
 func (s *Server) startMQTT() {
@@ -4424,8 +4393,8 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 	sm.mu.RUnlock()
 
 	type retainedMsg struct {
-		subj string
 		rmsg *mqttRetainedMsgRef
+		subj string
 	}
 
 	// For each session we will obtain a list of retained messages.

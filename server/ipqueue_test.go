@@ -472,8 +472,8 @@ func Benchmark_IPQueueSizeCalculation(b *testing.B) {
 		q.recycle(&elts)
 	}
 	for _, test := range []struct {
-		name string
 		run  func(b *testing.B, q *ipQueue[testType])
+		name string
 	}{
 		{name: "pop one", run: runPopOne},
 		{name: "pop all", run: runPopAll},

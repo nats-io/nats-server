@@ -53,8 +53,8 @@ const (
 type MsgTraceEvent struct {
 	Server  ServerInfo      `json:"server"`
 	Request MsgTraceRequest `json:"request"`
-	Hops    int             `json:"hops,omitempty"`
 	Events  MsgTraceEvents  `json:"events"`
+	Hops    int             `json:"hops,omitempty"`
 }
 
 type MsgTraceRequest struct {
@@ -71,18 +71,18 @@ type MsgTrace interface {
 }
 
 type MsgTraceBase struct {
-	Type      MsgTraceType `json:"type"`
 	Timestamp time.Time    `json:"ts"`
+	Type      MsgTraceType `json:"type"`
 }
 
 type MsgTraceIngress struct {
 	MsgTraceBase
-	Kind    int    `json:"kind"`
-	CID     uint64 `json:"cid"`
 	Name    string `json:"name,omitempty"`
 	Account string `json:"acc"`
 	Subject string `json:"subj"`
 	Error   string `json:"error,omitempty"`
+	Kind    int    `json:"kind"`
+	CID     uint64 `json:"cid"`
 }
 
 type MsgTraceSubjectMapping struct {
@@ -107,25 +107,21 @@ type MsgTraceJetStream struct {
 	MsgTraceBase
 	Stream     string `json:"stream"`
 	Subject    string `json:"subject,omitempty"`
-	NoInterest bool   `json:"nointerest,omitempty"`
 	Error      string `json:"error,omitempty"`
+	NoInterest bool   `json:"nointerest,omitempty"`
 }
 
 type MsgTraceEgress struct {
 	MsgTraceBase
-	Kind         int    `json:"kind"`
-	CID          uint64 `json:"cid"`
-	Name         string `json:"name,omitempty"`
-	Hop          string `json:"hop,omitempty"`
-	Account      string `json:"acc,omitempty"`
-	Subscription string `json:"sub,omitempty"`
-	Queue        string `json:"queue,omitempty"`
-	Error        string `json:"error,omitempty"`
-
-	// This is for applications that unmarshal the trace events
-	// and want to link an egress to route/leaf/gateway with
-	// the MsgTraceEvent from that server.
-	Link *MsgTraceEvent `json:"-"`
+	Link         *MsgTraceEvent `json:"-"`
+	Name         string         `json:"name,omitempty"`
+	Hop          string         `json:"hop,omitempty"`
+	Account      string         `json:"acc,omitempty"`
+	Subscription string         `json:"sub,omitempty"`
+	Queue        string         `json:"queue,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	Kind         int            `json:"kind"`
+	CID          uint64         `json:"cid"`
 }
 
 // -------------------------------------------------------------
@@ -248,17 +244,16 @@ const (
 )
 
 type msgTrace struct {
-	ready int32
 	srv   *Server
 	acc   *Account
-	// Origin account name, set only if acc is nil when acc lookup failed.
-	oan   string
-	dest  string
 	event *MsgTraceEvent
 	js    *MsgTraceJetStream
+	oan   string
+	dest  string
 	hop   string
 	nhop  string
-	tonly bool // Will only trace the message, not do delivery.
+	ready int32
+	tonly bool
 	ct    compressionType
 }
 

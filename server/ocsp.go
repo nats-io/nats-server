@@ -63,17 +63,16 @@ const (
 
 // OCSPMonitor monitors the state of a staple per certificate.
 type OCSPMonitor struct {
-	kind     string
-	mu       sync.Mutex
-	raw      []byte
-	srv      *Server
-	certFile string
-	resp     *ocsp.Response
-	hc       *http.Client
-	stopCh   chan struct{}
-	Leaf     *x509.Certificate
-	Issuer   *x509.Certificate
-
+	srv              *Server
+	resp             *ocsp.Response
+	hc               *http.Client
+	stopCh           chan struct{}
+	Leaf             *x509.Certificate
+	Issuer           *x509.Certificate
+	kind             string
+	certFile         string
+	raw              []byte
+	mu               sync.Mutex
 	shutdownOnRevoke bool
 }
 
@@ -577,9 +576,9 @@ func (s *Server) setupOCSPStapleStoreDir() error {
 type tlsConfigKind struct {
 	tlsConfig   *tls.Config
 	tlsOpts     *TLSConfigOpts
+	apply       func(*tls.Config)
 	kind        string
 	isLeafSpoke bool
-	apply       func(*tls.Config)
 }
 
 func (s *Server) configureOCSP() []*tlsConfigKind {

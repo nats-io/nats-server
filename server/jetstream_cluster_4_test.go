@@ -1150,21 +1150,21 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 	}
 	type job func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, c *cluster)
 	type testParams struct {
+		expect          job
 		cluster         string
 		streams         []*streamSetup
+		jobs            []job
 		producers       int
 		consumers       int
-		restartAny      bool
-		restartWait     time.Duration
-		ldmRestart      bool
-		rolloutRestart  bool
-		restarts        int
-		checkHealthz    bool
-		jobs            []job
-		expect          job
-		duration        time.Duration
-		producerMsgs    int
 		producerMsgSize int
+		restartWait     time.Duration
+		producerMsgs    int
+		restarts        int
+		duration        time.Duration
+		ldmRestart      bool
+		checkHealthz    bool
+		rolloutRestart  bool
+		restartAny      bool
 	}
 	test := func(t *testing.T, test *testParams) {
 		conf := `
@@ -3409,8 +3409,8 @@ func TestJetStreamClusterDesyncAfterQuitDuringCatchup(t *testing.T) {
 
 func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 	tests := []struct {
-		title            string
 		onErrorCondition func(server *Server, mset *stream)
+		title            string
 	}{
 		{
 			title: "TooManyRetries",

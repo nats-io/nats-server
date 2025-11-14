@@ -40,25 +40,13 @@ import (
 const _EMPTY_ = ""
 
 type parser struct {
-	mapping map[string]any
-	lx      *lexer
-
-	// The current scoped context, can be array or map
-	ctx any
-
-	// stack of contexts, either map or array/slice stack
-	ctxs []any
-
-	// Keys stack
-	keys []string
-
-	// Keys stack as items
-	ikeys []item
-
-	// The config file path, empty by default.
-	fp string
-
-	// pedantic reports error when configuration is not correct.
+	ctx      any
+	mapping  map[string]any
+	lx       *lexer
+	fp       string
+	ctxs     []any
+	keys     []string
+	ikeys    []item
 	pedantic bool
 }
 
@@ -150,10 +138,10 @@ func ParseFileWithChecksDigest(fp string) (map[string]any, string, error) {
 }
 
 type token struct {
-	item         item
 	value        any
-	usedVariable bool
 	sourceFile   string
+	item         item
+	usedVariable bool
 }
 
 func (t *token) MarshalJSON() ([]byte, error) {

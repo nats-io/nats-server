@@ -2549,11 +2549,11 @@ func TestNoRaceJetStreamStandaloneDontReplyToAckBeforeProcessingIt(t *testing.T)
 // due to an old index.db and compaction after the index.db took place which could lose per subject information.
 func TestNoRaceFileStoreMsgLimitsAndOldRecoverState(t *testing.T) {
 	for _, test := range []struct {
+		transform        func(StreamConfig) StreamConfig
 		name             string
 		expectedFirstSeq uint64
 		expectedLastSeq  uint64
 		expectedMsgs     uint64
-		transform        func(StreamConfig) StreamConfig
 	}{
 		{
 			name:             "MaxMsgsPer",
@@ -2967,8 +2967,8 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 }
 
 type fastProdLogger struct {
-	DummyLogger
 	gotIt chan struct{}
+	DummyLogger
 }
 
 func (l *fastProdLogger) Debugf(format string, args ...any) {

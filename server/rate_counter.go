@@ -19,10 +19,10 @@ import (
 )
 
 type rateCounter struct {
+	end      time.Time
 	limit    int64
 	count    int64
 	blocked  uint64
-	end      time.Time
 	interval time.Duration
 	mu       sync.Mutex
 }

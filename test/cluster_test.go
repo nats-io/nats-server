@@ -594,8 +594,8 @@ func TestEphemeralClusterName(t *testing.T) {
 }
 
 type captureErrLogger struct {
-	dummyLogger
 	ch chan string
+	dummyLogger
 }
 
 func (c *captureErrLogger) Errorf(format string, v ...any) {

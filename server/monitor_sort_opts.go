@@ -93,8 +93,8 @@ func (l byLast) Less(i, j int) bool {
 
 // Idle time
 type byIdle struct {
-	ConnInfos
 	now time.Time
+	ConnInfos
 }
 
 func (l byIdle) Less(i, j int) bool {
@@ -103,8 +103,8 @@ func (l byIdle) Less(i, j int) bool {
 
 // Uptime
 type byUptime struct {
-	ConnInfos
 	now time.Time
+	ConnInfos
 }
 
 func (l byUptime) Less(i, j int) bool {

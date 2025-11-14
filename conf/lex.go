@@ -84,35 +84,23 @@ const (
 type stateFn func(lx *lexer) stateFn
 
 type lexer struct {
-	input string
-	start int
-	pos   int
-	width int
-	line  int
-	state stateFn
-	items chan item
-
-	// A stack of state functions used to maintain context.
-	// The idea is to reuse parts of the state machine in various places.
-	// For example, values can appear at the top level or within arbitrarily
-	// nested arrays. The last state on the stack is used after a value has
-	// been lexed. Similarly for comments.
-	stack []stateFn
-
-	// Used for processing escapable substrings in double-quoted and raw strings
-	stringParts   []string
+	state         stateFn
+	items         chan item
 	stringStateFn stateFn
-
-	// lstart is the start position of the current line.
-	lstart int
-
-	// ilstart is the start position of the line from the current item.
-	ilstart int
+	input         string
+	stack         []stateFn
+	stringParts   []string
+	start         int
+	pos           int
+	width         int
+	line          int
+	lstart        int
+	ilstart       int
 }
 
 type item struct {
-	typ  itemType
 	val  string
+	typ  itemType
 	line int
 	pos  int
 }

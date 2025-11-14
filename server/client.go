@@ -258,80 +258,64 @@ func (p WriteTimeoutPolicy) String() string {
 }
 
 type client struct {
-	// Here first because of use of atomics, and memory alignment.
-	stats
+	out            outbound
+	last           time.Time
+	rttStart       time.Time
+	lastReplyPrune time.Time
+	lastIn         time.Time
+	start          time.Time
+	expires        time.Time
+	authErr        error
 	gwReplyMapping
-	kind  int
-	srv   *Server
-	acc   *Account
-	perms *permissions
-	in    readCache
-	parseState
-	opts       ClientOpts
-	rrTracking *rrTracking
-	mpay       int32
-	msubs      int32
-	mcl        int32
-	mu         sync.Mutex
-	cid        uint64
-	start      time.Time
-	nonce      []byte
-	pubKey     string
-	nc         net.Conn
-	ncs        atomic.Value
-	ncsAcc     atomic.Value
 	ncsUser    atomic.Value
-	out        outbound
+	ncsAcc     atomic.Value
+	ncs        atomic.Value
+	nc         net.Conn
+	route      *route
+	mqtt       *mqtt
+	tlsTo      *time.Timer
+	ws         *websocket
+	leaf       *leaf
+	gw         *gateway
+	srv        *Server
+	acc        *Account
+	rrTracking *rrTracking
+	perms      *permissions
 	user       *NkeyUser
-	host       string
-	port       uint16
+	atmr       *time.Timer
+	pcd        map[*client]struct{}
 	subs       map[string]*subscription
 	replies    map[string]*resp
 	mperms     *msgDeny
-	darray     []string
-	pcd        map[*client]struct{}
-	atmr       *time.Timer
-	expires    time.Time
+	opts       ClientOpts
+	in         readCache
+	nameTag    string
+	host       string
 	ping       pinfo
-	msgb       [msgScratchSize]byte
-	last       time.Time
-	lastIn     time.Time
 	proxyKey   string
-
+	pubKey     string
+	darray     []string
+	tags       jwt.TagList
+	nonce      []byte
+	parseState
+	stats
+	kind              int
+	cid               uint64
+	rtt               time.Duration
+	mu                sync.Mutex
+	msubs             int32
+	mcl               int32
+	mpay              int32
 	repliesSincePrune uint16
-	lastReplyPrune    time.Time
-
-	headers bool
-
-	rtt      time.Duration
-	rttStart time.Time
-
-	route *route
-	gw    *gateway
-	leaf  *leaf
-	ws    *websocket
-	mqtt  *mqtt
-
-	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
-
-	rref byte
-
-	trace bool
-	echo  bool
-	noIcb bool
-	iproc bool // In-Process connection, set at creation and immutable.
-
-	tags    jwt.TagList
-	nameTag string
-
-	tlsTo *time.Timer
-
-	// Authentication error override. This is used because the authentication
-	// stack is simply returning a boolean, and the only authentication error
-	// reported is the generic `ErrAuthentication`. In the authentication code,
-	// if we want to report a different error, we can now set this field
-	// and `authViolation()` will use that one.
-	authErr error
+	flags             clientFlag
+	port              uint16
+	msgb              [msgScratchSize]byte
+	rref              byte
+	iproc             bool
+	noIcb             bool
+	echo              bool
+	trace             bool
+	headers           bool
 }
 
 type rrTracking struct {
@@ -348,17 +332,17 @@ type pinfo struct {
 
 // outbound holds pending data for a socket.
 type outbound struct {
-	nb  net.Buffers        // Pending buffers for send, each has fixed capacity as per nbPool below.
-	wnb net.Buffers        // Working copy of "nb", reused on each flushOutbound call, partial writes may leave entries here for next iteration.
-	pb  int64              // Total pending/queued bytes.
-	fsp int32              // Flush signals that are pending per producer from readLoop's pcd.
-	wtp WriteTimeoutPolicy // What do we do on a write timeout?
-	sg  *sync.Cond         // To signal writeLoop that there is data to flush.
-	wdl time.Duration      // Snapshot of write deadline.
-	mp  int64              // Snapshot of max pending for client.
-	lft time.Duration      // Last flush time for Write.
-	stc chan struct{}      // Stall chan we create to slow down producers on overrun, e.g. fan-in.
+	sg  *sync.Cond
+	stc chan struct{}
 	cw  *s2.Writer
+	nb  net.Buffers
+	wnb net.Buffers
+	pb  int64
+	wdl time.Duration
+	mp  int64
+	lft time.Duration
+	fsp int32
+	wtp WriteTimeoutPolicy
 }
 
 const nbMaxVectorSize = 1024 // == IOV_MAX on Linux/Darwin and most other Unices (except Solaris/AIX)
@@ -429,13 +413,12 @@ type perm struct {
 }
 
 type permissions struct {
-	// Have these 2 first for memory alignment due to the use of atomic.
-	pcsz   int32
-	prun   int32
 	sub    perm
 	pub    perm
 	resp   *ResponsePermission
 	pcache sync.Map
+	pcsz   int32
+	prun   int32
 }
 
 // This is used to dynamically track responses and reply subjects
@@ -484,33 +467,18 @@ const sysGroup = "_sys_"
 
 // Used in readloop to cache hot subject lookups and group statistics.
 type readCache struct {
-	// These are for clients who are bound to a single account.
-	genid   uint64
+	start   time.Time
 	results map[string]*SublistResult
-
-	// This is for routes and gateways to have their own L1 as well that is account aware.
 	pacache map[string]*perAccountCache
-
-	// This is for when we deliver messages across a route. We use this structure
-	// to make sure to only send one message and properly scope to queues as needed.
-	rts []routeTarget
-
-	// These are all temporary totals for an invocation of a read in readloop.
-	msgs  int32
-	bytes int32
-	subs  int32
-
-	rsz int32 // Read buffer size
-	srs int32 // Short reads, used for dynamic buffer resizing.
-
-	// These are for readcache flags to avoid locks.
-	flags readCacheFlag
-
-	// Capture the time we started processing our readLoop.
-	start time.Time
-
-	// Total time stalled so far for readLoop processing.
-	tst time.Duration
+	rts     []routeTarget
+	genid   uint64
+	tst     time.Duration
+	msgs    int32
+	bytes   int32
+	subs    int32
+	rsz     int32
+	srs     int32
+	flags   readCacheFlag
 }
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -630,21 +598,21 @@ func (c *client) clientTypeString() string {
 // FIXME(dlc) - This is getting bloated for normal subs, need
 // to optionally have an opts section for non-normal stuff.
 type subscription struct {
-	client  *client
-	im      *streamImport // This is for import stream support.
-	rsi     bool
-	si      bool
-	shadow  []*subscription // This is to track shadowed accounts.
 	icb     msgHandler
+	im      *streamImport
+	mqtt    *mqttSub
+	client  *client
+	origin  []byte
+	shadow  []*subscription
 	subject []byte
 	queue   []byte
 	sid     []byte
-	origin  []byte
 	nm      int64
 	max     int64
 	qw      int32
 	closed  int32
-	mqtt    *mqttSub
+	si      bool
+	rsi     bool
 }
 
 // Indicate that this subscription is closed.
@@ -660,34 +628,28 @@ func (s *subscription) isClosed() bool {
 }
 
 type ClientOpts struct {
-	Echo         bool   `json:"echo"`
-	Verbose      bool   `json:"verbose"`
-	Pedantic     bool   `json:"pedantic"`
-	TLSRequired  bool   `json:"tls_required"`
-	Nkey         string `json:"nkey,omitempty"`
-	JWT          string `json:"jwt,omitempty"`
-	Sig          string `json:"sig,omitempty"`
-	Token        string `json:"auth_token,omitempty"`
-	Username     string `json:"user,omitempty"`
-	Password     string `json:"pass,omitempty"`
-	Name         string `json:"name"`
-	Lang         string `json:"lang"`
-	Version      string `json:"version"`
-	Protocol     int    `json:"protocol"`
-	Account      string `json:"account,omitempty"`
-	AccountNew   bool   `json:"new_account,omitempty"`
-	Headers      bool   `json:"headers,omitempty"`
-	NoResponders bool   `json:"no_responders,omitempty"`
-
-	// Routes and Leafnodes only
-	Import *SubjectPermission `json:"import,omitempty"`
-	Export *SubjectPermission `json:"export,omitempty"`
-
-	// Leafnodes
-	RemoteAccount string `json:"remote_account,omitempty"`
-
-	// Proxy would include its own nonce signature.
-	ProxySig string `json:"proxy_sig,omitempty"`
+	Import        *SubjectPermission `json:"import,omitempty"`
+	Export        *SubjectPermission `json:"export,omitempty"`
+	Name          string             `json:"name"`
+	Lang          string             `json:"lang"`
+	Nkey          string             `json:"nkey,omitempty"`
+	JWT           string             `json:"jwt,omitempty"`
+	Sig           string             `json:"sig,omitempty"`
+	Token         string             `json:"auth_token,omitempty"`
+	Username      string             `json:"user,omitempty"`
+	Password      string             `json:"pass,omitempty"`
+	ProxySig      string             `json:"proxy_sig,omitempty"`
+	RemoteAccount string             `json:"remote_account,omitempty"`
+	Version       string             `json:"version"`
+	Account       string             `json:"account,omitempty"`
+	Protocol      int                `json:"protocol"`
+	AccountNew    bool               `json:"new_account,omitempty"`
+	Headers       bool               `json:"headers,omitempty"`
+	NoResponders  bool               `json:"no_responders,omitempty"`
+	Pedantic      bool               `json:"pedantic"`
+	Verbose       bool               `json:"verbose"`
+	TLSRequired   bool               `json:"tls_required"`
+	Echo          bool               `json:"echo"`
 }
 
 var defaultOpts = ClientOpts{Verbose: true, Pedantic: true, Echo: true}

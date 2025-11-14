@@ -26,12 +26,12 @@ import (
 // Basic HTTP proxy for testing
 type testHTTPProxy struct {
 	listener    net.Listener
-	port        int
 	username    string
 	password    string
+	connections []net.Conn
+	port        int
+	closeDelay  time.Duration
 	started     bool
-	closeDelay  time.Duration // Delay before closing connections for robustness
-	connections []net.Conn    // Track connections for cleanup
 }
 
 func createTestHTTPProxy(username, password string) *testHTTPProxy {
@@ -255,8 +255,8 @@ func TestLeafNodeHttpProxyConfigWarnings(t *testing.T) {
 	testCases := []struct {
 		name          string
 		config        string
-		expectWarning bool
 		warningMatch  string
+		expectWarning bool
 	}{
 		{
 			name: "proxy with only TCP URLs",
@@ -700,14 +700,9 @@ func TestLeafNodeHttpProxyTunnelFailsWithoutAuth(t *testing.T) {
 // TestLeafNodeProxyValidationProgrammatic tests proxy validation when configuring server programmatically
 func TestLeafNodeHttpProxyValidationProgrammatic(t *testing.T) {
 	tests := []struct {
-		// name is the name of the test.
-		name string
-
-		// setupOptions creates the Options configuration for the test.
+		err          error
 		setupOptions func() *Options
-
-		// err is the expected error. nil means no error expected.
-		err error
+		name         string
 	}{
 		{
 			name: "invalid proxy scheme",

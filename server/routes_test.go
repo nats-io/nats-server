@@ -1309,7 +1309,7 @@ func TestRouteCloseTLSConnection(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.Cluster.Host, opts.Cluster.Port)
+	endpoint := net.JoinHostPort(opts.Cluster.Host, fmt.Sprintf("%d", opts.Cluster.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)
@@ -1393,9 +1393,9 @@ func (r *testRouteResolver) LookupHost(ctx context.Context, host string) ([]stri
 }
 
 type routeHostLookupLogger struct {
-	DummyLogger
 	errCh chan string
 	ch    chan bool
+	DummyLogger
 	count int
 }
 
@@ -1678,8 +1678,8 @@ func TestClusterQueueGroupWeightTrackingLeak(t *testing.T) {
 }
 
 type testRouteReconnectLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *testRouteReconnectLogger) Debugf(format string, v ...any) {
@@ -2520,10 +2520,10 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 }
 
 type captureRMsgTrace struct {
-	DummyLogger
-	sync.Mutex
 	traces *bytes.Buffer
-	out    []string
+	DummyLogger
+	out []string
+	sync.Mutex
 }
 
 func (l *captureRMsgTrace) Tracef(format string, args ...any) {
@@ -3375,11 +3375,11 @@ func TestRoutePoolAndPerAccountWithServiceLatencyNoDataRace(t *testing.T) {
 
 func TestRouteParseOriginClusterMsgArgs(t *testing.T) {
 	for _, test := range []struct {
-		racc    bool
 		args    string
 		pacache string
 		reply   string
 		queues  [][]byte
+		racc    bool
 	}{
 		{racc: true, args: "ORIGIN foo 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: _EMPTY_, queues: nil},
 		{racc: true, args: "ORIGIN foo bar 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: "bar", queues: nil},
@@ -3643,8 +3643,8 @@ func TestRoutePoolAndPerAccountWithOlderServer(t *testing.T) {
 }
 
 type testDuplicateRouteLogger struct {
+	ch chan struct{}
 	DummyLogger
-	ch    chan struct{}
 	count int
 }
 
@@ -3913,8 +3913,8 @@ func TestRouteCompressionOptions(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		mode string
-		rtts []time.Duration
 		err  string
+		rtts []time.Duration
 	}{
 		{name: "unsupported mode", mode: "gzip", rtts: nil, err: "unsupported"},
 		{name: "not ascending order", mode: "s2_auto", rtts: []time.Duration{
@@ -3975,8 +3975,8 @@ func TestRouteCompression(t *testing.T) {
 	`
 	for _, test := range []struct {
 		name     string
-		poolSize int
 		accounts string
+		poolSize int
 	}{
 		{name: "no pooling", poolSize: -1, accounts: _EMPTY_},
 		{name: "pooling", poolSize: 3, accounts: _EMPTY_},
@@ -4744,7 +4744,7 @@ func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Cluster.Port))
+	c, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Cluster.Port)))
 	if err != nil {
 		t.Fatalf("Error connecting: %v", err)
 	}

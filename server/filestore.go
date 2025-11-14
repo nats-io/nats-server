@@ -53,27 +53,16 @@ import (
 )
 
 type FileStoreConfig struct {
-	// Where the parent directory for all storage will be located.
-	StoreDir string
-	// BlockSize is the file block size. This also represents the maximum overhead size.
-	BlockSize uint64
-	// CacheExpire is how long with no activity until we expire the cache.
-	CacheExpire time.Duration
-	// SubjectStateExpire is how long with no activity until we expire a msg block's subject state.
+	srv                *Server
+	StoreDir           string
+	BlockSize          uint64
+	CacheExpire        time.Duration
 	SubjectStateExpire time.Duration
-	// SyncInterval is how often we sync to disk in the background.
-	SyncInterval time.Duration
-	// SyncAlways is when the stream should sync all data writes.
-	SyncAlways bool
-	// AsyncFlush allows async flush to batch write operations.
-	AsyncFlush bool
-	// Cipher is the cipher to use when encrypting.
-	Cipher StoreCipher
-	// Compression is the algorithm to use when compressing.
-	Compression StoreCompression
-
-	// Internal reference to our server.
-	srv *Server
+	SyncInterval       time.Duration
+	Cipher             StoreCipher
+	SyncAlways         bool
+	AsyncFlush         bool
+	Compression        StoreCompression
 }
 
 // FileStreamInfo allows us to remember created time.
@@ -170,105 +159,102 @@ type psi struct {
 }
 
 type fileStore struct {
-	srv         *Server
-	mu          sync.RWMutex
-	state       StreamState
-	tombs       []uint64
-	ld          *LostStreamData
-	scb         StorageUpdateHandler
-	rmcb        StorageRemoveMsgHandler
-	pmsgcb      ProcessJetStreamMsgHandler
-	ageChk      *time.Timer // Timer to expire messages.
-	ageChkRun   bool        // Whether message expiration is currently running.
-	ageChkTime  int64       // When the message expiration is scheduled to run.
-	syncTmr     *time.Timer
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
+	lpex        time.Time
+	aek         cipher.AEAD
+	ttls        *thw.HashWheel
+	sdm         *SDMMeta
+	rmcb        StorageRemoveMsgHandler
+	pmsgcb      ProcessJetStreamMsgHandler
+	ageChk      *time.Timer
+	scheduling  *MsgScheduling
+	hh          *highwayhash.Digest64
+	syncTmr     *time.Timer
+	ld          *LostStreamData
+	scb         StorageUpdateHandler
 	prf         keyGen
 	oldprf      keyGen
-	aek         cipher.AEAD
+	qch         chan struct{}
 	lmb         *msgBlock
-	blks        []*msgBlock
+	srv         *Server
 	bim         map[uint32]*msgBlock
 	psim        *stree.SubjectTree[psi]
-	tsl         int
-	adml        int
-	hh          *highwayhash.Digest64
-	qch         chan struct{}
 	fsld        chan struct{}
-	cmu         sync.RWMutex
+	state       StreamState
 	cfs         []ConsumerStore
+	blks        []*msgBlock
+	tombs       []uint64
+	ageChkTime  int64
+	tsl         int
 	sips        int
 	dirty       int
+	adml        int
+	cmu         sync.RWMutex
+	mu          sync.RWMutex
 	closing     bool
-	closed      bool
-	fip         bool
-	receivedAny bool
 	firstMoved  bool
-	ttls        *thw.HashWheel
-	scheduling  *MsgScheduling
-	sdm         *SDMMeta
-	lpex        time.Time // Last PurgeEx call.
+	receivedAny bool
+	ageChkRun   bool
+	fip         bool
+	closed      bool
 }
 
 // Represents a message store block and its data.
 type msgBlock struct {
-	// Here for 32bit systems and atomic.
-	first      msgId
-	last       msgId
-	mu         sync.RWMutex
-	fs         *fileStore
-	aek        cipher.AEAD
-	bek        cipher.Stream
-	seed       []byte
-	nonce      []byte
-	mfn        string
-	mfd        *os.File
-	cmp        StoreCompression // Effective compression at the time of loading the block
-	liwsz      int64
-	index      uint32
-	bytes      uint64 // User visible bytes count.
-	rbytes     uint64 // Total bytes (raw) including deleted. Used for rolling to new blk.
-	cbytes     uint64 // Bytes count after last compaction. 0 if no compaction happened yet.
-	msgs       uint64 // User visible message count.
-	fss        *stree.SubjectTree[SimpleState]
-	kfn        string
-	lwts       int64
-	llts       int64
-	lrts       int64
-	lsts       int64
-	llseq      uint64
-	hh         *highwayhash.Digest64
-	ecache     elastic.Pointer[cache]
-	cache      *cache
-	cloads     uint64
-	cexp       time.Duration
-	fexp       time.Duration
-	ctmr       *time.Timer
-	werr       error
-	dmap       avl.SequenceSet
-	fch        chan struct{}
-	qch        chan struct{}
-	lchk       [8]byte
-	loading    bool
-	flusher    bool
-	noTrack    bool
-	needSync   bool
-	syncAlways bool
-	noCompact  bool
-	closed     bool
-	ttls       uint64 // How many msgs have TTLs?
-	schedules  uint64 // How many msgs have schedules?
-
-	// Used to mock write failures.
+	werr         error
+	aek          cipher.AEAD
+	bek          cipher.Stream
+	ecache       elastic.Pointer[cache]
+	fss          *stree.SubjectTree[SimpleState]
+	qch          chan struct{}
+	fs           *fileStore
+	cache        *cache
+	hh           *highwayhash.Digest64
+	mfd          *os.File
+	fch          chan struct{}
+	ctmr         *time.Timer
+	mfn          string
+	kfn          string
+	nonce        []byte
+	seed         []byte
+	dmap         avl.SequenceSet
+	first        msgId
+	last         msgId
+	liwsz        int64
+	cbytes       uint64
+	lrts         int64
+	lsts         int64
+	llseq        uint64
+	lwts         int64
+	msgs         uint64
+	ttls         uint64
+	cloads       uint64
+	cexp         time.Duration
+	fexp         time.Duration
+	rbytes       uint64
+	bytes        uint64
+	llts         int64
+	schedules    uint64
+	mu           sync.RWMutex
+	index        uint32
+	lchk         [8]byte
+	loading      bool
+	flusher      bool
+	noTrack      bool
+	needSync     bool
+	syncAlways   bool
+	noCompact    bool
+	closed       bool
+	cmp          StoreCompression
 	mockWriteErr bool
 }
 
 // Write through caching layer that is also used on loading messages.
 type cache struct {
 	buf  []byte
-	wp   int
 	idx  []uint32
+	wp   int
 	fseq uint64
 	nra  bool
 }
@@ -10727,18 +10713,18 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 ////////////////////////////////////////////////////////////////////////////////
 
 type consumerFileStore struct {
-	mu      sync.Mutex
+	state   ConsumerState
+	aek     cipher.AEAD
+	hh      *highwayhash.Digest64
 	fs      *fileStore
 	cfg     *FileConsumerInfo
+	qch     chan struct{}
 	prf     keyGen
-	aek     cipher.AEAD
-	name    string
+	fch     chan struct{}
 	odir    string
 	ifn     string
-	hh      *highwayhash.Digest64
-	state   ConsumerState
-	fch     chan struct{}
-	qch     chan struct{}
+	name    string
+	mu      sync.Mutex
 	flusher bool
 	writing bool
 	dirty   bool

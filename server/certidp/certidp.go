@@ -98,13 +98,13 @@ type ChainLink struct {
 
 // OCSPPeerConfig holds the parsed OCSP peer configuration section of TLS configuration
 type OCSPPeerConfig struct {
-	Verify                 bool
 	Timeout                float64
 	ClockSkew              float64
+	TTLUnsetNextUpdate     float64
+	Verify                 bool
 	WarnOnly               bool
 	UnknownIsGood          bool
 	AllowWhenCAUnreachable bool
-	TTLUnsetNextUpdate     float64
 }
 
 func NewOCSPPeerConfig() *OCSPPeerConfig {

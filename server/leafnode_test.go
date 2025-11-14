@@ -43,8 +43,8 @@ import (
 )
 
 type captureLeafNodeRandomIPLogger struct {
+	ch chan struct{}
 	DummyLogger
-	ch  chan struct{}
 	ips [3]int
 }
 
@@ -338,8 +338,8 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 }
 
 type captureErrorLogger struct {
-	DummyLogger
 	errCh chan string
+	DummyLogger
 }
 
 func (l *captureErrorLogger) Errorf(format string, v ...any) {
@@ -820,8 +820,8 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 }
 
 type loopDetectedLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *loopDetectedLogger) Errorf(format string, v ...any) {
@@ -986,7 +986,7 @@ func TestLeafNodeCloseTLSConnection(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.LeafNode.Host, opts.LeafNode.Port)
+	endpoint := net.JoinHostPort(opts.LeafNode.Host, fmt.Sprintf("%d", opts.LeafNode.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)
@@ -1809,8 +1809,8 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 }
 
 type chanLogger struct {
-	DummyLogger
 	triggerChan chan string
+	DummyLogger
 }
 
 func (l *chanLogger) Warnf(format string, v ...any) {
@@ -2031,13 +2031,13 @@ func TestLeafNodeOriginClusterInfo(t *testing.T) {
 }
 
 type proxyAcceptDetectFailureLate struct {
-	sync.Mutex
-	wg         sync.WaitGroup
-	acceptPort int
 	l          net.Listener
-	srvs       []net.Conn
 	leaf       net.Conn
 	startChan  chan struct{}
+	srvs       []net.Conn
+	wg         sync.WaitGroup
+	acceptPort int
+	sync.Mutex
 }
 
 func (p *proxyAcceptDetectFailureLate) run(t *testing.T) int {
@@ -2128,9 +2128,9 @@ func (p *proxyAcceptDetectFailureLate) close() {
 }
 
 type oldConnReplacedLogger struct {
-	DummyLogger
 	errCh  chan string
 	warnCh chan string
+	DummyLogger
 }
 
 func (l *oldConnReplacedLogger) Errorf(format string, v ...any) {
@@ -2463,9 +2463,9 @@ func TestLeafNodeLMsgSplit(t *testing.T) {
 }
 
 type parseRouteLSUnsubLogger struct {
-	DummyLogger
 	gotTrace chan struct{}
 	gotErr   chan error
+	DummyLogger
 }
 
 func (l *parseRouteLSUnsubLogger) Errorf(format string, v ...any) {
@@ -2823,9 +2823,9 @@ func TestLeafNodeWSMixURLs(t *testing.T) {
 }
 
 type testConnTrackSize struct {
-	sync.Mutex
 	net.Conn
 	sz int
+	sync.Mutex
 }
 
 func (c *testConnTrackSize) Write(p []byte) (int, error) {
@@ -2960,10 +2960,10 @@ func TestLeafNodeWSBasic(t *testing.T) {
 func TestLeafNodeWSRemoteCompressAndMaskingOptions(t *testing.T) {
 	for _, test := range []struct {
 		name      string
-		compress  bool
 		compStr   string
-		noMasking bool
 		noMaskStr string
+		compress  bool
+		noMasking bool
 	}{
 		{name: "compression masking", compress: true, compStr: "true", noMasking: false, noMaskStr: "false"},
 		{name: "compression no masking", compress: true, compStr: "true", noMasking: true, noMaskStr: "true"},
@@ -6039,9 +6039,9 @@ leafnodes:{
 }
 
 type checkLeafMinVersionLogger struct {
-	DummyLogger
 	errCh  chan string
 	connCh chan string
+	DummyLogger
 }
 
 func (l *checkLeafMinVersionLogger) Errorf(format string, args ...any) {
@@ -6414,8 +6414,8 @@ func TestLeafNodeSignatureCB(t *testing.T) {
 }
 
 type testLeafTraceLogger struct {
-	DummyLogger
 	ch chan string
+	DummyLogger
 }
 
 func (l *testLeafTraceLogger) Tracef(format string, v ...any) {
@@ -7208,8 +7208,8 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		mode string
-		rtts []time.Duration
 		err  string
+		rtts []time.Duration
 	}{
 		{name: "unsupported mode", mode: "gzip", rtts: nil, err: "unsupported"},
 		{name: "not ascending order", mode: "s2_auto", rtts: []time.Duration{
@@ -9547,8 +9547,8 @@ func TestLeafNodeConnectionSucceedsEvenWithDelayedFirstINFO(t *testing.T) {
 }
 
 type captureLeafConnClosed struct {
-	DummyLogger
 	ch chan struct{}
+	DummyLogger
 }
 
 func (l *captureLeafConnClosed) Noticef(format string, v ...any) {

@@ -40,15 +40,15 @@ import (
 // JetStreamConfig determines this server's configuration.
 // MaxMemory and MaxStore are in bytes.
 type JetStreamConfig struct {
-	MaxMemory    int64         `json:"max_memory"`              // MaxMemory is the maximum size of memory type streams
-	MaxStore     int64         `json:"max_storage"`             // MaxStore is the maximum size of file store type streams
-	StoreDir     string        `json:"store_dir,omitempty"`     // StoreDir is where storage files are stored
-	SyncInterval time.Duration `json:"sync_interval,omitempty"` // SyncInterval is how frequently we sync to disk in the background by calling fsync
-	SyncAlways   bool          `json:"sync_always,omitempty"`   // SyncAlways indicates flushes are done after every write
-	Domain       string        `json:"domain,omitempty"`        // Domain is the JetStream domain
-	CompressOK   bool          `json:"compress_ok,omitempty"`   // CompressOK indicates if compression is supported
-	UniqueTag    string        `json:"unique_tag,omitempty"`    // UniqueTag is the unique tag assigned to this instance
-	Strict       bool          `json:"strict,omitempty"`        // Strict indicates if strict JSON parsing is performed
+	StoreDir     string        `json:"store_dir,omitempty"`
+	Domain       string        `json:"domain,omitempty"`
+	UniqueTag    string        `json:"unique_tag,omitempty"`
+	MaxMemory    int64         `json:"max_memory"`
+	MaxStore     int64         `json:"max_storage"`
+	SyncInterval time.Duration `json:"sync_interval,omitempty"`
+	SyncAlways   bool          `json:"sync_always,omitempty"`
+	CompressOK   bool          `json:"compress_ok,omitempty"`
+	Strict       bool          `json:"strict,omitempty"`
 }
 
 // Statistics about JetStream for this server.
@@ -85,10 +85,10 @@ type JetStreamTier struct {
 
 // JetStreamAccountStats returns current statistics about the account's JetStream usage.
 type JetStreamAccountStats struct {
-	JetStreamTier                          // in case tiers are used, reflects totals with limits not set
-	Domain        string                   `json:"domain,omitempty"`
-	API           JetStreamAPIStats        `json:"api"`
-	Tiers         map[string]JetStreamTier `json:"tiers,omitempty"` // indexed by tier name
+	Tiers  map[string]JetStreamTier `json:"tiers,omitempty"`
+	Domain string                   `json:"domain,omitempty"`
+	JetStreamTier
+	API JetStreamAPIStats `json:"api"`
 }
 
 // JetStreamAPIStats holds stats about the API usage for this server
@@ -101,35 +101,28 @@ type JetStreamAPIStats struct {
 
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
-	// These are here first because of atomics on 32bit systems.
-	apiInflight   int64
-	apiTotal      int64
-	apiErrors     int64
-	memReserved   int64
-	storeReserved int64
-	memUsed       int64
-	storeUsed     int64
-	queueLimit    int64
-	clustered     int32
-	mu            sync.RWMutex
-	srv           *Server
-	config        JetStreamConfig
-	cluster       *jetStreamCluster
-	accounts      map[string]*jsAccount
-	apiSubs       *Sublist
-	started       time.Time
-
-	// System level request to purge a stream move
-	accountPurge *subscription
-
-	// Some bools regarding general state.
+	started        time.Time
+	srv            *Server
+	accounts       map[string]*jsAccount
+	accountPurge   *subscription
+	apiSubs        *Sublist
+	cluster        *jetStreamCluster
+	config         JetStreamConfig
+	queueLimit     int64
+	storeReserved  int64
+	memReserved    int64
+	apiInflight    int64
+	apiErrors      int64
+	storeUsed      int64
+	memUsed        int64
+	apiTotal       int64
+	mu             sync.RWMutex
+	clustered      int32
+	disabled       atomic.Bool
 	metaRecovering bool
 	standAlone     bool
 	oos            bool
 	shuttingDown   bool
-
-	// Atomic versions
-	disabled atomic.Bool
 }
 
 type remoteUsage struct {
@@ -149,32 +142,26 @@ type jsaStorage struct {
 // an internal sub for a stream, so we will direct link to the stream
 // and walk backwards as needed vs multiple hash lookups and locks, etc.
 type jsAccount struct {
-	mu       sync.RWMutex
-	js       *jetStream
-	account  *Account
-	storeDir string
-	inflight sync.Map
-	streams  map[string]*stream
-
-	// From server
-	sendq *ipQueue[*pubMsg]
-
-	// For limiting only running one checkAndSync at a time.
-	sync atomic.Bool
-
-	// Usage/limits related fields that will be protected by usageMu
-	usageMu    sync.RWMutex
-	limits     map[string]JetStreamAccountLimits // indexed by tierName
-	usage      map[string]*jsaStorage            // indexed by tierName
-	rusage     map[string]*remoteUsage           // indexed by node id
+	lupdate    time.Time
+	usage      map[string]*jsaStorage
+	rusage     map[string]*remoteUsage
+	utimer     *time.Timer
+	js         *jetStream
+	streams    map[string]*stream
+	sendq      *ipQueue[*pubMsg]
+	updatesSub *subscription
+	limits     map[string]JetStreamAccountLimits
+	account    *Account
+	inflight   sync.Map
+	updatesPub string
+	storeDir   string
 	apiTotal   uint64
 	apiErrors  uint64
 	usageApi   uint64
 	usageErr   uint64
-	updatesPub string
-	updatesSub *subscription
-	lupdate    time.Time
-	utimer     *time.Timer
+	usageMu    sync.RWMutex
+	mu         sync.RWMutex
+	sync       atomic.Bool
 }
 
 // Track general usage for this account.

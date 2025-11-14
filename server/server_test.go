@@ -203,8 +203,8 @@ func TestStartupAndShutdown(t *testing.T) {
 func TestTLSVersions(t *testing.T) {
 	for _, test := range []struct {
 		name     string
-		value    uint16
 		expected string
+		value    uint16
 	}{
 		{name: "1.0", value: tls.VersionTLS10, expected: "1.0"},
 		{name: "1.1", value: tls.VersionTLS11, expected: "1.1"},
@@ -698,9 +698,9 @@ func TestNilMonitoringPort(t *testing.T) {
 }
 
 type DummyAuth struct {
+	deadline  time.Time
 	t         *testing.T
 	needNonce bool
-	deadline  time.Time
 	register  bool
 }
 
@@ -1428,8 +1428,8 @@ func TestServerShutdownDuringStart(t *testing.T) {
 }
 
 type myDummyDNSResolver struct {
-	ips []string
 	err error
+	ips []string
 }
 
 func (r *myDummyDNSResolver) LookupHost(ctx context.Context, host string) ([]string, error) {

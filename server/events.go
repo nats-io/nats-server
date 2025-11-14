@@ -113,37 +113,37 @@ type inSysMsg struct {
 	sub  *subscription
 	c    *client
 	acc  *Account
+	cb   sysMsgHandler
 	subj string
 	rply string
 	hdr  []byte
 	msg  []byte
-	cb   sysMsgHandler
 }
 
 // Used to send and receive messages from inside the server.
 type internal struct {
-	account        *Account
+	lastStatsz     time.Time
+	recvqp         *ipQueue[*inSysMsg]
+	sendq          *ipQueue[*pubMsg]
 	client         *client
-	seq            uint64
-	sid            int
 	servers        map[string]*serverUpdate
 	sweeper        *time.Timer
 	stmr           *time.Timer
 	replies        map[string]msgHandler
-	sendq          *ipQueue[*pubMsg]
-	recvq          *ipQueue[*inSysMsg]
-	recvqp         *ipQueue[*inSysMsg] // For STATSZ/Pings
 	resetCh        chan struct{}
-	wg             sync.WaitGroup
+	recvq          *ipQueue[*inSysMsg]
+	account        *Account
+	remoteStatsSub *subscription
 	sq             *sendq
-	orphMax        time.Duration
-	chkOrph        time.Duration
-	statsz         time.Duration
-	cstatsz        time.Duration
 	shash          string
 	inboxPre       string
-	remoteStatsSub *subscription
-	lastStatsz     time.Time
+	wg             sync.WaitGroup
+	statsz         time.Duration
+	cstatsz        time.Duration
+	chkOrph        time.Duration
+	orphMax        time.Duration
+	seq            uint64
+	sid            int
 }
 
 // ServerStatsMsg is sent periodically with stats updates.
@@ -180,11 +180,11 @@ const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 // A "peer" can be an inbound client connection or a leaf connection to a remote server. Peer in event payload
 // is always the peer's (TLS) leaf cert, which may or may be the invalid cert (See also OCSPPeerChainlinkInvalidEventMsg)
 type OCSPPeerRejectEventMsg struct {
+	Server ServerInfo `json:"server"`
 	TypedEvent
 	Kind   string           `json:"kind"`
-	Peer   certidp.CertInfo `json:"peer"`
-	Server ServerInfo       `json:"server"`
 	Reason string           `json:"reason"`
+	Peer   certidp.CertInfo `json:"peer"`
 }
 
 // OCSPPeerRejectEventMsgType is the schema type for OCSPPeerRejectEventMsg
@@ -194,11 +194,11 @@ const OCSPPeerRejectEventMsgType = "io.nats.server.advisory.v1.ocsp_peer_reject"
 // during a peer TLS handshake. A "peer" can be an inbound client connection or a leaf connection to a remote server.
 // Peer and Link may be the same if the invalid cert was the peer's leaf cert
 type OCSPPeerChainlinkInvalidEventMsg struct {
+	Server ServerInfo `json:"server"`
 	TypedEvent
+	Reason string           `json:"reason"`
 	Link   certidp.CertInfo `json:"link"`
 	Peer   certidp.CertInfo `json:"peer"`
-	Server ServerInfo       `json:"server"`
-	Reason string           `json:"reason"`
 }
 
 // OCSPPeerChainlinkInvalidEventMsgType is the schema type for OCSPPeerChainlinkInvalidEventMsg
@@ -215,15 +215,15 @@ type AccountNumConns struct {
 
 // AccountStat contains the data common between AccountNumConns and AccountStatz
 type AccountStat struct {
+	Sent          DataStats `json:"sent"`
+	Received      DataStats `json:"received"`
 	Account       string    `json:"acc"`
 	Name          string    `json:"name"`
 	Conns         int       `json:"conns"`
 	LeafNodes     int       `json:"leafnodes"`
 	TotalConns    int       `json:"total_conns"`
-	NumSubs       uint32    `json:"num_subscriptions"`
-	Sent          DataStats `json:"sent"`
-	Received      DataStats `json:"received"`
 	SlowConsumers int64     `json:"slow_consumers"`
+	NumSubs       uint32    `json:"num_subscriptions"`
 }
 
 const AccountNumConnsMsgType = "io.nats.server.advisory.v1.account_connections"
@@ -247,21 +247,18 @@ type ServerCapability uint64
 
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
-	Name     string            `json:"name"`
-	Host     string            `json:"host"`
-	ID       string            `json:"id"`
-	Cluster  string            `json:"cluster,omitempty"`
-	Domain   string            `json:"domain,omitempty"`
-	Version  string            `json:"ver"`
-	Tags     []string          `json:"tags,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-	// Whether JetStream is enabled (deprecated in favor of the `ServerCapability`).
-	JetStream bool `json:"jetstream"`
-	// Generic capability flags
-	Flags ServerCapability `json:"flags"`
-	// Sequence and Time from the remote server for this message.
-	Seq  uint64    `json:"seq"`
-	Time time.Time `json:"time"`
+	Time      time.Time         `json:"time"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	Name      string            `json:"name"`
+	Host      string            `json:"host"`
+	ID        string            `json:"id"`
+	Cluster   string            `json:"cluster,omitempty"`
+	Domain    string            `json:"domain,omitempty"`
+	Version   string            `json:"ver"`
+	Tags      []string          `json:"tags,omitempty"`
+	Flags     ServerCapability  `json:"flags"`
+	Seq       uint64            `json:"seq"`
+	JetStream bool              `json:"jetstream"`
 }
 
 const (
@@ -307,27 +304,27 @@ func (si *ServerInfo) AccountNRG() bool {
 // ClientInfo is detailed information about the client forming a connection.
 type ClientInfo struct {
 	Start      *time.Time    `json:"start,omitempty"`
-	Host       string        `json:"host,omitempty"`
-	ID         uint64        `json:"id,omitempty"`
-	Account    string        `json:"acc,omitempty"`
+	Stop       *time.Time    `json:"stop,omitempty"`
+	Server     string        `json:"server,omitempty"`
+	Cluster    string        `json:"cluster,omitempty"`
 	Service    string        `json:"svc,omitempty"`
 	User       string        `json:"user,omitempty"`
 	Name       string        `json:"name,omitempty"`
 	Lang       string        `json:"lang,omitempty"`
 	Version    string        `json:"ver,omitempty"`
-	RTT        time.Duration `json:"rtt,omitempty"`
-	Server     string        `json:"server,omitempty"`
-	Cluster    string        `json:"cluster,omitempty"`
-	Alternates []string      `json:"alts,omitempty"`
-	Stop       *time.Time    `json:"stop,omitempty"`
+	Nonce      string        `json:"nonce,omitempty"`
+	MQTTClient string        `json:"client_id,omitempty"`
+	Account    string        `json:"acc,omitempty"`
+	ClientType string        `json:"client_type,omitempty"`
+	Host       string        `json:"host,omitempty"`
 	Jwt        string        `json:"jwt,omitempty"`
 	IssuerKey  string        `json:"issuer_key,omitempty"`
 	NameTag    string        `json:"name_tag,omitempty"`
-	Tags       jwt.TagList   `json:"tags,omitempty"`
 	Kind       string        `json:"kind,omitempty"`
-	ClientType string        `json:"client_type,omitempty"`
-	MQTTClient string        `json:"client_id,omitempty"` // This is the MQTT client ID
-	Nonce      string        `json:"nonce,omitempty"`
+	Tags       jwt.TagList   `json:"tags,omitempty"`
+	Alternates []string      `json:"alts,omitempty"`
+	ID         uint64        `json:"id,omitempty"`
+	RTT        time.Duration `json:"rtt,omitempty"`
 }
 
 // forAssignmentSnap returns the minimum amount of ClientInfo we need for assignment snapshots.
@@ -363,44 +360,44 @@ func (ci *ClientInfo) forAdvisory() *ClientInfo {
 
 // ServerStats hold various statistics that we will periodically send out.
 type ServerStats struct {
-	Start                time.Time             `json:"start"`
-	Mem                  int64                 `json:"mem"`
-	Cores                int                   `json:"cores"`
-	CPU                  float64               `json:"cpu"`
-	Connections          int                   `json:"connections"`
-	TotalConnections     uint64                `json:"total_connections"`
-	ActiveAccounts       int                   `json:"active_accounts"`
-	NumSubs              uint32                `json:"subscriptions"`
 	Sent                 DataStats             `json:"sent"`
 	Received             DataStats             `json:"received"`
-	SlowConsumers        int64                 `json:"slow_consumers"`
-	SlowConsumersStats   *SlowConsumersStats   `json:"slow_consumer_stats,omitempty"`
-	StaleConnections     int64                 `json:"stale_connections,omitempty"`
-	StaleConnectionStats *StaleConnectionStats `json:"stale_connection_stats,omitempty"`
-	StalledClients       int64                 `json:"stalled_clients,omitempty"`
-	Routes               []*RouteStat          `json:"routes,omitempty"`
-	Gateways             []*GatewayStat        `json:"gateways,omitempty"`
-	ActiveServers        int                   `json:"active_servers,omitempty"`
+	Start                time.Time             `json:"start"`
 	JetStream            *JetStreamVarz        `json:"jetstream,omitempty"`
+	StaleConnectionStats *StaleConnectionStats `json:"stale_connection_stats,omitempty"`
+	SlowConsumersStats   *SlowConsumersStats   `json:"slow_consumer_stats,omitempty"`
+	Gateways             []*GatewayStat        `json:"gateways,omitempty"`
+	Routes               []*RouteStat          `json:"routes,omitempty"`
+	TotalConnections     uint64                `json:"total_connections"`
+	SlowConsumers        int64                 `json:"slow_consumers"`
+	ActiveAccounts       int                   `json:"active_accounts"`
+	StaleConnections     int64                 `json:"stale_connections,omitempty"`
+	Connections          int                   `json:"connections"`
+	StalledClients       int64                 `json:"stalled_clients,omitempty"`
+	CPU                  float64               `json:"cpu"`
+	Cores                int                   `json:"cores"`
+	ActiveServers        int                   `json:"active_servers,omitempty"`
+	Mem                  int64                 `json:"mem"`
 	MemLimit             int64                 `json:"gomemlimit,omitempty"`
 	MaxProcs             int                   `json:"gomaxprocs,omitempty"`
+	NumSubs              uint32                `json:"subscriptions"`
 }
 
 // RouteStat holds route statistics.
 type RouteStat struct {
-	ID       uint64    `json:"rid"`
-	Name     string    `json:"name,omitempty"`
 	Sent     DataStats `json:"sent"`
 	Received DataStats `json:"received"`
+	Name     string    `json:"name,omitempty"`
+	ID       uint64    `json:"rid"`
 	Pending  int       `json:"pending"`
 }
 
 // GatewayStat holds gateway statistics.
 type GatewayStat struct {
-	ID         uint64    `json:"gwid"`
-	Name       string    `json:"name"`
 	Sent       DataStats `json:"sent"`
 	Received   DataStats `json:"received"`
+	Name       string    `json:"name"`
+	ID         uint64    `json:"gwid"`
 	NumInbound int       `json:"inbound_connections"`
 }
 
@@ -411,20 +408,20 @@ type MsgBytes struct {
 
 // DataStats reports how may msg and bytes. Applicable for both sent and received.
 type DataStats struct {
-	MsgBytes
 	Gateways *MsgBytes `json:"gateways,omitempty"`
 	Routes   *MsgBytes `json:"routes,omitempty"`
 	Leafs    *MsgBytes `json:"leafs,omitempty"`
+	MsgBytes
 }
 
 // Used for internally queueing up messages that the server wants to send.
 type pubMsg struct {
+	msg  any
 	c    *client
+	si   *ServerInfo
 	sub  string
 	rply string
-	si   *ServerInfo
 	hdr  []byte
-	msg  any
 	oct  compressionType
 	echo bool
 	last bool
@@ -459,16 +456,16 @@ func (pm *pubMsg) returnToPool() {
 
 // Used to track server updates.
 type serverUpdate struct {
-	seq   uint64
 	ltime time.Time
+	seq   uint64
 }
 
 // TypedEvent is a event or advisory sent by the server that has nats type hints
 // typically used for events that might be consumed by 3rd party event systems
 type TypedEvent struct {
+	Time time.Time `json:"timestamp"`
 	Type string    `json:"type"`
 	ID   string    `json:"id"`
-	Time time.Time `json:"timestamp"`
 }
 
 // internalReceiveLoop will be responsible for dispatching all messages that
@@ -1498,9 +1495,9 @@ func (s *Server) initEventTracking() {
 // For account information they will need to ping that separately, and this allows security
 // controls on each subsystem if desired, e.g. account info, jetstream account info, etc.
 type UserInfo struct {
+	Permissions *Permissions  `json:"permissions,omitempty"`
 	UserID      string        `json:"user"`
 	Account     string        `json:"account"`
-	Permissions *Permissions  `json:"permissions,omitempty"`
 	Expires     time.Duration `json:"expires,omitempty"`
 }
 
@@ -1944,12 +1941,12 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, _ *Account, sub
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
 type EventFilterOptions struct {
-	Name       string   `json:"server_name,omitempty"` // filter by server name
-	Cluster    string   `json:"cluster,omitempty"`     // filter by cluster name
-	Host       string   `json:"host,omitempty"`        // filter by host name
-	ExactMatch bool     `json:"exact_match,omitempty"` // if the above filters should use exact matching or only "contains"
-	Tags       []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
-	Domain     string   `json:"domain,omitempty"`      // filter by JS domain
+	Name       string   `json:"server_name,omitempty"`
+	Cluster    string   `json:"cluster,omitempty"`
+	Host       string   `json:"host,omitempty"`
+	Domain     string   `json:"domain,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	ExactMatch bool     `json:"exact_match,omitempty"`
 }
 
 // StatszEventOptions are options passed to Statsz
@@ -1972,8 +1969,8 @@ type ConnzEventOptions struct {
 
 // In the context of system events, RoutezEventOptions are options passed to Routez
 type RoutezEventOptions struct {
-	RoutezOptions
 	EventFilterOptions
+	RoutezOptions
 }
 
 // In the context of system events, SubzEventOptions are options passed to Subz
@@ -1990,8 +1987,8 @@ type VarzEventOptions struct {
 
 // In the context of system events, GatewayzEventOptions are options passed to Gatewayz
 type GatewayzEventOptions struct {
-	GatewayzOptions
 	EventFilterOptions
+	GatewayzOptions
 }
 
 // In the context of system events, LeafzEventOptions are options passed to Leafz
@@ -2008,26 +2005,26 @@ type AccountzEventOptions struct {
 
 // In the context of system events, AccountzEventOptions are options passed to Accountz
 type AccountStatzEventOptions struct {
-	AccountStatzOptions
 	EventFilterOptions
+	AccountStatzOptions
 }
 
 // In the context of system events, JszEventOptions are options passed to Jsz
 type JszEventOptions struct {
-	JSzOptions
 	EventFilterOptions
+	JSzOptions
 }
 
 // In the context of system events, HealthzEventOptions are options passed to Healthz
 type HealthzEventOptions struct {
-	HealthzOptions
 	EventFilterOptions
+	HealthzOptions
 }
 
 // In the context of system events, ProfilezEventOptions are options passed to Profilez
 type ProfilezEventOptions struct {
-	ProfilezOptions
 	EventFilterOptions
+	ProfilezOptions
 }
 
 // In the context of system events, ExpvarzEventOptions are options passed to Expvarz

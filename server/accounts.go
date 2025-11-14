@@ -50,72 +50,65 @@ var maxSubLimitReportThreshold = defaultMaxSubLimitReportThreshold
 // Account are subject namespace definitions. By default no messages are shared between accounts.
 // You can share via Exports and Imports of Streams and Services.
 type Account struct {
-	// Total stats for the account.
-	stats struct {
-		sync.Mutex
-		stats       // Totals
-		gw    stats // Gateways
-		rt    stats // Routes
-		ln    stats // Leafnodes
-	}
-
+	imports importMap
+	updated time.Time
+	exports exportMap
 	gwReplyMapping
-	Name         string
-	Nkey         string
-	Issuer       string
-	claimJWT     string
-	updated      time.Time
-	mu           sync.RWMutex
-	sqmu         sync.Mutex
+	srv          *Server
+	extAuth      *jwt.ExternalAuthorization
+	defaultPerms *Permissions
+	eventIds     *nuid.NUID
+	signingKeys  map[string]jwt.Scope
 	sl           *Sublist
 	ic           *client
 	sq           *sendq
-	isid         uint64
+	jsLimits     map[string]JetStreamAccountLimits
+	leafClusters map[string]uint64
+	js           *jsAccount
+	strack       map[string]sconns
 	etmr         *time.Timer
 	ctmr         *time.Timer
-	strack       map[string]sconns
-	nrclients    int32
-	sysclients   int32
-	nleafs       int32
-	nrleafs      int32
+	usersRevoked map[string]int64
+	lqws         map[string]int32
 	clients      map[*client]struct{}
 	rm           map[string]int32
-	lqws         map[string]int32
-	usersRevoked map[string]int64
-	mappings     []*mapping
-	hasMapped    atomic.Bool
-	lmu          sync.RWMutex
-	lleafs       []*client
-	leafClusters map[string]uint64
-	imports      importMap
-	exports      exportMap
-	js           *jsAccount
-	jsLimits     map[string]JetStreamAccountLimits
-	nrgAccount   string
-	limits
-	expired      atomic.Bool
-	incomplete   bool
-	signingKeys  map[string]jwt.Scope
-	extAuth      *jwt.ExternalAuthorization
-	srv          *Server // server this account is registered with (possibly nil)
-	lds          string  // loop detection subject for leaf nodes
-	siReply      []byte  // service reply prefix, will form wildcard subscription.
-	eventIds     *nuid.NUID
-	eventIdsMu   sync.Mutex
-	defaultPerms *Permissions
-	tags         jwt.TagList
+	Issuer       string
+	traceDest    string
+	claimJWT     string
+	lds          string
 	nameTag      string
-	lastLimErr   int64
-	routePoolIdx int
-	// If the trace destination is specified and a message with a traceParentHdr
-	// is received, and has the least significant bit of the last token set to 1,
-	// then if traceDestSampling is > 0 and < 100, a random value will be selected
-	// and if it falls between 0 and that value, message tracing will be triggered.
-	traceDest         string
+	Nkey         string
+	Name         string
+	nrgAccount   string
+	siReply      []byte
+	mappings     []*mapping
+	lleafs       []*client
+	tags         jwt.TagList
+	stats        struct {
+		sync.Mutex
+		stats
+		gw stats
+		rt stats
+		ln stats
+	}
+	routePoolIdx      int
+	isid              uint64
+	lastLimErr        int64
 	traceDestSampling int
-	// Guarantee that only one goroutine can be running either checkJetStreamMigrate
-	// or clearObserverState at a given time for this account to prevent interleaving.
-	jscmMu sync.Mutex
+	lmu               sync.RWMutex
+	mu                sync.RWMutex
+	limits
+	sqmu       sync.Mutex
+	eventIdsMu sync.Mutex
+	jscmMu     sync.Mutex
+	expired    atomic.Bool
+	nrleafs    int32
+	nrclients  int32
+	sysclients int32
+	hasMapped  atomic.Bool
+	nleafs     int32
+	incomplete bool // Totals
+	// Leafnodes
 }
 
 const (
@@ -141,43 +134,40 @@ type sconns struct {
 // Import stream mapping struct
 type streamImport struct {
 	acc     *Account
-	from    string
-	to      string
 	tr      *subjectTransform
 	rtr     *subjectTransform
 	claim   *jwt.Import
+	from    string
+	to      string
 	usePub  bool
 	invalid bool
-	// This is `allow_trace` and when true and message tracing is happening,
-	// we will trace egresses past the account boundary, if `false`, we stop
-	// at the account boundary.
-	atrc bool
+	atrc    bool
 }
 
 const ClientInfoHdr = "Nats-Request-Info"
 
 // Import service mapping struct
 type serviceImport struct {
-	acc         *Account
+	latency     *serviceLatency
 	claim       *jwt.Import
 	se          *serviceExport
-	sid         []byte
-	from        string
-	to          string
+	trackingHdr http.Header
+	rc          *client
+	acc         *Account
 	tr          *subjectTransform
+	m1          *ServiceLatency
+	to          string
+	from        string
+	sid         []byte
 	ts          int64
 	rt          ServiceRespType
-	latency     *serviceLatency
-	m1          *ServiceLatency
-	rc          *client
 	usePub      bool
 	response    bool
 	invalid     bool
 	share       bool
 	tracking    bool
 	didDeliver  bool
-	atrc        bool        // allow trace (got from service export)
-	trackingHdr http.Header // header from request
+	atrc        bool
 }
 
 // This is used to record when we create a mapping for implicit service
@@ -215,10 +205,10 @@ func (rt ServiceRespType) String() string {
 // exportAuth holds configured approvals or boolean indicating an
 // auth token is required for import.
 type exportAuth struct {
-	tokenReq    bool
-	accountPos  uint
 	approved    map[string]*Account
 	actsRevoked map[string]int64
+	accountPos  uint
+	tokenReq    bool
 }
 
 // streamExport
@@ -230,21 +220,17 @@ type streamExport struct {
 type serviceExport struct {
 	exportAuth
 	acc        *Account
-	respType   ServiceRespType
 	latency    *serviceLatency
 	rtmr       *time.Timer
 	respThresh time.Duration
-	// This is `allow_trace` and when true and message tracing is happening,
-	// when processing a service import we will go through account boundary
-	// and trace egresses on that other account. If `false`, we stop at the
-	// account boundary.
-	atrc bool
+	respType   ServiceRespType
+	atrc       bool
 }
 
 // Used to track service latency.
 type serviceLatency struct {
-	sampling int8 // percentage from 1-100 or 0 to indicate triggered by header
 	subject  string
+	sampling int8
 }
 
 // exportMap tracks the exported streams and services.
@@ -257,9 +243,9 @@ type exportMap struct {
 // importMap tracks the imported streams and services.
 // For services we will also track the response mappings as well.
 type importMap struct {
-	streams  []*streamImport
 	services map[string][]*serviceImport
 	rrMap    map[string][]*serviceRespEntry
+	streams  []*streamImport
 }
 
 // NewAccount creates a new unlimited account with the given name.
@@ -658,8 +644,8 @@ func (a *Account) shouldLogMaxSubErr() bool {
 // MapDest is for mapping published subjects for clients.
 type MapDest struct {
 	Subject string `json:"subject"`
-	Weight  uint8  `json:"weight"`
 	Cluster string `json:"cluster,omitempty"`
+	Weight  uint8  `json:"weight"`
 }
 
 func NewMapDest(subject string, weight uint8) *MapDest {
@@ -674,10 +660,10 @@ type destination struct {
 
 // mapping is an internal entry for mapping subjects.
 type mapping struct {
-	src    string
-	wc     bool
-	dests  []*destination
 	cdests map[string][]*destination
+	src    string
+	dests  []*destination
+	wc     bool
 }
 
 // AddMapping adds in a simple route mapping from src subject to dest subject
@@ -1324,12 +1310,12 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 // designate to share the additional information in the service import.
 type ServiceLatency struct {
 	TypedEvent
-	Status         int           `json:"status"`
-	Error          string        `json:"description,omitempty"`
+	RequestStart   time.Time     `json:"start"`
 	Requestor      *ClientInfo   `json:"requestor,omitempty"`
 	Responder      *ClientInfo   `json:"responder,omitempty"`
-	RequestHeader  http.Header   `json:"header,omitempty"` // only contains header(s) triggering the measurement
-	RequestStart   time.Time     `json:"start"`
+	RequestHeader  http.Header   `json:"header,omitempty"`
+	Error          string        `json:"description,omitempty"`
+	Status         int           `json:"status"`
 	ServiceLatency time.Duration `json:"service"`
 	SystemLatency  time.Duration `json:"system"`
 	TotalLatency   time.Duration `json:"total"`
@@ -4070,8 +4056,8 @@ func (*resolverDefaultsOpsImpl) Store(_, _ string) error {
 // MemAccResolver is a memory only resolver.
 // Mostly for testing.
 type MemAccResolver struct {
-	sm sync.Map
 	resolverDefaultsOpsImpl
+	sm sync.Map
 }
 
 // Fetch will fetch the account jwt claims from the internal sync.Map.
@@ -4094,9 +4080,9 @@ func (m *MemAccResolver) IsReadOnly() bool {
 
 // URLAccResolver implements an http fetcher.
 type URLAccResolver struct {
-	url string
-	c   *http.Client
 	resolverDefaultsOpsImpl
+	c   *http.Client
+	url string
 }
 
 // NewURLAccResolver returns a new resolver for the given base URL.
@@ -4163,14 +4149,14 @@ type ServerAPIClaimUpdateResponse struct {
 
 type ClaimUpdateError struct {
 	Account     string `json:"account,omitempty"`
-	Code        int    `json:"code"`
 	Description string `json:"description,omitempty"`
+	Code        int    `json:"code"`
 }
 
 type ClaimUpdateStatus struct {
 	Account string `json:"account,omitempty"`
-	Code    int    `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+	Code    int    `json:"code,omitempty"`
 }
 
 func respondToUpdate(s *Server, respSubj string, acc string, message string, err error) {

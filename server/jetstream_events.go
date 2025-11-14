@@ -92,11 +92,11 @@ const JSConsumerActionAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_act
 // JSConsumerPauseAdvisory indicates that a consumer was paused or unpaused
 type JSConsumerPauseAdvisory struct {
 	TypedEvent
+	PauseUntil time.Time `json:"pause_until,omitempty"`
 	Stream     string    `json:"stream"`
 	Consumer   string    `json:"consumer"`
-	Paused     bool      `json:"paused"`
-	PauseUntil time.Time `json:"pause_until,omitempty"`
 	Domain     string    `json:"domain,omitempty"`
+	Paused     bool      `json:"paused"`
 }
 
 const JSConsumerPauseAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_pause"
@@ -107,11 +107,11 @@ type JSConsumerAckMetric struct {
 	TypedEvent
 	Stream      string `json:"stream"`
 	Consumer    string `json:"consumer"`
+	Domain      string `json:"domain,omitempty"`
 	ConsumerSeq uint64 `json:"consumer_seq"`
 	StreamSeq   uint64 `json:"stream_seq"`
 	Delay       int64  `json:"ack_time"`
 	Deliveries  uint64 `json:"deliveries"`
-	Domain      string `json:"domain,omitempty"`
 }
 
 // JSConsumerAckMetricType is the schema type for JSConsumerAckMetricType
@@ -123,9 +123,9 @@ type JSConsumerDeliveryExceededAdvisory struct {
 	TypedEvent
 	Stream     string `json:"stream"`
 	Consumer   string `json:"consumer"`
+	Domain     string `json:"domain,omitempty"`
 	StreamSeq  uint64 `json:"stream_seq"`
 	Deliveries uint64 `json:"deliveries"`
-	Domain     string `json:"domain,omitempty"`
 }
 
 // JSConsumerDeliveryExceededAdvisoryType is the schema type for JSConsumerDeliveryExceededAdvisory
@@ -137,10 +137,10 @@ type JSConsumerDeliveryNakAdvisory struct {
 	TypedEvent
 	Stream      string `json:"stream"`
 	Consumer    string `json:"consumer"`
+	Domain      string `json:"domain,omitempty"`
 	ConsumerSeq uint64 `json:"consumer_seq"`
 	StreamSeq   uint64 `json:"stream_seq"`
 	Deliveries  uint64 `json:"deliveries"`
-	Domain      string `json:"domain,omitempty"`
 }
 
 // JSConsumerDeliveryNakAdvisoryType is the schema type for JSConsumerDeliveryNakAdvisory
@@ -152,11 +152,11 @@ type JSConsumerDeliveryTerminatedAdvisory struct {
 	TypedEvent
 	Stream      string `json:"stream"`
 	Consumer    string `json:"consumer"`
+	Reason      string `json:"reason,omitempty"`
+	Domain      string `json:"domain,omitempty"`
 	ConsumerSeq uint64 `json:"consumer_seq"`
 	StreamSeq   uint64 `json:"stream_seq"`
 	Deliveries  uint64 `json:"deliveries"`
-	Reason      string `json:"reason,omitempty"`
-	Domain      string `json:"domain,omitempty"`
 }
 
 // JSConsumerDeliveryTerminatedAdvisoryType is the schema type for JSConsumerDeliveryTerminatedAdvisory
@@ -201,12 +201,12 @@ const JSRestoreCreateAdvisoryType = "io.nats.jetstream.advisory.v1.restore_creat
 // JSRestoreCompleteAdvisory is an advisory sent after a snapshot is successfully started
 type JSRestoreCompleteAdvisory struct {
 	TypedEvent
-	Stream string      `json:"stream"`
 	Start  time.Time   `json:"start"`
 	End    time.Time   `json:"end"`
-	Bytes  int64       `json:"bytes"`
 	Client *ClientInfo `json:"client"`
+	Stream string      `json:"stream"`
 	Domain string      `json:"domain,omitempty"`
+	Bytes  int64       `json:"bytes"`
 }
 
 // JSRestoreCompleteAdvisoryType is the schema type for JSSnapshotCreateAdvisory
@@ -221,9 +221,9 @@ const JSDomainLeaderElectedAdvisoryType = "io.nats.jetstream.advisory.v1.domain_
 type JSDomainLeaderElectedAdvisory struct {
 	TypedEvent
 	Leader   string      `json:"leader"`
-	Replicas []*PeerInfo `json:"replicas"`
 	Cluster  string      `json:"cluster"`
 	Domain   string      `json:"domain,omitempty"`
+	Replicas []*PeerInfo `json:"replicas"`
 }
 
 // JSStreamLeaderElectedAdvisoryType is sent when the system elects a new leader for a stream.
@@ -235,8 +235,8 @@ type JSStreamLeaderElectedAdvisory struct {
 	Account  string      `json:"account,omitempty"`
 	Stream   string      `json:"stream"`
 	Leader   string      `json:"leader"`
-	Replicas []*PeerInfo `json:"replicas"`
 	Domain   string      `json:"domain,omitempty"`
+	Replicas []*PeerInfo `json:"replicas"`
 }
 
 // JSStreamQuorumLostAdvisoryType is sent when the system detects a clustered stream and
@@ -248,8 +248,8 @@ type JSStreamQuorumLostAdvisory struct {
 	TypedEvent
 	Account  string      `json:"account,omitempty"`
 	Stream   string      `json:"stream"`
-	Replicas []*PeerInfo `json:"replicas"`
 	Domain   string      `json:"domain,omitempty"`
+	Replicas []*PeerInfo `json:"replicas"`
 }
 
 // JSStreamBatchAbandonedAdvisoryType is sent when a stream's atomic batch is abandoned.
@@ -283,8 +283,8 @@ type JSConsumerLeaderElectedAdvisory struct {
 	Stream   string      `json:"stream"`
 	Consumer string      `json:"consumer"`
 	Leader   string      `json:"leader"`
-	Replicas []*PeerInfo `json:"replicas"`
 	Domain   string      `json:"domain,omitempty"`
+	Replicas []*PeerInfo `json:"replicas"`
 }
 
 // JSConsumerQuorumLostAdvisoryType is sent when the system detects a clustered consumer and
@@ -297,8 +297,8 @@ type JSConsumerQuorumLostAdvisory struct {
 	Account  string      `json:"account,omitempty"`
 	Stream   string      `json:"stream"`
 	Consumer string      `json:"consumer"`
-	Replicas []*PeerInfo `json:"replicas"`
 	Domain   string      `json:"domain,omitempty"`
+	Replicas []*PeerInfo `json:"replicas"`
 }
 
 const JSConsumerGroupPinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_pinned"

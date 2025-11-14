@@ -1728,8 +1728,8 @@ func TestSystemAccountNoAuthUser(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		usrInfo string
-		ok      bool
 		account string
+		ok      bool
 	}{
 		{name: "valid user/pwd", usrInfo: "admin:pwd@", ok: true, account: "$SYS"},
 		{name: "invalid pwd", usrInfo: "admin:wrong@", ok: false, account: _EMPTY_},
@@ -1978,8 +1978,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 
 func TestServerEventsHealthZSingleServer(t *testing.T) {
 	type healthzResp struct {
-		Healthz HealthStatus `json:"data"`
 		Server  ServerInfo   `json:"server"`
+		Healthz HealthStatus `json:"data"`
 	}
 	cfg := fmt.Sprintf(`listen: 127.0.0.1:-1
 
@@ -2295,8 +2295,8 @@ func TestServerEventsHealthZSingleServer(t *testing.T) {
 
 func TestServerEventsHealthZClustered(t *testing.T) {
 	type healthzResp struct {
-		Healthz HealthStatus `json:"data"`
 		Server  ServerInfo   `json:"server"`
+		Healthz HealthStatus `json:"data"`
 	}
 	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
 	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
@@ -2341,10 +2341,10 @@ func TestServerEventsHealthZClustered(t *testing.T) {
 	pingSubj := fmt.Sprintf(serverHealthzReqSubj, "PING")
 
 	tests := []struct {
-		name          string
 		req           *HealthzEventOptions
-		expected      HealthStatus
+		name          string
 		expectedError string
+		expected      HealthStatus
 	}{
 		{
 			name:     "no parameters",
@@ -2598,8 +2598,8 @@ func TestServerEventsHealthZClustered(t *testing.T) {
 
 func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 	type healthzResp struct {
-		Healthz HealthStatus `json:"data"`
 		Server  ServerInfo   `json:"server"`
+		Healthz HealthStatus `json:"data"`
 	}
 	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
 	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
@@ -2751,8 +2751,8 @@ func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 
 func TestServerEventsHealthZJetStreamNotEnabled(t *testing.T) {
 	type healthzResp struct {
-		Healthz HealthStatus `json:"data"`
 		Server  ServerInfo   `json:"server"`
+		Healthz HealthStatus `json:"data"`
 	}
 	cfg := `listen: 127.0.0.1:-1
 
@@ -2891,8 +2891,8 @@ func TestServerEventsPingStatsZDedicatedRecvQ(t *testing.T) {
 	}
 	const statsz = "STATSZ"
 	for _, test := range []struct {
-		name      string
 		f         func() string
+		name      string
 		expectTwo bool
 	}{
 		{name: "server stats ping request subject", f: func() string { return serverStatsPingReqSubj }, expectTwo: true},
@@ -3150,9 +3150,9 @@ func TestGatewayNameClientInfo(t *testing.T) {
 }
 
 type slowAccResolver struct {
-	sync.Mutex
 	AccountResolver
 	acc string
+	sync.Mutex
 }
 
 func (sr *slowAccResolver) Fetch(name string) (string, error) {
@@ -3752,8 +3752,8 @@ func TestServerEventsProfileZNotBlockingRecvQ(t *testing.T) {
 	}
 	const profilez = "PROFILEZ"
 	for _, test := range []struct {
-		name string
 		f    func() string
+		name string
 	}{
 		{name: "server profilez request subject", f: func() string { return fmt.Sprintf(serverPingReqSubj, profilez) }},
 		{name: "server direct request subject", f: func() string { return fmt.Sprintf(serverDirectReqSubj, sb.ID(), profilez) }},
@@ -3799,8 +3799,8 @@ func TestServerEventsPingStatsSlowConsumersStats(t *testing.T) {
 
 	const statsz = "STATSZ"
 	for _, test := range []struct {
-		name      string
 		f         func() string
+		name      string
 		expectTwo bool
 	}{
 		{name: "server stats ping request subject", f: func() string { return serverStatsPingReqSubj }, expectTwo: true},
@@ -3967,8 +3967,8 @@ func TestServerEventsStatszMaxProcsMemLimit(t *testing.T) {
 
 func TestSubszPagination(t *testing.T) {
 	type subszResp struct {
-		Subsz  Subsz      `json:"data"`
 		Server ServerInfo `json:"server"`
+		Subsz  Subsz      `json:"data"`
 	}
 	s, opts := runTrustedServer(t)
 	defer s.Shutdown()
