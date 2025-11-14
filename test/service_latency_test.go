@@ -69,7 +69,7 @@ func createSuperCluster(t *testing.T, numServersPer, numClusters int) *superclus
 		c := createClusterEx(t, true, 5*time.Millisecond, true, randClusterName(), numServersPer, clusters...)
 		clusters = append(clusters, c)
 	}
-	return &supercluster{t, clusters}
+	return &supercluster{t: t, clusters: clusters}
 }
 
 func (sc *supercluster) setResponseThreshold(t *testing.T, maxTime time.Duration) {
@@ -1106,9 +1106,9 @@ func TestServiceLatencyFailureReportingMultipleServers(t *testing.T) {
 		ci, si int
 		desc   string
 	}{
-		{0, 0, "same server"},
-		{0, 1, "same cluster, different server"},
-		{1, 1, "different cluster"},
+		{ci: 0, si: 0, desc: "same server"},
+		{ci: 0, si: 1, desc: "same cluster, different server"},
+		{ci: 1, si: 1, desc: "different cluster"},
 	}
 
 	for _, cs := range cases {
@@ -1345,9 +1345,9 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		ci, si int
 		desc   string
 	}{
-		{0, 0, "same server"},
-		{0, 1, "same cluster, different server"},
-		{1, 1, "different cluster"},
+		{ci: 0, si: 0, desc: "same server"},
+		{ci: 0, si: 1, desc: "same cluster, different server"},
+		{ci: 1, si: 1, desc: "different cluster"},
 	}
 
 	for _, cs := range cases {
@@ -1668,32 +1668,32 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 		shared bool
 		header nats.Header
 	}{
-		{true, nats.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
-		{true, nats.Header{"X-B3-Sampled": []string{"1"}}},
-		{true, nats.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
-		{true, nats.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
-		{true, nats.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
-		{false, nats.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
-		{false, nats.Header{"X-B3-Sampled": []string{"1"}}},
-		{false, nats.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
-		{false, nats.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
-		{false, nats.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
-		{false, nats.Header{
+		{shared: true, header: nats.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
+		{shared: true, header: nats.Header{"X-B3-Sampled": []string{"1"}}},
+		{shared: true, header: nats.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
+		{shared: true, header: nats.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
+		{shared: true, header: nats.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
+		{shared: false, header: nats.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
+		{shared: false, header: nats.Header{"X-B3-Sampled": []string{"1"}}},
+		{shared: false, header: nats.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
+		{shared: false, header: nats.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
+		{shared: false, header: nats.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
+		{shared: false, header: nats.Header{
 			"X-B3-TraceId":      []string{"80f198ee56343ba864fe8b2a57d3eff7"},
 			"X-B3-ParentSpanId": []string{"05e3ac9a4f6e3b90"},
 			"X-B3-SpanId":       []string{"e457b5a2e4d86bd1"},
 			"X-B3-Sampled":      []string{"1"},
 		}},
-		{false, nats.Header{
+		{shared: false, header: nats.Header{
 			"X-B3-TraceId":      []string{"80f198ee56343ba864fe8b2a57d3eff7"},
 			"X-B3-ParentSpanId": []string{"05e3ac9a4f6e3b90"},
 			"X-B3-SpanId":       []string{"e457b5a2e4d86bd1"},
 		}},
-		{false, nats.Header{
+		{shared: false, header: nats.Header{
 			"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"},
 			"Uberctx-X":     []string{"foo"},
 		}},
-		{false, nats.Header{
+		{shared: false, header: nats.Header{
 			"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
 			"Tracestate":  []string{"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE"},
 		}},

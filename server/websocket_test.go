@@ -80,13 +80,13 @@ func TestWSGet(t *testing.T) {
 		result string
 		reterr bool
 	}{
-		{"fromrb1", 0, 3, 3, 4, "012", false},    // Partial from read buffer
-		{"fromrb2", 3, 2, 5, 4, "34", false},     // Partial from read buffer
-		{"fromrb3", 5, 1, 6, 4, "5", false},      // Partial from read buffer
-		{"fromtr1", 4, 4, 6, 4, "4567", false},   // Partial from read buffer + some of ioReader
-		{"fromtr2", 4, 6, 6, 4, "456789", false}, // Partial from read buffer + all of ioReader
-		{"fromtr3", 4, 6, 6, 2, "456789", false}, // Partial from read buffer + all of ioReader with several reads
-		{"fromtr4", 4, 6, 6, 2, "", true},        // ioReader returns error
+		{name: "fromrb1", pos: 0, needed: 3, newpos: 3, trmax: 4, result: "012", reterr: false},    // Partial from read buffer
+		{name: "fromrb2", pos: 3, needed: 2, newpos: 5, trmax: 4, result: "34", reterr: false},     // Partial from read buffer
+		{name: "fromrb3", pos: 5, needed: 1, newpos: 6, trmax: 4, result: "5", reterr: false},      // Partial from read buffer
+		{name: "fromtr1", pos: 4, needed: 4, newpos: 6, trmax: 4, result: "4567", reterr: false},   // Partial from read buffer + some of ioReader
+		{name: "fromtr2", pos: 4, needed: 6, newpos: 6, trmax: 4, result: "456789", reterr: false}, // Partial from read buffer + all of ioReader
+		{name: "fromtr3", pos: 4, needed: 6, newpos: 6, trmax: 2, result: "456789", reterr: false}, // Partial from read buffer + all of ioReader with several reads
+		{name: "fromtr4", pos: 4, needed: 6, newpos: 6, trmax: 2, result: "", reterr: true},        // ioReader returns error
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tr.pos = 0
@@ -126,11 +126,11 @@ func TestWSIsControlFrame(t *testing.T) {
 		code      wsOpCode
 		isControl bool
 	}{
-		{"binary", wsBinaryMessage, false},
-		{"text", wsTextMessage, false},
-		{"ping", wsPingMessage, true},
-		{"pong", wsPongMessage, true},
-		{"close", wsCloseMessage, true},
+		{name: "binary", code: wsBinaryMessage, isControl: false},
+		{name: "text", code: wsTextMessage, isControl: false},
+		{name: "ping", code: wsPingMessage, isControl: true},
+		{name: "pong", code: wsPongMessage, isControl: true},
+		{name: "close", code: wsCloseMessage, isControl: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if res := wsIsControlFrame(test.code); res != test.isControl {
@@ -190,8 +190,8 @@ func TestWSCreateCloseMessage(t *testing.T) {
 		psize     int
 		truncated bool
 	}{
-		{"fits", wsCloseStatusInternalSrvError, 10, false},
-		{"truncated", wsCloseStatusProtocolError, wsMaxControlPayloadSize + 10, true},
+		{name: "fits", status: wsCloseStatusInternalSrvError, psize: 10, truncated: false},
+		{name: "truncated", status: wsCloseStatusProtocolError, psize: wsMaxControlPayloadSize + 10, truncated: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload := make([]byte, test.psize)
@@ -231,12 +231,12 @@ func TestWSCreateFrameHeader(t *testing.T) {
 		compressed bool
 		len        int
 	}{
-		{"uncompressed 10", wsBinaryMessage, false, 10},
-		{"uncompressed 600", wsTextMessage, false, 600},
-		{"uncompressed 100000", wsTextMessage, false, 100000},
-		{"compressed 10", wsBinaryMessage, true, 10},
-		{"compressed 600", wsBinaryMessage, true, 600},
-		{"compressed 100000", wsTextMessage, true, 100000},
+		{name: "uncompressed 10", frameType: wsBinaryMessage, compressed: false, len: 10},
+		{name: "uncompressed 600", frameType: wsTextMessage, compressed: false, len: 600},
+		{name: "uncompressed 100000", frameType: wsTextMessage, compressed: false, len: 100000},
+		{name: "compressed 10", frameType: wsBinaryMessage, compressed: true, len: 10},
+		{name: "compressed 600", frameType: wsBinaryMessage, compressed: true, len: 600},
+		{name: "compressed 100000", frameType: wsTextMessage, compressed: true, len: 100000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, _ := wsCreateFrameHeader(false, test.compressed, test.frameType, test.len)
@@ -495,9 +495,9 @@ func TestWSReadVariousFrameSizes(t *testing.T) {
 		name string
 		size int
 	}{
-		{"tiny", 100},
-		{"medium", 1000},
-		{"large", 70000},
+		{name: "tiny", size: 100},
+		{name: "medium", size: 1000},
+		{name: "large", size: 70000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
@@ -574,8 +574,8 @@ func TestWSReadPingFrame(t *testing.T) {
 		name    string
 		payload []byte
 	}{
-		{"without payload", nil},
-		{"with payload", []byte("optional payload")},
+		{name: "without payload", payload: nil},
+		{name: "with payload", payload: []byte("optional payload")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
@@ -619,8 +619,8 @@ func TestWSReadPongFrame(t *testing.T) {
 		name    string
 		payload []byte
 	}{
-		{"without payload", nil},
-		{"with payload", []byte("optional payload")},
+		{name: "without payload", payload: nil},
+		{name: "with payload", payload: []byte("optional payload")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
@@ -650,9 +650,9 @@ func TestWSReadCloseFrame(t *testing.T) {
 		noStatus bool
 		payload  []byte
 	}{
-		{"status without payload", false, nil},
-		{"status with payload", false, []byte("optional payload")},
-		{"no status no payload", true, nil},
+		{name: "status without payload", noStatus: false, payload: nil},
+		{name: "status with payload", noStatus: false, payload: []byte("optional payload")},
+		{name: "no status no payload", noStatus: true, payload: nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
@@ -830,14 +830,14 @@ func TestWSReadGetErrors(t *testing.T) {
 		lenPayload int
 		rbextra    int
 	}{
-		{10, 1},
-		{10, 3},
-		{200, 1},
-		{200, 2},
-		{200, 5},
-		{70000, 1},
-		{70000, 5},
-		{70000, 13},
+		{lenPayload: 10, rbextra: 1},
+		{lenPayload: 10, rbextra: 3},
+		{lenPayload: 200, rbextra: 1},
+		{lenPayload: 200, rbextra: 2},
+		{lenPayload: 200, rbextra: 5},
+		{lenPayload: 70000, rbextra: 1},
+		{lenPayload: 70000, rbextra: 5},
+		{lenPayload: 70000, rbextra: 13},
 	} {
 		t.Run("", func(t *testing.T) {
 			c, ri, _ := testWSSetupForRead()
@@ -920,56 +920,56 @@ func TestWSReadErrors(t *testing.T) {
 		nbufs  int
 	}{
 		{
-			func() []byte {
+			cframe: func() []byte {
 				msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("hello"))
 				msg[1] &= ^byte(wsMaskBit)
 				return msg
 			},
-			"mask bit missing", 1,
+			err: "mask bit missing", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(wsPingMessage, 1, true, false, make([]byte, 200))
 			},
-			"control frame length bigger than maximum allowed", 1,
+			err: "control frame length bigger than maximum allowed", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(wsPingMessage, 1, false, false, []byte("hello"))
 			},
-			"control frame does not have final bit set", 1,
+			err: "control frame does not have final bit set", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, []byte("frag1"))
 				newMsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("new message"))
 				all := append([]byte(nil), frag1...)
 				all = append(all, newMsg...)
 				return all
 			},
-			"new message started before final frame for previous message was received", 2,
+			err: "new message started before final frame for previous message was received", nbufs: 2,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				frame := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("frame"))
 				frag := testWSCreateClientMsg(wsBinaryMessage, 2, false, false, []byte("continuation"))
 				all := append([]byte(nil), frame...)
 				all = append(all, frag...)
 				return all
 			},
-			"invalid continuation frame", 2,
+			err: "invalid continuation frame", nbufs: 2,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(wsBinaryMessage, 2, false, true, []byte("frame"))
 			},
-			"invalid continuation frame", 1,
+			err: "invalid continuation frame", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(99, 1, false, false, []byte("hello"))
 			},
-			"unknown opcode", 1,
+			err: "unknown opcode", nbufs: 1,
 		},
 	} {
 		t.Run(test.err, func(t *testing.T) {
@@ -1000,28 +1000,28 @@ func TestWSEnqueueCloseMsg(t *testing.T) {
 		reason ClosedState
 		status int
 	}{
-		{ClientClosed, wsCloseStatusNormalClosure},
-		{AuthenticationTimeout, wsCloseStatusPolicyViolation},
-		{AuthenticationViolation, wsCloseStatusPolicyViolation},
-		{SlowConsumerPendingBytes, wsCloseStatusPolicyViolation},
-		{SlowConsumerWriteDeadline, wsCloseStatusPolicyViolation},
-		{MaxAccountConnectionsExceeded, wsCloseStatusPolicyViolation},
-		{MaxConnectionsExceeded, wsCloseStatusPolicyViolation},
-		{MaxControlLineExceeded, wsCloseStatusPolicyViolation},
-		{MaxSubscriptionsExceeded, wsCloseStatusPolicyViolation},
-		{MissingAccount, wsCloseStatusPolicyViolation},
-		{AuthenticationExpired, wsCloseStatusPolicyViolation},
-		{Revocation, wsCloseStatusPolicyViolation},
-		{TLSHandshakeError, wsCloseStatusTLSHandshake},
-		{ParseError, wsCloseStatusProtocolError},
-		{ProtocolViolation, wsCloseStatusProtocolError},
-		{BadClientProtocolVersion, wsCloseStatusProtocolError},
-		{MaxPayloadExceeded, wsCloseStatusMessageTooBig},
-		{ServerShutdown, wsCloseStatusGoingAway},
-		{WriteError, wsCloseStatusGoingAway},
-		{ReadError, wsCloseStatusGoingAway},
-		{StaleConnection, wsCloseStatusGoingAway},
-		{ClosedState(254), wsCloseStatusInternalSrvError},
+		{reason: ClientClosed, status: wsCloseStatusNormalClosure},
+		{reason: AuthenticationTimeout, status: wsCloseStatusPolicyViolation},
+		{reason: AuthenticationViolation, status: wsCloseStatusPolicyViolation},
+		{reason: SlowConsumerPendingBytes, status: wsCloseStatusPolicyViolation},
+		{reason: SlowConsumerWriteDeadline, status: wsCloseStatusPolicyViolation},
+		{reason: MaxAccountConnectionsExceeded, status: wsCloseStatusPolicyViolation},
+		{reason: MaxConnectionsExceeded, status: wsCloseStatusPolicyViolation},
+		{reason: MaxControlLineExceeded, status: wsCloseStatusPolicyViolation},
+		{reason: MaxSubscriptionsExceeded, status: wsCloseStatusPolicyViolation},
+		{reason: MissingAccount, status: wsCloseStatusPolicyViolation},
+		{reason: AuthenticationExpired, status: wsCloseStatusPolicyViolation},
+		{reason: Revocation, status: wsCloseStatusPolicyViolation},
+		{reason: TLSHandshakeError, status: wsCloseStatusTLSHandshake},
+		{reason: ParseError, status: wsCloseStatusProtocolError},
+		{reason: ProtocolViolation, status: wsCloseStatusProtocolError},
+		{reason: BadClientProtocolVersion, status: wsCloseStatusProtocolError},
+		{reason: MaxPayloadExceeded, status: wsCloseStatusMessageTooBig},
+		{reason: ServerShutdown, status: wsCloseStatusGoingAway},
+		{reason: WriteError, status: wsCloseStatusGoingAway},
+		{reason: ReadError, status: wsCloseStatusGoingAway},
+		{reason: StaleConnection, status: wsCloseStatusGoingAway},
+		{reason: ClosedState(254), status: wsCloseStatusInternalSrvError},
 	} {
 		t.Run(test.reason.String(), func(t *testing.T) {
 			c, _, _ := testWSSetupForRead()
@@ -1159,21 +1159,21 @@ func TestWSCheckOrigin(t *testing.T) {
 		origin     string
 		err        string
 	}{
-		{"any", notSameOrigin, allowedListEmpty, "", false, "http://any.host.com", ""},
-		{"same origin ok", sameOrigin, allowedListEmpty, "host.com", false, "http://host.com:80", ""},
-		{"same origin bad host", sameOrigin, allowedListEmpty, "host.com", false, "http://other.host.com", "not same origin"},
-		{"same origin bad port", sameOrigin, allowedListEmpty, "host.com", false, "http://host.com:81", "not same origin"},
-		{"same origin bad scheme", sameOrigin, allowedListEmpty, "host.com", true, "http://host.com", "not same origin"},
-		{"same origin bad uri", sameOrigin, allowedListEmpty, "host.com", false, "@@@://invalid:url:1234", "invalid URI"},
-		{"same origin bad url", sameOrigin, allowedListEmpty, "host.com", false, "http://invalid:url:1234", "too many colons"},
-		{"same origin bad req host", sameOrigin, allowedListEmpty, "invalid:url:1234", false, "http://host.com", "too many colons"},
-		{"no origin same origin ignored", sameOrigin, allowedListEmpty, "", false, "", ""},
-		{"no origin list ignored", sameOrigin, someList, "", false, "", ""},
-		{"no origin same origin and list ignored", sameOrigin, someList, "", false, "", ""},
-		{"allowed from list", notSameOrigin, someList, "", false, "http://host2.com:1234", ""},
-		{"allowed with different path", notSameOrigin, someList, "", false, "http://host1.com/some/path", ""},
-		{"list bad port", notSameOrigin, someList, "", false, "http://host1.com:1234", "not in the allowed list"},
-		{"list bad scheme", notSameOrigin, someList, "", false, "https://host2.com:1234", "not in the allowed list"},
+		{name: "any", sameOrigin: notSameOrigin, origins: allowedListEmpty, reqHost: "", reqTLS: false, origin: "http://any.host.com", err: ""},
+		{name: "same origin ok", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "host.com", reqTLS: false, origin: "http://host.com:80", err: ""},
+		{name: "same origin bad host", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "host.com", reqTLS: false, origin: "http://other.host.com", err: "not same origin"},
+		{name: "same origin bad port", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "host.com", reqTLS: false, origin: "http://host.com:81", err: "not same origin"},
+		{name: "same origin bad scheme", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "host.com", reqTLS: true, origin: "http://host.com", err: "not same origin"},
+		{name: "same origin bad uri", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "host.com", reqTLS: false, origin: "@@@://invalid:url:1234", err: "invalid URI"},
+		{name: "same origin bad url", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "host.com", reqTLS: false, origin: "http://invalid:url:1234", err: "too many colons"},
+		{name: "same origin bad req host", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "invalid:url:1234", reqTLS: false, origin: "http://host.com", err: "too many colons"},
+		{name: "no origin same origin ignored", sameOrigin: sameOrigin, origins: allowedListEmpty, reqHost: "", reqTLS: false, origin: "", err: ""},
+		{name: "no origin list ignored", sameOrigin: sameOrigin, origins: someList, reqHost: "", reqTLS: false, origin: "", err: ""},
+		{name: "no origin same origin and list ignored", sameOrigin: sameOrigin, origins: someList, reqHost: "", reqTLS: false, origin: "", err: ""},
+		{name: "allowed from list", sameOrigin: notSameOrigin, origins: someList, reqHost: "", reqTLS: false, origin: "http://host2.com:1234", err: ""},
+		{name: "allowed with different path", sameOrigin: notSameOrigin, origins: someList, reqHost: "", reqTLS: false, origin: "http://host1.com/some/path", err: ""},
+		{name: "list bad port", sameOrigin: notSameOrigin, origins: someList, reqHost: "", reqTLS: false, origin: "http://host1.com:1234", err: "not in the allowed list"},
+		{name: "list bad scheme", sameOrigin: notSameOrigin, origins: someList, reqHost: "", reqTLS: false, origin: "https://host2.com:1234", err: "not in the allowed list"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := DefaultOptions()
@@ -1208,119 +1208,119 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		status int
 	}{
 		{
-			"bad method",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "bad method",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Method = "POST"
 				return opts, nil, req
 			},
-			"must be GET",
-			http.StatusMethodNotAllowed,
+			err:    "must be GET",
+			status: http.StatusMethodNotAllowed,
 		},
 		{
-			"no host",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "no host",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Host = ""
 				return opts, nil, req
 			},
-			"'Host' missing in request",
-			http.StatusBadRequest,
+			err:    "'Host' missing in request",
+			status: http.StatusBadRequest,
 		},
 		{
-			"invalid upgrade header",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "invalid upgrade header",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Upgrade")
 				return opts, nil, req
 			},
-			"invalid value for header 'Upgrade'",
-			http.StatusBadRequest,
+			err:    "invalid value for header 'Upgrade'",
+			status: http.StatusBadRequest,
 		},
 		{
-			"invalid connection header",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "invalid connection header",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Connection")
 				return opts, nil, req
 			},
-			"invalid value for header 'Connection'",
-			http.StatusBadRequest,
+			err:    "invalid value for header 'Connection'",
+			status: http.StatusBadRequest,
 		},
 		{
-			"no key",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "no key",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Sec-Websocket-Key")
 				return opts, nil, req
 			},
-			"key missing",
-			http.StatusBadRequest,
+			err:    "key missing",
+			status: http.StatusBadRequest,
 		},
 		{
-			"empty key",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "empty key",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Set("Sec-Websocket-Key", "")
 				return opts, nil, req
 			},
-			"key missing",
-			http.StatusBadRequest,
+			err:    "key missing",
+			status: http.StatusBadRequest,
 		},
 		{
-			"missing version",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "missing version",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Sec-Websocket-Version")
 				return opts, nil, req
 			},
-			"invalid version",
-			http.StatusBadRequest,
+			err:    "invalid version",
+			status: http.StatusBadRequest,
 		},
 		{
-			"wrong version",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "wrong version",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Set("Sec-Websocket-Version", "99")
 				return opts, nil, req
 			},
-			"invalid version",
-			http.StatusBadRequest,
+			err:    "invalid version",
+			status: http.StatusBadRequest,
 		},
 		{
-			"origin",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "origin",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				opts.Websocket.SameOrigin = true
 				req := testWSCreateValidReq()
 				req.Header.Set("Origin", "http://bad.host.com")
 				return opts, nil, req
 			},
-			"origin not allowed",
-			http.StatusForbidden,
+			err:    "origin not allowed",
+			status: http.StatusForbidden,
 		},
 		{
-			"hijack error",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "hijack error",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				rw := &testResponseWriter{err: fmt.Errorf("on purpose")}
 				req := testWSCreateValidReq()
 				return opts, rw, req
 			},
-			"on purpose",
-			http.StatusInternalServerError,
+			err:    "on purpose",
+			status: http.StatusInternalServerError,
 		},
 		{
-			"hijack buffered data",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			name: "hijack buffered data",
+			setup: func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				buf := &bytes.Buffer{}
 				buf.WriteString("some data")
@@ -1333,8 +1333,8 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 				req := testWSCreateValidReq()
 				return opts, rw, req
 			},
-			"client sent data before handshake is complete",
-			http.StatusBadRequest,
+			err:    "client sent data before handshake is complete",
+			status: http.StatusBadRequest,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1508,141 +1508,141 @@ func TestWSParseOptions(t *testing.T) {
 		err      string
 	}{
 		// Negative tests
-		{"bad type", "websocket: []", nil, "to be a map"},
-		{"bad listen", "websocket: { listen: [] }", nil, "port or host:port"},
-		{"bad port", `websocket: { port: "abc" }`, nil, "not int64"},
-		{"bad host", `websocket: { host: 123 }`, nil, "not string"},
-		{"bad advertise type", `websocket: { advertise: 123 }`, nil, "not string"},
-		{"bad tls", `websocket: { tls: 123 }`, nil, "not map[string]interface {}"},
-		{"bad same origin", `websocket: { same_origin: "abc" }`, nil, "not bool"},
-		{"bad allowed origins type", `websocket: { allowed_origins: {} }`, nil, "unsupported type"},
-		{"bad allowed origins values", `websocket: { allowed_origins: [ {} ] }`, nil, "unsupported type in array"},
-		{"bad handshake timeout type", `websocket: { handshake_timeout: [] }`, nil, "unsupported type"},
-		{"bad handshake timeout duration", `websocket: { handshake_timeout: "abc" }`, nil, "invalid duration"},
-		{"bad header type", `websocket: { headers: 123 }`, nil, "unsupported type"},
-		{"bad header type", `websocket: { headers: [] }`, nil, "unsupported type"},
-		{"bad header value", `websocket: { headers: { "key": 123 } }`, nil, "unsupported type"},
-		{"unknown field", `websocket: { this_does_not_exist: 123 }`, nil, "unknown"},
+		{name: "bad type", content: "websocket: []", checkOpt: nil, err: "to be a map"},
+		{name: "bad listen", content: "websocket: { listen: [] }", checkOpt: nil, err: "port or host:port"},
+		{name: "bad port", content: `websocket: { port: "abc" }`, checkOpt: nil, err: "not int64"},
+		{name: "bad host", content: `websocket: { host: 123 }`, checkOpt: nil, err: "not string"},
+		{name: "bad advertise type", content: `websocket: { advertise: 123 }`, checkOpt: nil, err: "not string"},
+		{name: "bad tls", content: `websocket: { tls: 123 }`, checkOpt: nil, err: "not map[string]interface {}"},
+		{name: "bad same origin", content: `websocket: { same_origin: "abc" }`, checkOpt: nil, err: "not bool"},
+		{name: "bad allowed origins type", content: `websocket: { allowed_origins: {} }`, checkOpt: nil, err: "unsupported type"},
+		{name: "bad allowed origins values", content: `websocket: { allowed_origins: [ {} ] }`, checkOpt: nil, err: "unsupported type in array"},
+		{name: "bad handshake timeout type", content: `websocket: { handshake_timeout: [] }`, checkOpt: nil, err: "unsupported type"},
+		{name: "bad handshake timeout duration", content: `websocket: { handshake_timeout: "abc" }`, checkOpt: nil, err: "invalid duration"},
+		{name: "bad header type", content: `websocket: { headers: 123 }`, checkOpt: nil, err: "unsupported type"},
+		{name: "bad header type", content: `websocket: { headers: [] }`, checkOpt: nil, err: "unsupported type"},
+		{name: "bad header value", content: `websocket: { headers: { "key": 123 } }`, checkOpt: nil, err: "unsupported type"},
+		{name: "unknown field", content: `websocket: { this_does_not_exist: 123 }`, checkOpt: nil, err: "unknown"},
 		// Positive tests
-		{"listen port only", `websocket { listen: 1234 }`, func(wo *WebsocketOpts) error {
+		{name: "listen port only", content: `websocket { listen: 1234 }`, checkOpt: func(wo *WebsocketOpts) error {
 			if wo.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", wo.Port)
 			}
 			return nil
-		}, ""},
-		{"listen host and port", `websocket { listen: "localhost:1234" }`, func(wo *WebsocketOpts) error {
+		}, err: ""},
+		{name: "listen host and port", content: `websocket { listen: "localhost:1234" }`, checkOpt: func(wo *WebsocketOpts) error {
 			if wo.Host != "localhost" || wo.Port != 1234 {
 				return fmt.Errorf("expected localhost:1234, got %v:%v", wo.Host, wo.Port)
 			}
 			return nil
-		}, ""},
-		{"host", `websocket { host: "localhost" }`, func(wo *WebsocketOpts) error {
+		}, err: ""},
+		{name: "host", content: `websocket { host: "localhost" }`, checkOpt: func(wo *WebsocketOpts) error {
 			if wo.Host != "localhost" {
 				return fmt.Errorf("expected localhost, got %v", wo.Host)
 			}
 			return nil
-		}, ""},
-		{"port", `websocket { port: 1234 }`, func(wo *WebsocketOpts) error {
+		}, err: ""},
+		{name: "port", content: `websocket { port: 1234 }`, checkOpt: func(wo *WebsocketOpts) error {
 			if wo.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", wo.Port)
 			}
 			return nil
-		}, ""},
-		{"advertise", `websocket { advertise: "host:1234" }`, func(wo *WebsocketOpts) error {
+		}, err: ""},
+		{name: "advertise", content: `websocket { advertise: "host:1234" }`, checkOpt: func(wo *WebsocketOpts) error {
 			if wo.Advertise != "host:1234" {
 				return fmt.Errorf("expected %q, got %q", "host:1234", wo.Advertise)
 			}
 			return nil
-		}, ""},
-		{"same origin", `websocket { same_origin: true }`, func(wo *WebsocketOpts) error {
+		}, err: ""},
+		{name: "same origin", content: `websocket { same_origin: true }`, checkOpt: func(wo *WebsocketOpts) error {
 			if !wo.SameOrigin {
 				return fmt.Errorf("expected same_origin==true, got %v", wo.SameOrigin)
 			}
 			return nil
-		}, ""},
-		{"allowed origins one only", `websocket { allowed_origins: "https://host.com/" }`, func(wo *WebsocketOpts) error {
+		}, err: ""},
+		{name: "allowed origins one only", content: `websocket { allowed_origins: "https://host.com/" }`, checkOpt: func(wo *WebsocketOpts) error {
 			expected := []string{"https://host.com/"}
 			if !reflect.DeepEqual(wo.AllowedOrigins, expected) {
 				return fmt.Errorf("expected allowed origins to be %q, got %q", expected, wo.AllowedOrigins)
 			}
 			return nil
-		}, ""},
-		{"allowed origins array",
-			`
+		}, err: ""},
+		{name: "allowed origins array",
+			content: `
 			websocket {
 				allowed_origins: [
 					"https://host1.com/"
 					"https://host2.com/"
 				]
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				expected := []string{"https://host1.com/", "https://host2.com/"}
 				if !reflect.DeepEqual(wo.AllowedOrigins, expected) {
 					return fmt.Errorf("expected allowed origins to be %q, got %q", expected, wo.AllowedOrigins)
 				}
 				return nil
-			}, ""},
-		{"handshake timeout in whole seconds", `websocket { handshake_timeout: 3 }`, func(wo *WebsocketOpts) error {
+			}, err: ""},
+		{name: "handshake timeout in whole seconds", content: `websocket { handshake_timeout: 3 }`, checkOpt: func(wo *WebsocketOpts) error {
 			if wo.HandshakeTimeout != 3*time.Second {
 				return fmt.Errorf("expected handshake to be 3s, got %v", wo.HandshakeTimeout)
 			}
 			return nil
-		}, ""},
-		{"handshake timeout n duration", `websocket { handshake_timeout: "4s" }`, func(wo *WebsocketOpts) error {
+		}, err: ""},
+		{name: "handshake timeout n duration", content: `websocket { handshake_timeout: "4s" }`, checkOpt: func(wo *WebsocketOpts) error {
 			if wo.HandshakeTimeout != 4*time.Second {
 				return fmt.Errorf("expected handshake to be 4s, got %v", wo.HandshakeTimeout)
 			}
 			return nil
-		}, ""},
-		{"tls config",
-			`
+		}, err: ""},
+		{name: "tls config",
+			content: `
 			websocket {
 				tls {
 					cert_file: "./configs/certs/server.pem"
 					key_file: "./configs/certs/key.pem"
 				}
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				if wo.TLSConfig == nil {
 					return fmt.Errorf("TLSConfig should have been set")
 				}
 				return nil
-			}, ""},
-		{"compression",
-			`
+			}, err: ""},
+		{name: "compression",
+			content: `
 			websocket {
 				compression: true
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				if !wo.Compression {
 					return fmt.Errorf("Compression should have been set")
 				}
 				return nil
-			}, ""},
-		{"jwt cookie",
-			`
+			}, err: ""},
+		{name: "jwt cookie",
+			content: `
 			websocket {
 				jwt_cookie: "jwtcookie"
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				if wo.JWTCookie != "jwtcookie" {
 					return fmt.Errorf("Invalid JWTCookie value: %q", wo.JWTCookie)
 				}
 				return nil
-			}, ""},
-		{"no auth user",
-			`
+			}, err: ""},
+		{name: "no auth user",
+			content: `
 			websocket {
 				no_auth_user: "noauthuser"
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				if wo.NoAuthUser != "noauthuser" {
 					return fmt.Errorf("Invalid NoAuthUser value: %q", wo.NoAuthUser)
 				}
 				return nil
-			}, ""},
-		{"auth block",
-			`
+			}, err: ""},
+		{name: "auth block",
+			content: `
 			websocket {
 				authorization {
 					user: "webuser"
@@ -1651,34 +1651,34 @@ func TestWSParseOptions(t *testing.T) {
 					timeout: 2.0
 				}
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				if wo.Username != "webuser" || wo.Password != "pwd" || wo.Token != "token" || wo.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth block: %+v", wo)
 				}
 				return nil
-			}, ""},
-		{"auth timeout as int",
-			`
+			}, err: ""},
+		{name: "auth timeout as int",
+			content: `
 			websocket {
 				authorization {
 					timeout: 2
 				}
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				if wo.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth timeout: %v", wo.AuthTimeout)
 				}
 				return nil
-			}, ""},
-		{"headers block",
-			`
+			}, err: ""},
+		{name: "headers block",
+			content: `
 			websocket {
 				headers {
 					"X-Header": "some-value"
 					"X-Another-Header": "another-value"
 				}
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, checkOpt: func(wo *WebsocketOpts) error {
 				if len(wo.Headers) != 2 {
 					return fmt.Errorf("Expected 2 headers, got %v", len(wo.Headers))
 				}
@@ -1692,7 +1692,7 @@ func TestWSParseOptions(t *testing.T) {
 					}
 				}
 				return nil
-			}, ""},
+			}, err: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
@@ -1720,61 +1720,61 @@ func TestWSValidateOptions(t *testing.T) {
 		getOpts func() *Options
 		err     string
 	}{
-		{"websocket disabled", func() *Options { return nwso.Clone() }, ""},
-		{"no tls", func() *Options { o := wso.Clone(); o.Websocket.TLSConfig = nil; return o }, "requires TLS configuration"},
-		{"bad url in allowed list", func() *Options {
+		{name: "websocket disabled", getOpts: func() *Options { return nwso.Clone() }, err: ""},
+		{name: "no tls", getOpts: func() *Options { o := wso.Clone(); o.Websocket.TLSConfig = nil; return o }, err: "requires TLS configuration"},
+		{name: "bad url in allowed list", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.AllowedOrigins = []string{"http://this:is:bad:url"}
 			return o
-		}, "unable to parse"},
-		{"missing trusted configuration", func() *Options {
+		}, err: "unable to parse"},
+		{name: "missing trusted configuration", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.JWTCookie = "jwt"
 			return o
-		}, "keys configuration is required"},
-		{"websocket username not allowed if users specified", func() *Options {
+		}, err: "keys configuration is required"},
+		{name: "websocket username not allowed if users specified", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
 			o.Websocket.Username = "b"
 			o.Websocket.Password = "pwd"
 			return o
-		}, "websocket authentication username not compatible with presence of users/nkeys"},
-		{"websocket token not allowed if users specified", func() *Options {
+		}, err: "websocket authentication username not compatible with presence of users/nkeys"},
+		{name: "websocket token not allowed if users specified", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
 			o.Websocket.Token = "mytoken"
 			return o
-		}, "websocket authentication token not compatible with presence of users/nkeys"},
-		{"headers with sec-websocket- prefix not allowed", func() *Options {
+		}, err: "websocket authentication token not compatible with presence of users/nkeys"},
+		{name: "headers with sec-websocket- prefix not allowed", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Sec-WebSocket-Key": "123"}
 			return o
-		}, `invalid header "Sec-WebSocket-Key", "Sec-WebSocket-" prefix not allowed`},
-		{"header with host", func() *Options {
+		}, err: `invalid header "Sec-WebSocket-Key", "Sec-WebSocket-" prefix not allowed`},
+		{name: "header with host", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Host": "http://localhost:8080"}
 			return o
-		}, `websocket: invalid header "Host" not allowed`},
-		{"header with content-length", func() *Options {
+		}, err: `websocket: invalid header "Host" not allowed`},
+		{name: "header with content-length", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Content-Length": "0"}
 			return o
-		}, `websocket: invalid header "Content-Length" not allowed`},
-		{"header with connection", func() *Options {
+		}, err: `websocket: invalid header "Content-Length" not allowed`},
+		{name: "header with connection", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Connection": "Upgrade"}
 			return o
-		}, `websocket: invalid header "Connection" not allowed`},
-		{"header with upgrade", func() *Options {
+		}, err: `websocket: invalid header "Connection" not allowed`},
+		{name: "header with upgrade", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Upgrade": "websocket"}
 			return o
-		}, `websocket: invalid header "Upgrade" not allowed`},
-		{"header with Nats-No-Masking", func() *Options {
+		}, err: `websocket: invalid header "Upgrade" not allowed`},
+		{name: "header with Nats-No-Masking", getOpts: func() *Options {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Nats-No-Masking": "false"}
 			return o
-		}, `websocket: invalid header "Nats-No-Masking" not allowed`},
+		}, err: `websocket: invalid header "Nats-No-Masking" not allowed`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateWebsocketOptions(test.getOpts())
@@ -1793,8 +1793,8 @@ func TestWSSetOriginOptions(t *testing.T) {
 		content string
 		err     string
 	}{
-		{"@@@://host.com/", "invalid URI"},
-		{"http://this:is:bad:url/", "invalid port"},
+		{content: "@@@://host.com/", err: "invalid URI"},
+		{content: "http://this:is:bad:url/", err: "invalid port"},
 	} {
 		t.Run(test.err, func(t *testing.T) {
 			o.Websocket.AllowedOrigins = []string{test.content}
@@ -2153,8 +2153,8 @@ func TestWSPubSub(t *testing.T) {
 		name        string
 		compression bool
 	}{
-		{"no compression", false},
-		{"compression", true},
+		{name: "no compression", compression: false},
+		{name: "compression", compression: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()
@@ -2232,8 +2232,8 @@ func TestWSTLSConnection(t *testing.T) {
 		useTLS bool
 		status int
 	}{
-		{"client uses TLS", true, http.StatusSwitchingProtocols},
-		{"client does not use TLS", false, http.StatusBadRequest},
+		{name: "client uses TLS", useTLS: true, status: http.StatusSwitchingProtocols},
+		{name: "client does not use TLS", useTLS: false, status: http.StatusBadRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			wsc, err := net.Dial("tcp", addr)
@@ -2291,8 +2291,8 @@ func TestWSTLSVerifyClientCert(t *testing.T) {
 		name        string
 		provideCert bool
 	}{
-		{"client provides cert", true},
-		{"client does not provide cert", false},
+		{name: "client provides cert", provideCert: true},
+		{name: "client does not provide cert", provideCert: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			wsc, err := net.Dial("tcp", addr)
@@ -2367,14 +2367,14 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 		filtering   bool
 		provideCert bool
 	}{
-		{"no filtering, client provides cert", false, true},
-		{"no filtering, client does not provide cert", false, false},
-		{"filtering, client provides cert", true, true},
-		{"filtering, client does not provide cert", true, false},
-		{"no users override, client provides cert", false, true},
-		{"no users override, client does not provide cert", false, false},
-		{"users override, client provides cert", true, true},
-		{"users override, client does not provide cert", true, false},
+		{name: "no filtering, client provides cert", filtering: false, provideCert: true},
+		{name: "no filtering, client does not provide cert", filtering: false, provideCert: false},
+		{name: "filtering, client provides cert", filtering: true, provideCert: true},
+		{name: "filtering, client does not provide cert", filtering: true, provideCert: false},
+		{name: "no users override, client provides cert", filtering: false, provideCert: true},
+		{name: "no users override, client does not provide cert", filtering: false, provideCert: false},
+		{name: "users override, client provides cert", filtering: true, provideCert: true},
+		{name: "users override, client does not provide cert", filtering: true, provideCert: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()
@@ -2688,8 +2688,8 @@ func TestWSFrameOutbound(t *testing.T) {
 		name         string
 		maskingWrite bool
 	}{
-		{"no write masking", false},
-		{"write masking", true},
+		{name: "no write masking", maskingWrite: false},
+		{name: "write masking", maskingWrite: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, _, _ := testWSSetupForRead()
@@ -3186,8 +3186,8 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 		maskWrite bool
 		noLimit   bool
 	}{
-		{"no write masking", false, false},
-		{"write masking", true, false},
+		{name: "no write masking", maskWrite: false, noLimit: false},
+		{name: "write masking", maskWrite: true, noLimit: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := testWSOptions()
@@ -3274,65 +3274,52 @@ func TestWSBasicAuth(t *testing.T) {
 		cookies []string
 	}{
 		{
-			"top level auth, no override, wrong u/p",
-			func() *Options {
+			name: "top level auth, no override, wrong u/p",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Username = "normal"
 				o.Password = "client"
 				return o
 			},
-			"websocket", "client", "-ERR 'Authorization Violation'",
-			nil,
+			user: "websocket", pass: "client", err: "-ERR 'Authorization Violation'",
+			cookies: nil,
 		},
 		{
-			"top level auth, no override, correct u/p",
-			func() *Options {
+			name: "top level auth, no override, correct u/p",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Username = "normal"
 				o.Password = "client"
 				return o
 			},
-			"normal", "client", "",
-			nil,
+			user: "normal", pass: "client", err: "",
+			cookies: nil,
 		},
 		{
-			"no top level auth, ws auth, wrong u/p",
-			func() *Options {
+			name: "no top level auth, ws auth, wrong u/p",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.Username = "websocket"
 				o.Websocket.Password = "client"
 				return o
 			},
-			"normal", "client", "-ERR 'Authorization Violation'",
-			nil,
+			user: "normal", pass: "client", err: "-ERR 'Authorization Violation'",
+			cookies: nil,
 		},
 		{
-			"no top level auth, ws auth, correct u/p",
-			func() *Options {
+			name: "no top level auth, ws auth, correct u/p",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.Username = "websocket"
 				o.Websocket.Password = "client"
 				return o
 			},
-			"websocket", "client", "",
-			nil,
+			user: "websocket", pass: "client", err: "",
+			cookies: nil,
 		},
 		{
-			"top level auth, ws override, wrong u/p",
-			func() *Options {
-				o := testWSOptions()
-				o.Username = "normal"
-				o.Password = "client"
-				o.Websocket.Username = "websocket"
-				o.Websocket.Password = "client"
-				return o
-			},
-			"normal", "client", "-ERR 'Authorization Violation'",
-			nil,
-		},
-		{
-			"top level auth, ws override, correct u/p",
-			func() *Options {
+			name: "top level auth, ws override, wrong u/p",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Username = "normal"
 				o.Password = "client"
@@ -3340,12 +3327,25 @@ func TestWSBasicAuth(t *testing.T) {
 				o.Websocket.Password = "client"
 				return o
 			},
-			"websocket", "client", "",
-			nil,
+			user: "normal", pass: "client", err: "-ERR 'Authorization Violation'",
+			cookies: nil,
 		},
 		{
-			"username/password from cookies",
-			func() *Options {
+			name: "top level auth, ws override, correct u/p",
+			opts: func() *Options {
+				o := testWSOptions()
+				o.Username = "normal"
+				o.Password = "client"
+				o.Websocket.Username = "websocket"
+				o.Websocket.Password = "client"
+				return o
+			},
+			user: "websocket", pass: "client", err: "",
+			cookies: nil,
+		},
+		{
+			name: "username/password from cookies",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.UsernameCookie = "un"
 				o.Websocket.PasswordCookie = "pw"
@@ -3353,12 +3353,12 @@ func TestWSBasicAuth(t *testing.T) {
 				o.Password = "s3cr3t!"
 				return o
 			},
-			"", "", "",
-			[]string{"un=me", "pw=s3cr3t!"},
+			user: "", pass: "", err: "",
+			cookies: []string{"un=me", "pw=s3cr3t!"},
 		},
 		{
-			"bad username/ good password from cookies",
-			func() *Options {
+			name: "bad username/ good password from cookies",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.UsernameCookie = "un"
 				o.Websocket.PasswordCookie = "pw"
@@ -3366,12 +3366,12 @@ func TestWSBasicAuth(t *testing.T) {
 				o.Password = "s3cr3t!"
 				return o
 			},
-			"", "", "-ERR 'Authorization Violation",
-			[]string{"un=m", "pw=s3cr3t!"},
+			user: "", pass: "", err: "-ERR 'Authorization Violation",
+			cookies: []string{"un=m", "pw=s3cr3t!"},
 		},
 		{
-			"good username/ bad password from cookies",
-			func() *Options {
+			name: "good username/ bad password from cookies",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.UsernameCookie = "un"
 				o.Websocket.PasswordCookie = "pw"
@@ -3379,30 +3379,30 @@ func TestWSBasicAuth(t *testing.T) {
 				o.Password = "s3cr3t!"
 				return o
 			},
-			"", "", "-ERR 'Authorization Violation",
-			[]string{"un=me", "pw=hi!"},
+			user: "", pass: "", err: "-ERR 'Authorization Violation",
+			cookies: []string{"un=me", "pw=hi!"},
 		},
 		{
-			"token from cookie",
-			func() *Options {
+			name: "token from cookie",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.TokenCookie = "tok"
 				o.Authorization = "l3tm31n!"
 				return o
 			},
-			"", "", "",
-			[]string{"tok=l3tm31n!"},
+			user: "", pass: "", err: "",
+			cookies: []string{"tok=l3tm31n!"},
 		},
 		{
-			"bad token from cookie",
-			func() *Options {
+			name: "bad token from cookie",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.TokenCookie = "tok"
 				o.Authorization = "l3tm31n!"
 				return o
 			},
-			"", "", "-ERR 'Authorization Violation",
-			[]string{"tok=hello!"},
+			user: "", pass: "", err: "-ERR 'Authorization Violation",
+			cookies: []string{"tok=hello!"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3437,8 +3437,8 @@ func TestWSAuthTimeout(t *testing.T) {
 		wat  float64
 		err  string
 	}{
-		{"use top-level auth timeout", 10.0, 0.0, ""},
-		{"use websocket auth timeout", 10.0, 0.05, "-ERR 'Authentication Timeout'"},
+		{name: "use top-level auth timeout", at: 10.0, wat: 0.0, err: ""},
+		{name: "use websocket auth timeout", at: 10.0, wat: 0.05, err: "-ERR 'Authentication Timeout'"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()
@@ -3487,60 +3487,60 @@ func TestWSTokenAuth(t *testing.T) {
 		err   string
 	}{
 		{
-			"top level auth, no override, wrong token",
-			func() *Options {
+			name: "top level auth, no override, wrong token",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Authorization = "goodtoken"
 				return o
 			},
-			"badtoken", "-ERR 'Authorization Violation'",
+			token: "badtoken", err: "-ERR 'Authorization Violation'",
 		},
 		{
-			"top level auth, no override, correct token",
-			func() *Options {
+			name: "top level auth, no override, correct token",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Authorization = "goodtoken"
 				return o
 			},
-			"goodtoken", "",
+			token: "goodtoken", err: "",
 		},
 		{
-			"no top level auth, ws auth, wrong token",
-			func() *Options {
+			name: "no top level auth, ws auth, wrong token",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.Token = "goodtoken"
 				return o
 			},
-			"badtoken", "-ERR 'Authorization Violation'",
+			token: "badtoken", err: "-ERR 'Authorization Violation'",
 		},
 		{
-			"no top level auth, ws auth, correct token",
-			func() *Options {
+			name: "no top level auth, ws auth, correct token",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Websocket.Token = "goodtoken"
 				return o
 			},
-			"goodtoken", "",
+			token: "goodtoken", err: "",
 		},
 		{
-			"top level auth, ws override, wrong token",
-			func() *Options {
+			name: "top level auth, ws override, wrong token",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Authorization = "clienttoken"
 				o.Websocket.Token = "websockettoken"
 				return o
 			},
-			"clienttoken", "-ERR 'Authorization Violation'",
+			token: "clienttoken", err: "-ERR 'Authorization Violation'",
 		},
 		{
-			"top level auth, ws override, correct token",
-			func() *Options {
+			name: "top level auth, ws override, correct token",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Authorization = "clienttoken"
 				o.Websocket.Token = "websockettoken"
 				return o
 			},
-			"websockettoken", "",
+			token: "websockettoken", err: "",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3626,53 +3626,53 @@ func TestWSUsersAuth(t *testing.T) {
 		err  string
 	}{
 		{
-			"no filtering, wrong user",
-			func() *Options {
+			name: "no filtering, wrong user",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Users = users
 				return o
 			},
-			"wronguser", "pwd", "-ERR 'Authorization Violation'",
+			user: "wronguser", pass: "pwd", err: "-ERR 'Authorization Violation'",
 		},
 		{
-			"no filtering, correct user",
-			func() *Options {
+			name: "no filtering, correct user",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Users = users
 				return o
 			},
-			"user", "pwd", "",
+			user: "user", pass: "pwd", err: "",
 		},
 		{
-			"filering, user not allowed",
-			func() *Options {
+			name: "filering, user not allowed",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Users = users
 				// Only allowed for regular clients
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard})
 				return o
 			},
-			"user", "pwd", "-ERR 'Authorization Violation'",
+			user: "user", pass: "pwd", err: "-ERR 'Authorization Violation'",
 		},
 		{
-			"filtering, user allowed",
-			func() *Options {
+			name: "filtering, user allowed",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Users = users
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket})
 				return o
 			},
-			"user", "pwd", "",
+			user: "user", pass: "pwd", err: "",
 		},
 		{
-			"filtering, wrong password",
-			func() *Options {
+			name: "filtering, wrong password",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Users = users
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket})
 				return o
 			},
-			"user", "badpassword", "-ERR 'Authorization Violation'",
+			user: "user", pass: "badpassword", err: "-ERR 'Authorization Violation'",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3725,10 +3725,10 @@ func TestWSNoAuthUser(t *testing.T) {
 		expectedUser string
 		expectedAcc  string
 	}{
-		{"no override, no user provided", false, false, "noauth", "normal"},
-		{"no override, user povided", false, true, "user", "normal"},
-		{"override, no user provided", true, false, "wsnoauth", "websocket"},
-		{"override, user provided", true, true, "wsuser", "websocket"},
+		{name: "no override, no user provided", override: false, useAuth: false, expectedUser: "noauth", expectedAcc: "normal"},
+		{name: "no override, user povided", override: false, useAuth: true, expectedUser: "user", expectedAcc: "normal"},
+		{name: "override, no user provided", override: true, useAuth: false, expectedUser: "wsnoauth", expectedAcc: "websocket"},
+		{name: "override, user provided", override: true, useAuth: true, expectedUser: "wsuser", expectedAcc: "websocket"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()
@@ -3803,26 +3803,26 @@ func TestWSNkeyAuth(t *testing.T) {
 		err  string
 	}{
 		{
-			"no filtering, wrong nkey",
-			func() *Options {
+			name: "no filtering, wrong nkey",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{{Nkey: pub}}
 				return o
 			},
-			badpub, badkp, "-ERR 'Authorization Violation'",
+			nkey: badpub, kp: badkp, err: "-ERR 'Authorization Violation'",
 		},
 		{
-			"no filtering, correct nkey",
-			func() *Options {
+			name: "no filtering, correct nkey",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{{Nkey: pub}}
 				return o
 			},
-			pub, nkp, "",
+			nkey: pub, kp: nkp, err: "",
 		},
 		{
-			"filtering, nkey not allowed",
-			func() *Options {
+			name: "filtering, nkey not allowed",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{
 					{
@@ -3836,11 +3836,11 @@ func TestWSNkeyAuth(t *testing.T) {
 				}
 				return o
 			},
-			pub, nkp, "-ERR 'Authorization Violation'",
+			nkey: pub, kp: nkp, err: "-ERR 'Authorization Violation'",
 		},
 		{
-			"filtering, correct nkey",
-			func() *Options {
+			name: "filtering, correct nkey",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{
 					{Nkey: pub},
@@ -3851,11 +3851,11 @@ func TestWSNkeyAuth(t *testing.T) {
 				}
 				return o
 			},
-			wspub, wsnkp, "",
+			nkey: wspub, kp: wsnkp, err: "",
 		},
 		{
-			"filtering, wrong nkey",
-			func() *Options {
+			name: "filtering, wrong nkey",
+			opts: func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{
 					{
@@ -3865,7 +3865,7 @@ func TestWSNkeyAuth(t *testing.T) {
 				}
 				return o
 			},
-			badpub, badkp, "-ERR 'Authorization Violation'",
+			nkey: badpub, kp: badkp, err: "-ERR 'Authorization Violation'",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3929,10 +3929,10 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 		connectionTypes []string
 		expectedAnswer  string
 	}{
-		{"not allowed", []string{jwt.ConnectionTypeStandard}, "-ERR"},
-		{"allowed", []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeWebsocket)}, "+OK"},
-		{"allowed with unknown", []string{jwt.ConnectionTypeWebsocket, "SomeNewType"}, "+OK"},
-		{"not allowed with unknown", []string{"SomeNewType"}, "-ERR"},
+		{name: "not allowed", connectionTypes: []string{jwt.ConnectionTypeStandard}, expectedAnswer: "-ERR"},
+		{name: "allowed", connectionTypes: []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeWebsocket)}, expectedAnswer: "+OK"},
+		{name: "allowed with unknown", connectionTypes: []string{jwt.ConnectionTypeWebsocket, "SomeNewType"}, expectedAnswer: "+OK"},
+		{name: "not allowed with unknown", connectionTypes: []string{"SomeNewType"}, expectedAnswer: "-ERR"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			nuc := newJWTTestUserClaims()
@@ -4225,37 +4225,37 @@ func TestWSXForwardedFor(t *testing.T) {
 		useHdrValue   bool
 		expectedValue string
 	}{
-		{"nil map", func() map[string][]string {
+		{name: "nil map", headers: func() map[string][]string {
 			return nil
-		}, false, _EMPTY_},
-		{"empty map", func() map[string][]string {
+		}, useHdrValue: false, expectedValue: _EMPTY_},
+		{name: "empty map", headers: func() map[string][]string {
 			return make(map[string][]string)
-		}, false, _EMPTY_},
-		{"header present empty value", func() map[string][]string {
+		}, useHdrValue: false, expectedValue: _EMPTY_},
+		{name: "header present empty value", headers: func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{}
 			return m
-		}, false, _EMPTY_},
-		{"header present invalid IP", func() map[string][]string {
+		}, useHdrValue: false, expectedValue: _EMPTY_},
+		{name: "header present invalid IP", headers: func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"not a valid IP"}
 			return m
-		}, false, _EMPTY_},
-		{"header present one IP", func() map[string][]string {
+		}, useHdrValue: false, expectedValue: _EMPTY_},
+		{name: "header present one IP", headers: func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"1.2.3.4"}
 			return m
-		}, true, "1.2.3.4"},
-		{"header present multiple IPs", func() map[string][]string {
+		}, useHdrValue: true, expectedValue: "1.2.3.4"},
+		{name: "header present multiple IPs", headers: func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"1.2.3.4", "5.6.7.8"}
 			return m
-		}, true, "1.2.3.4"},
-		{"header present IPv6", func() map[string][]string {
+		}, useHdrValue: true, expectedValue: "1.2.3.4"},
+		{name: "header present IPv6", headers: func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"::1"}
 			return m
-		}, true, "[::1]"},
+		}, useHdrValue: true, expectedValue: "[::1]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, r, _ := testNewWSClient(t, testWSClientOptions{
@@ -4554,7 +4554,7 @@ func wsBenchPub(b *testing.B, numPubs int, compress bool, payload string) {
 		wsc, br := testWSCreateClient(b, compress, false, opts.Websocket.Host, opts.Websocket.Port)
 		defer wsc.Close()
 		bw := bufio.NewWriterSize(wsc, bufSize)
-		pubs = append(pubs, pub{wsc, br, bw})
+		pubs = append(pubs, pub{c: wsc, br: br, bw: bw})
 	}
 
 	// Average the amount of bytes sent by iteration

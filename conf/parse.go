@@ -262,7 +262,7 @@ func (p *parser) popItemKey() item {
 func (p *parser) processItem(it item, fp string) error {
 	setValue := func(it item, v any) {
 		if p.pedantic {
-			p.setValue(&token{it, v, false, fp})
+			p.setValue(&token{item: it, value: v, usedVariable: false, sourceFile: fp})
 		} else {
 			p.setValue(v)
 		}
@@ -387,10 +387,10 @@ func (p *parser) processItem(it item, fp string) error {
 				// Mark the looked up variable as used, and make
 				// the variable reference become handled as a token.
 				tk.usedVariable = true
-				p.setValue(&token{it, tk.Value(), false, fp})
+				p.setValue(&token{item: it, value: tk.Value(), usedVariable: false, sourceFile: fp})
 			default:
 				// Special case to add position context to bcrypt references.
-				p.setValue(&token{it, value, false, fp})
+				p.setValue(&token{item: it, value: value, usedVariable: false, sourceFile: fp})
 			}
 		} else {
 			p.setValue(value)

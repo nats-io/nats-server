@@ -51,9 +51,9 @@ func BenchmarkJetStreamCreate(b *testing.B) {
 		replicas    int
 		storage     nats.StorageType
 	}{
-		{1, 1, nats.MemoryStorage},
-		{3, 3, nats.MemoryStorage},
-		{3, 3, nats.FileStorage},
+		{clusterSize: 1, replicas: 1, storage: nats.MemoryStorage},
+		{clusterSize: 3, replicas: 3, storage: nats.MemoryStorage},
+		{clusterSize: 3, replicas: 3, storage: nats.FileStorage},
 	}
 
 	for _, bc := range benchmarksCases {
@@ -204,9 +204,9 @@ func BenchmarkJetStreamCreateConsumers(b *testing.B) {
 		consumerReplicas int
 		consumerStorage  nats.StorageType
 	}{
-		{1, 1, nats.MemoryStorage},
-		{3, 3, nats.MemoryStorage},
-		{3, 3, nats.FileStorage},
+		{clusterSize: 1, consumerReplicas: 1, consumerStorage: nats.MemoryStorage},
+		{clusterSize: 3, consumerReplicas: 3, consumerStorage: nats.MemoryStorage},
+		{clusterSize: 3, consumerReplicas: 3, consumerStorage: nats.FileStorage},
 	}
 
 	type ConsumerType string

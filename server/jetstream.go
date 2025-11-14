@@ -275,14 +275,14 @@ func (s *Server) decryptMeta(sc StoreCipher, ekey, buf []byte, acc, context stri
 	} else {
 		// First of all, try our current encryption keys with both
 		// store cipher algorithms.
-		prfs = append(prfs, prfWithCipher{prf, sc})
-		prfs = append(prfs, prfWithCipher{prf, osc})
+		prfs = append(prfs, prfWithCipher{keyGen: prf, StoreCipher: sc})
+		prfs = append(prfs, prfWithCipher{keyGen: prf, StoreCipher: osc})
 	}
 	if prf := s.jsKeyGen(s.getOpts().JetStreamOldKey, acc); prf != nil {
 		// Then, if we have an old encryption key, try with also with
 		// both store cipher algorithms.
-		prfs = append(prfs, prfWithCipher{prf, sc})
-		prfs = append(prfs, prfWithCipher{prf, osc})
+		prfs = append(prfs, prfWithCipher{keyGen: prf, StoreCipher: sc})
+		prfs = append(prfs, prfWithCipher{keyGen: prf, StoreCipher: osc})
 	}
 
 	for i, prf := range prfs {
@@ -2055,7 +2055,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 			total.total.store -= usage.store
 			usage.mem, usage.store = memUsed, storeUsed
 		} else {
-			rUsage.tiers[tierName] = &jsaUsage{memUsed, storeUsed}
+			rUsage.tiers[tierName] = &jsaUsage{mem: memUsed, store: storeUsed}
 		}
 		total.total.mem += memUsed
 		total.total.store += storeUsed

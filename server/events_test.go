@@ -1412,8 +1412,8 @@ func TestAccountReqInfo(t *testing.T) {
 		Data *AccountInfo `json:"data"`
 		Srv  *ServerInfo  `json:"server"`
 	}{
-		&info,
-		&srv,
+		Data: &info,
+		Srv:  &srv,
 	}
 	if resp, err := ncSys.Request(info1, nil, time.Second); err != nil {
 		t.Fatalf("Error on request: %v", err)
@@ -1731,12 +1731,12 @@ func TestSystemAccountNoAuthUser(t *testing.T) {
 		ok      bool
 		account string
 	}{
-		{"valid user/pwd", "admin:pwd@", true, "$SYS"},
-		{"invalid pwd", "admin:wrong@", false, _EMPTY_},
-		{"some token", "sometoken@", false, _EMPTY_},
-		{"user used without pwd", "admin@", false, _EMPTY_}, // will be treated as a token
-		{"user with empty password", "admin:@", false, _EMPTY_},
-		{"no user means global account", _EMPTY_, true, globalAccountName},
+		{name: "valid user/pwd", usrInfo: "admin:pwd@", ok: true, account: "$SYS"},
+		{name: "invalid pwd", usrInfo: "admin:wrong@", ok: false, account: _EMPTY_},
+		{name: "some token", usrInfo: "sometoken@", ok: false, account: _EMPTY_},
+		{name: "user used without pwd", usrInfo: "admin@", ok: false, account: _EMPTY_}, // will be treated as a token
+		{name: "user with empty password", usrInfo: "admin:@", ok: false, account: _EMPTY_},
+		{name: "no user means global account", usrInfo: _EMPTY_, ok: true, account: globalAccountName},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			url := fmt.Sprintf("nats://%s127.0.0.1:%d", test.usrInfo, o.Port)
@@ -2895,10 +2895,10 @@ func TestServerEventsPingStatsZDedicatedRecvQ(t *testing.T) {
 		f         func() string
 		expectTwo bool
 	}{
-		{"server stats ping request subject", func() string { return serverStatsPingReqSubj }, true},
-		{"server ping request subject", func() string { return fmt.Sprintf(serverPingReqSubj, statsz) }, true},
-		{"server a direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, sa.ID(), statsz) }, false},
-		{"server b direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, sb.ID(), statsz) }, false},
+		{name: "server stats ping request subject", f: func() string { return serverStatsPingReqSubj }, expectTwo: true},
+		{name: "server ping request subject", f: func() string { return fmt.Sprintf(serverPingReqSubj, statsz) }, expectTwo: true},
+		{name: "server a direct request subject", f: func() string { return fmt.Sprintf(serverDirectReqSubj, sa.ID(), statsz) }, expectTwo: false},
+		{name: "server b direct request subject", f: func() string { return fmt.Sprintf(serverDirectReqSubj, sb.ID(), statsz) }, expectTwo: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testReq(t, test.f(), test.expectTwo)
@@ -2993,65 +2993,65 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 		resp      any
 		respField []string
 	}{
-		{"VARZ", nil, &Varz{},
-			[]string{"now", "cpu", "system_account"}},
-		{"SUBSZ", nil, &Subsz{},
-			[]string{"num_subscriptions", "num_cache"}},
-		{"CONNZ", nil, &Connz{},
-			[]string{"now", "connections"}},
-		{"ROUTEZ", nil, &Routez{},
-			[]string{"now", "routes"}},
-		{"GATEWAYZ", nil, &Gatewayz{},
-			[]string{"now", "outbound_gateways", "inbound_gateways"}},
-		{"LEAFZ", nil, &Leafz{},
-			[]string{"now", "leafs"}},
+		{endpoint: "VARZ", opt: nil, resp: &Varz{},
+			respField: []string{"now", "cpu", "system_account"}},
+		{endpoint: "SUBSZ", opt: nil, resp: &Subsz{},
+			respField: []string{"num_subscriptions", "num_cache"}},
+		{endpoint: "CONNZ", opt: nil, resp: &Connz{},
+			respField: []string{"now", "connections"}},
+		{endpoint: "ROUTEZ", opt: nil, resp: &Routez{},
+			respField: []string{"now", "routes"}},
+		{endpoint: "GATEWAYZ", opt: nil, resp: &Gatewayz{},
+			respField: []string{"now", "outbound_gateways", "inbound_gateways"}},
+		{endpoint: "LEAFZ", opt: nil, resp: &Leafz{},
+			respField: []string{"now", "leafs"}},
 
-		{"SUBSZ", &SubszOptions{}, &Subsz{},
-			[]string{"num_subscriptions", "num_cache"}},
-		{"CONNZ", &ConnzOptions{}, &Connz{},
-			[]string{"now", "connections"}},
-		{"ROUTEZ", &RoutezOptions{}, &Routez{},
-			[]string{"now", "routes"}},
-		{"GATEWAYZ", &GatewayzOptions{}, &Gatewayz{},
-			[]string{"now", "outbound_gateways", "inbound_gateways"}},
-		{"LEAFZ", &LeafzOptions{}, &Leafz{},
-			[]string{"now", "leafs"}},
-		{"ACCOUNTZ", &AccountzOptions{}, &Accountz{},
-			[]string{"now", "accounts"}},
+		{endpoint: "SUBSZ", opt: &SubszOptions{}, resp: &Subsz{},
+			respField: []string{"num_subscriptions", "num_cache"}},
+		{endpoint: "CONNZ", opt: &ConnzOptions{}, resp: &Connz{},
+			respField: []string{"now", "connections"}},
+		{endpoint: "ROUTEZ", opt: &RoutezOptions{}, resp: &Routez{},
+			respField: []string{"now", "routes"}},
+		{endpoint: "GATEWAYZ", opt: &GatewayzOptions{}, resp: &Gatewayz{},
+			respField: []string{"now", "outbound_gateways", "inbound_gateways"}},
+		{endpoint: "LEAFZ", opt: &LeafzOptions{}, resp: &Leafz{},
+			respField: []string{"now", "leafs"}},
+		{endpoint: "ACCOUNTZ", opt: &AccountzOptions{}, resp: &Accountz{},
+			respField: []string{"now", "accounts"}},
 
-		{"SUBSZ", &SubszOptions{Limit: 5}, &Subsz{},
-			[]string{"num_subscriptions", "num_cache"}},
-		{"CONNZ", &ConnzOptions{Limit: 5}, &Connz{},
-			[]string{"now", "connections"}},
-		{"ROUTEZ", &RoutezOptions{SubscriptionsDetail: true}, &Routez{},
-			[]string{"now", "routes"}},
-		{"GATEWAYZ", &GatewayzOptions{Accounts: true}, &Gatewayz{},
-			[]string{"now", "outbound_gateways", "inbound_gateways"}},
-		{"LEAFZ", &LeafzOptions{Subscriptions: true}, &Leafz{},
-			[]string{"now", "leafs"}},
-		{"ACCOUNTZ", &AccountzOptions{Account: sysAcc}, &Accountz{},
-			[]string{"now", "account_detail"}},
-		{"LEAFZ", &LeafzOptions{Account: sysAcc}, &Leafz{},
-			[]string{"now", "leafs"}},
+		{endpoint: "SUBSZ", opt: &SubszOptions{Limit: 5}, resp: &Subsz{},
+			respField: []string{"num_subscriptions", "num_cache"}},
+		{endpoint: "CONNZ", opt: &ConnzOptions{Limit: 5}, resp: &Connz{},
+			respField: []string{"now", "connections"}},
+		{endpoint: "ROUTEZ", opt: &RoutezOptions{SubscriptionsDetail: true}, resp: &Routez{},
+			respField: []string{"now", "routes"}},
+		{endpoint: "GATEWAYZ", opt: &GatewayzOptions{Accounts: true}, resp: &Gatewayz{},
+			respField: []string{"now", "outbound_gateways", "inbound_gateways"}},
+		{endpoint: "LEAFZ", opt: &LeafzOptions{Subscriptions: true}, resp: &Leafz{},
+			respField: []string{"now", "leafs"}},
+		{endpoint: "ACCOUNTZ", opt: &AccountzOptions{Account: sysAcc}, resp: &Accountz{},
+			respField: []string{"now", "account_detail"}},
+		{endpoint: "LEAFZ", opt: &LeafzOptions{Account: sysAcc}, resp: &Leafz{},
+			respField: []string{"now", "leafs"}},
 
-		{"ROUTEZ", json.RawMessage(`{"cluster":""}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"name":""}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST_CLUSTER_22"}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"CLUSTER"}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST_CLUSTER_22", "subscriptions":true}`), &Routez{},
-			[]string{"now", "routes"}},
+		{endpoint: "ROUTEZ", opt: json.RawMessage(`{"cluster":""}`), resp: &Routez{},
+			respField: []string{"now", "routes"}},
+		{endpoint: "ROUTEZ", opt: json.RawMessage(`{"name":""}`), resp: &Routez{},
+			respField: []string{"now", "routes"}},
+		{endpoint: "ROUTEZ", opt: json.RawMessage(`{"cluster":"TEST_CLUSTER_22"}`), resp: &Routez{},
+			respField: []string{"now", "routes"}},
+		{endpoint: "ROUTEZ", opt: json.RawMessage(`{"cluster":"CLUSTER"}`), resp: &Routez{},
+			respField: []string{"now", "routes"}},
+		{endpoint: "ROUTEZ", opt: json.RawMessage(`{"cluster":"TEST_CLUSTER_22", "subscriptions":true}`), resp: &Routez{},
+			respField: []string{"now", "routes"}},
 
-		{"JSZ", nil, &JSzOptions{}, []string{"now", "disabled"}},
+		{endpoint: "JSZ", opt: nil, resp: &JSzOptions{}, respField: []string{"now", "disabled"}},
 
-		{"HEALTHZ", nil, &JSzOptions{}, []string{"status"}},
-		{"HEALTHZ", &HealthzOptions{JSEnabledOnly: true}, &JSzOptions{}, []string{"status"}},
-		{"HEALTHZ", &HealthzOptions{JSServerOnly: true}, &JSzOptions{}, []string{"status"}},
-		{"HEALTHZ", &HealthzOptions{JSMetaOnly: true}, &JSzOptions{}, []string{"status"}},
-		{"EXPVARZ", nil, &ExpvarzStatus{}, []string{"memstats", "cmdline"}},
+		{endpoint: "HEALTHZ", opt: nil, resp: &JSzOptions{}, respField: []string{"status"}},
+		{endpoint: "HEALTHZ", opt: &HealthzOptions{JSEnabledOnly: true}, resp: &JSzOptions{}, respField: []string{"status"}},
+		{endpoint: "HEALTHZ", opt: &HealthzOptions{JSServerOnly: true}, resp: &JSzOptions{}, respField: []string{"status"}},
+		{endpoint: "HEALTHZ", opt: &HealthzOptions{JSMetaOnly: true}, resp: &JSzOptions{}, respField: []string{"status"}},
+		{endpoint: "EXPVARZ", opt: nil, resp: &ExpvarzStatus{}, respField: []string{"memstats", "cmdline"}},
 	}
 
 	for i, test := range tests {
@@ -3755,8 +3755,8 @@ func TestServerEventsProfileZNotBlockingRecvQ(t *testing.T) {
 		name string
 		f    func() string
 	}{
-		{"server profilez request subject", func() string { return fmt.Sprintf(serverPingReqSubj, profilez) }},
-		{"server direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, sb.ID(), profilez) }},
+		{name: "server profilez request subject", f: func() string { return fmt.Sprintf(serverPingReqSubj, profilez) }},
+		{name: "server direct request subject", f: func() string { return fmt.Sprintf(serverDirectReqSubj, sb.ID(), profilez) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testReq(t, test.f())
@@ -3803,9 +3803,9 @@ func TestServerEventsPingStatsSlowConsumersStats(t *testing.T) {
 		f         func() string
 		expectTwo bool
 	}{
-		{"server stats ping request subject", func() string { return serverStatsPingReqSubj }, true},
-		{"server ping request subject", func() string { return fmt.Sprintf(serverPingReqSubj, statsz) }, true},
-		{"server direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, s.ID(), statsz) }, false},
+		{name: "server stats ping request subject", f: func() string { return serverStatsPingReqSubj }, expectTwo: true},
+		{name: "server ping request subject", f: func() string { return fmt.Sprintf(serverPingReqSubj, statsz) }, expectTwo: true},
+		{name: "server direct request subject", f: func() string { return fmt.Sprintf(serverDirectReqSubj, s.ID(), statsz) }, expectTwo: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// Clear all slow consumers values

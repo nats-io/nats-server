@@ -836,7 +836,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
 	// Check pending and warn if getting backed up.
-	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
+	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub: jsub, sub: sub, acc: acc, subject: subject, reply: reply, msg: copyBytes(rmsg), pa: c.pa})
 	limit := atomic.LoadInt64(&js.queueLimit)
 	if pending >= int(limit) {
 		s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", pending)
@@ -921,30 +921,30 @@ func (s *Server) setJetStreamExportSubs() error {
 		subject string
 		handler msgHandler
 	}{
-		{JSApiAccountInfo, s.jsAccountInfoRequest},
-		{JSApiStreamCreate, s.jsStreamCreateRequest},
-		{JSApiStreamUpdate, s.jsStreamUpdateRequest},
-		{JSApiStreams, s.jsStreamNamesRequest},
-		{JSApiStreamList, s.jsStreamListRequest},
-		{JSApiStreamInfo, s.jsStreamInfoRequest},
-		{JSApiStreamDelete, s.jsStreamDeleteRequest},
-		{JSApiStreamPurge, s.jsStreamPurgeRequest},
-		{JSApiStreamSnapshot, s.jsStreamSnapshotRequest},
-		{JSApiStreamRestore, s.jsStreamRestoreRequest},
-		{JSApiStreamRemovePeer, s.jsStreamRemovePeerRequest},
-		{JSApiStreamLeaderStepDown, s.jsStreamLeaderStepDownRequest},
-		{JSApiConsumerLeaderStepDown, s.jsConsumerLeaderStepDownRequest},
-		{JSApiMsgDelete, s.jsMsgDeleteRequest},
-		{JSApiMsgGet, s.jsMsgGetRequest},
-		{JSApiConsumerCreateEx, s.jsConsumerCreateRequest},
-		{JSApiConsumerCreate, s.jsConsumerCreateRequest},
-		{JSApiDurableCreate, s.jsConsumerCreateRequest},
-		{JSApiConsumers, s.jsConsumerNamesRequest},
-		{JSApiConsumerList, s.jsConsumerListRequest},
-		{JSApiConsumerInfo, s.jsConsumerInfoRequest},
-		{JSApiConsumerDelete, s.jsConsumerDeleteRequest},
-		{JSApiConsumerPause, s.jsConsumerPauseRequest},
-		{JSApiConsumerUnpin, s.jsConsumerUnpinRequest},
+		{subject: JSApiAccountInfo, handler: s.jsAccountInfoRequest},
+		{subject: JSApiStreamCreate, handler: s.jsStreamCreateRequest},
+		{subject: JSApiStreamUpdate, handler: s.jsStreamUpdateRequest},
+		{subject: JSApiStreams, handler: s.jsStreamNamesRequest},
+		{subject: JSApiStreamList, handler: s.jsStreamListRequest},
+		{subject: JSApiStreamInfo, handler: s.jsStreamInfoRequest},
+		{subject: JSApiStreamDelete, handler: s.jsStreamDeleteRequest},
+		{subject: JSApiStreamPurge, handler: s.jsStreamPurgeRequest},
+		{subject: JSApiStreamSnapshot, handler: s.jsStreamSnapshotRequest},
+		{subject: JSApiStreamRestore, handler: s.jsStreamRestoreRequest},
+		{subject: JSApiStreamRemovePeer, handler: s.jsStreamRemovePeerRequest},
+		{subject: JSApiStreamLeaderStepDown, handler: s.jsStreamLeaderStepDownRequest},
+		{subject: JSApiConsumerLeaderStepDown, handler: s.jsConsumerLeaderStepDownRequest},
+		{subject: JSApiMsgDelete, handler: s.jsMsgDeleteRequest},
+		{subject: JSApiMsgGet, handler: s.jsMsgGetRequest},
+		{subject: JSApiConsumerCreateEx, handler: s.jsConsumerCreateRequest},
+		{subject: JSApiConsumerCreate, handler: s.jsConsumerCreateRequest},
+		{subject: JSApiDurableCreate, handler: s.jsConsumerCreateRequest},
+		{subject: JSApiConsumers, handler: s.jsConsumerNamesRequest},
+		{subject: JSApiConsumerList, handler: s.jsConsumerListRequest},
+		{subject: JSApiConsumerInfo, handler: s.jsConsumerInfoRequest},
+		{subject: JSApiConsumerDelete, handler: s.jsConsumerDeleteRequest},
+		{subject: JSApiConsumerPause, handler: s.jsConsumerPauseRequest},
+		{subject: JSApiConsumerUnpin, handler: s.jsConsumerUnpinRequest},
 	}
 
 	js.mu.Lock()
@@ -1106,13 +1106,13 @@ func (s *Server) delayedAPIResponder() {
 
 func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string, rg *raftGroup, duration time.Duration) {
 	s.delayedAPIResponses.push(&delayedAPIResponse{
-		ci, acc, subject, reply, request, nil, response, rg, time.Now().Add(duration), false, nil,
+		ci: ci, acc: acc, subject: subject, reply: reply, request: request, hdr: nil, response: response, rg: rg, deadline: time.Now().Add(duration), noJs: false, next: nil,
 	})
 }
 
 func (s *Server) sendDelayedErrResponse(acc *Account, subject string, hdr []byte, response string, duration time.Duration) {
 	s.delayedAPIResponses.push(&delayedAPIResponse{
-		nil, acc, subject, _EMPTY_, _EMPTY_, hdr, response, nil, time.Now().Add(duration), true, nil,
+		ci: nil, acc: acc, subject: subject, reply: _EMPTY_, request: _EMPTY_, hdr: hdr, response: response, rg: nil, deadline: time.Now().Add(duration), noJs: true, next: nil,
 	})
 }
 
@@ -3794,8 +3794,8 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		if reply == _EMPTY_ {
 			sub.client.processUnsub(sub.sid)
 			resultCh <- result{
-				fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, streamName),
-				reply,
+				err:   fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, streamName),
+				reply: reply,
 			}
 			return
 		}
@@ -3803,8 +3803,8 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		if len(msg) < LEN_CR_LF {
 			sub.client.processUnsub(sub.sid)
 			resultCh <- result{
-				fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, streamName),
-				reply,
+				err:   fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, streamName),
+				reply: reply,
 			}
 			return
 		}
@@ -3814,7 +3814,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		// This means we are complete with our transfer from the client.
 		if len(msg) == 0 {
 			s.Debugf("Finished staging restore for stream '%s > %s'", acc.Name, streamName)
-			resultCh <- result{err, reply}
+			resultCh <- result{err: err, reply: reply}
 			return
 		}
 
@@ -3823,13 +3823,13 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		total += len(msg)
 		if js.wouldExceedLimits(FileStorage, total) {
 			s.resourcesExceededError(FileStorage)
-			resultCh <- result{NewJSInsufficientResourcesError(), reply}
+			resultCh <- result{err: NewJSInsufficientResourcesError(), reply: reply}
 			return
 		}
 
 		// Append chunk to temp file. Mark as issue if we encounter an error.
 		if n, err := tfile.Write(msg); n != len(msg) || err != nil {
-			resultCh <- result{err, reply}
+			resultCh <- result{err: err, reply: reply}
 			if reply != _EMPTY_ {
 				s.sendInternalAccountMsg(acc, reply, "-ERR 'storage failure during restore'")
 			}

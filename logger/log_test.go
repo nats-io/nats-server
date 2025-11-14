@@ -253,7 +253,7 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	// Check error on rotate.
 	logger.Lock()
 	logger.fl.Lock()
-	failClose := &fileLogFailClose{logger.fl.f, true}
+	failClose := &fileLogFailClose{writerAndCloser: logger.fl.f, fail: true}
 	logger.fl.f = failClose
 	logger.fl.Unlock()
 	logger.Unlock()

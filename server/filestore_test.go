@@ -2032,11 +2032,11 @@ func TestFileStoreConsumer(t *testing.T) {
 
 		// We should sanity check pending here as well, so will check if a pending value is below
 		// ack floor or above delivered.
-		state.Pending = map[uint64]*Pending{70: {70, tn}}
+		state.Pending = map[uint64]*Pending{70: {Sequence: 70, Timestamp: tn}}
 		shouldFail()
-		state.Pending = map[uint64]*Pending{140: {140, tn}}
+		state.Pending = map[uint64]*Pending{140: {Sequence: 140, Timestamp: tn}}
 		shouldFail()
-		state.Pending = map[uint64]*Pending{72: {72, tn}} // exact on floor should fail
+		state.Pending = map[uint64]*Pending{72: {Sequence: 72, Timestamp: tn}} // exact on floor should fail
 		shouldFail()
 
 		// Put timestamps a second apart.
@@ -2045,7 +2045,7 @@ func TestFileStoreConsumer(t *testing.T) {
 		ago := time.Now().Add(-30 * time.Second).Truncate(time.Second)
 		nt := func() *Pending {
 			ago = ago.Add(time.Second)
-			return &Pending{0, ago.UnixNano()}
+			return &Pending{Sequence: 0, Timestamp: ago.UnixNano()}
 		}
 		// Should succeed.
 		state.Pending = map[uint64]*Pending{75: nt(), 80: nt(), 83: nt(), 90: nt(), 111: nt()}
@@ -2112,9 +2112,9 @@ func TestFileStoreConsumerEncodeDecodePendingBelowStreamAckFloor(t *testing.T) {
 
 	now := time.Now().Round(time.Second).Add(-10 * time.Second).UnixNano()
 	state.Pending = map[uint64]*Pending{
-		10782: {1190, now},
-		10810: {1191, now + int64(time.Second)},
-		10815: {1192, now + int64(2*time.Second)},
+		10782: {Sequence: 1190, Timestamp: now},
+		10810: {Sequence: 1191, Timestamp: now + int64(time.Second)},
+		10815: {Sequence: 1192, Timestamp: now + int64(2*time.Second)},
 	}
 	buf := encodeConsumerState(state)
 
@@ -2620,7 +2620,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 			if state == nil {
 				t.Fatalf("No state available")
 			}
-			expected := SequencePair{dseq, sseq}
+			expected := SequencePair{Consumer: dseq, Stream: sseq}
 			if state.Delivered != expected {
 				t.Fatalf("Unexpected state, wanted %+v, got %+v", expected, state.Delivered)
 			}
@@ -2678,7 +2678,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 			if state == nil {
 				t.Fatalf("No state available")
 			}
-			expected := SequencePair{dseq, sseq}
+			expected := SequencePair{Consumer: dseq, Stream: sseq}
 			if state.Delivered != expected {
 				t.Fatalf("Unexpected delivered state, wanted %+v, got %+v", expected, state.Delivered)
 			}
@@ -2718,7 +2718,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 			if len(state.Pending) != pending {
 				t.Fatalf("Expected %d pending, got %d pending", pending, len(state.Pending))
 			}
-			eflr := SequencePair{dflr, sflr}
+			eflr := SequencePair{Consumer: dflr, Stream: sflr}
 			if state.AckFloor != eflr {
 				t.Fatalf("Unexpected ack floor state, wanted %+v, got %+v", eflr, state.AckFloor)
 			}

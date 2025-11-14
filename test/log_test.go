@@ -39,63 +39,63 @@ func TestLogMaxArchives(t *testing.T) {
 		totEntriesExpected int
 	}{
 		{
-			"Default implicit, no max logs, expect 0 purged logs",
-			`
+			name: "Default implicit, no max logs, expect 0 purged logs",
+			config: `
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
 			`,
-			9,
+			totEntriesExpected: 9,
 		},
 		{
-			"Default explicit, no max logs, expect 0 purged logs",
-			`
+			name: "Default explicit, no max logs, expect 0 purged logs",
+			config: `
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
 				logfile_max_num: 0
 			`,
-			9,
+			totEntriesExpected: 9,
 		},
 		{
-			"Default explicit - negative val, no max logs, expect 0 purged logs",
-			`
+			name: "Default explicit - negative val, no max logs, expect 0 purged logs",
+			config: `
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
 				logfile_max_num: -42
 			`,
-			9,
+			totEntriesExpected: 9,
 		},
 		{
-			"1-max num, expect 8 purged logs",
-			`
+			name: "1-max num, expect 8 purged logs",
+			config: `
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
 				logfile_max_num: 1
 			`,
-			1,
+			totEntriesExpected: 1,
 		},
 		{
-			"5-max num, expect 4 purged logs; use opt alias",
-			`
+			name: "5-max num, expect 4 purged logs; use opt alias",
+			config: `
 				port: -1
 				log_file: %s
 				log_size_limit: 100
 				log_max_num: 5
 			`,
-			5,
+			totEntriesExpected: 5,
 		},
 		{
-			"100-max num, expect 0 purged logs",
-			`
+			name: "100-max num, expect 0 purged logs",
+			config: `
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
 				logfile_max_num: 100
 			`,
-			9,
+			totEntriesExpected: 9,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

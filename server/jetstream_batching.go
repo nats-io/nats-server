@@ -150,7 +150,7 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 		mset.ddMu.Lock()
 		for msgId := range diff.msgIds {
 			// We stage with zero, and will update in processJetStreamMsg once we know the sequence.
-			mset.storeMsgIdLocked(&ddentry{msgId, 0, ts})
+			mset.storeMsgIdLocked(&ddentry{id: msgId, seq: 0, ts: ts})
 		}
 		mset.ddMu.Unlock()
 	}

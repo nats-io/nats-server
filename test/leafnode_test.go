@@ -2083,12 +2083,12 @@ func TestLeafNodeInfoURLs(t *testing.T) {
 		useAdvertise bool
 	}{
 		{
-			"without advertise",
-			false,
+			name:         "without advertise",
+			useAdvertise: false,
 		},
 		{
-			"with advertise",
-			true,
+			name:         "with advertise",
+			useAdvertise: true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -4462,8 +4462,8 @@ func TestLeafNodeConnectInfo(t *testing.T) {
 		sys    string
 		hasSys bool
 	}{
-		{"with explicit system account", "system_account: SYS", true},
-		{"without explicit system account", "", false},
+		{name: "with explicit system account", sys: "system_account: SYS", hasSys: true},
+		{name: "without explicit system account", sys: "", hasSys: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`

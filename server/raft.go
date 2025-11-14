@@ -378,7 +378,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
-	return writePeerState(cfg.Store, &peerState{knownPeers, expected, extUndetermined})
+	return writePeerState(cfg.Store, &peerState{knownPeers: knownPeers, clusterSize: expected, domainExt: extUndetermined})
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
@@ -526,13 +526,13 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	}
 
 	// Make sure to track ourselves.
-	n.peers[n.id] = &lps{time.Now(), 0, true}
+	n.peers[n.id] = &lps{ts: time.Now(), li: 0, kp: true}
 
 	// Track known peers
 	for _, peer := range ps.knownPeers {
 		if peer != n.id {
 			// Set these to 0 to start but mark as known peer.
-			n.peers[peer] = &lps{time.Time{}, 0, true}
+			n.peers[peer] = &lps{ts: time.Time{}, li: 0, kp: true}
 		}
 	}
 
@@ -1125,7 +1125,7 @@ func (n *raft) DrainAndReplaySnapshot() bool {
 	n.pauseApplyLocked()
 	n.apply.drain()
 	n.commit = snap.lastIndex
-	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	n.apply.push(newCommittedEntry(n.commit, []*Entry{{Type: EntrySnapshot, Data: snap.data}}))
 	return true
 }
 
@@ -1238,7 +1238,7 @@ func (n *raft) SendSnapshot(data []byte) error {
 	n.Lock()
 	defer n.Unlock()
 	// Don't check if we're leader before sending and storing, this is used on scaleup.
-	n.sendAppendEntryLocked([]*Entry{{EntrySnapshot, data}}, false)
+	n.sendAppendEntryLocked([]*Entry{{Type: EntrySnapshot, Data: data}}, false)
 	return nil
 }
 
@@ -1282,7 +1282,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	return n.installSnapshot(&snapshot{
 		lastTerm:  term,
 		lastIndex: n.applied,
-		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+		peerstate: encodePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt}),
 		data:      data,
 	})
 }
@@ -1415,7 +1415,7 @@ func (n *raft) setupLastSnapshot() {
 	// Applied will move up when the snapshot is actually applied.
 	n.commit = snap.lastIndex
 	n.papplied = snap.lastIndex
-	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	n.apply.push(newCommittedEntry(n.commit, []*Entry{{Type: EntrySnapshot, Data: snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 	}
@@ -1870,7 +1870,7 @@ func (n *raft) UpdateKnownPeers(knownPeers []string) {
 
 func (n *raft) updateKnownPeersLocked(knownPeers []string) {
 	// Process like peer state update.
-	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
+	ps := &peerState{knownPeers: knownPeers, clusterSize: len(knownPeers), domainExt: n.extSt}
 	n.processPeerState(ps)
 }
 
@@ -2918,7 +2918,7 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
-	ae := n.buildAppendEntry([]*Entry{{EntrySnapshot, snap.data}, {EntryPeerState, snap.peerstate}})
+	ae := n.buildAppendEntry([]*Entry{{Type: EntrySnapshot, Data: snap.data}, {Type: EntryPeerState, Data: snap.peerstate}})
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
 	var state StreamState
 	n.wal.FastState(&state)
@@ -3075,7 +3075,7 @@ func (n *raft) applyCommit(index uint64) error {
 				n.installSnapshot(&snapshot{
 					lastTerm:  ae.pterm,
 					lastIndex: ae.commit,
-					peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+					peerstate: encodePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt}),
 					data:      e.Data,
 				})
 			}
@@ -3099,7 +3099,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 			if lp, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
-				n.peers[newPeer] = &lps{time.Time{}, 0, true}
+				n.peers[newPeer] = &lps{ts: time.Time{}, li: 0, kp: true}
 			} else {
 				// Mark as added.
 				lp.kp = true
@@ -3107,7 +3107,7 @@ func (n *raft) applyCommit(index uint64) error {
 			// Adjust cluster size and quorum if needed.
 			n.adjustClusterSizeAndQuorum()
 			// Write out our new state.
-			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+			n.writePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt})
 			// We pass these up as well.
 			committed = append(committed, e)
 
@@ -3126,7 +3126,7 @@ func (n *raft) applyCommit(index uint64) error {
 				// We should decrease our cluster size since we are tracking this peer.
 				n.adjustClusterSizeAndQuorum()
 				// Write out our new state.
-				n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+				n.writePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt})
 			}
 
 			// If this is us and we are the leader we should attempt to stepdown.
@@ -3257,7 +3257,7 @@ func (n *raft) trackPeer(peer string) error {
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now()
 	} else if !isRemoved {
-		n.peers[peer] = &lps{time.Now(), 0, false}
+		n.peers[peer] = &lps{ts: time.Now(), li: 0, kp: false}
 	}
 	n.Unlock()
 
@@ -3678,7 +3678,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		if ps := n.peers[ae.leader]; ps != nil {
 			ps.ts = time.Now()
 		} else {
-			n.peers[ae.leader] = &lps{time.Now(), 0, true}
+			n.peers[ae.leader] = &lps{ts: time.Now(), li: 0, kp: true}
 		}
 	}
 
@@ -3776,7 +3776,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			snap := &snapshot{
 				lastTerm:  n.pterm,
 				lastIndex: n.pindex,
-				peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+				peerstate: encodePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt}),
 				data:      ae.entries[0].Data,
 			}
 			// Install the leader's snapshot as our own.
@@ -3851,7 +3851,7 @@ CONTINUE:
 			if newPeer := string(e.Data); len(newPeer) == idLen {
 				// Track directly, but wait for commit to be official
 				if _, ok := n.peers[newPeer]; !ok {
-					n.peers[newPeer] = &lps{time.Time{}, 0, false}
+					n.peers[newPeer] = &lps{ts: time.Time{}, li: 0, kp: false}
 				}
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
@@ -3920,7 +3920,7 @@ func (n *raft) processPeerState(ps *peerState) {
 			lp.kp = true
 			n.peers[peer] = lp
 		} else {
-			n.peers[peer] = &lps{time.Time{}, 0, true}
+			n.peers[peer] = &lps{ts: time.Time{}, li: 0, kp: true}
 		}
 	}
 	n.debug("Update peers from leader to %+v", n.peers)
@@ -4149,13 +4149,13 @@ func (n *raft) currentPeerState() *peerState {
 }
 
 func (n *raft) currentPeerStateLocked() *peerState {
-	return &peerState{n.peerNames(), n.csz, n.extSt}
+	return &peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt}
 }
 
 // sendPeerState will send our current peer state to the cluster.
 // Lock should be held.
 func (n *raft) sendPeerState() {
-	n.sendAppendEntryLocked([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerStateLocked())}}, true)
+	n.sendAppendEntryLocked([]*Entry{{Type: EntryPeerState, Data: encodePeerState(n.currentPeerStateLocked())}}, true)
 }
 
 // Send a heartbeat.
@@ -4404,7 +4404,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	n.Lock()
 
-	vresp := &voteResponse{n.term, n.id, false, n.pindex == 0}
+	vresp := &voteResponse{term: n.term, peer: n.id, granted: false, empty: n.pindex == 0}
 	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
 
 	// Ignore if we are newer. This is important so that we don't accidentally process
@@ -4478,7 +4478,7 @@ func (n *raft) requestVote() {
 	}
 	n.vote = n.id
 	n.writeTermVote()
-	vr := voteRequest{n.term, n.pterm, n.pindex, n.id, _EMPTY_}
+	vr := voteRequest{term: n.term, lastTerm: n.pterm, lastIndex: n.pindex, candidate: n.id, reply: _EMPTY_}
 	subj, reply := n.vsubj, n.vreply
 	n.Unlock()
 

@@ -577,7 +577,7 @@ func parseOCSPResponseCache(v any) (pcfg *OCSPResponseCacheConfig, retError erro
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalCacheOptsConfig, v)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrIllegalCacheOptsConfig, v)}
 	}
 	pcfg = NewOCSPResponseCacheConfig()
 	retError = nil
@@ -588,23 +588,23 @@ func parseOCSPResponseCache(v any) (pcfg *OCSPResponseCacheConfig, retError erro
 		case "type":
 			cache, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 			}
 			cacheType, exists := OCSPResponseCacheTypeMap[strings.ToLower(cache)]
 			if !exists {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrUnknownCacheType, cache)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrUnknownCacheType, cache)}
 			}
 			pcfg.Type = cacheType
 		case "local_store":
 			store, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 			}
 			pcfg.LocalStore = store
 		case "preserve_revoked":
 			preserve, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 			}
 			pcfg.PreserveRevoked = preserve
 		case "save_interval":
@@ -617,11 +617,11 @@ func parseOCSPResponseCache(v any) (pcfg *OCSPResponseCacheConfig, retError erro
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldTypeConversion, "unexpected type")}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingCacheOptFieldTypeConversion, "unexpected type")}
 			}
 			si := time.Duration(at) * time.Second
 			if si < OCSPResponseCacheMinimumSaveInterval {
@@ -629,7 +629,7 @@ func parseOCSPResponseCache(v any) (pcfg *OCSPResponseCacheConfig, retError erro
 			}
 			pcfg.SaveInterval = si.Seconds()
 		default:
-			return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
+			return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 		}
 	}
 	return pcfg, nil

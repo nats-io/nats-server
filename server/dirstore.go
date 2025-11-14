@@ -664,7 +664,7 @@ func (pq *expirationTracker) track(publicKey string, hash *[sha256.Size]byte, th
 		i.hash = *hash
 		heap.Fix(pq, i.index)
 	} else {
-		heap.Push(pq, &jwtItem{-1, publicKey, exp, *hash})
+		heap.Push(pq, &jwtItem{index: -1, publicKey: publicKey, expiration: exp, hash: *hash})
 	}
 	xorAssign(&pq.hash, *hash) // add in new hash
 }
@@ -682,15 +682,15 @@ func (store *DirJWTStore) startExpiring(reCheck time.Duration, limit int64, evic
 	defer store.Unlock()
 	quit := make(chan struct{})
 	pq := &expirationTracker{
-		make([]*jwtItem, 0, 10),
-		make(map[string]*list.Element),
-		list.New(),
-		limit,
-		evictOnLimit,
-		ttl,
-		[sha256.Size]byte{},
-		quit,
-		sync.WaitGroup{},
+		heap:         make([]*jwtItem, 0, 10),
+		idx:          make(map[string]*list.Element),
+		lru:          list.New(),
+		limit:        limit,
+		evictOnLimit: evictOnLimit,
+		ttl:          ttl,
+		hash:         [sha256.Size]byte{},
+		quit:         quit,
+		wg:           sync.WaitGroup{},
 	}
 	store.expiration = pq
 	pq.wg.Add(1)

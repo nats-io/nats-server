@@ -1079,7 +1079,7 @@ func TestJetStreamClusterDoubleAckRedelivery(t *testing.T) {
 						t.Logf("Error: %v %v", msgID, err)
 						errors[msgID] = err
 					} else {
-						acked[msgID] = &ackResult{resp, msg, nil}
+						acked[msgID] = &ackResult{ack: resp, original: msg, redelivered: nil}
 						break Retries
 					}
 				}
@@ -2467,8 +2467,8 @@ func TestJetStreamClusterPubAckSequenceDupeResetAfterLeaderChange(t *testing.T) 
 
 	// Store one msg ID that needs to be preserved, and another that should be removed during leader change.
 	mset.ddMu.Lock()
-	mset.storeMsgIdLocked(&ddentry{"genuine", 1, time.Now().UnixNano()})
-	mset.storeMsgIdLocked(&ddentry{"msgId", 0, time.Now().UnixNano()})
+	mset.storeMsgIdLocked(&ddentry{id: "genuine", seq: 1, ts: time.Now().UnixNano()})
+	mset.storeMsgIdLocked(&ddentry{id: "msgId", seq: 0, ts: time.Now().UnixNano()})
 	mset.ddMu.Unlock()
 
 	// Simulates the msg ID being in process.
@@ -4430,7 +4430,7 @@ func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 	co := lookupConsumer(cl)
 	rn := co.node.(*raft)
 	rn.Lock()
-	entries := []*Entry{{EntryNormal, updateDeliveredBuffer()}, {EntryNormal, updateAcksBuffer()}}
+	entries := []*Entry{{Type: EntryNormal, Data: updateDeliveredBuffer()}, {Type: EntryNormal, Data: updateAcksBuffer()}}
 	ae := encode(t, rn.buildAppendEntry(entries))
 	err = rn.storeToWAL(ae)
 	minPindex := rn.pindex

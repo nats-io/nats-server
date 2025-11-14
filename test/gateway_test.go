@@ -481,14 +481,14 @@ func TestGatewayNoPanicOnBadProtocol(t *testing.T) {
 		name  string
 		proto string
 	}{
-		{"sub", "SUB > 1\r\n"},
-		{"unsub", "UNSUB 1\r\n"},
-		{"rsub", "RS+ $foo foo 2\r\n"},
-		{"runsub", "RS- $foo foo 2\r\n"},
-		{"pub", "PUB foo 2\r\nok\r\n"},
-		{"msg", "MSG foo 2\r\nok\r\n"},
-		{"rmsg", "RMSG $foo foo 2\r\nok\r\n"},
-		{"anything", "xxxx\r\n"},
+		{name: "sub", proto: "SUB > 1\r\n"},
+		{name: "unsub", proto: "UNSUB 1\r\n"},
+		{name: "rsub", proto: "RS+ $foo foo 2\r\n"},
+		{name: "runsub", proto: "RS- $foo foo 2\r\n"},
+		{name: "pub", proto: "PUB foo 2\r\nok\r\n"},
+		{name: "msg", proto: "MSG foo 2\r\nok\r\n"},
+		{name: "rmsg", proto: "RMSG $foo foo 2\r\nok\r\n"},
+		{name: "anything", proto: "xxxx\r\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// Create raw tcp connection to gateway port
@@ -557,8 +557,8 @@ func TestGatewayErrorOnRSentFromOutbound(t *testing.T) {
 		name  string
 		proto string
 	}{
-		{"RS+", "RS+"},
-		{"RS-", "RS-"},
+		{name: "RS+", proto: "RS+"},
+		{name: "RS-", proto: "RS-"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			gA := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
@@ -768,8 +768,8 @@ func TestGatewayAuthTimeout(t *testing.T) {
 		setAuth bool //
 		wait    time.Duration
 	}{
-		{"auth not explicitly set", false, 2500 * time.Millisecond},
-		{"auth set", true, 500 * time.Millisecond},
+		{name: "auth not explicitly set", setAuth: false, wait: 2500 * time.Millisecond},
+		{name: "auth set", setAuth: true, wait: 500 * time.Millisecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ob := testDefaultOptionsForGateway("B")

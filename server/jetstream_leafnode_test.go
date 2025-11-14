@@ -397,10 +397,10 @@ leafnodes:{
 		// But this should work itself out regardless
 		leafFunctionPreJoin bool
 	}{
-		{true, true},
-		{true, false},
-		{false, true},
-		{false, false}} {
+		{same: true, leafFunctionPreJoin: true},
+		{same: true, leafFunctionPreJoin: false},
+		{same: false, leafFunctionPreJoin: true},
+		{same: false, leafFunctionPreJoin: false}} {
 		t.Run(fmt.Sprintf("%t-%t", testCase.same, testCase.leafFunctionPreJoin), func(t *testing.T) {
 			sd1 := t.TempDir()
 			confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, sd1)))

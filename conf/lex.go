@@ -158,7 +158,7 @@ func (lx *lexer) emit(typ itemType) {
 	val := strings.Join(lx.stringParts, "") + lx.input[lx.start:lx.pos]
 	// Position of item in line where it started.
 	pos := lx.pos - lx.ilstart - len(val)
-	lx.items <- item{typ, val, lx.line, pos}
+	lx.items <- item{typ: typ, val: val, line: lx.line, pos: pos}
 	lx.start = lx.pos
 	lx.ilstart = lx.lstart
 }
@@ -173,7 +173,7 @@ func (lx *lexer) emitString() {
 	}
 	// Position of string in line where it started.
 	pos := lx.pos - lx.ilstart - len(finalString)
-	lx.items <- item{itemString, finalString, lx.line, pos}
+	lx.items <- item{typ: itemString, val: finalString, line: lx.line, pos: pos}
 	lx.start = lx.pos
 	lx.ilstart = lx.lstart
 }
@@ -245,10 +245,10 @@ func (lx *lexer) errorf(format string, values ...any) stateFn {
 	// Position of error in current line.
 	pos := lx.pos - lx.lstart
 	lx.items <- item{
-		itemError,
-		fmt.Sprintf(format, values...),
-		lx.line,
-		pos,
+		typ:  itemError,
+		val:  fmt.Sprintf(format, values...),
+		line: lx.line,
+		pos:  pos,
 	}
 	return nil
 }

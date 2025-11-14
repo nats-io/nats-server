@@ -445,7 +445,7 @@ func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr []byte,
 	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
-	(*m) = pubMsg{c, sub, rply, si, hdr, msg, oct, echo, last}
+	(*m) = pubMsg{c: c, sub: sub, rply: rply, si: si, hdr: hdr, msg: msg, oct: oct, echo: echo, last: last}
 	return m
 }
 
@@ -1763,7 +1763,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 func (s *Server) updateRemoteServer(si *ServerInfo) {
 	su := s.sys.servers[si.ID]
 	if su == nil {
-		s.sys.servers[si.ID] = &serverUpdate{si.Seq, time.Now()}
+		s.sys.servers[si.ID] = &serverUpdate{seq: si.Seq, ltime: time.Now()}
 		s.processNewServer(si)
 	} else {
 		// Should always be going up.
@@ -2788,7 +2788,7 @@ func (s *Server) noInlineCallbackRecvQSelect(cb sysMsgHandler, recvQSelect int) 
 	return func(sub *subscription, c *client, acc *Account, subj, rply string, rmsg []byte) {
 		// Need to copy and split here.
 		hdr, msg := c.msgParts(rmsg)
-		recvq.push(&inSysMsg{sub, c, acc, subj, rply, copyBytes(hdr), copyBytes(msg), cb})
+		recvq.push(&inSysMsg{sub: sub, c: c, acc: acc, subj: subj, rply: rply, hdr: copyBytes(hdr), msg: copyBytes(msg), cb: cb})
 	}
 }
 

@@ -426,8 +426,8 @@ func TestJetStreamClusterMixedMode(t *testing.T) {
 		name string
 		tmpl string
 	}{
-		{"multi-account", jsClusterLimitsTempl},
-		{"global-account", jsMixedModeGlobalAccountTempl},
+		{name: "multi-account", tmpl: jsClusterLimitsTempl},
+		{name: "global-account", tmpl: jsMixedModeGlobalAccountTempl},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 

@@ -266,7 +266,7 @@ type importMap struct {
 func NewAccount(name string) *Account {
 	a := &Account{
 		Name:     name,
-		limits:   limits{-1, -1, -1, -1, false},
+		limits:   limits{mpay: -1, msubs: -1, mconns: -1, mleafs: -1, disallowBearer: false},
 		eventIds: nuid.New(),
 	}
 	return a
@@ -663,7 +663,7 @@ type MapDest struct {
 }
 
 func NewMapDest(subject string, weight uint8) *MapDest {
-	return &MapDest{subject, weight, _EMPTY_}
+	return &MapDest{Subject: subject, Weight: weight, Cluster: _EMPTY_}
 }
 
 // destination is for internal representation for a weighted mapped destination.
@@ -720,14 +720,14 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 			return err
 		}
 		if d.Cluster == _EMPTY_ {
-			m.dests = append(m.dests, &destination{tr, d.Weight})
+			m.dests = append(m.dests, &destination{tr: tr, weight: d.Weight})
 		} else {
 			// We have a cluster scoped filter.
 			if m.cdests == nil {
 				m.cdests = make(map[string][]*destination)
 			}
 			ad := m.cdests[d.Cluster]
-			ad = append(ad, &destination{tr, d.Weight})
+			ad = append(ad, &destination{tr: tr, weight: d.Weight})
 			m.cdests[d.Cluster] = ad
 		}
 	}
@@ -754,7 +754,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 			if len(dests) == 0 {
 				aw = 100
 			}
-			dests = append(dests, &destination{tr, aw})
+			dests = append(dests, &destination{tr: tr, weight: aw})
 		}
 		slices.SortFunc(dests, func(i, j *destination) int { return cmp.Compare(i.weight, j.weight) })
 
@@ -1859,7 +1859,7 @@ func (a *Account) addReverseRespMapEntry(acc *Account, reply, from string) {
 	if a.imports.rrMap == nil {
 		a.imports.rrMap = make(map[string][]*serviceRespEntry)
 	}
-	sre := &serviceRespEntry{acc, from}
+	sre := &serviceRespEntry{acc: acc, msub: from}
 	sra := a.imports.rrMap[reply]
 	a.imports.rrMap[reply] = append(sra, sre)
 	a.mu.Unlock()
@@ -2097,7 +2097,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	if claim != nil {
 		share = claim.Share
 	}
-	si := &serviceImport{dest, claim, se, nil, from, to, tr, 0, rt, lat, nil, nil, usePub, false, false, share, false, false, atrc, nil}
+	si := &serviceImport{acc: dest, claim: claim, se: se, sid: nil, from: from, to: to, tr: tr, ts: 0, rt: rt, latency: lat, m1: nil, rc: nil, usePub: usePub, response: false, invalid: false, share: share, tracking: false, didDeliver: false, atrc: atrc, trackingHdr: nil}
 	sis := a.imports.services[from]
 	sis = append(sis, si)
 	a.imports.services[from] = sis
@@ -2566,7 +2566,7 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// dest is the requestor's account. a is the service responder with the export.
 	// Marked as internal here, that is how we distinguish.
-	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, false, false, nil}
+	si := &serviceImport{acc: dest, claim: nil, se: osi.se, sid: nil, from: nrr, to: to, tr: nil, ts: 0, rt: rt, latency: nil, m1: nil, rc: nil, usePub: false, response: true, invalid: false, share: osi.share, tracking: false, didDeliver: false, atrc: false, trackingHdr: nil}
 
 	if a.exports.responses == nil {
 		a.exports.responses = make(map[string]*serviceImport)
@@ -2683,7 +2683,7 @@ func (a *Account) addMappedStreamImportWithClaim(account *Account, from, to stri
 	if imClaim != nil {
 		allowTrace = imClaim.AllowTrace
 	}
-	a.imports.streams = append(a.imports.streams, &streamImport{account, from, to, tr, nil, imClaim, usePub, false, allowTrace})
+	a.imports.streams = append(a.imports.streams, &streamImport{acc: account, from: from, to: to, tr: tr, rtr: nil, claim: imClaim, usePub: usePub, invalid: false, atrc: allowTrace})
 	a.mu.Unlock()
 	return nil
 }
@@ -4582,7 +4582,7 @@ func NewDirAccResolver(path string, limit int64, syncInterval time.Duration, del
 		return nil, err
 	}
 
-	res := &DirAccResolver{store, nil, syncInterval, DEFAULT_ACCOUNT_FETCH_TIMEOUT}
+	res := &DirAccResolver{DirJWTStore: store, Server: nil, syncInterval: syncInterval, fetchTimeout: DEFAULT_ACCOUNT_FETCH_TIMEOUT}
 	if err := res.apply(opts...); err != nil {
 		return nil, err
 	}
@@ -4668,7 +4668,7 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration, opts ..
 	if err != nil {
 		return nil, err
 	}
-	res := &CacheDirAccResolver{DirAccResolver{store, nil, 0, DEFAULT_ACCOUNT_FETCH_TIMEOUT}, ttl}
+	res := &CacheDirAccResolver{DirAccResolver: DirAccResolver{DirJWTStore: store, Server: nil, syncInterval: 0, fetchTimeout: DEFAULT_ACCOUNT_FETCH_TIMEOUT}, ttl: ttl}
 	if err := res.apply(opts...); err != nil {
 		return nil, err
 	}

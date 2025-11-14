@@ -938,9 +938,9 @@ func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
 		name     string
 		poolSize int
 	}{
-		{"no pooling", -1},
-		{"pool 1", 1},
-		{"pool 3", 3},
+		{name: "no pooling", poolSize: -1},
+		{name: "pool 1", poolSize: 1},
+		{name: "pool 3", poolSize: 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			optsA, err := ProcessConfigFile("./configs/srv_a.conf")
@@ -2102,9 +2102,9 @@ func TestRoutePoolConnectRace(t *testing.T) {
 		name     string
 		poolSize int
 	}{
-		{"no pool", -1},
-		{"pool size 1", 1},
-		{"pool size 5", 5},
+		{name: "no pool", poolSize: -1},
+		{name: "pool size 1", poolSize: 1},
+		{name: "pool size 5", poolSize: 5},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// This test will have each server point to each other and that is causing
@@ -2724,14 +2724,14 @@ func TestRoutePerAccountDefaultForSysAccount(t *testing.T) {
 		sysAcc   string
 		noSysAcc bool
 	}{
-		{"default sys no accounts", _EMPTY_, _EMPTY_, false},
-		{"default sys in accounts", "accounts: [\"$SYS\"]", _EMPTY_, false},
-		{"default sys with other accounts", "accounts: [\"A\",\"$SYS\"]", _EMPTY_, false},
-		{"explicit sys no accounts", _EMPTY_, "system_account: B", false},
-		{"explicit sys in accounts", "accounts: [\"B\"]", "system_account: B", false},
-		{"explicit sys with other accounts", "accounts: [\"B\",\"A\"]", "system_account: B", false},
-		{"no system account no accounts", _EMPTY_, "no_sys_acc: true", true},
-		{"no system account with accounts", "accounts: [\"A\"]", "no_sys_acc: true", true},
+		{name: "default sys no accounts", accounts: _EMPTY_, sysAcc: _EMPTY_, noSysAcc: false},
+		{name: "default sys in accounts", accounts: "accounts: [\"$SYS\"]", sysAcc: _EMPTY_, noSysAcc: false},
+		{name: "default sys with other accounts", accounts: "accounts: [\"A\",\"$SYS\"]", sysAcc: _EMPTY_, noSysAcc: false},
+		{name: "explicit sys no accounts", accounts: _EMPTY_, sysAcc: "system_account: B", noSysAcc: false},
+		{name: "explicit sys in accounts", accounts: "accounts: [\"B\"]", sysAcc: "system_account: B", noSysAcc: false},
+		{name: "explicit sys with other accounts", accounts: "accounts: [\"B\",\"A\"]", sysAcc: "system_account: B", noSysAcc: false},
+		{name: "no system account no accounts", accounts: _EMPTY_, sysAcc: "no_sys_acc: true", noSysAcc: true},
+		{name: "no system account with accounts", accounts: "accounts: [\"A\"]", sysAcc: "no_sys_acc: true", noSysAcc: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, _EMPTY_, test.accounts,
@@ -3106,9 +3106,9 @@ func TestRoutePoolPerAccountSubUnsubProtoParsing(t *testing.T) {
 		name  string
 		extra string
 	}{
-		{"regular", _EMPTY_},
-		{"pooling", "pool_size: 5"},
-		{"per-account", "accounts: [\"A\"]"},
+		{name: "regular", extra: _EMPTY_},
+		{name: "pooling", extra: "pool_size: 5"},
+		{name: "per-account", extra: "accounts: [\"A\"]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			confATemplate := `
@@ -3198,10 +3198,10 @@ func TestRoutePoolPerAccountStreamImport(t *testing.T) {
 		name  string
 		route string
 	}{
-		{"regular", _EMPTY_},
-		{"pooled", "pool_size: 5"},
-		{"one per account", "accounts: [\"A\"]"},
-		{"both per account", "accounts: [\"A\", \"B\"]"},
+		{name: "regular", route: _EMPTY_},
+		{name: "pooled", route: "pool_size: 5"},
+		{name: "one per account", route: "accounts: [\"A\"]"},
+		{name: "both per account", route: "accounts: [\"A\", \"B\"]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmplA := `
@@ -3302,8 +3302,8 @@ func TestRoutePoolAndPerAccountWithServiceLatencyNoDataRace(t *testing.T) {
 		name    string
 		poolStr string
 	}{
-		{"pool", "pool_size: 5"},
-		{"per account", "accounts: [\"SYS\", \"SERVICE\", \"REQUESTOR\"]"},
+		{name: "pool", poolStr: "pool_size: 5"},
+		{name: "per account", poolStr: "accounts: [\"SYS\", \"SERVICE\", \"REQUESTOR\"]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmpl := `
@@ -3381,15 +3381,15 @@ func TestRouteParseOriginClusterMsgArgs(t *testing.T) {
 		reply   string
 		queues  [][]byte
 	}{
-		{true, "ORIGIN foo 12 345\r\n", "MY_ACCOUNT foo", _EMPTY_, nil},
-		{true, "ORIGIN foo bar 12 345\r\n", "MY_ACCOUNT foo", "bar", nil},
-		{true, "ORIGIN foo + bar queue1 queue2 12 345\r\n", "MY_ACCOUNT foo", "bar", [][]byte{[]byte("queue1"), []byte("queue2")}},
-		{true, "ORIGIN foo | queue1 queue2 12 345\r\n", "MY_ACCOUNT foo", _EMPTY_, [][]byte{[]byte("queue1"), []byte("queue2")}},
+		{racc: true, args: "ORIGIN foo 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: _EMPTY_, queues: nil},
+		{racc: true, args: "ORIGIN foo bar 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: "bar", queues: nil},
+		{racc: true, args: "ORIGIN foo + bar queue1 queue2 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: "bar", queues: [][]byte{[]byte("queue1"), []byte("queue2")}},
+		{racc: true, args: "ORIGIN foo | queue1 queue2 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: _EMPTY_, queues: [][]byte{[]byte("queue1"), []byte("queue2")}},
 
-		{false, "ORIGIN MY_ACCOUNT foo 12 345\r\n", "MY_ACCOUNT foo", _EMPTY_, nil},
-		{false, "ORIGIN MY_ACCOUNT foo bar 12 345\r\n", "MY_ACCOUNT foo", "bar", nil},
-		{false, "ORIGIN MY_ACCOUNT foo + bar queue1 queue2 12 345\r\n", "MY_ACCOUNT foo", "bar", [][]byte{[]byte("queue1"), []byte("queue2")}},
-		{false, "ORIGIN MY_ACCOUNT foo | queue1 queue2 12 345\r\n", "MY_ACCOUNT foo", _EMPTY_, [][]byte{[]byte("queue1"), []byte("queue2")}},
+		{racc: false, args: "ORIGIN MY_ACCOUNT foo 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: _EMPTY_, queues: nil},
+		{racc: false, args: "ORIGIN MY_ACCOUNT foo bar 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: "bar", queues: nil},
+		{racc: false, args: "ORIGIN MY_ACCOUNT foo + bar queue1 queue2 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: "bar", queues: [][]byte{[]byte("queue1"), []byte("queue2")}},
+		{racc: false, args: "ORIGIN MY_ACCOUNT foo | queue1 queue2 12 345\r\n", pacache: "MY_ACCOUNT foo", reply: _EMPTY_, queues: [][]byte{[]byte("queue1"), []byte("queue2")}},
 	} {
 		t.Run(test.args, func(t *testing.T) {
 			c := &client{kind: ROUTER, route: &route{}}
@@ -3817,41 +3817,41 @@ func TestRouteCompressionOptions(t *testing.T) {
 		expected string
 		rtts     []time.Duration
 	}{
-		{"boolean enabled", "true", nil, CompressionS2Fast, nil},
-		{"string enabled", "enabled", nil, CompressionS2Fast, nil},
-		{"string EnaBled", "EnaBled", nil, CompressionS2Fast, nil},
-		{"string on", "on", nil, CompressionS2Fast, nil},
-		{"string ON", "ON", nil, CompressionS2Fast, nil},
-		{"string fast", "fast", nil, CompressionS2Fast, nil},
-		{"string Fast", "Fast", nil, CompressionS2Fast, nil},
-		{"string s2_fast", "s2_fast", nil, CompressionS2Fast, nil},
-		{"string s2_Fast", "s2_Fast", nil, CompressionS2Fast, nil},
-		{"boolean disabled", "false", nil, CompressionOff, nil},
-		{"string disabled", "disabled", nil, CompressionOff, nil},
-		{"string DisableD", "DisableD", nil, CompressionOff, nil},
-		{"string off", "off", nil, CompressionOff, nil},
-		{"string OFF", "OFF", nil, CompressionOff, nil},
-		{"better", "better", nil, CompressionS2Better, nil},
-		{"Better", "Better", nil, CompressionS2Better, nil},
-		{"s2_better", "s2_better", nil, CompressionS2Better, nil},
-		{"S2_BETTER", "S2_BETTER", nil, CompressionS2Better, nil},
-		{"best", "best", nil, CompressionS2Best, nil},
-		{"BEST", "BEST", nil, CompressionS2Best, nil},
-		{"s2_best", "s2_best", nil, CompressionS2Best, nil},
-		{"S2_BEST", "S2_BEST", nil, CompressionS2Best, nil},
-		{"auto no rtts", "auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"s2_auto no rtts", "s2_auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"auto", "{mode: auto, rtt_thresholds: [%s]}", []int{1}, CompressionS2Auto, []time.Duration{time.Millisecond}},
-		{"Auto", "{Mode: Auto, thresholds: [%s]}", []int{1, 2}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond}},
-		{"s2_auto", "{mode: s2_auto, thresholds: [%s]}", []int{1, 2, 3}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
-		{"s2_AUTO", "{mode: s2_AUTO, thresholds: [%s]}", []int{1, 2, 3, 4}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
-		{"s2_auto:-10,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{-10, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
-		{"s2_auto:5,10,15", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 15}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
-		{"s2_auto:0,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{0, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
-		{"s2_auto:5,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 0, 20}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 10, 0, 20}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,0,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 0, 0, 20}, CompressionS2Auto, []time.Duration{0, 0, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,10,0,0", "{mode: s2_auto, rtt_thresholds: [%s]}", []int{0, 10, 0, 0}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond}},
+		{name: "boolean enabled", mode: "true", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string enabled", mode: "enabled", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string EnaBled", mode: "EnaBled", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string on", mode: "on", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string ON", mode: "ON", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string fast", mode: "fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string Fast", mode: "Fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string s2_fast", mode: "s2_fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string s2_Fast", mode: "s2_Fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "boolean disabled", mode: "false", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string disabled", mode: "disabled", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string DisableD", mode: "DisableD", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string off", mode: "off", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string OFF", mode: "OFF", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "better", mode: "better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "Better", mode: "Better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "s2_better", mode: "s2_better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "S2_BETTER", mode: "S2_BETTER", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "best", mode: "best", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "BEST", mode: "BEST", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "s2_best", mode: "s2_best", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "S2_BEST", mode: "S2_BEST", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "auto no rtts", mode: "auto", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "s2_auto no rtts", mode: "s2_auto", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "auto", mode: "{mode: auto, rtt_thresholds: [%s]}", rttVals: []int{1}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond}},
+		{name: "Auto", mode: "{Mode: Auto, thresholds: [%s]}", rttVals: []int{1, 2}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond}},
+		{name: "s2_auto", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{1, 2, 3}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
+		{name: "s2_AUTO", mode: "{mode: s2_AUTO, thresholds: [%s]}", rttVals: []int{1, 2, 3, 4}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
+		{name: "s2_auto:-10,5,10", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{-10, 5, 10}, expected: CompressionS2Auto, rtts: []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{name: "s2_auto:5,10,15", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{5, 10, 15}, expected: CompressionS2Auto, rtts: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
+		{name: "s2_auto:0,5,10", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 5, 10}, expected: CompressionS2Auto, rtts: []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{name: "s2_auto:5,10,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{5, 10, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,10,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 10, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,0,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 0, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{0, 0, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,10,0,0", mode: "{mode: s2_auto, rtt_thresholds: [%s]}", rttVals: []int{0, 10, 0, 0}, expected: CompressionS2Auto, rtts: []time.Duration{0, 10 * time.Millisecond}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var val string
@@ -3916,26 +3916,26 @@ func TestRouteCompressionOptions(t *testing.T) {
 		rtts []time.Duration
 		err  string
 	}{
-		{"unsupported mode", "gzip", nil, "unsupported"},
-		{"not ascending order", "s2_auto", []time.Duration{
+		{name: "unsupported mode", mode: "gzip", rtts: nil, err: "unsupported"},
+		{name: "not ascending order", mode: "s2_auto", rtts: []time.Duration{
 			5 * time.Millisecond,
 			10 * time.Millisecond,
 			2 * time.Millisecond,
-		}, "ascending"},
-		{"too many thresholds", "s2_auto", []time.Duration{
+		}, err: "ascending"},
+		{name: "too many thresholds", mode: "s2_auto", rtts: []time.Duration{
 			5 * time.Millisecond,
 			10 * time.Millisecond,
 			20 * time.Millisecond,
 			40 * time.Millisecond,
 			60 * time.Millisecond,
-		}, "more than 4"},
-		{"all 0", "s2_auto", []time.Duration{0, 0, 0, 0}, "at least one"},
-		{"single 0", "s2_auto", []time.Duration{0}, "at least one"},
+		}, err: "more than 4"},
+		{name: "all 0", mode: "s2_auto", rtts: []time.Duration{0, 0, 0, 0}, err: "at least one"},
+		{name: "single 0", mode: "s2_auto", rtts: []time.Duration{0}, err: "at least one"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := DefaultOptions()
 			o.Cluster.Port = -1
-			o.Cluster.Compression = CompressionOpts{test.mode, test.rtts}
+			o.Cluster.Compression = CompressionOpts{Mode: test.mode, RTTThresholds: test.rtts}
 			if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3978,9 +3978,9 @@ func TestRouteCompression(t *testing.T) {
 		poolSize int
 		accounts string
 	}{
-		{"no pooling", -1, _EMPTY_},
-		{"pooling", 3, _EMPTY_},
-		{"per account", 1, "accounts: [\"A\"]"},
+		{name: "no pooling", poolSize: -1, accounts: _EMPTY_},
+		{name: "pooling", poolSize: 3, accounts: _EMPTY_},
+		{name: "per account", poolSize: 1, accounts: "accounts: [\"A\"]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "S1", test.poolSize, test.accounts, _EMPTY_)))
@@ -4098,35 +4098,35 @@ func TestRouteCompressionMatrixModes(t *testing.T) {
 		s1Expected string
 		s2Expected string
 	}{
-		{"off off", "off", "off", CompressionOff, CompressionOff},
-		{"off accept", "off", "accept", CompressionOff, CompressionOff},
-		{"off on", "off", "on", CompressionOff, CompressionOff},
-		{"off better", "off", "better", CompressionOff, CompressionOff},
-		{"off best", "off", "best", CompressionOff, CompressionOff},
+		{name: "off off", s1: "off", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off accept", s1: "off", s2: "accept", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off on", s1: "off", s2: "on", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off better", s1: "off", s2: "better", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off best", s1: "off", s2: "best", s1Expected: CompressionOff, s2Expected: CompressionOff},
 
-		{"accept off", "accept", "off", CompressionOff, CompressionOff},
-		{"accept accept", "accept", "accept", CompressionOff, CompressionOff},
-		{"accept on", "accept", "on", CompressionS2Fast, CompressionS2Fast},
-		{"accept better", "accept", "better", CompressionS2Better, CompressionS2Better},
-		{"accept best", "accept", "best", CompressionS2Best, CompressionS2Best},
+		{name: "accept off", s1: "accept", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "accept accept", s1: "accept", s2: "accept", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "accept on", s1: "accept", s2: "on", s1Expected: CompressionS2Fast, s2Expected: CompressionS2Fast},
+		{name: "accept better", s1: "accept", s2: "better", s1Expected: CompressionS2Better, s2Expected: CompressionS2Better},
+		{name: "accept best", s1: "accept", s2: "best", s1Expected: CompressionS2Best, s2Expected: CompressionS2Best},
 
-		{"on off", "on", "off", CompressionOff, CompressionOff},
-		{"on accept", "on", "accept", CompressionS2Fast, CompressionS2Fast},
-		{"on on", "on", "on", CompressionS2Fast, CompressionS2Fast},
-		{"on better", "on", "better", CompressionS2Fast, CompressionS2Better},
-		{"on best", "on", "best", CompressionS2Fast, CompressionS2Best},
+		{name: "on off", s1: "on", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "on accept", s1: "on", s2: "accept", s1Expected: CompressionS2Fast, s2Expected: CompressionS2Fast},
+		{name: "on on", s1: "on", s2: "on", s1Expected: CompressionS2Fast, s2Expected: CompressionS2Fast},
+		{name: "on better", s1: "on", s2: "better", s1Expected: CompressionS2Fast, s2Expected: CompressionS2Better},
+		{name: "on best", s1: "on", s2: "best", s1Expected: CompressionS2Fast, s2Expected: CompressionS2Best},
 
-		{"better off", "better", "off", CompressionOff, CompressionOff},
-		{"better accept", "better", "accept", CompressionS2Better, CompressionS2Better},
-		{"better on", "better", "on", CompressionS2Better, CompressionS2Fast},
-		{"better better", "better", "better", CompressionS2Better, CompressionS2Better},
-		{"better best", "better", "best", CompressionS2Better, CompressionS2Best},
+		{name: "better off", s1: "better", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "better accept", s1: "better", s2: "accept", s1Expected: CompressionS2Better, s2Expected: CompressionS2Better},
+		{name: "better on", s1: "better", s2: "on", s1Expected: CompressionS2Better, s2Expected: CompressionS2Fast},
+		{name: "better better", s1: "better", s2: "better", s1Expected: CompressionS2Better, s2Expected: CompressionS2Better},
+		{name: "better best", s1: "better", s2: "best", s1Expected: CompressionS2Better, s2Expected: CompressionS2Best},
 
-		{"best off", "best", "off", CompressionOff, CompressionOff},
-		{"best accept", "best", "accept", CompressionS2Best, CompressionS2Best},
-		{"best on", "best", "on", CompressionS2Best, CompressionS2Fast},
-		{"best better", "best", "better", CompressionS2Best, CompressionS2Better},
-		{"best best", "best", "best", CompressionS2Best, CompressionS2Best},
+		{name: "best off", s1: "best", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "best accept", s1: "best", s2: "accept", s1Expected: CompressionS2Best, s2Expected: CompressionS2Best},
+		{name: "best on", s1: "best", s2: "on", s1Expected: CompressionS2Best, s2Expected: CompressionS2Fast},
+		{name: "best better", s1: "best", s2: "better", s1Expected: CompressionS2Best, s2Expected: CompressionS2Better},
+		{name: "best best", s1: "best", s2: "best", s1Expected: CompressionS2Best, s2Expected: CompressionS2Best},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", test.s1, _EMPTY_)))
@@ -4392,7 +4392,7 @@ func TestRoutePings(t *testing.T) {
 	s1.mu.RLock()
 	s1.forEachRemote(func(r *client) {
 		r.mu.Lock()
-		r.nc = &capturePingConn{r.nc, ch}
+		r.nc = &capturePingConn{Conn: r.nc, ch: ch}
 		r.mu.Unlock()
 	})
 	s1.mu.RUnlock()
@@ -4426,7 +4426,7 @@ func TestRouteCustomPing(t *testing.T) {
 	s1.mu.RLock()
 	s1.forEachRemote(func(r *client) {
 		r.mu.Lock()
-		r.nc = &capturePingConn{r.nc, ch}
+		r.nc = &capturePingConn{Conn: r.nc, ch: ch}
 		r.mu.Unlock()
 	})
 	s1.mu.RUnlock()
@@ -4811,10 +4811,10 @@ func TestRouteImplicitNotTooManyDuplicates(t *testing.T) {
 		pooling     bool
 		compression bool
 	}{
-		{"no pooling-no compression", false, false},
-		{"no pooling-compression", false, true},
-		{"pooling-no compression", true, false},
-		{"pooling-compression", true, true},
+		{name: "no pooling-no compression", pooling: false, compression: false},
+		{name: "no pooling-compression", pooling: false, compression: true},
+		{name: "pooling-no compression", pooling: true, compression: false},
+		{name: "pooling-compression", pooling: true, compression: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := DefaultOptions()
@@ -4899,10 +4899,10 @@ func TestRouteImplicitJoinsSeparateGroups(t *testing.T) {
 		pooling     bool
 		compression bool
 	}{
-		{"no pooling-no compression", false, false},
-		{"no pooling-compression", false, true},
-		{"pooling-no compression", true, false},
-		{"pooling-compression", true, true},
+		{name: "no pooling-no compression", pooling: false, compression: false},
+		{name: "no pooling-compression", pooling: false, compression: true},
+		{name: "pooling-no compression", pooling: true, compression: false},
+		{name: "pooling-compression", pooling: true, compression: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			setOpts := func(o *Options) {

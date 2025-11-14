@@ -5168,9 +5168,9 @@ func TestGatewaySendReplyAcrossGateways(t *testing.T) {
 		poolSize int
 		peracc   bool
 	}{
-		{"no pooling", -1, false},
-		{"pooling", 5, false},
-		{"per account", 0, true},
+		{name: "no pooling", poolSize: -1, peracc: false},
+		{name: "pooling", poolSize: 5, peracc: false},
+		{name: "per account", poolSize: 0, peracc: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ob := testDefaultOptionsForGateway("B")
@@ -6423,7 +6423,7 @@ func TestGatewayPings(t *testing.T) {
 	c := sa.getOutboundGatewayConnection("B")
 	ch := make(chan struct{}, 1)
 	c.mu.Lock()
-	c.nc = &capturePingConn{c.nc, ch}
+	c.nc = &capturePingConn{Conn: c.nc, ch: ch}
 	c.mu.Unlock()
 
 	for i := 0; i < 5; i++ {

@@ -1298,7 +1298,7 @@ func (mset *stream) rebuildDedupe() {
 		var msgId string
 		if len(sm.hdr) > 0 {
 			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
-				mset.storeMsgIdLocked(&ddentry{msgId, sm.seq, sm.ts})
+				mset.storeMsgIdLocked(&ddentry{id: msgId, seq: sm.seq, ts: sm.ts})
 			}
 		}
 		if seq == state.LastSeq {
@@ -2692,7 +2692,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 		if si.trs[i] != nil {
 			destination = si.trs[i].dest
 		}
-		trConfigs[i] = SubjectTransformConfig{si.sfs[i], destination}
+		trConfigs[i] = SubjectTransformConfig{Source: si.sfs[i], Destination: destination}
 	}
 
 	ssi.SubjectTransforms = trConfigs
@@ -5933,7 +5933,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.lmsgId = msgId
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
-			mset.storeMsgId(&ddentry{msgId, mset.lseq, ts})
+			mset.storeMsgId(&ddentry{id: msgId, seq: mset.lseq, ts: ts})
 		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
@@ -6070,11 +6070,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if dde := mset.ddmap[msgId]; dde != nil {
 				dde.seq, dde.ts = seq, ts
 			} else {
-				mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+				mset.storeMsgIdLocked(&ddentry{id: msgId, seq: seq, ts: ts})
 			}
 		} else {
 			// R1 or not leader..
-			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+			mset.storeMsgIdLocked(&ddentry{id: msgId, seq: seq, ts: ts})
 		}
 		mset.ddMu.Unlock()
 	}
@@ -6687,7 +6687,7 @@ func newJSPubMsg(dsubj, subj, reply string, hdr, msg []byte, o *consumer, seq ui
 	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
-	(*m) = jsPubMsg{dsubj, reply, StoreMsg{subj, hdr, msg, buf, seq, 0}, o}
+	(*m) = jsPubMsg{dsubj: dsubj, reply: reply, StoreMsg: StoreMsg{subj: subj, hdr: hdr, msg: msg, buf: buf, seq: seq, ts: 0}, o: o}
 
 	return m
 }
@@ -6765,7 +6765,7 @@ func (mset *stream) setupSendCapabilities() {
 		return
 	}
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' sendQ", mset.acc.Name, mset.cfg.Name)
-	mset.outq = &jsOutQ{newIPQueue[*jsPubMsg](mset.srv, qname)}
+	mset.outq = &jsOutQ{ipQueue: newIPQueue[*jsPubMsg](mset.srv, qname)}
 	go mset.internalLoop()
 }
 

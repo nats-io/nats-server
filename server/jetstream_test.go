@@ -408,8 +408,8 @@ func TestJetStreamNoPanicOnRaceBetweenShutdownAndConsumerDelete(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_STREAM", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "MY_STREAM", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_STREAM", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_STREAM", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -739,8 +739,8 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -772,8 +772,8 @@ func TestJetStreamStateTimestamps(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -811,8 +811,8 @@ func TestJetStreamNoAckStream(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "foo", Storage: MemoryStorage, NoAck: true}},
-		{"FileStore", &StreamConfig{Name: "foo", Storage: FileStorage, NoAck: true}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, NoAck: true}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, NoAck: true}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -846,8 +846,8 @@ func TestJetStreamBasicDeliverSubject(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MSET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "MSET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MSET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MSET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1002,8 +1002,8 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
-		{"FileStore", &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1096,8 +1096,8 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
-		{"FileStore", &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1187,8 +1187,8 @@ func TestJetStreamWorkQueueWrapWaiting(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
-		{"FileStore", &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1269,8 +1269,8 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
-		{"FileStore", &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1387,8 +1387,8 @@ func TestJetStreamSubjectFiltering(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MSET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "MSET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MSET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MSET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1457,8 +1457,8 @@ func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1524,8 +1524,8 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "ORDERS", Storage: MemoryStorage, Subjects: []string{"orders.*.*"}}},
-		{"FileStore", &StreamConfig{Name: "ORDERS", Storage: FileStorage, Subjects: []string{"orders.*.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "ORDERS", Storage: MemoryStorage, Subjects: []string{"orders.*.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "ORDERS", Storage: FileStorage, Subjects: []string{"orders.*.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1636,8 +1636,8 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
-		{"FileStore", &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1705,8 +1705,8 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
-		{"FileStore", &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_MSG_SET", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1923,8 +1923,8 @@ func TestJetStreamAckAllRedelivery(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_S22", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "MY_S22", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_S22", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_S22", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2005,8 +2005,8 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &msc},
-		{"FileStore", &fsc},
+		{name: "MemoryStore", mconfig: &msc},
+		{name: "FileStore", mconfig: &fsc},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2148,8 +2148,8 @@ func TestJetStreamAckReplyStreamPendingWithAcks(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &msc},
-		{"FileStore", &fsc},
+		{name: "MemoryStore", mconfig: &msc},
+		{name: "FileStore", mconfig: &fsc},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2215,8 +2215,8 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
-		{"FileStore", &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2313,8 +2313,8 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
-		{"FileStore", &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2386,8 +2386,8 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
-		{"FileStore", &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2467,8 +2467,8 @@ func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
-		{"FileStore", &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage, Retention: WorkQueuePolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage, Retention: WorkQueuePolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3144,12 +3144,12 @@ func TestJetStreamSnapshots(t *testing.T) {
 				resp.Respond(nil)
 			}
 		}
-		obs = append(obs, obsi{o.config(), toReceive})
+		obs = append(obs, obsi{cfg: o.config(), ack: toReceive})
 	}
 	nc.Flush()
 
 	// Snapshot state of the stream and consumers.
-	info := info{mset.config(), mset.state(), obs}
+	info := info{cfg: mset.config(), state: mset.state(), obs: obs}
 
 	sr, err := mset.snapshot(5*time.Second, false, true)
 	if err != nil {
@@ -3728,8 +3728,8 @@ func TestJetStreamActiveDelivery(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "ADS", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "ADS", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "ADS", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "ADS", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3783,8 +3783,8 @@ func TestJetStreamEphemeralConsumers(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "EP", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "EP", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "EP", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "EP", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3857,8 +3857,8 @@ func TestJetStreamMetadata(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Retention: WorkQueuePolicy, Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Retention: WorkQueuePolicy, Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Retention: WorkQueuePolicy, Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Retention: WorkQueuePolicy, Storage: FileStorage}},
 	}
 
 	for _, c := range cases {
@@ -3961,8 +3961,8 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4111,8 +4111,8 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4184,8 +4184,8 @@ func TestJetStreamStreamPurge(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4240,8 +4240,8 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4330,8 +4330,8 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4413,8 +4413,8 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage, Retention: InterestPolicy}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage, Retention: InterestPolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage, Retention: InterestPolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage, Retention: InterestPolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4555,8 +4555,8 @@ func TestJetStreamInterestRetentionStreamWithFilteredConsumers(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: MemoryStorage, Retention: InterestPolicy}},
-		{"FileStore", &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: FileStorage, Retention: InterestPolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: MemoryStorage, Retention: InterestPolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: FileStorage, Retention: InterestPolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4641,8 +4641,8 @@ func TestJetStreamInterestRetentionWithWildcardsAndFilteredConsumers(t *testing.
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &msc},
-		{"FileStore", &fsc},
+		{name: "MemoryStore", mconfig: &msc},
+		{name: "FileStore", mconfig: &fsc},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4693,8 +4693,8 @@ func TestJetStreamInterestRetentionStreamWithDurableRestart(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "IK", Storage: MemoryStorage, Retention: InterestPolicy}},
-		{"FileStore", &StreamConfig{Name: "IK", Storage: FileStorage, Retention: InterestPolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "IK", Storage: MemoryStorage, Retention: InterestPolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "IK", Storage: FileStorage, Retention: InterestPolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -5631,9 +5631,9 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 					resp.Respond(nil)
 				}
 			}
-			obs = append(obs, obsi{o.config(), toReceive})
+			obs = append(obs, obsi{cfg: o.config(), ack: toReceive})
 		}
-		ostate[msetName] = info{mset.config(), mset.state(), obs}
+		ostate[msetName] = info{cfg: mset.config(), state: mset.state(), obs: obs}
 	}
 	pusage := acc.JetStreamUsage()
 	nc.Flush()
@@ -8612,8 +8612,8 @@ func TestJetStreamMaxMsgsPerSubject(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &msc},
-		{"FileStore", &fsc},
+		{name: "MemoryStore", mconfig: &msc},
+		{name: "FileStore", mconfig: &fsc},
 	}
 
 	for _, c := range cases {
@@ -10066,9 +10066,9 @@ func TestJetStreamServerEncryption(t *testing.T) {
 		cstr   string
 		cipher StoreCipher
 	}{
-		{"Default", _EMPTY_, ChaCha},
-		{"ChaCha", ", cipher: chacha", ChaCha},
-		{"AES", ", cipher: aes", AES},
+		{name: "Default", cstr: _EMPTY_, cipher: ChaCha},
+		{name: "ChaCha", cstr: ", cipher: chacha", cipher: ChaCha},
+		{name: "AES", cstr: ", cipher: aes", cipher: AES},
 	}
 
 	for _, c := range cases {
@@ -10272,9 +10272,9 @@ func TestJetStreamServerEncryptionServerRestarts(t *testing.T) {
 		cstr   string
 		cipher StoreCipher
 	}{
-		{"Default", _EMPTY_, ChaCha},
-		{"ChaCha", ", cipher: chacha", ChaCha},
-		{"AES", ", cipher: aes", AES},
+		{name: "Default", cstr: _EMPTY_, cipher: ChaCha},
+		{name: "ChaCha", cstr: ", cipher: chacha", cipher: ChaCha},
+		{name: "AES", cstr: ", cipher: aes", cipher: AES},
 	}
 
 	for _, c := range cases {
@@ -11557,8 +11557,8 @@ func TestJetStreamMaxMsgsPerSubjectWithDiscardNew(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &msc},
-		{"FileStore", &fsc},
+		{name: "MemoryStore", mconfig: &msc},
+		{name: "FileStore", mconfig: &fsc},
 	}
 
 	for _, c := range cases {
@@ -15924,10 +15924,10 @@ func TestJetStreamServerReencryption(t *testing.T) {
 		from string
 		to   string
 	}{
-		{"aes", "aes"},
-		{"aes", "chacha"},
-		{"chacha", "chacha"},
-		{"chacha", "aes"},
+		{from: "aes", to: "aes"},
+		{from: "aes", to: "chacha"},
+		{from: "chacha", to: "chacha"},
+		{from: "chacha", to: "aes"},
 	} {
 		for _, compression := range []StoreCompression{NoCompression, S2Compression} {
 			t.Run(fmt.Sprintf("%s_to_%s/%s", algo.from, algo.to, compression), func(t *testing.T) {
@@ -16359,9 +16359,9 @@ func TestJetStreamSyncInterval(t *testing.T) {
 		expected time.Duration
 		always   bool
 	}{
-		{"Default", _EMPTY_, defaultSyncInterval, false},
-		{"10s", "sync_interval: 10s", time.Duration(10 * time.Second), false},
-		{"Always", "sync_interval: always", defaultSyncInterval, true},
+		{name: "Default", sync: _EMPTY_, expected: defaultSyncInterval, always: false},
+		{name: "10s", sync: "sync_interval: 10s", expected: time.Duration(10 * time.Second), always: false},
+		{name: "Always", sync: "sync_interval: always", expected: defaultSyncInterval, always: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, sd, test.sync)))
@@ -17040,13 +17040,13 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 			}
 
 			sub := sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}})
-			checkResponses(sub, 3, p{"foo.foo", 97}, p{"foo.bar", 98}, p{"foo.baz", 99}, eob)
+			checkResponses(sub, 3, p{subj: "foo.foo", seq: 97}, p{subj: "foo.bar", seq: 98}, p{subj: "foo.baz", seq: 99}, eob)
 			// Check with UpToSeq
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}, UpToSeq: 3})
-			checkResponses(sub, 3, p{"foo.foo", 1}, p{"foo.bar", 2}, p{"foo.baz", 3}, eob)
+			checkResponses(sub, 3, p{subj: "foo.foo", seq: 1}, p{subj: "foo.bar", seq: 2}, p{subj: "foo.baz", seq: 3}, eob)
 			// check last header sequence number is correct
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.foo", "foo.baz"}})
-			checkResponses(sub, 2, p{"foo.foo", 97}, p{"foo.baz", 99}, eob)
+			checkResponses(sub, 2, p{subj: "foo.foo", seq: 97}, p{subj: "foo.baz", seq: 99}, eob)
 			// Test No Results.
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"bar.*"}})
 			checkSubsPending(t, sub, 1)
@@ -18139,21 +18139,21 @@ func TestIsJSONObjectOrArray(t *testing.T) {
 		data  []byte
 		valid bool
 	}{
-		{"empty", []byte{}, false},
-		{"empty_object", []byte("{}"), true},
-		{"empty object, not trimmed", []byte("\t\n\r{ }"), true},
-		{"empty_array", []byte("[]"), true},
-		{"empty array, not trimmed", []byte("\t\n\r[ ]"), true},
+		{name: "empty", data: []byte{}, valid: false},
+		{name: "empty_object", data: []byte("{}"), valid: true},
+		{name: "empty object, not trimmed", data: []byte("\t\n\r{ }"), valid: true},
+		{name: "empty_array", data: []byte("[]"), valid: true},
+		{name: "empty array, not trimmed", data: []byte("\t\n\r[ ]"), valid: true},
 		// This is a valid JSON, but it's not a JSON object or array.
-		{"empty_string", []byte("\"\""), false},
-		{"whitespace_only", []byte("   "), false},
-		{"object_with_whitespace", []byte("{   }"), true},
-		{"array_with_whitespace", []byte("[   ]"), true},
-		{"string_with_whitespace", []byte("   \"text\""), false},
-		{"number", []byte("123"), false},
-		{"boolean_true", []byte("true"), false},
-		{"boolean_false", []byte("false"), false},
-		{"null_value", []byte("null"), false}, {"invalid JSON", []byte("invalid"), false},
+		{name: "empty_string", data: []byte("\"\""), valid: false},
+		{name: "whitespace_only", data: []byte("   "), valid: false},
+		{name: "object_with_whitespace", data: []byte("{   }"), valid: true},
+		{name: "array_with_whitespace", data: []byte("[   ]"), valid: true},
+		{name: "string_with_whitespace", data: []byte("   \"text\""), valid: false},
+		{name: "number", data: []byte("123"), valid: false},
+		{name: "boolean_true", data: []byte("true"), valid: false},
+		{name: "boolean_false", data: []byte("false"), valid: false},
+		{name: "null_value", data: []byte("null"), valid: false}, {name: "invalid JSON", data: []byte("invalid"), valid: false},
 	}
 
 	for _, test := range tests {
@@ -19741,28 +19741,28 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 		SubjectDeleteMarkerTTL: -time.Millisecond,
 	}
 
-	_, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	_, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: true})
 	require_Error(t, err, errors.New("subject delete marker TTL must not be negative"))
 
 	cfg.SubjectDeleteMarkerTTL = time.Millisecond
-	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: true})
 	require_Error(t, err, errors.New("subject delete marker TTL must be at least 1 second"))
 
 	cfg.SubjectDeleteMarkerTTL = time.Second
-	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: true})
 	require_Error(t, err, errors.New("subject delete marker cannot be set if message TTLs are disabled"))
 
 	cfg.AllowMsgTTL = true
-	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: true})
 	require_Error(t, err, errors.New("subject delete marker cannot be set if roll-ups are disabled"))
 
 	cfg.AllowRollup = true
 	cfg.DenyPurge = true
-	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: true})
 	require_Error(t, err, errors.New("roll-ups require the purge permission"))
 
 	cfg.DenyPurge = false
-	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	_, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19775,7 +19775,7 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 		SubjectDeleteMarkerTTL: time.Second,
 	}
 
-	si, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	si, err := addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19791,7 +19791,7 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 		Subjects: []string{"update"},
 	}
 
-	si, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	si, err = addStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19800,7 +19800,7 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 	require_False(t, si.Config.DenyPurge)
 
 	cfg.SubjectDeleteMarkerTTL = time.Second
-	si, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, false})
+	si, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19813,7 +19813,7 @@ func TestJetStreamCreateStreamWithSubjectDeleteMarkersOptions(t *testing.T) {
 	cfg = si.Config
 	cfg.SubjectDeleteMarkerTTL = 0
 	cfg.AllowMsgTTL = false
-	_, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{cfg, true})
+	_, err = updateStreamPedanticWithError(t, nc, &StreamConfigRequest{StreamConfig: cfg, Pedantic: true})
 	require_Error(t, err, errors.New("message TTL status can not be disabled"))
 }
 
@@ -20194,8 +20194,8 @@ func TestJetStreamStreamRetentionUpdatesConsumers(t *testing.T) {
 		from RetentionPolicy
 		to   RetentionPolicy
 	}{
-		{LimitsPolicy, InterestPolicy},
-		{InterestPolicy, LimitsPolicy},
+		{from: LimitsPolicy, to: InterestPolicy},
+		{from: InterestPolicy, to: LimitsPolicy},
 	} {
 		from, to, name := tc.from, tc.to, fmt.Sprintf("%sTo%s", tc.from, tc.to)
 		t.Run(name, func(t *testing.T) {

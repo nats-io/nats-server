@@ -450,30 +450,30 @@ func TestMQTTValidateOptions(t *testing.T) {
 		getOpts func() *Options
 		err     error
 	}{
-		{"mqtt disabled", func() *Options { return nmqtto.Clone() }, nil},
-		{"mqtt username not allowed if users specified", func() *Options {
+		{name: "mqtt disabled", getOpts: func() *Options { return nmqtto.Clone() }, err: nil},
+		{name: "mqtt username not allowed if users specified", getOpts: func() *Options {
 			o := mqtto.Clone()
 			o.Users = []*User{{Username: "abc", Password: "pwd"}}
 			o.MQTT.Username = "b"
 			o.MQTT.Password = "pwd"
 			return o
-		}, errMQTTUserMixWithUsersNKeys},
-		{"mqtt token not allowed if users specified", func() *Options {
+		}, err: errMQTTUserMixWithUsersNKeys},
+		{name: "mqtt token not allowed if users specified", getOpts: func() *Options {
 			o := mqtto.Clone()
 			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
 			o.MQTT.Token = "mytoken"
 			return o
-		}, errMQTTTokenMixWIthUsersNKeys},
-		{"ack wait should be >=0", func() *Options {
+		}, err: errMQTTTokenMixWIthUsersNKeys},
+		{name: "ack wait should be >=0", getOpts: func() *Options {
 			o := mqtto.Clone()
 			o.MQTT.AckWait = -10 * time.Second
 			return o
-		}, errMQTTAckWaitMustBePositive},
-		{"js api timeout should be >=0", func() *Options {
+		}, err: errMQTTAckWaitMustBePositive},
+		{name: "js api timeout should be >=0", getOpts: func() *Options {
 			o := mqtto.Clone()
 			o.MQTT.JSAPITimeout = -10 * time.Second
 			return o
-		}, errMQTTJSAPITimeoutMustBePositive},
+		}, err: errMQTTJSAPITimeoutMustBePositive},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateMQTTOptions(test.getOpts())
@@ -494,74 +494,74 @@ func TestMQTTParseOptions(t *testing.T) {
 		err      string
 	}{
 		// Negative tests
-		{"bad type", "mqtt: []", nil, "to be a map"},
-		{"bad listen", "mqtt: { listen: [] }", nil, "port or host:port"},
-		{"bad port", `mqtt: { port: "abc" }`, nil, "not int64"},
-		{"bad host", `mqtt: { host: 123 }`, nil, "not string"},
-		{"bad tls", `mqtt: { tls: 123 }`, nil, "not map[string]interface {}"},
-		{"unknown field", `mqtt: { this_does_not_exist: 123 }`, nil, "unknown"},
-		{"ack wait", `mqtt: {ack_wait: abc}`, nil, "invalid duration"},
-		{"max ack pending", `mqtt: {max_ack_pending: abc}`, nil, "not int64"},
-		{"max ack pending too high", `mqtt: {max_ack_pending: 12345678}`, nil, "invalid value"},
-		{"js_api_timeout bad duration", `mqtt: {js_api_timeout: abc}`, nil, "invalid duration"},
+		{name: "bad type", content: "mqtt: []", checkOpt: nil, err: "to be a map"},
+		{name: "bad listen", content: "mqtt: { listen: [] }", checkOpt: nil, err: "port or host:port"},
+		{name: "bad port", content: `mqtt: { port: "abc" }`, checkOpt: nil, err: "not int64"},
+		{name: "bad host", content: `mqtt: { host: 123 }`, checkOpt: nil, err: "not string"},
+		{name: "bad tls", content: `mqtt: { tls: 123 }`, checkOpt: nil, err: "not map[string]interface {}"},
+		{name: "unknown field", content: `mqtt: { this_does_not_exist: 123 }`, checkOpt: nil, err: "unknown"},
+		{name: "ack wait", content: `mqtt: {ack_wait: abc}`, checkOpt: nil, err: "invalid duration"},
+		{name: "max ack pending", content: `mqtt: {max_ack_pending: abc}`, checkOpt: nil, err: "not int64"},
+		{name: "max ack pending too high", content: `mqtt: {max_ack_pending: 12345678}`, checkOpt: nil, err: "invalid value"},
+		{name: "js_api_timeout bad duration", content: `mqtt: {js_api_timeout: abc}`, checkOpt: nil, err: "invalid duration"},
 		// Positive tests
-		{"tls gen fails", `
+		{name: "tls gen fails", content: `
 			mqtt {
 				tls {
 					cert_file: "./configs/certs/server.pem"
 				}
-			}`, nil, "missing 'key_file'"},
-		{"listen port only", `mqtt { listen: 1234 }`, func(o *MQTTOpts) error {
+			}`, checkOpt: nil, err: "missing 'key_file'"},
+		{name: "listen port only", content: `mqtt { listen: 1234 }`, checkOpt: func(o *MQTTOpts) error {
 			if o.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", o.Port)
 			}
 			return nil
-		}, ""},
-		{"listen host and port", `mqtt { listen: "localhost:1234" }`, func(o *MQTTOpts) error {
+		}, err: ""},
+		{name: "listen host and port", content: `mqtt { listen: "localhost:1234" }`, checkOpt: func(o *MQTTOpts) error {
 			if o.Host != "localhost" || o.Port != 1234 {
 				return fmt.Errorf("expected localhost:1234, got %v:%v", o.Host, o.Port)
 			}
 			return nil
-		}, ""},
-		{"host", `mqtt { host: "localhost" }`, func(o *MQTTOpts) error {
+		}, err: ""},
+		{name: "host", content: `mqtt { host: "localhost" }`, checkOpt: func(o *MQTTOpts) error {
 			if o.Host != "localhost" {
 				return fmt.Errorf("expected localhost, got %v", o.Host)
 			}
 			return nil
-		}, ""},
-		{"port", `mqtt { port: 1234 }`, func(o *MQTTOpts) error {
+		}, err: ""},
+		{name: "port", content: `mqtt { port: 1234 }`, checkOpt: func(o *MQTTOpts) error {
 			if o.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", o.Port)
 			}
 			return nil
-		}, ""},
-		{"tls config",
-			`
+		}, err: ""},
+		{name: "tls config",
+			content: `
 			mqtt {
 				tls {
 					cert_file: "./configs/certs/server.pem"
 					key_file: "./configs/certs/key.pem"
 				}
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if o.TLSConfig == nil {
 					return fmt.Errorf("TLSConfig should have been set")
 				}
 				return nil
-			}, ""},
-		{"no auth user",
-			`
+			}, err: ""},
+		{name: "no auth user",
+			content: `
 			mqtt {
 				no_auth_user: "noauthuser"
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if o.NoAuthUser != "noauthuser" {
 					return fmt.Errorf("Invalid NoAuthUser value: %q", o.NoAuthUser)
 				}
 				return nil
-			}, ""},
-		{"auth block",
-			`
+			}, err: ""},
+		{name: "auth block",
+			content: `
 			mqtt {
 				authorization {
 					user: "mqttuser"
@@ -570,80 +570,80 @@ func TestMQTTParseOptions(t *testing.T) {
 					timeout: 2.0
 				}
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if o.Username != "mqttuser" || o.Password != "pwd" || o.Token != "token" || o.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth block: %+v", o)
 				}
 				return nil
-			}, ""},
-		{"auth timeout as int",
-			`
+			}, err: ""},
+		{name: "auth timeout as int",
+			content: `
 			mqtt {
 				authorization {
 					timeout: 2
 				}
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if o.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth timeout: %v", o.AuthTimeout)
 				}
 				return nil
-			}, ""},
-		{"ack wait",
-			`
+			}, err: ""},
+		{name: "ack wait",
+			content: `
 			mqtt {
 				ack_wait: "10s"
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if o.AckWait != 10*time.Second {
 					return fmt.Errorf("Invalid ack wait: %v", o.AckWait)
 				}
 				return nil
-			}, ""},
-		{"max ack pending",
-			`
+			}, err: ""},
+		{name: "max ack pending",
+			content: `
 			mqtt {
 				max_ack_pending: 123
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if o.MaxAckPending != 123 {
 					return fmt.Errorf("Invalid max ack pending: %v", o.MaxAckPending)
 				}
 				return nil
-			}, ""},
-		{"reject_qos2_publish",
-			`
+			}, err: ""},
+		{name: "reject_qos2_publish",
+			content: `
 			mqtt {
 				reject_qos2_publish: true
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if !o.rejectQoS2Pub {
 					return fmt.Errorf("Invalid: expected rejectQoS2Pub to be set")
 				}
 				return nil
-			}, ""},
-		{"downgrade_qos2_subscribe",
-			`
+			}, err: ""},
+		{name: "downgrade_qos2_subscribe",
+			content: `
 			mqtt {
 				downgrade_qos2_subscribe: true
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if !o.downgradeQoS2Sub {
 					return fmt.Errorf("Invalid: expected downgradeQoS2Sub to be set")
 				}
 				return nil
-			}, ""},
-		{"js_api_timeout",
-			`
+			}, err: ""},
+		{name: "js_api_timeout",
+			content: `
 			mqtt {
 				js_api_timeout: "60s"
 			}
-			`, func(o *MQTTOpts) error {
+			`, checkOpt: func(o *MQTTOpts) error {
 				if o.JSAPITimeout != 60*time.Second {
 					return fmt.Errorf("Invalid JS API timeout: %v", o.JSAPITimeout)
 				}
 				return nil
-			}, ""},
+			}, err: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
@@ -1051,10 +1051,10 @@ func TestMQTTTLSVerifyAndMap(t *testing.T) {
 		filtering   bool
 		provideCert bool
 	}{
-		{"no filtering, client provides cert", false, true},
-		{"no filtering, client does not provide cert", false, false},
-		{"filtering, client provides cert", true, true},
-		{"filtering, client does not provide cert", true, false},
+		{name: "no filtering, client provides cert", filtering: false, provideCert: true},
+		{name: "no filtering, client does not provide cert", filtering: false, provideCert: false},
+		{name: "filtering, client provides cert", filtering: true, provideCert: true},
+		{name: "filtering, client does not provide cert", filtering: true, provideCert: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testMQTTDefaultOptions()
@@ -1161,60 +1161,48 @@ func TestMQTTBasicAuth(t *testing.T) {
 		rc   byte
 	}{
 		{
-			"top level auth, no override, wrong u/p",
-			func() *Options {
+			name: "top level auth, no override, wrong u/p",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Username = "normal"
 				o.Password = "client"
 				return o
 			},
-			"mqtt", "client", mqttConnAckRCNotAuthorized,
+			user: "mqtt", pass: "client", rc: mqttConnAckRCNotAuthorized,
 		},
 		{
-			"top level auth, no override, correct u/p",
-			func() *Options {
+			name: "top level auth, no override, correct u/p",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Username = "normal"
 				o.Password = "client"
 				return o
 			},
-			"normal", "client", mqttConnAckRCConnectionAccepted,
+			user: "normal", pass: "client", rc: mqttConnAckRCConnectionAccepted,
 		},
 		{
-			"no top level auth, mqtt auth, wrong u/p",
-			func() *Options {
+			name: "no top level auth, mqtt auth, wrong u/p",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.MQTT.Username = "mqtt"
 				o.MQTT.Password = "client"
 				return o
 			},
-			"normal", "client", mqttConnAckRCNotAuthorized,
+			user: "normal", pass: "client", rc: mqttConnAckRCNotAuthorized,
 		},
 		{
-			"no top level auth, mqtt auth, correct u/p",
-			func() *Options {
+			name: "no top level auth, mqtt auth, correct u/p",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.MQTT.Username = "mqtt"
 				o.MQTT.Password = "client"
 				return o
 			},
-			"mqtt", "client", mqttConnAckRCConnectionAccepted,
+			user: "mqtt", pass: "client", rc: mqttConnAckRCConnectionAccepted,
 		},
 		{
-			"top level auth, mqtt override, wrong u/p",
-			func() *Options {
-				o := testMQTTDefaultOptions()
-				o.Username = "normal"
-				o.Password = "client"
-				o.MQTT.Username = "mqtt"
-				o.MQTT.Password = "client"
-				return o
-			},
-			"normal", "client", mqttConnAckRCNotAuthorized,
-		},
-		{
-			"top level auth, mqtt override, correct u/p",
-			func() *Options {
+			name: "top level auth, mqtt override, wrong u/p",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Username = "normal"
 				o.Password = "client"
@@ -1222,7 +1210,19 @@ func TestMQTTBasicAuth(t *testing.T) {
 				o.MQTT.Password = "client"
 				return o
 			},
-			"mqtt", "client", mqttConnAckRCConnectionAccepted,
+			user: "normal", pass: "client", rc: mqttConnAckRCNotAuthorized,
+		},
+		{
+			name: "top level auth, mqtt override, correct u/p",
+			opts: func() *Options {
+				o := testMQTTDefaultOptions()
+				o.Username = "normal"
+				o.Password = "client"
+				o.MQTT.Username = "mqtt"
+				o.MQTT.Password = "client"
+				return o
+			},
+			user: "mqtt", pass: "client", rc: mqttConnAckRCConnectionAccepted,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1249,8 +1249,8 @@ func TestMQTTAuthTimeout(t *testing.T) {
 		mat  float64
 		ok   bool
 	}{
-		{"use top-level auth timeout", 0.5, 0.0, true},
-		{"use mqtt auth timeout", 0.5, 0.05, false},
+		{name: "use top-level auth timeout", at: 0.5, mat: 0.0, ok: true},
+		{name: "use mqtt auth timeout", at: 0.5, mat: 0.05, ok: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testMQTTDefaultOptions()
@@ -1308,60 +1308,60 @@ func TestMQTTTokenAuth(t *testing.T) {
 		rc    byte
 	}{
 		{
-			"top level auth, no override, wrong token",
-			func() *Options {
+			name: "top level auth, no override, wrong token",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Authorization = "goodtoken"
 				return o
 			},
-			"badtoken", mqttConnAckRCNotAuthorized,
+			token: "badtoken", rc: mqttConnAckRCNotAuthorized,
 		},
 		{
-			"top level auth, no override, correct token",
-			func() *Options {
+			name: "top level auth, no override, correct token",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Authorization = "goodtoken"
 				return o
 			},
-			"goodtoken", mqttConnAckRCConnectionAccepted,
+			token: "goodtoken", rc: mqttConnAckRCConnectionAccepted,
 		},
 		{
-			"no top level auth, mqtt auth, wrong token",
-			func() *Options {
+			name: "no top level auth, mqtt auth, wrong token",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.MQTT.Token = "goodtoken"
 				return o
 			},
-			"badtoken", mqttConnAckRCNotAuthorized,
+			token: "badtoken", rc: mqttConnAckRCNotAuthorized,
 		},
 		{
-			"no top level auth, mqtt auth, correct token",
-			func() *Options {
+			name: "no top level auth, mqtt auth, correct token",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.MQTT.Token = "goodtoken"
 				return o
 			},
-			"goodtoken", mqttConnAckRCConnectionAccepted,
+			token: "goodtoken", rc: mqttConnAckRCConnectionAccepted,
 		},
 		{
-			"top level auth, mqtt override, wrong token",
-			func() *Options {
+			name: "top level auth, mqtt override, wrong token",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Authorization = "clienttoken"
 				o.MQTT.Token = "mqtttoken"
 				return o
 			},
-			"clienttoken", mqttConnAckRCNotAuthorized,
+			token: "clienttoken", rc: mqttConnAckRCNotAuthorized,
 		},
 		{
-			"top level auth, mqtt override, correct token",
-			func() *Options {
+			name: "top level auth, mqtt override, correct token",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Authorization = "clienttoken"
 				o.MQTT.Token = "mqtttoken"
 				return o
 			},
-			"mqtttoken", mqttConnAckRCConnectionAccepted,
+			token: "mqtttoken", rc: mqttConnAckRCConnectionAccepted,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1410,10 +1410,10 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 		connectionTypes []string
 		rc              byte
 	}{
-		{"not allowed", []string{jwt.ConnectionTypeStandard}, mqttConnAckRCNotAuthorized},
-		{"allowed", []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeMqtt)}, mqttConnAckRCConnectionAccepted},
-		{"allowed with unknown", []string{jwt.ConnectionTypeMqtt, "SomeNewType"}, mqttConnAckRCConnectionAccepted},
-		{"not allowed with unknown", []string{"SomeNewType"}, mqttConnAckRCNotAuthorized},
+		{name: "not allowed", connectionTypes: []string{jwt.ConnectionTypeStandard}, rc: mqttConnAckRCNotAuthorized},
+		{name: "allowed", connectionTypes: []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeMqtt)}, rc: mqttConnAckRCConnectionAccepted},
+		{name: "allowed with unknown", connectionTypes: []string{jwt.ConnectionTypeMqtt, "SomeNewType"}, rc: mqttConnAckRCConnectionAccepted},
+		{name: "not allowed with unknown", connectionTypes: []string{"SomeNewType"}, rc: mqttConnAckRCNotAuthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 
@@ -1469,53 +1469,53 @@ func TestMQTTUsersAuth(t *testing.T) {
 		rc   byte
 	}{
 		{
-			"no filtering, wrong user",
-			func() *Options {
+			name: "no filtering, wrong user",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Users = users
 				return o
 			},
-			"wronguser", "pwd", mqttConnAckRCNotAuthorized,
+			user: "wronguser", pass: "pwd", rc: mqttConnAckRCNotAuthorized,
 		},
 		{
-			"no filtering, correct user",
-			func() *Options {
+			name: "no filtering, correct user",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Users = users
 				return o
 			},
-			"user", "pwd", mqttConnAckRCConnectionAccepted,
+			user: "user", pass: "pwd", rc: mqttConnAckRCConnectionAccepted,
 		},
 		{
-			"filtering, user not allowed",
-			func() *Options {
+			name: "filtering, user not allowed",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Users = users
 				// Only allowed for regular clients
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard})
 				return o
 			},
-			"user", "pwd", mqttConnAckRCNotAuthorized,
+			user: "user", pass: "pwd", rc: mqttConnAckRCNotAuthorized,
 		},
 		{
-			"filtering, user allowed",
-			func() *Options {
+			name: "filtering, user allowed",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Users = users
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
 				return o
 			},
-			"user", "pwd", mqttConnAckRCConnectionAccepted,
+			user: "user", pass: "pwd", rc: mqttConnAckRCConnectionAccepted,
 		},
 		{
-			"filtering, wrong password",
-			func() *Options {
+			name: "filtering, wrong password",
+			opts: func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Users = users
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
 				return o
 			},
-			"user", "badpassword", mqttConnAckRCNotAuthorized,
+			user: "user", pass: "badpassword", rc: mqttConnAckRCNotAuthorized,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1561,10 +1561,10 @@ func TestMQTTNoAuthUser(t *testing.T) {
 		expectedUser string
 		expectedAcc  string
 	}{
-		{"no override, no user provided", false, false, "noauth", "normal"},
-		{"no override, user povided", false, true, "user", "normal"},
-		{"override, no user provided", true, false, "mqttnoauth", "mqtt"},
-		{"override, user provided", true, true, "mqttuser", "mqtt"},
+		{name: "no override, no user provided", override: false, useAuth: false, expectedUser: "noauth", expectedAcc: "normal"},
+		{name: "no override, user povided", override: false, useAuth: true, expectedUser: "user", expectedAcc: "normal"},
+		{name: "override, no user provided", override: true, useAuth: false, expectedUser: "mqttnoauth", expectedAcc: "mqtt"},
+		{name: "override, user provided", override: true, useAuth: true, expectedUser: "mqttuser", expectedAcc: "mqtt"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testMQTTDefaultOptions()
@@ -1660,31 +1660,31 @@ func TestMQTTParseConnect(t *testing.T) {
 		proto []byte
 		err   string
 	}{
-		{"packet in buffer error", []byte{0}, io.ErrUnexpectedEOF.Error()},
-		{"bad proto name", []byte{0, 4, 'B', 'A', 'D'}, "protocol name"},
-		{"invalid proto name", []byte{0, 3, 'B', 'A', 'D'}, "expected connect packet with protocol name"},
-		{"old proto not supported", []byte{0, 6, 'M', 'Q', 'I', 's', 'd', 'p'}, "older protocol"},
-		{"error on protocol level", []byte{0, 4, 'M', 'Q', 'T', 'T'}, "protocol level"},
-		{"unacceptable protocol version", []byte{0, 4, 'M', 'Q', 'T', 'T', 10}, "unacceptable protocol version"},
-		{"error on flags", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel}, "flags"},
-		{"reserved flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1}, errMQTTConnFlagReserved.Error()},
-		{"will qos without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 3}, "if Will flag is set to 0, Will QoS must be 0 too"},
-		{"will retain without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 5}, errMQTTWillAndRetainFlag.Error()},
-		{"will qos", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 3<<3 | 1<<2}, "if Will flag is set to 1, Will QoS can be 0, 1 or 2"},
-		{"no user but password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagPasswordFlag}, errMQTTPasswordFlagAndNoUser.Error()},
-		{"missing keep alive", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0}, "keep alive"},
-		{"missing client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1}, "client ID"},
-		{"empty client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 0}, errMQTTCIDEmptyNeedsCleanFlag.Error()},
-		{"invalid utf8 client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, 241}, "invalid utf8 for client ID"},
-		{"missing will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, "Will topic"},
-		{"empty will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, errMQTTEmptyWillTopic.Error()},
-		{"invalid utf8 will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, "invalid utf8 for Will topic"},
-		{"invalid wildcard will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, '#'}, "wildcards not allowed"},
-		{"error on will message", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a', 0, 3}, "Will message"},
-		{"error on username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, "user name"},
-		{"empty username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, errMQTTEmptyUsername.Error()},
-		{"invalid utf8 username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, "invalid utf8 for user name"},
-		{"error on password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagPasswordFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a'}, "password"},
+		{name: "packet in buffer error", proto: []byte{0}, err: io.ErrUnexpectedEOF.Error()},
+		{name: "bad proto name", proto: []byte{0, 4, 'B', 'A', 'D'}, err: "protocol name"},
+		{name: "invalid proto name", proto: []byte{0, 3, 'B', 'A', 'D'}, err: "expected connect packet with protocol name"},
+		{name: "old proto not supported", proto: []byte{0, 6, 'M', 'Q', 'I', 's', 'd', 'p'}, err: "older protocol"},
+		{name: "error on protocol level", proto: []byte{0, 4, 'M', 'Q', 'T', 'T'}, err: "protocol level"},
+		{name: "unacceptable protocol version", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', 10}, err: "unacceptable protocol version"},
+		{name: "error on flags", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel}, err: "flags"},
+		{name: "reserved flag", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1}, err: errMQTTConnFlagReserved.Error()},
+		{name: "will qos without will flag", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 3}, err: "if Will flag is set to 0, Will QoS must be 0 too"},
+		{name: "will retain without will flag", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 5}, err: errMQTTWillAndRetainFlag.Error()},
+		{name: "will qos", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 3<<3 | 1<<2}, err: "if Will flag is set to 1, Will QoS can be 0, 1 or 2"},
+		{name: "no user but password", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagPasswordFlag}, err: errMQTTPasswordFlagAndNoUser.Error()},
+		{name: "missing keep alive", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0}, err: "keep alive"},
+		{name: "missing client ID", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1}, err: "client ID"},
+		{name: "empty client ID", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 0}, err: errMQTTCIDEmptyNeedsCleanFlag.Error()},
+		{name: "invalid utf8 client ID", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, 241}, err: "invalid utf8 for client ID"},
+		{name: "missing will topic", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, err: "Will topic"},
+		{name: "empty will topic", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, err: errMQTTEmptyWillTopic.Error()},
+		{name: "invalid utf8 will topic", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, err: "invalid utf8 for Will topic"},
+		{name: "invalid wildcard will topic", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, '#'}, err: "wildcards not allowed"},
+		{name: "error on will message", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a', 0, 3}, err: "Will message"},
+		{name: "error on username", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, err: "user name"},
+		{name: "empty username", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, err: errMQTTEmptyUsername.Error()},
+		{name: "invalid utf8 username", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, err: "invalid utf8 for user name"},
+		{name: "error on password", proto: []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagPasswordFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a'}, err: "password"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
@@ -1779,49 +1779,49 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 		natsSubject string
 		err         string
 	}{
-		{"/", "/", "/./", ""},
-		{"//", "//", "/././", ""},
-		{"///", "///", "/./././", ""},
-		{"////", "////", "/././././", ""},
-		{"foo", "foo", "foo", ""},
-		{"/foo", "/foo", "/.foo", ""},
-		{"//foo", "//foo", "/./.foo", ""},
-		{"///foo", "///foo", "/././.foo", ""},
-		{"///foo/", "///foo/", "/././.foo./", ""},
-		{"///foo//", "///foo//", "/././.foo././", ""},
-		{"///foo///", "///foo///", "/././.foo./././", ""},
-		{"//.foo.//", "//.foo.//", "/././/foo//././", ""},
-		{"foo/bar", "foo/bar", "foo.bar", ""},
-		{"/foo/bar", "/foo/bar", "/.foo.bar", ""},
-		{"/foo/bar/", "/foo/bar/", "/.foo.bar./", ""},
-		{"foo/bar/baz", "foo/bar/baz", "foo.bar.baz", ""},
-		{"/foo/bar/baz", "/foo/bar/baz", "/.foo.bar.baz", ""},
-		{"/foo/bar/baz/", "/foo/bar/baz/", "/.foo.bar.baz./", ""},
-		{"bar", "bar/", "bar./", ""},
-		{"bar//", "bar//", "bar././", ""},
-		{"bar///", "bar///", "bar./././", ""},
-		{"foo//bar", "foo//bar", "foo./.bar", ""},
-		{"foo///bar", "foo///bar", "foo././.bar", ""},
-		{"foo////bar", "foo////bar", "foo./././.bar", ""},
-		{".", ".", "//", ""},
-		{"..", "..", "////", ""},
-		{"...", "...", "//////", ""},
-		{"./", "./", "//./", ""},
-		{".//.", ".//.", "//././/", ""},
-		{"././.", "././.", "//.//.//", ""},
-		{"././/.", "././/.", "//.//././/", ""},
-		{".foo", ".foo", "//foo", ""},
-		{"foo.", "foo.", "foo//", ""},
-		{".foo.", ".foo.", "//foo//", ""},
-		{"foo../bar/", "foo../bar/", "foo////.bar./", ""},
-		{"foo../bar/.", "foo../bar/.", "foo////.bar.//", ""},
-		{"/foo/", "/foo/", "/.foo./", ""},
-		{"./foo/.", "./foo/.", "//.foo.//", ""},
-		{"foo.bar/baz", "foo.bar/baz", "foo//bar.baz", ""},
+		{name: "/", mqttTopic: "/", natsSubject: "/./", err: ""},
+		{name: "//", mqttTopic: "//", natsSubject: "/././", err: ""},
+		{name: "///", mqttTopic: "///", natsSubject: "/./././", err: ""},
+		{name: "////", mqttTopic: "////", natsSubject: "/././././", err: ""},
+		{name: "foo", mqttTopic: "foo", natsSubject: "foo", err: ""},
+		{name: "/foo", mqttTopic: "/foo", natsSubject: "/.foo", err: ""},
+		{name: "//foo", mqttTopic: "//foo", natsSubject: "/./.foo", err: ""},
+		{name: "///foo", mqttTopic: "///foo", natsSubject: "/././.foo", err: ""},
+		{name: "///foo/", mqttTopic: "///foo/", natsSubject: "/././.foo./", err: ""},
+		{name: "///foo//", mqttTopic: "///foo//", natsSubject: "/././.foo././", err: ""},
+		{name: "///foo///", mqttTopic: "///foo///", natsSubject: "/././.foo./././", err: ""},
+		{name: "//.foo.//", mqttTopic: "//.foo.//", natsSubject: "/././/foo//././", err: ""},
+		{name: "foo/bar", mqttTopic: "foo/bar", natsSubject: "foo.bar", err: ""},
+		{name: "/foo/bar", mqttTopic: "/foo/bar", natsSubject: "/.foo.bar", err: ""},
+		{name: "/foo/bar/", mqttTopic: "/foo/bar/", natsSubject: "/.foo.bar./", err: ""},
+		{name: "foo/bar/baz", mqttTopic: "foo/bar/baz", natsSubject: "foo.bar.baz", err: ""},
+		{name: "/foo/bar/baz", mqttTopic: "/foo/bar/baz", natsSubject: "/.foo.bar.baz", err: ""},
+		{name: "/foo/bar/baz/", mqttTopic: "/foo/bar/baz/", natsSubject: "/.foo.bar.baz./", err: ""},
+		{name: "bar", mqttTopic: "bar/", natsSubject: "bar./", err: ""},
+		{name: "bar//", mqttTopic: "bar//", natsSubject: "bar././", err: ""},
+		{name: "bar///", mqttTopic: "bar///", natsSubject: "bar./././", err: ""},
+		{name: "foo//bar", mqttTopic: "foo//bar", natsSubject: "foo./.bar", err: ""},
+		{name: "foo///bar", mqttTopic: "foo///bar", natsSubject: "foo././.bar", err: ""},
+		{name: "foo////bar", mqttTopic: "foo////bar", natsSubject: "foo./././.bar", err: ""},
+		{name: ".", mqttTopic: ".", natsSubject: "//", err: ""},
+		{name: "..", mqttTopic: "..", natsSubject: "////", err: ""},
+		{name: "...", mqttTopic: "...", natsSubject: "//////", err: ""},
+		{name: "./", mqttTopic: "./", natsSubject: "//./", err: ""},
+		{name: ".//.", mqttTopic: ".//.", natsSubject: "//././/", err: ""},
+		{name: "././.", mqttTopic: "././.", natsSubject: "//.//.//", err: ""},
+		{name: "././/.", mqttTopic: "././/.", natsSubject: "//.//././/", err: ""},
+		{name: ".foo", mqttTopic: ".foo", natsSubject: "//foo", err: ""},
+		{name: "foo.", mqttTopic: "foo.", natsSubject: "foo//", err: ""},
+		{name: ".foo.", mqttTopic: ".foo.", natsSubject: "//foo//", err: ""},
+		{name: "foo../bar/", mqttTopic: "foo../bar/", natsSubject: "foo////.bar./", err: ""},
+		{name: "foo../bar/.", mqttTopic: "foo../bar/.", natsSubject: "foo////.bar.//", err: ""},
+		{name: "/foo/", mqttTopic: "/foo/", natsSubject: "/.foo./", err: ""},
+		{name: "./foo/.", mqttTopic: "./foo/.", natsSubject: "//.foo.//", err: ""},
+		{name: "foo.bar/baz", mqttTopic: "foo.bar/baz", natsSubject: "foo//bar.baz", err: ""},
 		// These should produce errors
-		{"foo/+", "foo/+", "", "wildcards not allowed in publish"},
-		{"foo/#", "foo/#", "", "wildcards not allowed in publish"},
-		{"foo bar", "foo bar", "", "not supported"},
+		{name: "foo/+", mqttTopic: "foo/+", natsSubject: "", err: "wildcards not allowed in publish"},
+		{name: "foo/#", mqttTopic: "foo/#", natsSubject: "", err: "wildcards not allowed in publish"},
+		{name: "foo bar", mqttTopic: "foo bar", natsSubject: "", err: "not supported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := mqttTopicToNATSPubSubject([]byte(test.mqttTopic))
@@ -1853,31 +1853,31 @@ func TestMQTTFilterConversion(t *testing.T) {
 		mqttTopic   string
 		natsSubject string
 	}{
-		{"single level wildcard", "+", "*"},
-		{"single level wildcard", "/+", "/.*"},
-		{"single level wildcard", "+/", "*./"},
-		{"single level wildcard", "/+/", "/.*./"},
-		{"single level wildcard", "foo/+", "foo.*"},
-		{"single level wildcard", "foo/+/", "foo.*./"},
-		{"single level wildcard", "foo/+/bar", "foo.*.bar"},
-		{"single level wildcard", "foo/+/+", "foo.*.*"},
-		{"single level wildcard", "foo/+/+/", "foo.*.*./"},
-		{"single level wildcard", "foo/+/+/bar", "foo.*.*.bar"},
-		{"single level wildcard", "foo//+", "foo./.*"},
-		{"single level wildcard", "foo//+/", "foo./.*./"},
-		{"single level wildcard", "foo//+//", "foo./.*././"},
-		{"single level wildcard", "foo//+//bar", "foo./.*./.bar"},
-		{"single level wildcard", "foo///+///bar", "foo././.*././.bar"},
-		{"single level wildcard", "foo.bar///+///baz", "foo//bar././.*././.baz"},
+		{name: "single level wildcard", mqttTopic: "+", natsSubject: "*"},
+		{name: "single level wildcard", mqttTopic: "/+", natsSubject: "/.*"},
+		{name: "single level wildcard", mqttTopic: "+/", natsSubject: "*./"},
+		{name: "single level wildcard", mqttTopic: "/+/", natsSubject: "/.*./"},
+		{name: "single level wildcard", mqttTopic: "foo/+", natsSubject: "foo.*"},
+		{name: "single level wildcard", mqttTopic: "foo/+/", natsSubject: "foo.*./"},
+		{name: "single level wildcard", mqttTopic: "foo/+/bar", natsSubject: "foo.*.bar"},
+		{name: "single level wildcard", mqttTopic: "foo/+/+", natsSubject: "foo.*.*"},
+		{name: "single level wildcard", mqttTopic: "foo/+/+/", natsSubject: "foo.*.*./"},
+		{name: "single level wildcard", mqttTopic: "foo/+/+/bar", natsSubject: "foo.*.*.bar"},
+		{name: "single level wildcard", mqttTopic: "foo//+", natsSubject: "foo./.*"},
+		{name: "single level wildcard", mqttTopic: "foo//+/", natsSubject: "foo./.*./"},
+		{name: "single level wildcard", mqttTopic: "foo//+//", natsSubject: "foo./.*././"},
+		{name: "single level wildcard", mqttTopic: "foo//+//bar", natsSubject: "foo./.*./.bar"},
+		{name: "single level wildcard", mqttTopic: "foo///+///bar", natsSubject: "foo././.*././.bar"},
+		{name: "single level wildcard", mqttTopic: "foo.bar///+///baz", natsSubject: "foo//bar././.*././.baz"},
 
-		{"multi level wildcard", "#", ">"},
-		{"multi level wildcard", "/#", "/.>"},
-		{"multi level wildcard", "/foo/#", "/.foo.>"},
-		{"multi level wildcard", "foo/#", "foo.>"},
-		{"multi level wildcard", "foo//#", "foo./.>"},
-		{"multi level wildcard", "foo///#", "foo././.>"},
-		{"multi level wildcard", "foo/bar/#", "foo.bar.>"},
-		{"multi level wildcard", "foo/bar.baz/#", "foo.bar//baz.>"},
+		{name: "multi level wildcard", mqttTopic: "#", natsSubject: ">"},
+		{name: "multi level wildcard", mqttTopic: "/#", natsSubject: "/.>"},
+		{name: "multi level wildcard", mqttTopic: "/foo/#", natsSubject: "/.foo.>"},
+		{name: "multi level wildcard", mqttTopic: "foo/#", natsSubject: "foo.>"},
+		{name: "multi level wildcard", mqttTopic: "foo//#", natsSubject: "foo./.>"},
+		{name: "multi level wildcard", mqttTopic: "foo///#", natsSubject: "foo././.>"},
+		{name: "multi level wildcard", mqttTopic: "foo/bar/#", natsSubject: "foo.bar.>"},
+		{name: "multi level wildcard", mqttTopic: "foo/bar.baz/#", natsSubject: "foo.bar//baz.>"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := mqttFilterToNATSSubject([]byte(test.mqttTopic))
@@ -1899,15 +1899,15 @@ func TestMQTTParseSub(t *testing.T) {
 		pl    int
 		err   string
 	}{
-		{"reserved flag", nil, 3, 0, "wrong subscribe reserved flags"},
-		{"ensure packet loaded", []byte{1, 2}, mqttSubscribeFlags, 10, io.ErrUnexpectedEOF.Error()},
-		{"error reading packet id", []byte{1}, mqttSubscribeFlags, 1, "reading packet identifier"},
-		{"missing filters", []byte{0, 1}, mqttSubscribeFlags, 2, "subscribe protocol must contain at least 1 topic filter"},
-		{"error reading topic", []byte{0, 1, 0, 2, 'a'}, mqttSubscribeFlags, 5, "topic filter"},
-		{"empty topic", []byte{0, 1, 0, 0}, mqttSubscribeFlags, 4, errMQTTTopicFilterCannotBeEmpty.Error()},
-		{"invalid utf8 topic", []byte{0, 1, 0, 1, 241}, mqttSubscribeFlags, 5, "invalid utf8 for topic filter"},
-		{"missing qos", []byte{0, 1, 0, 1, 'a'}, mqttSubscribeFlags, 5, "QoS"},
-		{"invalid qos", []byte{0, 1, 0, 1, 'a', 3}, mqttSubscribeFlags, 6, "subscribe QoS value must be 0, 1 or 2"},
+		{name: "reserved flag", proto: nil, b: 3, pl: 0, err: "wrong subscribe reserved flags"},
+		{name: "ensure packet loaded", proto: []byte{1, 2}, b: mqttSubscribeFlags, pl: 10, err: io.ErrUnexpectedEOF.Error()},
+		{name: "error reading packet id", proto: []byte{1}, b: mqttSubscribeFlags, pl: 1, err: "reading packet identifier"},
+		{name: "missing filters", proto: []byte{0, 1}, b: mqttSubscribeFlags, pl: 2, err: "subscribe protocol must contain at least 1 topic filter"},
+		{name: "error reading topic", proto: []byte{0, 1, 0, 2, 'a'}, b: mqttSubscribeFlags, pl: 5, err: "topic filter"},
+		{name: "empty topic", proto: []byte{0, 1, 0, 0}, b: mqttSubscribeFlags, pl: 4, err: errMQTTTopicFilterCannotBeEmpty.Error()},
+		{name: "invalid utf8 topic", proto: []byte{0, 1, 0, 1, 241}, b: mqttSubscribeFlags, pl: 5, err: "invalid utf8 for topic filter"},
+		{name: "missing qos", proto: []byte{0, 1, 0, 1, 'a'}, b: mqttSubscribeFlags, pl: 5, err: "QoS"},
+		{name: "invalid qos", proto: []byte{0, 1, 0, 1, 'a', 3}, b: mqttSubscribeFlags, pl: 6, err: "subscribe QoS value must be 0, 1 or 2"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
@@ -2216,13 +2216,13 @@ func TestMQTTParsePub(t *testing.T) {
 		pl    int
 		err   string
 	}{
-		{"qos not supported", (3 << 1), nil, 0, "QoS=3 is invalid in MQTT"},
-		{"packet in buffer error", 0, nil, 10, io.ErrUnexpectedEOF.Error()},
-		{"error on topic", 0, []byte{0, 3, 'f', 'o'}, 4, "topic"},
-		{"empty topic", 0, []byte{0, 0}, 2, errMQTTTopicIsEmpty.Error()},
-		{"wildcards topic", 0, []byte{0, 1, '#'}, 3, "wildcards not allowed"},
-		{"error on packet identifier", mqttPubQos1, []byte{0, 3, 'f', 'o', 'o'}, 5, "packet identifier"},
-		{"invalid packet identifier", mqttPubQos1, []byte{0, 3, 'f', 'o', 'o', 0, 0}, 7, errMQTTPacketIdentifierIsZero.Error()},
+		{name: "qos not supported", flags: (3 << 1), proto: nil, pl: 0, err: "QoS=3 is invalid in MQTT"},
+		{name: "packet in buffer error", flags: 0, proto: nil, pl: 10, err: io.ErrUnexpectedEOF.Error()},
+		{name: "error on topic", flags: 0, proto: []byte{0, 3, 'f', 'o'}, pl: 4, err: "topic"},
+		{name: "empty topic", flags: 0, proto: []byte{0, 0}, pl: 2, err: errMQTTTopicIsEmpty.Error()},
+		{name: "wildcards topic", flags: 0, proto: []byte{0, 1, '#'}, pl: 3, err: "wildcards not allowed"},
+		{name: "error on packet identifier", flags: mqttPubQos1, proto: []byte{0, 3, 'f', 'o', 'o'}, pl: 5, err: "packet identifier"},
+		{name: "invalid packet identifier", flags: mqttPubQos1, proto: []byte{0, 3, 'f', 'o', 'o', 0, 0}, pl: 7, err: errMQTTPacketIdentifierIsZero.Error()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
@@ -2243,9 +2243,9 @@ func TestMQTTParsePIMsg(t *testing.T) {
 		proto []byte
 		err   string
 	}{
-		{"packet in buffer error", nil, io.ErrUnexpectedEOF.Error()},
-		{"error reading packet identifier", []byte{0}, "packet identifier"},
-		{"invalid packet identifier", []byte{0, 0}, errMQTTPacketIdentifierIsZero.Error()},
+		{name: "packet in buffer error", proto: nil, err: io.ErrUnexpectedEOF.Error()},
+		{name: "error reading packet identifier", proto: []byte{0}, err: "packet identifier"},
+		{name: "invalid packet identifier", proto: []byte{0, 0}, err: errMQTTPacketIdentifierIsZero.Error()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
@@ -2312,27 +2312,27 @@ func TestMQTTSub(t *testing.T) {
 		mqttPubTopic   string
 		ok             bool
 	}{
-		{"1 level match", "foo", "foo", "foo", true},
-		{"1 level no match", "foo", "bar", "bar", false},
-		{"2 levels match", "foo/bar", "foo.bar", "foo/bar", true},
-		{"2 levels no match", "foo/bar", "foo.baz", "foo/baz", false},
-		{"3 levels match", "/foo/bar", "/.foo.bar", "/foo/bar", true},
-		{"3 levels no match", "/foo/bar", "/.foo.baz", "/foo/baz", false},
+		{name: "1 level match", mqttSubTopic: "foo", natsPubSubject: "foo", mqttPubTopic: "foo", ok: true},
+		{name: "1 level no match", mqttSubTopic: "foo", natsPubSubject: "bar", mqttPubTopic: "bar", ok: false},
+		{name: "2 levels match", mqttSubTopic: "foo/bar", natsPubSubject: "foo.bar", mqttPubTopic: "foo/bar", ok: true},
+		{name: "2 levels no match", mqttSubTopic: "foo/bar", natsPubSubject: "foo.baz", mqttPubTopic: "foo/baz", ok: false},
+		{name: "3 levels match", mqttSubTopic: "/foo/bar", natsPubSubject: "/.foo.bar", mqttPubTopic: "/foo/bar", ok: true},
+		{name: "3 levels no match", mqttSubTopic: "/foo/bar", natsPubSubject: "/.foo.baz", mqttPubTopic: "/foo/baz", ok: false},
 
-		{"single level wc", "foo/+", "foo.bar.baz", "foo/bar/baz", false},
-		{"single level wc", "foo/+", "foo.bar./", "foo/bar/", false},
-		{"single level wc", "foo/+", "foo.bar", "foo/bar", true},
-		{"single level wc", "foo/+", "foo./", "foo/", true},
-		{"single level wc", "foo/+", "foo", "foo", false},
-		{"single level wc", "foo/+", "/.foo", "/foo", false},
+		{name: "single level wc", mqttSubTopic: "foo/+", natsPubSubject: "foo.bar.baz", mqttPubTopic: "foo/bar/baz", ok: false},
+		{name: "single level wc", mqttSubTopic: "foo/+", natsPubSubject: "foo.bar./", mqttPubTopic: "foo/bar/", ok: false},
+		{name: "single level wc", mqttSubTopic: "foo/+", natsPubSubject: "foo.bar", mqttPubTopic: "foo/bar", ok: true},
+		{name: "single level wc", mqttSubTopic: "foo/+", natsPubSubject: "foo./", mqttPubTopic: "foo/", ok: true},
+		{name: "single level wc", mqttSubTopic: "foo/+", natsPubSubject: "foo", mqttPubTopic: "foo", ok: false},
+		{name: "single level wc", mqttSubTopic: "foo/+", natsPubSubject: "/.foo", mqttPubTopic: "/foo", ok: false},
 
-		{"multiple level wc", "foo/#", "foo.bar.baz./", "foo/bar/baz/", true},
-		{"multiple level wc", "foo/#", "foo.bar.baz", "foo/bar/baz", true},
-		{"multiple level wc", "foo/#", "foo.bar./", "foo/bar/", true},
-		{"multiple level wc", "foo/#", "foo.bar", "foo/bar", true},
-		{"multiple level wc", "foo/#", "foo./", "foo/", true},
-		{"multiple level wc", "foo/#", "foo", "foo", true},
-		{"multiple level wc", "foo/#", "/.foo", "/foo", false},
+		{name: "multiple level wc", mqttSubTopic: "foo/#", natsPubSubject: "foo.bar.baz./", mqttPubTopic: "foo/bar/baz/", ok: true},
+		{name: "multiple level wc", mqttSubTopic: "foo/#", natsPubSubject: "foo.bar.baz", mqttPubTopic: "foo/bar/baz", ok: true},
+		{name: "multiple level wc", mqttSubTopic: "foo/#", natsPubSubject: "foo.bar./", mqttPubTopic: "foo/bar/", ok: true},
+		{name: "multiple level wc", mqttSubTopic: "foo/#", natsPubSubject: "foo.bar", mqttPubTopic: "foo/bar", ok: true},
+		{name: "multiple level wc", mqttSubTopic: "foo/#", natsPubSubject: "foo./", mqttPubTopic: "foo/", ok: true},
+		{name: "multiple level wc", mqttSubTopic: "foo/#", natsPubSubject: "foo", mqttPubTopic: "foo", ok: true},
+		{name: "multiple level wc", mqttSubTopic: "foo/#", natsPubSubject: "/.foo", mqttPubTopic: "/foo", ok: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -2661,23 +2661,23 @@ func TestMQTTPubSubMatrix(t *testing.T) {
 		mqttSubQoS0 bool
 		mqttSubQoS1 bool
 	}{
-		{"NATS to MQTT sub QoS-0", true, false, 0, false, true, false},
-		{"NATS to MQTT sub QoS-1", true, false, 0, false, false, true},
-		{"NATS to MQTT sub QoS-0 and QoS-1", true, false, 0, false, true, true},
+		{name: "NATS to MQTT sub QoS-0", natsPub: true, mqttPub: false, mqttPubQoS: 0, natsSub: false, mqttSubQoS0: true, mqttSubQoS1: false},
+		{name: "NATS to MQTT sub QoS-1", natsPub: true, mqttPub: false, mqttPubQoS: 0, natsSub: false, mqttSubQoS0: false, mqttSubQoS1: true},
+		{name: "NATS to MQTT sub QoS-0 and QoS-1", natsPub: true, mqttPub: false, mqttPubQoS: 0, natsSub: false, mqttSubQoS0: true, mqttSubQoS1: true},
 
-		{"MQTT QoS-0 to NATS sub", false, true, 0, true, false, false},
-		{"MQTT QoS-0 to MQTT sub QoS-0", false, true, 0, false, true, false},
-		{"MQTT QoS-0 to MQTT sub QoS-1", false, true, 0, false, false, true},
-		{"MQTT QoS-0 to NATS sub and MQTT sub QoS-0", false, true, 0, true, true, false},
-		{"MQTT QoS-0 to NATS sub and MQTT sub QoS-1", false, true, 0, true, false, true},
-		{"MQTT QoS-0 to all subs", false, true, 0, true, true, true},
+		{name: "MQTT QoS-0 to NATS sub", natsPub: false, mqttPub: true, mqttPubQoS: 0, natsSub: true, mqttSubQoS0: false, mqttSubQoS1: false},
+		{name: "MQTT QoS-0 to MQTT sub QoS-0", natsPub: false, mqttPub: true, mqttPubQoS: 0, natsSub: false, mqttSubQoS0: true, mqttSubQoS1: false},
+		{name: "MQTT QoS-0 to MQTT sub QoS-1", natsPub: false, mqttPub: true, mqttPubQoS: 0, natsSub: false, mqttSubQoS0: false, mqttSubQoS1: true},
+		{name: "MQTT QoS-0 to NATS sub and MQTT sub QoS-0", natsPub: false, mqttPub: true, mqttPubQoS: 0, natsSub: true, mqttSubQoS0: true, mqttSubQoS1: false},
+		{name: "MQTT QoS-0 to NATS sub and MQTT sub QoS-1", natsPub: false, mqttPub: true, mqttPubQoS: 0, natsSub: true, mqttSubQoS0: false, mqttSubQoS1: true},
+		{name: "MQTT QoS-0 to all subs", natsPub: false, mqttPub: true, mqttPubQoS: 0, natsSub: true, mqttSubQoS0: true, mqttSubQoS1: true},
 
-		{"MQTT QoS-1 to NATS sub", false, true, 1, true, false, false},
-		{"MQTT QoS-1 to MQTT sub QoS-0", false, true, 1, false, true, false},
-		{"MQTT QoS-1 to MQTT sub QoS-1", false, true, 1, false, false, true},
-		{"MQTT QoS-1 to NATS sub and MQTT sub QoS-0", false, true, 1, true, true, false},
-		{"MQTT QoS-1 to NATS sub and MQTT sub QoS-1", false, true, 1, true, false, true},
-		{"MQTT QoS-1 to all subs", false, true, 1, true, true, true},
+		{name: "MQTT QoS-1 to NATS sub", natsPub: false, mqttPub: true, mqttPubQoS: 1, natsSub: true, mqttSubQoS0: false, mqttSubQoS1: false},
+		{name: "MQTT QoS-1 to MQTT sub QoS-0", natsPub: false, mqttPub: true, mqttPubQoS: 1, natsSub: false, mqttSubQoS0: true, mqttSubQoS1: false},
+		{name: "MQTT QoS-1 to MQTT sub QoS-1", natsPub: false, mqttPub: true, mqttPubQoS: 1, natsSub: false, mqttSubQoS0: false, mqttSubQoS1: true},
+		{name: "MQTT QoS-1 to NATS sub and MQTT sub QoS-0", natsPub: false, mqttPub: true, mqttPubQoS: 1, natsSub: true, mqttSubQoS0: true, mqttSubQoS1: false},
+		{name: "MQTT QoS-1 to NATS sub and MQTT sub QoS-1", natsPub: false, mqttPub: true, mqttPubQoS: 1, natsSub: true, mqttSubQoS0: false, mqttSubQoS1: true},
+		{name: "MQTT QoS-1 to all subs", natsPub: false, mqttPub: true, mqttPubQoS: 1, natsSub: true, mqttSubQoS0: true, mqttSubQoS1: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testMQTTDefaultOptions()
@@ -2946,16 +2946,16 @@ func TestMQTTCluster(t *testing.T) {
 		name    string
 		restart bool
 	}{
-		{"first_start", true},
-		{"restart", false},
+		{name: "first_start", restart: true},
+		{name: "restart", restart: false},
 	} {
 		t.Run(topTest.name, func(t *testing.T) {
 			for _, test := range []struct {
 				name   string
 				subQos byte
 			}{
-				{"qos_0", 0},
-				{"qos_1", 1},
+				{name: "qos_0", subQos: 0},
+				{name: "qos_1", subQos: 1},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					clientID := nuid.Next()
@@ -3275,12 +3275,12 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 		seq     uint64
 		floor   uint64
 	}{
-		{"foo.1", []action{{true, 1}, {true, 2}, {true, 3}}, 3, 0},
-		{"foo.2", []action{{true, 3}, {true, 1}, {true, 2}}, 3, 0},
-		{"foo.3", []action{{true, 1}, {false, 1}, {true, 2}}, 2, 0},
-		{"foo.4", []action{{false, 2}, {true, 1}, {true, 3}, {true, 2}}, 3, 0},
-		{"foo.5", []action{{false, 2}, {true, 1}, {true, 2}}, 0, 2},
-		{"foo.6", []action{{true, 1}, {true, 2}, {false, 2}}, 0, 2},
+		{subject: "foo.1", order: []action{{add: true, seq: 1}, {add: true, seq: 2}, {add: true, seq: 3}}, seq: 3, floor: 0},
+		{subject: "foo.2", order: []action{{add: true, seq: 3}, {add: true, seq: 1}, {add: true, seq: 2}}, seq: 3, floor: 0},
+		{subject: "foo.3", order: []action{{add: true, seq: 1}, {add: false, seq: 1}, {add: true, seq: 2}}, seq: 2, floor: 0},
+		{subject: "foo.4", order: []action{{add: false, seq: 2}, {add: true, seq: 1}, {add: true, seq: 3}, {add: true, seq: 2}}, seq: 3, floor: 0},
+		{subject: "foo.5", order: []action{{add: false, seq: 2}, {add: true, seq: 1}, {add: true, seq: 2}}, seq: 0, floor: 2},
+		{subject: "foo.6", order: []action{{add: true, seq: 1}, {add: true, seq: 2}, {add: false, seq: 2}}, seq: 0, floor: 2},
 	} {
 		t.Run(test.subject, func(t *testing.T) {
 			for _, a := range test.order {
@@ -3416,10 +3416,10 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 		size     int
 		replicas int
 	}{
-		{1, 1},
-		{2, 2},
-		{3, 3},
-		{5, 3},
+		{size: 1, replicas: 1},
+		{size: 2, replicas: 2},
+		{size: 3, replicas: 3},
+		{size: 5, replicas: 3},
 	} {
 		t.Run(fmt.Sprintf("size %v", test.size), func(t *testing.T) {
 			var s *Server
@@ -3855,13 +3855,13 @@ func TestMQTTParseUnsub(t *testing.T) {
 		pl    int
 		err   string
 	}{
-		{"reserved flag", nil, 3, 0, "wrong unsubscribe reserved flags"},
-		{"ensure packet loaded", []byte{1, 2}, mqttUnsubscribeFlags, 10, io.ErrUnexpectedEOF.Error()},
-		{"error reading packet id", []byte{1}, mqttUnsubscribeFlags, 1, "reading packet identifier"},
-		{"missing filters", []byte{0, 1}, mqttUnsubscribeFlags, 2, "subscribe protocol must contain at least 1 topic filter"},
-		{"error reading topic", []byte{0, 1, 0, 2, 'a'}, mqttUnsubscribeFlags, 5, "topic filter"},
-		{"empty topic", []byte{0, 1, 0, 0}, mqttUnsubscribeFlags, 4, errMQTTTopicFilterCannotBeEmpty.Error()},
-		{"invalid utf8 topic", []byte{0, 1, 0, 1, 241}, mqttUnsubscribeFlags, 5, "invalid utf8 for topic filter"},
+		{name: "reserved flag", proto: nil, b: 3, pl: 0, err: "wrong unsubscribe reserved flags"},
+		{name: "ensure packet loaded", proto: []byte{1, 2}, b: mqttUnsubscribeFlags, pl: 10, err: io.ErrUnexpectedEOF.Error()},
+		{name: "error reading packet id", proto: []byte{1}, b: mqttUnsubscribeFlags, pl: 1, err: "reading packet identifier"},
+		{name: "missing filters", proto: []byte{0, 1}, b: mqttUnsubscribeFlags, pl: 2, err: "subscribe protocol must contain at least 1 topic filter"},
+		{name: "error reading topic", proto: []byte{0, 1, 0, 2, 'a'}, b: mqttUnsubscribeFlags, pl: 5, err: "topic filter"},
+		{name: "empty topic", proto: []byte{0, 1, 0, 0}, b: mqttUnsubscribeFlags, pl: 4, err: errMQTTTopicFilterCannotBeEmpty.Error()},
+		{name: "invalid utf8 topic", proto: []byte{0, 1, 0, 1, 241}, b: mqttUnsubscribeFlags, pl: 5, err: "invalid utf8 for topic filter"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
@@ -3973,9 +3973,9 @@ func TestMQTTPublishTopicErrors(t *testing.T) {
 		name  string
 		topic string
 	}{
-		{"empty", ""},
-		{"with single level wildcard", "foo/+"},
-		{"with multiple level wildcard", "foo/#"},
+		{name: "empty", topic: ""},
+		{name: "with single level wildcard", topic: "foo/+"},
+		{name: "with multiple level wildcard", topic: "foo/#"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -4027,10 +4027,10 @@ func TestMQTTWill(t *testing.T) {
 		willExpected bool
 		willQoS      byte
 	}{
-		{"will qos 0", true, 0},
-		{"will qos 1", true, 1},
-		{"will qos 2", true, 2},
-		{"proper disconnect no will", false, 0},
+		{name: "will qos 0", willExpected: true, willQoS: 0},
+		{name: "will qos 1", willExpected: true, willQoS: 1},
+		{name: "will qos 2", willExpected: true, willQoS: 2},
+		{name: "proper disconnect no will", willExpected: false, willQoS: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mcs, rs := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -4103,10 +4103,10 @@ func TestMQTTWillRetain(t *testing.T) {
 		pubQoS byte
 		subQoS byte
 	}{
-		{"pub QoS0 sub QoS0", 0, 0},
-		{"pub QoS0 sub QoS1", 0, 1},
-		{"pub QoS1 sub QoS0", 1, 0},
-		{"pub QoS1 sub QoS1", 1, 1},
+		{name: "pub QoS0 sub QoS0", pubQoS: 0, subQoS: 0},
+		{name: "pub QoS0 sub QoS1", pubQoS: 0, subQoS: 1},
+		{name: "pub QoS1 sub QoS0", pubQoS: 1, subQoS: 0},
+		{name: "pub QoS1 sub QoS1", pubQoS: 1, subQoS: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testMQTTDefaultOptions()
@@ -4305,10 +4305,10 @@ func TestMQTTPublishRetain(t *testing.T) {
 		expectedValue string
 		subGetsIt     bool
 	}{
-		{"publish large retained", true, large, large, true},
-		{"publish retained", true, "retained", "retained", true},
-		{"publish not retained", false, "not retained", "retained", true},
-		{"remove retained", true, "", "", false},
+		{name: "publish large retained", retained: true, sentValue: large, expectedValue: large, subGetsIt: true},
+		{name: "publish retained", retained: true, sentValue: "retained", expectedValue: "retained", subGetsIt: true},
+		{name: "publish not retained", retained: false, sentValue: "not retained", expectedValue: "retained", subGetsIt: true},
+		{name: "remove retained", retained: true, sentValue: "", expectedValue: "", subGetsIt: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mc1, rs1 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -6120,8 +6120,8 @@ func TestMQTTPartial(t *testing.T) {
 		name string
 		ws   bool
 	}{
-		{"standard", false},
-		{"websocket", true},
+		{name: "standard", ws: false},
+		{name: "websocket", ws: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ci := &mqttConnInfo{cleanSess: true, ws: test.ws}
@@ -6439,14 +6439,14 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		opt any
 		cid string
 	}{
-		{&ConnzOptions{MQTTClient: "conn1"}, "conn1"},
-		{&ConnzOptions{MQTTClient: "conn3", State: ConnClosed}, "conn3"},
-		{&ConnzOptions{MQTTClient: "conn4", State: ConnClosed}, "conn4"},
-		{&ConnzOptions{MQTTClient: "conn5"}, _EMPTY_},
-		{json.RawMessage(`{"mqtt_client":"conn1"}`), "conn1"},
-		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn3", "state":%v}`, ConnClosed)), "conn3"},
-		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn4", "state":%v}`, ConnClosed)), "conn4"},
-		{json.RawMessage(`{"mqtt_client":"conn5"}`), _EMPTY_},
+		{opt: &ConnzOptions{MQTTClient: "conn1"}, cid: "conn1"},
+		{opt: &ConnzOptions{MQTTClient: "conn3", State: ConnClosed}, cid: "conn3"},
+		{opt: &ConnzOptions{MQTTClient: "conn4", State: ConnClosed}, cid: "conn4"},
+		{opt: &ConnzOptions{MQTTClient: "conn5"}, cid: _EMPTY_},
+		{opt: json.RawMessage(`{"mqtt_client":"conn1"}`), cid: "conn1"},
+		{opt: json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn3", "state":%v}`, ConnClosed)), cid: "conn3"},
+		{opt: json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn4", "state":%v}`, ConnClosed)), cid: "conn4"},
+		{opt: json.RawMessage(`{"mqtt_client":"conn5"}`), cid: _EMPTY_},
 	} {
 		t.Run("sys connz", func(t *testing.T) {
 			b, _ := json.Marshal(test.opt)
@@ -6684,11 +6684,11 @@ func TestMQTTConsumerReplicasValidate(t *testing.T) {
 		cr   int
 		err  bool
 	}{
-		{"stream replicas neg", -1, 3, false},
-		{"stream replicas 0", 0, 3, false},
-		{"consumer replicas neg", 0, -1, false},
-		{"consumer replicas 0", -1, 0, false},
-		{"consumer replicas too high", 1, 2, true},
+		{name: "stream replicas neg", sr: -1, cr: 3, err: false},
+		{name: "stream replicas 0", sr: 0, cr: 3, err: false},
+		{name: "consumer replicas neg", sr: 0, cr: -1, err: false},
+		{name: "consumer replicas 0", sr: -1, cr: 0, err: false},
+		{name: "consumer replicas too high", sr: 1, cr: 2, err: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o.MQTT.StreamReplicas = test.sr
@@ -7124,8 +7124,8 @@ func TestMQTTSubRetainedRace(t *testing.T) {
 		name string
 		f    func(t *testing.T, s *Server, o *Options, subTopic, pubTopic string, QOS byte)
 	}{
-		{"new top level", testMQTTNewSubRetainedRace},
-		{"existing top level", testMQTTNewSubWithExistingTopLevelRetainedRace},
+		{name: "new top level", f: testMQTTNewSubRetainedRace},
+		{name: "existing top level", f: testMQTTNewSubWithExistingTopLevelRetainedRace},
 	}
 	pubTopic := "/bar"
 	subTopics := []string{"#", "/bar", "/+", "/#"}
@@ -7577,10 +7577,10 @@ func TestMQTTSparkbDeathHandling(t *testing.T) {
 		expectTimestampOffset int
 		expectUnchanged       bool
 	}{
-		{"append", protoMetrics, len(protoMetrics), false},
-		{"replace at the end", append(protoMetrics, proto0Timestamp...), len(protoMetrics), false},
-		{"replace at the start", append(protoDeadbeefTimestamp, protoMetrics...), 0, false},
-		{"invalid", []byte{0xde, 0xad, 0xbe, 0xef}, 0, true}, // invalid payload
+		{name: "append", payload: protoMetrics, expectTimestampOffset: len(protoMetrics), expectUnchanged: false},
+		{name: "replace at the end", payload: append(protoMetrics, proto0Timestamp...), expectTimestampOffset: len(protoMetrics), expectUnchanged: false},
+		{name: "replace at the start", payload: append(protoDeadbeefTimestamp, protoMetrics...), expectTimestampOffset: 0, expectUnchanged: false},
+		{name: "invalid", payload: []byte{0xde, 0xad, 0xbe, 0xef}, expectTimestampOffset: 0, expectUnchanged: true}, // invalid payload
 	} {
 		var sendPI uint16
 		for _, topic := range []string{"NDEATH/nnn", "DDEATH/nnn/ddd"} {

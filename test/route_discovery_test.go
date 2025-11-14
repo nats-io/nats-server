@@ -311,7 +311,7 @@ func TestStressSeedSolicitWorks(t *testing.T) {
 			defer s4.Shutdown()
 			go s4.Start()
 
-			serversInfo := []serverInfo{{s1, opts}, {s2, s2Opts}, {s3, s3Opts}, {s4, s4Opts}}
+			serversInfo := []serverInfo{{server: s1, opts: opts}, {server: s2, opts: s2Opts}, {server: s3, opts: s3Opts}, {server: s4, opts: s4Opts}}
 
 			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 				for j := 0; j < len(serversInfo); j++ {
@@ -429,7 +429,7 @@ func TestStressChainedSolicitWorks(t *testing.T) {
 			defer s4.Shutdown()
 			go s4.Start()
 
-			serversInfo := []serverInfo{{s1, opts}, {s2, s2Opts}, {s3, s3Opts}, {s4, s4Opts}}
+			serversInfo := []serverInfo{{server: s1, opts: opts}, {server: s2, opts: s2Opts}, {server: s3, opts: s3Opts}, {server: s4, opts: s4Opts}}
 
 			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 				for j := 0; j < len(serversInfo); j++ {

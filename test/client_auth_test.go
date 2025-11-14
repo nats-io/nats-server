@@ -102,10 +102,10 @@ func TestClientConnectInfo(t *testing.T) {
 		hasSys   bool
 		protocol int
 	}{
-		{"async info support with explicit system account", "system_account: SYS", true, server.ClientProtoInfo},
-		{"async info support without explicit system account", "", false, server.ClientProtoInfo},
-		{"no async info support with explicit system account", "system_account: SYS", true, server.ClientProtoZero},
-		{"no async info support without explicit system account", "", false, server.ClientProtoZero},
+		{name: "async info support with explicit system account", sys: "system_account: SYS", hasSys: true, protocol: server.ClientProtoInfo},
+		{name: "async info support without explicit system account", sys: "", hasSys: false, protocol: server.ClientProtoInfo},
+		{name: "no async info support with explicit system account", sys: "system_account: SYS", hasSys: true, protocol: server.ClientProtoZero},
+		{name: "no async info support without explicit system account", sys: "", hasSys: false, protocol: server.ClientProtoZero},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -279,10 +279,10 @@ func TestProxyKeyVerification(t *testing.T) {
 		bsig bool
 		ok   bool
 	}{
-		{"key present first", u1, false, true},
-		{"key present last", u2, false, true},
-		{"key not present", u3, false, false},
-		{"bad signature", u2, true, false},
+		{name: "key present first", kp: u1, bsig: false, ok: true},
+		{name: "key present last", kp: u2, bsig: false, ok: true},
+		{name: "key not present", kp: u3, bsig: false, ok: false},
+		{name: "bad signature", kp: u2, bsig: true, ok: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, subTest := range []struct {
@@ -290,8 +290,8 @@ func TestProxyKeyVerification(t *testing.T) {
 				port     int
 				isClient bool
 			}{
-				{"client", o.Port, true},
-				{"leafnodes", o.LeafNode.Port, false},
+				{name: "client", port: o.Port, isClient: true},
+				{name: "leafnodes", port: o.LeafNode.Port, isClient: false},
 			} {
 				t.Run(subTest.name, func(t *testing.T) {
 					expect, c := connect(t, test.kp, test.bsig, subTest.port, subTest.isClient, "user")
@@ -457,8 +457,8 @@ func TestProxyKeyVerification(t *testing.T) {
 		name string
 		bsig bool
 	}{
-		{"no trusted proxy and correct signature", false},
-		{"no trusted proxy and invalid signature", true},
+		{name: "no trusted proxy and correct signature", bsig: false},
+		{name: "no trusted proxy and invalid signature", bsig: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			expect, c := connect(t, u1, test.bsig, o.LeafNode.Port, false, "user")
@@ -493,8 +493,8 @@ func TestProxyKeyVerification(t *testing.T) {
 		user string
 		ok   bool
 	}{
-		{"no trusted proxy configured no proxy required", "u1", true},
-		{"no trusted proxy configured and proxy required", "u2", false},
+		{name: "no trusted proxy configured no proxy required", user: "u1", ok: true},
+		{name: "no trusted proxy configured and proxy required", user: "u2", ok: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// We can use any key pair here, it is not important.

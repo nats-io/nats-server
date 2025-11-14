@@ -809,23 +809,23 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 		cluster   string
 	}{
 		// these pass because replica count is 1
-		{&nats.Placement{Tags: []string{"az:same"}}, 1, false, "C1"},
-		{&nats.Placement{Tags: []string{"cloud:C1-tag", "az:same"}}, 1, false, "C1"},
-		{&nats.Placement{Tags: []string{"cloud:C1-tag"}}, 1, false, "C1"},
+		{placement: &nats.Placement{Tags: []string{"az:same"}}, replicas: 1, fail: false, cluster: "C1"},
+		{placement: &nats.Placement{Tags: []string{"cloud:C1-tag", "az:same"}}, replicas: 1, fail: false, cluster: "C1"},
+		{placement: &nats.Placement{Tags: []string{"cloud:C1-tag"}}, replicas: 1, fail: false, cluster: "C1"},
 		// pass because az is set, which disables the filter
-		{&nats.Placement{Tags: []string{"az:same"}}, 2, false, "C1"},
-		{&nats.Placement{Tags: []string{"cloud:C1-tag", "az:same"}}, 2, false, "C1"},
+		{placement: &nats.Placement{Tags: []string{"az:same"}}, replicas: 2, fail: false, cluster: "C1"},
+		{placement: &nats.Placement{Tags: []string{"cloud:C1-tag", "az:same"}}, replicas: 2, fail: false, cluster: "C1"},
 		// fails because this cluster only has the same az
-		{&nats.Placement{Tags: []string{"cloud:C1-tag"}}, 2, true, ""},
+		{placement: &nats.Placement{Tags: []string{"cloud:C1-tag"}}, replicas: 2, fail: true, cluster: ""},
 		// fails because no 3 unique tags exist
-		{&nats.Placement{Tags: []string{"cloud:C2-tag"}}, 3, true, ""},
-		{nil, 3, true, ""},
+		{placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}, replicas: 3, fail: true, cluster: ""},
+		{placement: nil, replicas: 3, fail: true, cluster: ""},
 		// pass because replica count is low enough
-		{nil, 2, false, "C2"},
-		{&nats.Placement{Tags: []string{"cloud:C2-tag"}}, 2, false, "C2"},
+		{placement: nil, replicas: 2, fail: false, cluster: "C2"},
+		{placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}, replicas: 2, fail: false, cluster: "C2"},
 		// pass because az is provided
-		{&nats.Placement{Tags: []string{"az:1"}}, 3, false, "C2"},
-		{&nats.Placement{Tags: []string{"az:2"}}, 2, false, "C2"},
+		{placement: &nats.Placement{Tags: []string{"az:1"}}, replicas: 3, fail: false, cluster: "C2"},
+		{placement: &nats.Placement{Tags: []string{"az:2"}}, replicas: 2, fail: false, cluster: "C2"},
 	} {
 		name := fmt.Sprintf("test-%d", i)
 		t.Run(name, func(t *testing.T) {
@@ -1606,8 +1606,8 @@ func TestJetStreamSuperClusterEphemeralCleanup(t *testing.T) {
 		streamName      string
 		sourceName      string
 	}{
-		{"local", 0, "TEST1", "S1"},
-		{"remote", 1, "TEST2", "S2"},
+		{name: "local", sourceInCluster: 0, streamName: "TEST1", sourceName: "S1"},
+		{name: "remote", sourceInCluster: 1, streamName: "TEST2", sourceName: "S2"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := js.AddStream(&nats.StreamConfig{Name: test.streamName, Replicas: 3}); err != nil {
@@ -1963,8 +1963,8 @@ func TestJetStreamSuperClusterPushConsumerInterest(t *testing.T) {
 		name  string
 		queue string
 	}{
-		{"non queue", _EMPTY_},
-		{"queue", "queue"},
+		{name: "non queue", queue: _EMPTY_},
+		{name: "queue", queue: "queue"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testInterest := func(s *Server) {
@@ -2355,8 +2355,8 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 		name     string
 		replicas int
 	}{
-		{"R1", 1},
-		{"R3", 3},
+		{name: "R1", replicas: 1},
+		{name: "R3", replicas: 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			replicas := test.replicas
@@ -2738,8 +2738,8 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 		name     string
 		replicas int
 	}{
-		{"R1", 1},
-		{"R3", 3},
+		{name: "R1", replicas: 1},
+		{name: "R3", replicas: 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			js.DeleteStream("TEST")

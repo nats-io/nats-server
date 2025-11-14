@@ -907,7 +907,7 @@ func convertPanicToErrorList(lastToken *token, errors *[]error) {
 	} else if err := recover(); err == nil {
 		return
 	} else if lastToken != nil && *lastToken != nil {
-		*errors = append(*errors, &configErr{*lastToken, fmt.Sprint(err)})
+		*errors = append(*errors, &configErr{token: *lastToken, reason: fmt.Sprint(err)})
 	} else {
 		*errors = append(*errors, fmt.Errorf("encountered panic without a token %v", err))
 	}
@@ -921,7 +921,7 @@ func convertPanicToError(lastToken *token, e *error) {
 	} else if err := recover(); err == nil {
 		return
 	} else if lastToken != nil && *lastToken != nil {
-		*e = &configErr{*lastToken, fmt.Sprint(err)}
+		*e = &configErr{token: *lastToken, reason: fmt.Sprint(err)}
 	} else {
 		*e = fmt.Errorf("%v", err)
 	}
@@ -936,7 +936,7 @@ func configureSystemAccount(o *Options, m map[string]any) (retErr error) {
 		tk, v := unwrapValue(v, &lt)
 		sa, ok := v.(string)
 		if !ok {
-			return &configErr{tk, "system account name must be a string"}
+			return &configErr{token: tk, reason: "system account name must be a string"}
 		}
 		o.SystemAccount = sa
 		return nil
@@ -1022,7 +1022,7 @@ func (o *Options) processConfigFile(configFile string, m map[string]any) error {
 
 		for _, acc := range o.AuthCallout.AllowedAccounts {
 			if _, ok := accounts[acc]; !ok {
-				err := &configErr{nil, fmt.Sprintf("auth_callout allowed account %q not found in configured accounts", acc)}
+				err := &configErr{token: nil, reason: fmt.Sprintf("auth_callout allowed account %q not found in configured accounts", acc)}
 				errors = append(errors, err)
 			}
 		}
@@ -1047,7 +1047,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "listen":
 		hp, err := parseListen(v)
 		if err != nil {
-			*errors = append(*errors, &configErr{tk, err.Error()})
+			*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 			return
 		}
 		o.Host = hp.host
@@ -1059,7 +1059,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "server_name":
 		sn := v.(string)
 		if strings.Contains(sn, " ") {
-			err := &configErr{tk, ErrServerNameHasSpaces.Error()}
+			err := &configErr{token: tk, reason: ErrServerNameHasSpaces.Error()}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1121,7 +1121,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.AuthCallout = auth.callout
 
 		if (auth.user != _EMPTY_ || auth.pass != _EMPTY_) && auth.token != _EMPTY_ {
-			err := &configErr{tk, "Cannot have a user/pass and token"}
+			err := &configErr{token: tk, reason: "Cannot have a user/pass and token"}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1134,12 +1134,12 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		// added in parseAccounts() (which means they will be in unames)
 		if auth.users != nil || len(unames) > 0 {
 			if auth.user != _EMPTY_ {
-				err := &configErr{tk, "Can not have a single user/pass and a users array"}
+				err := &configErr{token: tk, reason: "Can not have a single user/pass and a users array"}
 				*errors = append(*errors, err)
 				return
 			}
 			if auth.token != _EMPTY_ {
-				err := &configErr{tk, "Can not have a token and a users array"}
+				err := &configErr{token: tk, reason: "Can not have a token and a users array"}
 				*errors = append(*errors, err)
 				return
 			}
@@ -1148,7 +1148,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			if len(auth.users) > 0 {
 				for _, u := range auth.users {
 					if _, ok := unames[u.Username]; ok {
-						err := &configErr{tk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
+						err := &configErr{token: tk, reason: fmt.Sprintf("Duplicate user %q detected", u.Username)}
 						*errors = append(*errors, err)
 						return
 					}
@@ -1162,7 +1162,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		if len(auth.nkeys) > 0 {
 			for _, u := range auth.nkeys {
 				if _, ok := unames[u.Nkey]; ok {
-					err := &configErr{tk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
 					*errors = append(*errors, err)
 					return
 				}
@@ -1174,7 +1174,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "http":
 		hp, err := parseListen(v)
 		if err != nil {
-			err := &configErr{tk, err.Error()}
+			err := &configErr{token: tk, reason: err.Error()}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1183,7 +1183,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "https":
 		hp, err := parseListen(v)
 		if err != nil {
-			err := &configErr{tk, err.Error()}
+			err := &configErr{token: tk, reason: err.Error()}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1215,7 +1215,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "store_dir", "storedir":
 		// Check if JetStream configuration is also setting the storage directory.
 		if o.StoreDir != _EMPTY_ {
-			*errors = append(*errors, &configErr{tk, "Duplicate 'store_dir' configuration"})
+			*errors = append(*errors, &configErr{token: tk, reason: "Duplicate 'store_dir' configuration"})
 			return
 		}
 		o.StoreDir = v.(string)
@@ -1246,14 +1246,14 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.ProfBlockRate = int(v.(int64))
 	case "max_control_line":
 		if v.(int64) > 1<<31-1 {
-			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("%s value is too big", k)}
 			*errors = append(*errors, err)
 			return
 		}
 		o.MaxControlLine = int32(v.(int64))
 	case "max_payload":
 		if v.(int64) > 1<<31-1 {
-			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("%s value is too big", k)}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1270,11 +1270,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.MaxSubs = int(v.(int64))
 	case "max_sub_tokens", "max_subscription_tokens":
 		if n := v.(int64); n > math.MaxUint8 {
-			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("%s value is too big", k)}
 			*errors = append(*errors, err)
 			return
 		} else if n <= 0 {
-			err := &configErr{tk, fmt.Sprintf("%s value can not be negative", k)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("%s value can not be negative", k)}
 			*errors = append(*errors, err)
 			return
 		} else {
@@ -1291,7 +1291,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			return
 		}
 		if o.TLSConfig, err = GenTLSConfig(tc); err != nil {
-			err := &configErr{tk, err.Error()}
+			err := &configErr{token: tk, reason: err.Error()}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1334,7 +1334,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 					case strings.EqualFold(mode, "auto"):
 						ocsp.Mode = OCSPModeAuto
 					default:
-						*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported ocsp mode %T", mode)})
+						*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("error parsing ocsp config: unsupported ocsp mode %T", mode)})
 					}
 				case "urls":
 					urls := v.([]string)
@@ -1343,13 +1343,13 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 					url := v.(string)
 					ocsp.OverrideURLs = []string{url}
 				default:
-					*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported field %T", kk)})
+					*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("error parsing ocsp config: unsupported field %T", kk)})
 					return
 				}
 			}
 			o.OCSPConfig = ocsp
 		default:
-			*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported type %T", v)})
+			*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("error parsing ocsp config: unsupported type %T", v)})
 			return
 		}
 	case "allow_non_tls":
@@ -1361,12 +1361,12 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "lame_duck_duration":
 		dur, err := time.ParseDuration(v.(string))
 		if err != nil {
-			err := &configErr{tk, fmt.Sprintf("error parsing lame_duck_duration: %v", err)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("error parsing lame_duck_duration: %v", err)}
 			*errors = append(*errors, err)
 			return
 		}
 		if dur < 30*time.Second {
-			err := &configErr{tk, fmt.Sprintf("invalid lame_duck_duration of %v, minimum is 30 seconds", dur)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("invalid lame_duck_duration of %v, minimum is 30 seconds", dur)}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1374,12 +1374,12 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "lame_duck_grace_period":
 		dur, err := time.ParseDuration(v.(string))
 		if err != nil {
-			err := &configErr{tk, fmt.Sprintf("error parsing lame_duck_grace_period: %v", err)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("error parsing lame_duck_grace_period: %v", err)}
 			*errors = append(*errors, err)
 			return
 		}
 		if dur < 0 {
-			err := &configErr{tk, "invalid lame_duck_grace_period, needs to be positive"}
+			err := &configErr{token: tk, reason: "invalid lame_duck_grace_period, needs to be positive"}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1397,18 +1397,18 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 					if v, ok := token.Value().(string); ok {
 						opFiles = append(opFiles, v)
 					} else {
-						err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T where string is expected", token)}
+						err := &configErr{token: tk, reason: fmt.Sprintf("error parsing operators: unsupported type %T where string is expected", token)}
 						*errors = append(*errors, err)
 						break
 					}
 				} else {
-					err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", t)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("error parsing operators: unsupported type %T", t)}
 					*errors = append(*errors, err)
 					break
 				}
 			}
 		default:
-			err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", v)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("error parsing operators: unsupported type %T", v)}
 			*errors = append(*errors, err)
 		}
 		// Assume for now these are file names, but they can also be the JWT itself inline.
@@ -1416,7 +1416,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		for _, fname := range opFiles {
 			theJWT, opc, err := readOperatorJWT(fname)
 			if err != nil {
-				err := &configErr{tk, fmt.Sprintf("error parsing operator JWT: %v", err)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("error parsing operator JWT: %v", err)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -1450,11 +1450,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				url := items[1]
 				_, err := parseURL(url, "account resolver")
 				if err != nil {
-					*errors = append(*errors, &configErr{tk, err.Error()})
+					*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 					return
 				}
 				if ur, err := NewURLAccResolver(url); err != nil {
-					err := &configErr{tk, err.Error()}
+					err := &configErr{token: tk, reason: err.Error()}
 					*errors = append(*errors, err)
 					return
 				} else {
@@ -1509,17 +1509,17 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				}
 			}
 			if err != nil {
-				*errors = append(*errors, &configErr{tk, err.Error()})
+				*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 				return
 			}
 
 			checkDir := func() {
 				if dir == _EMPTY_ {
-					*errors = append(*errors, &configErr{tk, "dir has no value and needs to point to a directory"})
+					*errors = append(*errors, &configErr{token: tk, reason: "dir has no value and needs to point to a directory"})
 					return
 				}
 				if info, _ := os.Stat(dir); info != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
-					*errors = append(*errors, &configErr{tk, "dir needs to point to an accessible directory"})
+					*errors = append(*errors, &configErr{token: tk, reason: "dir needs to point to an accessible directory"})
 					return
 				}
 			}
@@ -1529,22 +1529,22 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			case "CACHE":
 				checkDir()
 				if sync != 0 {
-					*errors = append(*errors, &configErr{tk, "CACHE does not accept sync"})
+					*errors = append(*errors, &configErr{token: tk, reason: "CACHE does not accept sync"})
 				}
 				if del {
-					*errors = append(*errors, &configErr{tk, "CACHE does not accept allow_delete"})
+					*errors = append(*errors, &configErr{token: tk, reason: "CACHE does not accept allow_delete"})
 				}
 				if hdel_set {
-					*errors = append(*errors, &configErr{tk, "CACHE does not accept hard_delete"})
+					*errors = append(*errors, &configErr{token: tk, reason: "CACHE does not accept hard_delete"})
 				}
 				res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
 			case "FULL":
 				checkDir()
 				if ttl != 0 {
-					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
+					*errors = append(*errors, &configErr{token: tk, reason: "FULL does not accept ttl"})
 				}
 				if hdel_set && !del {
-					*errors = append(*errors, &configErr{tk, "hard_delete has no effect without delete"})
+					*errors = append(*errors, &configErr{token: tk, reason: "hard_delete has no effect without delete"})
 				}
 				delete := NoDelete
 				if del {
@@ -1559,17 +1559,17 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				res = &MemAccResolver{}
 			}
 			if err != nil {
-				*errors = append(*errors, &configErr{tk, err.Error()})
+				*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 				return
 			}
 			o.AccountResolver = res
 		default:
-			err := &configErr{tk, fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}
 			*errors = append(*errors, err)
 			return
 		}
 		if o.AccountResolver == nil {
-			err := &configErr{tk, "error parsing account resolver, should be MEM or " +
+			err := &configErr{token: tk, reason: "error parsing account resolver, should be MEM or " +
 				" URL(\"url\") or a map containing dir and type state=[FULL|CACHE])"}
 			*errors = append(*errors, err)
 		}
@@ -1581,7 +1581,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		}
 		tlsConfig, err := GenTLSConfig(tc)
 		if err != nil {
-			err := &configErr{tk, err.Error()}
+			err := &configErr{token: tk, reason: err.Error()}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1592,7 +1592,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "resolver_preload":
 		mp, ok := v.(map[string]any)
 		if !ok {
-			err := &configErr{tk, "preload should be a map of account_public_key:account_jwt"}
+			err := &configErr{token: tk, reason: "preload should be a map of account_public_key:account_jwt"}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1600,13 +1600,13 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		for key, val := range mp {
 			tk, val = unwrapValue(val, &lt)
 			if jwtstr, ok := val.(string); !ok {
-				*errors = append(*errors, &configErr{tk, "preload map value should be a string JWT"})
+				*errors = append(*errors, &configErr{token: tk, reason: "preload map value should be a string JWT"})
 				continue
 			} else {
 				// Make sure this is a valid account JWT, that is a config error.
 				// We will warn of expirations, etc later.
 				if _, err := jwt.DecodeAccountClaims(jwtstr); err != nil {
-					err := &configErr{tk, "invalid account JWT"}
+					err := &configErr{token: tk, reason: "invalid account JWT"}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -1629,14 +1629,14 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				if key, ok := mv.(string); ok {
 					o.resolverPinnedAccounts[key] = struct{}{}
 				} else {
-					err := &configErr{tk,
-						fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type in array %T", mv)}
+					err := &configErr{token: tk,
+						reason: fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type in array %T", mv)}
 					*errors = append(*errors, err)
 					continue
 				}
 			}
 		default:
-			err := &configErr{tk, fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type %T", v)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type %T", v)}
 			*errors = append(*errors, err)
 			return
 		}
@@ -1663,20 +1663,20 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				if key, ok := mv.(string); ok {
 					keys = append(keys, key)
 				} else {
-					err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type in array %T", mv)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("error parsing trusted: unsupported type in array %T", mv)}
 					*errors = append(*errors, err)
 					continue
 				}
 			}
 			o.TrustedKeys = keys
 		default:
-			err := &configErr{tk, fmt.Sprintf("error parsing trusted: unsupported type %T", v)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("error parsing trusted: unsupported type %T", v)}
 			*errors = append(*errors, err)
 		}
 		// Do a quick sanity check on keys
 		for _, key := range o.TrustedKeys {
 			if !nkeys.IsValidPublicOperatorKey(key) {
-				err := &configErr{tk, fmt.Sprintf("trust key %q required to be a valid public operator nkey", key)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("trust key %q required to be a valid public operator nkey", key)}
 				*errors = append(*errors, err)
 			}
 		}
@@ -1708,15 +1708,15 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 						o.Tags.Add(ts)
 						continue
 					} else {
-						err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T where string is expected", token)}
+						err = &configErr{token: tk, reason: fmt.Sprintf("error parsing tags: unsupported type %T where string is expected", token)}
 					}
 				} else {
-					err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", t)}
+					err = &configErr{token: tk, reason: fmt.Sprintf("error parsing tags: unsupported type %T", t)}
 				}
 				break
 			}
 		default:
-			err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", v)}
+			err = &configErr{token: tk, reason: fmt.Sprintf("error parsing tags: unsupported type %T", v)}
 		}
 		if err != nil {
 			*errors = append(*errors, err)
@@ -1734,7 +1734,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				o.Metadata[mk] = mv.(string)
 			}
 		default:
-			err = &configErr{tk, fmt.Sprintf("error parsing metadata: unsupported type %T", v)}
+			err = &configErr{token: tk, reason: fmt.Sprintf("error parsing metadata: unsupported type %T", v)}
 		}
 		if err != nil {
 			*errors = append(*errors, err)
@@ -1743,7 +1743,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "default_js_domain":
 		vv, ok := v.(map[string]any)
 		if !ok {
-			*errors = append(*errors, &configErr{tk, fmt.Sprintf("error default_js_domain config: unsupported type %T", v)})
+			*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("error default_js_domain config: unsupported type %T", v)})
 			return
 		}
 		m := make(map[string]string)
@@ -1774,7 +1774,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			}
 			o.OCSPCacheConfig = pc
 		default:
-			err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", v)}
+			err = &configErr{token: tk, reason: fmt.Sprintf("error parsing tags: unsupported type %T", v)}
 		}
 		if err != nil {
 			*errors = append(*errors, err)
@@ -1818,7 +1818,7 @@ func setupUsersAndNKeysDuplicateCheckMap(o *Options) map[string]struct{} {
 func parseDuration(field string, tk token, v any, errors *[]error, warnings *[]error) time.Duration {
 	if wd, ok := v.(string); ok {
 		if dur, err := time.ParseDuration(wd); err != nil {
-			err := &configErr{tk, fmt.Sprintf("error parsing %s: %v", field, err)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("error parsing %s: %v", field, err)}
 			*errors = append(*errors, err)
 			return 0
 		} else {
@@ -1848,7 +1848,7 @@ func parseWriteDeadlinePolicy(tk token, v string, errors *[]error) WriteTimeoutP
 	case "retry":
 		return WriteTimeoutPolicyRetry
 	default:
-		err := &configErr{tk, "write_timeout must be 'default', 'close' or 'retry'"}
+		err := &configErr{token: tk, reason: "write_timeout must be 'default', 'close' or 'retry'"}
 		*errors = append(*errors, err)
 		return WriteTimeoutPolicyDefault
 	}
@@ -1900,7 +1900,7 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected map to define cluster, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected map to define cluster, got %T", v)}
 	}
 
 	for mk, mv := range cm {
@@ -1910,7 +1910,7 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 		case "name":
 			cn := mv.(string)
 			if strings.Contains(cn, " ") {
-				err := &configErr{tk, ErrClusterNameHasSpaces.Error()}
+				err := &configErr{token: tk, reason: ErrClusterNameHasSpaces.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -1918,7 +1918,7 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -1935,17 +1935,17 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 				continue
 			}
 			if auth.users != nil {
-				err := &configErr{tk, "Cluster authorization does not allow multiple users"}
+				err := &configErr{token: tk, reason: "Cluster authorization does not allow multiple users"}
 				*errors = append(*errors, err)
 				continue
 			}
 			if auth.token != _EMPTY_ {
-				err := &configErr{tk, "Cluster authorization does not support tokens"}
+				err := &configErr{token: tk, reason: "Cluster authorization does not support tokens"}
 				*errors = append(*errors, err)
 				continue
 			}
 			if auth.callout != nil {
-				err := &configErr{tk, "Cluster authorization does not support callouts"}
+				err := &configErr{token: tk, reason: "Cluster authorization does not support callouts"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2006,7 +2006,7 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			}
 			// Dynamic response permissions do not make sense here.
 			if perms.Response != nil {
-				err := &configErr{tk, "Cluster permissions do not support dynamic responses"}
+				err := &configErr{token: tk, reason: "Cluster permissions do not support dynamic responses"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2024,7 +2024,7 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 		case "ping_interval":
 			opts.Cluster.PingInterval = parseDuration("ping_interval", tk, mv, errors, warnings)
 			if opts.Cluster.PingInterval > routeMaxPingInterval {
-				*warnings = append(*warnings, &configErr{tk, fmt.Sprintf("Cluster 'ping_interval' will reset to %v which is the max for routes", routeMaxPingInterval)})
+				*warnings = append(*warnings, &configErr{token: tk, reason: fmt.Sprintf("Cluster 'ping_interval' will reset to %v which is the max for routes", routeMaxPingInterval)})
 			}
 		case "ping_max":
 			opts.Cluster.MaxPingsOut = int(mv.(int64))
@@ -2076,18 +2076,18 @@ func parseCompression(c *CompressionOpts, chosenModeForOn string, tk token, mk s
 					_, mv := unwrapValue(iv, &lt)
 					dur, err := time.ParseDuration(mv.(string))
 					if err != nil {
-						return &configErr{tk, err.Error()}
+						return &configErr{token: tk, reason: err.Error()}
 					}
 					c.RTTThresholds = append(c.RTTThresholds, dur)
 				}
 			default:
 				if !tk.IsUsedVariable() {
-					return &configErr{tk, fmt.Sprintf("unknown field %q", mk)}
+					return &configErr{token: tk, reason: fmt.Sprintf("unknown field %q", mk)}
 				}
 			}
 		}
 	default:
-		return &configErr{tk, fmt.Sprintf("field %q should be a boolean or a structure, got %T", mk, mv)}
+		return &configErr{token: tk, reason: fmt.Sprintf("field %q should be a boolean or a structure, got %T", mk, mv)}
 	}
 	return nil
 }
@@ -2116,7 +2116,7 @@ func parseURLs(a []any, typ string, warnings *[]error) (urls []*url.URL, errors 
 		dd[sURL] = true
 		url, err := parseURL(sURL, typ)
 		if err != nil {
-			err := &configErr{tk, err.Error()}
+			err := &configErr{token: tk, reason: err.Error()}
 			errors = append(errors, err)
 			continue
 		}
@@ -2143,7 +2143,7 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 	tk, v := unwrapValue(v, &lt)
 	gm, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected gateway to be a map, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected gateway to be a map, got %T", v)}
 	}
 	for mk, mv := range gm {
 		// Again, unwrap token value if line check is required.
@@ -2152,7 +2152,7 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 		case "name":
 			gn := mv.(string)
 			if strings.Contains(gn, " ") {
-				err := &configErr{tk, ErrGatewayNameHasSpaces.Error()}
+				err := &configErr{token: tk, reason: ErrGatewayNameHasSpaces.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2160,7 +2160,7 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2177,16 +2177,16 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 				continue
 			}
 			if auth.users != nil {
-				*errors = append(*errors, &configErr{tk, "Gateway authorization does not allow multiple users"})
+				*errors = append(*errors, &configErr{token: tk, reason: "Gateway authorization does not allow multiple users"})
 				continue
 			}
 			if auth.token != _EMPTY_ {
-				err := &configErr{tk, "Gateway authorization does not support tokens"}
+				err := &configErr{token: tk, reason: "Gateway authorization does not support tokens"}
 				*errors = append(*errors, err)
 				continue
 			}
 			if auth.callout != nil {
-				err := &configErr{tk, "Gateway authorization does not support callouts"}
+				err := &configErr{token: tk, reason: "Gateway authorization does not support callouts"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2240,7 +2240,7 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 	return nil
 }
 
-var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
+var dynamicJSAccountLimits = JetStreamAccountLimits{MaxMemory: -1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1, MaxAckPending: -1, MemoryMaxStreamBytes: -1, StoreMaxStreamBytes: -1, MaxBytesRequired: false}
 var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
@@ -2263,65 +2263,65 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 		case "disabled", "disable":
 			acc.jsLimits = nil
 		default:
-			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
+			return &configErr{token: tk, reason: fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
 	case map[string]any:
-		jsLimits := JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
+		jsLimits := JetStreamAccountLimits{MaxMemory: -1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1, MaxAckPending: -1, MemoryMaxStreamBytes: -1, StoreMaxStreamBytes: -1, MaxBytesRequired: false}
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
 			case "max_memory", "max_mem", "mem", "memory":
 				vv, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxMemory = vv
 			case "max_store", "max_file", "max_disk", "store", "disk":
 				vv, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxStore = vv
 			case "max_streams", "streams":
 				vv, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxStreams = int(vv)
 			case "max_consumers", "consumers":
 				vv, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxConsumers = int(vv)
 			case "max_bytes_required", "max_stream_bytes", "max_bytes":
 				vv, ok := mv.(bool)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable bool for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable bool for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxBytesRequired = vv
 			case "mem_max_stream_bytes", "memory_max_stream_bytes":
 				vv, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MemoryMaxStreamBytes = vv
 			case "disk_max_stream_bytes", "store_max_stream_bytes":
 				vv, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.StoreMaxStreamBytes = vv
 			case "max_ack_pending":
 				vv, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxAckPending = int(vv)
 			case "cluster_traffic":
 				vv, ok := mv.(string)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected either 'system' or 'account' string value for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected either 'system' or 'account' string value for %q, got %v", mk, mv)}
 				}
 				switch vv {
 				case "system", _EMPTY_:
@@ -2329,7 +2329,7 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 				case "owner":
 					acc.nrgAccount = acc.Name
 				default:
-					return &configErr{tk, fmt.Sprintf("Expected 'system' or 'owner' string value for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected 'system' or 'owner' string value for %q, got %v", mk, mv)}
 				}
 			default:
 				if !tk.IsUsedVariable() {
@@ -2346,7 +2346,7 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 		}
 		acc.jsLimits = map[string]JetStreamAccountLimits{_EMPTY_: jsLimits}
 	default:
-		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
 	}
 	return nil
 }
@@ -2394,7 +2394,7 @@ func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 
 	vv, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected a map to define JetStreamLimits, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected a map to define JetStreamLimits, got %T", v)}
 	}
 	for mk, mv := range vv {
 		tk, mv = unwrapValue(mv, &lt)
@@ -2437,7 +2437,7 @@ func parseJetStreamLimitsBatch(v any, opts *Options, errors *[]error) error {
 
 	vv, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected a map to define batch limits, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected a map to define batch limits, got %T", v)}
 	}
 	for mk, mv := range vv {
 		tk, mv = unwrapValue(mv, &lt)
@@ -2479,7 +2479,7 @@ func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
 
 	vv, ok := v.(map[string]interface{})
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected a map to define JetStreamLimits, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected a map to define JetStreamLimits, got %T", v)}
 	}
 	for mk, mv := range vv {
 		tk, mv = unwrapValue(mv, &lt)
@@ -2516,13 +2516,13 @@ func setJetStreamEkCipher(opts *Options, mv interface{}, tk token) error {
 	switch strings.ToLower(mv.(string)) {
 	case "chacha", "chachapoly":
 		if fips140.Enabled() {
-			return &configErr{tk, fmt.Sprintf("Cipher type %q cannot be used in FIPS-140 mode", mv)}
+			return &configErr{token: tk, reason: fmt.Sprintf("Cipher type %q cannot be used in FIPS-140 mode", mv)}
 		}
 		opts.JetStreamCipher = ChaCha
 	case "aes":
 		opts.JetStreamCipher = AES
 	default:
-		return &configErr{tk, fmt.Sprintf("Unknown cipher type: %q", mv)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Unknown cipher type: %q", mv)}
 	}
 	return nil
 }
@@ -2544,7 +2544,7 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 		case "disabled", "disable":
 			opts.JetStream = false
 		default:
-			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
+			return &configErr{token: tk, reason: fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
 	case map[string]any:
 		doEnable := true
@@ -2555,12 +2555,12 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 				if v, ok := mv.(bool); ok {
 					opts.NoJetStreamStrict = !v
 				} else {
-					return &configErr{tk, fmt.Sprintf("Expected 'true' or 'false' for bool value, got '%s'", mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected 'true' or 'false' for bool value, got '%s'", mv)}
 				}
 			case "store", "store_dir", "storedir":
 				// StoreDir can be set at the top level as well so have to prevent ambiguous declarations.
 				if opts.StoreDir != _EMPTY_ {
-					return &configErr{tk, "Duplicate 'store_dir' configuration"}
+					return &configErr{token: tk, reason: "Duplicate 'store_dir' configuration"}
 				}
 				opts.StoreDir = mv.(string)
 			case "sync", "sync_interval":
@@ -2574,14 +2574,14 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 			case "max_memory_store", "max_mem_store", "max_mem":
 				s, err := getStorageSize(mv)
 				if err != nil {
-					return &configErr{tk, fmt.Sprintf("max_mem_store %s", err)}
+					return &configErr{token: tk, reason: fmt.Sprintf("max_mem_store %s", err)}
 				}
 				opts.JetStreamMaxMemory = s
 				opts.maxMemSet = true
 			case "max_file_store", "max_file":
 				s, err := getStorageSize(mv)
 				if err != nil {
-					return &configErr{tk, fmt.Sprintf("max_file_store %s", err)}
+					return &configErr{token: tk, reason: fmt.Sprintf("max_file_store %s", err)}
 				}
 				opts.JetStreamMaxStore = s
 				opts.maxStoreSet = true
@@ -2612,40 +2612,40 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 			case "max_outstanding_catchup":
 				s, err := getStorageSize(mv)
 				if err != nil {
-					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
+					return &configErr{token: tk, reason: fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				opts.JetStreamMaxCatchup = s
 			case "max_buffered_size":
 				s, err := getStorageSize(mv)
 				if err != nil {
-					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
+					return &configErr{token: tk, reason: fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				opts.StreamMaxBufferedSize = s
 			case "max_buffered_msgs":
 				mlen, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				opts.StreamMaxBufferedMsgs = int(mlen)
 			case "request_queue_limit":
 				lim, ok := mv.(int64)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				opts.JetStreamRequestQueueLimit = lim
 			case "meta_compact":
 				thres, ok := mv.(int64)
 				if !ok || thres < 0 {
-					return &configErr{tk, fmt.Sprintf("Expected an absolute size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected an absolute size for %q, got %v", mk, mv)}
 				}
 				opts.JetStreamMetaCompact = uint64(thres)
 			case "meta_compact_size":
 				s, err := getStorageSize(mv)
 				if err != nil {
-					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
+					return &configErr{token: tk, reason: fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				if s < 0 {
-					return &configErr{tk, fmt.Sprintf("Expected an absolute size for %q, got %v", mk, mv)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Expected an absolute size for %q, got %v", mk, mv)}
 				}
 				opts.JetStreamMetaCompactSize = uint64(s)
 			default:
@@ -2663,7 +2663,7 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 		}
 		opts.JetStream = doEnable
 	default:
-		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
 	}
 
 	return nil
@@ -2677,7 +2677,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected map to define a leafnode, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected map to define a leafnode, got %T", v)}
 	}
 
 	for mk, mv := range cm {
@@ -2687,7 +2687,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2712,7 +2712,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 			opts.LeafNode.Nkey = auth.nkey
 			// Validate user info config for leafnode authorization
 			if err := validateLeafNodeAuthOptions(opts); err != nil {
-				*errors = append(*errors, &configErr{tk, err.Error()})
+				*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 				continue
 			}
 		case "remotes":
@@ -2732,7 +2732,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 				continue
 			}
 			if opts.LeafNode.TLSConfig, err = GenTLSConfig(tc); err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2750,7 +2750,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 		case "min_version", "minimum_version":
 			version := mv.(string)
 			if err := checkLeafMinVersionConfig(version); err != nil {
-				err = &configErr{tk, err.Error()}
+				err = &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2805,7 +2805,7 @@ func parseLeafAuthorization(v any, errors, warnings *[]error) (*authorization, e
 		case "nkey":
 			nk := mv.(string)
 			if !nkeys.IsValidPublicUserKey(nk) {
-				*errors = append(*errors, &configErr{tk, "Not a valid public nkey for leafnode authorization"})
+				*errors = append(*errors, &configErr{token: tk, reason: "Not a valid public nkey for leafnode authorization"})
 			}
 			auth.nkey = nk
 		case "timeout":
@@ -2818,11 +2818,11 @@ func parseLeafAuthorization(v any, errors, warnings *[]error) (*authorization, e
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing leafnode authorization config, 'timeout' %s", err)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing leafnode authorization config, 'timeout' %s", err)}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, "error parsing leafnode authorization config, 'timeout' wrong type"}
+				return nil, &configErr{token: tk, reason: "error parsing leafnode authorization config, 'timeout' wrong type"}
 			}
 			if at > (60 * time.Second).Seconds() {
 				reason := fmt.Sprintf("timeout of %v (%f seconds) is high, consider keeping it under 60 seconds. possibly caused by unquoted duration; use '1m' instead of 1m, for example", mv, at)
@@ -2871,14 +2871,14 @@ func parseLeafUsers(mv any, errors *[]error) ([]*User, error) {
 	// Make sure we have an array
 	uv, ok := mv.([]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("Expected users field to be an array, got %v", mv)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected users field to be an array, got %v", mv)}
 	}
 	for _, u := range uv {
 		tk, u = unwrapValue(u, &lt)
 		// Check its a map/struct
 		um, ok := u.(map[string]any)
 		if !ok {
-			err := &configErr{tk, fmt.Sprintf("Expected user entry to be a map/struct, got %v", u)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("Expected user entry to be a map/struct, got %v", u)}
 			*errors = append(*errors, err)
 			continue
 		}
@@ -2924,7 +2924,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 	tk, v := unwrapValue(v, &lt)
 	ra, ok := v.([]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("Expected remotes field to be an array, got %T", v)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected remotes field to be an array, got %T", v)}
 	}
 	remotes := make([]*RemoteLeafOpts, 0, len(ra))
 	for _, r := range ra {
@@ -2932,7 +2932,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 		// Check its a map/struct
 		rm, ok := r.(map[string]any)
 		if !ok {
-			*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected remote leafnode entry to be a map/struct, got %v", r)})
+			*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("Expected remote leafnode entry to be a map/struct, got %v", r)})
 			continue
 		}
 		remote := &RemoteLeafOpts{}
@@ -2954,12 +2954,12 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				case string:
 					url, err := parseURL(v, "leafnode")
 					if err != nil {
-						*errors = append(*errors, &configErr{tk, err.Error()})
+						*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 						continue
 					}
 					remote.URLs = append(remote.URLs, url)
 				default:
-					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected remote leafnode url to be an array or string, got %v", v)})
+					*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("Expected remote leafnode url to be an array or string, got %v", v)})
 					continue
 				}
 			case "account", "local":
@@ -2967,24 +2967,24 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 			case "creds", "credentials":
 				p, err := expandPath(v.(string))
 				if err != nil {
-					*errors = append(*errors, &configErr{tk, err.Error()})
+					*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 					continue
 				}
 				// Can't have both creds and nkey
 				if remote.Nkey != _EMPTY_ {
-					*errors = append(*errors, &configErr{tk, "Remote leafnode can not have both creds and nkey defined"})
+					*errors = append(*errors, &configErr{token: tk, reason: "Remote leafnode can not have both creds and nkey defined"})
 					continue
 				}
 				remote.Credentials = p
 			case "nkey", "seed":
 				nk := v.(string)
 				if pb, _, err := nkeys.DecodeSeed([]byte(nk)); err != nil || pb != nkeys.PrefixByteUser {
-					err := &configErr{tk, fmt.Sprintf("Remote leafnode nkey is not a valid seed: %q", v)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("Remote leafnode nkey is not a valid seed: %q", v)}
 					*errors = append(*errors, err)
 					continue
 				}
 				if remote.Credentials != _EMPTY_ {
-					*errors = append(*errors, &configErr{tk, "Remote leafnode can not have both creds and nkey defined"})
+					*errors = append(*errors, &configErr{token: tk, reason: "Remote leafnode can not have both creds and nkey defined"})
 					continue
 				}
 				remote.Nkey = nk
@@ -2995,7 +2995,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 					continue
 				}
 				if remote.TLSConfig, err = GenTLSConfig(tc); err != nil {
-					*errors = append(*errors, &configErr{tk, err.Error()})
+					*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 					continue
 				}
 				// If ca_file is defined, GenTLSConfig() sets TLSConfig.ClientCAs.
@@ -3048,7 +3048,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 						remote.JetStreamClusterMigrateDelay = parseDuration("leader_migrate_delay", tk, delay, errors, warnings)
 					}
 				default:
-					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected boolean or map for jetstream_cluster_migrate, got %T", v)})
+					*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("Expected boolean or map for jetstream_cluster_migrate, got %T", v)})
 				}
 			case "isolate_leafnode_interest", "isolate":
 				remote.LocalIsolation = v.(bool)
@@ -3066,7 +3066,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 			case "proxy":
 				proxyMap, ok := v.(map[string]any)
 				if !ok {
-					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected proxy to be a map, got %T", v)})
+					*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("Expected proxy to be a map, got %T", v)})
 					continue
 				}
 				// Capture the token for the "proxy" field itself, before the map iteration
@@ -3110,12 +3110,12 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 		}
 		// Use the saved proxy token for validation errors, not the last field token
 		if warns, err := validateLeafNodeProxyOptions(remote); err != nil {
-			*errors = append(*errors, &configErr{proxyToken, err.Error()})
+			*errors = append(*errors, &configErr{token: proxyToken, reason: err.Error()})
 			continue
 		} else {
 			// Add any warnings about proxy configuration
 			for _, warn := range warns {
-				*warnings = append(*warnings, &configErr{proxyToken, warn})
+				*warnings = append(*warnings, &configErr{token: proxyToken, reason: warn})
 			}
 		}
 		remotes = append(remotes, remote)
@@ -3132,7 +3132,7 @@ func getTLSConfig(tk token) (*tls.Config, *TLSConfigOpts, error) {
 	}
 	config, err := GenTLSConfig(tc)
 	if err != nil {
-		err := &configErr{tk, err.Error()}
+		err := &configErr{token: tk, reason: err.Error()}
 		return nil, nil, err
 	}
 	// For clusters/gateways, we will force strict verification. We also act
@@ -3151,7 +3151,7 @@ func parseGateways(v any, errors *[]error, warnings *[]error) ([]*RemoteGatewayO
 	// Make sure we have an array
 	ga, ok := v.([]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("Expected gateways field to be an array, got %T", v)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected gateways field to be an array, got %T", v)}
 	}
 	gateways := []*RemoteGatewayOpts{}
 	for _, g := range ga {
@@ -3159,7 +3159,7 @@ func parseGateways(v any, errors *[]error, warnings *[]error) ([]*RemoteGatewayO
 		// Check its a map/struct
 		gm, ok := g.(map[string]any)
 		if !ok {
-			*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected gateway entry to be a map/struct, got %v", g)})
+			*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("Expected gateway entry to be a map/struct, got %v", g)})
 			continue
 		}
 		gateway := &RemoteGatewayOpts{}
@@ -3180,7 +3180,7 @@ func parseGateways(v any, errors *[]error, warnings *[]error) ([]*RemoteGatewayO
 			case "url":
 				url, err := parseURL(v.(string), "gateway")
 				if err != nil {
-					*errors = append(*errors, &configErr{tk, err.Error()})
+					*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 					continue
 				}
 				gateway.URLs = append(gateway.URLs, url)
@@ -3262,7 +3262,7 @@ func parseAccountMapDest(v any, tk token, errors *[]error) (*MapDest, *configErr
 	// These should be maps.
 	mv, ok := v.(map[string]any)
 	if !ok {
-		err := &configErr{tk, "Expected an entry for the mapping destination"}
+		err := &configErr{token: tk, reason: "Expected an entry for the mapping destination"}
 		*errors = append(*errors, err)
 		return nil, err
 	}
@@ -3283,12 +3283,12 @@ func parseAccountMapDest(v any, tk token, errors *[]error) (*MapDest, *configErr
 				ws = strings.TrimSuffix(ws, "%")
 				weight, err := strconv.Atoi(ws)
 				if err != nil {
-					err := &configErr{tk, fmt.Sprintf("Invalid weight %q for mapping destination", ws)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("Invalid weight %q for mapping destination", ws)}
 					*errors = append(*errors, err)
 					return nil, err
 				}
 				if weight > 100 || weight < 0 {
-					err := &configErr{tk, fmt.Sprintf("Invalid weight %d for mapping destination", weight)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("Invalid weight %d for mapping destination", weight)}
 					*errors = append(*errors, err)
 					return nil, err
 				}
@@ -3297,28 +3297,28 @@ func parseAccountMapDest(v any, tk token, errors *[]error) (*MapDest, *configErr
 			case int64:
 				weight := vv
 				if weight > 100 || weight < 0 {
-					err := &configErr{tk, fmt.Sprintf("Invalid weight %d for mapping destination", weight)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("Invalid weight %d for mapping destination", weight)}
 					*errors = append(*errors, err)
 					return nil, err
 				}
 				mdest.Weight = uint8(weight)
 				sw = true
 			default:
-				err := &configErr{tk, fmt.Sprintf("Unknown entry type for weight of %v\n", vv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Unknown entry type for weight of %v\n", vv)}
 				*errors = append(*errors, err)
 				return nil, err
 			}
 		case "cluster":
 			mdest.Cluster = dmv.(string)
 		default:
-			err := &configErr{tk, fmt.Sprintf("Unknown field %q for mapping destination", k)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("Unknown field %q for mapping destination", k)}
 			*errors = append(*errors, err)
 			return nil, err
 		}
 	}
 
 	if !sw {
-		err := &configErr{tk, fmt.Sprintf("Missing weight for mapping destination %q", mdest.Subject)}
+		err := &configErr{token: tk, reason: fmt.Sprintf("Missing weight for mapping destination %q", mdest.Subject)}
 		*errors = append(*errors, err)
 		return nil, err
 	}
@@ -3335,7 +3335,7 @@ func parseAccountMappings(v any, acc *Account, errors *[]error) error {
 	am := v.(map[string]any)
 	for subj, mv := range am {
 		if !IsValidSubject(subj) {
-			err := &configErr{tk, fmt.Sprintf("Subject %q is not a valid subject", subj)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("Subject %q is not a valid subject", subj)}
 			*errors = append(*errors, err)
 			continue
 		}
@@ -3344,7 +3344,7 @@ func parseAccountMappings(v any, acc *Account, errors *[]error) error {
 		switch vv := v.(type) {
 		case string:
 			if err := acc.AddMapping(subj, v.(string)); err != nil {
-				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q to %q : %v", subj, v.(string), err)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Error adding mapping for %q to %q : %v", subj, v.(string), err)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3361,7 +3361,7 @@ func parseAccountMappings(v any, acc *Account, errors *[]error) error {
 
 			// Now add them in..
 			if err := acc.AddWeightedMappings(subj, mappings...); err != nil {
-				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q : %v", subj, err)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Error adding mapping for %q : %v", subj, err)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3373,12 +3373,12 @@ func parseAccountMappings(v any, acc *Account, errors *[]error) error {
 			}
 			// Now add it in..
 			if err := acc.AddWeightedMappings(subj, mdest); err != nil {
-				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q : %v", subj, err)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Error adding mapping for %q : %v", subj, err)}
 				*errors = append(*errors, err)
 				continue
 			}
 		default:
-			err := &configErr{tk, fmt.Sprintf("Unknown type %T for mapping destination", vv)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("Unknown type %T for mapping destination", vv)}
 			*errors = append(*errors, err)
 			continue
 		}
@@ -3395,7 +3395,7 @@ func parseAccountLimits(mv any, acc *Account, errors *[]error) error {
 	tk, v := unwrapValue(mv, &lt)
 	am, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected account limits to be a map/struct, got %+v", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected account limits to be a map/struct, got %+v", v)}
 	}
 
 	for k, v := range am {
@@ -3411,7 +3411,7 @@ func parseAccountLimits(mv any, acc *Account, errors *[]error) error {
 			acc.mleafs = int32(mv.(int64))
 		default:
 			if !tk.IsUsedVariable() {
-				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing account limits", k)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Unknown field %q parsing account limits", k)}
 				*errors = append(*errors, err)
 			}
 		}
@@ -3424,17 +3424,17 @@ func parseAccountMsgTrace(mv any, topKey string, acc *Account) error {
 	processDest := func(tk token, k string, v any) error {
 		td, ok := v.(string)
 		if !ok {
-			return &configErr{tk, fmt.Sprintf("Field %q should be a string, got %T", k, v)}
+			return &configErr{token: tk, reason: fmt.Sprintf("Field %q should be a string, got %T", k, v)}
 		}
 		if !IsValidPublishSubject(td) {
-			return &configErr{tk, fmt.Sprintf("Trace destination %q is not valid", td)}
+			return &configErr{token: tk, reason: fmt.Sprintf("Trace destination %q is not valid", td)}
 		}
 		acc.traceDest = td
 		return nil
 	}
 	processSampling := func(tk token, n int) error {
 		if n <= 0 || n > 100 {
-			return &configErr{tk, fmt.Sprintf("Ttrace destination sampling value %d is invalid, needs to be [1..100]", n)}
+			return &configErr{token: tk, reason: fmt.Sprintf("Ttrace destination sampling value %d is invalid, needs to be [1..100]", n)}
 		}
 		acc.traceDestSampling = n
 		return nil
@@ -3463,22 +3463,22 @@ func parseAccountMsgTrace(mv any, topKey string, acc *Account) error {
 					s := strings.TrimSuffix(vv, "%")
 					n, err := strconv.Atoi(s)
 					if err != nil {
-						return &configErr{tk, fmt.Sprintf("Invalid trace destination sampling value %q", vv)}
+						return &configErr{token: tk, reason: fmt.Sprintf("Invalid trace destination sampling value %q", vv)}
 					}
 					if err := processSampling(tk, n); err != nil {
 						return err
 					}
 				default:
-					return &configErr{tk, fmt.Sprintf("Trace destination sampling field %q should be an integer or a percentage, got %T", k, v)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Trace destination sampling field %q should be an integer or a percentage, got %T", k, v)}
 				}
 			default:
 				if !tk.IsUsedVariable() {
-					return &configErr{tk, fmt.Sprintf("Unknown field %q parsing account message trace map/struct %q", k, topKey)}
+					return &configErr{token: tk, reason: fmt.Sprintf("Unknown field %q parsing account message trace map/struct %q", k, topKey)}
 				}
 			}
 		}
 	default:
-		return &configErr{tk, fmt.Sprintf("Expected account message trace %q to be a string or a map/struct, got %T", topKey, v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected account message trace %q to be a string or a map/struct, got %T", topKey, v)}
 	}
 	return nil
 }
@@ -3504,12 +3504,12 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			ns := name.(string)
 			// Check for reserved names.
 			if isReservedAccount(ns) {
-				err := &configErr{tk, fmt.Sprintf("%q is a Reserved Account", ns)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("%q is a Reserved Account", ns)}
 				*errors = append(*errors, err)
 				continue
 			}
 			if _, ok := m[ns]; ok {
-				err := &configErr{tk, fmt.Sprintf("Duplicate Account Entry: %s", ns)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Duplicate Account Entry: %s", ns)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3535,12 +3535,12 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			// These should be maps.
 			mv, ok := amv.(map[string]any)
 			if !ok {
-				err := &configErr{tk, "Expected map entries for accounts"}
+				err := &configErr{token: tk, reason: "Expected map entries for accounts"}
 				*errors = append(*errors, err)
 				continue
 			}
 			if isReservedAccount(aname) {
-				err := &configErr{tk, fmt.Sprintf("%q is a Reserved Account", aname)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("%q is a Reserved Account", aname)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3558,7 +3558,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 				case "nkey":
 					nk, ok := mv.(string)
 					if !ok || !nkeys.IsValidPublicAccountKey(nk) {
-						err := &configErr{tk, fmt.Sprintf("Not a valid public nkey for an account: %q", mv)}
+						err := &configErr{token: tk, reason: fmt.Sprintf("Not a valid public nkey for an account: %q", mv)}
 						*errors = append(*errors, err)
 						continue
 					}
@@ -3626,7 +3626,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 						// something to happen, want and set the value to 0 for good
 						// measure.
 						*warnings = append(*warnings,
-							&configErr{tk, "Trace destination sampling ignored since no destination was set"})
+							&configErr{token: tk, reason: "Trace destination sampling ignored since no destination was set"})
 						acc.traceDestSampling = 0
 					}
 				default:
@@ -3645,12 +3645,12 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			// with u/p or token and any user defined in accounts{}
 			if len(nkeyUsr) > 0 || len(users) > 0 {
 				if opts.Username != _EMPTY_ {
-					err := &configErr{usersTk, "Can not have a single user/pass and accounts"}
+					err := &configErr{token: usersTk, reason: "Can not have a single user/pass and accounts"}
 					*errors = append(*errors, err)
 					continue
 				}
 				if opts.Authorization != _EMPTY_ {
-					err := &configErr{usersTk, "Can not have a token and accounts"}
+					err := &configErr{token: usersTk, reason: "Can not have a token and accounts"}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -3658,7 +3658,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			applyDefaultPermissions(users, nkeyUsr, acc.defaultPerms)
 			for _, u := range nkeyUsr {
 				if _, ok := uorn[u.Nkey]; ok {
-					err := &configErr{usersTk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
+					err := &configErr{token: usersTk, reason: fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -3668,7 +3668,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			opts.Nkeys = append(opts.Nkeys, nkeyUsr...)
 			for _, u := range users {
 				if _, ok := uorn[u.Username]; ok {
-					err := &configErr{usersTk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
+					err := &configErr{token: usersTk, reason: fmt.Sprintf("Duplicate user %q detected", u.Username)}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -3701,14 +3701,14 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			ta := am[an]
 			if ta == nil {
 				msg := fmt.Sprintf("%q account not defined for stream export", an)
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 			accounts = append(accounts, ta)
 		}
 		if err := stream.acc.addStreamExportWithAccountPos(stream.sub, accounts, stream.tPos); err != nil {
 			msg := fmt.Sprintf("Error adding stream export %q: %v", stream.sub, err)
-			*errors = append(*errors, &configErr{tk, msg})
+			*errors = append(*errors, &configErr{token: tk, reason: msg})
 			continue
 		}
 	}
@@ -3719,14 +3719,14 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			ta := am[an]
 			if ta == nil {
 				msg := fmt.Sprintf("%q account not defined for service export", an)
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 			accounts = append(accounts, ta)
 		}
 		if err := service.acc.addServiceExportWithResponseAndAccountPos(service.sub, service.rt, accounts, service.tPos); err != nil {
 			msg := fmt.Sprintf("Error adding service export %q: %v", service.sub, err)
-			*errors = append(*errors, &configErr{tk, msg})
+			*errors = append(*errors, &configErr{token: tk, reason: msg})
 			continue
 		}
 
@@ -3734,7 +3734,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			// Response threshold was set in options.
 			if err := service.acc.SetServiceExportResponseThreshold(service.sub, service.rthr); err != nil {
 				msg := fmt.Sprintf("Error adding service export response threshold for %q: %v", service.sub, err)
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 		}
@@ -3743,13 +3743,13 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			// System accounts are on be default so just make sure we have not opted out..
 			if opts.NoSystemAccount {
 				msg := fmt.Sprintf("Error adding service latency sampling for %q: %v", service.sub, ErrNoSysAccount.Error())
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 
 			if err := service.acc.TrackServiceExportWithSampling(service.sub, service.lat.subject, int(service.lat.sampling)); err != nil {
 				msg := fmt.Sprintf("Error adding service latency sampling for %q on subject %q: %v", service.sub, service.lat.subject, err)
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 		}
@@ -3757,7 +3757,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 		if service.atrc {
 			if err := service.acc.SetServiceExportAllowTrace(service.sub, true); err != nil {
 				msg := fmt.Sprintf("Error adding allow_trace for %q: %v", service.sub, err)
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 		}
@@ -3766,19 +3766,19 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 		ta := am[stream.an]
 		if ta == nil {
 			msg := fmt.Sprintf("%q account not defined for stream import", stream.an)
-			*errors = append(*errors, &configErr{tk, msg})
+			*errors = append(*errors, &configErr{token: tk, reason: msg})
 			continue
 		}
 		if stream.pre != _EMPTY_ {
 			if err := stream.acc.addStreamImportWithClaim(ta, stream.sub, stream.pre, stream.atrc, nil); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 		} else {
 			if err := stream.acc.addMappedStreamImportWithClaim(ta, stream.sub, stream.to, stream.atrc, nil); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
-				*errors = append(*errors, &configErr{tk, msg})
+				*errors = append(*errors, &configErr{token: tk, reason: msg})
 				continue
 			}
 		}
@@ -3787,7 +3787,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 		ta := am[service.an]
 		if ta == nil {
 			msg := fmt.Sprintf("%q account not defined for service import", service.an)
-			*errors = append(*errors, &configErr{tk, msg})
+			*errors = append(*errors, &configErr{token: tk, reason: msg})
 			continue
 		}
 		if service.to == _EMPTY_ {
@@ -3795,12 +3795,12 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 		}
 		if err := service.acc.AddServiceImport(ta, service.to, service.sub); err != nil {
 			msg := fmt.Sprintf("Error adding service import %q: %v", service.sub, err)
-			*errors = append(*errors, &configErr{tk, msg})
+			*errors = append(*errors, &configErr{token: tk, reason: msg})
 			continue
 		}
 		if err := service.acc.SetServiceImportSharing(ta, service.sub, service.share); err != nil {
 			msg := fmt.Sprintf("Error setting service import sharing %q: %v", service.sub, err)
-			*errors = append(*errors, &configErr{tk, msg})
+			*errors = append(*errors, &configErr{token: tk, reason: msg})
 			continue
 		}
 	}
@@ -3817,7 +3817,7 @@ func parseAccountExports(v any, acc *Account, errors *[]error) ([]*export, []*ex
 	tk, v := unwrapValue(v, &lt)
 	ims, ok := v.([]any)
 	if !ok {
-		return nil, nil, &configErr{tk, fmt.Sprintf("Exports should be an array, got %T", v)}
+		return nil, nil, &configErr{token: tk, reason: fmt.Sprintf("Exports should be an array, got %T", v)}
 	}
 
 	var services []*export
@@ -3851,7 +3851,7 @@ func parseAccountImports(v any, acc *Account, errors *[]error) ([]*importStream,
 	tk, v := unwrapValue(v, &lt)
 	ims, ok := v.([]any)
 	if !ok {
-		return nil, nil, &configErr{tk, fmt.Sprintf("Imports should be an array, got %T", v)}
+		return nil, nil, &configErr{token: tk, reason: fmt.Sprintf("Imports should be an array, got %T", v)}
 	}
 
 	var services []*importService
@@ -3871,8 +3871,8 @@ IMS_LOOP:
 			for _, dup := range sisPerSubj {
 				if dup.an == service.an {
 					tk, _ := unwrapValue(v, &lt)
-					err := &configErr{tk,
-						fmt.Sprintf("Duplicate service import subject %q, previously used in import for account %q, subject %q",
+					err := &configErr{token: tk,
+						reason: fmt.Sprintf("Duplicate service import subject %q, previously used in import for account %q, subject %q",
 							service.to, dup.an, dup.sub)}
 					*errors = append(*errors, err)
 					continue IMS_LOOP
@@ -3948,35 +3948,35 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 	tk, v := unwrapValue(v, &lt)
 	vv, ok := v.(map[string]any)
 	if !ok {
-		return nil, nil, &configErr{tk, fmt.Sprintf("Export Items should be a map with type entry, got %T", v)}
+		return nil, nil, &configErr{token: tk, reason: fmt.Sprintf("Export Items should be a map with type entry, got %T", v)}
 	}
 	for mk, mv := range vv {
 		tk, mv := unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "stream":
 			if curService != nil {
-				err := &configErr{tk, fmt.Sprintf("Detected stream %q but already saw a service", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Detected stream %q but already saw a service", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
 			if rtToken != nil {
-				err := &configErr{rtToken, "Detected response directive on non-service"}
+				err := &configErr{token: rtToken, reason: "Detected response directive on non-service"}
 				*errors = append(*errors, err)
 				continue
 			}
 			if latToken != nil {
-				err := &configErr{latToken, "Detected latency directive on non-service"}
+				err := &configErr{token: latToken, reason: "Detected latency directive on non-service"}
 				*errors = append(*errors, err)
 				continue
 			}
 			if atrcToken != nil {
-				err := &configErr{atrcToken, "Detected allow_trace directive on non-service"}
+				err := &configErr{token: atrcToken, reason: "Detected allow_trace directive on non-service"}
 				*errors = append(*errors, err)
 				continue
 			}
 			mvs, ok := mv.(string)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Expected stream name to be string, got %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Expected stream name to be string, got %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3986,13 +3986,13 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 			}
 		case "service":
 			if curStream != nil {
-				err := &configErr{tk, fmt.Sprintf("Detected service %q but already saw a stream", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Detected service %q but already saw a stream", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
 			mvs, ok := mv.(string)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Expected service name to be string, got %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Expected service name to be string, got %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4014,7 +4014,7 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 			}
 		case "response", "response_type":
 			if rtSeen {
-				err := &configErr{tk, "Duplicate response type definition"}
+				err := &configErr{token: tk, reason: "Duplicate response type definition"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4022,7 +4022,7 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 			rtToken = tk
 			mvs, ok := mv.(string)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Expected response type to be string, got %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Expected response type to be string, got %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4034,7 +4034,7 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 			case "chunk", "chunked":
 				rt = Chunked
 			default:
-				err := &configErr{tk, fmt.Sprintf("Unknown response type: %q", mvs)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Unknown response type: %q", mvs)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4042,26 +4042,26 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 				curService.rt = rt
 			}
 			if curStream != nil {
-				err := &configErr{tk, "Detected response directive on non-service"}
+				err := &configErr{token: tk, reason: "Detected response directive on non-service"}
 				*errors = append(*errors, err)
 			}
 		case "threshold", "response_threshold", "response_max_time", "response_time":
 			if threshSeen {
-				err := &configErr{tk, "Duplicate response threshold detected"}
+				err := &configErr{token: tk, reason: "Duplicate response threshold detected"}
 				*errors = append(*errors, err)
 				continue
 			}
 			threshSeen = true
 			mvs, ok := mv.(string)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Expected response threshold to be a parseable time duration, got %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Expected response threshold to be a parseable time duration, got %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
 			var err error
 			thresh, err = time.ParseDuration(mvs)
 			if err != nil {
-				err := &configErr{tk, fmt.Sprintf("Expected response threshold to be a parseable time duration, got %q", mvs)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Expected response threshold to be a parseable time duration, got %q", mvs)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4069,7 +4069,7 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 				curService.rthr = thresh
 			}
 			if curStream != nil {
-				err := &configErr{tk, "Detected response directive on non-service"}
+				err := &configErr{token: tk, reason: "Detected response directive on non-service"}
 				*errors = append(*errors, err)
 			}
 		case "accounts":
@@ -4091,7 +4091,7 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 				continue
 			}
 			if curStream != nil {
-				err = &configErr{tk, "Detected latency directive on non-service"}
+				err = &configErr{token: tk, reason: "Detected latency directive on non-service"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4106,7 +4106,7 @@ func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error
 			atrc = mv.(bool)
 			if curStream != nil {
 				*errors = append(*errors,
-					&configErr{tk, "Detected allow_trace directive on non-service"})
+					&configErr{token: tk, reason: "Detected allow_trace directive on non-service"})
 				continue
 			}
 			if curService != nil {
@@ -4231,20 +4231,20 @@ func parseImportStreamOrService(v any, errors *[]error) (*importStream, *importS
 	tk, mv := unwrapValue(v, &lt)
 	vv, ok := mv.(map[string]any)
 	if !ok {
-		return nil, nil, &configErr{tk, fmt.Sprintf("Import Items should be a map with type entry, got %T", mv)}
+		return nil, nil, &configErr{token: tk, reason: fmt.Sprintf("Import Items should be a map with type entry, got %T", mv)}
 	}
 	for mk, mv := range vv {
 		tk, mv := unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "stream":
 			if curService != nil {
-				err := &configErr{tk, "Detected stream but already saw a service"}
+				err := &configErr{token: tk, reason: "Detected stream but already saw a service"}
 				*errors = append(*errors, err)
 				continue
 			}
 			ac, ok := mv.(map[string]any)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Stream entry should be an account map, got %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Stream entry should be an account map, got %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4255,7 +4255,7 @@ func parseImportStreamOrService(v any, errors *[]error) (*importStream, *importS
 				continue
 			}
 			if accountName == _EMPTY_ || subject == _EMPTY_ {
-				err := &configErr{tk, "Expect an account name and a subject"}
+				err := &configErr{token: tk, reason: "Expect an account name and a subject"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4271,18 +4271,18 @@ func parseImportStreamOrService(v any, errors *[]error) (*importStream, *importS
 			}
 		case "service":
 			if curStream != nil {
-				err := &configErr{tk, "Detected service but already saw a stream"}
+				err := &configErr{token: tk, reason: "Detected service but already saw a stream"}
 				*errors = append(*errors, err)
 				continue
 			}
 			if atrcToken != nil {
-				err := &configErr{atrcToken, "Detected allow_trace directive on a non-stream"}
+				err := &configErr{token: atrcToken, reason: "Detected allow_trace directive on a non-stream"}
 				*errors = append(*errors, err)
 				continue
 			}
 			ac, ok := mv.(map[string]any)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("Service entry should be an account map, got %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Service entry should be an account map, got %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4293,7 +4293,7 @@ func parseImportStreamOrService(v any, errors *[]error) (*importStream, *importS
 				continue
 			}
 			if accountName == _EMPTY_ || subject == _EMPTY_ {
-				err := &configErr{tk, "Expect an account name and a subject"}
+				err := &configErr{token: tk, reason: "Expect an account name and a subject"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4317,7 +4317,7 @@ func parseImportStreamOrService(v any, errors *[]error) (*importStream, *importS
 			if curStream != nil {
 				curStream.to = to
 				if curStream.pre != _EMPTY_ {
-					err := &configErr{tk, "Stream import can not have a 'prefix' and a 'to' property"}
+					err := &configErr{token: tk, reason: "Stream import can not have a 'prefix' and a 'to' property"}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -4329,7 +4329,7 @@ func parseImportStreamOrService(v any, errors *[]error) (*importStream, *importS
 			}
 		case "allow_trace":
 			if curService != nil {
-				err := &configErr{tk, "Detected allow_trace directive on a non-stream"}
+				err := &configErr{token: tk, reason: "Detected allow_trace directive on a non-stream"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4403,11 +4403,11 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing authorization config, 'timeout' %s", err)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing authorization config, 'timeout' %s", err)}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, "error parsing authorization config, 'timeout' wrong type"}
+				return nil, &configErr{token: tk, reason: "error parsing authorization config, 'timeout' wrong type"}
 			}
 			if at > (60 * time.Second).Seconds() {
 				reason := fmt.Sprintf("timeout of %v (%f seconds) is high, consider keeping it under 60 seconds. possibly caused by unquoted duration; use '1m' instead of 1m, for example", mv, at)
@@ -4474,7 +4474,7 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 	// Make sure we have an array
 	uv, ok := mv.([]any)
 	if !ok {
-		return nil, nil, &configErr{tk, fmt.Sprintf("Expected users field to be an array, got %v", mv)}
+		return nil, nil, &configErr{token: tk, reason: fmt.Sprintf("Expected users field to be an array, got %v", mv)}
 	}
 	for _, u := range uv {
 		tk, u = unwrapValue(u, &lt)
@@ -4482,7 +4482,7 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 		// Check its a map/struct
 		um, ok := u.(map[string]any)
 		if !ok {
-			err := &configErr{tk, fmt.Sprintf("Expected user entry to be a map/struct, got %v", u)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("Expected user entry to be a map/struct, got %v", u)}
 			*errors = append(*errors, err)
 			continue
 		}
@@ -4542,15 +4542,15 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 
 		// Check to make sure we have at least an nkey or username <password> defined.
 		if nkey.Nkey == _EMPTY_ && user.Username == _EMPTY_ {
-			return nil, nil, &configErr{tk, "User entry requires a user"}
+			return nil, nil, &configErr{token: tk, reason: "User entry requires a user"}
 		} else if nkey.Nkey != _EMPTY_ {
 			// Make sure the nkey a proper public nkey for a user..
 			if !nkeys.IsValidPublicUserKey(nkey.Nkey) {
-				return nil, nil, &configErr{tk, "Not a valid public nkey for a user"}
+				return nil, nil, &configErr{token: tk, reason: "Not a valid public nkey for a user"}
 			}
 			// If we have user or password defined here that is an error.
 			if user.Username != _EMPTY_ || user.Password != _EMPTY_ {
-				return nil, nil, &configErr{tk, "Nkey users do not take usernames or passwords"}
+				return nil, nil, &configErr{token: tk, reason: "Nkey users do not take usernames or passwords"}
 			}
 			keys = append(keys, nkey)
 		} else {
@@ -4568,7 +4568,7 @@ func parseAllowedConnectionTypes(tk token, lt *token, mv any, errors *[]error) m
 	}
 	m, err := convertAllowedConnectionTypes(cts)
 	if err != nil {
-		*errors = append(*errors, &configErr{tk, err.Error()})
+		*errors = append(*errors, &configErr{token: tk, reason: err.Error()})
 	}
 	return m
 }
@@ -4585,7 +4585,7 @@ func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 	tk, mv = unwrapValue(mv, &lt)
 	pm, ok := mv.(map[string]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("Expected authorization callout to be a map/struct, got %+v", mv)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected authorization callout to be a map/struct, got %+v", mv)}
 	}
 	for k, v := range pm {
 		tk, mv = unwrapValue(v, &lt)
@@ -4594,14 +4594,14 @@ func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 		case "issuer":
 			ac.Issuer = mv.(string)
 			if !nkeys.IsValidPublicAccountKey(ac.Issuer) {
-				return nil, &configErr{tk, fmt.Sprintf("Expected callout user to be a valid public account nkey, got %q", ac.Issuer)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected callout user to be a valid public account nkey, got %q", ac.Issuer)}
 			}
 		case "account", "acc":
 			ac.Account = mv.(string)
 		case "auth_users", "users":
 			aua, ok := mv.([]any)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("Expected auth_users field to be an array, got %T", v)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected auth_users field to be an array, got %T", v)}
 			}
 			for _, uv := range aua {
 				_, uv = unwrapValue(uv, &lt)
@@ -4610,12 +4610,12 @@ func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 		case "xkey", "key":
 			ac.XKey = mv.(string)
 			if !nkeys.IsValidPublicCurveKey(ac.XKey) {
-				return nil, &configErr{tk, fmt.Sprintf("Expected callout xkey to be a valid public xkey, got %q", ac.XKey)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected callout xkey to be a valid public xkey, got %q", ac.XKey)}
 			}
 		case "allowed_accounts":
 			aua, ok := mv.([]any)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("Expected allowed accounts field to be an array, got %T", v)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected allowed accounts field to be an array, got %T", v)}
 			}
 			for _, uv := range aua {
 				_, uv = unwrapValue(uv, &lt)
@@ -4623,7 +4623,7 @@ func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 			}
 		default:
 			if !tk.IsUsedVariable() {
-				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing authorization callout", k)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Unknown field %q parsing authorization callout", k)}
 				*errors = append(*errors, err)
 			}
 		}
@@ -4634,10 +4634,10 @@ func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 		ac.Account = globalAccountName
 	}
 	if ac.Issuer == _EMPTY_ {
-		return nil, &configErr{tk, "Authorization callouts require an issuer to be specified"}
+		return nil, &configErr{token: tk, reason: "Authorization callouts require an issuer to be specified"}
 	}
 	if len(ac.AuthUsers) == 0 {
-		return nil, &configErr{tk, "Authorization callouts require authorized users to be specified"}
+		return nil, &configErr{token: tk, reason: "Authorization callouts require authorized users to be specified"}
 	}
 	return ac, nil
 }
@@ -4654,7 +4654,7 @@ func parseUserPermissions(mv any, errors *[]error) (*Permissions, error) {
 	tk, mv = unwrapValue(mv, &lt)
 	pm, ok := mv.(map[string]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("Expected permissions to be a map/struct, got %+v", mv)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected permissions to be a map/struct, got %+v", mv)}
 	}
 	for k, v := range pm {
 		tk, mv = unwrapValue(v, &lt)
@@ -4702,7 +4702,7 @@ func parseUserPermissions(mv any, errors *[]error) (*Permissions, error) {
 			}
 		default:
 			if !tk.IsUsedVariable() {
-				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing permissions", k)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Unknown field %q parsing permissions", k)}
 				*errors = append(*errors, err)
 			}
 		}
@@ -4741,15 +4741,15 @@ func parsePermSubjects(v any, errors *[]error) ([]string, error) {
 
 			subject, ok := i.(string)
 			if !ok {
-				return nil, &configErr{tk, "Subject in permissions array cannot be cast to string"}
+				return nil, &configErr{token: tk, reason: "Subject in permissions array cannot be cast to string"}
 			}
 			subjects = append(subjects, subject)
 		}
 	default:
-		return nil, &configErr{tk, fmt.Sprintf("Expected subject permissions to be a subject, or array of subjects, got %T", v)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("Expected subject permissions to be a subject, or array of subjects, got %T", v)}
 	}
 	if err := checkPermSubjectArray(subjects); err != nil {
-		return nil, &configErr{tk, err.Error()}
+		return nil, &configErr{token: tk, reason: err.Error()}
 	}
 	return subjects, nil
 }
@@ -4763,7 +4763,7 @@ func parseAllowResponses(v any, errors *[]error) *ResponsePermission {
 	// Check if this is a map.
 	pm, ok := v.(map[string]any)
 	if !ok {
-		err := &configErr{tk, "error parsing response permissions, expected a boolean or a map"}
+		err := &configErr{token: tk, reason: "error parsing response permissions, expected a boolean or a map"}
 		*errors = append(*errors, err)
 		return nil
 	}
@@ -4788,7 +4788,7 @@ func parseAllowResponses(v any, errors *[]error) *ResponsePermission {
 			if ok {
 				ttl, err := time.ParseDuration(wd)
 				if err != nil {
-					err := &configErr{tk, fmt.Sprintf("error parsing expires: %v", err)}
+					err := &configErr{token: tk, reason: fmt.Sprintf("error parsing expires: %v", err)}
 					*errors = append(*errors, err)
 					return nil
 				}
@@ -4798,13 +4798,13 @@ func parseAllowResponses(v any, errors *[]error) *ResponsePermission {
 					rp.Expires = ttl
 				}
 			} else {
-				err := &configErr{tk, "error parsing expires, not a duration string"}
+				err := &configErr{token: tk, reason: "error parsing expires, not a duration string"}
 				*errors = append(*errors, err)
 				return nil
 			}
 		default:
 			if !tk.IsUsedVariable() {
-				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing permissions", k)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Unknown field %q parsing permissions", k)}
 				*errors = append(*errors, err)
 			}
 		}
@@ -4850,7 +4850,7 @@ func parseSubjectPermission(v any, errors *[]error) (*SubjectPermission, error) 
 			p.Deny = subjects
 		default:
 			if !tk.IsUsedVariable() {
-				err := &configErr{tk, fmt.Sprintf("Unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("Unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)}
 				*errors = append(*errors, err)
 			}
 		}
@@ -4944,37 +4944,37 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		case "cert_file":
 			certFile, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'cert_file' to be filename"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'cert_file' to be filename"}
 			}
 			tc.CertFile = certFile
 		case "key_file":
 			keyFile, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'key_file' to be filename"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'key_file' to be filename"}
 			}
 			tc.KeyFile = keyFile
 		case "ca_file":
 			caFile, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'ca_file' to be filename"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'ca_file' to be filename"}
 			}
 			tc.CaFile = caFile
 		case "insecure":
 			insecure, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'insecure' to be a boolean"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'insecure' to be a boolean"}
 			}
 			tc.Insecure = insecure
 		case "verify":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'verify' to be a boolean"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'verify' to be a boolean"}
 			}
 			tc.Verify = verify
 		case "verify_and_map":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'verify_and_map' to be a boolean"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'verify_and_map' to be a boolean"}
 			}
 			if verify {
 				tc.Verify = verify
@@ -4983,10 +4983,10 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		case "verify_cert_and_check_known_urls":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'verify_cert_and_check_known_urls' to be a boolean"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'verify_cert_and_check_known_urls' to be a boolean"}
 			}
 			if verify && isClientCtx {
-				return nil, &configErr{tk, "verify_cert_and_check_known_urls not supported in this context"}
+				return nil, &configErr{token: tk, reason: "verify_cert_and_check_known_urls not supported in this context"}
 			}
 			if verify {
 				tc.Verify = verify
@@ -4995,20 +4995,20 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		case "allow_insecure_cipher_suites":
 			allow, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'allow_insecure_cipher_suites' to be a boolean"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'allow_insecure_cipher_suites' to be a boolean"}
 			}
 			tc.AllowInsecureCiphers = allow
 		case "cipher_suites":
 			ra := mv.([]any)
 			if len(ra) == 0 {
-				return nil, &configErr{tk, "error parsing tls config, 'cipher_suites' cannot be empty"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, 'cipher_suites' cannot be empty"}
 			}
 			tc.Ciphers = make([]uint16, 0, len(ra))
 			for _, r := range ra {
 				tk, r := unwrapValue(r, &lt)
 				cipher, err := parseCipher(r.(string))
 				if err != nil {
-					return nil, &configErr{tk, err.Error()}
+					return nil, &configErr{token: tk, reason: err.Error()}
 				}
 				tc.Ciphers = append(tc.Ciphers, cipher.ID)
 				if cipher.Insecure {
@@ -5018,14 +5018,14 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		case "curve_preferences":
 			ra := mv.([]any)
 			if len(ra) == 0 {
-				return nil, &configErr{tk, "error parsing tls config, 'curve_preferences' cannot be empty"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, 'curve_preferences' cannot be empty"}
 			}
 			tc.CurvePreferences = make([]tls.CurveID, 0, len(ra))
 			for _, r := range ra {
 				tk, r := unwrapValue(r, &lt)
 				cps, err := parseCurvePreferences(r.(string))
 				if err != nil {
-					return nil, &configErr{tk, err.Error()}
+					return nil, &configErr{token: tk, reason: err.Error()}
 				}
 				tc.CurvePreferences = append(tc.CurvePreferences, cps)
 			}
@@ -5039,11 +5039,11 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'timeout' %s", err)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing tls config, 'timeout' %s", err)}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, "error parsing tls config, 'timeout' wrong type"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, 'timeout' wrong type"}
 			}
 			tc.Timeout = at
 		case "connection_rate_limit":
@@ -5052,13 +5052,13 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 			case int64:
 				at = mv
 			default:
-				return nil, &configErr{tk, "error parsing tls config, 'connection_rate_limit' wrong type"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, 'connection_rate_limit' wrong type"}
 			}
 			tc.RateLimit = at
 		case "pinned_certs":
 			ra, ok := mv.([]any)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'pinned_certs' to be a list of hex-encoded sha256 of DER encoded SubjectPublicKeyInfo"}
+				return nil, &configErr{token: tk, reason: "error parsing tls config, expected 'pinned_certs' to be a list of hex-encoded sha256 of DER encoded SubjectPublicKeyInfo"}
 			}
 			if len(ra) != 0 {
 				wl := PinnedCertSet{}
@@ -5067,7 +5067,7 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 					tk, r := unwrapValue(r, &lt)
 					entry := strings.ToLower(r.(string))
 					if !re.MatchString(entry) {
-						return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'pinned_certs' key %s does not look like hex-encoded sha256 of DER encoded SubjectPublicKeyInfo", entry)}
+						return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing tls config, 'pinned_certs' key %s does not look like hex-encoded sha256 of DER encoded SubjectPublicKeyInfo", entry)}
 					}
 					wl[entry] = struct{}{}
 				}
@@ -5076,27 +5076,27 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		case "cert_store":
 			certStore, ok := mv.(string)
 			if !ok || certStore == _EMPTY_ {
-				return nil, &configErr{tk, certstore.ErrBadCertStoreField.Error()}
+				return nil, &configErr{token: tk, reason: certstore.ErrBadCertStoreField.Error()}
 			}
 			certStoreType, err := certstore.ParseCertStore(certStore)
 			if err != nil {
-				return nil, &configErr{tk, err.Error()}
+				return nil, &configErr{token: tk, reason: err.Error()}
 			}
 			tc.CertStore = certStoreType
 		case "cert_match_by":
 			certMatchBy, ok := mv.(string)
 			if !ok || certMatchBy == _EMPTY_ {
-				return nil, &configErr{tk, certstore.ErrBadCertMatchByField.Error()}
+				return nil, &configErr{token: tk, reason: certstore.ErrBadCertMatchByField.Error()}
 			}
 			certMatchByType, err := certstore.ParseCertMatchBy(certMatchBy)
 			if err != nil {
-				return nil, &configErr{tk, err.Error()}
+				return nil, &configErr{token: tk, reason: err.Error()}
 			}
 			tc.CertMatchBy = certMatchByType
 		case "cert_match":
 			certMatch, ok := mv.(string)
 			if !ok || certMatch == _EMPTY_ {
-				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
+				return nil, &configErr{token: tk, reason: certstore.ErrBadCertMatchField.Error()}
 			}
 			tc.CertMatch = certMatch
 		case "ca_certs_match":
@@ -5113,10 +5113,10 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 							rv = append(rv, ts)
 							continue
 						} else {
-							return nil, &configErr{tk, fmt.Sprintf("error parsing ca_cert_match: unsupported type %T where string is expected", token)}
+							return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing ca_cert_match: unsupported type %T where string is expected", token)}
 						}
 					} else {
-						return nil, &configErr{tk, fmt.Sprintf("error parsing ca_cert_match: unsupported type %T", t)}
+						return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing ca_cert_match: unsupported type %T", t)}
 					}
 				}
 			}
@@ -5141,15 +5141,15 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 						tc.FallbackDelay = dur
 						break
 					}
-					return nil, &configErr{tk, fmt.Sprintf("field %q's value %q is invalid", mk, mv)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf("field %q's value %q is invalid", mk, mv)}
 				}
 			default:
-				return nil, &configErr{tk, fmt.Sprintf("field %q should be a boolean or a string, got %T", mk, mv)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("field %q should be a boolean or a string, got %T", mk, mv)}
 			}
 		case "cert_match_skip_invalid":
 			certMatchSkipInvalid, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, certstore.ErrBadCertMatchSkipInvalidField.Error()}
+				return nil, &configErr{token: tk, reason: certstore.ErrBadCertMatchSkipInvalidField.Error()}
 			}
 			tc.CertMatchSkipInvalid = certMatchSkipInvalid
 		case "ocsp_peer":
@@ -5168,30 +5168,30 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 			case map[string]any:
 				pc, err := parseOCSPPeer(mv)
 				if err != nil {
-					return nil, &configErr{tk, err.Error()}
+					return nil, &configErr{token: tk, reason: err.Error()}
 				}
 				tc.OCSPPeerConfig = pc
 			default:
-				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp peer config: unsupported type %T", v)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing ocsp peer config: unsupported type %T", v)}
 			}
 		case "certs", "certificates":
 			certs, ok := mv.([]any)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", v)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing certificates config: unsupported type %T", v)}
 			}
 			tc.Certificates = make([]*TLSCertPairOpt, len(certs))
 			for i, v := range certs {
 				tk, vv := unwrapValue(v, &lt)
 				pair, ok := vv.(map[string]any)
 				if !ok {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", vv)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing certificates config: unsupported type %T", vv)}
 				}
 				certPair := &TLSCertPairOpt{}
 				for k, v := range pair {
 					tk, vv = unwrapValue(v, &lt)
 					file, ok := vv.(string)
 					if !ok {
-						return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", vv)}
+						return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing certificates config: unsupported type %T", vv)}
 					}
 					switch k {
 					case "cert_file":
@@ -5199,26 +5199,26 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 					case "key_file":
 						certPair.KeyFile = file
 					default:
-						return nil, &configErr{tk, fmt.Sprintf("error parsing tls certs config, unknown field %q", k)}
+						return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing tls certs config, unknown field %q", k)}
 					}
 				}
 				if certPair.CertFile == _EMPTY_ || certPair.KeyFile == _EMPTY_ {
-					return nil, &configErr{tk, "error parsing certificates config: both 'cert_file' and 'cert_key' options are required"}
+					return nil, &configErr{token: tk, reason: "error parsing certificates config: both 'cert_file' and 'cert_key' options are required"}
 				}
 				tc.Certificates[i] = certPair
 			}
 		case "min_version":
 			minVersion, err := parseTLSVersion(mv)
 			if err != nil {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config: %v", err)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing tls config: %v", err)}
 			}
 			tc.MinVersion = minVersion
 		default:
-			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field %q", mk)}
+			return nil, &configErr{token: tk, reason: fmt.Sprintf("error parsing tls config, unknown field %q", mk)}
 		}
 	}
 	if len(tc.Certificates) > 0 && tc.CertFile != _EMPTY_ {
-		return nil, &configErr{tk, "error parsing tls config, cannot combine 'cert_file' option with 'certs' option"}
+		return nil, &configErr{token: tk, reason: "error parsing tls config, cannot combine 'cert_file' option with 'certs' option"}
 	}
 
 	// If cipher suites were not specified then use the defaults
@@ -5238,7 +5238,7 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		for _, ic := range ics {
 			names = append(names, ic.Name)
 		}
-		return nil, &configErr{tk, fmt.Sprintf("insecure cipher suites configured without 'allow_insecure_cipher_suites' option set: %s", strings.Join(names, ", "))}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("insecure cipher suites configured without 'allow_insecure_cipher_suites' option set: %s", strings.Join(names, ", "))}
 	}
 
 	return &tc, nil
@@ -5300,14 +5300,14 @@ func parseStringArray(fieldName string, tk token, lt *token, mv any, errors *[]e
 			if str, ok := val.(string); ok {
 				strs = append(strs, str)
 			} else {
-				err := &configErr{tk, fmt.Sprintf("error parsing %s: unsupported type in array %T", fieldName, val)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("error parsing %s: unsupported type in array %T", fieldName, val)}
 				*errors = append(*errors, err)
 				continue
 			}
 		}
 		return strs, nil
 	default:
-		err := &configErr{tk, fmt.Sprintf("error parsing %s: unsupported type %T", fieldName, mv)}
+		err := &configErr{token: tk, reason: fmt.Sprintf("error parsing %s: unsupported type %T", fieldName, mv)}
 		*errors = append(*errors, err)
 		return nil, err
 	}
@@ -5320,7 +5320,7 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 	tk, v := unwrapValue(v, &lt)
 	gm, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected websocket to be a map, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected websocket to be a map, got %T", v)}
 	}
 	for mk, mv := range gm {
 		// Again, unwrap token value if line check is required.
@@ -5329,7 +5329,7 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -5350,7 +5350,7 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 				continue
 			}
 			if o.Websocket.TLSConfig, err = GenTLSConfig(tc); err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -5370,12 +5370,12 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 				var err error
 				ht, err = time.ParseDuration(mv)
 				if err != nil {
-					err := &configErr{tk, err.Error()}
+					err := &configErr{token: tk, reason: err.Error()}
 					*errors = append(*errors, err)
 					continue
 				}
 			default:
-				err := &configErr{tk, fmt.Sprintf("error parsing handshake timeout: unsupported type %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("error parsing handshake timeout: unsupported type %T", mv)}
 				*errors = append(*errors, err)
 			}
 			o.Websocket.HandshakeTimeout = ht
@@ -5400,7 +5400,7 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 		case "headers":
 			m, ok := mv.(map[string]any)
 			if !ok {
-				err := &configErr{tk, fmt.Sprintf("error parsing headers: unsupported type %T", mv)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("error parsing headers: unsupported type %T", mv)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -5408,7 +5408,7 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 			for key, val := range m {
 				tk, val = unwrapValue(val, &lt)
 				if headerValue, ok := val.(string); !ok {
-					*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing header key %s: unsupported type %T", key, val)})
+					*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("error parsing header key %s: unsupported type %T", key, val)})
 					continue
 				} else {
 					o.Websocket.Headers[key] = headerValue
@@ -5437,7 +5437,7 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 	tk, v := unwrapValue(v, &lt)
 	gm, ok := v.(map[string]any)
 	if !ok {
-		return &configErr{tk, fmt.Sprintf("Expected mqtt to be a map, got %T", v)}
+		return &configErr{token: tk, reason: fmt.Sprintf("Expected mqtt to be a map, got %T", v)}
 	}
 	for mk, mv := range gm {
 		// Again, unwrap token value if line check is required.
@@ -5446,7 +5446,7 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -5463,7 +5463,7 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 				continue
 			}
 			if o.MQTT.TLSConfig, err = GenTLSConfig(tc); err != nil {
-				err := &configErr{tk, err.Error()}
+				err := &configErr{token: tk, reason: err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -5486,7 +5486,7 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 		case "max_ack_pending", "max_pending", "max_inflight":
 			tmp := int(mv.(int64))
 			if tmp < 0 || tmp > 0xFFFF {
-				err := &configErr{tk, fmt.Sprintf("invalid value %v, should in [0..%d] range", tmp, 0xFFFF)}
+				err := &configErr{token: tk, reason: fmt.Sprintf("invalid value %v, should in [0..%d] range", tmp, 0xFFFF)}
 				*errors = append(*errors, err)
 			} else {
 				o.MQTT.MaxAckPending = uint16(tmp)
@@ -5541,7 +5541,7 @@ func parseProxies(mv any, errors *[]error) (*ProxiesConfig, error) {
 	tk, mv = unwrapValue(mv, &lt)
 	pm, ok := mv.(map[string]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("expected proxies to be a map/struct, got %T", mv)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("expected proxies to be a map/struct, got %T", mv)}
 	}
 	for mk, mv := range pm {
 		tk, _ = unwrapValue(mv, &lt)
@@ -5580,14 +5580,14 @@ func parseProxiesTrusted(mv any, errors *[]error) ([]*ProxyConfig, error) {
 	tk, mv = unwrapValue(mv, &lt)
 	ta, ok := mv.([]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("expected proxies' trusted field to be an array, got %T", mv)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf("expected proxies' trusted field to be an array, got %T", mv)}
 	}
 	for _, t := range ta {
 		tk, t = unwrapValue(t, &lt)
 		// Check its a map/struct
 		tm, ok := t.(map[string]any)
 		if !ok {
-			err := &configErr{tk, fmt.Sprintf("expected proxies' trusted entry to be a map/struct, got %T", t)}
+			err := &configErr{token: tk, reason: fmt.Sprintf("expected proxies' trusted entry to be a map/struct, got %T", t)}
 			*errors = append(*errors, err)
 			continue
 		}
@@ -5598,7 +5598,7 @@ func parseProxiesTrusted(mv any, errors *[]error) ([]*ProxyConfig, error) {
 			case "key", "public_key":
 				proxy.Key = v.(string)
 				if !nkeys.IsValidPublicKey(proxy.Key) {
-					*errors = append(*errors, &configErr{tk, fmt.Sprintf("invalid proxy key %q", proxy.Key)})
+					*errors = append(*errors, &configErr{token: tk, reason: fmt.Sprintf("invalid proxy key %q", proxy.Key)})
 					continue
 				}
 			default:

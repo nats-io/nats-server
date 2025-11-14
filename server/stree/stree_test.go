@@ -1072,7 +1072,7 @@ func TestSubjectTreeLazyIntersectComprehensive(t *testing.T) {
 		results[string(key)] = struct {
 			v1 int
 			v2 string
-		}{*v1, *v2}
+		}{v1: *v1, v2: *v2}
 	})
 
 	require_Equal(t, len(results), 2)

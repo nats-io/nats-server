@@ -1385,9 +1385,9 @@ func TestJetStreamClusterConsumerInfoList(t *testing.T) {
 		fetch int
 		ack   int
 	}{
-		{subFoo, 4, 2},
-		{subBar, 2, 0},
-		{subBaz, 8, 6},
+		{sub: subFoo, fetch: 4, ack: 2},
+		{sub: subBar, fetch: 2, ack: 0},
+		{sub: subBaz, fetch: 8, ack: 6},
 	} {
 		msgs := fetchMsgs(t, ss.sub, ss.fetch, 5*time.Second)
 		for i := 0; i < ss.ack; i++ {
@@ -6557,17 +6557,17 @@ func TestJetStreamClusterMetaRecoveryUpdatesDeletesConsumers(t *testing.T) {
 	js := c.leader().getJetStream()
 
 	create := []*Entry{
-		{EntryNormal, encodeAddStreamAssignment(&streamAssignment{
+		{Type: EntryNormal, Data: encodeAddStreamAssignment(&streamAssignment{
 			Config: &StreamConfig{Name: "TEST", Storage: FileStorage},
 		})},
-		{EntryNormal, encodeAddConsumerAssignment(&consumerAssignment{
+		{Type: EntryNormal, Data: encodeAddConsumerAssignment(&consumerAssignment{
 			Stream: "TEST",
 			Config: &ConsumerConfig{Name: "consumer"},
 		})},
 	}
 
 	delete := []*Entry{
-		{EntryNormal, encodeDeleteStreamAssignment(&streamAssignment{
+		{Type: EntryNormal, Data: encodeDeleteStreamAssignment(&streamAssignment{
 			Config: &StreamConfig{Name: "TEST", Storage: FileStorage},
 		})},
 	}
@@ -6602,25 +6602,25 @@ func TestJetStreamClusterMetaRecoveryRecreateFileStreamAsMemory(t *testing.T) {
 	js := c.leader().getJetStream()
 
 	createFileStream := []*Entry{
-		{EntryNormal, encodeAddStreamAssignment(&streamAssignment{
+		{Type: EntryNormal, Data: encodeAddStreamAssignment(&streamAssignment{
 			Config: &StreamConfig{Name: "TEST", Storage: FileStorage},
 		})},
 	}
 
 	deleteFileStream := []*Entry{
-		{EntryNormal, encodeDeleteStreamAssignment(&streamAssignment{
+		{Type: EntryNormal, Data: encodeDeleteStreamAssignment(&streamAssignment{
 			Config: &StreamConfig{Name: "TEST", Storage: FileStorage},
 		})},
 	}
 
 	createMemoryStream := []*Entry{
-		{EntryNormal, encodeAddStreamAssignment(&streamAssignment{
+		{Type: EntryNormal, Data: encodeAddStreamAssignment(&streamAssignment{
 			Config: &StreamConfig{Name: "TEST", Storage: FileStorage},
 		})},
 	}
 
 	createConsumer := []*Entry{
-		{EntryNormal, encodeAddConsumerAssignment(&consumerAssignment{
+		{Type: EntryNormal, Data: encodeAddConsumerAssignment(&consumerAssignment{
 			Stream: "TEST",
 			Config: &ConsumerConfig{Name: "consumer"},
 		})},
@@ -6680,8 +6680,8 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 			js := c.leader().getJetStream()
 
 			ca := &consumerAssignment{Stream: "TEST", Name: "consumer"}
-			createConsumer := []*Entry{{EntryNormal, test.encodeAddConsumerAssignment(ca)}}
-			deleteConsumer := []*Entry{{EntryNormal, encodeDeleteConsumerAssignment(ca)}}
+			createConsumer := []*Entry{{Type: EntryNormal, Data: test.encodeAddConsumerAssignment(ca)}}
+			deleteConsumer := []*Entry{{Type: EntryNormal, Data: encodeDeleteConsumerAssignment(ca)}}
 
 			// Need to be recovering so that we accumulate recoveryUpdates.
 			js.setMetaRecovering()

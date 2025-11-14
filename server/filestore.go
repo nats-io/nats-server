@@ -1316,12 +1316,12 @@ func (mb *msgBlock) convertCipher() error {
 	}
 	var prfs []prfWithCipher
 	if fs.prf != nil {
-		prfs = append(prfs, prfWithCipher{fs.prf, sc})
-		prfs = append(prfs, prfWithCipher{fs.prf, osc})
+		prfs = append(prfs, prfWithCipher{keyGen: fs.prf, StoreCipher: sc})
+		prfs = append(prfs, prfWithCipher{keyGen: fs.prf, StoreCipher: osc})
 	}
 	if fs.oldprf != nil {
-		prfs = append(prfs, prfWithCipher{fs.oldprf, sc})
-		prfs = append(prfs, prfWithCipher{fs.oldprf, osc})
+		prfs = append(prfs, prfWithCipher{keyGen: fs.oldprf, StoreCipher: sc})
+		prfs = append(prfs, prfWithCipher{keyGen: fs.oldprf, StoreCipher: osc})
 	}
 
 	for _, prf := range prfs {
@@ -1561,7 +1561,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		// Do some quick sanity checks here.
 		if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
 			truncate(index)
-			return gatherLost(lbuf - index), tombstones, errBadMsg{mb.mfn, fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d index %d lbuf %d)", dlen, slen, rl, index, lbuf)}
+			return gatherLost(lbuf - index), tombstones, errBadMsg{fn: mb.mfn, detail: fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d index %d lbuf %d)", dlen, slen, rl, index, lbuf)}
 		}
 
 		// Check for checksum failures before additional processing.
@@ -1579,7 +1579,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			checksum := hh.Sum(hb[:0])
 			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
 				truncate(index)
-				return gatherLost(lbuf - index), tombstones, errBadMsg{mb.mfn, "invalid checksum"}
+				return gatherLost(lbuf - index), tombstones, errBadMsg{fn: mb.mfn, detail: "invalid checksum"}
 			}
 			copy(mb.lchk[0:], checksum)
 		}
@@ -5394,7 +5394,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 		rl = uint32(len(mb.cache.buf)) - ri
 	}
 	if rl < msgHdrSize {
-		return 0, 0, false, errBadMsg{mb.mfn, fmt.Sprintf("length too short for slot %d", slot)}
+		return 0, 0, false, errBadMsg{fn: mb.mfn, detail: fmt.Sprintf("length too short for slot %d", slot)}
 	}
 	return uint32(ri), rl, hashChecked, nil
 }
@@ -6135,7 +6135,7 @@ func (fs *fileStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool
 				p.last = false
 			}
 		}
-		fs.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
+		fs.sdm.pending[seq] = SDMBySeq{last: p.last, ts: time.Now().UnixNano()}
 		return p.last, true
 	}
 
@@ -7790,7 +7790,7 @@ func (mb *msgBlock) msgFromBufNoCopy(buf []byte, sm *StoreMsg, hh *highwayhash.D
 // Lock should be held.
 func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Digest64, doCopy bool) (*StoreMsg, error) {
 	if len(buf) < emptyRecordLen {
-		return nil, errBadMsg{mb.mfn, "record too short"}
+		return nil, errBadMsg{fn: mb.mfn, detail: "record too short"}
 	}
 	var le = binary.LittleEndian
 
@@ -7802,7 +7802,7 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
 	if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || int(rl) > len(buf) || rl > rlBadThresh {
-		return nil, errBadMsg{mb.mfn, fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d buf %d)", dlen, slen, rl, buf)}
+		return nil, errBadMsg{fn: mb.mfn, detail: fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d buf %d)", dlen, slen, rl, buf)}
 	}
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
@@ -7817,7 +7817,7 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 		}
 		var hb [highwayhash.Size64]byte
 		if !bytes.Equal(hh.Sum(hb[:0]), data[len(data)-8:]) {
-			return nil, errBadMsg{mb.mfn, "invalid checksum"}
+			return nil, errBadMsg{fn: mb.mfn, detail: "invalid checksum"}
 		}
 	}
 	seq := le.Uint64(hdr[4:])
@@ -7836,18 +7836,18 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 	// layers and for us to be safe to expire, and recycle, the large msgBlocks.
 	end := dlen - 8
 	if len(data) < end {
-		return nil, errBadMsg{mb.mfn, "invalid data length"}
+		return nil, errBadMsg{fn: mb.mfn, detail: "invalid data length"}
 	}
 
 	if hasHeaders {
 		if slen+4 > len(data) {
-			return nil, errBadMsg{mb.mfn, "invalid subject length greataer than data length"}
+			return nil, errBadMsg{fn: mb.mfn, detail: "invalid subject length greataer than data length"}
 		}
 		hl := le.Uint32(data[slen:])
 		bi := slen + 4
 		li := bi + int(hl)
 		if bi > end {
-			return nil, errBadMsg{mb.mfn, "invalid buffer index"}
+			return nil, errBadMsg{fn: mb.mfn, detail: "invalid buffer index"}
 		}
 		if doCopy {
 			sm.buf = append(sm.buf, data[bi:end]...)
@@ -7856,13 +7856,13 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 		}
 		li, end = li-bi, end-bi
 		if li > len(sm.buf) || end > len(sm.buf) {
-			return nil, errBadMsg{mb.mfn, "invalid message length or end greater than buffer length"}
+			return nil, errBadMsg{fn: mb.mfn, detail: "invalid message length or end greater than buffer length"}
 		}
 		sm.hdr = sm.buf[0:li:li]
 		sm.msg = sm.buf[li:end]
 	} else {
 		if slen > end {
-			return nil, errBadMsg{mb.mfn, "invalid subject length greater than end"}
+			return nil, errBadMsg{fn: mb.mfn, detail: "invalid subject length greater than end"}
 		}
 		if doCopy {
 			sm.buf = append(sm.buf, data[slen:end]...)
@@ -7871,14 +7871,14 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 		}
 		mlen := end - slen
 		if mlen > len(sm.buf) {
-			return nil, errBadMsg{mb.mfn, "invalid message length greater than buffer length"}
+			return nil, errBadMsg{fn: mb.mfn, detail: "invalid message length greater than buffer length"}
 		}
 		sm.msg = sm.buf[0:mlen]
 	}
 	sm.seq, sm.ts = seq, ts
 	if slen > 0 {
 		if slen > len(data) {
-			return nil, errBadMsg{mb.mfn, "invalid subject length greater than data length"}
+			return nil, errBadMsg{fn: mb.mfn, detail: "invalid subject length greater than data length"}
 		}
 		if doCopy {
 			// Make a copy since sm.subj lifetime may last longer.
@@ -8598,7 +8598,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				nrg = fs.removePerSubject(sm.subj)
 
 				// Track tombstones we need to write.
-				tombs = append(tombs, msgId{sm.seq, sm.ts})
+				tombs = append(tombs, msgId{seq: sm.seq, ts: sm.ts})
 				if sm.seq < lowSeq || lowSeq == 0 {
 					lowSeq = sm.seq
 				}
@@ -8882,7 +8882,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			// Update fss
 			smb.removeSeqPerSubject(sm.subj, mseq)
 			fs.removePerSubject(sm.subj)
-			tombs = append(tombs, msgId{sm.seq, sm.ts})
+			tombs = append(tombs, msgId{seq: sm.seq, ts: sm.ts})
 		}
 	}
 
@@ -9112,7 +9112,7 @@ func (mb *msgBlock) tombsLocked() []msgId {
 		// Check for tombstones.
 		if seq&tbit != 0 {
 			ts := int64(le.Uint64(hdr[12:]))
-			tombs = append(tombs, msgId{seq &^ tbit, ts})
+			tombs = append(tombs, msgId{seq: seq &^ tbit, ts: ts})
 		}
 		// Advance to next record.
 		index += rl
@@ -10552,7 +10552,7 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	errCh := make(chan string, 1)
 	go fs.streamSnapshot(pw, includeConsumers, errCh)
 
-	return &SnapshotResult{pr, state, errCh}, nil
+	return &SnapshotResult{Reader: pr, State: state, errCh: errCh}, nil
 }
 
 // Helper to return the config.
@@ -11092,7 +11092,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 			}
 		} else {
 			// Add to pending.
-			o.state.Pending[sseq] = &Pending{dseq, ts}
+			o.state.Pending[sseq] = &Pending{Sequence: dseq, Timestamp: ts}
 		}
 		// Update delivered as needed.
 		if dseq > o.state.Delivered.Consumer {
@@ -11254,7 +11254,7 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	if len(state.Pending) > 0 {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
-			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			pending[seq] = &Pending{Sequence: p.Sequence, Timestamp: p.Timestamp}
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -11440,7 +11440,7 @@ func checkConsumerHeader(hdr []byte) (uint8, error) {
 func (o *consumerFileStore) copyPending() map[uint64]*Pending {
 	pending := make(map[uint64]*Pending, len(o.state.Pending))
 	for seq, p := range o.state.Pending {
-		pending[seq] = &Pending{p.Sequence, p.Timestamp}
+		pending[seq] = &Pending{Sequence: p.Sequence, Timestamp: p.Timestamp}
 	}
 	return pending
 }
@@ -11537,7 +11537,7 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 		if doCopy {
 			o.state.Pending = make(map[uint64]*Pending, len(state.Pending))
 			for seq, p := range state.Pending {
-				o.state.Pending[seq] = &Pending{p.Sequence, p.Timestamp}
+				o.state.Pending[seq] = &Pending{Sequence: p.Sequence, Timestamp: p.Timestamp}
 			}
 		} else {
 			o.state.Pending = state.Pending
@@ -11658,7 +11658,7 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 				ts = (mints - ts) * int64(time.Second)
 			}
 			// Store in pending.
-			state.Pending[sseq] = &Pending{dseq, ts}
+			state.Pending[sseq] = &Pending{Sequence: dseq, Timestamp: ts}
 		}
 	}
 

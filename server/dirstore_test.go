@@ -833,9 +833,9 @@ func TestRemove(t *testing.T) {
 		expected int
 		moved    int
 	}{
-		HardDelete:    {0, 0},
-		RenameDeleted: {0, 1},
-		NoDelete:      {1, 0},
+		HardDelete:    {expected: 0, moved: 0},
+		RenameDeleted: {expected: 0, moved: 1},
+		NoDelete:      {expected: 1, moved: 0},
 	} {
 		deleteType, test := deleteType, test // fixes govet capturing loop variables
 		t.Run("", func(t *testing.T) {

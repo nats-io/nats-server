@@ -121,31 +121,31 @@ func TestComma(t *testing.T) {
 	}
 
 	l := testList{
-		{"0", comma(0), "0"},
-		{"10", comma(10), "10"},
-		{"100", comma(100), "100"},
-		{"1,000", comma(1000), "1,000"},
-		{"10,000", comma(10000), "10,000"},
-		{"100,000", comma(100000), "100,000"},
-		{"10,000,000", comma(10000000), "10,000,000"},
-		{"10,100,000", comma(10100000), "10,100,000"},
-		{"10,010,000", comma(10010000), "10,010,000"},
-		{"10,001,000", comma(10001000), "10,001,000"},
-		{"123,456,789", comma(123456789), "123,456,789"},
-		{"maxint", comma(9.223372e+18), "9,223,372,000,000,000,000"},
-		{"math.maxint", comma(math.MaxInt64), "9,223,372,036,854,775,807"},
-		{"math.minint", comma(math.MinInt64), "-9,223,372,036,854,775,808"},
-		{"minint", comma(-9.223372e+18), "-9,223,372,000,000,000,000"},
-		{"-123,456,789", comma(-123456789), "-123,456,789"},
-		{"-10,100,000", comma(-10100000), "-10,100,000"},
-		{"-10,010,000", comma(-10010000), "-10,010,000"},
-		{"-10,001,000", comma(-10001000), "-10,001,000"},
-		{"-10,000,000", comma(-10000000), "-10,000,000"},
-		{"-100,000", comma(-100000), "-100,000"},
-		{"-10,000", comma(-10000), "-10,000"},
-		{"-1,000", comma(-1000), "-1,000"},
-		{"-100", comma(-100), "-100"},
-		{"-10", comma(-10), "-10"},
+		{name: "0", got: comma(0), exp: "0"},
+		{name: "10", got: comma(10), exp: "10"},
+		{name: "100", got: comma(100), exp: "100"},
+		{name: "1,000", got: comma(1000), exp: "1,000"},
+		{name: "10,000", got: comma(10000), exp: "10,000"},
+		{name: "100,000", got: comma(100000), exp: "100,000"},
+		{name: "10,000,000", got: comma(10000000), exp: "10,000,000"},
+		{name: "10,100,000", got: comma(10100000), exp: "10,100,000"},
+		{name: "10,010,000", got: comma(10010000), exp: "10,010,000"},
+		{name: "10,001,000", got: comma(10001000), exp: "10,001,000"},
+		{name: "123,456,789", got: comma(123456789), exp: "123,456,789"},
+		{name: "maxint", got: comma(9.223372e+18), exp: "9,223,372,000,000,000,000"},
+		{name: "math.maxint", got: comma(math.MaxInt64), exp: "9,223,372,036,854,775,807"},
+		{name: "math.minint", got: comma(math.MinInt64), exp: "-9,223,372,036,854,775,808"},
+		{name: "minint", got: comma(-9.223372e+18), exp: "-9,223,372,000,000,000,000"},
+		{name: "-123,456,789", got: comma(-123456789), exp: "-123,456,789"},
+		{name: "-10,100,000", got: comma(-10100000), exp: "-10,100,000"},
+		{name: "-10,010,000", got: comma(-10010000), exp: "-10,010,000"},
+		{name: "-10,001,000", got: comma(-10001000), exp: "-10,001,000"},
+		{name: "-10,000,000", got: comma(-10000000), exp: "-10,000,000"},
+		{name: "-100,000", got: comma(-100000), exp: "-100,000"},
+		{name: "-10,000", got: comma(-10000), exp: "-10,000"},
+		{name: "-1,000", got: comma(-1000), exp: "-1,000"},
+		{name: "-100", got: comma(-100), exp: "-100"},
+		{name: "-10", got: comma(-10), exp: "-10"},
 	}
 
 	failed := false
@@ -166,10 +166,10 @@ func TestURLRedaction(t *testing.T) {
 		Full string
 		Safe string
 	}{
-		{"nats://foo:bar@example.org", "nats://foo:xxxxx@example.org"},
-		{"nats://foo@example.org", "nats://foo@example.org"},
-		{"nats://example.org", "nats://example.org"},
-		{"nats://example.org/foo?bar=1", "nats://example.org/foo?bar=1"},
+		{Full: "nats://foo:bar@example.org", Safe: "nats://foo:xxxxx@example.org"},
+		{Full: "nats://foo@example.org", Safe: "nats://foo@example.org"},
+		{Full: "nats://example.org", Safe: "nats://example.org"},
+		{Full: "nats://example.org/foo?bar=1", Safe: "nats://example.org/foo?bar=1"},
 	}
 	var err error
 	listFull := make([]*url.URL, len(redactionFromTo))
@@ -200,16 +200,16 @@ func TestVersionAtLeast(t *testing.T) {
 		update  int
 		result  bool
 	}{
-		{"2.0.0-beta", 1, 9, 9, true},
-		{"2.0.0", 1, 99, 9, true},
-		{"2.2.0", 2, 1, 9, true},
-		{"2.2.2", 2, 2, 2, true},
-		{"2.2.2", 2, 2, 3, false},
-		{"2.2.2", 2, 3, 2, false},
-		{"2.2.2", 3, 2, 2, false},
-		{"2.22.2", 3, 0, 0, false},
-		{"2.2.22", 2, 3, 0, false},
-		{"bad.version", 1, 2, 3, false},
+		{version: "2.0.0-beta", major: 1, minor: 9, update: 9, result: true},
+		{version: "2.0.0", major: 1, minor: 99, update: 9, result: true},
+		{version: "2.2.0", major: 2, minor: 1, update: 9, result: true},
+		{version: "2.2.2", major: 2, minor: 2, update: 2, result: true},
+		{version: "2.2.2", major: 2, minor: 2, update: 3, result: false},
+		{version: "2.2.2", major: 2, minor: 3, update: 2, result: false},
+		{version: "2.2.2", major: 3, minor: 2, update: 2, result: false},
+		{version: "2.22.2", major: 3, minor: 0, update: 0, result: false},
+		{version: "2.2.22", major: 2, minor: 3, update: 0, result: false},
+		{version: "bad.version", major: 1, minor: 2, update: 3, result: false},
 	} {
 		t.Run(_EMPTY_, func(t *testing.T) {
 			if res := versionAtLeast(test.version, test.major, test.minor, test.update); res != test.result {

@@ -32,7 +32,7 @@ func parseOCSPPeer(v any) (pcfg *certidp.OCSPPeerConfig, retError error) {
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]any)
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalPeerOptsConfig, v)}
+		return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrIllegalPeerOptsConfig, v)}
 	}
 	pcfg = certidp.NewOCSPPeerConfig()
 	retError = nil
@@ -42,7 +42,7 @@ func parseOCSPPeer(v any) (pcfg *certidp.OCSPPeerConfig, retError error) {
 		case "verify":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.Verify = verify
 		case "allowed_clockskew":
@@ -55,11 +55,11 @@ func parseOCSPPeer(v any) (pcfg *certidp.OCSPPeerConfig, retError error) {
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
 			if at >= 0 {
 				pcfg.ClockSkew = at
@@ -74,11 +74,11 @@ func parseOCSPPeer(v any) (pcfg *certidp.OCSPPeerConfig, retError error) {
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
 			if at >= 0 {
 				pcfg.Timeout = at
@@ -93,11 +93,11 @@ func parseOCSPPeer(v any) (pcfg *certidp.OCSPPeerConfig, retError error) {
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
+					return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
 			if at >= 0 {
 				pcfg.TTLUnsetNextUpdate = at
@@ -105,23 +105,23 @@ func parseOCSPPeer(v any) (pcfg *certidp.OCSPPeerConfig, retError error) {
 		case "warn_only":
 			warnOnly, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.WarnOnly = warnOnly
 		case "unknown_is_good":
 			unknownIsGood, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.UnknownIsGood = unknownIsGood
 		case "allow_when_ca_unreachable":
 			allowWhenCAUnreachable, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
+				return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.AllowWhenCAUnreachable = allowWhenCAUnreachable
 		default:
-			return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
+			return nil, &configErr{token: tk, reason: fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 		}
 	}
 	return pcfg, nil

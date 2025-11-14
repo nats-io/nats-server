@@ -114,7 +114,7 @@ func TestNRGAppendEntryEncode(t *testing.T) {
 
 	// Test max number of entries.
 	for i := 0; i < math.MaxUint16+1; i++ {
-		ae.entries = append(ae.entries, &Entry{EntryNormal, nil})
+		ae.entries = append(ae.entries, &Entry{Type: EntryNormal, Data: nil})
 	}
 	_, err = ae.encode(b)
 	require_Error(t, err, errTooManyEntries)
@@ -127,7 +127,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 		pindex: 0,
 	}
 	for i := 0; i < math.MaxUint16; i++ {
-		ae.entries = append(ae.entries, &Entry{EntryNormal, nil})
+		ae.entries = append(ae.entries, &Entry{Type: EntryNormal, Data: nil})
 	}
 	buf, err := ae.encode(nil)
 	require_NoError(t, err)
@@ -432,7 +432,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	require_Equal(t, n.prop.len(), 0)
 	require_Equal(t, n.resp.len(), 0)
 
-	n.prop.push(&proposedEntry{&Entry{}, _EMPTY_})
+	n.prop.push(&proposedEntry{Entry: &Entry{}, reply: _EMPTY_})
 	n.resp.push(&appendEntryResponse{})
 	require_Equal(t, n.prop.len(), 1)
 	require_Equal(t, n.resp.len(), 1)
@@ -1693,7 +1693,7 @@ func TestNRGDontSwitchToCandidateWithInflightSnapshot(t *testing.T) {
 	// Create a sample snapshot entry, the content doesn't matter.
 	snapshotEntries := []*Entry{
 		newEntry(EntrySnapshot, nil),
-		newEntry(EntryPeerState, encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})),
+		newEntry(EntryPeerState, encodePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt})),
 	}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1732,7 +1732,7 @@ func TestNRGDontSwitchToCandidateWithMultipleInflightSnapshots(t *testing.T) {
 	// Create a sample snapshot entry, the content doesn't matter.
 	snapshotEntries := []*Entry{
 		newEntry(EntrySnapshot, nil),
-		newEntry(EntryPeerState, encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})),
+		newEntry(EntryPeerState, encodePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt})),
 	}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1832,7 +1832,7 @@ func TestNRGCancelCatchupWhenDetectingHigherTermDuringVoteRequest(t *testing.T) 
 	// Receiving a vote request should cancel our catchup.
 	// Otherwise, we could receive catchup messages after this that provides the previous leader with quorum.
 	// If the new leader doesn't have these entries, the previous leader would desync since it would commit them.
-	err := n.processVoteRequest(&voteRequest{2, 1, 1, nats0, "reply"})
+	err := n.processVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 1, candidate: nats0, reply: "reply"})
 	require_NoError(t, err)
 	require_True(t, n.catchup == nil)
 }
@@ -1913,7 +1913,7 @@ func TestNRGTruncateDownToCommittedWhenTruncateFails(t *testing.T) {
 	defer cleanup()
 
 	n.Lock()
-	n.wal = mockWALTruncateAlwaysFails{n.wal}
+	n.wal = mockWALTruncateAlwaysFails{WAL: n.wal}
 	n.Unlock()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
@@ -2463,7 +2463,7 @@ func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
 	require_Equal(t, n.commit, 0)
 
 	// Normally would commit the entry, but since we're not leader anymore we should ignore it.
-	n.trackResponse(&appendEntryResponse{1, 1, "peer", _EMPTY_, true})
+	n.trackResponse(&appendEntryResponse{term: 1, index: 1, peer: "peer", reply: _EMPTY_, success: true})
 	require_Equal(t, n.commit, 0)
 }
 
@@ -2906,7 +2906,7 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	n.SetObserver(true)
 	snapshotEntries := []*Entry{
 		newEntry(EntrySnapshot, nil),
-		newEntry(EntryPeerState, encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})),
+		newEntry(EntryPeerState, encodePeerState(&peerState{knownPeers: n.peerNames(), clusterSize: n.csz, domainExt: n.extSt})),
 	}
 	aeSnapshot := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: snapshotEntries})
 	n.createCatchup(aeSnapshot)

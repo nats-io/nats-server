@@ -3176,7 +3176,7 @@ func (s *Server) startMonitoring(secure bool) error {
 		Addr:              hp,
 		Handler:           mux,
 		MaxHeaderBytes:    1 << 20,
-		ErrorLog:          log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		ErrorLog:          log.New(&captureHTTPServerLog{s: s, prefix: "monitoring: "}, _EMPTY_, 0),
 		ReadHeaderTimeout: time.Second * 5,
 	}
 	s.mu.Lock()
@@ -3451,7 +3451,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 			c.nc.SetReadDeadline(time.Time{})
 			pre = pre[:n]
 		}
-		conn = &tlsMixConn{conn, bytes.NewBuffer(pre)}
+		conn = &tlsMixConn{Conn: conn, pre: bytes.NewBuffer(pre)}
 		addr, err := readProxyProtoHeader(conn)
 		if err != nil && err != errProxyProtoUnrecognized {
 			// err != errProxyProtoUnrecognized implies that we detected a proxy
@@ -3500,7 +3500,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 
 		// If we have a prebuffer create a multi-reader.
 		if len(pre) > 0 {
-			c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
+			c.nc = &tlsMixConn{Conn: c.nc, pre: bytes.NewBuffer(pre)}
 			// Clear pre so it is not parsed.
 			pre = nil
 		}

@@ -879,7 +879,7 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool
 			}
 		}
 		if n != nil {
-			levels = append(levels, lnt{l, n, t})
+			levels = append(levels, lnt{l: l, n: n, t: t})
 			l = n.next
 		} else {
 			l = nil
@@ -1263,7 +1263,7 @@ func ValidateMapping(src string, dest string) error {
 	for t := range strings.SplitSeq(dest, tsep) {
 		length := len(t)
 		if length == 0 || sfwc {
-			return &mappingDestinationErr{t, ErrInvalidMappingDestinationSubject}
+			return &mappingDestinationErr{token: t, err: ErrInvalidMappingDestinationSubject}
 		}
 
 		// if it looks like it contains a mapping function, it should be a valid mapping function
@@ -1276,7 +1276,7 @@ func ValidateMapping(src string, dest string) error {
 				!sliceFromRightMappingFunctionRegEx.MatchString(t) &&
 				!splitMappingFunctionRegEx.MatchString(t) &&
 				!randomMappingFunctionRegEx.MatchString(t) {
-				return &mappingDestinationErr{t, ErrUnknownMappingDestinationFunction}
+				return &mappingDestinationErr{token: t, err: ErrUnknownMappingDestinationFunction}
 			} else {
 				continue
 			}

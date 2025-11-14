@@ -1335,7 +1335,7 @@ func TestMonitorConnzSortByIdleTime(t *testing.T) {
 
 	for name, conns := range cases {
 		t.Run(name, func(t *testing.T) {
-			sort.Sort(byIdle{conns, now})
+			sort.Sort(byIdle{ConnInfos: conns, now: now})
 
 			idleDurations := getIdleDurations(conns, now)
 
@@ -2735,16 +2735,16 @@ func TestMonitorCluster(t *testing.T) {
 	defer s.Shutdown()
 
 	expected := ClusterOptsVarz{
-		"A",
-		opts.Cluster.Host,
-		opts.Cluster.Port,
-		opts.Cluster.AuthTimeout,
-		[]string{"127.0.0.1:1234"},
-		opts.Cluster.TLSTimeout,
-		opts.Cluster.TLSConfig != nil,
-		opts.Cluster.TLSConfig != nil,
-		DEFAULT_ROUTE_POOL_SIZE,
-		0, _EMPTY_,
+		Name:          "A",
+		Host:          opts.Cluster.Host,
+		Port:          opts.Cluster.Port,
+		AuthTimeout:   opts.Cluster.AuthTimeout,
+		URLs:          []string{"127.0.0.1:1234"},
+		TLSTimeout:    opts.Cluster.TLSTimeout,
+		TLSRequired:   opts.Cluster.TLSConfig != nil,
+		TLSVerify:     opts.Cluster.TLSConfig != nil,
+		PoolSize:      DEFAULT_ROUTE_POOL_SIZE,
+		WriteDeadline: 0, WriteTimeout: _EMPTY_,
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -2760,7 +2760,7 @@ func TestMonitorCluster(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = ClusterOptsVarz{"", "", 0, 0, nil, 2, false, false, 0, 0, _EMPTY_}
+		_ = ClusterOptsVarz{Name: "", Host: "", Port: 0, AuthTimeout: 0, URLs: nil, TLSTimeout: 2, TLSRequired: false, TLSVerify: false, PoolSize: 0, WriteDeadline: 0, WriteTimeout: _EMPTY_}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -2904,18 +2904,18 @@ func TestMonitorGateway(t *testing.T) {
 	defer s.Shutdown()
 
 	expected := GatewayOptsVarz{
-		"A",
-		opts.Gateway.Host,
-		opts.Gateway.Port,
-		opts.Gateway.AuthTimeout,
-		opts.Gateway.TLSTimeout,
-		opts.Gateway.TLSConfig != nil,
-		opts.Gateway.TLSConfig != nil,
-		opts.Gateway.Advertise,
-		opts.Gateway.ConnectRetries,
-		[]RemoteGatewayOptsVarz{{"B", 1, nil}},
-		opts.Gateway.RejectUnknown,
-		0, _EMPTY_,
+		Name:           "A",
+		Host:           opts.Gateway.Host,
+		Port:           opts.Gateway.Port,
+		AuthTimeout:    opts.Gateway.AuthTimeout,
+		TLSTimeout:     opts.Gateway.TLSTimeout,
+		TLSRequired:    opts.Gateway.TLSConfig != nil,
+		TLSVerify:      opts.Gateway.TLSConfig != nil,
+		Advertise:      opts.Gateway.Advertise,
+		ConnectRetries: opts.Gateway.ConnectRetries,
+		Gateways:       []RemoteGatewayOptsVarz{{Name: "B", TLSTimeout: 1, URLs: nil}},
+		RejectUnknown:  opts.Gateway.RejectUnknown,
+		WriteDeadline:  0, WriteTimeout: _EMPTY_,
 	}
 	// Since URLs array is not guaranteed to be always the same order,
 	// we don't add it in the expected GatewayOptsVarz, instead we
@@ -2953,7 +2953,7 @@ func TestMonitorGateway(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in GatewayOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = GatewayOptsVarz{"", "", 0, 0, 0, false, false, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false, 0, "default"}
+		_ = GatewayOptsVarz{Name: "", Host: "", Port: 0, AuthTimeout: 0, TLSTimeout: 0, TLSRequired: false, TLSVerify: false, Advertise: "", ConnectRetries: 0, Gateways: []RemoteGatewayOptsVarz{{Name: "", TLSTimeout: 0, URLs: nil}}, RejectUnknown: false, WriteDeadline: 0, WriteTimeout: "default"}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -3127,19 +3127,19 @@ func TestMonitorLeafNode(t *testing.T) {
 	defer s.Shutdown()
 
 	expected := LeafNodeOptsVarz{
-		opts.LeafNode.Host,
-		opts.LeafNode.Port,
-		opts.LeafNode.AuthTimeout,
-		opts.LeafNode.TLSTimeout,
-		opts.LeafNode.TLSConfig != nil,
-		opts.LeafNode.TLSConfig != nil,
-		[]RemoteLeafOptsVarz{
+		Host:        opts.LeafNode.Host,
+		Port:        opts.LeafNode.Port,
+		AuthTimeout: opts.LeafNode.AuthTimeout,
+		TLSTimeout:  opts.LeafNode.TLSTimeout,
+		TLSRequired: opts.LeafNode.TLSConfig != nil,
+		TLSVerify:   opts.LeafNode.TLSConfig != nil,
+		Remotes: []RemoteLeafOptsVarz{
 			{
-				"acc", 1, []string{"localhost:1234"}, nil, false,
+				LocalAccount: "acc", TLSTimeout: 1, URLs: []string{"localhost:1234"}, Deny: nil, TLSOCSPPeerVerify: false,
 			},
 		},
-		false,
-		0, _EMPTY_,
+		TLSOCSPPeerVerify: false,
+		WriteDeadline:     0, WriteTimeout: _EMPTY_,
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -3164,7 +3164,7 @@ func TestMonitorLeafNode(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = LeafNodeOptsVarz{"", 0, 0, 0, false, false, []RemoteLeafOptsVarz{{"", 0, nil, nil, false}}, false, 0, _EMPTY_}
+		_ = LeafNodeOptsVarz{Host: "", Port: 0, AuthTimeout: 0, TLSTimeout: 0, TLSRequired: false, TLSVerify: false, Remotes: []RemoteLeafOptsVarz{{LocalAccount: "", TLSTimeout: 0, URLs: nil, Deny: nil, TLSOCSPPeerVerify: false}}, TLSOCSPPeerVerify: false, WriteDeadline: 0, WriteTimeout: _EMPTY_}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -3818,10 +3818,10 @@ func TestMonitorGatewayzWithSubs(t *testing.T) {
 		allAccs bool
 		opts    *GatewayzOptions
 	}{
-		{"accs=1&subs=1", true, &GatewayzOptions{Accounts: true, AccountSubscriptions: true}},
-		{"accs=1&subs=detail", true, &GatewayzOptions{Accounts: true, AccountSubscriptionsDetail: true}},
-		{"acc_name=B&subs=1", false, &GatewayzOptions{AccountName: "B", AccountSubscriptions: true}},
-		{"acc_name=B&subs=detail", false, &GatewayzOptions{AccountName: "B", AccountSubscriptionsDetail: true}},
+		{url: "accs=1&subs=1", allAccs: true, opts: &GatewayzOptions{Accounts: true, AccountSubscriptions: true}},
+		{url: "accs=1&subs=detail", allAccs: true, opts: &GatewayzOptions{Accounts: true, AccountSubscriptionsDetail: true}},
+		{url: "acc_name=B&subs=1", allAccs: false, opts: &GatewayzOptions{AccountName: "B", AccountSubscriptions: true}},
+		{url: "acc_name=B&subs=detail", allAccs: false, opts: &GatewayzOptions{AccountName: "B", AccountSubscriptionsDetail: true}},
 	} {
 		t.Run(test.url, func(t *testing.T) {
 			gatewayzURL := fmt.Sprintf("http://127.0.0.1:%d/gatewayz?%s", sa.MonitorAddr().Port, test.url)
@@ -4377,9 +4377,9 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 		gateway1 int
 		lport    int
 	}{
-		{7500, 7501, 7502, 5502, 8500, 8503, 7433},
-		{5500, 5501, 5502, 7502, 8501, 8503, 7434},
-		{6050, 6051, 6052, 7502, 8502, 8503, 7435},
+		{port: 7500, mport: 7501, cport: 7502, route1: 5502, gport: 8500, gateway1: 8503, lport: 7433},
+		{port: 5500, mport: 5501, cport: 5502, route1: 7502, gport: 8501, gateway1: 8503, lport: 7434},
+		{port: 6050, mport: 6051, cport: 6052, route1: 7502, gport: 8502, gateway1: 8503, lport: 7435},
 	} {
 		dir := t.TempDir()
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -4429,7 +4429,7 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 		gport    int
 		gateway1 int
 	}{
-		{7503, 7504, 6053, 8503, 8500},
+		{port: 7503, mport: 7504, cport: 6053, gport: 8503, gateway1: 8500},
 	} {
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
 			listen: 127.0.0.1:%d
@@ -4467,7 +4467,7 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 		mport int
 		lport int
 	}{
-		{7505, 7506, 7433},
+		{port: 7505, mport: 7506, lport: 7433},
 	} {
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
 			listen: 127.0.0.1:%d
@@ -4992,8 +4992,8 @@ func TestMonitorJsz(t *testing.T) {
 		cport  int
 		routed int
 	}{
-		{7500, 7501, 7502, 5502},
-		{5500, 5501, 5502, 7502},
+		{port: 7500, mport: 7501, cport: 7502, routed: 5502},
+		{port: 5500, mport: 5501, cport: 5502, routed: 7502},
 	} {
 		s, _ := runMonitorJSServer(t, test.port, test.mport, test.cport, test.routed)
 		defer s.Shutdown()
@@ -6123,7 +6123,7 @@ func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	az, err := s.Accountz(&AccountzOptions{"APP"})
+	az, err := s.Accountz(&AccountzOptions{Account: "APP"})
 	require_NoError(t, err)
 	require_NotNil(t, az.Account)
 	require_True(t, len(az.Account.Imports) > 0)
@@ -6271,22 +6271,22 @@ func TestMonitorHealthzStatusUnavailable(t *testing.T) {
 		wantStatus string
 	}{
 		{
-			"healthz",
-			fmt.Sprintf("http://%s/healthz?", s.MonitorAddr().String()),
-			http.StatusServiceUnavailable,
-			"unavailable",
+			name:       "healthz",
+			url:        fmt.Sprintf("http://%s/healthz?", s.MonitorAddr().String()),
+			statusCode: http.StatusServiceUnavailable,
+			wantStatus: "unavailable",
 		},
 		{
-			"js-enabled-only",
-			fmt.Sprintf("http://%s/healthz?js-enabled-only=true", s.MonitorAddr().String()),
-			http.StatusServiceUnavailable,
-			"unavailable",
+			name:       "js-enabled-only",
+			url:        fmt.Sprintf("http://%s/healthz?js-enabled-only=true", s.MonitorAddr().String()),
+			statusCode: http.StatusServiceUnavailable,
+			wantStatus: "unavailable",
 		},
 		{
-			"js-server-only",
-			fmt.Sprintf("http://%s/healthz?js-server-only=true", s.MonitorAddr().String()),
-			http.StatusOK,
-			"ok",
+			name:       "js-server-only",
+			url:        fmt.Sprintf("http://%s/healthz?js-server-only=true", s.MonitorAddr().String()),
+			statusCode: http.StatusOK,
+			wantStatus: "ok",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

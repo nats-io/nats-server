@@ -639,8 +639,8 @@ func TestNoRaceRouteCache(t *testing.T) {
 		name     string
 		useQueue bool
 	}{
-		{"plain_sub", false},
-		{"queue_sub", true},
+		{name: "plain_sub", useQueue: false},
+		{name: "queue_sub", useQueue: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 
@@ -1011,11 +1011,11 @@ func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 		name string
 		url  func(o *Options) (string, int)
 	}{
-		{"client", func(o *Options) (string, int) { return o.Host, o.Port }},
-		{"route", func(o *Options) (string, int) { return o.Cluster.Host, o.Cluster.Port }},
-		{"gateway", func(o *Options) (string, int) { return o.Gateway.Host, o.Gateway.Port }},
-		{"leafnode", func(o *Options) (string, int) { return o.LeafNode.Host, o.LeafNode.Port }},
-		{"websocket", func(o *Options) (string, int) { return o.Websocket.Host, o.Websocket.Port }},
+		{name: "client", url: func(o *Options) (string, int) { return o.Host, o.Port }},
+		{name: "route", url: func(o *Options) (string, int) { return o.Cluster.Host, o.Cluster.Port }},
+		{name: "gateway", url: func(o *Options) (string, int) { return o.Gateway.Host, o.Gateway.Port }},
+		{name: "leafnode", url: func(o *Options) (string, int) { return o.LeafNode.Host, o.LeafNode.Port }},
+		{name: "websocket", url: func(o *Options) (string, int) { return o.Websocket.Host, o.Websocket.Port }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := DefaultOptions()
@@ -3341,8 +3341,8 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 		name    string
 		durable string
 	}{
-		{"durable", "dlc"},
-		{"ephemeral", _EMPTY_},
+		{name: "durable", durable: "dlc"},
+		{name: "ephemeral", durable: _EMPTY_},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -3627,7 +3627,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	// Let's put a non-contigous AppendEntry into the system.
 	ae.pindex += 10
 	// Add in delivered record.
-	ae.entries = []*Entry{{EntryNormal, dentry(1000, 1000, 1, time.Now().UnixNano())}}
+	ae.entries = []*Entry{{Type: EntryNormal, Data: dentry(1000, 1000, 1, time.Now().UnixNano())}}
 	encoded, err := ae.encode(nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4357,9 +4357,9 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 		name    string
 		mconfig *nats.StreamConfig
 	}{
-		{"MemoryStore", &nats.StreamConfig{Name: "TEST", Storage: nats.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
+		{name: "MemoryStore", mconfig: &nats.StreamConfig{Name: "TEST", Storage: nats.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
 			Subjects: []string{"*"}}},
-		{"FileStore", &nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage, MaxMsgsPerSubject: 25_000_000,
+		{name: "FileStore", mconfig: &nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage, MaxMsgsPerSubject: 25_000_000,
 			Subjects: []string{"*"}}},
 	}
 	for _, c := range cases {
@@ -8062,8 +8062,8 @@ func TestNoRaceRoutePool(t *testing.T) {
 		name     string
 		poolSize int
 	}{
-		{"no pooling", 0},
-		{"pooling", 5},
+		{name: "no pooling", poolSize: 0},
+		{name: "pooling", poolSize: 5},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmpl := `
@@ -8170,8 +8170,8 @@ func testNoRaceRoutePerAccount(t *testing.T, useWildCard bool) {
 		name      string
 		dedicated bool
 	}{
-		{"route for all accounts", false},
-		{"route per account", true},
+		{name: "route for all accounts", dedicated: false},
+		{name: "route per account", dedicated: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmpl := `
@@ -8302,16 +8302,16 @@ func TestNoRaceRoutePoolAndPerAccountConfigReload(t *testing.T) {
 		accountsBefore string
 		accountsAfter  string
 	}{
-		{"from no pool to pool", _EMPTY_, "pool_size: 2", _EMPTY_, _EMPTY_},
-		{"increase pool size", "pool_size: 2", "pool_size: 5", _EMPTY_, _EMPTY_},
-		{"decrease pool size", "pool_size: 5", "pool_size: 2", _EMPTY_, _EMPTY_},
-		{"from pool to no pool", "pool_size: 5", _EMPTY_, _EMPTY_, _EMPTY_},
-		{"from no account to account", _EMPTY_, _EMPTY_, _EMPTY_, "accounts: [\"A\"]"},
-		{"add account", _EMPTY_, _EMPTY_, "accounts: [\"B\"]", "accounts: [\"A\",\"B\"]"},
-		{"remove account", _EMPTY_, _EMPTY_, "accounts: [\"A\",\"B\"]", "accounts: [\"B\"]"},
-		{"from account to no account", _EMPTY_, _EMPTY_, "accounts: [\"A\"]", _EMPTY_},
-		{"increase pool size and add account", "pool_size: 2", "pool_size: 3", "accounts: [\"B\"]", "accounts: [\"B\",\"A\"]"},
-		{"decrease pool size and remove account", "pool_size: 3", "pool_size: 2", "accounts: [\"A\",\"B\"]", "accounts: [\"B\"]"},
+		{name: "from no pool to pool", poolSizeBefore: _EMPTY_, poolSizeAfter: "pool_size: 2", accountsBefore: _EMPTY_, accountsAfter: _EMPTY_},
+		{name: "increase pool size", poolSizeBefore: "pool_size: 2", poolSizeAfter: "pool_size: 5", accountsBefore: _EMPTY_, accountsAfter: _EMPTY_},
+		{name: "decrease pool size", poolSizeBefore: "pool_size: 5", poolSizeAfter: "pool_size: 2", accountsBefore: _EMPTY_, accountsAfter: _EMPTY_},
+		{name: "from pool to no pool", poolSizeBefore: "pool_size: 5", poolSizeAfter: _EMPTY_, accountsBefore: _EMPTY_, accountsAfter: _EMPTY_},
+		{name: "from no account to account", poolSizeBefore: _EMPTY_, poolSizeAfter: _EMPTY_, accountsBefore: _EMPTY_, accountsAfter: "accounts: [\"A\"]"},
+		{name: "add account", poolSizeBefore: _EMPTY_, poolSizeAfter: _EMPTY_, accountsBefore: "accounts: [\"B\"]", accountsAfter: "accounts: [\"A\",\"B\"]"},
+		{name: "remove account", poolSizeBefore: _EMPTY_, poolSizeAfter: _EMPTY_, accountsBefore: "accounts: [\"A\",\"B\"]", accountsAfter: "accounts: [\"B\"]"},
+		{name: "from account to no account", poolSizeBefore: _EMPTY_, poolSizeAfter: _EMPTY_, accountsBefore: "accounts: [\"A\"]", accountsAfter: _EMPTY_},
+		{name: "increase pool size and add account", poolSizeBefore: "pool_size: 2", poolSizeAfter: "pool_size: 3", accountsBefore: "accounts: [\"B\"]", accountsAfter: "accounts: [\"B\",\"A\"]"},
+		{name: "decrease pool size and remove account", poolSizeBefore: "pool_size: 3", poolSizeAfter: "pool_size: 2", accountsBefore: "accounts: [\"A\",\"B\"]", accountsAfter: "accounts: [\"B\"]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmplA := `

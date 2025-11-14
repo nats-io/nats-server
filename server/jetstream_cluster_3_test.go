@@ -134,10 +134,10 @@ func TestJetStreamClusterDiscardNewAndMaxMsgsPerSubject(t *testing.T) {
 		storage  StorageType
 		replicas int
 	}{
-		{"MEM-R1", MemoryStorage, 1},
-		{"FILE-R1", FileStorage, 1},
-		{"MEM-R3", MemoryStorage, 3},
-		{"FILE-R3", FileStorage, 3},
+		{name: "MEM-R1", storage: MemoryStorage, replicas: 1},
+		{name: "FILE-R1", storage: FileStorage, replicas: 1},
+		{name: "MEM-R3", storage: MemoryStorage, replicas: 3},
+		{name: "FILE-R3", storage: FileStorage, replicas: 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			js.DeleteStream("KV")

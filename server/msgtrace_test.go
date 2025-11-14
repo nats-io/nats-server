@@ -84,45 +84,45 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 		expected map[string][]string
 		external bool
 	}{
-		{"missing header line", []byte("Nats-Trace-Dest: val\r\n"), nil, false},
-		{"no trace header present", []byte(hdrLine + "Header1: val1\r\nHeader2: val2\r\n"), nil, false},
-		{"trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + MsgTraceDest + ": some value\r\n"), nil, false},
-		{"trace header with some suffix", []byte(hdrLine + MsgTraceDest + "-Some-Suffix: some value\r\n"), nil, false},
-		{"trace header with space before colon", []byte(hdrLine + MsgTraceDest + " : some value\r\n"), nil, false},
-		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceDest + " : bogus"), nil, false},
-		{"external trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
-		{"external trace header with some suffix", []byte(hdrLine + traceParentHdr + "-Some-Suffix: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
-		{"external header with space before colon", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
-		{"external header with missing cr_lf for value", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), nil, false},
-		{"trace header first", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
-		{"trace header last", []byte(hdrLine + "Some-Header: some value\r\n" + MsgTraceDest + ": some.dest\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
-		{"trace header multiple values", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n" + MsgTraceDest + ": some.dest.2"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest", "some.dest.2"}}, false},
-		{"trace header and some empty key", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n: bogus\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
-		{"trace header and some header missing cr_lf for value", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: bogus"),
-			map[string][]string{MsgTraceDest: {"some.dest"}}, false},
-		{"trace header and external after", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
-		{"trace header and external before", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n" + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
-		{"external malformed", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-01\r\n"), nil, false},
-		{"external first and sampling", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
-		{"external middle and sampling", []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value2\r\n"),
-			map[string][]string{"Some-Header": {"some value1", "some value2"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
-		{"external last and sampling", []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
-		{"external sampling with not just 01", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27"}}, true},
-		{"external with different case and sampling", []byte(hdrLine + "TrAcEpArEnT: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
-		{"external first and not sampling", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value\r\n"), nil, false},
-		{"external middle and not sampling", []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value2\r\n"), nil, false},
-		{"external last and not sampling", []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\n"), nil, false},
-		{"external not sampling with not just 00", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-22\r\nSome-Header: some value\r\n"), nil, false},
+		{name: "missing header line", header: []byte("Nats-Trace-Dest: val\r\n"), expected: nil, external: false},
+		{name: "no trace header present", header: []byte(hdrLine + "Header1: val1\r\nHeader2: val2\r\n"), expected: nil, external: false},
+		{name: "trace header with some prefix", header: []byte(hdrLine + "Some-Prefix-" + MsgTraceDest + ": some value\r\n"), expected: nil, external: false},
+		{name: "trace header with some suffix", header: []byte(hdrLine + MsgTraceDest + "-Some-Suffix: some value\r\n"), expected: nil, external: false},
+		{name: "trace header with space before colon", header: []byte(hdrLine + MsgTraceDest + " : some value\r\n"), expected: nil, external: false},
+		{name: "trace header with missing cr_lf for value", header: []byte(hdrLine + MsgTraceDest + " : bogus"), expected: nil, external: false},
+		{name: "external trace header with some prefix", header: []byte(hdrLine + "Some-Prefix-" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), expected: nil, external: false},
+		{name: "external trace header with some suffix", header: []byte(hdrLine + traceParentHdr + "-Some-Suffix: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), expected: nil, external: false},
+		{name: "external header with space before colon", header: []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), expected: nil, external: false},
+		{name: "external header with missing cr_lf for value", header: []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), expected: nil, external: false},
+		{name: "trace header first", header: []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, external: false},
+		{name: "trace header last", header: []byte(hdrLine + "Some-Header: some value\r\n" + MsgTraceDest + ": some.dest\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, external: false},
+		{name: "trace header multiple values", header: []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n" + MsgTraceDest + ": some.dest.2"),
+			expected: map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest", "some.dest.2"}}, external: false},
+		{name: "trace header and some empty key", header: []byte(hdrLine + MsgTraceDest + ": some.dest\r\n: bogus\r\nSome-Header: some value\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, external: false},
+		{name: "trace header and some header missing cr_lf for value", header: []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: bogus"),
+			expected: map[string][]string{MsgTraceDest: {"some.dest"}}, external: false},
+		{name: "trace header and external after", header: []byte(hdrLine + MsgTraceDest + ": some.dest\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, external: false},
+		{name: "trace header and external before", header: []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n" + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, external: false},
+		{name: "external malformed", header: []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-01\r\n"), expected: nil, external: false},
+		{name: "external first and sampling", header: []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, external: true},
+		{name: "external middle and sampling", header: []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value2\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value1", "some value2"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, external: true},
+		{name: "external last and sampling", header: []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, external: true},
+		{name: "external sampling with not just 01", header: []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27\r\nSome-Header: some value\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27"}}, external: true},
+		{name: "external with different case and sampling", header: []byte(hdrLine + "TrAcEpArEnT: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			expected: map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, external: true},
+		{name: "external first and not sampling", header: []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value\r\n"), expected: nil, external: false},
+		{name: "external middle and not sampling", header: []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value2\r\n"), expected: nil, external: false},
+		{name: "external last and not sampling", header: []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\n"), expected: nil, external: false},
+		{name: "external not sampling with not just 00", header: []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-22\r\nSome-Header: some value\r\n"), expected: nil, external: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			m, ext := genHeaderMapIfTraceHeadersPresent(test.header)
@@ -226,8 +226,8 @@ func TestMsgTraceBasic(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg = nats.NewMsg("foo")
@@ -329,8 +329,8 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			nc2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
@@ -398,8 +398,8 @@ func TestMsgTraceIngressErrors(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			nc2 := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"))
@@ -476,8 +476,8 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sendMsg := func(pubc *nats.Conn, subj, errTxt string) {
@@ -627,8 +627,8 @@ func TestMsgTraceWithQueueSub(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -763,8 +763,8 @@ func TestMsgTraceWithRoutes(t *testing.T) {
 		name string
 		acc  string
 	}{
-		{"pinned account", "A"},
-		{"reg account", "B"},
+		{name: "pinned account", acc: "A"},
+		{name: "reg account", acc: "B"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			acc := test.acc
@@ -791,8 +791,8 @@ func TestMsgTraceWithRoutes(t *testing.T) {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("foo.bar")
@@ -932,8 +932,8 @@ func TestMsgTraceWithRouteToOldServer(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -999,10 +999,10 @@ func TestMsgTraceWithLeafNode(t *testing.T) {
 		fromHub         bool
 		leafUseLocalAcc bool
 	}{
-		{"from hub", true, false},
-		{"from leaf", false, false},
-		{"from hub with local account", true, true},
-		{"from leaf with local account", false, true},
+		{name: "from hub", fromHub: true, leafUseLocalAcc: false},
+		{name: "from leaf", fromHub: false, leafUseLocalAcc: false},
+		{name: "from hub with local account", fromHub: true, leafUseLocalAcc: true},
+		{name: "from leaf with local account", fromHub: false, leafUseLocalAcc: true},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			confHub := createConfFile(t, []byte(`
@@ -1105,8 +1105,8 @@ func TestMsgTraceWithLeafNode(t *testing.T) {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("foo")
@@ -1186,8 +1186,8 @@ func TestMsgTraceWithLeafNodeToOldServer(t *testing.T) {
 		name    string
 		fromHub bool
 	}{
-		{"from hub", true},
-		{"from leaf", false},
+		{name: "from hub", fromHub: true},
+		{name: "from leaf", fromHub: false},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			confHub := createConfFile(t, []byte(`
@@ -1249,8 +1249,8 @@ func TestMsgTraceWithLeafNodeToOldServer(t *testing.T) {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("foo")
@@ -1386,8 +1386,8 @@ func TestMsgTraceWithLeafNodeDaisyChain(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo.bar")
@@ -1540,8 +1540,8 @@ func TestMsgTraceWithGateways(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo.bar")
@@ -1700,8 +1700,8 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -1828,9 +1828,9 @@ func TestMsgTraceServiceImport(t *testing.T) {
 		name  string
 		allow bool
 	}{
-		{"not allowed", false},
-		{"allowed", true},
-		{"not allowed again", false},
+		{name: "not allowed", allow: false},
+		{name: "allowed", allow: true},
+		{name: "not allowed again", allow: false},
 	} {
 		atomic.StoreInt32(&recv, 0)
 		t.Run(mainTest.name, func(t *testing.T) {
@@ -1838,8 +1838,8 @@ func TestMsgTraceServiceImport(t *testing.T) {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("bat")
@@ -1978,8 +1978,8 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 		allowStr string
 		allow    bool
 	}{
-		{"allowed", "true", true},
-		{"not allowed", "false", false},
+		{name: "allowed", allowStr: "true", allow: true},
+		{name: "not allowed", allowStr: "false", allow: false},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			tmpl := `
@@ -2061,8 +2061,8 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("bat")
@@ -2358,8 +2358,8 @@ func TestMsgTraceServiceImportWithLeafNodeHub(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("bat")
@@ -2564,8 +2564,8 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("baz")
@@ -2715,17 +2715,17 @@ func TestMsgTraceStreamExport(t *testing.T) {
 		name  string
 		allow bool
 	}{
-		{"not allowed", false},
-		{"allowed", true},
-		{"not allowed again", false},
+		{name: "not allowed", allow: false},
+		{name: "allowed", allow: true},
+		{name: "not allowed again", allow: false},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			for _, test := range []struct {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("info.11.22.bar")
@@ -2816,8 +2816,8 @@ func TestMsgTraceStreamExportWithSuperCluster(t *testing.T) {
 		allowStr string
 		allow    bool
 	}{
-		{"allowed", "true", true},
-		{"not allowed", "false", false},
+		{name: "allowed", allowStr: "true", allow: true},
+		{name: "not allowed", allowStr: "false", allow: false},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			tmpl := `
@@ -2878,8 +2878,8 @@ func TestMsgTraceStreamExportWithSuperCluster(t *testing.T) {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("info.11.22.bar")
@@ -3084,8 +3084,8 @@ func TestMsgTraceStreamExportWithLeafNode_Hub(t *testing.T) {
 		deliverMsg bool
 	}{
 
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 
 		t.Run(test.name, func(t *testing.T) {
@@ -3271,8 +3271,8 @@ func TestMsgTraceStreamExportWithLeafNode_Leaf(t *testing.T) {
 		deliverMsg bool
 	}{
 
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 
 		t.Run(test.name, func(t *testing.T) {
@@ -3432,8 +3432,8 @@ func TestMsgTraceJetStream(t *testing.T) {
 		name       string
 		deliverMsg bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{name: "just trace", deliverMsg: false},
+		{name: "deliver msg", deliverMsg: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -3497,17 +3497,17 @@ func TestMsgTraceJetStream(t *testing.T) {
 		expectedErr string
 		special     int
 	}{
-		{"unexpected stream name", JSExpectedStream, "WRONG", "expected stream does not match", 0},
-		{"duplicate id", JSMsgId, "MyId", "duplicate", 0},
-		{"last seq by subject mismatch", JSExpectedLastSubjSeq, "10", "last sequence by subject mismatch", 0},
-		{"last seq mismatch", JSExpectedLastSeq, "10", "last sequence mismatch", 0},
-		{"last msgid mismatch", JSExpectedLastMsgId, "MyId3", "last msgid mismatch", 0},
-		{"invalid rollup command", JSMsgRollup, "wrong", "rollup value invalid: \"wrong\"", 0},
-		{"rollup not permitted", JSMsgRollup, JSMsgRollupSubject, "rollup not permitted", 1},
-		{"max msg size", _EMPTY_, _EMPTY_, ErrMaxPayload.Error(), 2},
-		{"normal message ok", _EMPTY_, _EMPTY_, _EMPTY_, 3},
-		{"insufficient resources", _EMPTY_, _EMPTY_, NewJSInsufficientResourcesError().Error(), 0},
-		{"stream sealed", _EMPTY_, _EMPTY_, NewJSStreamSealedError().Error(), 4},
+		{name: "unexpected stream name", headerName: JSExpectedStream, headerVal: "WRONG", expectedErr: "expected stream does not match", special: 0},
+		{name: "duplicate id", headerName: JSMsgId, headerVal: "MyId", expectedErr: "duplicate", special: 0},
+		{name: "last seq by subject mismatch", headerName: JSExpectedLastSubjSeq, headerVal: "10", expectedErr: "last sequence by subject mismatch", special: 0},
+		{name: "last seq mismatch", headerName: JSExpectedLastSeq, headerVal: "10", expectedErr: "last sequence mismatch", special: 0},
+		{name: "last msgid mismatch", headerName: JSExpectedLastMsgId, headerVal: "MyId3", expectedErr: "last msgid mismatch", special: 0},
+		{name: "invalid rollup command", headerName: JSMsgRollup, headerVal: "wrong", expectedErr: "rollup value invalid: \"wrong\"", special: 0},
+		{name: "rollup not permitted", headerName: JSMsgRollup, headerVal: JSMsgRollupSubject, expectedErr: "rollup not permitted", special: 1},
+		{name: "max msg size", headerName: _EMPTY_, headerVal: _EMPTY_, expectedErr: ErrMaxPayload.Error(), special: 2},
+		{name: "normal message ok", headerName: _EMPTY_, headerVal: _EMPTY_, expectedErr: _EMPTY_, special: 3},
+		{name: "insufficient resources", headerName: _EMPTY_, headerVal: _EMPTY_, expectedErr: NewJSInsufficientResourcesError().Error(), special: 0},
+		{name: "stream sealed", headerName: _EMPTY_, headerVal: _EMPTY_, expectedErr: NewJSStreamSealedError().Error(), special: 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg = newMsg()
@@ -3642,9 +3642,9 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 		name   string
 		stream string
 	}{
-		{"from stream leader", "TEST1"},
-		{"from non stream leader", "TEST2"},
-		{"from other cluster", "TEST3"},
+		{name: "from stream leader", stream: "TEST1"},
+		{name: "from non stream leader", stream: "TEST2"},
+		{name: "from other cluster", stream: "TEST3"},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			cfg := &nats.StreamConfig{
@@ -3689,8 +3689,8 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 				name       string
 				deliverMsg bool
 			}{
-				{"just trace", false},
-				{"deliver msg", true},
+				{name: "just trace", deliverMsg: false},
+				{name: "deliver msg", deliverMsg: true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg(mainTest.stream)
@@ -3838,16 +3838,16 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 				expectedErr string
 				special     int
 			}{
-				{"unexpected stream name", JSExpectedStream, "WRONG", "expected stream does not match", 0},
-				{"duplicate id", JSMsgId, "MyId", "duplicate", 0},
-				{"last seq by subject mismatch", JSExpectedLastSubjSeq, "3", "last sequence by subject mismatch", 0},
-				{"last seq mismatch", JSExpectedLastSeq, "10", "last sequence mismatch", 0},
-				{"last msgid mismatch", JSExpectedLastMsgId, "MyId3", "last msgid mismatch", 0},
-				{"invalid rollup command", JSMsgRollup, "wrong", "rollup value invalid: \"wrong\"", 0},
-				{"rollup not permitted", JSMsgRollup, JSMsgRollupSubject, "rollup not permitted", 1},
-				{"max msg size", _EMPTY_, _EMPTY_, ErrMaxPayload.Error(), 2},
-				{"new message ok", _EMPTY_, _EMPTY_, _EMPTY_, 3},
-				{"stream sealed", _EMPTY_, _EMPTY_, NewJSStreamSealedError().Error(), 4},
+				{name: "unexpected stream name", headerName: JSExpectedStream, headerVal: "WRONG", expectedErr: "expected stream does not match", special: 0},
+				{name: "duplicate id", headerName: JSMsgId, headerVal: "MyId", expectedErr: "duplicate", special: 0},
+				{name: "last seq by subject mismatch", headerName: JSExpectedLastSubjSeq, headerVal: "3", expectedErr: "last sequence by subject mismatch", special: 0},
+				{name: "last seq mismatch", headerName: JSExpectedLastSeq, headerVal: "10", expectedErr: "last sequence mismatch", special: 0},
+				{name: "last msgid mismatch", headerName: JSExpectedLastMsgId, headerVal: "MyId3", expectedErr: "last msgid mismatch", special: 0},
+				{name: "invalid rollup command", headerName: JSMsgRollup, headerVal: "wrong", expectedErr: "rollup value invalid: \"wrong\"", special: 0},
+				{name: "rollup not permitted", headerName: JSMsgRollup, headerVal: JSMsgRollupSubject, expectedErr: "rollup not permitted", special: 1},
+				{name: "max msg size", headerName: _EMPTY_, headerVal: _EMPTY_, expectedErr: ErrMaxPayload.Error(), special: 2},
+				{name: "new message ok", headerName: _EMPTY_, headerVal: _EMPTY_, expectedErr: _EMPTY_, special: 3},
+				{name: "stream sealed", headerName: _EMPTY_, headerVal: _EMPTY_, expectedErr: NewJSStreamSealedError().Error(), special: 4},
 			} {
 				t.Run(subtest.name, func(t *testing.T) {
 					msg := newMsg()
@@ -4011,10 +4011,10 @@ func TestMsgTraceWithCompression(t *testing.T) {
 		expectedHdr  string
 		unsupported  bool
 	}{
-		{"gzip", "gzip", false},
-		{"snappy", "snappy", false},
-		{"s2", "snappy", false},
-		{"bad one", "identity", true},
+		{compressAlgo: "gzip", expectedHdr: "gzip", unsupported: false},
+		{compressAlgo: "snappy", expectedHdr: "snappy", unsupported: false},
+		{compressAlgo: "s2", expectedHdr: "snappy", unsupported: false},
+		{compressAlgo: "bad one", expectedHdr: "identity", unsupported: true},
 	} {
 		t.Run(test.compressAlgo, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -4516,86 +4516,86 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 		// trace is triggered based on sampling (last token is `-01`). The presence
 		// of Nats-Trace-Only has no effect and message should always be delivered
 		// to the application.
-		{"only external header sampling",
-			func(h nats.Header) {
+		{name: "only external header sampling",
+			setHeaders: func(h nats.Header) {
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
-			true,
-			false,
-			true},
-		{"only external header with different case and sampling",
-			func(h nats.Header) {
+			traceTriggered: true,
+			traceOnly:      false,
+			expectedAccSub: true},
+		{name: "only external header with different case and sampling",
+			setHeaders: func(h nats.Header) {
 				h.Set("TraceParent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
-			true,
-			false,
-			true},
-		{"only external header sampling but not simply 01",
-			func(h nats.Header) {
+			traceTriggered: true,
+			traceOnly:      false,
+			expectedAccSub: true},
+		{name: "only external header sampling but not simply 01",
+			setHeaders: func(h nats.Header) {
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-25")
 			},
-			true,
-			false,
-			true},
-		{"only external header no sampling",
-			func(h nats.Header) {
+			traceTriggered: true,
+			traceOnly:      false,
+			expectedAccSub: true},
+		{name: "only external header no sampling",
+			setHeaders: func(h nats.Header) {
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},
-			false,
-			false,
-			false},
-		{"external header sampling and trace only",
-			func(h nats.Header) {
+			traceTriggered: false,
+			traceOnly:      false,
+			expectedAccSub: false},
+		{name: "external header sampling and trace only",
+			setHeaders: func(h nats.Header) {
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 				h.Set(MsgTraceOnly, "true")
 			},
-			true,
-			false,
-			true},
-		{"external header no sampling and trace only",
-			func(h nats.Header) {
+			traceTriggered: true,
+			traceOnly:      false,
+			expectedAccSub: true},
+		{name: "external header no sampling and trace only",
+			setHeaders: func(h nats.Header) {
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 				h.Set(MsgTraceOnly, "true")
 			},
-			false,
-			false,
-			false},
+			traceTriggered: false,
+			traceOnly:      false,
+			expectedAccSub: false},
 		// Tests where Nats-Trace-Dest is present, so ignore external header and
 		// always deliver to the Nats-Trace-Dest, not the account.
-		{"trace dest and external header sampling",
-			func(h nats.Header) {
+		{name: "trace dest and external header sampling",
+			setHeaders: func(h nats.Header) {
 				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
-			true,
-			false,
-			false},
-		{"trace dest and external header no sampling",
-			func(h nats.Header) {
+			traceTriggered: true,
+			traceOnly:      false,
+			expectedAccSub: false},
+		{name: "trace dest and external header no sampling",
+			setHeaders: func(h nats.Header) {
 				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},
-			true,
-			false,
-			false},
-		{"trace dest with trace only and external header sampling",
-			func(h nats.Header) {
+			traceTriggered: true,
+			traceOnly:      false,
+			expectedAccSub: false},
+		{name: "trace dest with trace only and external header sampling",
+			setHeaders: func(h nats.Header) {
 				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(MsgTraceOnly, "true")
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
-			true,
-			true,
-			false},
-		{"trace dest with trace only and external header no sampling",
-			func(h nats.Header) {
+			traceTriggered: true,
+			traceOnly:      true,
+			expectedAccSub: false},
+		{name: "trace dest with trace only and external header no sampling",
+			setHeaders: func(h nats.Header) {
 				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(MsgTraceOnly, "true")
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},
-			true,
-			true,
-			false},
+			traceTriggered: true,
+			traceOnly:      true,
+			expectedAccSub: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -4667,8 +4667,8 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 		name   string
 		reload bool
 	}{
-		{"external header but no account destination", true},
-		{"external header with account destination added through config reload", false},
+		{name: "external header but no account destination", reload: true},
+		{name: "external header with account destination added through config reload", reload: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -4746,9 +4746,9 @@ func TestMsgTraceAccountTraceDestJWTUpdate(t *testing.T) {
 		name           string
 		traceTriggered bool
 	}{
-		{"no acc dest", false},
-		{"adding trace dest", true},
-		{"removing trace dest", false},
+		{name: "no acc dest", traceTriggered: false},
+		{name: "adding trace dest", traceTriggered: true},
+		{name: "removing trace dest", traceTriggered: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
@@ -4839,9 +4839,9 @@ func TestMsgTraceServiceJWTUpdate(t *testing.T) {
 		name       string
 		allowTrace bool
 	}{
-		{"trace not allowed", false},
-		{"trace allowed", true},
-		{"trace not allowed again", false},
+		{name: "trace not allowed", allowTrace: false},
+		{name: "trace allowed", allowTrace: true},
+		{name: "trace not allowed again", allowTrace: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("req")
@@ -4941,9 +4941,9 @@ func TestMsgTraceStreamJWTUpdate(t *testing.T) {
 		name       string
 		allowTrace bool
 	}{
-		{"trace not allowed", false},
-		{"trace allowed", true},
-		{"trace not allowed again", false},
+		{name: "trace not allowed", allowTrace: false},
+		{name: "trace allowed", allowTrace: true},
+		{name: "trace not allowed again", allowTrace: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("info")
@@ -5007,10 +5007,10 @@ func TestMsgTraceParseAccountDestWithSampling(t *testing.T) {
 		samplingStr string
 		want        int
 	}{
-		{"trace sampling no dest", `msg_trace: {sampling: 50}`, 0},
-		{"trace dest only", `msg_trace: {dest: foo}`, 100},
-		{"trace dest with number only", `msg_trace: {dest: foo, sampling: 20}`, 20},
-		{"trace dest with percentage", `msg_trace: {dest: foo, sampling: 50%}`, 50},
+		{name: "trace sampling no dest", samplingStr: `msg_trace: {sampling: 50}`, want: 0},
+		{name: "trace dest only", samplingStr: `msg_trace: {dest: foo}`, want: 100},
+		{name: "trace dest with number only", samplingStr: `msg_trace: {dest: foo, sampling: 20}`, want: 20},
+		{name: "trace dest with percentage", samplingStr: `msg_trace: {dest: foo, sampling: 50%}`, want: 50},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.samplingStr)))
@@ -5067,9 +5067,9 @@ func TestMsgTraceAccountDestWithSampling(t *testing.T) {
 	}{
 		// Sampling is considered 100% if not specified or <=0 or >= 100.
 		// To disable sampling, the account destination should not be specified.
-		{"no sampling specified", _EMPTY_, 100},
-		{"sampling specified", ", sampling: \"25%\"", 25},
-		{"no sampling again", _EMPTY_, 100},
+		{name: "no sampling specified", samplingStr: _EMPTY_, sampling: 100},
+		{name: "sampling specified", samplingStr: ", sampling: \"25%\"", sampling: 25},
+		{name: "no sampling again", samplingStr: _EMPTY_, sampling: 100},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if iter > 0 {
@@ -5160,9 +5160,9 @@ func TestMsgTraceAccDestWithSamplingJWTUpdate(t *testing.T) {
 		name     string
 		sampling int
 	}{
-		{"no sampling specified", 100},
-		{"sampling", 25},
-		{"set back sampling to 0", 100},
+		{name: "no sampling specified", sampling: 100},
+		{name: "sampling", sampling: 25},
+		{name: "set back sampling to 0", sampling: 100},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if iter > 0 {

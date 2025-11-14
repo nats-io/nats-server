@@ -429,8 +429,8 @@ func TestOCSPClient(t *testing.T) {
 		configure func()
 	}{
 		{
-			"OCSP Stapling makes server fail to boot if status is unknown",
-			`
+			name: "OCSP Stapling makes server fail to boot if status is unknown",
+			config: `
 				port: -1
 
 				# Enable OCSP stapling with policy to honor must staple if present.
@@ -443,18 +443,18 @@ func TestOCSPClient(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 		{
-			"OCSP Stapling ignored by default if server without must staple status",
-			`
+			name: "OCSP Stapling ignored by default if server without must staple status",
+			config: `
 				port: -1
 
 				ocsp: true
@@ -466,18 +466,18 @@ func TestOCSPClient(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
+			err:       nil,
+			rerr:      nil,
+			configure: func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
 		},
 		{
-			"OCSP Stapling honored by default if server has must staple status",
-			`
+			name: "OCSP Stapling honored by default if server has must staple status",
+			config: `
 				port: -1
 
 				tls {
@@ -487,20 +487,20 @@ func TestOCSPClient(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {
+			err:  nil,
+			rerr: nil,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
 			},
 		},
 		{
-			"OCSP Stapling can be disabled even if server has must staple status",
-			`
+			name: "OCSP Stapling can be disabled even if server has must staple status",
+			config: `
 				port: -1
 
 				ocsp: false
@@ -512,14 +512,14 @@ func TestOCSPClient(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {
+			err:  nil,
+			rerr: nil,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Revoked)
 			},
 		},
@@ -2642,8 +2642,8 @@ func TestOCSPCustomConfig(t *testing.T) {
 		configure func()
 	}{
 		{
-			"OCSP Stapling in auto mode makes server fail to boot if status is revoked",
-			`
+			name: "OCSP Stapling in auto mode makes server fail to boot if status is revoked",
+			config: `
 				port: -1
 
 				ocsp {
@@ -2657,7 +2657,7 @@ func TestOCSPCustomConfig(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse != nil {
@@ -2670,13 +2670,13 @@ func TestOCSPCustomConfig(t *testing.T) {
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Revoked) },
+			err:       nil,
+			rerr:      nil,
+			configure: func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Revoked) },
 		},
 		{
-			"OCSP Stapling must staple ignored if disabled with ocsp: false",
-			`
+			name: "OCSP Stapling must staple ignored if disabled with ocsp: false",
+			config: `
 				port: -1
 
 				ocsp: false
@@ -2688,7 +2688,7 @@ func TestOCSPCustomConfig(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse != nil {
@@ -2701,15 +2701,15 @@ func TestOCSPCustomConfig(t *testing.T) {
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {
+			err:  nil,
+			rerr: nil,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
 			},
 		},
 		{
-			"OCSP Stapling must staple ignored if disabled with ocsp mode never",
-			`
+			name: "OCSP Stapling must staple ignored if disabled with ocsp mode never",
+			config: `
 				port: -1
 
 				ocsp: { mode: never }
@@ -2721,7 +2721,7 @@ func TestOCSPCustomConfig(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse != nil {
@@ -2734,15 +2734,15 @@ func TestOCSPCustomConfig(t *testing.T) {
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {
+			err:  nil,
+			rerr: nil,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
 			},
 		},
 		{
-			"OCSP Stapling in always mode fetches a staple even if cert does not have one",
-			`
+			name: "OCSP Stapling in always mode fetches a staple even if cert does not have one",
+			config: `
 				port: -1
 
 				ocsp {
@@ -2757,7 +2757,7 @@ func TestOCSPCustomConfig(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -2770,13 +2770,13 @@ func TestOCSPCustomConfig(t *testing.T) {
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
+			err:       nil,
+			rerr:      nil,
+			configure: func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
 		},
 		{
-			"OCSP Stapling in must staple mode does not fetch staple if there is no must staple flag",
-			`
+			name: "OCSP Stapling in must staple mode does not fetch staple if there is no must staple flag",
+			config: `
 				port: -1
 
 				ocsp {
@@ -2791,7 +2791,7 @@ func TestOCSPCustomConfig(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse != nil {
@@ -2804,13 +2804,13 @@ func TestOCSPCustomConfig(t *testing.T) {
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
+			err:       nil,
+			rerr:      nil,
+			configure: func() { SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
 		},
 		{
-			"OCSP Stapling in must staple mode fetches staple if there is a must staple flag",
-			`
+			name: "OCSP Stapling in must staple mode fetches staple if there is a must staple flag",
+			config: `
 				port: -1
 
 				ocsp {
@@ -2825,7 +2825,7 @@ func TestOCSPCustomConfig(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -2838,9 +2838,9 @@ func TestOCSPCustomConfig(t *testing.T) {
 				nats.RootCAs(caCert),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {
+			err:  nil,
+			rerr: nil,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
 			},
 		},
@@ -3472,8 +3472,8 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 		configure   func()
 	}{
 		{
-			"Correct issuer configured in cert bundle",
-			`
+			name: "Correct issuer configured in cert bundle",
+			config: `
 				port: -1
 
 				ocsp {
@@ -3487,7 +3487,7 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -3500,16 +3500,16 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 				nats.RootCAs(clientTrustBundle),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			true,
-			func() {
+			err:         nil,
+			rerr:        nil,
+			serverStart: true,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
 			},
 		},
 		{
-			"Wrong issuer configured in cert bundle, server no start",
-			`
+			name: "Wrong issuer configured in cert bundle, server no start",
+			config: `
 				port: -1
 
 				ocsp {
@@ -3523,7 +3523,7 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -3536,16 +3536,16 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 				nats.RootCAs(clientTrustBundle),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			false,
-			func() {
+			err:         nil,
+			rerr:        nil,
+			serverStart: false,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
 			},
 		},
 		{
-			"Issuer configured in CA bundle only, configuration 1",
-			`
+			name: "Issuer configured in CA bundle only, configuration 1",
+			config: `
 				port: -1
 
 				ocsp {
@@ -3559,7 +3559,7 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -3572,16 +3572,16 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 				nats.RootCAs(clientTrustBundle),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			true,
-			func() {
+			err:         nil,
+			rerr:        nil,
+			serverStart: true,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
 			},
 		},
 		{
-			"Issuer configured in CA bundle only, configuration 2",
-			`
+			name: "Issuer configured in CA bundle only, configuration 2",
+			config: `
 				port: -1
 
 				ocsp {
@@ -3595,7 +3595,7 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -3608,16 +3608,16 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 				nats.RootCAs(clientTrustBundle),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			true,
-			func() {
+			err:         nil,
+			rerr:        nil,
+			serverStart: true,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
 			},
 		},
 		{
-			"Issuer configured in CA bundle only, configuration 3",
-			`
+			name: "Issuer configured in CA bundle only, configuration 3",
+			config: `
 				port: -1
 
 				ocsp {
@@ -3631,7 +3631,7 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 					timeout: 5
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -3644,10 +3644,10 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 				nats.RootCAs(clientTrustBundle),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			true,
-			func() {
+			err:         nil,
+			rerr:        nil,
+			serverStart: true,
+			configure: func() {
 				SetOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
 			},
 		},

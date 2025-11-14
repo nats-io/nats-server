@@ -6769,7 +6769,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			}
 		}
 		// Add to our list of potential nodes.
-		nodes = append(nodes, wn{p.ID, available, ni.offline, peerHA[p.ID], peerStreams[p.ID]})
+		nodes = append(nodes, wn{id: p.ID, avail: available, off: ni.offline, ha: peerHA[p.ID], ns: peerStreams[p.ID]})
 		if !ni.offline {
 			onlinePeers++
 		}
@@ -7055,7 +7055,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		// on concurrent create requests while this stream assignment has
 		// possibly not been processed yet.
 		if streams, ok := cc.inflight[acc.Name]; ok && self == nil {
-			streams[cfg.Name] = &inflightInfo{rg, syncSubject, cfg}
+			streams[cfg.Name] = &inflightInfo{rg: rg, sync: syncSubject, cfg: cfg}
 		}
 	}
 }
@@ -9375,7 +9375,7 @@ RETRY:
 	reply := syncReplySubject()
 	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, reply string, msg []byte) {
 		// Make copy since we are using a buffer from the inbound client/route.
-		msgsQ.push(&im{copyBytes(msg), reply})
+		msgsQ.push(&im{msg: copyBytes(msg), reply: reply})
 	})
 	if err != nil {
 		s.Errorf("Could not subscribe to stream catchup: %v", err)
@@ -9576,7 +9576,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	if len(hdr) > 0 {
 		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
 			mset.ddMu.Lock()
-			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+			mset.storeMsgIdLocked(&ddentry{id: msgId, seq: seq, ts: ts})
 			mset.ddMu.Unlock()
 		}
 	}

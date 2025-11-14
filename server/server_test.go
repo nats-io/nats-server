@@ -206,11 +206,11 @@ func TestTLSVersions(t *testing.T) {
 		value    uint16
 		expected string
 	}{
-		{"1.0", tls.VersionTLS10, "1.0"},
-		{"1.1", tls.VersionTLS11, "1.1"},
-		{"1.2", tls.VersionTLS12, "1.2"},
-		{"1.3", tls.VersionTLS13, "1.3"},
-		{"unknown", 0x999, "Unknown [0x999]"},
+		{name: "1.0", value: tls.VersionTLS10, expected: "1.0"},
+		{name: "1.1", value: tls.VersionTLS11, expected: "1.1"},
+		{name: "1.2", value: tls.VersionTLS12, expected: "1.2"},
+		{name: "1.3", value: tls.VersionTLS13, expected: "1.3"},
+		{name: "unknown", value: 0x999, expected: "Unknown [0x999]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if v := tlsVersion(test.value); v != test.expected {
@@ -1746,12 +1746,12 @@ func TestConnectErrorReports(t *testing.T) {
 		errExpected bool
 	}
 	for _, test := range []testConnect{
-		{"route_attempt_1", 1, true},
-		{"route_attempt_2", 2, false},
-		{"route_attempt_3", 3, true},
-		{"route_attempt_4", 4, false},
-		{"route_attempt_6", 6, true},
-		{"route_attempt_7", 7, false},
+		{name: "route_attempt_1", attempt: 1, errExpected: true},
+		{name: "route_attempt_2", attempt: 2, errExpected: false},
+		{name: "route_attempt_3", attempt: 3, errExpected: true},
+		{name: "route_attempt_4", attempt: 4, errExpected: false},
+		{name: "route_attempt_6", attempt: 6, errExpected: true},
+		{name: "route_attempt_7", attempt: 7, errExpected: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
@@ -1789,12 +1789,12 @@ func TestConnectErrorReports(t *testing.T) {
 	}
 
 	for _, test := range []testConnect{
-		{"leafnode_attempt_1", 1, true},
-		{"leafnode_attempt_2", 2, false},
-		{"leafnode_attempt_3", 3, true},
-		{"leafnode_attempt_4", 4, false},
-		{"leafnode_attempt_6", 6, true},
-		{"leafnode_attempt_7", 7, false},
+		{name: "leafnode_attempt_1", attempt: 1, errExpected: true},
+		{name: "leafnode_attempt_2", attempt: 2, errExpected: false},
+		{name: "leafnode_attempt_3", attempt: 3, errExpected: true},
+		{name: "leafnode_attempt_4", attempt: 4, errExpected: false},
+		{name: "leafnode_attempt_6", attempt: 6, errExpected: true},
+		{name: "leafnode_attempt_7", attempt: 7, errExpected: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
@@ -1822,12 +1822,12 @@ func TestConnectErrorReports(t *testing.T) {
 	defer s.Shutdown()
 
 	for _, test := range []testConnect{
-		{"gateway_attempt_1", 1, true},
-		{"gateway_attempt_2", 2, false},
-		{"gateway_attempt_3", 3, true},
-		{"gateway_attempt_4", 4, false},
-		{"gateway_attempt_6", 6, true},
-		{"gateway_attempt_7", 7, false},
+		{name: "gateway_attempt_1", attempt: 1, errExpected: true},
+		{name: "gateway_attempt_2", attempt: 2, errExpected: false},
+		{name: "gateway_attempt_3", attempt: 3, errExpected: true},
+		{name: "gateway_attempt_4", attempt: 4, errExpected: false},
+		{name: "gateway_attempt_6", attempt: 6, errExpected: true},
+		{name: "gateway_attempt_7", attempt: 7, errExpected: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
@@ -1909,12 +1909,12 @@ func TestReconnectErrorReports(t *testing.T) {
 		errExpected bool
 	}
 	for _, test := range []testConnect{
-		{"route_attempt_1", 1, true},
-		{"route_attempt_2", 2, false},
-		{"route_attempt_3", 3, true},
-		{"route_attempt_4", 4, false},
-		{"route_attempt_6", 6, true},
-		{"route_attempt_7", 7, false},
+		{name: "route_attempt_1", attempt: 1, errExpected: true},
+		{name: "route_attempt_2", attempt: 2, errExpected: false},
+		{name: "route_attempt_3", attempt: 3, errExpected: true},
+		{name: "route_attempt_4", attempt: 4, errExpected: false},
+		{name: "route_attempt_6", attempt: 6, errExpected: true},
+		{name: "route_attempt_7", attempt: 7, errExpected: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
@@ -1967,12 +1967,12 @@ func TestReconnectErrorReports(t *testing.T) {
 	}
 
 	for _, test := range []testConnect{
-		{"leafnode_attempt_1", 1, true},
-		{"leafnode_attempt_2", 2, false},
-		{"leafnode_attempt_3", 3, true},
-		{"leafnode_attempt_4", 4, false},
-		{"leafnode_attempt_6", 6, true},
-		{"leafnode_attempt_7", 7, false},
+		{name: "leafnode_attempt_1", attempt: 1, errExpected: true},
+		{name: "leafnode_attempt_2", attempt: 2, errExpected: false},
+		{name: "leafnode_attempt_3", attempt: 3, errExpected: true},
+		{name: "leafnode_attempt_4", attempt: 4, errExpected: false},
+		{name: "leafnode_attempt_6", attempt: 6, errExpected: true},
+		{name: "leafnode_attempt_7", attempt: 7, errExpected: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected
@@ -2022,12 +2022,12 @@ func TestReconnectErrorReports(t *testing.T) {
 	errErrTxt := fmt.Sprintf("[ERR] %s", errTxt)
 
 	for _, test := range []testConnect{
-		{"gateway_attempt_1", 1, true},
-		{"gateway_attempt_2", 2, false},
-		{"gateway_attempt_3", 3, true},
-		{"gateway_attempt_4", 4, false},
-		{"gateway_attempt_6", 6, true},
-		{"gateway_attempt_7", 7, false},
+		{name: "gateway_attempt_1", attempt: 1, errExpected: true},
+		{name: "gateway_attempt_2", attempt: 2, errExpected: false},
+		{name: "gateway_attempt_3", attempt: 3, errExpected: true},
+		{name: "gateway_attempt_4", attempt: 4, errExpected: false},
+		{name: "gateway_attempt_6", attempt: 6, errExpected: true},
+		{name: "gateway_attempt_7", attempt: 7, errExpected: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			debugExpected := !test.errExpected

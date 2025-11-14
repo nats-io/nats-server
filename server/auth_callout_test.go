@@ -444,9 +444,9 @@ func TestAuthCalloutAllowedAccounts(t *testing.T) {
 		password string
 		account  string
 	}{
-		{"dlc", "zzz", "BAR"},
-		{"foo", "", "FOO"},
-		{"sys", "pwd", "SYS"},
+		{user: "dlc", password: "zzz", account: "BAR"},
+		{user: "foo", password: "", account: "FOO"},
+		{user: "sys", password: "pwd", account: "SYS"},
 	}
 
 	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
@@ -2293,10 +2293,10 @@ func TestAuthCalloutLeafNodeAndOperatorMode(t *testing.T) {
 		up   string
 		ok   bool
 	}{
-		{"bad token", "tokenx", false},
-		{"bad username and password", "leaf:pwdx", false},
-		{"token", "token", true},
-		{"username and password", "leaf:pwd", true},
+		{name: "bad token", up: "tokenx", ok: false},
+		{name: "bad username and password", up: "leaf:pwdx", ok: false},
+		{name: "token", up: "token", ok: true},
+		{name: "username and password", up: "leaf:pwd", ok: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lconf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -2384,10 +2384,10 @@ func TestAuthCalloutLeafNodeAndConfigMode(t *testing.T) {
 		up   string
 		ok   bool
 	}{
-		{"bad token", "tokenx", false},
-		{"bad username and password", "leaf:pwdx", false},
-		{"token", "token", true},
-		{"username and password", "leaf:pwd", true},
+		{name: "bad token", up: "tokenx", ok: false},
+		{name: "bad username and password", up: "leaf:pwdx", ok: false},
+		{name: "token", up: "token", ok: true},
+		{name: "username and password", up: "leaf:pwd", ok: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lconf := createConfFile(t, []byte(fmt.Sprintf(`

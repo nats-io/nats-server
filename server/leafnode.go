@@ -1334,7 +1334,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		if !c.isWebsocket() && info.TLSRequired {
 			// If we have a prebuffer create a multi-reader.
 			if len(pre) > 0 {
-				c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
+				c.nc = &tlsMixConn{Conn: c.nc, pre: bytes.NewBuffer(pre)}
 			}
 			// Perform server-side TLS handshake.
 			if err := c.doTLSServerHandshake(tlsHandshakeLeaf, opts.LeafNode.TLSConfig, opts.LeafNode.TLSTimeout, opts.LeafNode.TLSPinnedCerts); err != nil {

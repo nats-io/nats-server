@@ -264,10 +264,10 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		messageSize int
 		minMessages int
 	}{
-		{1, 1, 10, 100_000}, // Single node, 10B messages, ~1MiB minimum
-		{1, 1, 1024, 1_000}, // Single node, 1KB messages, ~1MiB minimum
-		{3, 3, 10, 100_000}, // Cluster, R3, 10B messages, ~1MiB minimum
-		{3, 3, 1024, 1_000}, // Cluster, R3, 1KB messages, ~1MiB minimum
+		{clusterSize: 1, replicas: 1, messageSize: 10, minMessages: 100_000}, // Single node, 10B messages, ~1MiB minimum
+		{clusterSize: 1, replicas: 1, messageSize: 1024, minMessages: 1_000}, // Single node, 1KB messages, ~1MiB minimum
+		{clusterSize: 3, replicas: 3, messageSize: 10, minMessages: 100_000}, // Cluster, R3, 10B messages, ~1MiB minimum
+		{clusterSize: 3, replicas: 3, messageSize: 1024, minMessages: 1_000}, // Cluster, R3, 1KB messages, ~1MiB minimum
 	}
 
 	//Each of the cases above is run with each of the consumer types
@@ -421,14 +421,14 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 		storage     nats.StorageType // Stream storage
 		filters     int              // How many subject filters?
 	}{
-		{1, 1, nats.MemoryStorage, 1},
-		{1, 1, nats.MemoryStorage, 2},
-		{3, 3, nats.MemoryStorage, 1},
-		{3, 3, nats.MemoryStorage, 2},
-		{1, 1, nats.FileStorage, 1},
-		{1, 1, nats.FileStorage, 2},
-		{3, 3, nats.FileStorage, 1},
-		{3, 3, nats.FileStorage, 2},
+		{clusterSize: 1, replicas: 1, storage: nats.MemoryStorage, filters: 1},
+		{clusterSize: 1, replicas: 1, storage: nats.MemoryStorage, filters: 2},
+		{clusterSize: 3, replicas: 3, storage: nats.MemoryStorage, filters: 1},
+		{clusterSize: 3, replicas: 3, storage: nats.MemoryStorage, filters: 2},
+		{clusterSize: 1, replicas: 1, storage: nats.FileStorage, filters: 1},
+		{clusterSize: 1, replicas: 1, storage: nats.FileStorage, filters: 2},
+		{clusterSize: 3, replicas: 3, storage: nats.FileStorage, filters: 1},
+		{clusterSize: 3, replicas: 3, storage: nats.FileStorage, filters: 2},
 	}
 
 	for _, cs := range clusterSizeCases {
@@ -515,10 +515,10 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 		replicas    int              // Stream replicas
 		storage     nats.StorageType // Stream storage
 	}{
-		{1, 1, nats.MemoryStorage},
-		{3, 3, nats.MemoryStorage},
-		{1, 1, nats.FileStorage},
-		{3, 3, nats.FileStorage},
+		{clusterSize: 1, replicas: 1, storage: nats.MemoryStorage},
+		{clusterSize: 3, replicas: 3, storage: nats.MemoryStorage},
+		{clusterSize: 1, replicas: 1, storage: nats.FileStorage},
+		{clusterSize: 3, replicas: 3, storage: nats.FileStorage},
 	}
 
 	benchmarksCases := []struct {
@@ -528,9 +528,9 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 		concurrentConsumers int // Number of consumer running
 
 	}{
-		{100, 10, 5, 12},
-		{1000, 10, 25, 12},
-		{10_000, 10, 50, 12},
+		{domains: 100, subjectsPerDomain: 10, filters: 5, concurrentConsumers: 12},
+		{domains: 1000, subjectsPerDomain: 10, filters: 25, concurrentConsumers: 12},
+		{domains: 10_000, subjectsPerDomain: 10, filters: 50, concurrentConsumers: 12},
 	}
 
 	for _, cs := range clusterSizeCases {
@@ -866,12 +866,12 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		messageSize int
 		numSubjects int
 	}{
-		{1, 1, 10, 1},   // Single node, 10B messages
-		{1, 1, 1024, 1}, // Single node, 1KB messages
-		{3, 3, 10, 1},   // 3-nodes cluster, R=3, 10B messages
-		{3, 3, 1024, 1}, // 3-nodes cluster, R=3, 1KB messages
-		{3, 3, 10, 1},   // 3-nodes cluster, R=3, 10B messages (async flush)
-		{3, 3, 1024, 1}, // 3-nodes cluster, R=3, 1KB messages (async flush)
+		{clusterSize: 1, replicas: 1, messageSize: 10, numSubjects: 1},   // Single node, 10B messages
+		{clusterSize: 1, replicas: 1, messageSize: 1024, numSubjects: 1}, // Single node, 1KB messages
+		{clusterSize: 3, replicas: 3, messageSize: 10, numSubjects: 1},   // 3-nodes cluster, R=3, 10B messages
+		{clusterSize: 3, replicas: 3, messageSize: 1024, numSubjects: 1}, // 3-nodes cluster, R=3, 1KB messages
+		{clusterSize: 3, replicas: 3, messageSize: 10, numSubjects: 1},   // 3-nodes cluster, R=3, 10B messages (async flush)
+		{clusterSize: 3, replicas: 3, messageSize: 1024, numSubjects: 1}, // 3-nodes cluster, R=3, 1KB messages (async flush)
 	}
 
 	// All the cases above are run with each of the publisher cases below
@@ -879,10 +879,10 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		pType       PublishType
 		asyncWindow int
 	}{
-		{Sync, -1},
-		{Async, 1000},
-		{Async, 4000},
-		{Async, 8000},
+		{pType: Sync, asyncWindow: -1},
+		{pType: Async, asyncWindow: 1000},
+		{pType: Async, asyncWindow: 4000},
+		{pType: Async, asyncWindow: 8000},
 	}
 
 	for _, bc := range benchmarksCases {
@@ -1227,10 +1227,10 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 		pType       PublishType
 		asyncWindow int
 	}{
-		{Sync, -1},
-		{Async, 1000},
-		{Async, 4000},
-		{Async, 8000},
+		{pType: Sync, asyncWindow: -1},
+		{pType: Async, asyncWindow: 1000},
+		{pType: Async, asyncWindow: 4000},
+		{pType: Async, asyncWindow: 8000},
 	}
 
 	for _, bc := range benchmarksCases {
@@ -1372,8 +1372,8 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 		clusterSize int
 		replicas    int
 	}{
-		{1, 1}, // Single node, R=1
-		{3, 3}, // 3-nodes cluster, R=3
+		{clusterSize: 1, replicas: 1}, // Single node, R=1
+		{clusterSize: 3, replicas: 3}, // 3-nodes cluster, R=3
 	}
 
 	// Parameter: Stream storage type
@@ -1689,11 +1689,11 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		numKeys     int
 		valueSize   int
 	}{
-		{1, 1, 100, 100},   // 1 node with 100 keys, 100B values
-		{1, 1, 1000, 100},  // 1 node with 1000 keys, 100B values
-		{3, 3, 100, 100},   // 3 nodes with 100 keys, 100B values
-		{3, 3, 1000, 100},  // 3 nodes with 1000 keys, 100B values
-		{3, 3, 1000, 1024}, // 3 nodes with 1000 keys, 1KB values
+		{clusterSize: 1, replicas: 1, numKeys: 100, valueSize: 100},   // 1 node with 100 keys, 100B values
+		{clusterSize: 1, replicas: 1, numKeys: 1000, valueSize: 100},  // 1 node with 1000 keys, 100B values
+		{clusterSize: 3, replicas: 3, numKeys: 100, valueSize: 100},   // 3 nodes with 100 keys, 100B values
+		{clusterSize: 3, replicas: 3, numKeys: 1000, valueSize: 100},  // 3 nodes with 1000 keys, 100B values
+		{clusterSize: 3, replicas: 3, numKeys: 1000, valueSize: 1024}, // 3 nodes with 1000 keys, 1KB values
 	}
 
 	workloadCases := []WorkloadType{
@@ -1889,14 +1889,14 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 		minObjSz int
 		maxObjSz int
 	}{
-		{nats.MemoryStorage, 100, 1024, 102400},     // mem storage, 100 objects sized (1KB-100KB)
-		{nats.MemoryStorage, 100, 102400, 1048576},  // mem storage, 100 objects sized (100KB-1MB)
-		{nats.MemoryStorage, 1000, 10240, 102400},   // mem storage, 1k objects of various size (10KB - 100KB)
-		{nats.FileStorage, 100, 1024, 102400},       // file storage, 100 objects sized (1KB-100KB)
-		{nats.FileStorage, 1000, 10240, 1048576},    // file storage, 1k objects of various size (10KB - 1MB)
-		{nats.FileStorage, 100, 102400, 1048576},    // file storage, 100 objects sized (100KB-1MB)
-		{nats.FileStorage, 100, 1048576, 10485760},  // file storage, 100 objects sized (1MB-10MB)
-		{nats.FileStorage, 10, 10485760, 104857600}, // file storage, 10 objects sized (10MB-100MB)
+		{storage: nats.MemoryStorage, numKeys: 100, minObjSz: 1024, maxObjSz: 102400},     // mem storage, 100 objects sized (1KB-100KB)
+		{storage: nats.MemoryStorage, numKeys: 100, minObjSz: 102400, maxObjSz: 1048576},  // mem storage, 100 objects sized (100KB-1MB)
+		{storage: nats.MemoryStorage, numKeys: 1000, minObjSz: 10240, maxObjSz: 102400},   // mem storage, 1k objects of various size (10KB - 100KB)
+		{storage: nats.FileStorage, numKeys: 100, minObjSz: 1024, maxObjSz: 102400},       // file storage, 100 objects sized (1KB-100KB)
+		{storage: nats.FileStorage, numKeys: 1000, minObjSz: 10240, maxObjSz: 1048576},    // file storage, 1k objects of various size (10KB - 1MB)
+		{storage: nats.FileStorage, numKeys: 100, minObjSz: 102400, maxObjSz: 1048576},    // file storage, 100 objects sized (100KB-1MB)
+		{storage: nats.FileStorage, numKeys: 100, minObjSz: 1048576, maxObjSz: 10485760},  // file storage, 100 objects sized (1MB-10MB)
+		{storage: nats.FileStorage, numKeys: 10, minObjSz: 10485760, maxObjSz: 104857600}, // file storage, 10 objects sized (10MB-100MB)
 	}
 
 	var (
@@ -2028,9 +2028,9 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 		clusterSize int
 		replicas    int
 	}{
-		{1, 1},
-		{3, 3},
-		{3, 3},
+		{clusterSize: 1, replicas: 1},
+		{clusterSize: 3, replicas: 3},
+		{clusterSize: 3, replicas: 3},
 	}
 
 	workload := func(b *testing.B, numPubs int, messageSize int64, clientUrl string) {

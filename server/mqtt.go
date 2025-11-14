@@ -619,7 +619,7 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 
 	if tlsRequired {
 		if len(pre) > 0 {
-			c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
+			c.nc = &tlsMixConn{Conn: c.nc, pre: bytes.NewBuffer(pre)}
 			pre = nil
 		}
 

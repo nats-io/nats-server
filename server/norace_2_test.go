@@ -754,7 +754,7 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 		defer mset.mu.RUnlock()
 		var state StreamState
 		mset.store.FastState(&state)
-		return &fullState{state, mset.lseq, mset.clfs}
+		return &fullState{state: state, lseq: mset.lseq, clfs: mset.clfs}
 	}
 
 	grabStore := func(mset *stream) map[string][]uint64 {
@@ -2813,8 +2813,8 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.
 		o := mset.lookupConsumer(cname)
 		o.mu.Lock()
 		o.setStoreState(&ConsumerState{
-			Delivered: SequencePair{100_000, 100_000},
-			AckFloor:  SequencePair{100_000, 100_000},
+			Delivered: SequencePair{Consumer: 100_000, Stream: 100_000},
+			AckFloor:  SequencePair{Consumer: 100_000, Stream: 100_000},
 		})
 		o.mu.Unlock()
 	}

@@ -1103,17 +1103,17 @@ func TestIsSubsetMatch(t *testing.T) {
 		test    string
 		result  bool
 	}{
-		{"foo.bar", "foo.bar", true},
-		{"foo.*", ">", true},
-		{"foo.*", "*.*", true},
-		{"foo.*", "foo.*", true},
-		{"foo.*", "foo.bar", false},
-		{"foo.>", ">", true},
-		{"foo.>", "*.>", true},
-		{"foo.>", "foo.>", true},
-		{"foo.>", "foo.bar", false},
-		{"foo..bar", "foo.*", false}, // Bad subject, we return false
-		{"foo.*", "foo..bar", false}, // Bad subject, we return false
+		{subject: "foo.bar", test: "foo.bar", result: true},
+		{subject: "foo.*", test: ">", result: true},
+		{subject: "foo.*", test: "*.*", result: true},
+		{subject: "foo.*", test: "foo.*", result: true},
+		{subject: "foo.*", test: "foo.bar", result: false},
+		{subject: "foo.>", test: ">", result: true},
+		{subject: "foo.>", test: "*.>", result: true},
+		{subject: "foo.>", test: "foo.>", result: true},
+		{subject: "foo.>", test: "foo.bar", result: false},
+		{subject: "foo..bar", test: "foo.*", result: false}, // Bad subject, we return false
+		{subject: "foo.*", test: "foo..bar", result: false}, // Bad subject, we return false
 	} {
 		t.Run("", func(t *testing.T) {
 			if res := subjectIsSubsetMatch(test.subject, test.test); res != test.result {
@@ -1525,8 +1525,8 @@ func TestSublistMatchWithEmptyTokens(t *testing.T) {
 		name  string
 		cache bool
 	}{
-		{"cache", true},
-		{"no cache", false},
+		{name: "cache", cache: true},
+		{name: "no cache", cache: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sl := NewSublist(true)

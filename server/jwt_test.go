@@ -1536,8 +1536,8 @@ func TestJWTAccountURLResolver(t *testing.T) {
 		name   string
 		useTLS bool
 	}{
-		{"plain", false},
-		{"tls", true},
+		{name: "plain", useTLS: false},
+		{name: "tls", useTLS: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			kp, _ := nkeys.FromSeed(oSeed)
@@ -3550,8 +3550,8 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 	require_JWTPresent(t, dirC, bpub) // was looked up from A or B
 	// Check limits and update jwt B connecting to server A
 	for port, v := range map[string]struct{ pub, jwt, creds string }{
-		sB.ClientURL(): {bpub, bjwt2, bCreds},
-		sC.ClientURL(): {cpub, cjwt2, cCreds},
+		sB.ClientURL(): {pub: bpub, jwt: bjwt2, creds: bCreds},
+		sC.ClientURL(): {pub: cpub, jwt: cjwt2, creds: cCreds},
 	} {
 		require_1Connection(sA.ClientURL(), v.creds, v.pub, sA, sB, sC)
 		require_1Connection(sB.ClientURL(), v.creds, v.pub, sA, sB, sC)
@@ -3871,31 +3871,31 @@ func TestJWTUserLimits(t *testing.T) {
 		pass bool
 		f    func(*jwt.UserPermissionLimits)
 	}{
-		{true, nil},
-		{false, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8") }},
-		{true, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/0") }},
-		{true, func(j *jwt.UserPermissionLimits) { j.Src.Set("127.0.0.1/8") }},
-		{true, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8,127.0.0.1/8") }},
-		{false, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8,9.9.9.9/8") }},
-		{true, func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), time.Hour)) }},
-		{false, func(j *jwt.UserPermissionLimits) {
+		{pass: true, f: nil},
+		{pass: false, f: func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8") }},
+		{pass: true, f: func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/0") }},
+		{pass: true, f: func(j *jwt.UserPermissionLimits) { j.Src.Set("127.0.0.1/8") }},
+		{pass: true, f: func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8,127.0.0.1/8") }},
+		{pass: false, f: func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8,9.9.9.9/8") }},
+		{pass: true, f: func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), time.Hour)) }},
+		{pass: false, f: func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(time.Now().Add(time.Hour), time.Hour))
 		}},
-		{true, func(j *jwt.UserPermissionLimits) {
+		{pass: true, f: func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, time.Hour), newTimeRange(time.Now(), time.Hour))
 		}}, // last one is within range
-		{false, func(j *jwt.UserPermissionLimits) {
+		{pass: false, f: func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, time.Hour), newTimeRange(inTwoHours, time.Hour))
 		}}, // out of range
-		{false, func(j *jwt.UserPermissionLimits) {
+		{pass: false, f: func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, 3*time.Hour), newTimeRange(inTwoHours, 2*time.Hour))
 		}}, // overlapping [a[]b] out of range*/
-		{false, func(j *jwt.UserPermissionLimits) {
+		{pass: false, f: func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, 3*time.Hour), newTimeRange(inTwoHours, time.Hour))
 		}}, // overlapping [a[b]] out of range
 		// next day tests where end < begin
-		{true, func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), 25*time.Hour)) }},
-		{true, func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), -time.Hour)) }},
+		{pass: true, f: func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), 25*time.Hour)) }},
+		{pass: true, f: func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), -time.Hour)) }},
 	} {
 		t.Run("", func(t *testing.T) {
 			creds := createUserWithLimit(t, kp, doNotExpire, v.f)
@@ -5747,11 +5747,11 @@ func TestJWTQueuePermissions(t *testing.T) {
 		queue       string
 		errExpected bool
 	}{
-		{"allow", "queue.dev", false},
-		{"allow", "", true},
-		{"allow", "bad", true},
-		{"deny", "", false},
-		{"deny", "queue.dev", true},
+		{permType: "allow", queue: "queue.dev", errExpected: false},
+		{permType: "allow", queue: "", errExpected: true},
+		{permType: "allow", queue: "bad", errExpected: true},
+		{permType: "deny", queue: "", errExpected: false},
+		{permType: "deny", queue: "queue.dev", errExpected: true},
 	} {
 		t.Run(test.permType+test.queue, func(t *testing.T) {
 			usrCreds := newUser(t, test.permType)
@@ -5996,10 +5996,10 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 			creds string
 			fail  bool
 		}{
-			{uBadBadCreds, true},
-			{uBadGoodCreds, true},
-			{uGoodBadCreds, true},
-			{uGoodGoodCreds, false},
+			{creds: uBadBadCreds, fail: true},
+			{creds: uBadGoodCreds, fail: true},
+			{creds: uGoodBadCreds, fail: true},
+			{creds: uGoodGoodCreds, fail: false},
 		} {
 			nc, err := nats.Connect(url, nats.UserCredentials(test.creds))
 			nc.Close()
@@ -7019,7 +7019,7 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 			},
 		}
 		userCreds := createUserCredsEx(t, userClaim, accKP)
-		users[acc] = &namedCreds{name, userCreds}
+		users[acc] = &namedCreds{name: name, creds: userCreds}
 	}
 	mainAccJWT, err := mainAccClaim.Encode(oKp)
 	require_NoError(t, err)
@@ -7057,7 +7057,7 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 		sub, err := nc.SubscribeSync("city.>")
 		require_NoError(t, err)
-		subs[acc] = &namedSub{user.name, sub}
+		subs[acc] = &namedSub{name: user.name, sub: sub}
 	}
 
 	nc := natsConnect(t, s.ClientURL(), mainCreds, nats.ReconnectWait(15*time.Millisecond), nats.MaxReconnects(-1))
@@ -7304,7 +7304,7 @@ func TestJWTUpdateAccountClaimsStreamAndServiceImportDeadlock(t *testing.T) {
 				aAcc.mu.Unlock()
 				aAcc.addClient(c)
 
-				accs = append(accs, &Acc{aPub, aAC, aAcc, c})
+				accs = append(accs, &Acc{pub: aPub, ac: aAC, a: aAcc, c: c})
 			}
 
 			addImportExport := func(i int, acc *Acc) {

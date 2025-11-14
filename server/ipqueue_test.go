@@ -475,8 +475,8 @@ func Benchmark_IPQueueSizeCalculation(b *testing.B) {
 		name string
 		run  func(b *testing.B, q *ipQueue[testType])
 	}{
-		{"pop one", runPopOne},
-		{"pop all", runPopAll},
+		{name: "pop one", run: runPopOne},
+		{name: "pop all", run: runPopAll},
 	} {
 		b.Run(test.name, func(b *testing.B) {
 			// Measures without calculation function overheads.

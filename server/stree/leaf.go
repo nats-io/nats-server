@@ -28,7 +28,7 @@ type leaf[T any] struct {
 }
 
 func newLeaf[T any](suffix []byte, value T) *leaf[T] {
-	return &leaf[T]{value, copyBytes(suffix)}
+	return &leaf[T]{value: value, suffix: copyBytes(suffix)}
 }
 
 func (n *leaf[T]) isLeaf() bool                               { return true }

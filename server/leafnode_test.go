@@ -630,10 +630,10 @@ func TestLeafNodeBasicAuthSingleton(t *testing.T) {
 		lnURLCreds string
 		shouldFail bool
 	}{
-		{"user creds required and no user so fails", "", "", true},
-		{"user creds required and pick user2 associated to ACC2", "", "user2:user2@", false},
-		{"user creds required and unknown user should fail", "", "unknown:user@", true},
-		{"user creds required so binds to ACC1", "user: \"ln\"\npass: \"pwd\"", "ln:pwd@", false},
+		{name: "user creds required and no user so fails", userSpec: "", lnURLCreds: "", shouldFail: true},
+		{name: "user creds required and pick user2 associated to ACC2", userSpec: "", lnURLCreds: "user2:user2@", shouldFail: false},
+		{name: "user creds required and unknown user should fail", userSpec: "", lnURLCreds: "unknown:user@", shouldFail: true},
+		{name: "user creds required so binds to ACC1", userSpec: "user: \"ln\"\npass: \"pwd\"", lnURLCreds: "ln:pwd@", shouldFail: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 
@@ -1098,9 +1098,9 @@ func TestLeafNodeRemoteWrongPort(t *testing.T) {
 		clusterAdvertise  bool
 		leafnodeAdvertise bool
 	}{
-		{"advertise_on", false, false},
-		{"cluster_no_advertise", true, false},
-		{"leafnode_no_advertise", false, true},
+		{name: "advertise_on", clusterAdvertise: false, leafnodeAdvertise: false},
+		{name: "cluster_no_advertise", clusterAdvertise: true, leafnodeAdvertise: false},
+		{name: "leafnode_no_advertise", clusterAdvertise: false, leafnodeAdvertise: true},
 	} {
 		t.Run(test1.name, func(t *testing.T) {
 			oa := DefaultOptions()
@@ -1144,9 +1144,9 @@ func TestLeafNodeRemoteWrongPort(t *testing.T) {
 				name string
 				port int
 			}{
-				{"client", oa.Port},
-				{"cluster", oa.Cluster.Port},
-				{"gateway", oa.Gateway.Port},
+				{name: "client", port: oa.Port},
+				{name: "cluster", port: oa.Cluster.Port},
+				{name: "gateway", port: oa.Gateway.Port},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					oc := DefaultOptions()
@@ -1324,10 +1324,10 @@ func TestLeafNodePermissions(t *testing.T) {
 		subject  string
 		received bool
 	}{
-		{"do not send on export.bat", "export.bat", false},
-		{"do not send on export", "export", false},
-		{"send on foo", "foo", true},
-		{"send on export.this.one", "export.this.one", true},
+		{name: "do not send on export.bat", subject: "export.bat", received: false},
+		{name: "do not send on export", subject: "export", received: false},
+		{name: "send on foo", subject: "foo", received: true},
+		{name: "send on export.this.one", subject: "export.this.one", received: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			nc2.Publish(test.subject, []byte("msg"))
@@ -1361,10 +1361,10 @@ func TestLeafNodePermissions(t *testing.T) {
 		pubSubject string
 		ok         bool
 	}{
-		{"reject import on import.*", "import.*", "import.bad", false},
-		{"reject import on import", "import", "import", false},
-		{"accepts import on foo", "foo", "foo", true},
-		{"accepts import on import.this.one.ok", "import.*.>", "import.this.one.ok", true},
+		{name: "reject import on import.*", subSubject: "import.*", pubSubject: "import.bad", ok: false},
+		{name: "reject import on import", subSubject: "import", pubSubject: "import", ok: false},
+		{name: "accepts import on foo", subSubject: "foo", pubSubject: "foo", ok: true},
+		{name: "accepts import on import.this.one.ok", subSubject: "import.*.>", pubSubject: "import.this.one.ok", ok: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sub := natsSubSync(t, nc2, test.subSubject)
@@ -1722,10 +1722,10 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 		leafUsers   bool
 		provideCert bool
 	}{
-		{"no users override, provides cert", false, true},
-		{"no users override, does not provide cert", false, false},
-		{"users override, provides cert", true, true},
-		{"users override, does not provide cert", true, false},
+		{name: "no users override, provides cert", leafUsers: false, provideCert: true},
+		{name: "no users override, does not provide cert", leafUsers: false, provideCert: false},
+		{name: "users override, provides cert", leafUsers: true, provideCert: true},
+		{name: "users override, does not provide cert", leafUsers: true, provideCert: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := DefaultOptions()
@@ -2219,8 +2219,8 @@ func TestLeafNodeTwoRemotesBindToSameHubAccount(t *testing.T) {
 		account string
 		fail    bool
 	}{
-		{"different local accounts", "b", false},
-		{"same local accounts", "a", true},
+		{name: "different local accounts", account: "b", fail: false},
+		{name: "same local accounts", account: "a", fail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := `
@@ -2790,13 +2790,13 @@ func TestLeafNodeWSMixURLs(t *testing.T) {
 		name string
 		urls []string
 	}{
-		{"mix 1", []string{"nats://127.0.0.1:1234", "ws://127.0.0.1:5678", "wss://127.0.0.1:9012"}},
-		{"mix 2", []string{"ws://127.0.0.1:1234", "nats://127.0.0.1:5678", "wss://127.0.0.1:9012"}},
-		{"mix 3", []string{"wss://127.0.0.1:1234", "ws://127.0.0.1:5678", "nats://127.0.0.1:9012"}},
-		{"mix 4", []string{"ws://127.0.0.1:1234", "nats://127.0.0.1:9012"}},
-		{"mix 5", []string{"nats://127.0.0.1:1234", "ws://127.0.0.1:9012"}},
-		{"mix 6", []string{"wss://127.0.0.1:1234", "nats://127.0.0.1:9012"}},
-		{"mix 7", []string{"nats://127.0.0.1:1234", "wss://127.0.0.1:9012"}},
+		{name: "mix 1", urls: []string{"nats://127.0.0.1:1234", "ws://127.0.0.1:5678", "wss://127.0.0.1:9012"}},
+		{name: "mix 2", urls: []string{"ws://127.0.0.1:1234", "nats://127.0.0.1:5678", "wss://127.0.0.1:9012"}},
+		{name: "mix 3", urls: []string{"wss://127.0.0.1:1234", "ws://127.0.0.1:5678", "nats://127.0.0.1:9012"}},
+		{name: "mix 4", urls: []string{"ws://127.0.0.1:1234", "nats://127.0.0.1:9012"}},
+		{name: "mix 5", urls: []string{"nats://127.0.0.1:1234", "ws://127.0.0.1:9012"}},
+		{name: "mix 6", urls: []string{"wss://127.0.0.1:1234", "nats://127.0.0.1:9012"}},
+		{name: "mix 7", urls: []string{"nats://127.0.0.1:1234", "wss://127.0.0.1:9012"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := DefaultOptions()
@@ -2844,22 +2844,22 @@ func TestLeafNodeWSBasic(t *testing.T) {
 		acceptCompression bool
 		remoteCompression bool
 	}{
-		{"masking plain no compression", true, false, false, false},
-		{"masking plain compression", true, false, true, true},
-		{"masking plain compression disagree", true, false, false, true},
-		{"masking plain compression disagree 2", true, false, true, false},
-		{"masking tls no compression", true, true, false, false},
-		{"masking tls compression", true, true, true, true},
-		{"masking tls compression disagree", true, true, false, true},
-		{"masking tls compression disagree 2", true, true, true, false},
-		{"no masking plain no compression", false, false, false, false},
-		{"no masking plain compression", false, false, true, true},
-		{"no masking plain compression disagree", false, false, false, true},
-		{"no masking plain compression disagree 2", false, false, true, false},
-		{"no masking tls no compression", false, true, false, false},
-		{"no masking tls compression", false, true, true, true},
-		{"no masking tls compression disagree", false, true, false, true},
-		{"no masking tls compression disagree 2", false, true, true, false},
+		{name: "masking plain no compression", masking: true, tls: false, acceptCompression: false, remoteCompression: false},
+		{name: "masking plain compression", masking: true, tls: false, acceptCompression: true, remoteCompression: true},
+		{name: "masking plain compression disagree", masking: true, tls: false, acceptCompression: false, remoteCompression: true},
+		{name: "masking plain compression disagree 2", masking: true, tls: false, acceptCompression: true, remoteCompression: false},
+		{name: "masking tls no compression", masking: true, tls: true, acceptCompression: false, remoteCompression: false},
+		{name: "masking tls compression", masking: true, tls: true, acceptCompression: true, remoteCompression: true},
+		{name: "masking tls compression disagree", masking: true, tls: true, acceptCompression: false, remoteCompression: true},
+		{name: "masking tls compression disagree 2", masking: true, tls: true, acceptCompression: true, remoteCompression: false},
+		{name: "no masking plain no compression", masking: false, tls: false, acceptCompression: false, remoteCompression: false},
+		{name: "no masking plain compression", masking: false, tls: false, acceptCompression: true, remoteCompression: true},
+		{name: "no masking plain compression disagree", masking: false, tls: false, acceptCompression: false, remoteCompression: true},
+		{name: "no masking plain compression disagree 2", masking: false, tls: false, acceptCompression: true, remoteCompression: false},
+		{name: "no masking tls no compression", masking: false, tls: true, acceptCompression: false, remoteCompression: false},
+		{name: "no masking tls compression", masking: false, tls: true, acceptCompression: true, remoteCompression: true},
+		{name: "no masking tls compression disagree", masking: false, tls: true, acceptCompression: false, remoteCompression: true},
+		{name: "no masking tls compression disagree 2", masking: false, tls: true, acceptCompression: true, remoteCompression: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testDefaultLeafNodeWSOptions()
@@ -2965,10 +2965,10 @@ func TestLeafNodeWSRemoteCompressAndMaskingOptions(t *testing.T) {
 		noMasking bool
 		noMaskStr string
 	}{
-		{"compression masking", true, "true", false, "false"},
-		{"compression no masking", true, "true", true, "true"},
-		{"no compression masking", false, "false", false, "false"},
-		{"no compression no masking", false, "false", true, "true"},
+		{name: "compression masking", compress: true, compStr: "true", noMasking: false, noMaskStr: "false"},
+		{name: "compression no masking", compress: true, compStr: "true", noMasking: true, noMaskStr: "true"},
+		{name: "no compression masking", compress: false, compStr: "false", noMasking: false, noMaskStr: "false"},
+		{name: "no compression no masking", compress: false, compStr: "false", noMasking: true, noMaskStr: "true"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -4445,54 +4445,54 @@ func TestLeafNodeQueueGroupDistributionWithDaisyChainAndGateway(t *testing.T) {
 		d2   bool
 	}{
 		// Cases with QSubs in A, B and D
-		{"A1 __ B1 __ D1 __", true, false, true, false, true, false},
-		{"A1 __ B1 __ __ D2", true, false, true, false, false, true},
-		{"A1 __ B1 __ D1 D2", true, false, true, false, true, true},
+		{name: "A1 __ B1 __ D1 __", a1: true, a2: false, b1: true, b2: false, d1: true, d2: false},
+		{name: "A1 __ B1 __ __ D2", a1: true, a2: false, b1: true, b2: false, d1: false, d2: true},
+		{name: "A1 __ B1 __ D1 D2", a1: true, a2: false, b1: true, b2: false, d1: true, d2: true},
 
-		{"A1 __ __ B2 D1 __", true, false, false, true, true, false},
-		{"A1 __ __ B2 __ D2", true, false, false, true, false, true},
-		{"A1 __ __ B2 D1 D2", true, false, false, true, true, true},
+		{name: "A1 __ __ B2 D1 __", a1: true, a2: false, b1: false, b2: true, d1: true, d2: false},
+		{name: "A1 __ __ B2 __ D2", a1: true, a2: false, b1: false, b2: true, d1: false, d2: true},
+		{name: "A1 __ __ B2 D1 D2", a1: true, a2: false, b1: false, b2: true, d1: true, d2: true},
 
-		{"A1 __ B1 B2 D1 __", true, false, true, true, true, false},
-		{"A1 __ B1 B2 __ D2", true, false, true, true, false, true},
-		{"A1 __ B1 B2 D1 D2", true, false, true, true, true, true},
+		{name: "A1 __ B1 B2 D1 __", a1: true, a2: false, b1: true, b2: true, d1: true, d2: false},
+		{name: "A1 __ B1 B2 __ D2", a1: true, a2: false, b1: true, b2: true, d1: false, d2: true},
+		{name: "A1 __ B1 B2 D1 D2", a1: true, a2: false, b1: true, b2: true, d1: true, d2: true},
 
-		{"__ A2 B1 __ D1 __", false, true, true, false, true, false},
-		{"__ A2 B1 __ __ D2", false, true, true, false, false, true},
-		{"__ A2 B1 __ D1 D2", false, true, true, false, true, true},
+		{name: "__ A2 B1 __ D1 __", a1: false, a2: true, b1: true, b2: false, d1: true, d2: false},
+		{name: "__ A2 B1 __ __ D2", a1: false, a2: true, b1: true, b2: false, d1: false, d2: true},
+		{name: "__ A2 B1 __ D1 D2", a1: false, a2: true, b1: true, b2: false, d1: true, d2: true},
 
-		{"__ A2 __ B2 D1 __", false, true, false, true, true, false},
-		{"__ A2 __ B2 __ D2", false, true, false, true, false, true},
-		{"__ A2 __ B2 D1 D2", false, true, false, true, true, true},
+		{name: "__ A2 __ B2 D1 __", a1: false, a2: true, b1: false, b2: true, d1: true, d2: false},
+		{name: "__ A2 __ B2 __ D2", a1: false, a2: true, b1: false, b2: true, d1: false, d2: true},
+		{name: "__ A2 __ B2 D1 D2", a1: false, a2: true, b1: false, b2: true, d1: true, d2: true},
 
-		{"__ A2 B1 B2 D1 __", false, true, true, true, true, false},
-		{"__ A2 B1 B2 __ D2", false, true, true, true, false, true},
-		{"__ A2 B1 B2 D1 D2", false, true, true, true, true, true},
+		{name: "__ A2 B1 B2 D1 __", a1: false, a2: true, b1: true, b2: true, d1: true, d2: false},
+		{name: "__ A2 B1 B2 __ D2", a1: false, a2: true, b1: true, b2: true, d1: false, d2: true},
+		{name: "__ A2 B1 B2 D1 D2", a1: false, a2: true, b1: true, b2: true, d1: true, d2: true},
 
-		{"A1 A2 B1 __ D1 __", true, true, true, false, true, false},
-		{"A1 A2 B1 __ __ D2", true, true, true, false, false, true},
-		{"A1 A2 B1 __ D1 D2", true, true, true, false, true, true},
+		{name: "A1 A2 B1 __ D1 __", a1: true, a2: true, b1: true, b2: false, d1: true, d2: false},
+		{name: "A1 A2 B1 __ __ D2", a1: true, a2: true, b1: true, b2: false, d1: false, d2: true},
+		{name: "A1 A2 B1 __ D1 D2", a1: true, a2: true, b1: true, b2: false, d1: true, d2: true},
 
-		{"A1 A2 __ B2 D1 __", true, true, false, true, true, false},
-		{"A1 A2 __ B2 __ D2", true, true, false, true, false, true},
-		{"A1 A2 __ B2 D1 D2", true, true, false, true, true, true},
+		{name: "A1 A2 __ B2 D1 __", a1: true, a2: true, b1: false, b2: true, d1: true, d2: false},
+		{name: "A1 A2 __ B2 __ D2", a1: true, a2: true, b1: false, b2: true, d1: false, d2: true},
+		{name: "A1 A2 __ B2 D1 D2", a1: true, a2: true, b1: false, b2: true, d1: true, d2: true},
 
-		{"A1 A2 B1 B2 D1 __", true, true, true, true, true, false},
-		{"A1 A2 B1 B2 __ D2", true, true, true, true, false, true},
-		{"A1 A2 B1 B2 D1 D2", true, true, true, true, true, true},
+		{name: "A1 A2 B1 B2 D1 __", a1: true, a2: true, b1: true, b2: true, d1: true, d2: false},
+		{name: "A1 A2 B1 B2 __ D2", a1: true, a2: true, b1: true, b2: true, d1: false, d2: true},
+		{name: "A1 A2 B1 B2 D1 D2", a1: true, a2: true, b1: true, b2: true, d1: true, d2: true},
 
 		// Now without any QSub in B cluster (so just A and D)
-		{"A1 __ __ __ D1 __", true, false, false, false, true, false},
-		{"A1 __ __ __ __ D2", true, false, false, false, false, true},
-		{"A1 __ __ __ D1 D2", true, false, false, false, true, true},
+		{name: "A1 __ __ __ D1 __", a1: true, a2: false, b1: false, b2: false, d1: true, d2: false},
+		{name: "A1 __ __ __ __ D2", a1: true, a2: false, b1: false, b2: false, d1: false, d2: true},
+		{name: "A1 __ __ __ D1 D2", a1: true, a2: false, b1: false, b2: false, d1: true, d2: true},
 
-		{"__ A2 __ __ D1 __", false, true, false, false, true, false},
-		{"__ A2 __ __ __ D2", false, true, false, false, false, true},
-		{"__ A2 __ __ D1 D2", false, true, false, false, true, true},
+		{name: "__ A2 __ __ D1 __", a1: false, a2: true, b1: false, b2: false, d1: true, d2: false},
+		{name: "__ A2 __ __ __ D2", a1: false, a2: true, b1: false, b2: false, d1: false, d2: true},
+		{name: "__ A2 __ __ D1 D2", a1: false, a2: true, b1: false, b2: false, d1: true, d2: true},
 
-		{"A1 A2 __ __ D1 __", true, true, false, false, true, false},
-		{"A1 A2 __ __ __ D2", true, true, false, false, false, true},
-		{"A1 A2 __ __ D1 D2", true, true, false, false, true, true},
+		{name: "A1 A2 __ __ D1 __", a1: true, a2: true, b1: false, b2: false, d1: true, d2: false},
+		{name: "A1 A2 __ __ __ D2", a1: true, a2: true, b1: false, b2: false, d1: false, d2: true},
+		{name: "A1 A2 __ __ D1 D2", a1: true, a2: true, b1: false, b2: false, d1: true, d2: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			subj := fmt.Sprintf("foo.%d", i+1)
@@ -4683,91 +4683,91 @@ func TestLeafNodeAndGatewaysSingleMsgPerQueueGroup(t *testing.T) {
 
 		// Simple test firs, qsubs on leaf US and leaf EU, all messages stay in leaf US.
 		{
-			[]int{1, 0, 0, 0, 0, 0, 1, 0, 0},
-			[]int32{total, 0, 0, 0, 0, 0, 0, 0, 0},
+			subs:     []int{1, 0, 0, 0, 0, 0, 1, 0, 0},
+			expected: []int32{total, 0, 0, 0, 0, 0, 0, 0, 0},
 		},
 		// Move the queue sub from leaf US to GW US.
 		{
-			[]int{0, 0, 1, 0, 0, 0, 1, 0, 0},
-			[]int32{0, 0, total, 0, 0, 0, 0, 0, 0},
+			subs:     []int{0, 0, 1, 0, 0, 0, 1, 0, 0},
+			expected: []int32{0, 0, total, 0, 0, 0, 0, 0, 0},
 		},
 		// Now move it to GW EU.
 		{
-			[]int{0, 0, 0, 0, 1, 0, 1, 0, 0},
-			[]int32{0, 0, 0, 0, total, 0, 0, 0, 0},
+			subs:     []int{0, 0, 0, 0, 1, 0, 1, 0, 0},
+			expected: []int32{0, 0, 0, 0, total, 0, 0, 0, 0},
 		},
 
 		// More combinations...
 		{
-			[]int{1, 1, 0, 0, 0, 0, 1, 0, 0},
-			[]int32{total, total, 0, 0, 0, 0, 0, 0, 0},
+			subs:     []int{1, 1, 0, 0, 0, 0, 1, 0, 0},
+			expected: []int32{total, total, 0, 0, 0, 0, 0, 0, 0},
 		},
 		{
-			[]int{0, 1, 1, 0, 0, 0, 1, 0, 0},
-			[]int32{0, total, total, 0, 0, 0, 0, 0, 0},
+			subs:     []int{0, 1, 1, 0, 0, 0, 1, 0, 0},
+			expected: []int32{0, total, total, 0, 0, 0, 0, 0, 0},
 		},
 		{
-			[]int{0, 1, 1, 1, 0, 0, 1, 0, 0},
-			[]int32{0, total, total, total, 0, 0, 0, 0, 0},
+			subs:     []int{0, 1, 1, 1, 0, 0, 1, 0, 0},
+			expected: []int32{0, total, total, total, 0, 0, 0, 0, 0},
 		},
 		{
-			[]int{0, 1, 0, 1, 1, 0, 1, 0, 0},
-			[]int32{0, total, 0, total, total, 0, 0, 0, 0},
+			subs:     []int{0, 1, 0, 1, 1, 0, 1, 0, 0},
+			expected: []int32{0, total, 0, total, total, 0, 0, 0, 0},
 		},
 		{
-			[]int{0, 1, 0, 1, 1, 1, 1, 0, 0},
-			[]int32{0, total, 0, total, total, total, 0, 0, 0},
+			subs:     []int{0, 1, 0, 1, 1, 1, 1, 0, 0},
+			expected: []int32{0, total, 0, total, total, total, 0, 0, 0},
 		},
 		// If we have the qsub in leaf US, does not matter if we have
 		// qsubs in GW US and EU, only leaf US should receive the messages,
 		// but plain sub in GW servers should get them too.
 		{
-			[]int{1, 1, 1, 0, 0, 0, 1, 0, 0},
-			[]int32{total, total, 0, 0, 0, 0, 0, 0, 0},
+			subs:     []int{1, 1, 1, 0, 0, 0, 1, 0, 0},
+			expected: []int32{total, total, 0, 0, 0, 0, 0, 0, 0},
 		},
 		{
-			[]int{1, 1, 1, 1, 0, 0, 1, 0, 0},
-			[]int32{total, total, 0, total, 0, 0, 0, 0, 0},
+			subs:     []int{1, 1, 1, 1, 0, 0, 1, 0, 0},
+			expected: []int32{total, total, 0, total, 0, 0, 0, 0, 0},
 		},
 		{
-			[]int{1, 1, 1, 1, 1, 0, 1, 0, 0},
-			[]int32{total, total, 0, total, 0, 0, 0, 0, 0},
+			subs:     []int{1, 1, 1, 1, 1, 0, 1, 0, 0},
+			expected: []int32{total, total, 0, total, 0, 0, 0, 0, 0},
 		},
 		{
-			[]int{1, 1, 1, 1, 1, 1, 1, 0, 0},
-			[]int32{total, total, 0, total, 0, total, 0, 0, 0},
+			subs:     []int{1, 1, 1, 1, 1, 1, 1, 0, 0},
+			expected: []int32{total, total, 0, total, 0, total, 0, 0, 0},
 		},
 		// Now back to a qsub on leaf US and leaf EU, but introduce plain sub
 		// interest in leaf EU
 		{
-			[]int{1, 0, 0, 0, 0, 0, 1, 1, 0},
-			[]int32{total, 0, 0, 0, 0, 0, 0, total, 0},
+			subs:     []int{1, 0, 0, 0, 0, 0, 1, 1, 0},
+			expected: []int32{total, 0, 0, 0, 0, 0, 0, total, 0},
 		},
 		// And add a different queue group in leaf EU and it should get the messages too.
 		{
-			[]int{1, 0, 0, 0, 0, 0, 1, 1, 1},
-			[]int32{total, 0, 0, 0, 0, 0, 0, total, total},
+			subs:     []int{1, 0, 0, 0, 0, 0, 1, 1, 1},
+			expected: []int32{total, 0, 0, 0, 0, 0, 0, total, total},
 		},
 		// Keep plain and baz queue sub interests in leaf EU and add more combinations.
 		{
-			[]int{1, 1, 0, 0, 0, 0, 1, 1, 1},
-			[]int32{total, total, 0, 0, 0, 0, 0, total, total},
+			subs:     []int{1, 1, 0, 0, 0, 0, 1, 1, 1},
+			expected: []int32{total, total, 0, 0, 0, 0, 0, total, total},
 		},
 		{
-			[]int{1, 1, 1, 0, 0, 0, 1, 1, 1},
-			[]int32{total, total, 0, 0, 0, 0, 0, total, total},
+			subs:     []int{1, 1, 1, 0, 0, 0, 1, 1, 1},
+			expected: []int32{total, total, 0, 0, 0, 0, 0, total, total},
 		},
 		{
-			[]int{1, 1, 1, 1, 0, 0, 1, 1, 1},
-			[]int32{total, total, 0, total, 0, 0, 0, total, total},
+			subs:     []int{1, 1, 1, 1, 0, 0, 1, 1, 1},
+			expected: []int32{total, total, 0, total, 0, 0, 0, total, total},
 		},
 		{
-			[]int{1, 1, 1, 1, 1, 0, 1, 1, 1},
-			[]int32{total, total, 0, total, 0, 0, 0, total, total},
+			subs:     []int{1, 1, 1, 1, 1, 0, 1, 1, 1},
+			expected: []int32{total, total, 0, total, 0, 0, 0, total, total},
 		},
 		{
-			[]int{1, 1, 1, 1, 1, 1, 1, 1, 1},
-			[]int32{total, total, 0, total, 0, total, 0, total, total},
+			subs:     []int{1, 1, 1, 1, 1, 1, 1, 1, 1},
+			expected: []int32{total, total, 0, total, 0, total, 0, total, total},
 		},
 	} {
 		t.Run(_EMPTY_, func(t *testing.T) {
@@ -5300,8 +5300,8 @@ func TestLeafNodeQueueInterestAndWeightCorrectAfterServerRestartOrConnectionClos
 		name          string
 		pinnedAccount string
 	}{
-		{"without pinned account", _EMPTY_},
-		{"with pinned account", "accounts: [\"A\"]"},
+		{name: "without pinned account", pinnedAccount: _EMPTY_},
+		{name: "with pinned account", pinnedAccount: "accounts: [\"A\"]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			leafBConf := `
@@ -5605,10 +5605,10 @@ func TestLeafNodeRoutedSubKeyDifferentBetweenLeafSubAndRoutedSub(t *testing.T) {
 		pinnedAccount string
 		lnocu         bool
 	}{
-		{"without pinned account", _EMPTY_, true},
-		{"with pinned account", "accounts: [\"XYZ\"]", true},
-		{"old server without pinned account", _EMPTY_, false},
-		{"old server with pinned account", "accounts: [\"XYZ\"]", false},
+		{name: "without pinned account", pinnedAccount: _EMPTY_, lnocu: true},
+		{name: "with pinned account", pinnedAccount: "accounts: [\"XYZ\"]", lnocu: true},
+		{name: "old server without pinned account", pinnedAccount: _EMPTY_, lnocu: false},
+		{name: "old server with pinned account", pinnedAccount: "accounts: [\"XYZ\"]", lnocu: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			leafBConf := `
@@ -6098,8 +6098,8 @@ func TestLeafNodeMinVersion(t *testing.T) {
 		version string
 		err     string
 	}{
-		{"invalid version", "abc", "semver"},
-		{"version too low", "2.7.9", "the minimum version should be at least 2.8.0"},
+		{name: "invalid version", version: "abc", err: "semver"},
+		{name: "version too low", version: "2.7.9", err: "the minimum version should be at least 2.8.0"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o.Port = -1
@@ -6771,15 +6771,15 @@ func TestLeafNodeTLSHandshakeFirstFallbackDelayConfigValues(t *testing.T) {
 		first bool
 		delay time.Duration
 	}{
-		{"first as boolean true", "true", true, 0},
-		{"first as boolean false", "false", false, 0},
-		{"first as string true", "\"true\"", true, 0},
-		{"first as string false", "\"false\"", false, 0},
-		{"first as string on", "on", true, 0},
-		{"first as string off", "off", false, 0},
-		{"first as string auto", "auto", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
-		{"first as string auto_fallback", "auto_fallback", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
-		{"first as fallback duration", "300ms", true, 300 * time.Millisecond},
+		{name: "first as boolean true", val: "true", first: true, delay: 0},
+		{name: "first as boolean false", val: "false", first: false, delay: 0},
+		{name: "first as string true", val: "\"true\"", first: true, delay: 0},
+		{name: "first as string false", val: "\"false\"", first: false, delay: 0},
+		{name: "first as string on", val: "on", first: true, delay: 0},
+		{name: "first as string off", val: "off", first: false, delay: 0},
+		{name: "first as string auto", val: "auto", first: true, delay: DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{name: "first as string auto_fallback", val: "auto_fallback", first: true, delay: DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{name: "first as fallback duration", val: "300ms", first: true, delay: 300 * time.Millisecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.val)))
@@ -6982,41 +6982,41 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 		expected string
 		rtts     []time.Duration
 	}{
-		{"boolean enabled", "true", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string enabled", "enabled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string EnaBled", "EnaBled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string on", "on", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string ON", "ON", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string fast", "fast", nil, CompressionS2Fast, nil},
-		{"string Fast", "Fast", nil, CompressionS2Fast, nil},
-		{"string s2_fast", "s2_fast", nil, CompressionS2Fast, nil},
-		{"string s2_Fast", "s2_Fast", nil, CompressionS2Fast, nil},
-		{"boolean disabled", "false", nil, CompressionOff, nil},
-		{"string disabled", "disabled", nil, CompressionOff, nil},
-		{"string DisableD", "DisableD", nil, CompressionOff, nil},
-		{"string off", "off", nil, CompressionOff, nil},
-		{"string OFF", "OFF", nil, CompressionOff, nil},
-		{"better", "better", nil, CompressionS2Better, nil},
-		{"Better", "Better", nil, CompressionS2Better, nil},
-		{"s2_better", "s2_better", nil, CompressionS2Better, nil},
-		{"S2_BETTER", "S2_BETTER", nil, CompressionS2Better, nil},
-		{"best", "best", nil, CompressionS2Best, nil},
-		{"BEST", "BEST", nil, CompressionS2Best, nil},
-		{"s2_best", "s2_best", nil, CompressionS2Best, nil},
-		{"S2_BEST", "S2_BEST", nil, CompressionS2Best, nil},
-		{"auto no rtts", "auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"s2_auto no rtts", "s2_auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"auto", "{mode: auto, rtt_thresholds: [%s]}", []int{1}, CompressionS2Auto, []time.Duration{time.Millisecond}},
-		{"Auto", "{Mode: Auto, thresholds: [%s]}", []int{1, 2}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond}},
-		{"s2_auto", "{mode: s2_auto, thresholds: [%s]}", []int{1, 2, 3}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
-		{"s2_AUTO", "{mode: s2_AUTO, thresholds: [%s]}", []int{1, 2, 3, 4}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
-		{"s2_auto:-10,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{-10, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
-		{"s2_auto:5,10,15", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 15}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
-		{"s2_auto:0,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{0, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
-		{"s2_auto:5,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 0, 20}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 10, 0, 20}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,0,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 0, 0, 20}, CompressionS2Auto, []time.Duration{0, 0, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,10,0,0", "{mode: s2_auto, rtt_thresholds: [%s]}", []int{0, 10, 0, 0}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond}},
+		{name: "boolean enabled", mode: "true", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string enabled", mode: "enabled", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string EnaBled", mode: "EnaBled", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string on", mode: "on", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string ON", mode: "ON", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string fast", mode: "fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string Fast", mode: "Fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string s2_fast", mode: "s2_fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string s2_Fast", mode: "s2_Fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "boolean disabled", mode: "false", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string disabled", mode: "disabled", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string DisableD", mode: "DisableD", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string off", mode: "off", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string OFF", mode: "OFF", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "better", mode: "better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "Better", mode: "Better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "s2_better", mode: "s2_better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "S2_BETTER", mode: "S2_BETTER", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "best", mode: "best", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "BEST", mode: "BEST", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "s2_best", mode: "s2_best", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "S2_BEST", mode: "S2_BEST", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "auto no rtts", mode: "auto", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "s2_auto no rtts", mode: "s2_auto", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "auto", mode: "{mode: auto, rtt_thresholds: [%s]}", rttVals: []int{1}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond}},
+		{name: "Auto", mode: "{Mode: Auto, thresholds: [%s]}", rttVals: []int{1, 2}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond}},
+		{name: "s2_auto", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{1, 2, 3}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
+		{name: "s2_AUTO", mode: "{mode: s2_AUTO, thresholds: [%s]}", rttVals: []int{1, 2, 3, 4}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
+		{name: "s2_auto:-10,5,10", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{-10, 5, 10}, expected: CompressionS2Auto, rtts: []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{name: "s2_auto:5,10,15", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{5, 10, 15}, expected: CompressionS2Auto, rtts: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
+		{name: "s2_auto:0,5,10", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 5, 10}, expected: CompressionS2Auto, rtts: []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{name: "s2_auto:5,10,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{5, 10, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,10,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 10, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,0,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 0, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{0, 0, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,10,0,0", mode: "{mode: s2_auto, rtt_thresholds: [%s]}", rttVals: []int{0, 10, 0, 0}, expected: CompressionS2Auto, rtts: []time.Duration{0, 10 * time.Millisecond}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var val string
@@ -7087,41 +7087,41 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 		expected string
 		rtts     []time.Duration
 	}{
-		{"boolean enabled", "true", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string enabled", "enabled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string EnaBled", "EnaBled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string on", "on", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string ON", "ON", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string fast", "fast", nil, CompressionS2Fast, nil},
-		{"string Fast", "Fast", nil, CompressionS2Fast, nil},
-		{"string s2_fast", "s2_fast", nil, CompressionS2Fast, nil},
-		{"string s2_Fast", "s2_Fast", nil, CompressionS2Fast, nil},
-		{"boolean disabled", "false", nil, CompressionOff, nil},
-		{"string disabled", "disabled", nil, CompressionOff, nil},
-		{"string DisableD", "DisableD", nil, CompressionOff, nil},
-		{"string off", "off", nil, CompressionOff, nil},
-		{"string OFF", "OFF", nil, CompressionOff, nil},
-		{"better", "better", nil, CompressionS2Better, nil},
-		{"Better", "Better", nil, CompressionS2Better, nil},
-		{"s2_better", "s2_better", nil, CompressionS2Better, nil},
-		{"S2_BETTER", "S2_BETTER", nil, CompressionS2Better, nil},
-		{"best", "best", nil, CompressionS2Best, nil},
-		{"BEST", "BEST", nil, CompressionS2Best, nil},
-		{"s2_best", "s2_best", nil, CompressionS2Best, nil},
-		{"S2_BEST", "S2_BEST", nil, CompressionS2Best, nil},
-		{"auto no rtts", "auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"s2_auto no rtts", "s2_auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"auto", "{mode: auto, rtt_thresholds: [%s]}", []int{1}, CompressionS2Auto, []time.Duration{time.Millisecond}},
-		{"Auto", "{Mode: Auto, thresholds: [%s]}", []int{1, 2}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond}},
-		{"s2_auto", "{mode: s2_auto, thresholds: [%s]}", []int{1, 2, 3}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
-		{"s2_AUTO", "{mode: s2_AUTO, thresholds: [%s]}", []int{1, 2, 3, 4}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
-		{"s2_auto:-10,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{-10, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
-		{"s2_auto:5,10,15", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 15}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
-		{"s2_auto:0,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{0, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
-		{"s2_auto:5,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 0, 20}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 10, 0, 20}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,0,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 0, 0, 20}, CompressionS2Auto, []time.Duration{0, 0, 0, 20 * time.Millisecond}},
-		{"s2_auto:0,10,0,0", "{mode: s2_auto, rtt_thresholds: [%s]}", []int{0, 10, 0, 0}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond}},
+		{name: "boolean enabled", mode: "true", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string enabled", mode: "enabled", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string EnaBled", mode: "EnaBled", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string on", mode: "on", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string ON", mode: "ON", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "string fast", mode: "fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string Fast", mode: "Fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string s2_fast", mode: "s2_fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "string s2_Fast", mode: "s2_Fast", rttVals: nil, expected: CompressionS2Fast, rtts: nil},
+		{name: "boolean disabled", mode: "false", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string disabled", mode: "disabled", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string DisableD", mode: "DisableD", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string off", mode: "off", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "string OFF", mode: "OFF", rttVals: nil, expected: CompressionOff, rtts: nil},
+		{name: "better", mode: "better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "Better", mode: "Better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "s2_better", mode: "s2_better", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "S2_BETTER", mode: "S2_BETTER", rttVals: nil, expected: CompressionS2Better, rtts: nil},
+		{name: "best", mode: "best", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "BEST", mode: "BEST", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "s2_best", mode: "s2_best", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "S2_BEST", mode: "S2_BEST", rttVals: nil, expected: CompressionS2Best, rtts: nil},
+		{name: "auto no rtts", mode: "auto", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "s2_auto no rtts", mode: "s2_auto", rttVals: nil, expected: CompressionS2Auto, rtts: defaultCompressionS2AutoRTTThresholds},
+		{name: "auto", mode: "{mode: auto, rtt_thresholds: [%s]}", rttVals: []int{1}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond}},
+		{name: "Auto", mode: "{Mode: Auto, thresholds: [%s]}", rttVals: []int{1, 2}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond}},
+		{name: "s2_auto", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{1, 2, 3}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
+		{name: "s2_AUTO", mode: "{mode: s2_AUTO, thresholds: [%s]}", rttVals: []int{1, 2, 3, 4}, expected: CompressionS2Auto, rtts: []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
+		{name: "s2_auto:-10,5,10", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{-10, 5, 10}, expected: CompressionS2Auto, rtts: []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{name: "s2_auto:5,10,15", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{5, 10, 15}, expected: CompressionS2Auto, rtts: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
+		{name: "s2_auto:0,5,10", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 5, 10}, expected: CompressionS2Auto, rtts: []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{name: "s2_auto:5,10,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{5, 10, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,10,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 10, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,0,0,20", mode: "{mode: s2_auto, thresholds: [%s]}", rttVals: []int{0, 0, 0, 20}, expected: CompressionS2Auto, rtts: []time.Duration{0, 0, 0, 20 * time.Millisecond}},
+		{name: "s2_auto:0,10,0,0", mode: "{mode: s2_auto, rtt_thresholds: [%s]}", rttVals: []int{0, 10, 0, 0}, expected: CompressionS2Auto, rtts: []time.Duration{0, 10 * time.Millisecond}},
 	} {
 		t.Run("remote leaf "+test.name, func(t *testing.T) {
 			var val string
@@ -7211,32 +7211,32 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 		rtts []time.Duration
 		err  string
 	}{
-		{"unsupported mode", "gzip", nil, "unsupported"},
-		{"not ascending order", "s2_auto", []time.Duration{
+		{name: "unsupported mode", mode: "gzip", rtts: nil, err: "unsupported"},
+		{name: "not ascending order", mode: "s2_auto", rtts: []time.Duration{
 			5 * time.Millisecond,
 			10 * time.Millisecond,
 			2 * time.Millisecond,
-		}, "ascending"},
-		{"too many thresholds", "s2_auto", []time.Duration{
+		}, err: "ascending"},
+		{name: "too many thresholds", mode: "s2_auto", rtts: []time.Duration{
 			5 * time.Millisecond,
 			10 * time.Millisecond,
 			20 * time.Millisecond,
 			40 * time.Millisecond,
 			60 * time.Millisecond,
-		}, "more than 4"},
-		{"all 0", "s2_auto", []time.Duration{0, 0, 0, 0}, "at least one"},
-		{"single 0", "s2_auto", []time.Duration{0}, "at least one"},
+		}, err: "more than 4"},
+		{name: "all 0", mode: "s2_auto", rtts: []time.Duration{0, 0, 0, 0}, err: "at least one"},
+		{name: "single 0", mode: "s2_auto", rtts: []time.Duration{0}, err: "at least one"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := DefaultOptions()
 			o.LeafNode.Port = -1
-			o.LeafNode.Compression = CompressionOpts{test.mode, test.rtts}
+			o.LeafNode.Compression = CompressionOpts{Mode: test.mode, RTTThresholds: test.rtts}
 			if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Same with remotes
 			o.LeafNode.Compression = CompressionOpts{}
-			o.LeafNode.Remotes = []*RemoteLeafOpts{{Compression: CompressionOpts{test.mode, test.rtts}}}
+			o.LeafNode.Remotes = []*RemoteLeafOpts{{Compression: CompressionOpts{Mode: test.mode, RTTThresholds: test.rtts}}}
 			if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -7455,10 +7455,10 @@ func BenchmarkLeafNodeCompression(b *testing.B) {
 		algo string
 		user string
 	}{
-		{"Better", "a"},
-		{"Best", "b"},
-		{"Fast", "c"},
-		{"Off", "d"},
+		{algo: "Better", user: "a"},
+		{algo: "Best", user: "b"},
+		{algo: "Fast", user: "c"},
+		{algo: "Off", user: "d"},
 	} {
 		nc1 := natsConnect(b, s1.ClientURL(), nats.UserInfo(p.user, "pwd"))
 		nc2 := natsConnect(b, s2.ClientURL(), nats.UserInfo(p.user, "pwd"))
@@ -7496,36 +7496,36 @@ func TestLeafNodeCompressionMatrixModes(t *testing.T) {
 		s1Expected string
 		s2Expected string
 	}{
-		{"off off", "off", "off", CompressionOff, CompressionOff},
-		{"off accept", "off", "accept", CompressionOff, CompressionOff},
-		{"off on", "off", "on", CompressionOff, CompressionOff},
-		{"off better", "off", "better", CompressionOff, CompressionOff},
-		{"off best", "off", "best", CompressionOff, CompressionOff},
+		{name: "off off", s1: "off", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off accept", s1: "off", s2: "accept", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off on", s1: "off", s2: "on", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off better", s1: "off", s2: "better", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "off best", s1: "off", s2: "best", s1Expected: CompressionOff, s2Expected: CompressionOff},
 
-		{"accept off", "accept", "off", CompressionOff, CompressionOff},
-		{"accept accept", "accept", "accept", CompressionOff, CompressionOff},
+		{name: "accept off", s1: "accept", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "accept accept", s1: "accept", s2: "accept", s1Expected: CompressionOff, s2Expected: CompressionOff},
 		// Note: "on", means s2_auto, which will mean uncompressed since RTT is low.
-		{"accept on", "accept", "on", CompressionS2Fast, CompressionS2Uncompressed},
-		{"accept better", "accept", "better", CompressionS2Better, CompressionS2Better},
-		{"accept best", "accept", "best", CompressionS2Best, CompressionS2Best},
+		{name: "accept on", s1: "accept", s2: "on", s1Expected: CompressionS2Fast, s2Expected: CompressionS2Uncompressed},
+		{name: "accept better", s1: "accept", s2: "better", s1Expected: CompressionS2Better, s2Expected: CompressionS2Better},
+		{name: "accept best", s1: "accept", s2: "best", s1Expected: CompressionS2Best, s2Expected: CompressionS2Best},
 
-		{"on off", "on", "off", CompressionOff, CompressionOff},
-		{"on accept", "on", "accept", CompressionS2Uncompressed, CompressionS2Fast},
-		{"on on", "on", "on", CompressionS2Uncompressed, CompressionS2Uncompressed},
-		{"on better", "on", "better", CompressionS2Uncompressed, CompressionS2Better},
-		{"on best", "on", "best", CompressionS2Uncompressed, CompressionS2Best},
+		{name: "on off", s1: "on", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "on accept", s1: "on", s2: "accept", s1Expected: CompressionS2Uncompressed, s2Expected: CompressionS2Fast},
+		{name: "on on", s1: "on", s2: "on", s1Expected: CompressionS2Uncompressed, s2Expected: CompressionS2Uncompressed},
+		{name: "on better", s1: "on", s2: "better", s1Expected: CompressionS2Uncompressed, s2Expected: CompressionS2Better},
+		{name: "on best", s1: "on", s2: "best", s1Expected: CompressionS2Uncompressed, s2Expected: CompressionS2Best},
 
-		{"better off", "better", "off", CompressionOff, CompressionOff},
-		{"better accept", "better", "accept", CompressionS2Better, CompressionS2Better},
-		{"better on", "better", "on", CompressionS2Better, CompressionS2Uncompressed},
-		{"better better", "better", "better", CompressionS2Better, CompressionS2Better},
-		{"better best", "better", "best", CompressionS2Better, CompressionS2Best},
+		{name: "better off", s1: "better", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "better accept", s1: "better", s2: "accept", s1Expected: CompressionS2Better, s2Expected: CompressionS2Better},
+		{name: "better on", s1: "better", s2: "on", s1Expected: CompressionS2Better, s2Expected: CompressionS2Uncompressed},
+		{name: "better better", s1: "better", s2: "better", s1Expected: CompressionS2Better, s2Expected: CompressionS2Better},
+		{name: "better best", s1: "better", s2: "best", s1Expected: CompressionS2Better, s2Expected: CompressionS2Best},
 
-		{"best off", "best", "off", CompressionOff, CompressionOff},
-		{"best accept", "best", "accept", CompressionS2Best, CompressionS2Best},
-		{"best on", "best", "on", CompressionS2Best, CompressionS2Uncompressed},
-		{"best better", "best", "better", CompressionS2Best, CompressionS2Better},
-		{"best best", "best", "best", CompressionS2Best, CompressionS2Best},
+		{name: "best off", s1: "best", s2: "off", s1Expected: CompressionOff, s2Expected: CompressionOff},
+		{name: "best accept", s1: "best", s2: "accept", s1Expected: CompressionS2Best, s2Expected: CompressionS2Best},
+		{name: "best on", s1: "best", s2: "on", s1Expected: CompressionS2Best, s2Expected: CompressionS2Uncompressed},
+		{name: "best better", s1: "best", s2: "better", s1Expected: CompressionS2Best, s2Expected: CompressionS2Better},
+		{name: "best best", s1: "best", s2: "best", s1Expected: CompressionS2Best, s2Expected: CompressionS2Best},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf1 := createConfFile(t, []byte(fmt.Sprintf(`
@@ -7661,8 +7661,8 @@ func TestLeafNodeCompressionAuto(t *testing.T) {
 		s2Compression string
 		checkS1       bool
 	}{
-		{"remote side", "10s", CompressionS2Fast, "100ms", "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}", false},
-		{"accept side", "100ms", "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}", "10s", CompressionS2Fast, true},
+		{name: "remote side", s1Ping: "10s", s1Compression: CompressionS2Fast, s2Ping: "100ms", s2Compression: "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}", checkS1: false},
+		{name: "accept side", s1Ping: "100ms", s1Compression: "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}", s2Ping: "10s", s2Compression: CompressionS2Fast, checkS1: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf1 := createConfFile(t, []byte(fmt.Sprintf(`
@@ -8904,8 +8904,8 @@ func TestLeafNodeTwoRemotesToSameHubAccountWithClusters(t *testing.T) {
 		name        string
 		sp2Leafport int
 	}{
-		{"connect to different hub servers", oh2.LeafNode.Port},
-		{"connect to same hub server", oh1.LeafNode.Port},
+		{name: "connect to different hub servers", sp2Leafport: oh2.LeafNode.Port},
+		{name: "connect to same hub server", sp2Leafport: oh1.LeafNode.Port},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			confSP1 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP1", _EMPTY_, oh1.LeafNode.Port, oh1.LeafNode.Port)))
@@ -9491,8 +9491,8 @@ func TestLeafNodeConnectionSucceedsEvenWithDelayedFirstINFO(t *testing.T) {
 		name      string
 		websocket bool
 	}{
-		{"regular", false},
-		{"websocket", true},
+		{name: "regular", websocket: false},
+		{name: "websocket", websocket: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ob := DefaultOptions()
@@ -9566,8 +9566,8 @@ func TestLeafNodeDetectsStaleConnectionIfNoInfo(t *testing.T) {
 		name      string
 		websocket bool
 	}{
-		{"regular", false},
-		{"websocket", true},
+		{name: "regular", websocket: false},
+		{name: "websocket", websocket: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			l, err := net.Listen("tcp", "127.0.0.1:0")

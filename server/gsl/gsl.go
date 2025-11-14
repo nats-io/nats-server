@@ -337,7 +337,7 @@ func (s *GenericSublist[T]) remove(subject string, value T, shouldLock bool) err
 			}
 		}
 		if n != nil {
-			levels = append(levels, lnt[T]{l, n, t})
+			levels = append(levels, lnt[T]{l: l, n: n, t: t})
 			l = n.next
 		} else {
 			l = nil

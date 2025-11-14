@@ -1264,7 +1264,7 @@ func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 // messages based on a deny clause for subscriptions.
 // Lock should be held.
 func (c *client) loadMsgDenyFilter() {
-	c.mperms = &msgDeny{NewSublistWithCache(), make(map[string]bool)}
+	c.mperms = &msgDeny{deny: NewSublistWithCache(), dcache: make(map[string]bool)}
 	for _, sub := range c.darray {
 		c.mperms.deny.Insert(&subscription{subject: []byte(sub)})
 	}
@@ -3098,7 +3098,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact b
 			continue
 		}
 		if subj == im.to {
-			ims = append(ims, ime{im, _EMPTY_, false})
+			ims = append(ims, ime{im: im, overlapSubj: _EMPTY_, dyn: false})
 			continue
 		}
 		if tokensModified {
@@ -3109,10 +3109,10 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact b
 		imTokens := tokenizeSubjectIntoSlice(imTsa[:0], im.to)
 
 		if isSubsetMatchTokenized(tokens, imTokens) {
-			ims = append(ims, ime{im, _EMPTY_, true})
+			ims = append(ims, ime{im: im, overlapSubj: _EMPTY_, dyn: true})
 		} else if hasWC {
 			if isSubsetMatchTokenized(imTokens, tokens) {
-				ims = append(ims, ime{im, _EMPTY_, false})
+				ims = append(ims, ime{im: im, overlapSubj: _EMPTY_, dyn: false})
 			} else {
 				imTokensLen := len(imTokens)
 				for i, t := range tokens {
@@ -3141,7 +3141,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact b
 					// As isSubsetMatchTokenized was already called with tokens and imTokens,
 					// we wouldn't be here if it where not for tokens being modified.
 					// Hence, Join to re compute the subject string
-					ims = append(ims, ime{im, strings.Join(tokens, tsep), true})
+					ims = append(ims, ime{im: im, overlapSubj: strings.Join(tokens, tsep), dyn: true})
 				}
 			}
 		}
@@ -3867,7 +3867,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// do that accounting here. We only look at client.replies which will be non-nil.
 	// Only reply subject permissions if the client is not already allowed to publish to the reply subject.
 	if client.replies != nil && len(reply) > 0 && !client.pubAllowedFullCheck(string(reply), true, true) {
-		client.replies[string(reply)] = &resp{time.Now(), 0}
+		client.replies[string(reply)] = &resp{t: time.Now(), n: 0}
 		client.repliesSincePrune++
 		if client.repliesSincePrune > replyPermLimit || time.Since(client.lastReplyPrune) > replyPruneTime {
 			client.pruneReplyPerms()
@@ -5915,7 +5915,7 @@ func (c *client) closeConnection(reason ClosedState) {
 						if esub, ok := qsubs[key]; ok {
 							esub.n += num
 						} else {
-							qsubs[key] = &qsub{sub, num}
+							qsubs[key] = &qsub{sub: sub, n: num}
 						}
 					}
 				}

@@ -262,7 +262,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 	}
 
 	// FIXME(dlc) - Could pool at this level?
-	sm := &StoreMsg{subj, nil, nil, make([]byte, 0, len(hdr)+len(msg)), seq, ts}
+	sm := &StoreMsg{subj: subj, hdr: nil, msg: nil, buf: make([]byte, 0, len(hdr)+len(msg)), seq: seq, ts: ts}
 	sm.buf = append(sm.buf, hdr...)
 	sm.buf = append(sm.buf, msg...)
 	if len(hdr) > 0 {
@@ -1297,7 +1297,7 @@ func (ms *memStore) shouldProcessSdmLocked(seq uint64, subj string) (bool, bool)
 				p.last = false
 			}
 		}
-		ms.sdm.pending[seq] = SDMBySeq{p.last, time.Now().UnixNano()}
+		ms.sdm.pending[seq] = SDMBySeq{last: p.last, ts: time.Now().UnixNano()}
 		return p.last, true
 	}
 
@@ -2240,7 +2240,7 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 	if len(state.Pending) > 0 {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
-			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			pending[seq] = &Pending{Sequence: p.Sequence, Timestamp: p.Timestamp}
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -2328,7 +2328,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 			}
 		} else {
 			// Add to pending.
-			o.state.Pending[sseq] = &Pending{dseq, ts}
+			o.state.Pending[sseq] = &Pending{Sequence: dseq, Timestamp: ts}
 		}
 		// Update delivered as needed.
 		if dseq > o.state.Delivered.Consumer {
@@ -2520,7 +2520,7 @@ func (o *consumerMemStore) EncodedState() ([]byte, error) {
 func (o *consumerMemStore) copyPending() map[uint64]*Pending {
 	pending := make(map[uint64]*Pending, len(o.state.Pending))
 	for seq, p := range o.state.Pending {
-		pending[seq] = &Pending{p.Sequence, p.Timestamp}
+		pending[seq] = &Pending{Sequence: p.Sequence, Timestamp: p.Timestamp}
 	}
 	return pending
 }

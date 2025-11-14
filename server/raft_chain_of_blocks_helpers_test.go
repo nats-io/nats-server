@@ -40,9 +40,9 @@ var RCOBOptions = struct {
 	// (corresponding to the 'ready' state machine member variable)
 	safeSnapshots bool
 }{
-	false,
-	10240,
-	true,
+	verbose:       false,
+	maxBlockSize:  10240,
+	safeSnapshots: true,
 }
 
 // Simple state machine on top of Raft.

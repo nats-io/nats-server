@@ -500,31 +500,31 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	switch sortOpt {
 	case ByCid, ByStart:
-		sort.Sort(byCid{pconns})
+		sort.Sort(byCid{ConnInfos: pconns})
 	case BySubs:
-		sort.Sort(sort.Reverse(bySubs{pconns}))
+		sort.Sort(sort.Reverse(bySubs{ConnInfos: pconns}))
 	case ByPending:
-		sort.Sort(sort.Reverse(byPending{pconns}))
+		sort.Sort(sort.Reverse(byPending{ConnInfos: pconns}))
 	case ByOutMsgs:
-		sort.Sort(sort.Reverse(byOutMsgs{pconns}))
+		sort.Sort(sort.Reverse(byOutMsgs{ConnInfos: pconns}))
 	case ByInMsgs:
-		sort.Sort(sort.Reverse(byInMsgs{pconns}))
+		sort.Sort(sort.Reverse(byInMsgs{ConnInfos: pconns}))
 	case ByOutBytes:
-		sort.Sort(sort.Reverse(byOutBytes{pconns}))
+		sort.Sort(sort.Reverse(byOutBytes{ConnInfos: pconns}))
 	case ByInBytes:
-		sort.Sort(sort.Reverse(byInBytes{pconns}))
+		sort.Sort(sort.Reverse(byInBytes{ConnInfos: pconns}))
 	case ByLast:
-		sort.Sort(sort.Reverse(byLast{pconns}))
+		sort.Sort(sort.Reverse(byLast{ConnInfos: pconns}))
 	case ByIdle:
-		sort.Sort(sort.Reverse(byIdle{pconns, c.Now}))
+		sort.Sort(sort.Reverse(byIdle{ConnInfos: pconns, now: c.Now}))
 	case ByUptime:
-		sort.Sort(byUptime{pconns, time.Now()})
+		sort.Sort(byUptime{ConnInfos: pconns, now: time.Now()})
 	case ByStop:
-		sort.Sort(sort.Reverse(byStop{pconns}))
+		sort.Sort(sort.Reverse(byStop{ConnInfos: pconns}))
 	case ByReason:
-		sort.Sort(byReason{pconns})
+		sort.Sort(byReason{ConnInfos: pconns})
 	case ByRTT:
-		sort.Sort(sort.Reverse(byRTT{pconns}))
+		sort.Sort(sort.Reverse(byRTT{ConnInfos: pconns}))
 	}
 
 	minoff := c.Offset
@@ -1901,13 +1901,13 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		stats := s.ocsprc.Stats()
 		if stats != nil {
 			v.OCSPResponseCache = &OCSPResponseCacheVarz{
-				s.ocsprc.Type(),
-				stats.Hits,
-				stats.Misses,
-				stats.Responses,
-				stats.Revokes,
-				stats.Goods,
-				stats.Unknowns,
+				Type:      s.ocsprc.Type(),
+				Hits:      stats.Hits,
+				Misses:    stats.Misses,
+				Responses: stats.Responses,
+				Revokes:   stats.Revokes,
+				Goods:     stats.Goods,
+				Unknowns:  stats.Unknowns,
 			}
 		}
 	}
@@ -2423,7 +2423,7 @@ func (s *Server) HandleLeafz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	l, err := s.Leafz(&LeafzOptions{subs, r.URL.Query().Get("acc")})
+	l, err := s.Leafz(&LeafzOptions{Subscriptions: subs, Account: r.URL.Query().Get("acc")})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))
@@ -2691,7 +2691,7 @@ func (s *Server) HandleAccountz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.httpReqStats[AccountzPath]++
 	s.mu.Unlock()
-	if l, err := s.Accountz(&AccountzOptions{r.URL.Query().Get("acc")}); err != nil {
+	if l, err := s.Accountz(&AccountzOptions{Account: r.URL.Query().Get("acc")}); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))
 	} else if b, err := json.MarshalIndent(l, "", "  "); err != nil {
@@ -2771,7 +2771,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		claim.Validate(&vr)
 		vrIssues = make([]ExtVrIssues, len(vr.Issues))
 		for i, v := range vr.Issues {
-			vrIssues[i] = ExtVrIssues{v.Description, v.Blocking, v.TimeCheck}
+			vrIssues[i] = ExtVrIssues{Description: v.Description, Blocking: v.Blocking, Time: v.TimeCheck}
 		}
 	}
 	collectRevocations := func(revocations map[string]int64) map[string]time.Time {
@@ -2861,11 +2861,11 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		} else {
 			src = m.src
 			for _, d := range m.dests {
-				dests = append(dests, &MapDest{d.tr.dest, d.weight, _EMPTY_})
+				dests = append(dests, &MapDest{Subject: d.tr.dest, Weight: d.weight, Cluster: _EMPTY_})
 			}
 			for c, cd := range m.cdests {
 				for _, d := range cd {
-					dests = append(dests, &MapDest{d.tr.dest, d.weight, c})
+					dests = append(dests, &MapDest{Subject: d.tr.dest, Weight: d.weight, Cluster: c})
 				}
 			}
 		}
@@ -3086,7 +3086,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 						crgroup := consumer.raftGroup()
 						if crgroup != nil {
 							sdet.ConsumerRaftGroups = append(sdet.ConsumerRaftGroups,
-								&RaftGroupDetail{cInfo.Name, crgroup.Name},
+								&RaftGroupDetail{Name: cInfo.Name, RaftGroup: crgroup.Name},
 							)
 						}
 					}

@@ -859,19 +859,19 @@ func TestJetStreamConsumerIsFilteredMatch(t *testing.T) {
 		subject        string
 		result         bool
 	}{
-		{"no filter", []string{}, "foo.bar", true},
-		{"literal match", []string{"foo.baz", "foo.bar"}, "foo.bar", true},
-		{"literal mismatch", []string{"foo.baz", "foo.bar"}, "foo.ban", false},
-		{"wildcard > match", []string{"bar.>", "foo.>"}, "foo.bar", true},
-		{"wildcard > match", []string{"bar.>", "foo.>"}, "bar.foo", true},
-		{"wildcard > mismatch", []string{"bar.>", "foo.>"}, "baz.foo", false},
-		{"wildcard * match", []string{"bar.*", "foo.*"}, "foo.bar", true},
-		{"wildcard * match", []string{"bar.*", "foo.*"}, "bar.foo", true},
-		{"wildcard * mismatch", []string{"bar.*", "foo.*"}, "baz.foo", false},
-		{"wildcard * match", []string{"foo.*.x", "foo.*.y"}, "foo.bar.x", true},
-		{"wildcard * match", []string{"foo.*.x", "foo.*.y", "foo.*.z"}, "foo.bar.z", true},
-		{"many mismatch", filterSubjects(100), "foo.bar.do.not.match.any.filter.subject", false},
-		{"many match", filterSubjects(100), "foo.bar.12345.xyz.abcdef", true}, // will be matched by "foo.bar.*.xyz.abcdef"
+		{name: "no filter", filterSubjects: []string{}, subject: "foo.bar", result: true},
+		{name: "literal match", filterSubjects: []string{"foo.baz", "foo.bar"}, subject: "foo.bar", result: true},
+		{name: "literal mismatch", filterSubjects: []string{"foo.baz", "foo.bar"}, subject: "foo.ban", result: false},
+		{name: "wildcard > match", filterSubjects: []string{"bar.>", "foo.>"}, subject: "foo.bar", result: true},
+		{name: "wildcard > match", filterSubjects: []string{"bar.>", "foo.>"}, subject: "bar.foo", result: true},
+		{name: "wildcard > mismatch", filterSubjects: []string{"bar.>", "foo.>"}, subject: "baz.foo", result: false},
+		{name: "wildcard * match", filterSubjects: []string{"bar.*", "foo.*"}, subject: "foo.bar", result: true},
+		{name: "wildcard * match", filterSubjects: []string{"bar.*", "foo.*"}, subject: "bar.foo", result: true},
+		{name: "wildcard * mismatch", filterSubjects: []string{"bar.*", "foo.*"}, subject: "baz.foo", result: false},
+		{name: "wildcard * match", filterSubjects: []string{"foo.*.x", "foo.*.y"}, subject: "foo.bar.x", result: true},
+		{name: "wildcard * match", filterSubjects: []string{"foo.*.x", "foo.*.y", "foo.*.z"}, subject: "foo.bar.z", result: true},
+		{name: "many mismatch", filterSubjects: filterSubjects(100), subject: "foo.bar.do.not.match.any.filter.subject", result: false},
+		{name: "many match", filterSubjects: filterSubjects(100), subject: "foo.bar.12345.xyz.abcdef", result: true}, // will be matched by "foo.bar.*.xyz.abcdef"
 	} {
 		test := test
 
@@ -924,14 +924,14 @@ func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 		subject        string
 		result         bool
 	}{
-		{"no filter", []string{}, "foo.bar", false},
-		{"literal match", []string{"foo.baz", "foo.bar"}, "foo.bar", true},
-		{"literal mismatch", []string{"foo.baz", "foo.bar"}, "foo.ban", false},
-		{"literal match", []string{"bar.>", "foo.>"}, "foo.>", true},
-		{"subset match", []string{"bar.foo.>", "foo.bar.>"}, "bar.>", true},
-		{"subset mismatch", []string{"bar.>", "foo.>"}, "baz.foo.>", false},
-		{"literal match", filterSubjects(100), "foo.bar.*.xyz.abcdef", true},
-		{"subset match", filterSubjects(100), "foo.bar.>", true},
+		{name: "no filter", filterSubjects: []string{}, subject: "foo.bar", result: false},
+		{name: "literal match", filterSubjects: []string{"foo.baz", "foo.bar"}, subject: "foo.bar", result: true},
+		{name: "literal mismatch", filterSubjects: []string{"foo.baz", "foo.bar"}, subject: "foo.ban", result: false},
+		{name: "literal match", filterSubjects: []string{"bar.>", "foo.>"}, subject: "foo.>", result: true},
+		{name: "subset match", filterSubjects: []string{"bar.foo.>", "foo.bar.>"}, subject: "bar.>", result: true},
+		{name: "subset mismatch", filterSubjects: []string{"bar.>", "foo.>"}, subject: "baz.foo.>", result: false},
+		{name: "literal match", filterSubjects: filterSubjects(100), subject: "foo.bar.*.xyz.abcdef", result: true},
+		{name: "subset match", filterSubjects: filterSubjects(100), subject: "foo.bar.>", result: true},
 	} {
 		test := test
 
@@ -1035,8 +1035,8 @@ func TestJetStreamConsumerDelete(t *testing.T) {
 		name     string
 		replicas int
 	}{
-		{"single server", 1},
-		{"clustered", 3},
+		{name: "single server", replicas: 1},
+		{name: "clustered", replicas: 3},
 	}
 
 	for _, test := range tests {
@@ -2057,8 +2057,8 @@ func TestJetStreamConsumerUnpin(t *testing.T) {
 		js       nats.JetStreamContext
 		nc       *nats.Conn
 	}{
-		{1, js, nc},
-		{3, cjs, cnc},
+		{replicas: 1, js: js, nc: nc},
+		{replicas: 3, js: cjs, nc: cnc},
 	} {
 
 		_, err := server.js.AddStream(&nats.StreamConfig{
@@ -2114,12 +2114,12 @@ func TestJetStreamConsumerUnpin(t *testing.T) {
 		group    string
 		err      *ApiError
 	}{
-		{"unpin non-existing group", nc, "TEST", "C", "B", &ApiError{ErrCode: uint16(JSConsumerInvalidPriorityGroupErr)}},
-		{"unpin on missing stream", nc, "NOT_EXIST", "C", "A", &ApiError{ErrCode: uint16(JSStreamNotFoundErr)}},
-		{"unpin on missing consumer", nc, "TEST", "NOT_EXIST", "A", &ApiError{ErrCode: uint16(JSConsumerNotFoundErr)}},
-		{"unpin missing group", nc, "TEST", "C", "", &ApiError{ErrCode: uint16(JSInvalidJSONErr)}},
-		{"unpin bad group name", nc, "TEST", "C", "group    name\r\n", &ApiError{ErrCode: uint16(JSConsumerInvalidGroupNameErr)}},
-		{"ok unpin", nc, "TEST", "C", "A", nil},
+		{name: "unpin non-existing group", nc: nc, stream: "TEST", consumer: "C", group: "B", err: &ApiError{ErrCode: uint16(JSConsumerInvalidPriorityGroupErr)}},
+		{name: "unpin on missing stream", nc: nc, stream: "NOT_EXIST", consumer: "C", group: "A", err: &ApiError{ErrCode: uint16(JSStreamNotFoundErr)}},
+		{name: "unpin on missing consumer", nc: nc, stream: "TEST", consumer: "NOT_EXIST", group: "A", err: &ApiError{ErrCode: uint16(JSConsumerNotFoundErr)}},
+		{name: "unpin missing group", nc: nc, stream: "TEST", consumer: "C", group: "", err: &ApiError{ErrCode: uint16(JSInvalidJSONErr)}},
+		{name: "unpin bad group name", nc: nc, stream: "TEST", consumer: "C", group: "group    name\r\n", err: &ApiError{ErrCode: uint16(JSConsumerInvalidGroupNameErr)}},
+		{name: "ok unpin", nc: nc, stream: "TEST", consumer: "C", group: "A", err: nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := unpinRequest(t, nc, test.stream, test.consumer, test.group)
@@ -2156,8 +2156,8 @@ func TestJetStreamConsumerWithPriorityGroups(t *testing.T) {
 		replicas int
 		js       nats.JetStreamContext
 	}{
-		{1, js},
-		{3, cjs},
+		{replicas: 1, js: js},
+		{replicas: 3, js: cjs},
 	} {
 
 		_, err := server.js.AddStream(&nats.StreamConfig{
@@ -2179,21 +2179,21 @@ func TestJetStreamConsumerWithPriorityGroups(t *testing.T) {
 		deliverSubject string
 		err            *ApiError
 	}{
-		{"Pinned Consumer with Priority Group", nc, "TEST", "PINNED", []string{"A"}, PriorityPinnedClient, "", nil},
-		{"Pinned Consumer with Priority Group, clustered", cnc, "TEST", "PINNED", []string{"A"}, PriorityPinnedClient, "", nil},
-		{"Overflow Consumer with Priority Group", nc, "TEST", "OVERFLOW", []string{"A"}, PriorityOverflow, "", nil},
-		{"Overflow Consumer with Priority Group, clustered", cnc, "TEST", "OVERFLOW", []string{"A"}, PriorityOverflow, "", nil},
-		{"Pinned Consumer without Priority Group", nc, "TEST", "PINNED_NO_GROUP", nil, PriorityPinnedClient, "", &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
-		{"Pinned Consumer without Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", nil, PriorityPinnedClient, "", &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
-		{"Overflow Consumer without Priority Group", nc, "TEST", "PINNED_NO_GROUP", nil, PriorityOverflow, "", &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
-		{"Overflow Consumer without Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", nil, PriorityOverflow, "", &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
-		{"Pinned Consumer with empty Priority Group", nc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityPinnedClient, "", &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
-		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityPinnedClient, "", &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
-		{"Pinned Consumer with empty Priority Group", nc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, "", &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
-		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, "", &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
-		{"Consumer with `none` policy priority and no pinned TTL set", nc, "TEST", "NONE", []string{}, PriorityNone, "", &ApiError{ErrCode: uint16(JSConsumerPinnedTTLWithoutPriorityPolicyNone)}},
-		{"Consumer with `none` policy priority and Priority Group set", nc, "TEST", "NONE_WITH_GROUPS", []string{"A"}, PriorityNone, "", &ApiError{ErrCode: uint16(JSConsumerPriorityGroupWithPolicyNone)}},
-		{"Push consumer with Priority Group", nc, "TEST", "PUSH_WITH_POLICY", []string{"A"}, PriorityOverflow, "subject", &ApiError{ErrCode: uint16(JSConsumerPushWithPriorityGroupErr)}},
+		{name: "Pinned Consumer with Priority Group", nc: nc, stream: "TEST", consumer: "PINNED", groups: []string{"A"}, mode: PriorityPinnedClient, deliverSubject: "", err: nil},
+		{name: "Pinned Consumer with Priority Group, clustered", nc: cnc, stream: "TEST", consumer: "PINNED", groups: []string{"A"}, mode: PriorityPinnedClient, deliverSubject: "", err: nil},
+		{name: "Overflow Consumer with Priority Group", nc: nc, stream: "TEST", consumer: "OVERFLOW", groups: []string{"A"}, mode: PriorityOverflow, deliverSubject: "", err: nil},
+		{name: "Overflow Consumer with Priority Group, clustered", nc: cnc, stream: "TEST", consumer: "OVERFLOW", groups: []string{"A"}, mode: PriorityOverflow, deliverSubject: "", err: nil},
+		{name: "Pinned Consumer without Priority Group", nc: nc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: nil, mode: PriorityPinnedClient, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{name: "Pinned Consumer without Priority Group, clustered", nc: cnc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: nil, mode: PriorityPinnedClient, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{name: "Overflow Consumer without Priority Group", nc: nc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: nil, mode: PriorityOverflow, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{name: "Overflow Consumer without Priority Group, clustered", nc: cnc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: nil, mode: PriorityOverflow, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{name: "Pinned Consumer with empty Priority Group", nc: nc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: []string{""}, mode: PriorityPinnedClient, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{name: "Pinned Consumer with empty Priority Group, clustered", nc: cnc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: []string{""}, mode: PriorityPinnedClient, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{name: "Pinned Consumer with empty Priority Group", nc: nc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: []string{""}, mode: PriorityOverflow, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{name: "Pinned Consumer with empty Priority Group, clustered", nc: cnc, stream: "TEST", consumer: "PINNED_NO_GROUP", groups: []string{""}, mode: PriorityOverflow, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{name: "Consumer with `none` policy priority and no pinned TTL set", nc: nc, stream: "TEST", consumer: "NONE", groups: []string{}, mode: PriorityNone, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerPinnedTTLWithoutPriorityPolicyNone)}},
+		{name: "Consumer with `none` policy priority and Priority Group set", nc: nc, stream: "TEST", consumer: "NONE_WITH_GROUPS", groups: []string{"A"}, mode: PriorityNone, deliverSubject: "", err: &ApiError{ErrCode: uint16(JSConsumerPriorityGroupWithPolicyNone)}},
+		{name: "Push consumer with Priority Group", nc: nc, stream: "TEST", consumer: "PUSH_WITH_POLICY", groups: []string{"A"}, mode: PriorityOverflow, deliverSubject: "subject", err: &ApiError{ErrCode: uint16(JSConsumerPushWithPriorityGroupErr)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 
@@ -2303,15 +2303,15 @@ func TestJetStreamConsumerPriorityPullRequests(t *testing.T) {
 		request     JSApiConsumerGetNextRequest
 		description string
 	}{
-		{"Pinned Pull Request", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A"}}, ""},
-		{"Pinned Pull Request, no group", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{}}, "Bad Request - Priority Group missing"},
-		{"Pinned Pull Request, bad group", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "Bad"}}, "Bad Request - Invalid Priority Group"},
-		{"Pinned Pull Request, against Overflow", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", Id: "PINNED-ID"}}, "Bad Request - Not a Pinned Client Priority consumer"},
-		{"Pinned Pull Request, against standard consumer", nc, "STANDARD", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", Id: "PINNED-ID"}}, "Bad Request - Not a Pinned Client Priority consumer"},
-		{"Overflow Pull Request, overflow below threshold", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 1000}}, "Request Timeout"},
-		{"Overflow Pull Request, overflow above threshold", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, ""},
-		{"Overflow Pull Request, against pinned", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, "Bad Request - Not a Overflow Priority consumer"},
-		{"Overflow Pull Request, against standard consumer", nc, "STANDARD", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, "Bad Request - Not a Overflow Priority consumer"},
+		{name: "Pinned Pull Request", nc: nc, consumer: "PINNED", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A"}}, description: ""},
+		{name: "Pinned Pull Request, no group", nc: nc, consumer: "PINNED", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{}}, description: "Bad Request - Priority Group missing"},
+		{name: "Pinned Pull Request, bad group", nc: nc, consumer: "PINNED", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "Bad"}}, description: "Bad Request - Invalid Priority Group"},
+		{name: "Pinned Pull Request, against Overflow", nc: nc, consumer: "OVERFLOW", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", Id: "PINNED-ID"}}, description: "Bad Request - Not a Pinned Client Priority consumer"},
+		{name: "Pinned Pull Request, against standard consumer", nc: nc, consumer: "STANDARD", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", Id: "PINNED-ID"}}, description: "Bad Request - Not a Pinned Client Priority consumer"},
+		{name: "Overflow Pull Request, overflow below threshold", nc: nc, consumer: "OVERFLOW", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 1000}}, description: "Request Timeout"},
+		{name: "Overflow Pull Request, overflow above threshold", nc: nc, consumer: "OVERFLOW", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, description: ""},
+		{name: "Overflow Pull Request, against pinned", nc: nc, consumer: "PINNED", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, description: "Bad Request - Not a Overflow Priority consumer"},
+		{name: "Overflow Pull Request, against standard consumer", nc: nc, consumer: "STANDARD", request: JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, description: "Bad Request - Not a Overflow Priority consumer"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			inbox := nats.NewInbox()
@@ -2456,11 +2456,11 @@ func TestJetStreamConsumerMultipleFitersWithStartDate(t *testing.T) {
 		expectedMessages       uint64
 		expectedStreamSequence uint64
 	}{
-		{"Single-Filter-first-sequence", []string{"events.foo"}, past, 2, 0},
-		{"Multiple-Filter-first-sequence", []string{"events.foo", "events.bar", "events.baz"}, past, 4, 0},
-		{"Multiple-Filters-second-subject", []string{"events.bar", "events.baz"}, past, 2, 1},
-		{"Multiple-Filters-first-last-subject", []string{"events.foo", "events.biz"}, past, 4, 0},
-		{"Multiple-Filters-in-future", []string{"events.foo", "events.biz"}, time.Now().Add(1 * time.Minute), 0, 7},
+		{name: "Single-Filter-first-sequence", filterSubjects: []string{"events.foo"}, startTime: past, expectedMessages: 2, expectedStreamSequence: 0},
+		{name: "Multiple-Filter-first-sequence", filterSubjects: []string{"events.foo", "events.bar", "events.baz"}, startTime: past, expectedMessages: 4, expectedStreamSequence: 0},
+		{name: "Multiple-Filters-second-subject", filterSubjects: []string{"events.bar", "events.baz"}, startTime: past, expectedMessages: 2, expectedStreamSequence: 1},
+		{name: "Multiple-Filters-first-last-subject", filterSubjects: []string{"events.foo", "events.biz"}, startTime: past, expectedMessages: 4, expectedStreamSequence: 0},
+		{name: "Multiple-Filters-in-future", filterSubjects: []string{"events.foo", "events.biz"}, startTime: time.Now().Add(1 * time.Minute), expectedMessages: 0, expectedStreamSequence: 7},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			info, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
@@ -2483,13 +2483,13 @@ func TestPriorityGroupNameRegex(t *testing.T) {
 		group string
 		valid bool
 	}{
-		{"valid-short", "A", true},
-		{"valid-with-accepted-special-chars", "group/consumer=A", true},
-		{"empty", "", false},
-		{"with-space", "A B", false},
-		{"with-tab", "A   B", false},
-		{"too-long-name", "group-name-that-is-too-long", false},
-		{"line-termination", "\r\n", false},
+		{name: "valid-short", group: "A", valid: true},
+		{name: "valid-with-accepted-special-chars", group: "group/consumer=A", valid: true},
+		{name: "empty", group: "", valid: false},
+		{name: "with-space", group: "A B", valid: false},
+		{name: "with-tab", group: "A   B", valid: false},
+		{name: "too-long-name", group: "group-name-that-is-too-long", valid: false},
+		{name: "line-termination", group: "\r\n", valid: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			require_Equal(t, test.valid, validGroupName.MatchString(test.group))
@@ -2865,8 +2865,8 @@ func TestJetStreamConsumerCreate(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
-		{"FileStore", &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3059,8 +3059,8 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: subj, Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: subj, Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: subj, Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: subj, Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3122,8 +3122,8 @@ func TestJetStreamConsumerWithMultipleStartOptions(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: subj, Subjects: []string{"foo.>"}, Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3163,8 +3163,8 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "MY_WQ", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3259,8 +3259,8 @@ func TestJetStreamConsumerPullDelayedFirstPullWithReplayOriginal(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "MY_WQ", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MY_WQ", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3302,8 +3302,8 @@ func TestJetStreamConsumerAckFloorFill(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "MQ", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "MQ", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "MQ", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "MQ", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3776,8 +3776,8 @@ func TestJetStreamConsumerDurableReconnectWithOnlyPending(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3873,8 +3873,8 @@ func TestJetStreamConsumerDurableFilteredSubjectReconnect(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4016,8 +4016,8 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4071,8 +4071,8 @@ func TestJetStreamConsumerReconnect(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "ET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "ET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "ET", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "ET", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4178,8 +4178,8 @@ func TestJetStreamConsumerDurableReconnect(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
-		{"FileStore", &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DT", Storage: MemoryStorage, Subjects: []string{"foo.*"}}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DT", Storage: FileStorage, Subjects: []string{"foo.*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4286,8 +4286,8 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4403,8 +4403,8 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4461,8 +4461,8 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "DC", Storage: MemoryStorage}},
-		{"FileStore", &StreamConfig{Name: "DC", Storage: FileStorage}},
+		{name: "MemoryStore", mconfig: &StreamConfig{Name: "DC", Storage: MemoryStorage}},
+		{name: "FileStore", mconfig: &StreamConfig{Name: "DC", Storage: FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4689,13 +4689,13 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{
+		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:      "MY_STREAM",
 			Storage:   MemoryStorage,
 			Subjects:  []string{"foo.>"},
 			Retention: InterestPolicy,
 		}},
-		{"FileStore", &StreamConfig{
+		{name: "FileStore", mconfig: &StreamConfig{
 			Name:      "MY_STREAM",
 			Storage:   FileStorage,
 			Subjects:  []string{"foo.>"},
@@ -4859,12 +4859,12 @@ func TestJetStreamConsumerMaxAckPending(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{
+		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
 			Storage:  MemoryStorage,
 			Subjects: []string{"foo.*"},
 		}},
-		{"FileStore", &StreamConfig{
+		{name: "FileStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
 			Storage:  FileStorage,
 			Subjects: []string{"foo.*"},
@@ -4981,12 +4981,12 @@ func TestJetStreamConsumerPullMaxAckPending(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{
+		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
 			Storage:  MemoryStorage,
 			Subjects: []string{"foo.*"},
 		}},
-		{"FileStore", &StreamConfig{
+		{name: "FileStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
 			Storage:  FileStorage,
 			Subjects: []string{"foo.*"},
@@ -5073,12 +5073,12 @@ func TestJetStreamConsumerPullMaxAckPendingRedeliveries(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{
+		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
 			Storage:  MemoryStorage,
 			Subjects: []string{"foo.*"},
 		}},
-		{"FileStore", &StreamConfig{
+		{name: "FileStore", mconfig: &StreamConfig{
 			Name:     "MY_STREAM",
 			Storage:  FileStorage,
 			Subjects: []string{"foo.*"},
@@ -5306,8 +5306,8 @@ func TestJetStreamConsumerPendingBugWithKV(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &msc},
-		{"FileStore", &fsc},
+		{name: "MemoryStore", mconfig: &msc},
+		{name: "FileStore", mconfig: &fsc},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -5762,7 +5762,7 @@ func TestJetStreamConsumerPullHeartBeats(t *testing.T) {
 
 		sub, err := nc.Subscribe(reply, func(m *nats.Msg) {
 			mu.Lock()
-			msgs = append(msgs, &tsMsg{time.Now(), m})
+			msgs = append(msgs, &tsMsg{received: time.Now(), msg: m})
 			mu.Unlock()
 		})
 		require_NoError(t, err)

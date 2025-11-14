@@ -47,16 +47,16 @@ func BenchmarkPublish(b *testing.B) {
 	benchmarksCases := []struct {
 		messageSize int
 	}{
-		{0},
-		{1},
-		{32},
-		{128},
-		{512},
-		{4 * KB},
-		{32 * KB},
-		{128 * KB},
-		{512 * KB},
-		{1 * MB},
+		{messageSize: 0},
+		{messageSize: 1},
+		{messageSize: 32},
+		{messageSize: 128},
+		{messageSize: 512},
+		{messageSize: 4 * KB},
+		{messageSize: 32 * KB},
+		{messageSize: 128 * KB},
+		{messageSize: 512 * KB},
+		{messageSize: 1 * MB},
 	}
 
 	// All the cases above are run for each of the subscriber cases below
@@ -64,11 +64,11 @@ func BenchmarkPublish(b *testing.B) {
 		numSubs int
 		subType SubscriberType
 	}{
-		{0, None},
-		{1, Async},
-		{1, QueueAsync},
-		{10, Async},
-		{10, QueueAsync},
+		{numSubs: 0, subType: None},
+		{numSubs: 1, subType: Async},
+		{numSubs: 1, subType: QueueAsync},
+		{numSubs: 10, subType: Async},
+		{numSubs: 10, subType: QueueAsync},
 	}
 
 	for _, bc := range benchmarksCases {

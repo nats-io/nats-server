@@ -435,35 +435,35 @@ func TestParseWithNoValuesAreInvalid(t *testing.T) {
 		err  string
 	}{
 		{
-			"invalid key without values",
-			`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-			"config is invalid (:1:41)",
+			name: "invalid key without values",
+			conf: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+			err:  "config is invalid (:1:41)",
 		},
 		{
-			"invalid untrimmed key without values",
-			`              aaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-			"config is invalid (:1:41)",
+			name: "invalid untrimmed key without values",
+			conf: `              aaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+			err:  "config is invalid (:1:41)",
 		},
 		{
-			"invalid untrimmed key without values",
-			`     aaaaaaaaaaaaaaaaaaaaaaaaaaa         `,
-			"config is invalid (:1:41)",
+			name: "invalid untrimmed key without values",
+			conf: `     aaaaaaaaaaaaaaaaaaaaaaaaaaa         `,
+			err:  "config is invalid (:1:41)",
 		},
 		{
-			"invalid keys after comments",
-			`
+			name: "invalid keys after comments",
+			conf: `
           		# with comments and no spaces to create key values
          		# is also an invalid config.
          		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
                         `,
-			"config is invalid (:5:25)",
+			err: "config is invalid (:5:25)",
 		},
 		{
-			"comma separated without values are invalid",
-			`
+			name: "comma separated without values are invalid",
+			conf: `
                         a,a,a,a,a,a,a,a,a,a,a
                         `,
-			"config is invalid (:3:25)",
+			err: "config is invalid (:3:25)",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -482,19 +482,19 @@ func TestParseWithNoValuesEmptyConfigsAreValid(t *testing.T) {
 		conf string
 	}{
 		{
-			"empty conf",
-			"",
+			name: "empty conf",
+			conf: "",
 		},
 		{
-			"empty conf with line breaks",
-			`
+			name: "empty conf with line breaks",
+			conf: `
 
 
                         `,
 		},
 		{
-			"just comments with no values",
-			`
+			name: "just comments with no values",
+			conf: `
                         # just comments with no values
                         # is still valid.
                         `,
@@ -514,12 +514,12 @@ func TestParseWithTrailingBracketsAreValid(t *testing.T) {
 		conf string
 	}{
 		{
-			"empty conf",
-			"{}",
+			name: "empty conf",
+			conf: "{}",
 		},
 		{
-			"just comments with no values",
-			`
+			name: "just comments with no values",
+			conf: `
                         {
                         # comments in the body
                         }
@@ -528,15 +528,15 @@ func TestParseWithTrailingBracketsAreValid(t *testing.T) {
 		{
 			// trailing brackets accidentally can become keys,
 			// this is valid since needed to support JSON like configs..
-			"trailing brackets after config",
-			`
+			name: "trailing brackets after config",
+			conf: `
                         accounts { users = [{}]}
                         }
                         `,
 		},
 		{
-			"wrapped in brackets",
-			`{
+			name: "wrapped in brackets",
+			conf: `{
                           accounts { users = [{}]}
                         }
                         `,
@@ -558,29 +558,29 @@ func TestParseWithNoValuesIncludes(t *testing.T) {
 		linepos  string
 	}{
 		{
-			`# includes
+			input: `# includes
 			accounts {
                           foo { include 'foo.conf'}
                           bar { users = [{user = "bar"}] }
                           quux { include 'quux.conf'}
                         }
                         `,
-			map[string]string{
+			includes: map[string]string{
 				"foo.conf":  ``,
 				"quux.conf": `?????????????`,
 			},
-			"error parsing include file 'quux.conf', config is invalid",
-			"quux.conf:1:1",
+			err:     "error parsing include file 'quux.conf', config is invalid",
+			linepos: "quux.conf:1:1",
 		},
 		{
-			`# includes
+			input: `# includes
 			accounts {
                           foo { include 'foo.conf'}
                           bar { include 'bar.conf'}
                           quux { include 'quux.conf'}
                         }
                         `,
-			map[string]string{
+			includes: map[string]string{
 				"foo.conf": ``, // Empty configs are ok
 				"bar.conf": `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
 				"quux.conf": `
@@ -588,8 +588,8 @@ func TestParseWithNoValuesIncludes(t *testing.T) {
                                    # and no key values also ok.
                                 `,
 			},
-			"error parsing include file 'bar.conf', config is invalid",
-			"bar.conf:1:34",
+			err:     "error parsing include file 'bar.conf', config is invalid",
+			linepos: "bar.conf:1:34",
 		},
 	} {
 		t.Run("", func(t *testing.T) {
@@ -629,8 +629,8 @@ func TestJSONParseCompat(t *testing.T) {
 		expected map[string]any
 	}{
 		{
-			"JSON with nested blocks",
-			`
+			name: "JSON with nested blocks",
+			input: `
                         {
                           "http_port": 8227,
                           "port": 4227,
@@ -645,8 +645,8 @@ func TestJSONParseCompat(t *testing.T) {
                           }
                         }
                         `,
-			nil,
-			map[string]any{
+			includes: nil,
+			expected: map[string]any{
 				"http_port":      int64(8227),
 				"port":           int64(4227),
 				"write_deadline": "1h",
@@ -661,8 +661,8 @@ func TestJSONParseCompat(t *testing.T) {
 			},
 		},
 		{
-			"JSON with nested blocks",
-			`{
+			name: "JSON with nested blocks",
+			input: `{
                           "jetstream": {
                             "store_dir": "/tmp/nats"
                             "max_mem": 1000000,
@@ -671,8 +671,8 @@ func TestJSONParseCompat(t *testing.T) {
                           "server_name": "nats1"
                         }
                         `,
-			nil,
-			map[string]any{
+			includes: nil,
+			expected: map[string]any{
 				"jetstream": map[string]any{
 					"store_dir": "/tmp/nats",
 					"max_mem":   int64(1_000_000),
@@ -682,37 +682,37 @@ func TestJSONParseCompat(t *testing.T) {
 			},
 		},
 		{
-			"JSON empty object in one line",
-			`{}`,
-			nil,
-			map[string]any{},
+			name:     "JSON empty object in one line",
+			input:    `{}`,
+			includes: nil,
+			expected: map[string]any{},
 		},
 		{
-			"JSON empty object with line breaks",
-			`
+			name: "JSON empty object with line breaks",
+			input: `
                         {
                         }
                         `,
-			nil,
-			map[string]any{},
+			includes: nil,
+			expected: map[string]any{},
 		},
 		{
-			"JSON includes",
-			`
+			name: "JSON includes",
+			input: `
                         accounts {
                           foo  { include 'foo.json'  }
                           bar  { include 'bar.json'  }
                           quux { include 'quux.json' }
                         }
                         `,
-			map[string]string{
+			includes: map[string]string{
 				"foo.json": `{ "users": [ {"user": "foo"} ] }`,
 				"bar.json": `{
                                   "users": [ {"user": "bar"} ]
                                 }`,
 				"quux.json": `{}`,
 			},
-			map[string]any{
+			expected: map[string]any{
 				"accounts": map[string]any{
 					"foo": map[string]any{
 						"users": []any{
@@ -773,39 +773,39 @@ func TestBlocks(t *testing.T) {
 		linepos  string
 	}{
 		{
-			"inline block",
-			`{ listen: 0.0.0.0:4222 }`,
-			map[string]any{
+			name:  "inline block",
+			input: `{ listen: 0.0.0.0:4222 }`,
+			expected: map[string]any{
 				"listen": "0.0.0.0:4222",
 			},
-			"", "",
+			err: "", linepos: "",
 		},
 		{
-			"newline block",
-			`{
+			name: "newline block",
+			input: `{
 				listen: 0.0.0.0:4222
 			 }`,
-			map[string]any{
+			expected: map[string]any{
 				"listen": "0.0.0.0:4222",
 			},
-			"", "",
+			err: "", linepos: "",
 		},
 		{
-			"newline block with trailing comment",
-			`
+			name: "newline block with trailing comment",
+			input: `
 			{
 				listen: 0.0.0.0:4222
 			}
 			# wibble
 			`,
-			map[string]any{
+			expected: map[string]any{
 				"listen": "0.0.0.0:4222",
 			},
-			"", "",
+			err: "", linepos: "",
 		},
 		{
-			"nested newline blocks with trailing comment",
-			`
+			name: "nested newline blocks with trailing comment",
+			input: `
 			{
 				{
 					listen: 0.0.0.0:4222 // random comment
@@ -814,30 +814,30 @@ func TestBlocks(t *testing.T) {
 			}
 			# wibble2
 			`,
-			map[string]any{
+			expected: map[string]any{
 				"listen": "0.0.0.0:4222",
 			},
-			"", "",
+			err: "", linepos: "",
 		},
 		{
-			"top line values in block scope",
-			`
+			name: "top line values in block scope",
+			input: `
 			{
 			  "debug":              False
 			  "prof_port":          8221
 			  "server_name":        "aws-useast2-natscj1-1"
 			}
 			`,
-			map[string]any{
+			expected: map[string]any{
 				"debug":       false,
 				"prof_port":   int64(8221),
 				"server_name": "aws-useast2-natscj1-1",
 			},
-			"", "",
+			err: "", linepos: "",
 		},
 		{
-			"comment in block scope after value parse",
-			`
+			name: "comment in block scope after value parse",
+			input: `
 			{
 			  "debug":              False
 			  "server_name":        "gcp-asianortheast3-natscj1-1"
@@ -846,12 +846,12 @@ func TestBlocks(t *testing.T) {
 			  "prof_port":          8221
 			}
 			`,
-			map[string]any{
+			expected: map[string]any{
 				"debug":       false,
 				"prof_port":   int64(8221),
 				"server_name": "gcp-asianortheast3-natscj1-1",
 			},
-			"", "",
+			err: "", linepos: "",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -882,33 +882,33 @@ func TestParseDigest(t *testing.T) {
 		digest   string
 	}{
 		{
-			`foo = bar`,
-			nil,
-			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+			input:    `foo = bar`,
+			includes: nil,
+			digest:   "sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
 		},
 		{
-			`# Comments and whitespace have no effect
+			input: `# Comments and whitespace have no effect
                         foo = bar
                         `,
-			nil,
-			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+			includes: nil,
+			digest:   "sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
 		},
 		{
-			`# Syntax changes have no effect
+			input: `# Syntax changes have no effect
                         'foo': 'bar'
                         `,
-			nil,
-			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+			includes: nil,
+			digest:   "sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
 		},
 		{
-			`# Syntax changes have no effect
+			input: `# Syntax changes have no effect
                         { 'foo': 'bar' }
                         `,
-			nil,
-			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+			includes: nil,
+			digest:   "sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
 		},
 		{
-			`# substitutions
+			input: `# substitutions
                         BAR_USERS = { users = [ {user = "bar"} ]}
                         hello = 'world'
                         accounts {
@@ -918,11 +918,11 @@ func TestParseDigest(t *testing.T) {
                         }
                         very { nested { env { VAR = 'NESTED', quux = $VAR }}}
                         `,
-			nil,
-			"sha256:34f8faf3f269fe7509edc4742f20c8c4a7ad51fe21f8b361764314b533ac3ab5",
+			includes: nil,
+			digest:   "sha256:34f8faf3f269fe7509edc4742f20c8c4a7ad51fe21f8b361764314b533ac3ab5",
 		},
 		{
-			`# substitutions, same as previous one without env vars.
+			input: `# substitutions, same as previous one without env vars.
                         hello = 'world'
                         accounts {
                           bar  = { users = [ { user = "bar" } ]}
@@ -930,58 +930,58 @@ func TestParseDigest(t *testing.T) {
                         }
                         very { nested { env { quux = 'NESTED' }}}
                         `,
-			nil,
-			"sha256:34f8faf3f269fe7509edc4742f20c8c4a7ad51fe21f8b361764314b533ac3ab5",
+			includes: nil,
+			digest:   "sha256:34f8faf3f269fe7509edc4742f20c8c4a7ad51fe21f8b361764314b533ac3ab5",
 		},
 		{
-			`# substitutions
+			input: `# substitutions
                         BAR_USERS = { users = [ {user = "foo"} ]}
                         bar = $BAR_USERS
                         accounts {
                           users = $BAR_USERS
                         }
                         `,
-			nil,
-			"sha256:f5d943b4ed22b80c6199203f8a7eaa8eb68ef7b2d46ef6b1b26f05e21f8beb13",
+			includes: nil,
+			digest:   "sha256:f5d943b4ed22b80c6199203f8a7eaa8eb68ef7b2d46ef6b1b26f05e21f8beb13",
 		},
 		{
-			`# substitutions
+			input: `# substitutions
                         bar = { users = [ {user = "foo"} ]}
                         accounts {
                           users = { users = [ {user = "foo"} ]}
                         }
                         `,
-			nil,
-			"sha256:f5d943b4ed22b80c6199203f8a7eaa8eb68ef7b2d46ef6b1b26f05e21f8beb13",
+			includes: nil,
+			digest:   "sha256:f5d943b4ed22b80c6199203f8a7eaa8eb68ef7b2d46ef6b1b26f05e21f8beb13",
 		},
 		{
-			`# includes
+			input: `# includes
 			accounts {
                           foo { include 'foo.conf'}
                           bar { users = [{user = "bar"}] }
                           quux { include 'quux.conf'}
                         }
                         `,
-			map[string]string{
+			includes: map[string]string{
 				"foo.conf":  ` users = [{user = "foo"}]`,
 				"quux.conf": ` users = [{user = "quux"}]`,
 			},
-			"sha256:e72d70c91b64b0f880f86decb95ec2600cbdcf8bdcd2355fce5ebc54a84a77e9",
+			digest: "sha256:e72d70c91b64b0f880f86decb95ec2600cbdcf8bdcd2355fce5ebc54a84a77e9",
 		},
 		{
-			`# includes
+			input: `# includes
 			accounts {
                           foo { include 'foo.conf'}
                           bar { include 'bar.conf'}
                           quux { include 'quux.conf'}
                         }
                         `,
-			map[string]string{
+			includes: map[string]string{
 				"foo.conf":  ` users = [{user = "foo"}]`,
 				"bar.conf":  ` users = [{user = "bar"}]`,
 				"quux.conf": ` users = [{user = "quux"}]`,
 			},
-			"sha256:e72d70c91b64b0f880f86decb95ec2600cbdcf8bdcd2355fce5ebc54a84a77e9",
+			digest: "sha256:e72d70c91b64b0f880f86decb95ec2600cbdcf8bdcd2355fce5ebc54a84a77e9",
 		},
 	} {
 		t.Run("", func(t *testing.T) {

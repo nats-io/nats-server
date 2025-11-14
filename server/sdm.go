@@ -57,7 +57,7 @@ func (sdm *SDMMeta) trackPending(seq uint64, subj string, last bool) bool {
 	if p, ok := sdm.pending[seq]; ok {
 		return p.last
 	}
-	sdm.pending[seq] = SDMBySeq{last, time.Now().UnixNano()}
+	sdm.pending[seq] = SDMBySeq{last: last, ts: time.Now().UnixNano()}
 	sdm.totals[subj]++
 	return last
 }

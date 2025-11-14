@@ -1421,11 +1421,11 @@ func TestConfigureOptions(t *testing.T) {
 		version, help, tlsHelp func()
 	}
 	testFuncs := []testPrint{
-		{[]string{"-v"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
-		{[]string{"version"}, checkPrintInvoked, usage, PrintTLSHelpAndDie},
-		{[]string{"-h"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
-		{[]string{"help"}, PrintServerAndExit, checkPrintInvoked, PrintTLSHelpAndDie},
-		{[]string{"-help_tls"}, PrintServerAndExit, usage, checkPrintInvoked},
+		{args: []string{"-v"}, version: checkPrintInvoked, help: usage, tlsHelp: PrintTLSHelpAndDie},
+		{args: []string{"version"}, version: checkPrintInvoked, help: usage, tlsHelp: PrintTLSHelpAndDie},
+		{args: []string{"-h"}, version: PrintServerAndExit, help: checkPrintInvoked, tlsHelp: PrintTLSHelpAndDie},
+		{args: []string{"help"}, version: PrintServerAndExit, help: checkPrintInvoked, tlsHelp: PrintTLSHelpAndDie},
+		{args: []string{"-help_tls"}, version: PrintServerAndExit, help: usage, tlsHelp: checkPrintInvoked},
 	}
 	for _, tf := range testFuncs {
 		fs = flag.NewFlagSet("test", flag.ContinueOnError)
@@ -2138,22 +2138,22 @@ func TestParsingGatewaysErrors(t *testing.T) {
 		expectedErr string
 	}{
 		{
-			"bad_type",
-			`gateway: "bad_type"`,
-			"Expected gateway to be a map",
+			name:        "bad_type",
+			content:     `gateway: "bad_type"`,
+			expectedErr: "Expected gateway to be a map",
 		},
 		{
-			"bad_listen",
-			`gateway {
+			name: "bad_listen",
+			content: `gateway {
 				name: "A"
 				port: -1
 				listen: "bad::address"
 			}`,
-			"parse address",
+			expectedErr: "parse address",
 		},
 		{
-			"bad_auth",
-			`gateway {
+			name: "bad_auth",
+			content: `gateway {
 				name: "A"
 				port: -1
 				authorization {
@@ -2161,21 +2161,21 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					}
 				}
 			}`,
-			"be an array",
+			expectedErr: "be an array",
 		},
 		{
-			"unknown_field",
-			`gateway {
+			name: "unknown_field",
+			content: `gateway {
 				name: "A"
 				port: -1
 				reject_unknown_cluster: true
 				unknown_field: 1
 			}`,
-			"unknown field",
+			expectedErr: "unknown field",
 		},
 		{
-			"users_not_supported",
-			`gateway {
+			name: "users_not_supported",
+			content: `gateway {
 				name: "A"
 				port: -1
 				authorization {
@@ -2185,22 +2185,22 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					]
 				}
 			}`,
-			"does not allow multiple users",
+			expectedErr: "does not allow multiple users",
 		},
 		{
-			"tls_error",
-			`gateway {
+			name: "tls_error",
+			content: `gateway {
 				name: "A"
 				port: -1
 				tls {
 					cert_file: 123
 				}
 			}`,
-			"to be filename",
+			expectedErr: "to be filename",
 		},
 		{
-			"tls_gen_error_cert_file_not_found",
-			`gateway {
+			name: "tls_gen_error_cert_file_not_found",
+			content: `gateway {
 				name: "A"
 				port: -1
 				tls {
@@ -2208,11 +2208,11 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					key_file: "./configs/certs/server-key.pem"
 				}
 			}`,
-			"certificate/key pair",
+			expectedErr: "certificate/key pair",
 		},
 		{
-			"tls_gen_error_key_file_not_found",
-			`gateway {
+			name: "tls_gen_error_key_file_not_found",
+			content: `gateway {
 				name: "A"
 				port: -1
 				tls {
@@ -2220,33 +2220,33 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					key_file: "./configs/certs/missing.pem"
 				}
 			}`,
-			"certificate/key pair",
+			expectedErr: "certificate/key pair",
 		},
 		{
-			"tls_gen_error_key_file_missing",
-			`gateway {
+			name: "tls_gen_error_key_file_missing",
+			content: `gateway {
 				name: "A"
 				port: -1
 				tls {
 					cert_file: "./configs/certs/server.pem"
 				}
 			}`,
-			`missing 'key_file' in TLS configuration`,
+			expectedErr: `missing 'key_file' in TLS configuration`,
 		},
 		{
-			"tls_gen_error_cert_file_missing",
-			`gateway {
+			name: "tls_gen_error_cert_file_missing",
+			content: `gateway {
 				name: "A"
 				port: -1
 				tls {
 					key_file: "./configs/certs/server-key.pem"
 				}
 			}`,
-			`missing 'cert_file' in TLS configuration`,
+			expectedErr: `missing 'cert_file' in TLS configuration`,
 		},
 		{
-			"tls_gen_error_key_file_not_found",
-			`gateway {
+			name: "tls_gen_error_key_file_not_found",
+			content: `gateway {
 				name: "A"
 				port: -1
 				tls {
@@ -2254,31 +2254,31 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					key_file: "./configs/certs/missing.pem"
 				}
 			}`,
-			"certificate/key pair",
+			expectedErr: "certificate/key pair",
 		},
 		{
-			"gateways_needs_to_be_an_array",
-			`gateway {
+			name: "gateways_needs_to_be_an_array",
+			content: `gateway {
 				name: "A"
 				gateways {
 					name: "B"
 				}
 			}`,
-			"Expected gateways field to be an array",
+			expectedErr: "Expected gateways field to be an array",
 		},
 		{
-			"gateways_entry_needs_to_be_a_map",
-			`gateway {
+			name: "gateways_entry_needs_to_be_a_map",
+			content: `gateway {
 				name: "A"
 				gateways [
 					"g1", "g2"
 				]
 			}`,
-			"Expected gateway entry to be a map",
+			expectedErr: "Expected gateway entry to be a map",
 		},
 		{
-			"bad_url",
-			`gateway {
+			name: "bad_url",
+			content: `gateway {
 				name: "A"
 				gateways [
 					{
@@ -2287,11 +2287,11 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					}
 				]
 			}`,
-			"error parsing gateway url",
+			expectedErr: "error parsing gateway url",
 		},
 		{
-			"bad_urls",
-			`gateway {
+			name: "bad_urls",
+			content: `gateway {
 				name: "A"
 				gateways [
 					{
@@ -2300,11 +2300,11 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					}
 				]
 			}`,
-			"error parsing gateway url",
+			expectedErr: "error parsing gateway url",
 		},
 		{
-			"gateway_tls_error",
-			`gateway {
+			name: "gateway_tls_error",
+			content: `gateway {
 				name: "A"
 				port: -1
 				gateways [
@@ -2316,11 +2316,11 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					}
 				]
 			}`,
-			"to be filename",
+			expectedErr: "to be filename",
 		},
 		{
-			"gateway_unknown_field",
-			`gateway {
+			name: "gateway_unknown_field",
+			content: `gateway {
 				name: "A"
 				port: -1
 				gateways [
@@ -2330,7 +2330,7 @@ func TestParsingGatewaysErrors(t *testing.T) {
 					}
 				]
 			}`,
-			"unknown field",
+			expectedErr: "unknown field",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3180,11 +3180,11 @@ func TestQueuePermissions(t *testing.T) {
 		queue       string
 		errExpected bool
 	}{
-		{"allow", "queue.dev", false},
-		{"allow", "", true},
-		{"allow", "bad", true},
-		{"deny", "", false},
-		{"deny", "queue.dev", true},
+		{permType: "allow", queue: "queue.dev", errExpected: false},
+		{permType: "allow", queue: "", errExpected: true},
+		{permType: "allow", queue: "bad", errExpected: true},
+		{permType: "deny", queue: "", errExpected: false},
+		{permType: "deny", queue: "queue.dev", errExpected: true},
 	} {
 		t.Run(test.permType+test.queue, func(t *testing.T) {
 			confFileName := createConfFile(t, []byte(fmt.Sprintf(cfgFmt, test.permType)))
@@ -3289,13 +3289,13 @@ func TestGetStorageSize(t *testing.T) {
 		want  int64
 		err   bool
 	}{
-		{"1K", 1024, false},
-		{"1M", 1048576, false},
-		{"1G", 1073741824, false},
-		{"1T", 1099511627776, false},
-		{"1L", 0, true},
-		{"TT", 0, true},
-		{"", 0, false},
+		{input: "1K", want: 1024, err: false},
+		{input: "1M", want: 1048576, err: false},
+		{input: "1G", want: 1073741824, err: false},
+		{input: "1T", want: 1099511627776, err: false},
+		{input: "1L", want: 0, err: true},
+		{input: "TT", want: 0, err: true},
+		{input: "", want: 0, err: false},
 	}
 
 	for _, v := range tt {
@@ -3326,56 +3326,56 @@ func TestAuthorizationAndAccountsMisconfigurations(t *testing.T) {
 		err    string
 	}{
 		{
-			"duplicate users",
-			`
+			name: "duplicate users",
+			config: `
 			authorization = {users = [ {user: "user1", pass: "pwd"} ] }
 			accounts { ACC { users = [ {user: "user1"} ] } }
 			`,
-			fmt.Sprintf("Duplicate user %q detected", "user1"),
+			err: fmt.Sprintf("Duplicate user %q detected", "user1"),
 		},
 		{
-			"duplicate nkey",
-			`
+			name: "duplicate nkey",
+			config: `
 			authorization = {users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] }
 			accounts { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
 			`,
-			fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX"),
+			err: fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX"),
 		},
 		{
-			"auth single user and password and accounts users",
-			`
+			name: "auth single user and password and accounts users",
+			config: `
 			authorization = {user: "user1", password: "pwd"}
 			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
 			`,
-			"Can not have a single user/pass",
+			err: "Can not have a single user/pass",
 		},
 		{
-			"auth single user and password and accounts nkeys",
-			`
+			name: "auth single user and password and accounts nkeys",
+			config: `
 			authorization = {user: "user1", password: "pwd"}
 			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
 			`,
-			"Can not have a single user/pass",
+			err: "Can not have a single user/pass",
 		},
 		{
-			"auth token and accounts users",
-			`
+			name: "auth token and accounts users",
+			config: `
 			authorization = {token: "my_token"}
 			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
 			`,
-			"Can not have a token",
+			err: "Can not have a token",
 		},
 		{
-			"auth token and accounts nkeys",
-			`
+			name: "auth token and accounts nkeys",
+			config: `
 			authorization = {token: "my_token"}
 			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
 			`,
-			"Can not have a token",
+			err: "Can not have a token",
 		},
 		{
-			"auth callout allowed accounts",
-			`
+			name: "auth callout allowed accounts",
+			config: `
 			accounts {
 				AUTH { users = [ {user: "auth", password: "auth"} ] }
 				FOO {}
@@ -3389,7 +3389,7 @@ func TestAuthorizationAndAccountsMisconfigurations(t *testing.T) {
 				}
 			}
 			`,
-			"auth_callout allowed account \"BAR\" not found in configured accounts",
+			err: "auth_callout allowed account \"BAR\" not found in configured accounts",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3410,56 +3410,56 @@ func TestProcessConfigString(t *testing.T) {
 		err    string
 	}{
 		{
-			"duplicate users",
-			`
+			name: "duplicate users",
+			config: `
 			authorization = {users = [ {user: "user1", pass: "pwd"} ] }
 			accounts { ACC { users = [ {user: "user1"} ] } }
 			`,
-			fmt.Sprintf("Duplicate user %q detected", "user1"),
+			err: fmt.Sprintf("Duplicate user %q detected", "user1"),
 		},
 		{
-			"duplicate nkey",
-			`
+			name: "duplicate nkey",
+			config: `
 			authorization = {users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] }
 			accounts { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
 			`,
-			fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX"),
+			err: fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX"),
 		},
 		{
-			"auth single user and password and accounts users",
-			`
+			name: "auth single user and password and accounts users",
+			config: `
 			authorization = {user: "user1", password: "pwd"}
 			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
 			`,
-			"Can not have a single user/pass",
+			err: "Can not have a single user/pass",
 		},
 		{
-			"auth single user and password and accounts nkeys",
-			`
+			name: "auth single user and password and accounts nkeys",
+			config: `
 			authorization = {user: "user1", password: "pwd"}
 			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
 			`,
-			"Can not have a single user/pass",
+			err: "Can not have a single user/pass",
 		},
 		{
-			"auth token and accounts users",
-			`
+			name: "auth token and accounts users",
+			config: `
 			authorization = {token: "my_token"}
 			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
 			`,
-			"Can not have a token",
+			err: "Can not have a token",
 		},
 		{
-			"auth token and accounts nkeys",
-			`
+			name: "auth token and accounts nkeys",
+			config: `
 			authorization = {token: "my_token"}
 			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
 			`,
-			"Can not have a token",
+			err: "Can not have a token",
 		},
 		{
-			"auth callout allowed accounts",
-			`
+			name: "auth callout allowed accounts",
+			config: `
 			accounts {
 				AUTH { users = [ {user: "auth", password: "auth"} ] }
 				FOO {}
@@ -3473,7 +3473,7 @@ func TestProcessConfigString(t *testing.T) {
 				}
 			}
 			`,
-			"auth_callout allowed account \"BAR\" not found in configured accounts",
+			err: "auth_callout allowed account \"BAR\" not found in configured accounts",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

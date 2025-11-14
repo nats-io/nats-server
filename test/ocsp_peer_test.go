@@ -104,8 +104,8 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
+			name: "Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			config: `
 				port: -1
 				# default ocsp_cache since omitted
 				tls: {
@@ -122,18 +122,18 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 		{
-			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 2",
-			`
+			name: "Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 2",
+			config: `
 				port: -1
 				# default ocsp_cache since omitted
 				tls: {
@@ -146,18 +146,18 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client2/UserB1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client2/private/UserB1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 		{
-			"Explicit true cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
+			name: "Explicit true cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			config: `
 				port: -1
 				# Short form configuration
 				ocsp_cache: true
@@ -175,14 +175,14 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -241,8 +241,8 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Default cache, mTLS OCSP peer check on inbound client connection, client unknown to intermediate CA 1",
-			`
+			name: "Default cache, mTLS OCSP peer check on inbound client connection, client unknown to intermediate CA 1",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -255,14 +255,14 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			func() {},
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -315,8 +315,8 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1",
-			`
+			name: "mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -329,18 +329,18 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			func() {},
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			configure: func() {},
 		},
 		{
-			"Explicit disable, mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
-			`
+			name: "Explicit disable, mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -353,18 +353,18 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 					ocsp_peer: false
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 		{
-			"Implicit disable, mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
-			`
+			name: "Implicit disable, mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -377,18 +377,18 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 					# ocsp_peer: false
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 		{
-			"Explicit disable (long form), mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
-			`
+			name: "Explicit disable (long form), mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -401,14 +401,14 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 					ocsp_peer: { verify: false }
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -465,8 +465,8 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, client's intermediate is revoked",
-			`
+			name: "mTLS OCSP peer check on inbound client connection, client's intermediate is revoked",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -479,18 +479,18 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			func() {},
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			configure: func() {},
 		},
 		{
-			"mTLS OCSP peer check on inbound client connection, client's intermediate is unknown'",
-			`
+			name: "mTLS OCSP peer check on inbound client connection, client's intermediate is unknown'",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -503,14 +503,14 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client2/UserB1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client2/private/UserB1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			func() {},
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -563,8 +563,8 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 		expected    int
 	}{
 		{
-			"OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
-			`
+			name: "OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
+			hubconfig: `
 				port: -1
 				# Cache configuration is default
 				leaf: {
@@ -577,7 +577,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 					}
 				}
 			`,
-			`
+			spokeconfig: `
 				port: -1
 				leaf: {
 					remotes: [
@@ -593,11 +593,11 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 					]
 				}
 			`,
-			1,
+			expected: 1,
 		},
 		{
-			"OCSP peer check on Leaf Spoke by Leaf Hub (TLS server OCSP verification of TLS client)",
-			`
+			name: "OCSP peer check on Leaf Spoke by Leaf Hub (TLS server OCSP verification of TLS client)",
+			hubconfig: `
 				port: -1
 				# Cache configuration is default
 				leaf: {
@@ -613,7 +613,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 					}
 				}
 			`,
-			`
+			spokeconfig: `
 				port: -1
 				leaf: {
 					remotes: [
@@ -629,11 +629,11 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 					]
 				}
 			`,
-			1,
+			expected: 1,
 		},
 		{
-			"OCSP peer check bi-directionally",
-			`
+			name: "OCSP peer check bi-directionally",
+			hubconfig: `
 				port: -1
 				# Cache configuration is default
 				leaf: {
@@ -649,7 +649,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 					}
 				}
 			`,
-			`
+			spokeconfig: `
 				port: -1
 				leaf: {
 					remotes: [
@@ -667,7 +667,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 					]
 				}
 			`,
-			1,
+			expected: 1,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -710,8 +710,8 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 		expected    int
 	}{
 		{
-			"OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
-			`
+			name: "OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
+			hubconfig: `
 				port: -1
 				# Cache configuration is default
 				leaf: {
@@ -724,7 +724,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 					}
 				}
 			`,
-			`
+			spokeconfig: `
 				port: -1
 				leaf: {
 					remotes: [
@@ -740,11 +740,11 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 					]
 				}
 			`,
-			0,
+			expected: 0,
 		},
 		{
-			"OCSP peer check on Leaf Spoke by Leaf Hub (TLS server OCSP verification of TLS client)",
-			`
+			name: "OCSP peer check on Leaf Spoke by Leaf Hub (TLS server OCSP verification of TLS client)",
+			hubconfig: `
 				port: -1
 				leaf: {
 					listen: 127.0.0.1:7444
@@ -759,7 +759,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 					}
 				}
 			`,
-			`
+			spokeconfig: `
 				port: -1
 				leaf: {
 					remotes: [
@@ -775,11 +775,11 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 					]
 				}
 			`,
-			0,
+			expected: 0,
 		},
 		{
-			"OCSP peer check bi-directionally",
-			`
+			name: "OCSP peer check bi-directionally",
+			hubconfig: `
 				port: -1
 				leaf: {
 					listen: 127.0.0.1:7444
@@ -794,7 +794,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 					}
 				}
 			`,
-			`
+			spokeconfig: `
 				port: -1
 				leaf: {
 					remotes: [
@@ -812,7 +812,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 					]
 				}
 			`,
-			0,
+			expected: 0,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -877,8 +877,8 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 		configure func()
 	}{
 		{
-			"None cache explicit long form: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
+			name: "None cache explicit long form: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			config: `
 				port: -1
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
@@ -898,18 +898,18 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 					type: none
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 		{
-			"None cache explicit short form: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
+			name: "None cache explicit short form: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			config: `
 				port: -1
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
@@ -927,14 +927,14 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 				# Short form configuration
 				ocsp_cache: false
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1001,8 +1001,8 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
-			`
+			name: "Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1021,18 +1021,18 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 				# Short form configuration, local as default
 				ocsp_cache: true
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 		{
-			"Local cache long form: mTLS OCSP peer check on inbound client connection, UserB1 client of intermediate CA 2",
-			`
+			name: "Local cache long form: mTLS OCSP peer check on inbound client connection, UserB1 client of intermediate CA 2",
+			config: `
 				port: -1
 				http_port: 8222
 
@@ -1050,14 +1050,14 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 					type: local
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client2/UserB1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client2/private/UserB1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1138,8 +1138,8 @@ func TestOCSPPeerMonitor(t *testing.T) {
 		NumTrueLeafRemotes int
 	}{
 		{
-			"Monitor peer config setting on NATS client",
-			`
+			name: "Monitor peer config setting on NATS client",
+			config: `
 				port: -1
 				http_port: 8222
 				# Default cache configuration
@@ -1155,16 +1155,16 @@ func TestOCSPPeerMonitor(t *testing.T) {
 					}
 				}
 			`,
-			true,
-			false,
-			false,
-			false,
-			false,
-			0,
+			NATSClient:         true,
+			WSClient:           false,
+			MQTTClient:         false,
+			LeafClient:         false,
+			LeafRemotes:        false,
+			NumTrueLeafRemotes: 0,
 		},
 		{
-			"Monitor peer config setting on Websockets client",
-			`
+			name: "Monitor peer config setting on Websockets client",
+			config: `
 				port: -1
 				http_port: 8222
 				# Default cache configuration
@@ -1183,16 +1183,16 @@ func TestOCSPPeerMonitor(t *testing.T) {
 					}
 				}
 			`,
-			false,
-			true,
-			false,
-			false,
-			false,
-			0,
+			NATSClient:         false,
+			WSClient:           true,
+			MQTTClient:         false,
+			LeafClient:         false,
+			LeafRemotes:        false,
+			NumTrueLeafRemotes: 0,
 		},
 		{
-			"Monitor peer config setting on MQTT client",
-			`
+			name: "Monitor peer config setting on MQTT client",
+			config: `
 				port: -1
 				http_port: 8222
 				# Default cache configuration
@@ -1216,16 +1216,16 @@ func TestOCSPPeerMonitor(t *testing.T) {
 					}
 				}
 			`,
-			false,
-			false,
-			true,
-			false,
-			false,
-			0,
+			NATSClient:         false,
+			WSClient:           false,
+			MQTTClient:         true,
+			LeafClient:         false,
+			LeafRemotes:        false,
+			NumTrueLeafRemotes: 0,
 		},
 		{
-			"Monitor peer config setting on Leaf client",
-			`
+			name: "Monitor peer config setting on Leaf client",
+			config: `
 				port: -1
 				http_port: 8222
 				# Default cache configuration
@@ -1244,16 +1244,16 @@ func TestOCSPPeerMonitor(t *testing.T) {
 					}
 				}
 			`,
-			false,
-			false,
-			false,
-			true,
-			false,
-			0,
+			NATSClient:         false,
+			WSClient:           false,
+			MQTTClient:         false,
+			LeafClient:         true,
+			LeafRemotes:        false,
+			NumTrueLeafRemotes: 0,
 		},
 		{
-			"Monitor peer config on some Leaf Remotes as well as Leaf client",
-			`
+			name: "Monitor peer config on some Leaf Remotes as well as Leaf client",
+			config: `
 				port: -1
 				http_port: 8222
 				# Default cache configuration
@@ -1308,12 +1308,12 @@ func TestOCSPPeerMonitor(t *testing.T) {
 					]
 				}
 			`,
-			false,
-			false,
-			false,
-			true,
-			true,
-			2,
+			NATSClient:         false,
+			WSClient:           false,
+			MQTTClient:         false,
+			LeafClient:         true,
+			LeafRemotes:        true,
+			NumTrueLeafRemotes: 2,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1359,8 +1359,8 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 		expect string
 	}{
 		{
-			"Monitor local cache enabled, explicit cache true",
-			`
+			name: "Monitor local cache enabled, explicit cache true",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1377,11 +1377,11 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 				# Short form configuration
 				ocsp_cache: true
 			`,
-			"local",
+			expect: "local",
 		},
 		{
-			"Monitor local cache enabled, explicit cache type local",
-			`
+			name: "Monitor local cache enabled, explicit cache type local",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1400,11 +1400,11 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 					type: local
 				}
 			`,
-			"local",
+			expect: "local",
 		},
 		{
-			"Monitor local cache enabled, implicit default",
-			`
+			name: "Monitor local cache enabled, implicit default",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1421,11 +1421,11 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 				# Short form configuration
 				# ocsp_cache: true
 			`,
-			"local",
+			expect: "local",
 		},
 		{
-			"Monitor none cache enabled, explicit cache false (short)",
-			`
+			name: "Monitor none cache enabled, explicit cache false (short)",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1442,11 +1442,11 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 				# Short form configuration
 				ocsp_cache: false
 			`,
-			"",
+			expect: "",
 		},
 		{
-			"Monitor none cache enabled, explicit cache false (long)",
-			`
+			name: "Monitor none cache enabled, explicit cache false (long)",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1465,7 +1465,7 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 					type: none
 				}
 			`,
-			"",
+			expect: "",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1621,8 +1621,8 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 		clean     bool
 	}{
 		{
-			"Test expired revoked cert not actually deleted",
-			`
+			name: "Test expired revoked cert not actually deleted",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1643,22 +1643,22 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			1,
-			1,
-			0,
-			0,
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			true,
+			responses: 1,
+			revokes:   1,
+			goods:     0,
+			unknowns:  0,
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			clean:     true,
 		},
 		{
-			"Test expired revoked cert replaced by current good cert",
-			`
+			name: "Test expired revoked cert replaced by current good cert",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -1676,18 +1676,18 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			2,
-			0,
-			2,
-			0,
-			nil,
-			nil,
-			false,
+			responses: 2,
+			revokes:   0,
+			goods:     2,
+			unknowns:  0,
+			err:       nil,
+			rerr:      nil,
+			clean:     false,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1774,8 +1774,8 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Interop: Both Good: mTLS OCSP peer check on inbound client connection and server's OCSP staple validated at client",
-			`
+			name: "Interop: Both Good: mTLS OCSP peer check on inbound client connection and server's OCSP staple validated at client",
+			config: `
 				port: -1
 				ocsp_cache: true
 				ocsp: {
@@ -1795,7 +1795,7 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -1812,15 +1812,15 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {
+			err:  nil,
+			rerr: nil,
+			configure: func() {
 				SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 			},
 		},
 		{
-			"Interop: Bad Client: mTLS OCSP peer check on inbound client connection and server's OCSP staple validated at client",
-			`
+			name: "Interop: Bad Client: mTLS OCSP peer check on inbound client connection and server's OCSP staple validated at client",
+			config: `
 				port: -1
 				ocsp_cache: true
 				ocsp: {
@@ -1840,7 +1840,7 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.Secure(&tls.Config{
 					VerifyConnection: func(s tls.ConnectionState) error {
 						if s.OCSPResponse == nil {
@@ -1857,9 +1857,9 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			fmt.Errorf("remote error: tls: bad certificate"),
-			nil,
-			func() {
+			err:  fmt.Errorf("remote error: tls: bad certificate"),
+			rerr: nil,
+			configure: func() {
 				SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
 			},
 		},
@@ -1923,8 +1923,8 @@ func TestOCSPPeerWarnOnlyOption(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Revoked NATS client with warn_only explicitly set to false",
-			`
+			name: "Revoked NATS client with warn_only explicitly set to false",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -1940,18 +1940,18 @@ func TestOCSPPeerWarnOnlyOption(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			func() {},
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			configure: func() {},
 		},
 		{
-			"Revoked NATS client with warn_only explicitly set to true",
-			`
+			name: "Revoked NATS client with warn_only explicitly set to true",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -1967,14 +1967,14 @@ func TestOCSPPeerWarnOnlyOption(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2024,8 +2024,8 @@ func TestOCSPPeerUnknownIsGoodOption(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Unknown NATS client with no unknown_is_good option set (default false)",
-			`
+			name: "Unknown NATS client with no unknown_is_good option set (default false)",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -2038,18 +2038,18 @@ func TestOCSPPeerUnknownIsGoodOption(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			func() {},
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			configure: func() {},
 		},
 		{
-			"Unknown NATS client with unknown_is_good set to true",
-			`
+			name: "Unknown NATS client with unknown_is_good set to true",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -2065,14 +2065,14 @@ func TestOCSPPeerUnknownIsGoodOption(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2118,8 +2118,8 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 		rerr           error
 	}{
 		{
-			"Expired Revoked response in cache for UserA1 -- should be rejected connection (expired revoke honored)",
-			`
+			name: "Expired Revoked response in cache for UserA1 -- should be rejected connection (expired revoke honored)",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2141,12 +2141,12 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			`
+			cachedResponse: `
 				{
 					"5xL/SuHl6JN0OmxrNMpzVMTA73JVYcRfGX8+HvJinEI=": {
 						"subject": "CN=UserA1,O=Testnats,L=Tacoma,ST=WA,C=US",
@@ -2156,12 +2156,12 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 						"resp": "/wYAAFMyc1R3TwBSBQBao1Qr1QzUMIIGUQoBAKCCBkowggZGBgkrBgEFBQcwAQEEggY3MIIGMzCB46FZMFcxCzAJBgNVBAYTAlVTEQ0gCAwCV0ExDzANAQ0wBwwGVGFjb21hMREwDwEROAoMCFRlc3RuYXRzMRcwFQET8HQDDA5PQ1NQIFJlc3BvbmRlchgPMjAyMzA1MjkxNzU2MDBaMHUwczBNMAkGBSsOAwIaBQAEFKgwn5fplwQy+DsulBg5SRpx0iaYBBS1kW5PZLcWhHb5tL6ZzmCVmBqOnQIUXKGv1Xy7Fu/Cx+ZT/JQa7SS7tBc2ZAAQNDVaoBE2dwD0QQE0OVowDQYJKoZIhvcNAQELBQADggEBAGAax/vkv3SBFNbxp2utc/N6Rje4E0ceC972sWgqYjzYrH0oc/acg+OAXaxUjwqoQWaT+dHaI4D5qoTkMx7XlWATjI2L72IUTf6Luo92jPzyDFwb10CdeFHtRtEYD54Qbi/nD4oxQ8cSoLKC3wft2l3E/mK/1I4Mxwq15CioK4MhfzTISoeGZbjDXPKgloJOG3rn9v64vFGV6dosbLgaXEs+MPcCsPQYkwhOOyazuewRmIDOBp5QSsKPhqsT8Rs20t8LGTMkvjZniFWJs90l9QL9F1m3obq5nyuxrGt+7Rf5zoj4T+0XCOGtE+b7cRCLg43tFuTbaAQG8Z+qkPzpza+gggQ1MIIEMTCCBC0wggMVoAMCAQICFCnhUo39pSqH6x3kHUds4YpYaXOrOj8BBDBaUSLaLwIIGjAYSS+oEUludGVybWVkaWF0ZSBDQSAxMB4XDTIzMDUwMTE5MjgzOVoXDTMzMDQyOA0PUasVAEkMMIIBIi4nAgABBQD0QAEPADCCAQoCggEBAKMMyuuA66EOHnGb07P5Zc5wwiEGPDHBBn6lqErhIaN0VJ9XzlDWwyk8Q7CdPlSU7o36DXFs316eATB5bLuXXa+7WwV3cp9V5mZF9OLCz3sOWNYUanYprOMwKA3uvcqqrh8e70Dzw6sX8tfsDeH7aJoJg5kRWEKU+A3Umm+fO+hW8Km3GBqRQXxD49uxAfGtCznXZZjmFbAXqVZu+4R6wMxndfz2dYQxeMVtUY/QGdMWT4fvWzO5et3+X6hq/URUAPOkplv9O2U4T4JPucS9yZpW/FTxWC/L7vQI/bfsrSgIZpv4eJgy27FW3Q4xusbjVvUCL/t2KLvEi/Nr2qodOCECAwEAAaOB7TCB6jAdBgNVHQ4EFgQUy15QYHqrL6k7HiSrAkKN7IFgSBMwHwYDVR0jBBgwFoBSyQNQMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQ4YBAMCB4AwFgEeACUBEBAMMAoGCIm0sAMJMD0GA1UdHwQ2MDQwMqAwoC6GLGh0dHA6Ly8xMjcuMC4wLjE6MTg4ODgvaV1WKDFfY3JsLmRlcjAzEUscAQEEJzAlMCMRWwwwAYYXWkoALhICkTnw/0hlzm2RRjA3tvJ2wELj9e7pMg5GtdWdrLDyI/U1qBxhZoHADbyku7W+R1iL8dFfc4PSmdo+owsygZakvahXjv49xJNX7wV3YMmIHC4lfurIlY2mSnPlu2zEOwEDkI0S9WkTxXmHrkXLSciQJDkwzye6MR5fW+APk4JmKDPc46Go/K1A0EgxY/ugahMYsYtZu++W+IOYbEoYNxoCrcJCHX4c3Ep3t/Wulz4X6DWWhaDkMMUDC2JVE8E/3xUbw0X3adZe9Xf8T+goOz7wLCAigXKj1hvRUmOGISIGelv0KsfluZesG1a1TGLp+W9JX0M9nOaFOvjJTDP96aqIjs8oXGk="
 					}
 				}`,
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
+			err:  errors.New("remote error: tls: bad certificate"),
+			rerr: errors.New("expect error"),
 		},
 		{
-			"Expired Good response in cache for UserA1 -- should be allowed connection (cached item irrelevant)",
-			`
+			name: "Expired Good response in cache for UserA1 -- should be allowed connection (cached item irrelevant)",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2183,12 +2183,12 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			`
+			cachedResponse: `
 			{
 				"5xL/SuHl6JN0OmxrNMpzVMTA73JVYcRfGX8+HvJinEI=": {
 					"subject": "CN=UserA1,O=Testnats,L=Tacoma,ST=WA,C=US",
@@ -2198,12 +2198,12 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 					"resp": "/wYAAFMyc1R3TwBYBQBgpzMn1wzUMIIGUwoBAKCCBkwwggZIBgkrBgEFBQcwAQEEggY5MIIGNTCB5aFZMFcxCzAJBgNVBAYTAlVTEQ0gCAwCV0ExDzANAQ0wBwwGVGFjb21hMREwDwEROAoMCFRlc3RuYXRzMRcwFQET8HYDDA5PQ1NQIFJlc3BvbmRlchgPMjAyMzA2MDUxNjMzMDBaMHcwdTBNMAkGBSsOAwIaBQAEFKgwn5fplwQy+DsulBg5SRpx0iaYBBS1kW5PZLcWhHb5tL6ZzmCVmBqOnQIUXKGv1Xy7Fu/Cx+ZT/JQa7SS7tBeAADZmABA1MVqgEToTAPRAATVaMA0GCSqGSIb3DQEBCwUAA4IBAQB9csJxA2VcpQYmC5lzI0dJJnEC1zcaP1oFbBm5VsZAbWh4mIGTqyEjMkucBqANTypnhWFRYcZE5nJE8tN8Aen0EBYkhk1wfEIhincaF3zs6x5RzigxQOqTPAanO55keKH5exYnfBcyCwAQiBbQaTXLJJdjerfqiRjqgsnLW8yl2IC8+kxTCfR4GHTK34mvqVWYYhP/xbaxTLJTp35t1vf1o78ct9R+z8W5sCSO4TsMNnExZlu4Ejeon/KivMR22j7nelTEaDCuaOl03WxKh9yhw2ix8V7lvR74wh5f4fjLZria6Y0+lUjwvvrZyBRwA62W/ihe3778q8KhLECFPQSaoIIENTCCBDEwggQtMIIDFaADAgECAhQp4VKN/aUqh+sd5B1HbOGKWGlzqzo/AQQwWlEk2jECCBowGEkxqBFJbnRlcm1lZGlhdGUgQ0EgMTAeFw0yMzA1MDExOTI4MzlaFw0zMzA0MjgND1GtFQBJDDCCASIuJwIAAQUA9EABDwAwggEKAoIBAQCjDMrrgOuhDh5xm9Oz+WXOcMIhBjwxwQZ+pahK4SGjdFSfV85Q1sMpPEOwnT5UlO6N+g1xbN9engEweWy7l12vu1sFd3KfVeZmRfTiws97DljWFGp2KazjMCgN7r3Kqq4fHu9A88OrF/LX7A3h+2iaCYOZEVhClPgN1JpvnzvoVvCptxgakUF8Q+PbsQHxrQs512WY5hWwF6lWbvuEesDMZ3X89nWEMXjFbVGP0BnTFk+H71szuXrd/l+oav1EVADzpKZb/TtlOE+CT7nEvcmaVvxU8Vgvy+70CP237K0oCGab+HiYMtuxVt0OMbrG41b1Ai/7dii7xIvza9qqHTghAgMBAAGjge0wgeowHQYDVR0OBBYEFMteUGB6qy+pOx4kqwJCjeyBYEgTMB8GA1UdIwQYMBaAUssDUDAMBgNVHRMBAf8EAjAAMA4GA1UdDwEOGAQDAgeAMBYBHgAlARAQDDAKBgiJtrADCTA9BgNVHR8ENjA0MDKgMKAuhixodHRwOi8vMTI3LjAuMC4xOjE4ODg4L2ldVigxX2NybC5kZXIwMxFLHAEBBCcwJTAjEVsMMAGGF1pKAC4SAgALBQD0AQEBAEhlzm2RRjA3tvJ2wELj9e7pMg5GtdWdrLDyI/U1qBxhZoHADbyku7W+R1iL8dFfc4PSmdo+owsygZakvahXjv49xJNX7wV3YMmIHC4lfurIlY2mSnPlu2zEOwEDkI0S9WkTxXmHrkXLSciQJDkwzye6MR5fW+APk4JmKDPc46Go/K1A0EgxY/ugahMYsYtZu++W+IOYbEoYNxoCrcJCHX4c3Ep3t/Wulz4X6DWWhaDkMMUDC2JVE8E/3xUbw0X3adZe9Xf8T+goOz7wLCAigXKj1hvRUmOGISIGelv0KsfluZesG1a1TGLp+W9JX0M9nOaFOvjJTDP96aqIjs8oXGk="
 				}
 			}`,
-			nil,
-			nil,
+			err:  nil,
+			rerr: nil,
 		},
 		{
-			"Expired Unknown response in cache for UserA1 -- should be allowed connection (cached item irrelevant)",
-			`
+			name: "Expired Unknown response in cache for UserA1 -- should be allowed connection (cached item irrelevant)",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2225,12 +2225,12 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			`
+			cachedResponse: `
 			{
 				"5xL/SuHl6JN0OmxrNMpzVMTA73JVYcRfGX8+HvJinEI=": {
 					"subject": "CN=UserA1,O=Testnats,L=Tacoma,ST=WA,C=US",
@@ -2240,12 +2240,12 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 					"resp": "/wYAAFMyc1R3TwBSBQBH1aW01wzUMIIGUwoBAKCCBkwwggZIBgkrBgEFBQcwAQEEggY5MIIGNTCB5aFZMFcxCzAJBgNVBAYTAlVTEQ0gCAwCV0ExDzANAQ0wBwwGVGFjb21hMREwDwEROAoMCFRlc3RuYXRzMRcwFQET8HYDDA5PQ1NQIFJlc3BvbmRlchgPMjAyMzA2MDUxNjQ1MDBaMHcwdTBNMAkGBSsOAwIaBQAEFKgwn5fplwQy+DsulBg5SRpx0iaYBBS1kW5PZLcWhHb5tL6ZzmCVmBqOnQIUXKGv1Xy7Fu/Cx+ZT/JQa7SS7tBeCADpmAAwxWqAROhMA9EABNVowDQYJKoZIhvcNAQELBQADggEBAAzwED88ngiFj3hLzIejZ8DE/ppticX0vgAjUM8oXjDjwNXpSQ5xdXHsDk4RAYAVpNyiAfL2fapwz91g3JuZot6npp8smtZC5D0YMKK8iMjrx2aMqVyv+ai/33WG8PRWpBNzSTYaLhlBFjhUrx8HDu97ozNbmfgDWzRS1LqkJRa5YXvkyppqYTFSX73DV9R9tOVOwZ0x5WEKst9IJ+88mXsOBGyuye2Gh9RK6KsLgaOwiD9FBf18WRKIixeVM1Y/xHc/iwFPi8k3Z6hZ6gHX8NboQ/djCyzYVSWsUedTo/62uuagHPRWoYci4HQl4bSFXfcEO/EkWGnqkWBHfYZ4soigggQ1MIIEMTCCBC0wggMVoAMCAQICFCnhUo39pSqH6x3kHUds4YpYaXOrOj8BBDBaUSTaMQIIGjAYSTGoEUludGVybWVkaWF0ZSBDQSAxMB4XDTIzMDUwMTE5MjgzOVoXDTMzMDQyOA0PUa0VAEkMMIIBIi4nAgABBQD0QAEPADCCAQoCggEBAKMMyuuA66EOHnGb07P5Zc5wwiEGPDHBBn6lqErhIaN0VJ9XzlDWwyk8Q7CdPlSU7o36DXFs316eATB5bLuXXa+7WwV3cp9V5mZF9OLCz3sOWNYUanYprOMwKA3uvcqqrh8e70Dzw6sX8tfsDeH7aJoJg5kRWEKU+A3Umm+fO+hW8Km3GBqRQXxD49uxAfGtCznXZZjmFbAXqVZu+4R6wMxndfz2dYQxeMVtUY/QGdMWT4fvWzO5et3+X6hq/URUAPOkplv9O2U4T4JPucS9yZpW/FTxWC/L7vQI/bfsrSgIZpv4eJgy27FW3Q4xusbjVvUCL/t2KLvEi/Nr2qodOCECAwEAAaOB7TCB6jAdBgNVHQ4EFgQUy15QYHqrL6k7HiSrAkKN7IFgSBMwHwYDVR0jBBgwFoBSywNQMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQ4YBAMCB4AwFgEeACUBEBAMMAoGCIm2sAMJMD0GA1UdHwQ2MDQwMqAwoC6GLGh0dHA6Ly8xMjcuMC4wLjE6MTg4ODgvaV1WKDFfY3JsLmRlcjAzEUscAQEEJzAlMCMRWwwwAYYXWkoALhICkTnw/0hlzm2RRjA3tvJ2wELj9e7pMg5GtdWdrLDyI/U1qBxhZoHADbyku7W+R1iL8dFfc4PSmdo+owsygZakvahXjv49xJNX7wV3YMmIHC4lfurIlY2mSnPlu2zEOwEDkI0S9WkTxXmHrkXLSciQJDkwzye6MR5fW+APk4JmKDPc46Go/K1A0EgxY/ugahMYsYtZu++W+IOYbEoYNxoCrcJCHX4c3Ep3t/Wulz4X6DWWhaDkMMUDC2JVE8E/3xUbw0X3adZe9Xf8T+goOz7wLCAigXKj1hvRUmOGISIGelv0KsfluZesG1a1TGLp+W9JX0M9nOaFOvjJTDP96aqIjs8oXGk="
 				}
 			}`,
-			nil,
-			nil,
+			err:  nil,
+			rerr: nil,
 		},
 		{
-			"No response in cache for UserA1 -- should be allowed connection",
-			`
+			name: "No response in cache for UserA1 -- should be allowed connection",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2267,14 +2267,14 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			"",
-			nil,
-			nil,
+			cachedResponse: "",
+			err:            nil,
+			rerr:           nil,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2325,8 +2325,8 @@ func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 		storeLocation  string
 	}{
 		{
-			"Test load from non-default local store _custom_; connect will reject only if cache file found and loaded",
-			`
+			name: "Test load from non-default local store _custom_; connect will reject only if cache file found and loaded",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2349,12 +2349,12 @@ func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			`
+			cachedResponse: `
 				{
 					"5xL/SuHl6JN0OmxrNMpzVMTA73JVYcRfGX8+HvJinEI=": {
 						"subject": "CN=UserA1,O=Testnats,L=Tacoma,ST=WA,C=US",
@@ -2364,13 +2364,13 @@ func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 						"resp": "/wYAAFMyc1R3TwBSBQBao1Qr1QzUMIIGUQoBAKCCBkowggZGBgkrBgEFBQcwAQEEggY3MIIGMzCB46FZMFcxCzAJBgNVBAYTAlVTEQ0gCAwCV0ExDzANAQ0wBwwGVGFjb21hMREwDwEROAoMCFRlc3RuYXRzMRcwFQET8HQDDA5PQ1NQIFJlc3BvbmRlchgPMjAyMzA1MjkxNzU2MDBaMHUwczBNMAkGBSsOAwIaBQAEFKgwn5fplwQy+DsulBg5SRpx0iaYBBS1kW5PZLcWhHb5tL6ZzmCVmBqOnQIUXKGv1Xy7Fu/Cx+ZT/JQa7SS7tBc2ZAAQNDVaoBE2dwD0QQE0OVowDQYJKoZIhvcNAQELBQADggEBAGAax/vkv3SBFNbxp2utc/N6Rje4E0ceC972sWgqYjzYrH0oc/acg+OAXaxUjwqoQWaT+dHaI4D5qoTkMx7XlWATjI2L72IUTf6Luo92jPzyDFwb10CdeFHtRtEYD54Qbi/nD4oxQ8cSoLKC3wft2l3E/mK/1I4Mxwq15CioK4MhfzTISoeGZbjDXPKgloJOG3rn9v64vFGV6dosbLgaXEs+MPcCsPQYkwhOOyazuewRmIDOBp5QSsKPhqsT8Rs20t8LGTMkvjZniFWJs90l9QL9F1m3obq5nyuxrGt+7Rf5zoj4T+0XCOGtE+b7cRCLg43tFuTbaAQG8Z+qkPzpza+gggQ1MIIEMTCCBC0wggMVoAMCAQICFCnhUo39pSqH6x3kHUds4YpYaXOrOj8BBDBaUSLaLwIIGjAYSS+oEUludGVybWVkaWF0ZSBDQSAxMB4XDTIzMDUwMTE5MjgzOVoXDTMzMDQyOA0PUasVAEkMMIIBIi4nAgABBQD0QAEPADCCAQoCggEBAKMMyuuA66EOHnGb07P5Zc5wwiEGPDHBBn6lqErhIaN0VJ9XzlDWwyk8Q7CdPlSU7o36DXFs316eATB5bLuXXa+7WwV3cp9V5mZF9OLCz3sOWNYUanYprOMwKA3uvcqqrh8e70Dzw6sX8tfsDeH7aJoJg5kRWEKU+A3Umm+fO+hW8Km3GBqRQXxD49uxAfGtCznXZZjmFbAXqVZu+4R6wMxndfz2dYQxeMVtUY/QGdMWT4fvWzO5et3+X6hq/URUAPOkplv9O2U4T4JPucS9yZpW/FTxWC/L7vQI/bfsrSgIZpv4eJgy27FW3Q4xusbjVvUCL/t2KLvEi/Nr2qodOCECAwEAAaOB7TCB6jAdBgNVHQ4EFgQUy15QYHqrL6k7HiSrAkKN7IFgSBMwHwYDVR0jBBgwFoBSyQNQMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQ4YBAMCB4AwFgEeACUBEBAMMAoGCIm0sAMJMD0GA1UdHwQ2MDQwMqAwoC6GLGh0dHA6Ly8xMjcuMC4wLjE6MTg4ODgvaV1WKDFfY3JsLmRlcjAzEUscAQEEJzAlMCMRWwwwAYYXWkoALhICkTnw/0hlzm2RRjA3tvJ2wELj9e7pMg5GtdWdrLDyI/U1qBxhZoHADbyku7W+R1iL8dFfc4PSmdo+owsygZakvahXjv49xJNX7wV3YMmIHC4lfurIlY2mSnPlu2zEOwEDkI0S9WkTxXmHrkXLSciQJDkwzye6MR5fW+APk4JmKDPc46Go/K1A0EgxY/ugahMYsYtZu++W+IOYbEoYNxoCrcJCHX4c3Ep3t/Wulz4X6DWWhaDkMMUDC2JVE8E/3xUbw0X3adZe9Xf8T+goOz7wLCAigXKj1hvRUmOGISIGelv0KsfluZesG1a1TGLp+W9JX0M9nOaFOvjJTDP96aqIjs8oXGk="
 					}
 				}`,
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			"_custom_",
+			err:           errors.New("remote error: tls: bad certificate"),
+			rerr:          errors.New("expect error"),
+			storeLocation: "_custom_",
 		},
 		{
-			"Test load from default local store when \"\" set; connect will reject only if cache file found and loaded",
-			`
+			name: "Test load from default local store when \"\" set; connect will reject only if cache file found and loaded",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2393,12 +2393,12 @@ func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 					preserve_revoked: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			`
+			cachedResponse: `
 				{
 					"5xL/SuHl6JN0OmxrNMpzVMTA73JVYcRfGX8+HvJinEI=": {
 						"subject": "CN=UserA1,O=Testnats,L=Tacoma,ST=WA,C=US",
@@ -2408,9 +2408,9 @@ func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 						"resp": "/wYAAFMyc1R3TwBSBQBao1Qr1QzUMIIGUQoBAKCCBkowggZGBgkrBgEFBQcwAQEEggY3MIIGMzCB46FZMFcxCzAJBgNVBAYTAlVTEQ0gCAwCV0ExDzANAQ0wBwwGVGFjb21hMREwDwEROAoMCFRlc3RuYXRzMRcwFQET8HQDDA5PQ1NQIFJlc3BvbmRlchgPMjAyMzA1MjkxNzU2MDBaMHUwczBNMAkGBSsOAwIaBQAEFKgwn5fplwQy+DsulBg5SRpx0iaYBBS1kW5PZLcWhHb5tL6ZzmCVmBqOnQIUXKGv1Xy7Fu/Cx+ZT/JQa7SS7tBc2ZAAQNDVaoBE2dwD0QQE0OVowDQYJKoZIhvcNAQELBQADggEBAGAax/vkv3SBFNbxp2utc/N6Rje4E0ceC972sWgqYjzYrH0oc/acg+OAXaxUjwqoQWaT+dHaI4D5qoTkMx7XlWATjI2L72IUTf6Luo92jPzyDFwb10CdeFHtRtEYD54Qbi/nD4oxQ8cSoLKC3wft2l3E/mK/1I4Mxwq15CioK4MhfzTISoeGZbjDXPKgloJOG3rn9v64vFGV6dosbLgaXEs+MPcCsPQYkwhOOyazuewRmIDOBp5QSsKPhqsT8Rs20t8LGTMkvjZniFWJs90l9QL9F1m3obq5nyuxrGt+7Rf5zoj4T+0XCOGtE+b7cRCLg43tFuTbaAQG8Z+qkPzpza+gggQ1MIIEMTCCBC0wggMVoAMCAQICFCnhUo39pSqH6x3kHUds4YpYaXOrOj8BBDBaUSLaLwIIGjAYSS+oEUludGVybWVkaWF0ZSBDQSAxMB4XDTIzMDUwMTE5MjgzOVoXDTMzMDQyOA0PUasVAEkMMIIBIi4nAgABBQD0QAEPADCCAQoCggEBAKMMyuuA66EOHnGb07P5Zc5wwiEGPDHBBn6lqErhIaN0VJ9XzlDWwyk8Q7CdPlSU7o36DXFs316eATB5bLuXXa+7WwV3cp9V5mZF9OLCz3sOWNYUanYprOMwKA3uvcqqrh8e70Dzw6sX8tfsDeH7aJoJg5kRWEKU+A3Umm+fO+hW8Km3GBqRQXxD49uxAfGtCznXZZjmFbAXqVZu+4R6wMxndfz2dYQxeMVtUY/QGdMWT4fvWzO5et3+X6hq/URUAPOkplv9O2U4T4JPucS9yZpW/FTxWC/L7vQI/bfsrSgIZpv4eJgy27FW3Q4xusbjVvUCL/t2KLvEi/Nr2qodOCECAwEAAaOB7TCB6jAdBgNVHQ4EFgQUy15QYHqrL6k7HiSrAkKN7IFgSBMwHwYDVR0jBBgwFoBSyQNQMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQ4YBAMCB4AwFgEeACUBEBAMMAoGCIm0sAMJMD0GA1UdHwQ2MDQwMqAwoC6GLGh0dHA6Ly8xMjcuMC4wLjE6MTg4ODgvaV1WKDFfY3JsLmRlcjAzEUscAQEEJzAlMCMRWwwwAYYXWkoALhICkTnw/0hlzm2RRjA3tvJ2wELj9e7pMg5GtdWdrLDyI/U1qBxhZoHADbyku7W+R1iL8dFfc4PSmdo+owsygZakvahXjv49xJNX7wV3YMmIHC4lfurIlY2mSnPlu2zEOwEDkI0S9WkTxXmHrkXLSciQJDkwzye6MR5fW+APk4JmKDPc46Go/K1A0EgxY/ugahMYsYtZu++W+IOYbEoYNxoCrcJCHX4c3Ep3t/Wulz4X6DWWhaDkMMUDC2JVE8E/3xUbw0X3adZe9Xf8T+goOz7wLCAigXKj1hvRUmOGISIGelv0KsfluZesG1a1TGLp+W9JX0M9nOaFOvjJTDP96aqIjs8oXGk="
 					}
 				}`,
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			"_rc_",
+			err:           errors.New("remote error: tls: bad certificate"),
+			rerr:          errors.New("expect error"),
+			storeLocation: "_rc_",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2474,8 +2474,8 @@ func TestOCSPPeerIncrementalSaveLocalCache(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
-			`
+			name: "Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2498,7 +2498,7 @@ func TestOCSPPeerIncrementalSaveLocalCache(t *testing.T) {
 					save_interval: 1
 				}
 			`,
-			[][]nats.Option{
+			opts: [][]nats.Option{
 				{
 					nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 					nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
@@ -2510,9 +2510,9 @@ func TestOCSPPeerIncrementalSaveLocalCache(t *testing.T) {
 					nats.ErrorHandler(noOpErrHandler),
 				},
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2616,8 +2616,8 @@ func TestOCSPPeerUndelegatedCAResponseSigner(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, responder is CA (undelegated)",
-			`
+			name: "mTLS OCSP peer check on inbound client connection, responder is CA (undelegated)",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -2630,14 +2630,14 @@ func TestOCSPPeerUndelegatedCAResponseSigner(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2688,8 +2688,8 @@ func TestOCSPPeerDelegatedCAResponseSigner(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, responder is CA (undelegated)",
-			`
+			name: "mTLS OCSP peer check on inbound client connection, responder is CA (undelegated)",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -2702,14 +2702,14 @@ func TestOCSPPeerDelegatedCAResponseSigner(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			func() {},
+			err:       nil,
+			rerr:      nil,
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2760,8 +2760,8 @@ func TestOCSPPeerBadDelegatedCAResponseSigner(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, responder is not a legal delegate",
-			`
+			name: "mTLS OCSP peer check on inbound client connection, responder is not a legal delegate",
+			config: `
 				port: -1
 				# Cache configuration is default
 				tls: {
@@ -2774,14 +2774,14 @@ func TestOCSPPeerBadDelegatedCAResponseSigner(t *testing.T) {
 					ocsp_peer: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			errors.New("remote error: tls: bad certificate"),
-			errors.New("expect error"),
-			func() {},
+			err:       errors.New("remote error: tls: bad certificate"),
+			rerr:      errors.New("expect error"),
+			configure: func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2836,8 +2836,8 @@ func TestOCSPPeerNextUpdateUnset(t *testing.T) {
 		configure      func()
 	}{
 		{
-			"TTL set to 4 seconds with second client connection leveraging cache from first client connect",
-			`
+			name: "TTL set to 4 seconds with second client connection leveraging cache from first client connect",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2857,19 +2857,19 @@ func TestOCSPPeerNextUpdateUnset(t *testing.T) {
 				# Short form configuration, local as default
 				ocsp_cache: true
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			2,
-			func() {},
+			err:            nil,
+			rerr:           nil,
+			expectedMisses: 2,
+			configure:      func() {},
 		},
 		{
-			"TTL set to 1 seconds with second client connection not leveraging cache items from first client connect",
-			`
+			name: "TTL set to 1 seconds with second client connection not leveraging cache items from first client connect",
+			config: `
 				port: -1
 				http_port: 8222
 				tls: {
@@ -2889,15 +2889,15 @@ func TestOCSPPeerNextUpdateUnset(t *testing.T) {
 				# Short form configuration, local as default
 				ocsp_cache: true
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
-			3,
-			func() {},
+			err:            nil,
+			rerr:           nil,
+			expectedMisses: 3,
+			configure:      func() {},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2976,8 +2976,8 @@ func TestOCSPMonitoringPort(t *testing.T) {
 		rerr   error
 	}{
 		{
-			"https with ocsp_peer",
-			`
+			name: "https with ocsp_peer",
+			config: `
 				net: 127.0.0.1
 				port: -1
 				https: -1
@@ -2998,17 +2998,17 @@ func TestOCSPMonitoringPort(t *testing.T) {
 					}
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
+			err:  nil,
+			rerr: nil,
 		},
 		{
-			"https with just ocsp",
-			`
+			name: "https with just ocsp",
+			config: `
 				net: 127.0.0.1
 				port: -1
 				https: -1
@@ -3026,13 +3026,13 @@ func TestOCSPMonitoringPort(t *testing.T) {
 					verify: true
 				}
 			`,
-			[]nats.Option{
+			opts: []nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
-			nil,
-			nil,
+			err:  nil,
+			rerr: nil,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

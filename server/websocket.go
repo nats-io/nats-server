@@ -1215,7 +1215,7 @@ func (s *Server) startWebsocketServer() {
 		Addr:        hp,
 		Handler:     mux,
 		ReadTimeout: o.HandshakeTimeout,
-		ErrorLog:    log.New(&captureHTTPServerLog{s, "websocket: "}, _EMPTY_, 0),
+		ErrorLog:    log.New(&captureHTTPServerLog{s: s, prefix: "websocket: "}, _EMPTY_, 0),
 	}
 	s.websocket.mu.Lock()
 	s.websocket.server = hs

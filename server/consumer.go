@@ -2507,7 +2507,7 @@ func newJSAckMsg(subj, reply string, hdr int, msg []byte) *jsAckMsg {
 	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
-	(*m) = jsAckMsg{subj, reply, hdr, msg}
+	(*m) = jsAckMsg{subject: subj, reply: reply, hdr: hdr, msg: msg}
 	return m
 }
 
@@ -4083,7 +4083,7 @@ func newNextMsgReq(reply string, msg []byte) *nextMsgReq {
 	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
-	(*nmr) = nextMsgReq{reply, msg}
+	(*nmr) = nextMsgReq{reply: reply, msg: msg}
 	return nmr
 }
 
@@ -5371,7 +5371,7 @@ func (o *consumer) trackPending(sseq, dseq uint64) {
 		// So do not update p.Sequence.
 		p.Timestamp = time.Now().UnixNano()
 	} else {
-		o.pending[sseq] = &Pending{dseq, time.Now().UnixNano()}
+		o.pending[sseq] = &Pending{Sequence: dseq, Timestamp: time.Now().UnixNano()}
 	}
 }
 

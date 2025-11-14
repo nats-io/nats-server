@@ -11,45 +11,45 @@ import (
 
 func TestSuccessfulDNParsing(t *testing.T) {
 	testcases := map[string]DN{
-		"": {[]*RelativeDN{}},
-		"cn=Jim\\2C \\22Hasse Hö\\22 Hansson!,dc=dummy,dc=com": {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{{"cn", "Jim, \"Hasse Hö\" Hansson!"}}},
-			{[]*AttributeTypeAndValue{{"dc", "dummy"}}},
-			{[]*AttributeTypeAndValue{{"dc", "com"}}}}},
-		"UID=jsmith,DC=example,DC=net": {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{{"UID", "jsmith"}}},
-			{[]*AttributeTypeAndValue{{"DC", "example"}}},
-			{[]*AttributeTypeAndValue{{"DC", "net"}}}}},
-		"OU=Sales+CN=J. Smith,DC=example,DC=net": {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{
-				{"OU", "Sales"},
-				{"CN", "J. Smith"}}},
-			{[]*AttributeTypeAndValue{{"DC", "example"}}},
-			{[]*AttributeTypeAndValue{{"DC", "net"}}}}},
+		"": {RDNs: []*RelativeDN{}},
+		"cn=Jim\\2C \\22Hasse Hö\\22 Hansson!,dc=dummy,dc=com": {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{{Type: "cn", Value: "Jim, \"Hasse Hö\" Hansson!"}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "dc", Value: "dummy"}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "dc", Value: "com"}}}}},
+		"UID=jsmith,DC=example,DC=net": {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{{Type: "UID", Value: "jsmith"}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "DC", Value: "example"}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "DC", Value: "net"}}}}},
+		"OU=Sales+CN=J. Smith,DC=example,DC=net": {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{
+				{Type: "OU", Value: "Sales"},
+				{Type: "CN", Value: "J. Smith"}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "DC", Value: "example"}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "DC", Value: "net"}}}}},
 		//
 		// "1.3.6.1.4.1.1466.0=#04024869": {[]*RelativeDN{
 		// 	{[]*AttributeTypeAndValue{{"1.3.6.1.4.1.1466.0", "Hi"}}}}},
 		// "1.3.6.1.4.1.1466.0=#04024869,DC=net": {[]*RelativeDN{
 		// 	{[]*AttributeTypeAndValue{{"1.3.6.1.4.1.1466.0", "Hi"}}},
 		// 	{[]*AttributeTypeAndValue{{"DC", "net"}}}}},
-		"CN=Lu\\C4\\8Di\\C4\\87": {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{{"CN", "Lučić"}}}}},
-		"  CN  =  Lu\\C4\\8Di\\C4\\87  ": {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{{"CN", "Lučić"}}}}},
-		`   A   =   1   ,   B   =   2   `: {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{{"A", "1"}}},
-			{[]*AttributeTypeAndValue{{"B", "2"}}}}},
-		`   A   =   1   +   B   =   2   `: {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{
-				{"A", "1"},
-				{"B", "2"}}}}},
-		`   \ \ A\ \    =   \ \ 1\ \    ,   \ \ B\ \    =   \ \ 2\ \    `: {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{{"  A  ", "  1  "}}},
-			{[]*AttributeTypeAndValue{{"  B  ", "  2  "}}}}},
-		`   \ \ A\ \    =   \ \ 1\ \    +   \ \ B\ \    =   \ \ 2\ \    `: {[]*RelativeDN{
-			{[]*AttributeTypeAndValue{
-				{"  A  ", "  1  "},
-				{"  B  ", "  2  "}}}}},
+		"CN=Lu\\C4\\8Di\\C4\\87": {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{{Type: "CN", Value: "Lučić"}}}}},
+		"  CN  =  Lu\\C4\\8Di\\C4\\87  ": {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{{Type: "CN", Value: "Lučić"}}}}},
+		`   A   =   1   ,   B   =   2   `: {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{{Type: "A", Value: "1"}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "B", Value: "2"}}}}},
+		`   A   =   1   +   B   =   2   `: {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{
+				{Type: "A", Value: "1"},
+				{Type: "B", Value: "2"}}}}},
+		`   \ \ A\ \    =   \ \ 1\ \    ,   \ \ B\ \    =   \ \ 2\ \    `: {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{{Type: "  A  ", Value: "  1  "}}},
+			{Attributes: []*AttributeTypeAndValue{{Type: "  B  ", Value: "  2  "}}}}},
+		`   \ \ A\ \    =   \ \ 1\ \    +   \ \ B\ \    =   \ \ 2\ \    `: {RDNs: []*RelativeDN{
+			{Attributes: []*AttributeTypeAndValue{
+				{Type: "  A  ", Value: "  1  "},
+				{Type: "  B  ", Value: "  2  "}}}}},
 	}
 
 	for test, answer := range testcases {
@@ -104,53 +104,53 @@ func TestDNEqual(t *testing.T) {
 		Equal bool
 	}{
 		// Exact match
-		{"", "", true},
-		{"o=A", "o=A", true},
-		{"o=A", "o=B", false},
+		{A: "", B: "", Equal: true},
+		{A: "o=A", B: "o=A", Equal: true},
+		{A: "o=A", B: "o=B", Equal: false},
 
-		{"o=A,o=B", "o=A,o=B", true},
-		{"o=A,o=B", "o=A,o=C", false},
+		{A: "o=A,o=B", B: "o=A,o=B", Equal: true},
+		{A: "o=A,o=B", B: "o=A,o=C", Equal: false},
 
-		{"o=A+o=B", "o=A+o=B", true},
-		{"o=A+o=B", "o=A+o=C", false},
+		{A: "o=A+o=B", B: "o=A+o=B", Equal: true},
+		{A: "o=A+o=B", B: "o=A+o=C", Equal: false},
 
 		// Case mismatch in type is ignored
-		{"o=A", "O=A", true},
-		{"o=A,o=B", "o=A,O=B", true},
-		{"o=A+o=B", "o=A+O=B", true},
+		{A: "o=A", B: "O=A", Equal: true},
+		{A: "o=A,o=B", B: "o=A,O=B", Equal: true},
+		{A: "o=A+o=B", B: "o=A+O=B", Equal: true},
 
 		// Case mismatch in value is significant
-		{"o=a", "O=A", false},
-		{"o=a,o=B", "o=A,O=B", false},
-		{"o=a+o=B", "o=A+O=B", false},
+		{A: "o=a", B: "O=A", Equal: false},
+		{A: "o=a,o=B", B: "o=A,O=B", Equal: false},
+		{A: "o=a+o=B", B: "o=A+O=B", Equal: false},
 
 		// Multi-valued RDN order mismatch is ignored
-		{"o=A+o=B", "O=B+o=A", true},
+		{A: "o=A+o=B", B: "O=B+o=A", Equal: true},
 		// Number of RDN attributes is significant
-		{"o=A+o=B", "O=B+o=A+O=B", false},
+		{A: "o=A+o=B", B: "O=B+o=A+O=B", Equal: false},
 
 		// Missing values are significant
-		{"o=A+o=B", "O=B+o=A+O=C", false}, // missing values matter
-		{"o=A+o=B+o=C", "O=B+o=A", false}, // missing values matter
+		{A: "o=A+o=B", B: "O=B+o=A+O=C", Equal: false}, // missing values matter
+		{A: "o=A+o=B+o=C", B: "O=B+o=A", Equal: false}, // missing values matter
 
 		// Whitespace tests
 		// Matching
 		{
-			"cn=John Doe, ou=People, dc=sun.com",
-			"cn=John Doe, ou=People, dc=sun.com",
-			true,
+			A:     "cn=John Doe, ou=People, dc=sun.com",
+			B:     "cn=John Doe, ou=People, dc=sun.com",
+			Equal: true,
 		},
 		// Difference in leading/trailing chars is ignored
 		{
-			"cn=John Doe, ou=People, dc=sun.com",
-			"cn=John Doe,ou=People,dc=sun.com",
-			true,
+			A:     "cn=John Doe, ou=People, dc=sun.com",
+			B:     "cn=John Doe,ou=People,dc=sun.com",
+			Equal: true,
 		},
 		// Difference in values is significant
 		{
-			"cn=John Doe, ou=People, dc=sun.com",
-			"cn=John  Doe, ou=People, dc=sun.com",
-			false,
+			A:     "cn=John Doe, ou=People, dc=sun.com",
+			B:     "cn=John  Doe, ou=People, dc=sun.com",
+			Equal: false,
 		},
 	}
 
@@ -183,16 +183,16 @@ func TestDNAncestor(t *testing.T) {
 		Ancestor bool
 	}{
 		// Exact match returns false
-		{"", "", false},
-		{"o=A", "o=A", false},
-		{"o=A,o=B", "o=A,o=B", false},
-		{"o=A+o=B", "o=A+o=B", false},
+		{A: "", B: "", Ancestor: false},
+		{A: "o=A", B: "o=A", Ancestor: false},
+		{A: "o=A,o=B", B: "o=A,o=B", Ancestor: false},
+		{A: "o=A+o=B", B: "o=A+o=B", Ancestor: false},
 
 		// Mismatch
-		{"ou=C,ou=B,o=A", "ou=E,ou=D,ou=B,o=A", false},
+		{A: "ou=C,ou=B,o=A", B: "ou=E,ou=D,ou=B,o=A", Ancestor: false},
 
 		// Descendant
-		{"ou=C,ou=B,o=A", "ou=E,ou=C,ou=B,o=A", true},
+		{A: "ou=C,ou=B,o=A", B: "ou=E,ou=C,ou=B,o=A", Ancestor: true},
 	}
 
 	for i, tc := range testcases {

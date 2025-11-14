@@ -336,7 +336,7 @@ type errCtx struct {
 }
 
 func NewErrorCtx(err error, format string, args ...any) error {
-	return &errCtx{err, fmt.Sprintf(format, args...)}
+	return &errCtx{error: err, ctx: fmt.Sprintf(format, args...)}
 }
 
 // Unwrap implement to work with errors.Is and errors.As

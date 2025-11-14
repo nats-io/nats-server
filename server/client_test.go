@@ -1991,10 +1991,10 @@ func TestResponsePermissions(t *testing.T) {
 		name  string
 		perms *ResponsePermission
 	}{
-		{"max_msgs", &ResponsePermission{MaxMsgs: 2, Expires: time.Hour}},
-		{"no_expire_limit", &ResponsePermission{MaxMsgs: 3, Expires: -1 * time.Millisecond}},
-		{"expire", &ResponsePermission{MaxMsgs: 1000, Expires: 100 * time.Millisecond}},
-		{"no_msgs_limit", &ResponsePermission{MaxMsgs: -1, Expires: 100 * time.Millisecond}},
+		{name: "max_msgs", perms: &ResponsePermission{MaxMsgs: 2, Expires: time.Hour}},
+		{name: "no_expire_limit", perms: &ResponsePermission{MaxMsgs: 3, Expires: -1 * time.Millisecond}},
+		{name: "expire", perms: &ResponsePermission{MaxMsgs: 1000, Expires: 100 * time.Millisecond}},
+		{name: "no_msgs_limit", perms: &ResponsePermission{MaxMsgs: -1, Expires: 100 * time.Millisecond}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := DefaultOptions()
@@ -2449,8 +2449,8 @@ func TestCloseConnectionVeryEarly(t *testing.T) {
 		name   string
 		useTLS bool
 	}{
-		{"no_tls", false},
-		{"tls", true},
+		{name: "no_tls", useTLS: false},
+		{name: "tls", useTLS: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := DefaultOptions()
@@ -2527,12 +2527,12 @@ func TestClientConnectionName(t *testing.T) {
 		ws      bool
 		mqtt    bool
 	}{
-		{"client", CLIENT, "cid:", false, false},
-		{"ws client", CLIENT, "wid:", true, false},
-		{"mqtt client", CLIENT, "mid:", false, true},
-		{"route", ROUTER, "rid:", false, false},
-		{"gateway", GATEWAY, "gid:", false, false},
-		{"leafnode", LEAF, "lid:", false, false},
+		{name: "client", kind: CLIENT, kindStr: "cid:", ws: false, mqtt: false},
+		{name: "ws client", kind: CLIENT, kindStr: "wid:", ws: true, mqtt: false},
+		{name: "mqtt client", kind: CLIENT, kindStr: "mid:", ws: false, mqtt: true},
+		{name: "route", kind: ROUTER, kindStr: "rid:", ws: false, mqtt: false},
+		{name: "gateway", kind: GATEWAY, kindStr: "gid:", ws: false, mqtt: false},
+		{name: "leafnode", kind: LEAF, kindStr: "lid:", ws: false, mqtt: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := &client{srv: s, nc: &connString{}, kind: test.kind}
@@ -2603,19 +2603,19 @@ func TestClientLimits(t *testing.T) {
 		expect int32
 	}{
 		// all identical
-		{1, 1, 1, 1},
-		{-1, -1, 0, -1},
+		{client: 1, acc: 1, srv: 1, expect: 1},
+		{client: -1, acc: -1, srv: 0, expect: -1},
 		// only one value unlimited
-		{1, -1, 0, 1},
-		{-1, 1, 0, 1},
-		{-1, -1, 1, 1},
+		{client: 1, acc: -1, srv: 0, expect: 1},
+		{client: -1, acc: 1, srv: 0, expect: 1},
+		{client: -1, acc: -1, srv: 1, expect: 1},
 		// all combinations of distinct values
-		{1, 2, 3, 1},
-		{1, 3, 2, 1},
-		{2, 1, 3, 1},
-		{2, 3, 1, 1},
-		{3, 1, 2, 1},
-		{3, 2, 1, 1},
+		{client: 1, acc: 2, srv: 3, expect: 1},
+		{client: 1, acc: 3, srv: 2, expect: 1},
+		{client: 2, acc: 1, srv: 3, expect: 1},
+		{client: 2, acc: 3, srv: 1, expect: 1},
+		{client: 3, acc: 1, srv: 2, expect: 1},
+		{client: 3, acc: 2, srv: 1, expect: 1},
 	} {
 		t.Run("", func(t *testing.T) {
 			s.opts.MaxPayload = test.srv
@@ -2889,15 +2889,15 @@ func TestTLSClientHandshakeFirstFallbackDelayConfigValues(t *testing.T) {
 		first bool
 		delay time.Duration
 	}{
-		{"first as boolean true", "true", true, 0},
-		{"first as boolean false", "false", false, 0},
-		{"first as string true", "\"true\"", true, 0},
-		{"first as string false", "\"false\"", false, 0},
-		{"first as string on", "on", true, 0},
-		{"first as string off", "off", false, 0},
-		{"first as string auto", "auto", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
-		{"first as string auto_fallback", "auto_fallback", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
-		{"first as fallback duration", "300ms", true, 300 * time.Millisecond},
+		{name: "first as boolean true", val: "true", first: true, delay: 0},
+		{name: "first as boolean false", val: "false", first: false, delay: 0},
+		{name: "first as string true", val: "\"true\"", first: true, delay: 0},
+		{name: "first as string false", val: "\"false\"", first: false, delay: 0},
+		{name: "first as string on", val: "on", first: true, delay: 0},
+		{name: "first as string off", val: "off", first: false, delay: 0},
+		{name: "first as string auto", val: "auto", first: true, delay: DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{name: "first as string auto_fallback", val: "auto_fallback", first: true, delay: DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{name: "first as fallback duration", val: "300ms", first: true, delay: 300 * time.Millisecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.val)))
@@ -3327,8 +3327,8 @@ func TestInProcessAllowedConnectionType(t *testing.T) {
 		ct            string
 		inProcessOnly bool
 	}{
-		{"conf inprocess", jwt.ConnectionTypeInProcess, true},
-		{"conf standard", jwt.ConnectionTypeStandard, false},
+		{name: "conf inprocess", ct: jwt.ConnectionTypeInProcess, inProcessOnly: true},
+		{name: "conf standard", ct: jwt.ConnectionTypeStandard, inProcessOnly: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.ct)))
@@ -3359,8 +3359,8 @@ func TestInProcessAllowedConnectionType(t *testing.T) {
 		ct            string
 		inProcessOnly bool
 	}{
-		{"jwt inprocess", jwt.ConnectionTypeInProcess, true},
-		{"jwt standard", jwt.ConnectionTypeStandard, false},
+		{name: "jwt inprocess", ct: jwt.ConnectionTypeInProcess, inProcessOnly: true},
+		{name: "jwt standard", ct: jwt.ConnectionTypeStandard, inProcessOnly: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			skp, _ := nkeys.FromSeed(oSeed)

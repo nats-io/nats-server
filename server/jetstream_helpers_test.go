@@ -503,7 +503,7 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 		}
 	}
 
-	sc := &supercluster{t, clusters, nproxies}
+	sc := &supercluster{t: t, clusters: clusters, nproxies: nproxies}
 	sc.waitOnLeader()
 	sc.waitOnAllCurrent()
 

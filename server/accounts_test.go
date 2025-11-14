@@ -2929,9 +2929,9 @@ func TestAccountMultiWeightedRouteMappings(t *testing.T) {
 		sub *nats.Subscription
 		w   uint8
 	}{
-		{fsub, 20},
-		{bsub, 50},
-		{zsub, 30},
+		{sub: fsub, w: 20},
+		{sub: bsub, w: 50},
+		{sub: zsub, w: 30},
 	}
 
 	total := 5000
@@ -3025,7 +3025,7 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 		t.Fatalf("Account %q does not have mappings", "synadia")
 	}
 
-	az, err := s.Accountz(&AccountzOptions{"synadia"})
+	az, err := s.Accountz(&AccountzOptions{Account: "synadia"})
 	if err != nil {
 		t.Fatalf("Error getting Accountz: %v", err)
 	}
@@ -3335,7 +3335,7 @@ func TestSamplingHeader(t *testing.T) {
 		b.WriteString("\r\n")
 		hdrString := b.String()
 		c := &client{parseState: parseState{msgBuf: []byte(hdrString), pa: pubArg{hdr: len(hdrString)}}}
-		sample, hdr := shouldSample(&serviceLatency{0, "foo"}, c)
+		sample, hdr := shouldSample(&serviceLatency{sampling: 0, subject: "foo"}, c)
 		if expectSampling {
 			if !sample {
 				t.Fatal("Expected to sample")

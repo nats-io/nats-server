@@ -1163,15 +1163,15 @@ func TestTLSHandshakeFailureMemUsage(t *testing.T) {
 		config string
 	}{
 		{
-			"connect to TLS client port",
-			`
+			name: "connect to TLS client port",
+			config: `
 				port: -1
 				%s
 			`,
 		},
 		{
-			"connect to TLS route port",
-			`
+			name: "connect to TLS route port",
+			config: `
 				port: -1
 				cluster {
 					port: -1
@@ -1180,8 +1180,8 @@ func TestTLSHandshakeFailureMemUsage(t *testing.T) {
 			`,
 		},
 		{
-			"connect to TLS gateway port",
-			`
+			name: "connect to TLS gateway port",
+			config: `
 				port: -1
 				gateway {
 					name: "A"
@@ -1262,8 +1262,8 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 		// ```
 		//
 		{
-			"connect with tls using full RDN sequence",
-			`
+			name: "connect with tls using full RDN sequence",
+			config: `
                                 port: -1
                                 %s
 
@@ -1274,13 +1274,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
                                 }
                         `,
 			// C = US, ST = CA, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
-			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls using full RDN sequence in original order",
-			`
+			name: "connect with tls using full RDN sequence in original order",
+			config: `
 				port: -1
 				%s
 
@@ -1291,13 +1291,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				}
 			`,
 			// C = US, ST = CA, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
-			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls using partial RDN sequence has different permissions",
-			`
+			name: "connect with tls using partial RDN sequence has different permissions",
+			config: `
 				port: -1
 				%s
 
@@ -1311,13 +1311,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				}
 			`,
 			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
-			nats.ClientCert("./configs/certs/rdns/client-b.pem", "./configs/certs/rdns/client-b.key"),
-			nil,
-			errors.New("nats: timeout"),
+			certs: nats.ClientCert("./configs/certs/rdns/client-b.pem", "./configs/certs/rdns/client-b.key"),
+			err:   nil,
+			rerr:  errors.New("nats: timeout"),
 		},
 		{
-			"connect with tls and RDN sequence partially matches",
-			`
+			name: "connect with tls and RDN sequence partially matches",
+			config: `
 				port: -1
 				%s
 
@@ -1337,13 +1337,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			// C = US, ST = CA, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
 			//
-			nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and RDN sequence does not match",
-			`
+			name: "connect with tls and RDN sequence does not match",
+			config: `
 				port: -1
 				%s
 
@@ -1356,13 +1356,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`,
 			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo3, DC = foo4
 			//
-			nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
-			errors.New("nats: Authorization Violation"),
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
+			err:   errors.New("nats: Authorization Violation"),
+			rerr:  nil,
 		},
 		{
-			"connect with tls and RDN sequence with space after comma not should matter",
-			`
+			name: "connect with tls and RDN sequence with space after comma not should matter",
+			config: `
 				port: -1
 				%s
 
@@ -1374,13 +1374,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`,
 			// C=US/ST=California/L=Los Angeles/O=NATS/OU=NATS/CN=localhost/DC=foo1/DC=foo2
 			//
-			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and full RDN sequence respects order",
-			`
+			name: "connect with tls and full RDN sequence respects order",
+			config: `
 				port: -1
 				%s
 
@@ -1393,13 +1393,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
 			//
-			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and full RDN sequence with added domainComponents and spaces also matches",
-			`
+			name: "connect with tls and full RDN sequence with added domainComponents and spaces also matches",
+			config: `
 				port: -1
 				%s
 
@@ -1412,13 +1412,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
 			//
-			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and full RDN sequence with correct order takes precedence over others matches",
-			`
+			name: "connect with tls and full RDN sequence with correct order takes precedence over others matches",
+			config: `
 				port: -1
 				%s
 
@@ -1438,13 +1438,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
 			//
-			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and RDN includes multiple CN elements",
-			`
+			name: "connect with tls and RDN includes multiple CN elements",
+			config: `
 				port: -1
 				%s
 
@@ -1459,13 +1459,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			// Go:       CN=jdoe,OU=Users+OU=Organic Units
 			// RFC2253:  DC=com,DC=acme,OU=Organic Units,OU=Users,CN=jdoe,CN=123456,CN=John Doe
 			//
-			nats.ClientCert("./configs/certs/rdns/client-e.pem", "./configs/certs/rdns/client-e.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-e.pem", "./configs/certs/rdns/client-e.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and DN includes a multi value RDN",
-			`
+			name: "connect with tls and DN includes a multi value RDN",
+			config: `
 				port: -1
 				%s
 
@@ -1480,13 +1480,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			// Go:       CN=John Doe,O=users
 			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
 			//
-			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and DN includes a multi value RDN but there is no match",
-			`
+			name: "connect with tls and DN includes a multi value RDN but there is no match",
+			config: `
 				port: -1
 				%s
 
@@ -1501,13 +1501,13 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			// Go:       CN=John Doe,O=users
 			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
 			//
-			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
-			errors.New("nats: Authorization Violation"),
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			err:   errors.New("nats: Authorization Violation"),
+			rerr:  nil,
 		},
 		{
-			"connect with tls and DN includes a multi value RDN that are reordered",
-			`
+			name: "connect with tls and DN includes a multi value RDN that are reordered",
+			config: `
 				port: -1
 				%s
 
@@ -1522,9 +1522,9 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			// Go:       CN=John Doe,O=users
 			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
 			//
-			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1583,8 +1583,8 @@ func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 		rerr   error
 	}{
 		{
-			"connect with tls and DN includes a multi value RDN that are reordered",
-			`
+			name: "connect with tls and DN includes a multi value RDN that are reordered",
+			config: `
 				port: -1
 				%s
 
@@ -1599,13 +1599,13 @@ func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 			// Go:       CN=John Doe,O=users
 			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
 			//
-			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls and DN includes a multi value RDN that are reordered but not equal RDNs",
-			`
+			name: "connect with tls and DN includes a multi value RDN that are reordered but not equal RDNs",
+			config: `
 				port: -1
 				%s
 
@@ -1620,13 +1620,13 @@ func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 			// Go:       CN=John Doe,O=users
 			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
 			//
-			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
-			errors.New("nats: Authorization Violation"),
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			err:   errors.New("nats: Authorization Violation"),
+			rerr:  nil,
 		},
 		{
-			"connect with tls and DN includes a multi value RDN that are reordered but not equal RDNs",
-			`
+			name: "connect with tls and DN includes a multi value RDN that are reordered but not equal RDNs",
+			config: `
 				port: -1
 				%s
 
@@ -1641,9 +1641,9 @@ func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 			// Go:       CN=John Doe,O=users
 			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
 			//
-			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
-			errors.New("nats: Authorization Violation"),
-			nil,
+			certs: nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			err:   errors.New("nats: Authorization Violation"),
+			rerr:  nil,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1701,8 +1701,8 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 		rerr   error
 	}{
 		{
-			"connect with tls using certificate with URIs",
-			`
+			name: "connect with tls using certificate with URIs",
+			config: `
 				port: -1
 				%s
 
@@ -1714,13 +1714,13 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/client-a.pem", "./configs/certs/svid/client-a.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/svid/client-a.pem", "./configs/certs/svid/client-a.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls using certificate with limited different permissions",
-			`
+			name: "connect with tls using certificate with limited different permissions",
+			config: `
 				port: -1
 				%s
 
@@ -1736,13 +1736,13 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/client-b.pem", "./configs/certs/svid/client-b.key"),
-			nil,
-			errors.New("nats: timeout"),
+			certs: nats.ClientCert("./configs/certs/svid/client-b.pem", "./configs/certs/svid/client-b.key"),
+			err:   nil,
+			rerr:  errors.New("nats: timeout"),
 		},
 		{
-			"connect with tls without URIs in permissions will still match SAN",
-			`
+			name: "connect with tls without URIs in permissions will still match SAN",
+			config: `
 				port: -1
 				%s
 
@@ -1754,13 +1754,13 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/client-b.pem", "./configs/certs/svid/client-b.key"),
-			nil,
-			nil,
+			certs: nats.ClientCert("./configs/certs/svid/client-b.pem", "./configs/certs/svid/client-b.key"),
+			err:   nil,
+			rerr:  nil,
 		},
 		{
-			"connect with tls but no permissions",
-			`
+			name: "connect with tls but no permissions",
+			config: `
 				port: -1
 				%s
 
@@ -1772,9 +1772,9 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/client-a.pem", "./configs/certs/svid/client-a.key"),
-			errors.New("nats: Authorization Violation"),
-			nil,
+			certs: nats.ClientCert("./configs/certs/svid/client-a.pem", "./configs/certs/svid/client-a.key"),
+			err:   errors.New("nats: Authorization Violation"),
+			rerr:  nil,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

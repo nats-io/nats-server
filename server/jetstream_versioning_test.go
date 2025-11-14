@@ -396,8 +396,8 @@ func TestJetStreamMetadataMutations(t *testing.T) {
 
 	// Test for both single server and clustered mode.
 	for _, s := range []server{
-		{1, js, nc},
-		{3, cjs, cnc},
+		{replicas: 1, js: js, nc: nc},
+		{replicas: 3, js: cjs, nc: cnc},
 	} {
 		t.Run(fmt.Sprintf("R%d", s.replicas), func(t *testing.T) {
 			streamMetadataChecks(t, s)
