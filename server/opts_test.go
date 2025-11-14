@@ -1376,6 +1376,15 @@ func TestPingIntervalNew(t *testing.T) {
 	}
 }
 
+func TestOptions_ProcessConfigFileSafely(t *testing.T) {
+	opts := &Options{NoIncludes: true}
+
+	err := opts.ProcessConfigFile("./configs/include_conf_check_a.conf")
+	if err == nil || err.Error() != "file includes are not allowed in safe mode, but got 'include_conf_check_b.conf' on line 4" {
+		t.Fatalf("Expected includes not to be allowed, got %v", err)
+	}
+}
+
 func TestOptionsProcessConfigFile(t *testing.T) {
 	// Create options with default values of Debug and Trace
 	// that are the opposite of what is in the config file.
