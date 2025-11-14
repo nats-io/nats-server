@@ -28,7 +28,7 @@ linters:
         - pattern: ^fmt\.Print(f|ln)?$
     govet:
       enable:
-        - fieldalignment
+        - fieldalignment #do we need this?
       settings:
         printf:
           funcs:
