@@ -963,7 +963,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	mset.mu.RLock()
-	s, jsa, cfg, acc := mset.srv, mset.jsa, mset.cfg, mset.acc
+	s, js, jsa, cfg, acc := mset.srv, mset.js, mset.jsa, mset.cfg, mset.acc
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
@@ -1134,6 +1134,13 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		created:   time.Now().UTC(),
 	}
 
+	// Add created timestamp used for the store, must match that of the consumer assignment if it exists.
+	if ca != nil {
+		js.mu.RLock()
+		o.created = ca.Created
+		js.mu.RUnlock()
+	}
+
 	// Bind internal client to the user account.
 	o.client.registerWithAccount(a)
 	// Bind to the system account.
@@ -1186,7 +1193,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Setup our storage if not a direct consumer.
 	if !config.Direct {
-		store, err := mset.store.ConsumerStore(o.name, config)
+		store, err := mset.store.ConsumerStore(o.name, o.created, config)
 		if err != nil {
 			mset.mu.Unlock()
 			o.deleteWithoutAdvisory()

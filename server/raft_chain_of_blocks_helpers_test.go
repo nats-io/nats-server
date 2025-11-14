@@ -126,6 +126,8 @@ func (sm *RCOBStateMachine) applyEntry(ce *CommittedEntry) {
 			sm.applyBlock(entry.Data)
 		} else if entry.Type == EntrySnapshot {
 			sm.loadSnapshot(entry.Data)
+		} else if entry.Type == EntryCatchup {
+			// Ignore.
 		} else {
 			panic(fmt.Sprintf("[%s] unknown entry type: %s", sm.s.Name(), entry.Type))
 		}

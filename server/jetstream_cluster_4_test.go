@@ -4170,7 +4170,7 @@ func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T
 		updateStreams:   make(map[string]*streamAssignment),
 		updateConsumers: make(map[string]map[string]*consumerAssignment),
 	}
-	err = mjs.applyMetaSnapshot(snap, ru, true)
+	err = mjs.applyMetaSnapshot(snap, ru, true, true)
 	require_NoError(t, err)
 	require_Len(t, len(ru.updateStreams), 1)
 	for _, sa := range ru.updateStreams {
@@ -4240,7 +4240,7 @@ func TestJetStreamClusterMetaSnapshotReCreateConsistency(t *testing.T) {
 	mjs.mu.Lock()
 	mjs.metaRecovering = true
 	mjs.mu.Unlock()
-	_, err = mjs.applyMetaEntries([]*Entry{
+	_, _, err = mjs.applyMetaEntries([]*Entry{
 		newEntry(EntrySnapshot, snap),
 		newEntry(EntryNormal, streamDelete),
 		newEntry(EntryNormal, streamAdd),
@@ -4313,7 +4313,7 @@ func TestJetStreamClusterMetaSnapshotConsumerDeleteConsistency(t *testing.T) {
 	mjs.mu.Lock()
 	mjs.metaRecovering = true
 	mjs.mu.Unlock()
-	_, err = mjs.applyMetaEntries([]*Entry{
+	_, _, err = mjs.applyMetaEntries([]*Entry{
 		newEntry(EntrySnapshot, snap),
 		newEntry(EntryNormal, deleteConsumer),
 	}, ru)
