@@ -51,9 +51,9 @@ const (
 )
 
 type MsgTraceEvent struct {
-	Server  ServerInfo      `json:"server"`
 	Request MsgTraceRequest `json:"request"`
 	Events  MsgTraceEvents  `json:"events"`
+	Server  ServerInfo      `json:"server"`
 	Hops    int             `json:"hops,omitempty"`
 }
 

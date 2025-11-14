@@ -2397,8 +2397,8 @@ func TestFlushOutboundNoSliceReuseIfPartial(t *testing.T) {
 }
 
 type captureNoticeLogger struct {
-	DummyLogger
 	notices []string
+	DummyLogger
 }
 
 func (l *captureNoticeLogger) Noticef(format string, v ...any) {

@@ -218,10 +218,10 @@ type streamExport struct {
 
 // serviceExport holds additional information for exported services.
 type serviceExport struct {
+	acc     *Account
+	latency *serviceLatency
+	rtmr    *time.Timer
 	exportAuth
-	acc        *Account
-	latency    *serviceLatency
-	rtmr       *time.Timer
 	respThresh time.Duration
 	respType   ServiceRespType
 	atrc       bool

@@ -238,22 +238,22 @@ type CounterSources map[string]map[string]string
 
 // StreamInfo shows config and current state for this stream.
 type StreamInfo struct {
-	Config     StreamConfig        `json:"config"`
 	Created    time.Time           `json:"created"`
 	TimeStamp  time.Time           `json:"ts"`
 	Cluster    *ClusterInfo        `json:"cluster,omitempty"`
 	Mirror     *StreamSourceInfo   `json:"mirror,omitempty"`
-	State      StreamState         `json:"state"`
 	Domain     string              `json:"domain,omitempty"`
 	Sources    []*StreamSourceInfo `json:"sources,omitempty"`
 	Alternates []StreamAlternate   `json:"alternates,omitempty"`
+	State      StreamState         `json:"state"`
+	Config     StreamConfig        `json:"config"`
 }
 
 // streamInfoClusterResponse is a response used in a cluster to communicate the stream info
 // back to the meta leader as part of a stream list request.
 type streamInfoClusterResponse struct {
+	OfflineReason string `json:"offline_reason,omitempty"`
 	StreamInfo
-	OfflineReason string `json:"offline_reason,omitempty"` // Reporting when a stream is offline.
 }
 
 type StreamAlternate struct {
@@ -346,7 +346,6 @@ var (
 // Stream is a jetstream stream of messages. When we receive a message internally destined
 // for a Stream we will direct link from the client to this structure.
 type stream struct {
-	cfg                         StreamConfig
 	lqsent                      time.Time
 	created                     time.Time
 	store                       StreamStore
@@ -400,6 +399,7 @@ type stream struct {
 	cList                       []*consumer
 	ddarr                       []*ddentry
 	pubAck                      []byte
+	cfg                         StreamConfig
 	monitorWg                   sync.WaitGroup
 	numFilter                   int
 	clseq                       uint64
@@ -4839,9 +4839,8 @@ var dgPool = sync.Pool{
 
 // For when we need to not inline the request.
 type directGetReq struct {
-	// Copy of this is correct for this.
-	req   JSApiMsgGetRequest
 	reply string
+	req   JSApiMsgGetRequest
 }
 
 // processDirectGetRequest handles direct get request for stream messages.

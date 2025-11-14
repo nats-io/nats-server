@@ -1978,8 +1978,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 
 func TestServerEventsHealthZSingleServer(t *testing.T) {
 	type healthzResp struct {
-		Server  ServerInfo   `json:"server"`
 		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
 	}
 	cfg := fmt.Sprintf(`listen: 127.0.0.1:-1
 
@@ -2295,8 +2295,8 @@ func TestServerEventsHealthZSingleServer(t *testing.T) {
 
 func TestServerEventsHealthZClustered(t *testing.T) {
 	type healthzResp struct {
-		Server  ServerInfo   `json:"server"`
 		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
 	}
 	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
 	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
@@ -2598,8 +2598,8 @@ func TestServerEventsHealthZClustered(t *testing.T) {
 
 func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 	type healthzResp struct {
-		Server  ServerInfo   `json:"server"`
 		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
 	}
 	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
 	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
@@ -2751,8 +2751,8 @@ func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 
 func TestServerEventsHealthZJetStreamNotEnabled(t *testing.T) {
 	type healthzResp struct {
-		Server  ServerInfo   `json:"server"`
 		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
 	}
 	cfg := `listen: 127.0.0.1:-1
 

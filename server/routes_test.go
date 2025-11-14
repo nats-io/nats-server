@@ -2521,8 +2521,8 @@ func TestRoutePoolSizeDifferentOnEachServer(t *testing.T) {
 
 type captureRMsgTrace struct {
 	traces *bytes.Buffer
+	out    []string
 	DummyLogger
-	out []string
 	sync.Mutex
 }
 

@@ -24,9 +24,9 @@ import (
 type parserState int
 type parseState struct {
 	header  http.Header
-	pa      pubArg
 	argBuf  []byte
 	msgBuf  []byte
+	pa      pubArg
 	state   parserState
 	as      int
 	drop    int

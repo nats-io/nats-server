@@ -1179,9 +1179,6 @@ type Varz struct {
 	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`
 	Proxies               *ProxiesOptsVarz       `json:"proxies,omitempty"`
 	HTTPReqStats          map[string]uint64      `json:"http_req_stats"`
-	Gateway               GatewayOptsVarz        `json:"gateway,omitempty"`
-	Cluster               ClusterOptsVarz        `json:"cluster,omitempty"`
-	LeafNode              LeafNodeOptsVarz       `json:"leaf,omitempty"`
 	HTTPHost              string                 `json:"http_host"`
 	IP                    string                 `json:"ip,omitempty"`
 	Name                  string                 `json:"server_name"`
@@ -1202,6 +1199,9 @@ type Varz struct {
 	TrustedOperatorsJwt   []string               `json:"trusted_operators_jwt,omitempty"`
 	Websocket             WebsocketOptsVarz      `json:"websocket,omitempty"`
 	MQTT                  MQTTOptsVarz           `json:"mqtt,omitempty"`
+	LeafNode              LeafNodeOptsVarz       `json:"leaf,omitempty"`
+	Gateway               GatewayOptsVarz        `json:"gateway,omitempty"`
+	Cluster               ClusterOptsVarz        `json:"cluster,omitempty"`
 	TLSTimeout            float64                `json:"tls_timeout"`
 	OutBytes              int64                  `json:"out_bytes"`
 	MaxPending            int64                  `json:"max_pending"`
@@ -2892,17 +2892,17 @@ type RaftzOptions struct {
 
 // StreamDetail shows information about the stream state and its consumers.
 type StreamDetail struct {
-	Name               string              `json:"name"`
 	Created            time.Time           `json:"created"`
 	Cluster            *ClusterInfo        `json:"cluster,omitempty"`
 	Config             *StreamConfig       `json:"config,omitempty"`
-	State              StreamState         `json:"state,omitempty"`
+	Mirror             *StreamSourceInfo   `json:"mirror,omitempty"`
+	Name               string              `json:"name"`
+	RaftGroup          string              `json:"stream_raft_group,omitempty"`
 	Consumer           []*ConsumerInfo     `json:"consumer_detail,omitempty"`
 	DirectConsumer     []*ConsumerInfo     `json:"direct_consumer_detail,omitempty"`
-	Mirror             *StreamSourceInfo   `json:"mirror,omitempty"`
 	Sources            []*StreamSourceInfo `json:"sources,omitempty"`
-	RaftGroup          string              `json:"stream_raft_group,omitempty"`
 	ConsumerRaftGroups []*RaftGroupDetail  `json:"consumer_raft_groups,omitempty"`
+	State              StreamState         `json:"state,omitempty"`
 }
 
 // RaftGroupDetail shows information details about the Raft group.
@@ -2943,8 +2943,8 @@ type JSInfo struct {
 	Limits         *JSLimitOpts     `json:"limits,omitempty"`
 	Meta           *MetaClusterInfo `json:"meta_cluster,omitempty"`
 	ID             string           `json:"server_id"`
-	Config         JetStreamConfig  `json:"config,omitempty"`
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`
+	Config         JetStreamConfig  `json:"config,omitempty"`
 	JetStreamStats
 	ConsumersLeader int    `json:"consumers_leader,omitempty"`
 	Consumers       int    `json:"consumers"`
@@ -4000,20 +4000,20 @@ type RaftzGroup struct {
 	WALError      error                     `json:"wal_error,omitempty"`
 	Peers         map[string]RaftzGroupPeer `json:"peers"`
 	LeaderSince   *time.Time                `json:"leader_since,omitempty"`
-	WAL           StreamState               `json:"wal"`
 	Leader        string                    `json:"leader,omitempty"`
 	State         string                    `json:"state"`
 	TrafficAcc    string                    `json:"traffic_account"`
 	Vote          string                    `json:"voted_for,omitempty"`
 	ID            string                    `json:"id"`
-	Term          uint64                    `json:"term"`
-	IPQEntryLen   int                       `json:"ipq_entry_len"`
-	Size          int                       `json:"size"`
+	WAL           StreamState               `json:"wal"`
 	Applied       uint64                    `json:"applied"`
+	QuorumNeeded  int                       `json:"quorum_needed"`
+	Size          int                       `json:"size"`
+	Term          uint64                    `json:"term"`
 	Committed     uint64                    `json:"committed"`
 	PTerm         uint64                    `json:"pterm"`
 	PIndex        uint64                    `json:"pindex"`
-	QuorumNeeded  int                       `json:"quorum_needed"`
+	IPQEntryLen   int                       `json:"ipq_entry_len"`
 	IPQApplyLen   int                       `json:"ipq_apply_len"`
 	IPQPropLen    int                       `json:"ipq_proposal_len"`
 	IPQRespLen    int                       `json:"ipq_resp_len"`

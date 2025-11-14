@@ -237,9 +237,9 @@ var (
 )
 
 type srvMQTT struct {
-	sessmgr      mqttSessionManager
 	listener     net.Listener
 	listenerErr  error
+	sessmgr      mqttSessionManager
 	authOverride bool
 }
 

@@ -256,10 +256,6 @@ type AuthCallout struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type Options struct {
-	LeafNode                   LeafNodeOpts    `json:"leaf,omitempty"`
-	Cluster                    ClusterOpts     `json:"cluster,omitempty"`
-	Websocket                  WebsocketOpts   `json:"-"`
-	Gateway                    GatewayOpts     `json:"gateway,omitempty"`
 	AccountResolver            AccountResolver `json:"-"`
 	CustomClientAuthentication Authentication  `json:"-"`
 	CustomRouterAuthentication Authentication  `json:"-"`
@@ -277,7 +273,6 @@ type Options struct {
 	AccountResolverTLSConfig   *tls.Config `json:"-"`
 	resolverPinnedAccounts     map[string]struct{}
 	AuthCallout                *AuthCallout `json:"-"`
-	MQTT                       MQTTOpts     `json:"-"`
 	Password                   string       `json:"-"`
 	ConfigFile                 string       `json:"-"`
 	DefaultSentinel            string       `json:"-"`
@@ -314,13 +309,18 @@ type Options struct {
 	TrustedKeys                []string              `json:"-"`
 	Accounts                   []*Account            `json:"-"`
 	TrustedOperators           []*jwt.OperatorClaims `json:"-"`
+	Websocket                  WebsocketOpts         `json:"-"`
+	Gateway                    GatewayOpts           `json:"gateway,omitempty"`
+	MQTT                       MQTTOpts              `json:"-"`
+	LeafNode                   LeafNodeOpts          `json:"leaf,omitempty"`
+	Cluster                    ClusterOpts           `json:"cluster,omitempty"`
 	JetStreamLimits            JSLimitOpts
-	StreamMaxBufferedMsgs      int           `json:"-"`
+	StreamMaxBufferedSize      int64         `json:"-"`
 	WriteDeadline              time.Duration `json:"-"`
 	JetStreamMetaCompact       uint64
 	JetStreamMetaCompactSize   uint64
 	JetStreamMaxCatchup        int64
-	StreamMaxBufferedSize      int64         `json:"-"`
+	StreamMaxBufferedMsgs      int           `json:"-"`
 	JetStreamCipher            StoreCipher   `json:"-"`
 	SyncInterval               time.Duration `json:"-"`
 	Port                       int           `json:"port"`

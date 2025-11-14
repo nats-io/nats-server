@@ -155,8 +155,8 @@ type ServerStatsMsg struct {
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
 type ConnectEventMsg struct {
 	TypedEvent
-	Server ServerInfo `json:"server"`
 	Client ClientInfo `json:"client"`
+	Server ServerInfo `json:"server"`
 }
 
 // ConnectEventMsgType is the schema type for ConnectEventMsg
@@ -166,11 +166,11 @@ const ConnectEventMsgType = "io.nats.server.advisory.v1.client_connect"
 // ConnectEventMsg is closed.
 type DisconnectEventMsg struct {
 	TypedEvent
-	Server   ServerInfo `json:"server"`
-	Client   ClientInfo `json:"client"`
+	Reason   string     `json:"reason"`
 	Sent     DataStats  `json:"sent"`
 	Received DataStats  `json:"received"`
-	Reason   string     `json:"reason"`
+	Client   ClientInfo `json:"client"`
+	Server   ServerInfo `json:"server"`
 }
 
 // DisconnectEventMsgType is the schema type for DisconnectEventMsg
@@ -180,11 +180,11 @@ const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 // A "peer" can be an inbound client connection or a leaf connection to a remote server. Peer in event payload
 // is always the peer's (TLS) leaf cert, which may or may be the invalid cert (See also OCSPPeerChainlinkInvalidEventMsg)
 type OCSPPeerRejectEventMsg struct {
-	Server ServerInfo `json:"server"`
 	TypedEvent
 	Kind   string           `json:"kind"`
 	Reason string           `json:"reason"`
 	Peer   certidp.CertInfo `json:"peer"`
+	Server ServerInfo       `json:"server"`
 }
 
 // OCSPPeerRejectEventMsgType is the schema type for OCSPPeerRejectEventMsg
@@ -194,11 +194,11 @@ const OCSPPeerRejectEventMsgType = "io.nats.server.advisory.v1.ocsp_peer_reject"
 // during a peer TLS handshake. A "peer" can be an inbound client connection or a leaf connection to a remote server.
 // Peer and Link may be the same if the invalid cert was the peer's leaf cert
 type OCSPPeerChainlinkInvalidEventMsg struct {
-	Server ServerInfo `json:"server"`
 	TypedEvent
 	Reason string           `json:"reason"`
 	Link   certidp.CertInfo `json:"link"`
 	Peer   certidp.CertInfo `json:"peer"`
+	Server ServerInfo       `json:"server"`
 }
 
 // OCSPPeerChainlinkInvalidEventMsgType is the schema type for OCSPPeerChainlinkInvalidEventMsg
@@ -215,10 +215,10 @@ type AccountNumConns struct {
 
 // AccountStat contains the data common between AccountNumConns and AccountStatz
 type AccountStat struct {
-	Sent          DataStats `json:"sent"`
-	Received      DataStats `json:"received"`
 	Account       string    `json:"acc"`
 	Name          string    `json:"name"`
+	Sent          DataStats `json:"sent"`
+	Received      DataStats `json:"received"`
 	Conns         int       `json:"conns"`
 	LeafNodes     int       `json:"leafnodes"`
 	TotalConns    int       `json:"total_conns"`
@@ -231,8 +231,8 @@ const AccountNumConnsMsgType = "io.nats.server.advisory.v1.account_connections"
 // accNumConnsReq is sent when we are starting to track an account for the first
 // time. We will request others send info to us about their local state.
 type accNumConnsReq struct {
-	Server  ServerInfo `json:"server"`
 	Account string     `json:"acc"`
+	Server  ServerInfo `json:"server"`
 }
 
 // ServerID is basic static info for a server.
@@ -385,18 +385,18 @@ type ServerStats struct {
 
 // RouteStat holds route statistics.
 type RouteStat struct {
+	Name     string    `json:"name,omitempty"`
 	Sent     DataStats `json:"sent"`
 	Received DataStats `json:"received"`
-	Name     string    `json:"name,omitempty"`
 	ID       uint64    `json:"rid"`
 	Pending  int       `json:"pending"`
 }
 
 // GatewayStat holds gateway statistics.
 type GatewayStat struct {
+	Name       string    `json:"name"`
 	Sent       DataStats `json:"sent"`
 	Received   DataStats `json:"received"`
-	Name       string    `json:"name"`
 	ID         uint64    `json:"gwid"`
 	NumInbound int       `json:"inbound_connections"`
 }
@@ -1963,8 +1963,8 @@ type AccInfoEventOptions struct {
 
 // In the context of system events, ConnzEventOptions are options passed to Connz
 type ConnzEventOptions struct {
-	ConnzOptions
 	EventFilterOptions
+	ConnzOptions
 }
 
 // In the context of system events, RoutezEventOptions are options passed to Routez
@@ -1975,8 +1975,8 @@ type RoutezEventOptions struct {
 
 // In the context of system events, SubzEventOptions are options passed to Subz
 type SubszEventOptions struct {
-	SubszOptions
 	EventFilterOptions
+	SubszOptions
 }
 
 // In the context of system events, VarzEventOptions are options passed to Varz
@@ -1987,8 +1987,8 @@ type VarzEventOptions struct {
 
 // In the context of system events, GatewayzEventOptions are options passed to Gatewayz
 type GatewayzEventOptions struct {
-	EventFilterOptions
 	GatewayzOptions
+	EventFilterOptions
 }
 
 // In the context of system events, LeafzEventOptions are options passed to Leafz
@@ -2017,8 +2017,8 @@ type JszEventOptions struct {
 
 // In the context of system events, HealthzEventOptions are options passed to Healthz
 type HealthzEventOptions struct {
-	EventFilterOptions
 	HealthzOptions
+	EventFilterOptions
 }
 
 // In the context of system events, ProfilezEventOptions are options passed to Profilez
@@ -2034,14 +2034,14 @@ type ExpvarzEventOptions struct {
 
 // In the context of system events, IpqueueszEventOptions are options passed to Ipqueuesz
 type IpqueueszEventOptions struct {
-	EventFilterOptions
 	IpqueueszOptions
+	EventFilterOptions
 }
 
 // In the context of system events, RaftzEventOptions are options passed to Raftz
 type RaftzEventOptions struct {
-	EventFilterOptions
 	RaftzOptions
+	EventFilterOptions
 }
 
 // returns true if the request does NOT apply to this server and can be ignored.

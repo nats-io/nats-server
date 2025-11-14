@@ -32,18 +32,18 @@ import (
 
 // TODO(dlc) - This is a fairly simplistic approach but should do for now.
 type memStore struct {
-	cfg         StreamConfig
-	rmcb        StorageRemoveMsgHandler
+	ageChk      *time.Timer
+	pmsgcb      ProcessJetStreamMsgHandler
 	ttls        *thw.HashWheel
 	msgs        map[uint64]*StoreMsg
 	fss         *stree.SubjectTree[SimpleState]
 	sdm         *SDMMeta
 	scb         StorageUpdateHandler
 	scheduling  *MsgScheduling
-	ageChk      *time.Timer
-	pmsgcb      ProcessJetStreamMsgHandler
-	state       StreamState
+	rmcb        StorageRemoveMsgHandler
 	dmap        avl.SequenceSet
+	state       StreamState
+	cfg         StreamConfig
 	maxp        int64
 	consumers   int
 	ageChkTime  int64

@@ -5567,9 +5567,9 @@ type obsi struct {
 }
 
 type info struct {
-	cfg   StreamConfig
-	state StreamState
 	obs   []obsi
+	state StreamState
+	cfg   StreamConfig
 }
 
 func TestJetStreamSimpleFileRecovery(t *testing.T) {

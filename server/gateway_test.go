@@ -5826,8 +5826,8 @@ func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
 }
 
 type captureGWInterestSwitchLogger struct {
-	DummyLogger
 	imss []string
+	DummyLogger
 }
 
 func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...any) {

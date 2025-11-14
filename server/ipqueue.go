@@ -27,8 +27,8 @@ type ipQueue[T any] struct {
 	pool *sync.Pool
 	m    *sync.Map
 	name string
+	elts []T
 	ipQueueOpts[T]
-	elts       []T
 	inprogress int64
 	pos        int
 	sz         uint64

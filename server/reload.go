@@ -405,9 +405,9 @@ func (u *nkeysOption) Apply(server *Server) {
 // clusterOption implements the option interface for the `cluster` setting.
 type clusterOption struct {
 	authOption
-	newValue        ClusterOpts
 	accsAdded       []string
 	accsRemoved     []string
+	newValue        ClusterOpts
 	permsChanged    bool
 	poolSizeChanged bool
 	compressChanged bool

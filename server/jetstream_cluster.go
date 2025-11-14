@@ -140,10 +140,10 @@ type streamAssignment struct {
 }
 
 type unsupportedStreamAssignment struct {
-	info    StreamInfo
 	sysc    *client
 	infoSub *subscription
 	reason  string
+	info    StreamInfo
 }
 
 func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, err error) *unsupportedStreamAssignment {

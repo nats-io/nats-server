@@ -403,16 +403,16 @@ type ApiPagedRequest struct {
 
 // JSApiAccountInfoResponse reports back information on jetstream for this account.
 type JSApiAccountInfoResponse struct {
-	ApiResponse
 	*JetStreamAccountStats
+	ApiResponse
 }
 
 const JSApiAccountInfoResponseType = "io.nats.jetstream.api.v1.account_info_response"
 
 // JSApiStreamCreateResponse stream creation.
 type JSApiStreamCreateResponse struct {
-	ApiResponse
 	*StreamInfo
+	ApiResponse
 	DidCreate bool `json:"did_create,omitempty"`
 }
 
@@ -436,8 +436,8 @@ type JSApiStreamInfoRequest struct {
 }
 
 type JSApiStreamInfoResponse struct {
-	ApiResponse
 	*StreamInfo
+	ApiResponse
 	ApiPaged
 }
 
@@ -511,8 +511,8 @@ const JSApiConsumerUnpinResponseType = "io.nats.jetstream.api.v1.consumer_unpin_
 
 // JSApiStreamUpdateResponse for updating a stream.
 type JSApiStreamUpdateResponse struct {
-	ApiResponse
 	*StreamInfo
+	ApiResponse
 }
 
 const JSApiStreamUpdateResponseType = "io.nats.jetstream.api.v1.stream_update_response"
@@ -539,21 +539,17 @@ type JSApiStreamSnapshotRequest struct {
 
 // JSApiStreamSnapshotResponse is the direct response to the snapshot request.
 type JSApiStreamSnapshotResponse struct {
-	ApiResponse
-	// Configuration of the given stream.
 	Config *StreamConfig `json:"config,omitempty"`
-	// Current State for the given stream.
-	State *StreamState `json:"state,omitempty"`
+	State  *StreamState  `json:"state,omitempty"`
+	ApiResponse
 }
 
 const JSApiStreamSnapshotResponseType = "io.nats.jetstream.api.v1.stream_snapshot_response"
 
 // JSApiStreamRestoreRequest is the required restore request.
 type JSApiStreamRestoreRequest struct {
-	// Configuration of the given stream.
+	State  StreamState  `json:"state"`
 	Config StreamConfig `json:"config"`
-	// Current State for the given stream.
-	State StreamState `json:"state"`
 }
 
 // JSApiStreamRestoreResponse is the direct response to the restore request.
@@ -661,8 +657,8 @@ type JSApiMsgGetRequest struct {
 }
 
 type JSApiMsgGetResponse struct {
-	ApiResponse
 	Message *StoredMsg `json:"message,omitempty"`
+	ApiResponse
 }
 
 const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_response"
@@ -671,8 +667,8 @@ const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_respons
 const JSWaitQueueDefaultMax = 512
 
 type JSApiConsumerCreateResponse struct {
-	ApiResponse
 	*ConsumerInfo
+	ApiResponse
 }
 
 const JSApiConsumerCreateResponseType = "io.nats.jetstream.api.v1.consumer_create_response"
@@ -691,15 +687,15 @@ type JSApiConsumerPauseRequest struct {
 const JSApiConsumerPauseResponseType = "io.nats.jetstream.api.v1.consumer_pause_response"
 
 type JSApiConsumerPauseResponse struct {
+	PauseUntil time.Time `json:"pause_until"`
 	ApiResponse
-	PauseUntil     time.Time     `json:"pause_until"`
 	PauseRemaining time.Duration `json:"pause_remaining,omitempty"`
 	Paused         bool          `json:"paused"`
 }
 
 type JSApiConsumerInfoResponse struct {
-	ApiResponse
 	*ConsumerInfo
+	ApiResponse
 }
 
 const JSApiConsumerInfoResponseType = "io.nats.jetstream.api.v1.consumer_info_response"
@@ -742,10 +738,10 @@ type jsAPIRoutedReq struct {
 	jsub    *subscription
 	sub     *subscription
 	acc     *Account
-	pa      pubArg
 	subject string
 	reply   string
 	msg     []byte
+	pa      pubArg
 }
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {

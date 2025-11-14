@@ -159,10 +159,10 @@ type psi struct {
 }
 
 type fileStore struct {
-	cfg         FileStreamInfo
-	fcfg        FileStoreConfig
 	lpex        time.Time
 	aek         cipher.AEAD
+	srv         *Server
+	fsld        chan struct{}
 	ttls        *thw.HashWheel
 	sdm         *SDMMeta
 	rmcb        StorageRemoveMsgHandler
@@ -177,19 +177,19 @@ type fileStore struct {
 	oldprf      keyGen
 	qch         chan struct{}
 	lmb         *msgBlock
-	srv         *Server
-	bim         map[uint32]*msgBlock
 	psim        *stree.SubjectTree[psi]
-	fsld        chan struct{}
-	state       StreamState
+	bim         map[uint32]*msgBlock
 	cfs         []ConsumerStore
-	blks        []*msgBlock
 	tombs       []uint64
-	ageChkTime  int64
-	tsl         int
-	sips        int
-	dirty       int
+	blks        []*msgBlock
+	fcfg        FileStoreConfig
+	state       StreamState
+	cfg         FileStreamInfo
 	adml        int
+	sips        int
+	tsl         int
+	ageChkTime  int64
+	dirty       int
 	cmu         sync.RWMutex
 	mu          sync.RWMutex
 	closing     bool
@@ -10713,17 +10713,17 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 ////////////////////////////////////////////////////////////////////////////////
 
 type consumerFileStore struct {
-	state   ConsumerState
 	aek     cipher.AEAD
+	fch     chan struct{}
 	hh      *highwayhash.Digest64
 	fs      *fileStore
 	cfg     *FileConsumerInfo
 	qch     chan struct{}
 	prf     keyGen
-	fch     chan struct{}
 	odir    string
 	ifn     string
 	name    string
+	state   ConsumerState
 	mu      sync.Mutex
 	flusher bool
 	writing bool
