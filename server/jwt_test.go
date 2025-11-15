@@ -6319,11 +6319,11 @@ func TestJWTMappings(t *testing.T) {
 	aKp, aPub := createKey(t)
 	aClaim := jwt.NewAccountClaims(aPub)
 	aJwtNoM := encodeClaim(t, aClaim, aPub)
-	aClaim.AddMapping("foo1", jwt.WeightedMapping{Subject: "bar1"})
+	aClaim.AddMapping("foo1", jwt.WeightedMapping{Subject: "bar1", Weight: 100})
 	aJwtMap1 := encodeClaim(t, aClaim, aPub)
 
 	aClaim.Mappings = map[jwt.Subject][]jwt.WeightedMapping{}
-	aClaim.AddMapping("foo2", jwt.WeightedMapping{Subject: "bar2"})
+	aClaim.AddMapping("foo2", jwt.WeightedMapping{Subject: "bar2", Weight: 100})
 	aJwtMap2 := encodeClaim(t, aClaim, aPub)
 
 	dirSrv := t.TempDir()
