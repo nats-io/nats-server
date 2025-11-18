@@ -10541,6 +10541,75 @@ func TestJetStreamClusterNoInterestDesyncOnConsumerCreate(t *testing.T) {
 	})
 }
 
+// https://github.com/nats-io/nats-server/issues/7545
+func TestJetStreamClusterStreamDesyncAfterMinorityPeerRemove(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	n := mset.raftNode()
+
+	// Shut down a majority of nodes. Peer-removing them should fail, since there's no quorum.
+	var ps []string
+	for _, s := range c.servers {
+		if s == sl || s == rs {
+			continue
+		}
+		ps = append(ps, s.NodeName())
+		s.Shutdown()
+	}
+	for _, p := range ps {
+		require_NoError(t, n.ProposeRemovePeer(p))
+	}
+
+	// There's no quorum, but the leader is listening, so should time out.
+	// If the peer-remove was accounted for before quorum, this message would be accepted by a minority.
+	_, err = js.Publish("foo", nil, nats.AckWait(time.Second))
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Restart the majority, but shut down the minority where we tried to propose peer-removes.
+	for _, s := range c.servers {
+		if s == sl || s == rs {
+			s.Shutdown()
+			continue
+		}
+		c.restartServer(s)
+	}
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	nsl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+
+	nc.Close()
+	nc, js = jsClientConnect(t, nsl)
+	defer nc.Close()
+
+	// A majority of nodes is up, should accept this as the first write.
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	// Restart shut down servers and confirm in sync.
+	c.restartServer(rs)
+	c.restartServer(sl)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

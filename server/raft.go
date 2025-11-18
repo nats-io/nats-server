@@ -937,21 +937,6 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	return nil
 }
 
-// As a leader if we are proposing to remove a peer assume its already gone.
-func (n *raft) doRemovePeerAsLeader(peer string) {
-	n.Lock()
-	if n.removed == nil {
-		n.removed = map[string]time.Time{}
-	}
-	n.removed[peer] = time.Now()
-	if _, ok := n.peers[peer]; ok {
-		delete(n.peers, peer)
-		// We should decrease our cluster size since we are tracking this peer and the peer is most likely already gone.
-		n.adjustClusterSizeAndQuorum()
-	}
-	n.Unlock()
-}
-
 // ProposeRemovePeer is called to remove a peer from the group.
 func (n *raft) ProposeRemovePeer(peer string) error {
 	n.RLock()
@@ -965,12 +950,9 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 		return werr
 	}
 
-	// If we are the leader then we are responsible for processing the
-	// peer remove and then notifying the rest of the group that the
-	// peer was removed.
+	// If we are the leader then we are responsible for notifying the rest of the group that the peer was removed.
 	if isLeader {
 		prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_))
-		n.doRemovePeerAsLeader(peer)
 		return nil
 	}
 
@@ -2680,9 +2662,6 @@ func (n *raft) runAsLeader() {
 
 			es, sz := n.prop.pop(), 0
 			for _, b := range es {
-				if b.Type == EntryRemovePeer {
-					n.doRemovePeerAsLeader(string(b.Data))
-				}
 				entries = append(entries, b.Entry)
 				// Increment size.
 				sz += len(b.Data) + 1
