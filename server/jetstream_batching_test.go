@@ -992,6 +992,20 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			},
 		},
 		{
+			title:             "msg-schedules-rollup-invalid",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleRollup:  {"invalid"},
+					},
+					err: NewJSMessageSchedulesRollupInvalidError(),
+				},
+			},
+		},
+		{
 			title:             "msg-schedules-invalid-schedule",
 			allowMsgSchedules: true,
 			batch: []BatchItem{

@@ -528,6 +528,9 @@ func checkMsgHeadersPreClusteredProposal(
 			} else if scheduleTtl, ok := getMessageScheduleTTL(hdr); !ok {
 				apiErr := NewJSMessageSchedulesTTLInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
+			} else if scheduleRollup := getMessageScheduleRollup(hdr); scheduleRollup != _EMPTY_ && scheduleRollup != JSMsgRollupSubject {
+				apiErr := NewJSMessageSchedulesRollupInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
 			} else if scheduleTtl != _EMPTY_ && !allowTTL {
 				return hdr, msg, 0, NewJSMessageTTLDisabledError(), errMsgTTLDisabled
 			} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
