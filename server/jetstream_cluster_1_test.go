@@ -9633,6 +9633,100 @@ func TestJetStreamClusterScheduledMessageSubjectSourcing(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterScheduledDelayedMessageRollup(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				cfg := &StreamConfig{
+					Name:              "SchedulesEnabled",
+					Subjects:          []string{"foo.*"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+				}
+				_, err := jsStreamCreate(t, nc, cfg)
+				require_NoError(t, err)
+
+				_, err = js.Publish("foo.one", []byte("one"))
+				require_NoError(t, err)
+				_, err = js.Publish("foo.publish", []byte("previous"))
+				require_NoError(t, err)
+
+				// Schedule with an invalid rollup
+				schedule := time.Now().Add(time.Second).Format(time.RFC3339Nano)
+				schedulePattern := fmt.Sprintf("@at %s", schedule)
+				m := nats.NewMsg("foo.schedule")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Schedule-Source", "foo.one")
+				m.Header.Set("Nats-Schedule-Rollup", "invalid")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesRollupInvalidError())
+
+				// Now send with the correct rollup.
+				m.Header.Set("Nats-Schedule-Rollup", "sub")
+				pubAck, err := js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, 3)
+
+				sl := c.streamLeader(globalAccountName, "SchedulesEnabled")
+				mset, err := sl.globalAccount().lookupStream("SchedulesEnabled")
+				require_NoError(t, err)
+
+				// Both the schedule and the previous messages exist.
+				state := mset.state()
+				require_Equal(t, state.LastSeq, 3)
+				require_Equal(t, state.Msgs, 3)
+
+				// Waiting for the delayed message to be published, and rollup the previous message.
+				sawPrevious := false
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					sm, _, err := mset.store.LoadNextMsg("foo.publish", false, 0, nil)
+					if err != nil {
+						return err
+					}
+					if bytes.Equal(sm.msg, []byte("previous")) {
+						sawPrevious = true
+						return errors.New("still previous")
+					}
+					if !sawPrevious {
+						return errors.New("expected previous message to be rolled up")
+					}
+
+					state = mset.state()
+					if state.LastSeq != 4 {
+						return fmt.Errorf("expected last seq 4, got %d", state.LastSeq)
+					} else if state.Msgs != 2 {
+						return fmt.Errorf("expected 2 msgs, got %d", state.Msgs)
+					}
+					return nil
+				})
+
+				// Confirm the scheduled message has the correct data.
+				rsm, err := js.GetLastMsg("SchedulesEnabled", "foo.publish")
+				require_NoError(t, err)
+				require_Equal(t, rsm.Sequence, 4)
+				require_Equal(t, string(rsm.Data), "one")
+				require_Len(t, len(rsm.Header), 3)
+				require_Equal(t, rsm.Header.Get("Nats-Scheduler"), "foo.schedule")
+				require_Equal(t, rsm.Header.Get("Nats-Schedule-Next"), "purge")
+				require_Equal(t, rsm.Header.Get("Nats-Rollup"), "sub")
+
+				// Servers should be synced.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					return checkState(t, c, globalAccountName, "SchedulesEnabled")
+				})
+			})
+		}
+	}
+}
+
 func TestJetStreamClusterScheduledDelayedMessageReversedHeaderOrder(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
