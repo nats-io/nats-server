@@ -2928,15 +2928,15 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 			return
 		}
 		if err == nil {
-			s.Debugf("Trying to connect to route on %s (%s)", rURL.Host, address)
+			// s.Debugf("Trying to connect to route on %s (%s)", rURL.Host, address)
 			conn, err = natsDialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
 		}
 		if err != nil {
 			attempts++
 			if s.shouldReportConnectErr(firstConnect, attempts) {
-				s.Errorf(connErrFmt, attempts, err)
+				//s.Errorf(connErrFmt, attempts, err)
 			} else {
-				s.Debugf(connErrFmt, attempts, err)
+				// s.Debugf(connErrFmt, attempts, err)
 			}
 			if !tryForEver {
 				if opts.Cluster.ConnectRetries <= 0 {

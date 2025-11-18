@@ -209,6 +209,13 @@ const (
 	JSApiServerStreamCancelMove  = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.*.*"
 	JSApiServerStreamCancelMoveT = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.%s.%s"
 
+	// JSApiServerDegradedActivate forces Raft groups to be able to make progress
+	// when there are no other peers. This only works if the cluster size is 2.
+	JSApiServerDegradedActivate = "$JS.SERVER.DEGRADED.ACTIVATE.%s"
+
+	// JSApiServerDegradedStatus reports whether degraded mode is activated.
+	JSApiServerDegradedStatus = "$JS.SERVER.DEGRADED.STATUS.%s"
+
 	// The prefix for system level account API.
 	jsAPIAccountPre = "$JS.API.ACCOUNT."
 
@@ -755,6 +762,17 @@ type JSApiConsumerGetNextRequest struct {
 	NoWait    bool          `json:"no_wait,omitempty"`
 	Heartbeat time.Duration `json:"idle_heartbeat,omitempty"`
 	PriorityGroup
+}
+
+const JSApiDegradedStatusResponseType = "io.nats.jetstream.api.v1.degraded_status"
+
+type JSApiDegradedActivateRequest struct {
+	Active bool `json:"active"`
+}
+
+type JSApiDegradedStatusResponse struct {
+	ApiResponse
+	Active bool `json:"active"`
 }
 
 // Structure that holds state for a JetStream API request that is processed
@@ -2766,15 +2784,13 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers, false)
 }
 
-<<<<<<< HEAD
-=======
 // Request to activate degraded mode (for two-node clusters).
-func (s *Server) jsServerDegradedActivateRequest(_ *subscription, c *client, _ *Account, _, _ string, rmsg []byte) {
+func (s *Server) jsServerDegradedActivateRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 
-	_, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
 		return
@@ -2789,25 +2805,68 @@ func (s *Server) jsServerDegradedActivateRequest(_ *subscription, c *client, _ *
 		return
 	}
 
+	var resp = JSApiDegradedStatusResponse{
+		ApiResponse: ApiResponse{Type: JSApiDegradedStatusResponseType},
+		Active:      raftOverrideDegraded.Load(),
+	}
+	var req JSApiDegradedActivateRequest
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
+		resp.Error = NewJSInvalidJSONError(err)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	defer s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+
 	// TODO(nat): Only allow this for R2?
 	// But what if we have to peer-remove and/or peer-add to recover the system?
 
-	if !raftOverrideDegraded.CompareAndSwap(false, true) {
+	if !raftOverrideDegraded.CompareAndSwap(!req.Active, req.Active) {
 		return
 	}
 
-	s.Warnf("Cluster DEGRADED state enabled")
-
-	s.rnMu.Lock()
-	defer s.rnMu.Unlock()
-	for _, rg := range s.raftNodes {
-		if rg.State() != Leader {
-			rg.(*raft).switchToLeader()
+	switch req.Active {
+	case true:
+		s.Warnf("Cluster DEGRADED override enabled")
+		s.rnMu.Lock()
+		defer s.rnMu.Unlock()
+		for _, rg := range s.raftNodes {
+			if rg.State() != Leader {
+				rg.(*raft).switchToLeader()
+			}
 		}
+	case false:
+		s.Warnf("Cluster DEGRADED override disabled")
 	}
 }
 
->>>>>>> 65d221e30 (NRG: Don't drain response or proposal queues when switching to leader)
+// Request whether or not degraded mode (for two-node clusters) is enabled or not.
+func (s *Server) jsServerDegradedStatusRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	if acc != s.SystemAccount() {
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	var resp = JSApiDegradedStatusResponse{
+		ApiResponse: ApiResponse{Type: JSApiDegradedStatusResponseType},
+		Active:      raftOverrideDegraded.Load(),
+	}
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+}
+
 // Request to have an account purged
 func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {

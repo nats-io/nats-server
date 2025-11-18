@@ -902,6 +902,7 @@ func (n *raft) Propose(data []byte) error {
 	if werr := n.werr; werr != nil {
 		return werr
 	}
+
 	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_))
 	return nil
 }
@@ -2267,7 +2268,7 @@ func (n *raft) runAsFollower() {
 				}
 				n.resetElectionTimeout()
 				n.Unlock()
-			} else {
+			} else if n.State() == Follower { // still
 				n.switchToCandidate()
 				return
 			}
@@ -2908,6 +2909,11 @@ func (n *raft) runAsLeader() {
 
 // Quorum reports the quorum status. Will be called on former leaders.
 func (n *raft) Quorum() bool {
+	// If the cluster is in degraded mode then we won't report loss of quorum.
+	if raftOverrideDegraded.Load() {
+		return true
+	}
+
 	n.RLock()
 	defer n.RUnlock()
 
@@ -2929,6 +2935,11 @@ func (n *raft) lostQuorum() bool {
 }
 
 func (n *raft) lostQuorumLocked() bool {
+	// If the cluster is in degraded mode then we won't report loss of quorum.
+	if raftOverrideDegraded.Load() {
+		return false
+	}
+
 	// In order to avoid false positives that can happen in heavily loaded systems
 	// make sure nothing is queued up that we have not processed yet.
 	// Also make sure we let any scale up actions settle before deciding.
@@ -3311,7 +3322,7 @@ func (n *raft) tryCommit(index uint64) (bool, error) {
 	if n.peers[n.ID()] != nil {
 		acks += 1
 	}
-	if acks < n.qn {
+	if acks < n.qn && !raftOverrideDegraded.Load() {
 		return false, nil
 	}
 	// We have a quorum
@@ -3455,7 +3466,10 @@ func (n *raft) runAsCandidate() {
 		case <-n.quit:
 			return
 		case <-elect.C:
-			n.switchToCandidate()
+			// Only do if we're *still* candidate.
+			if n.State() == Candidate {
+				n.switchToCandidate()
+			}
 			return
 		case <-n.votes.ch:
 			// Because of drain() it is possible that we get nil from popOne().
@@ -4240,7 +4254,7 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 	if !shouldStore {
 		ae.returnToPool()
 	}
-	if n.csz == 1 {
+	if n.csz == 1 || raftOverrideDegraded.Load() {
 		n.tryCommit(n.pindex)
 	}
 	return nil
@@ -4689,8 +4703,14 @@ func (n *raft) wonElection(votes int) bool {
 	return votes >= n.quorumNeeded()
 }
 
+// Controls whether or not Raft groups can make progress without peers.
+var raftOverrideDegraded atomic.Bool
+
 // Return the quorum size for a given cluster config.
 func (n *raft) quorumNeeded() int {
+	if raftOverrideDegraded.Load() {
+		return 1
+	}
 	n.RLock()
 	qn := n.qn
 	n.RUnlock()
@@ -4703,15 +4723,10 @@ func (n *raft) updateLeadChange(isLeader bool) {
 	// so we dequeue any state that is pending and push the new one.
 	for {
 		select {
-		case n.leadc <- isLeader:
-			return
+		case <-n.leadc:
 		default:
-			select {
-			case <-n.leadc:
-			default:
-				// May have been consumed by the "reader" go routine, so go back
-				// to the top of the loop and try to send again.
-			}
+			n.leadc <- isLeader
+			return
 		}
 	}
 }
@@ -4734,7 +4749,13 @@ retry:
 	n.resetElectionTimeout()
 
 	var leadChange bool
-	if pstate == Leader && state != Leader {
+	if raftOverrideDegraded.Load() && state == Leader && n.leaderState.CompareAndSwap(false, true) {
+		leadChange = true
+		n.updateLeadChange(true)
+		// Drain the append entry response and proposal queues.
+		// n.resp.drain()
+		// n.prop.drain()
+	} else if pstate == Leader && state != Leader {
 		leadChange = true
 		n.updateLeadChange(false)
 		// Drain the append entry response and proposal queues.
@@ -4765,7 +4786,7 @@ func (n *raft) switchToFollower(leader string) {
 }
 
 func (n *raft) switchToFollowerLocked(leader string) {
-	if n.State() == Closed {
+	if n.State() == Closed || raftOverrideDegraded.Load() {
 		return
 	}
 
@@ -4786,7 +4807,7 @@ func (n *raft) switchToFollowerLocked(leader string) {
 }
 
 func (n *raft) switchToCandidate() {
-	if n.State() == Closed {
+	if n.State() == Closed || raftOverrideDegraded.Load() {
 		return
 	}
 

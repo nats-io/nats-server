@@ -73,6 +73,9 @@ type jetStreamCluster struct {
 	peerStreamMove *subscription
 	// System level request to cancel a stream move
 	peerStreamCancelMove *subscription
+	// System level requests to manage degraded mode
+	degradedActivate *subscription
+	degradedStatus   *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
 	// To notify others that monitorCluster has actually stopped.
@@ -6553,6 +6556,14 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.peerStreamCancelMove == nil {
 		cc.peerStreamCancelMove, _ = s.systemSubscribe(JSApiServerStreamCancelMove, _EMPTY_, false, c, s.jsLeaderServerStreamCancelMoveRequest)
 	}
+	if cc.degradedActivate == nil {
+		subj := fmt.Sprintf(JSApiServerDegradedActivate, js.srv.Name())
+		cc.degradedActivate, _ = s.systemSubscribe(subj, _EMPTY_, false, c, s.jsServerDegradedActivateRequest)
+	}
+	if cc.degradedStatus == nil {
+		subj := fmt.Sprintf(JSApiServerDegradedStatus, js.srv.Name())
+		cc.degradedStatus, _ = s.systemSubscribe(subj, _EMPTY_, false, c, s.jsServerDegradedStatusRequest)
+	}
 	if js.accountPurge == nil {
 		js.accountPurge, _ = s.systemSubscribe(JSApiAccountPurge, _EMPTY_, false, c, s.jsLeaderAccountPurgeRequest)
 	}
@@ -9267,7 +9278,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Do proposal.
-	_ = node.Propose(esm)
+	node.Propose(esm)
 	// The proposal can fail, but we always account for trying.
 	mset.clseq++
 	mset.trackReplicationTraffic(node, len(esm), r)
