@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3862,6 +3863,63 @@ func TestNRGQuorumAfterLeaderStepdown(t *testing.T) {
 			require_True(t, ps.ts.IsZero()) // Other follower is cleared.
 		}
 	}
+}
+
+func TestNRGPeerRemoveAfterQuorum(t *testing.T) {
+	origHBInterval := hbInterval
+	hbInterval = hbIntervalDefault
+	defer func() {
+		hbInterval = origHBInterval
+	}()
+
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	// Become leader.
+	n.switchToCandidate()
+	n.switchToLeader()
+
+	// Track peers and confirm proper cluster size.
+	require_NoError(t, n.trackPeer(nats0))
+	require_NoError(t, n.trackPeer(nats1))
+	for _, ps := range n.peers {
+		ps.kp = true
+	}
+	require_Equal(t, n.ClusterSize(), 3)
+	require_Equal(t, n.quorumNeeded(), 2)
+	require_Len(t, len(n.peers), 3)
+
+	// The peers will not respond, so proposing a peer remove should not immediately commit.
+	require_NoError(t, n.ProposeRemovePeer(nats0))
+	require_Equal(t, n.ClusterSize(), 3)
+	require_Equal(t, n.quorumNeeded(), 2)
+	require_Len(t, len(n.peers), 3)
+
+	// Also confirm that running as leader, we don't immediately commit the peer-remove.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		n.runAsLeader()
+	}()
+	go func() {
+		defer wg.Done()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			n.RLock()
+			defer n.RUnlock()
+			if n.prop.len() != 0 {
+				return errors.New("prop not empty")
+			}
+			return nil
+		})
+	}()
+	wg.Wait()
+	require_Equal(t, n.ClusterSize(), 3)
+	require_Equal(t, n.quorumNeeded(), 2)
+	require_Len(t, len(n.peers), 3)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
