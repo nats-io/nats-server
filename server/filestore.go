@@ -10821,8 +10821,14 @@ func (fs *fileStore) deleteBlocks() DeleteBlocks {
 // deleteMap returns all interior deletes for each block based on the mb.dmap.
 // Specifically, this will not contain any deletes for blocks that have been removed.
 // This is useful to know whether a tombstone is still relevant and marked as deleted by an active block.
-// All blocks should be at least read locked.
+// No locks should be held.
 func (fs *fileStore) deleteMap() (dmap avl.SequenceSet) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	fs.readLockAllMsgBlocks()
+	defer fs.readUnlockAllMsgBlocks()
+
 	for _, mb := range fs.blks {
 		if mb.dmap.Size() > 0 {
 			mb.dmap.Range(func(seq uint64) bool {
