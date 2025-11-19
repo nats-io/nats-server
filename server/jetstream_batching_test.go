@@ -2902,15 +2902,24 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 		_, err := jsStreamCreate(t, nc, cfg)
 		require_NoError(t, err)
 
-		reply := nats.NewInbox()
-		sub, err := nc.SubscribeSync(reply)
+		inbox := nats.NewInbox()
+		generateReply := func(batchId string, batchSeq uint64, flow uint64, gap string, v int) string {
+			return fmt.Sprintf("%s.%d.%s.%s.%d.%d.$FI", inbox, flow, gap, batchId, batchSeq, v)
+		}
+		generateNormalReply := func(batchId string, batchSeq uint64, gap string) string {
+			return generateReply(batchId, batchSeq, 0, gap, 0)
+		}
+		generateCommitReply := func(batchId string, batchSeq uint64, gap string) string {
+			return generateReply(batchId, batchSeq, 0, gap, 1)
+		}
+
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
 		require_NoError(t, err)
 		defer sub.Drain()
 
 		m := nats.NewMsg("foo.0")
-		m.Reply = reply
+		m.Reply = generateNormalReply("uuid", 0, JSFastBatchGapFail)
 		m.Data = []byte("foo.0")
-		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
 
 		// Publish with batch publish disabled.
 		require_NoError(t, nc.PublishMsg(m))
@@ -2925,17 +2934,18 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 		_, err = jsStreamUpdate(t, nc, cfg)
 		require_NoError(t, err)
 
-		// Publish without batch sequence errors.
+		// Publish with incorrect batch sequence errors.
+		m.Reply = generateNormalReply("uuid", 0, JSFastBatchGapFail)
 		require_NoError(t, nc.PublishMsg(m))
 		rmsg, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
 		pubAck = JSPubAckResponse{}
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
-		require_Error(t, pubAck.Error, NewJSBatchPublishMissingSeqError())
+		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidPatternError())
 
 		// A batch ID must not exceed the maximum length.
 		longBatchId := strings.Repeat("A", 65)
-		m.Header.Set("Nats-Fast-Batch-Id", longBatchId)
+		m.Reply = generateNormalReply(longBatchId, 1, JSFastBatchGapFail)
 		require_NoError(t, nc.PublishMsg(m))
 		rmsg, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
@@ -2945,8 +2955,7 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidBatchIDError())
 
 		// Publish a batch, misses start.
-		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
-		m.Header.Set("Nats-Batch-Sequence", "2")
+		m.Reply = generateNormalReply("uuid", 2, JSFastBatchGapFail)
 		require_NoError(t, nc.PublishMsg(m))
 		rmsg, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
@@ -2955,9 +2964,7 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 		require_Error(t, pubAck.Error, NewJSBatchPublishUnknownBatchIDError())
 
 		// Publish a "batch" which immediately commits.
-		m.Header.Set("Nats-Fast-Batch-Id", "uuid")
-		m.Header.Set("Nats-Batch-Sequence", "1")
-		m.Header.Set("Nats-Batch-Commit", "1")
+		m.Reply = generateCommitReply("uuid", 1, JSFastBatchGapFail)
 		require_NoError(t, nc.PublishMsg(m))
 		rmsg, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
@@ -2973,13 +2980,13 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 		require_Equal(t, pubAck.BatchSize, 1)
 
 		// Publish a batch of N messages.
-		m.Header.Del("Nats-Batch-Commit")
 		for seq, batch := uint64(1), uint64(5); seq <= batch; seq++ {
 			m.Subject = fmt.Sprintf("foo.%d", seq)
 			m.Data = []byte(m.Subject)
-			m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
 			if seq == batch {
-				m.Header.Set("Nats-Batch-Commit", "1")
+				m.Reply = generateCommitReply("uuid", seq, JSFastBatchGapFail)
+			} else {
+				m.Reply = generateNormalReply("uuid", seq, JSFastBatchGapFail)
 			}
 			require_NoError(t, nc.PublishMsg(m))
 

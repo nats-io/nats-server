@@ -2010,10 +2010,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSBatchPublishMissingSeqErr",
+    "constant": "JSBatchPublishInvalidPatternErr",
     "code": 400,
     "error_code": 10203,
-    "description": "batch publish sequence is missing",
+    "description": "batch publish pattern is invalid",
     "comment": "",
     "help": "",
     "url": "",

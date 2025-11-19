@@ -44,8 +44,8 @@ const (
 	// JSBatchPublishInvalidGapModeErr batch publish gap mode is invalid
 	JSBatchPublishInvalidGapModeErr ErrorIdentifier = 10206
 
-	// JSBatchPublishMissingSeqErr batch publish sequence is missing
-	JSBatchPublishMissingSeqErr ErrorIdentifier = 10203
+	// JSBatchPublishInvalidPatternErr batch publish pattern is invalid
+	JSBatchPublishInvalidPatternErr ErrorIdentifier = 10203
 
 	// JSBatchPublishUnknownBatchIDErr batch publish ID unknown
 	JSBatchPublishUnknownBatchIDErr ErrorIdentifier = 10205
@@ -639,7 +639,7 @@ var (
 		JSBatchPublishDisabledErr:                    {Code: 400, ErrCode: 10202, Description: "batch publish is disabled"},
 		JSBatchPublishInvalidBatchIDErr:              {Code: 400, ErrCode: 10204, Description: "batch publish ID is invalid"},
 		JSBatchPublishInvalidGapModeErr:              {Code: 400, ErrCode: 10206, Description: "batch publish gap mode is invalid"},
-		JSBatchPublishMissingSeqErr:                  {Code: 400, ErrCode: 10203, Description: "batch publish sequence is missing"},
+		JSBatchPublishInvalidPatternErr:              {Code: 400, ErrCode: 10203, Description: "batch publish pattern is invalid"},
 		JSBatchPublishUnknownBatchIDErr:              {Code: 400, ErrCode: 10205, Description: "batch publish ID unknown"},
 		JSClusterIncompleteErr:                       {Code: 503, ErrCode: 10004, Description: "incomplete results"},
 		JSClusterNoPeersErrF:                         {Code: 400, ErrCode: 10005, Description: "{err}"},
@@ -999,14 +999,14 @@ func NewJSBatchPublishInvalidGapModeError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSBatchPublishInvalidGapModeErr]
 }
 
-// NewJSBatchPublishMissingSeqError creates a new JSBatchPublishMissingSeqErr error: "batch publish sequence is missing"
-func NewJSBatchPublishMissingSeqError(opts ...ErrorOption) *ApiError {
+// NewJSBatchPublishInvalidPatternError creates a new JSBatchPublishInvalidPatternErr error: "batch publish pattern is invalid"
+func NewJSBatchPublishInvalidPatternError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSBatchPublishMissingSeqErr]
+	return ApiErrors[JSBatchPublishInvalidPatternErr]
 }
 
 // NewJSBatchPublishUnknownBatchIDError creates a new JSBatchPublishUnknownBatchIDErr error: "batch publish ID unknown"
