@@ -100,6 +100,18 @@ func (sg smGroup) unlockAll() {
 	}
 }
 
+// Acquire the lock on all follower nodes.
+func (sg smGroup) lockFollowers() []stateMachine {
+	var locked []stateMachine
+	for _, sm := range sg {
+		if !sm.node().Leader() {
+			locked = append(locked, sm)
+			sm.node().(*raft).Lock()
+		}
+	}
+	return locked[:]
+}
+
 // Create a raft group and place on numMembers servers at random.
 // Filestore based.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
