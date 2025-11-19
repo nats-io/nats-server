@@ -3959,8 +3959,14 @@ func TestMQTTUnsub(t *testing.T) {
 
 func testMQTTExpectDisconnect(t testing.TB, c net.Conn) {
 	t.Helper()
-	if buf, err := testMQTTRead(c); err == nil {
+	buf, err := testMQTTRead(c)
+	if err == nil {
 		t.Fatalf("Expected connection to be disconnected, got %s", buf)
+	}
+	// Distinguish real disconnection (EOF, connection reset) from timeout
+	type timeoutError interface{ Timeout() bool }
+	if te, ok := err.(timeoutError); ok && te.Timeout() {
+		t.Fatalf("Connection still open: timeout waiting for data")
 	}
 }
 
@@ -7724,49 +7730,15 @@ func TestMQTTMaxPayloadEnforced(t *testing.T) {
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	mp := mqttPort(t, s, o)
+	mp := o.MQTT.Port
 	host := o.MQTT.Host
-	if host == _EMPTY_ {
-		host = s.opts.MQTT.Host
-	}
 	mc, _ := testMQTTConnect(t, &mqttConnInfo{clientID: "cid", cleanSess: true}, host, mp)
 	defer mc.Close()
 
 	oversized := bytes.Repeat([]byte{'A'}, 1500)
 	testMQTTSendPublishPacket(t, mc, 0, false, false, "foo", 0, oversized)
 
-	expectMQTTClosedAfterMaxPayload(t, mc, mp)
-}
-
-func mqttPort(t testing.TB, s *Server, o *Options) int {
-	t.Helper()
-	if mp := o.MQTT.Port; mp > 0 {
-		return mp
-	}
-	s.mu.Lock()
-	mp := s.opts.MQTT.Port
-	if mp <= 0 && s.mqtt.listener != nil {
-		mp = s.mqtt.listener.Addr().(*net.TCPAddr).Port
-	}
-	s.mu.Unlock()
-	if mp <= 0 {
-		t.Fatalf("unable to determine MQTT port")
-	}
-	return mp
-}
-
-func expectMQTTClosedAfterMaxPayload(t testing.TB, conn net.Conn, mqttPort int) {
-	t.Helper()
-	w := newMQTTWriter(0)
-	w.WriteByte(mqttPacketPing)
-	w.WriteByte(0)
-	if _, err := testMQTTWrite(conn, w.Bytes()); err != nil {
-		return
-	}
-	resp, err := testMQTTRead(conn)
-	if err == nil && len(resp) > 0 && resp[0]&mqttPacketMask == mqttPacketPingResp {
-		t.Fatalf("MQTT oversized PUBLISH (>max_payload) still accepted; connection remains active (PINGRESP). mqtt-port=%d", mqttPort)
-	}
+	testMQTTExpectDisconnect(t, mc)
 }
 
 //////////////////////////////////////////////////////////////////////////
