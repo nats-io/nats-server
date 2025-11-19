@@ -6438,3 +6438,58 @@ func TestJetStreamClusterAccountFileStoreLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterCorruptMetaSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Restart the server so it generates a snapshot.
+	s := c.randomServer()
+	s.Shutdown()
+	s.WaitForShutdown()
+	s = c.restartServer(s)
+	require_False(t, s.isShuttingDown())
+
+	// Perform a couple leader elections to add a couple more entries to the Raft log.
+	// Once we corrupt the snapshot, we shouldn't recover with only the log.
+	for range 2 {
+		c.waitOnLeader()
+		ml := c.leader()
+		require_NotNil(t, ml)
+		meta := ml.getJetStream().getMetaGroup()
+		require_NoError(t, meta.StepDown())
+	}
+
+	// Stop the meta group of our selected server early, making sure it can't generate a new snapshot.
+	meta := s.getJetStream().getMetaGroup().(*raft)
+	meta.Stop()
+	meta.WaitForStop()
+
+	meta.RLock()
+	snapfile := meta.snapfile
+	meta.RUnlock()
+	configFile := s.getOpts().ConfigFile
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	// Truncate/corrupt the snapshot.
+	require_NoError(t, os.Truncate(snapfile, 0))
+
+	// The server should not start up.
+	opts := LoadConfig(configFile)
+	s, err = NewServer(opts)
+	require_NoError(t, err)
+	s.Start()
+	require_Equal(t, s.numRaftNodes(), 0)
+}
