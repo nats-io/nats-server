@@ -11349,8 +11349,9 @@ func TestFileStoreCompactTombstonesBelowFirstSeq(t *testing.T) {
 
 		lmb.mu.RLock()
 		rbytes := lmb.rbytes
+		shouldCompact := lmb.shouldCompactSync()
 		lmb.mu.RUnlock()
-		require_True(t, lmb.shouldCompactSync())
+		require_True(t, shouldCompact)
 		fs.syncBlocks()
 
 		lmb.mu.RLock()
