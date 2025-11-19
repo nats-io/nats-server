@@ -461,13 +461,17 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.papplied = 0
 	if _, ok := n.wal.(*memStore); ok {
 		_ = os.RemoveAll(filepath.Join(n.sd, snapshotsDir))
-	} else {
-		// See if we have any snapshots and if so load and process on startup.
-		n.setupLastSnapshot()
+	} else if err := n.setupLastSnapshot(); err != nil && err != errNoSnapAvailable {
+		// If we failed to recover from the snapshot, then we should surface
+		// the error upwards, otherwise we can complete recovery but have only
+		// a partial view of the world.
+		n.shutdown()
+		return nil, err
 	}
 
 	// Make sure that the snapshots directory exists.
 	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), defaultDirPerms); err != nil {
+		n.shutdown()
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
@@ -1350,11 +1354,14 @@ func termAndIndexFromSnapFile(sn string) (term, index uint64, err error) {
 // setupLastSnapshot is called at startup to try and recover the last snapshot from
 // the disk if possible. We will try to recover the term, index and commit/applied
 // indices and then notify the upper layer what we found. Compacts the WAL if needed.
-func (n *raft) setupLastSnapshot() {
+func (n *raft) setupLastSnapshot() error {
 	snapDir := filepath.Join(n.sd, snapshotsDir)
 	psnaps, err := os.ReadDir(snapDir)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return errNoSnapAvailable
+		}
+		return err
 	}
 
 	var lterm, lindex uint64
@@ -1378,18 +1385,8 @@ func (n *raft) setupLastSnapshot() {
 			os.Remove(sfile)
 		}
 	}
-
-	// Now cleanup any old entries
-	for _, sf := range psnaps {
-		sfile := filepath.Join(snapDir, sf.Name())
-		if sfile != latest {
-			n.debug("Removing old snapshot: %q", sfile)
-			os.Remove(sfile)
-		}
-	}
-
 	if latest == _EMPTY_ {
-		return
+		return nil
 	}
 
 	// Set latest snapshot we have.
@@ -1399,13 +1396,7 @@ func (n *raft) setupLastSnapshot() {
 	n.snapfile = latest
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
-		// We failed to recover the last snapshot for some reason, so we will
-		// assume it has been corrupted and will try to delete it.
-		if n.snapfile != _EMPTY_ {
-			os.Remove(n.snapfile)
-			n.snapfile = _EMPTY_
-		}
-		return
+		return err
 	}
 
 	// We successfully recovered the last snapshot from the disk.
@@ -1420,7 +1411,19 @@ func (n *raft) setupLastSnapshot() {
 	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
+		return err
 	}
+
+	// Now cleanup any old entries. We only do this once we know that the
+	// latest snapshot was OK.
+	for _, sf := range psnaps {
+		if sfile := filepath.Join(snapDir, sf.Name()); sfile != latest {
+			n.debug("Removing old snapshot: %q", sfile)
+			os.Remove(sfile)
+		}
+	}
+
+	return nil
 }
 
 // loadLastSnapshot will load and return our last snapshot.
@@ -1436,14 +1439,10 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 
 	if err != nil {
 		n.warn("Error reading snapshot: %v", err)
-		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
 		return nil, err
 	}
 	if len(buf) < minSnapshotLen {
 		n.warn("Snapshot corrupt, too short")
-		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
 		return nil, errSnapshotCorrupt
 	}
 
@@ -1455,8 +1454,6 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 	var hb [highwayhash.Size64]byte
 	if !bytes.Equal(lchk[:], n.hh.Sum(hb[:0])) {
 		n.warn("Snapshot corrupt, checksums did not match")
-		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
 		return nil, errSnapshotCorrupt
 	}
 
@@ -1470,12 +1467,12 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 	}
 
 	// We had a bug in 2.9.12 that would allow snapshots on last index of 0.
-	// Detect that here and return err.
+	// Detect that and continue anyway, nothing else we can do about it.
 	if snap.lastIndex == 0 {
 		n.warn("Snapshot with last index 0 is invalid, cleaning up")
 		os.Remove(n.snapfile)
 		n.snapfile = _EMPTY_
-		return nil, errSnapshotCorrupt
+		return nil, nil
 	}
 
 	return snap, nil
