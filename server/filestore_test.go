@@ -1460,7 +1460,7 @@ func TestFileStoreMeta(t *testing.T) {
 		AckPolicy:      AckAll,
 	}
 	oname := "obs22"
-	obs, err := fs.ConsumerStore(oname, &oconfig)
+	obs, err := fs.ConsumerStore(oname, time.Time{}, &oconfig)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1809,11 +1809,11 @@ func TestFileStoreSnapshot(t *testing.T) {
 		}
 
 		// Create a few consumers.
-		o1, err := fs.ConsumerStore("o22", &ConsumerConfig{})
+		o1, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		o2, err := fs.ConsumerStore("o33", &ConsumerConfig{})
+		o2, err := fs.ConsumerStore("o33", time.Time{}, &ConsumerConfig{})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1977,7 +1977,7 @@ func TestFileStoreConsumer(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		o, err := fs.ConsumerStore("obs22", &ConsumerConfig{})
+		o, err := fs.ConsumerStore("obs22", time.Time{}, &ConsumerConfig{})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2504,7 +2504,7 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 		defer fs.Stop()
 
 		cfg := &ConsumerConfig{AckPolicy: AckExplicit}
-		o, err := fs.ConsumerStore("o22", cfg)
+		o, err := fs.ConsumerStore("o22", time.Time{}, cfg)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2513,7 +2513,7 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 			t.Helper()
 			o.Stop()
 			time.Sleep(20 * time.Millisecond) // Wait for all things to settle.
-			o, err = fs.ConsumerStore("o22", cfg)
+			o, err = fs.ConsumerStore("o22", time.Time{}, cfg)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -2569,7 +2569,7 @@ func TestFileStoreConsumerFlusher(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
+		o, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2601,7 +2601,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 		defer fs.Stop()
 
 		// Simple consumer, no ack policy configured.
-		o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
+		o, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2655,7 +2655,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 		defer fs.Stop()
 
 		// Simple consumer, no ack policy configured.
-		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+		o, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2745,7 +2745,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 		}
 		o.Stop()
 
-		o, err = fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+		o, err = fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2847,7 +2847,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+		o, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -4171,7 +4171,7 @@ func TestFileStoreEncrypted(t *testing.T) {
 			fs.StoreMsg(subj, nil, msg, 0)
 		}
 
-		o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
+		o, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{})
 		require_NoError(t, err)
 
 		state := &ConsumerState{}
@@ -4194,7 +4194,7 @@ func TestFileStoreEncrypted(t *testing.T) {
 		require_NoError(t, err)
 		require_True(t, string(sm.msg) == "aes ftw")
 
-		o, err = fs.ConsumerStore("o22", &ConsumerConfig{})
+		o, err = fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{})
 		require_NoError(t, err)
 		rstate, err := o.State()
 		require_NoError(t, err)
@@ -4990,7 +4990,7 @@ func TestFileStoreConsumerStoreEncodeAfterRestart(t *testing.T) {
 			require_NoError(t, err)
 			defer fs.Stop()
 
-			o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+			o, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
 			require_NoError(t, err)
 			defer o.Stop()
 
@@ -5007,7 +5007,7 @@ func TestFileStoreConsumerStoreEncodeAfterRestart(t *testing.T) {
 			require_NoError(t, err)
 			defer fs.Stop()
 
-			o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
+			o, err := fs.ConsumerStore("o22", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
 			require_NoError(t, err)
 			defer o.Stop()
 
@@ -8366,7 +8366,7 @@ func Benchmark_FileStoreCreateConsumerStores(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				oname := fmt.Sprintf("obs22_%d", i)
-				ofs, err := fs.ConsumerStore(oname, &oconfig)
+				ofs, err := fs.ConsumerStore(oname, time.Time{}, &oconfig)
 				require_NoError(b, err)
 				require_NoError(b, ofs.Stop())
 			}

@@ -126,7 +126,7 @@ type StreamStore interface {
 	UpdateConfig(cfg *StreamConfig) error
 	Delete(inline bool) error
 	Stop() error
-	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
+	ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error)
 	AddConsumer(o ConsumerStore) error
 	RemoveConsumer(o ConsumerStore) error
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
