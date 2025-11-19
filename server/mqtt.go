@@ -28,12 +28,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
-	"sync/atomic"
 
-	"github.com/nats-io/nuid"
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nuid"
 )
 
 // References to "spec" here is from https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.pdf
@@ -491,6 +491,24 @@ const (
 	mqttNatsHeaderSubject = "Nmqtt-Subject"
 	mqttNatsHeaderMapped  = "Nmqtt-Mapped"
 )
+
+// EncodedNatsMsgHeaderLen computes the header length of the NATS message
+// after encoding an MQTT PUBLISH message.
+// encodePP: whether to encode complete MQTT PUBLISH packet header information
+//   - false: initial delivery (QoS 0/1) needs only base header
+//   - true: QoS2 storage needs to encode Nmqtt-Subject and Nmqtt-Mapped
+func (pp *mqttPublish) EncodedNatsMsgHeaderLen(encodePP bool) int {
+	headerLen := len(hdrLine) + len(mqttNatsHeader) + 2 + 2 + 2
+	
+	if encodePP {
+		headerLen += len(mqttNatsHeaderSubject) + 1 + len(pp.subject) + 2
+		if len(pp.mapped) > 0 {
+			headerLen += len(mqttNatsHeaderMapped) + 1 + len(pp.mapped) + 2
+		}
+	}
+	
+	return headerLen
+}
 
 type mqttParsedPublishNATSHeader struct {
 	qos     byte
@@ -4062,19 +4080,7 @@ func mqttPubTrace(pp *mqttPublish) string {
 //	Nmqtt-Pub:2foo.bar\r\n
 //	\r\n
 func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, headerLen int) {
-	size := len(hdrLine) +
-		len(mqttNatsHeader) + 2 + 2 + // 2 for ':<qos>', and 2 for CRLF
-		2 + // end-of-header CRLF
-		pp.sz
-	if encodePP {
-		size += len(mqttNatsHeaderSubject) + 1 + // +1 for ':'
-			len(pp.subject) + 2 // 2 for CRLF
-
-		if len(pp.mapped) > 0 {
-			size += len(mqttNatsHeaderMapped) + 1 + // +1 for ':'
-				len(pp.mapped) + 2 // 2 for CRLF
-		}
-	}
+	size := pp.EncodedNatsMsgHeaderLen(encodePP) + pp.sz
 	buf := bytes.NewBuffer(make([]byte, 0, size))
 
 	qos := mqttGetQoS(pp.flags)
@@ -4140,17 +4146,7 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 	// Enforce max_payload using existing client max payload logic (mpay) by
 	// checking the total NATS message size that would be processed.
 	if maxPayload := atomic.LoadInt32(&c.mpay); maxPayload != jwt.NoLimit {
-		// Compute the encoded NATS message length as mqttNewDeliverableMessage does.
-		headerOnlyLen := len(hdrLine) + len(mqttNatsHeader) + 2 + 2 + 2 // header + CRLFs
-		if qos == 2 {
-			// When QoS2 is stored, we still encode PP when storing, but initial delivery path
-			// for QoS2 uses store path; we conservatively include possible subject/mapped headers too
-			headerOnlyLen += len(mqttNatsHeaderSubject) + 1 + len(pp.subject) + 2
-			if len(pp.mapped) > 0 {
-				headerOnlyLen += len(mqttNatsHeaderMapped) + 1 + len(pp.mapped) + 2
-			}
-		}
-		total := headerOnlyLen + pp.sz
+		total := pp.EncodedNatsMsgHeaderLen(qos == 2) + pp.sz
 		if int64(total) > int64(maxPayload) {
 			c.maxPayloadViolation(total, maxPayload)
 			return ErrMaxPayload
