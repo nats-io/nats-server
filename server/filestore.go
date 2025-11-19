@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/ats"
@@ -4290,6 +4292,7 @@ func (mb *msgBlock) setupWriteCache(buf []byte) error {
 	}
 
 	// Looks like there isn't an existing file on disk, mint a new cache.
+	mb.fs.warn("DEBUG: init write cache for block %d", mb.index)
 	mb.cache = &cache{buf: buf}
 	mb.ecache.Set(mb.cache)
 	mb.llts = ats.AccessTime()
@@ -4636,6 +4639,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 		if needsRecord && mb.rbytes > 0 {
 			// We want to make sure since we have no messages
 			// that we write to the beginning since we only need last one.
+			mb.fs.warn("DEBUG: empty cache for block %d from skip seq %d", mb.index, seq)
 			mb.rbytes, mb.cache = 0, &cache{}
 			mb.ecache.Set(mb.cache)
 			// If encrypted we need to reset counter since we just keep one.
@@ -6010,6 +6014,7 @@ func (mb *msgBlock) expireCacheLocked() {
 		mb.cache.buf = nil
 		mb.cache.idx = mb.cache.idx[:0]
 		mb.cache.wp = 0
+		mb.fs.warn("DEBUG: emptied cache for block %d", mb.index)
 	}
 
 	// Check if we can clear out our idx unless under force expire.
@@ -7188,6 +7193,10 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			mb.fs.warn("indexCacheBuf corrupt record state in %s: dlen %d slen %d index %d rl %d lbuf %d", mb.mfn, dlen, slen, index, rl, lbuf)
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
+			assert.Unreachable("indexCacheBuf corrupt record state", map[string]any{
+				"index": mb.index,
+				"stack": string(debug.Stack()),
+			})
 			return errCorruptState
 		}
 
@@ -7282,6 +7291,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mb.cache.wp = int(lbuf)
 	mb.ttls = ttls
 	mb.schedules = schedules
+
+	mb.fs.warn("DEBUG: indexed cache for block %d at wp %d lb %d", mb.index, mb.cache.wp, len(buf))
 
 	return nil
 }
@@ -7388,6 +7399,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Update write pointer.
 	mb.cache.wp = int(wp)
+	mb.fs.warn("DEBUG: update wp for block %d at wp %d", mb.index, mb.cache.wp)
 
 	// Check if we are in sync always mode.
 	if mb.syncAlways {
