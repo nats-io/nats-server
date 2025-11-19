@@ -4157,3 +4157,102 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 		}
 	}
 }
+
+func TestNRGProposeRemovePeer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.leader().node()
+	rg.waitOnLeader()
+
+	peerId := rg.nonLeader().node().ID()
+	require_NoError(t, n.ProposeRemovePeer(peerId))
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		var err error
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				err = errors.New("has not removed peer")
+				break
+			}
+
+		}
+		return err
+	})
+}
+
+func TestNRGProposeRemovePeerConcurrent(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.leader().node()
+
+	locked := rg.lockFollowers()
+
+	// Attempt to remove the first follower, should succeed.
+	err := n.ProposeRemovePeer(locked[0].node().ID())
+	require_NoError(t, err)
+
+	// Check that membership change is in progress.
+	require_True(t, n.MembershipChangeInProgress())
+
+	// Attempt to remove the second follower, should fail.
+	err = n.ProposeRemovePeer(locked[1].node().ID())
+	require_Error(t, err, errMembershipChange)
+
+	for _, l := range locked {
+		l.node().(*raft).Unlock()
+	}
+
+	// Expect only one peer removal to succeed
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		var err error
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				err = errors.New("has not removed peer")
+				break
+			}
+
+		}
+		return err
+	})
+}
+
+func TestNRGUncommittedMembershipChangeOnNewLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	entries := []*Entry{newEntry(EntryRemovePeer, []byte(nats2))}
+	aeRemovePeer := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+
+	// plant a EntryRemovePeer in the log
+	n.processAppendEntry(aeRemovePeer, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_False(t, n.Healthy())
+
+	// become the new leader
+	n.term = 2
+	n.switchToLeader()
+	go n.runAsLeader()
+
+	// expect the membership to be still in progress
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if n.MembershipChangeInProgress() {
+			return nil
+		} else {
+			return errors.New("membership not in progress")
+		}
+	})
+
+	err := n.ProposeRemovePeer(nats1)
+	require_Error(t, err, errMembershipChange)
+}

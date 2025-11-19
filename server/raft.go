@@ -69,6 +69,7 @@ type RaftNode interface {
 	UpdateKnownPeers(knownPeers []string)
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
+	MembershipChangeInProgress() bool
 	AdjustClusterSize(csz int) error
 	AdjustBootClusterSize(csz int) error
 	ClusterSize() int
@@ -229,6 +230,7 @@ type raft struct {
 	observer     bool // The node is observing, i.e. not able to become leader
 	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
+	membChanging bool // There is a membership change proposal in progress
 }
 
 type proposedEntry struct {
@@ -315,6 +317,7 @@ var (
 	errTooManyEntries    = errors.New("raft: append entry can contain a max of 64k entries")
 	errBadAppendEntry    = errors.New("raft: append entry corrupt")
 	errNoInternalClient  = errors.New("raft: no internal client")
+	errMembershipChange  = errors.New("raft: membership change in progress")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -923,19 +926,24 @@ func (n *raft) ForwardProposal(entry []byte) error {
 
 // ProposeAddPeer is called to add a peer to the group.
 func (n *raft) ProposeAddPeer(peer string) error {
-	n.RLock()
+	n.Lock()
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
-		n.RUnlock()
+		n.Unlock()
 		return errNotLeader
 	}
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.RUnlock()
+		n.Unlock()
 		return werr
 	}
+	if n.membChanging {
+		n.Unlock()
+		return errMembershipChange
+	}
 	prop := n.prop
-	n.RUnlock()
+	n.membChanging = true
+	n.Unlock()
 
 	prop.push(newProposedEntry(newEntry(EntryAddPeer, []byte(peer)), _EMPTY_))
 	return nil
@@ -958,29 +966,40 @@ func (n *raft) doRemovePeerAsLeader(peer string) {
 
 // ProposeRemovePeer is called to remove a peer from the group.
 func (n *raft) ProposeRemovePeer(peer string) error {
-	n.RLock()
-	prop, subj := n.prop, n.rpsubj
-	isLeader := n.State() == Leader
-	werr := n.werr
-	n.RUnlock()
+	n.Lock()
 
 	// Error if we had a previous write error.
-	if werr != nil {
+	if werr := n.werr; werr != nil {
+		n.Unlock()
 		return werr
 	}
 
-	// If we are the leader then we are responsible for processing the
-	// peer remove and then notifying the rest of the group that the
-	// peer was removed.
-	if isLeader {
-		prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_))
-		n.doRemovePeerAsLeader(peer)
+	if n.State() != Leader {
+		subj := n.rpsubj
+		n.Unlock()
+
+		// Forward the proposal to the leader
+		n.sendRPC(subj, _EMPTY_, []byte(peer))
 		return nil
 	}
 
-	// Otherwise we need to forward the proposal to the leader.
-	n.sendRPC(subj, _EMPTY_, []byte(peer))
+	if n.membChanging {
+		n.Unlock()
+		return errMembershipChange
+	}
+
+	prop := n.prop
+	n.membChanging = true
+	n.Unlock()
+
+	prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_))
 	return nil
+}
+
+func (n *raft) MembershipChangeInProgress() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.membChanging
 }
 
 // ClusterSize reports back the total cluster size.
@@ -2408,6 +2427,15 @@ type Entry struct {
 	Data []byte
 }
 
+func (e *Entry) ChangesMembership() bool {
+	switch e.Type {
+	case EntryAddPeer, EntryRemovePeer:
+		return true
+	default:
+		return false
+	}
+}
+
 func (ae *appendEntry) String() string {
 	return fmt.Sprintf("&{leader:%s term:%d commit:%d pterm:%d pindex:%d entries: %d}",
 		ae.leader, ae.term, ae.commit, ae.pterm, ae.pindex, len(ae.entries))
@@ -2624,6 +2652,45 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 	prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
 }
 
+// Build and send appendEntry request for the given entry that changes
+// membership (EntryPeerAdd / EntryPeerRemove).
+// Returns true if the entry made it to the WAL and was sent to the followers
+func (n *raft) sendMembershipChange(e *Entry) bool {
+	n.Lock()
+	defer n.Unlock()
+
+	// Only makes sense to call this with entries that change membership
+	if !e.ChangesMembership() {
+		return false
+	}
+
+	err := n.sendAppendEntryLocked([]*Entry{e}, true)
+	if err != nil {
+		n.membChanging = false
+		return false
+	}
+
+	return true
+}
+
+// logContainsUncommittedMembershipChange returns true if the
+// log contains uncommitted entries that change membership.
+// Lock should be held.
+func (n *raft) logContainsUncommittedMembershipChange() (bool, error) {
+	for i := n.commit + 1; i <= n.pindex; i++ {
+		ae, err := n.loadEntry(i)
+		if err != nil {
+			return false, err
+		}
+		if len(ae.entries) > 0 && ae.entries[0].ChangesMembership() {
+			ae.returnToPool()
+			return true, nil
+		}
+		ae.returnToPool()
+	}
+	return false, nil
+}
+
 func (n *raft) runAsLeader() {
 	if n.State() == Closed {
 		return
@@ -2631,6 +2698,22 @@ func (n *raft) runAsLeader() {
 
 	n.Lock()
 	psubj, rpsubj := n.psubj, n.rpsubj
+
+	// Check if there are any uncommitted  membership changes.
+	// If so, we need to make sure we don't  propose any new
+	// ones until those are committed.
+	found, err := n.logContainsUncommittedMembershipChange()
+	if err != nil {
+		n.warn("Error while looking for membership changes in WAL: %v", err)
+		n.stepdownLocked(noLeader)
+		n.Unlock()
+		return
+
+	}
+	if found {
+		n.membChanging = true
+		n.debug("Log contains uncommitted membership change")
+	}
 
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
@@ -2683,8 +2766,12 @@ func (n *raft) runAsLeader() {
 
 			es, sz := n.prop.pop(), 0
 			for _, b := range es {
-				if b.Type == EntryRemovePeer {
-					n.doRemovePeerAsLeader(string(b.Data))
+				if b.ChangesMembership() {
+					sent := n.sendMembershipChange(b.Entry)
+					if sent && b.Type == EntryRemovePeer {
+						n.doRemovePeerAsLeader(string(b.Data))
+					}
+					continue
 				}
 				entries = append(entries, b.Entry)
 				// Increment size.
@@ -3140,6 +3227,9 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// We pass these up as well.
 			committed = append(committed, e)
+		}
+		if e.ChangesMembership() {
+			n.membChanging = false
 		}
 	}
 	// Pass to the upper layers if we have normal entries. It is
@@ -4036,12 +4126,15 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	defer n.Unlock()
 	n.sendAppendEntryLocked(entries, true)
 }
-func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
+
+// Returns nil if an appendEntry was appended to our WAL and sent to followers,
+// an error otherwise.
+func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 	// Safeguard against sending an append entry right after a stepdown from a different goroutine.
 	// Specifically done while holding the lock to not race.
 	if checkLeader && n.State() != Leader {
 		n.debug("Not sending append entry, not leader")
-		return
+		return errNotLeader
 	}
 	ae := n.buildAppendEntry(entries)
 
@@ -4049,14 +4142,14 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
 	var scratch [1024]byte
 	ae.buf, err = ae.encode(scratch[:])
 	if err != nil {
-		return
+		return err
 	}
 
 	// If we have entries store this in our wal.
 	shouldStore := ae.shouldStore()
 	if shouldStore {
 		if err := n.storeToWAL(ae); err != nil {
-			return
+			return err
 		}
 		n.active = time.Now()
 		n.cachePendingEntry(ae)
@@ -4065,6 +4158,7 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) {
 	if !shouldStore {
 		ae.returnToPool()
 	}
+	return nil
 }
 
 // cachePendingEntry saves append entries in memory for faster processing during applyCommit.
@@ -4596,6 +4690,8 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.leaderState.Store(false)
 	n.leaderSince.Store(nil)
 	n.lxfer = false
+	n.membChanging = false
+
 	// Reset acks, we can't assume acks from a previous term are still valid in another term.
 	if len(n.acks) > 0 {
 		n.acks = make(map[uint64]map[string]struct{})
