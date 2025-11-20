@@ -3959,8 +3959,13 @@ func TestMQTTUnsub(t *testing.T) {
 
 func testMQTTExpectDisconnect(t testing.TB, c net.Conn) {
 	t.Helper()
-	if buf, err := testMQTTRead(c); err == nil {
+	buf, err := testMQTTRead(c)
+	if err == nil {
 		t.Fatalf("Expected connection to be disconnected, got %s", buf)
+	}
+	// Distinguish real disconnection (EOF, connection reset) from timeout
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("Expected a disconnect but got a timeout error")
 	}
 }
 
@@ -7711,6 +7716,28 @@ func TestMQTTSparkbBirthHandling(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestMQTTMaxPayloadEnforced(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		server_name: test_mqtt_max_payload
+		port: -1
+		max_payload: 1024
+		mqtt { listen: "127.0.0.1:-1" }
+		jetstream: { domain: "TEST", max_mem_store: 8MB, max_file_store: 8MB, store_dir: "`+t.TempDir()+`" }
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	mp := o.MQTT.Port
+	host := o.MQTT.Host
+	mc, _ := testMQTTConnect(t, &mqttConnInfo{clientID: "cid", cleanSess: true}, host, mp)
+	defer mc.Close()
+
+	oversized := bytes.Repeat([]byte{'A'}, 1500)
+	testMQTTSendPublishPacket(t, mc, 0, false, false, "foo", 0, oversized)
+
+	testMQTTExpectDisconnect(t, mc)
 }
 
 //////////////////////////////////////////////////////////////////////////
