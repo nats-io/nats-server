@@ -3964,9 +3964,8 @@ func testMQTTExpectDisconnect(t testing.TB, c net.Conn) {
 		t.Fatalf("Expected connection to be disconnected, got %s", buf)
 	}
 	// Distinguish real disconnection (EOF, connection reset) from timeout
-	type timeoutError interface{ Timeout() bool }
-	if te, ok := err.(timeoutError); ok && te.Timeout() {
-		t.Fatalf("Connection still open: timeout waiting for data")
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("Expected a disconnect but got a timeout error")
 	}
 }
 
