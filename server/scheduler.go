@@ -169,6 +169,7 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 				ms.remove(seq)
 				return true
 			}
+			rollup := getMessageScheduleRollup(sm.hdr)
 
 			// Copy, as this is retrieved directly from storage, and we'll need to keep hold of this for some time.
 			// And in the case of headers, we'll copy all of them, but make changes.
@@ -187,6 +188,9 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 			hdr = genHeader(hdr, JSScheduleNext, JSScheduleNextPurge) // Purge the schedule message itself.
 			if ttl != _EMPTY_ {
 				hdr = genHeader(hdr, JSMessageTTL, ttl)
+			}
+			if rollup != _EMPTY_ {
+				hdr = genHeader(hdr, JSMsgRollup, rollup)
 			}
 			msgs = append(msgs, &inMsg{seq: seq, subj: target, hdr: hdr, msg: msg})
 			ms.markInflight(sm.subj)
