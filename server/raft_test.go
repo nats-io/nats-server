@@ -4110,3 +4110,71 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 		}
 	}
 }
+
+func TestNRGProposeRemovePeer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.leader().node()
+	rg.waitOnLeader()
+
+	peerId := rg.nonLeader().node().ID()
+	require_NoError(t, n.ProposeRemovePeer(peerId))
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		var err error
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				err = errors.New("has not removed peer")
+				break
+			}
+
+		}
+		return err
+	})
+}
+
+func TestNRGProposeRemovePeerConcurrent(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.leader().node()
+
+	locked := rg.lockFollowers()
+
+	// Attempt to remove all followers
+	for _, l := range locked {
+		n.ProposeRemovePeer(l.node().ID())
+	}
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if n.MembershipChangeInProgress() {
+			return nil
+		} else {
+			return errors.New("membership not in progress")
+		}
+	})
+
+	for _, l := range locked {
+		l.node().(*raft).Unlock()
+	}
+
+	// Expect only one peer removal to succeed
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		var err error
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				err = errors.New("has not removed peer")
+				break
+			}
+
+		}
+		return err
+	})
+}
