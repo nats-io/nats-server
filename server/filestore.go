@@ -6298,10 +6298,16 @@ func (fs *fileStore) runMsgScheduling() {
 	}
 	fs.scheduling.running = true
 
-	scheduledMsgs := fs.scheduling.getScheduledMessages(func(seq uint64, smv *StoreMsg) *StoreMsg {
-		sm, _ := fs.msgForSeqLocked(seq, smv, false)
-		return sm
-	})
+	scheduledMsgs := fs.scheduling.getScheduledMessages(
+		func(seq uint64, smv *StoreMsg) *StoreMsg {
+			sm, _ := fs.msgForSeqLocked(seq, smv, false)
+			return sm
+		},
+		func(subj string, smv *StoreMsg) *StoreMsg {
+			sm, _ := fs.loadLastLocked(subj, smv)
+			return sm
+		},
+	)
 	if len(scheduledMsgs) > 0 {
 		fs.mu.Unlock()
 		for _, msg := range scheduledMsgs {
@@ -8032,7 +8038,11 @@ func (fs *fileStore) LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.loadLastLocked(subj, sm)
+}
 
+// Lock should be held.
+func (fs *fileStore) loadLastLocked(subj string, sm *StoreMsg) (lsm *StoreMsg, err error) {
 	if fs.closed || fs.lmb == nil {
 		return nil, ErrStoreClosed
 	}

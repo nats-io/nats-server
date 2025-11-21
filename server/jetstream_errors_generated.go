@@ -314,6 +314,9 @@ const (
 	// JSMessageSchedulesRollupInvalidErr message schedules invalid rollup
 	JSMessageSchedulesRollupInvalidErr ErrorIdentifier = 10192
 
+	// JSMessageSchedulesSourceInvalidErr message schedules source is invalid
+	JSMessageSchedulesSourceInvalidErr ErrorIdentifier = 10202
+
 	// JSMessageSchedulesTTLInvalidErr message schedules invalid per-message TTL
 	JSMessageSchedulesTTLInvalidErr ErrorIdentifier = 10191
 
@@ -711,6 +714,7 @@ var (
 		JSMessageSchedulesDisabledErr:                {Code: 400, ErrCode: 10188, Description: "message schedules is disabled"},
 		JSMessageSchedulesPatternInvalidErr:          {Code: 400, ErrCode: 10189, Description: "message schedules pattern is invalid"},
 		JSMessageSchedulesRollupInvalidErr:           {Code: 400, ErrCode: 10192, Description: "message schedules invalid rollup"},
+		JSMessageSchedulesSourceInvalidErr:           {Code: 400, ErrCode: 10202, Description: "message schedules source is invalid"},
 		JSMessageSchedulesTTLInvalidErr:              {Code: 400, ErrCode: 10191, Description: "message schedules invalid per-message TTL"},
 		JSMessageSchedulesTargetInvalidErr:           {Code: 400, ErrCode: 10190, Description: "message schedules target is invalid"},
 		JSMessageTTLDisabledErr:                      {Code: 400, ErrCode: 10166, Description: "per-message TTL is disabled"},
@@ -1951,6 +1955,16 @@ func NewJSMessageSchedulesRollupInvalidError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMessageSchedulesRollupInvalidErr]
+}
+
+// NewJSMessageSchedulesSourceInvalidError creates a new JSMessageSchedulesSourceInvalidErr error: "message schedules source is invalid"
+func NewJSMessageSchedulesSourceInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesSourceInvalidErr]
 }
 
 // NewJSMessageSchedulesTTLInvalidError creates a new JSMessageSchedulesTTLInvalidErr error: "message schedules invalid per-message TTL"

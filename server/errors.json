@@ -1998,5 +1998,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSchedulesSourceInvalidErr",
+    "code": 400,
+    "error_code": 10202,
+    "description": "message schedules source is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

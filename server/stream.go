@@ -562,6 +562,7 @@ const (
 	JSSchedulePattern         = "Nats-Schedule"
 	JSScheduleTTL             = "Nats-Schedule-TTL"
 	JSScheduleTarget          = "Nats-Schedule-Target"
+	JSScheduleSource          = "Nats-Schedule-Source"
 )
 
 // Headers for published KV messages.
@@ -4907,6 +4908,14 @@ func getMessageScheduleTarget(hdr []byte) string {
 	return string(getHeader(JSScheduleTarget, hdr))
 }
 
+// Fast lookup of message schedule source.
+func getMessageScheduleSource(hdr []byte) string {
+	if len(hdr) == 0 {
+		return _EMPTY_
+	}
+	return string(getHeader(JSScheduleSource, hdr))
+}
+
 // Fast lookup of message scheduler.
 func getMessageScheduler(hdr []byte) string {
 	if len(hdr) == 0 {
@@ -5708,6 +5717,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
 					!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
 					apiErr := NewJSMessageSchedulesTargetInvalidError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				} else if scheduleSource := getMessageScheduleSource(hdr); scheduleSource != _EMPTY_ &&
+					(scheduleSource == scheduleTarget || scheduleSource == subject || !IsValidPublishSubject(scheduleSource)) {
+					apiErr := NewJSMessageSchedulesSourceInvalidError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
 						resp.Error = apiErr
