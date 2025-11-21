@@ -2916,8 +2916,6 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	if err != nil {
 		// We need to stepdown here when this happens.
 		n.stepdownLocked(noLeader)
-		// We need to reset our state here as well.
-		n.resetWAL()
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
