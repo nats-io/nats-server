@@ -10424,3 +10424,358 @@ func TestJetStreamConsumerNoWaitNoMessagesOnEosWithDeliveredMsgs(t *testing.T) {
 	require_Equal(t, msg.Header.Get("Status"), "404")
 	require_Equal(t, msg.Header.Get("Description"), "No Messages")
 }
+
+func TestJetStreamConsumerResetToSequence(t *testing.T) {
+	test := func(replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		cfg := &nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		}
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+			nats.BindStream("TEST"),
+			nats.MaxAckPending(1),
+			nats.AckWait(time.Second),
+			nats.ConsumerReplicas(replicas),
+		)
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		for i := range 4 {
+			_, err = js.Publish("foo", []byte(fmt.Sprintf("msg%d", i+1)))
+			require_NoError(t, err)
+		}
+
+		// Fetch and ack the first message.
+		msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_Equal(t, string(msgs[0].Data), "msg1")
+		require_NoError(t, msgs[0].AckSync())
+
+		// Now switch the stream to interest now that the messages and consumer are all available.
+		cfg.Retention = nats.InterestPolicy
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		sl := c.streamLeader(globalAccountName, "TEST")
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset, err := sl.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			state := mset.state()
+			if state.FirstSeq != 2 {
+				return fmt.Errorf("expected first seq to be 2, got %v", state)
+			}
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		s := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+
+		type Expected struct{ numPending, numAckPending, dseq, adflr, sseq, asflr uint64 }
+		checkConsumerInfo := func(e Expected) {
+			t.Helper()
+			ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+			require_NoError(t, err)
+			o.mu.RLock()
+			sseq, dseq, adflr, asflr, pending := o.sseq, o.dseq, o.adflr, o.asflr, len(o.pending)
+			o.mu.RUnlock()
+			require_Equal(t, ci.NumPending, e.numPending)
+			// NumAckPending needs to match both in the store and running state.
+			require_Equal(t, ci.NumAckPending, int(e.numAckPending))
+			require_Equal(t, pending, int(e.numAckPending))
+			// Delivered.Consumer needs to match both in the store and running state.
+			require_Equal(t, ci.Delivered.Consumer, e.dseq)
+			require_Equal(t, dseq-1, e.dseq)
+			// AckFloor.Consumer needs to match both in the store and running state.
+			require_Equal(t, ci.AckFloor.Consumer, e.adflr)
+			require_Equal(t, adflr, e.adflr)
+			// Delivered.Stream needs to match both in the store and running state.
+			require_Equal(t, ci.Delivered.Stream, e.sseq)
+			require_Equal(t, sseq-1, e.sseq)
+			// AckFloor.Stream needs to match both in the store and running state.
+			require_Equal(t, ci.AckFloor.Stream, e.asflr)
+			require_Equal(t, asflr, e.asflr)
+		}
+		// A single message was acked, 3 are ready to be delivered.
+		checkConsumerInfo(Expected{
+			numPending: 3, numAckPending: 0,
+			dseq: 1, adflr: 1,
+			sseq: 1, asflr: 1,
+		})
+
+		msgs, err = sub.Fetch(1, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_Equal(t, string(msgs[0].Data), "msg2")
+		// Don't ack.
+
+		// A message has been delivered and needs to be acked still.
+		checkConsumerInfo(Expected{
+			numPending: 2, numAckPending: 1,
+			dseq: 2, adflr: 1,
+			sseq: 2, asflr: 1,
+		})
+
+		// Resetting the consumer with an empty request results in a reset back to the ack floor.
+		var resp JSApiConsumerResetResponse
+		msg, err := nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", nil, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+		require_Equal(t, resp.ResetSeq, 2)
+		require_Equal(t, resp.Delivered.Stream, 1)
+		require_Equal(t, resp.Delivered.Last, nil)
+		require_Equal(t, resp.AckFloor.Stream, 1)
+		require_Equal(t, resp.AckFloor.Last, nil)
+
+		// Should be back.
+		require_Equal(t, resp.NumPending, 3)
+		checkConsumerInfo(Expected{
+			numPending: 3, numAckPending: 0,
+			dseq: 0, adflr: 0,
+			sseq: 1, asflr: 1,
+		})
+
+		// Trying to reset to zero fails.
+		req := JSApiConsumerResetRequest{Seq: 0}
+		data, err := json.Marshal(req)
+		require_NoError(t, err)
+		resp = JSApiConsumerResetResponse{}
+		msg, err = nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", data, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+		require_NotNil(t, resp.Error)
+		require_Error(t, resp.Error, NewJSInvalidJSONError(errors.New("reset to zero seq")))
+
+		// Resetting the consumer to the last message's sequence so it can be delivered still.
+		req = JSApiConsumerResetRequest{Seq: 4}
+		data, err = json.Marshal(req)
+		require_NoError(t, err)
+		resp = JSApiConsumerResetResponse{}
+		msg, err = nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", data, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+		require_Equal(t, resp.ResetSeq, 4)
+		require_Equal(t, resp.Delivered.Stream, 3)
+		require_Equal(t, resp.Delivered.Last, nil)
+		require_Equal(t, resp.AckFloor.Stream, 3)
+		require_Equal(t, resp.AckFloor.Last, nil)
+
+		// One message left as pending, the delivered counts are now zero,
+		// but the sequence and AckFloor are moved up.
+		checkConsumerInfo(Expected{
+			numPending: 1, numAckPending: 0,
+			dseq: 0, adflr: 0,
+			sseq: 3, asflr: 3,
+		})
+
+		// As a result of moving the starting sequence up, some messages
+		// have now lost interest and need to be removed.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset, err := sl.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			state := mset.state()
+			if state.FirstSeq != 4 {
+				return fmt.Errorf("expected first seq to be 4, got %v", state)
+			}
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		// We fetch the last message.
+		msgs, err = sub.Fetch(1, nats.MaxWait(2*time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_Equal(t, string(msgs[0].Data), "msg4")
+		checkConsumerInfo(Expected{
+			numPending: 0, numAckPending: 1,
+			dseq: 1, adflr: 0,
+			sseq: 4, asflr: 3,
+		})
+
+		// After acking, the delivered count should only show 1, but the AckFloor is higher.
+		require_NoError(t, msgs[0].AckSync())
+		checkConsumerInfo(Expected{
+			numPending: 0, numAckPending: 0,
+			dseq: 1, adflr: 1,
+			sseq: 4, asflr: 4,
+		})
+
+		// The stream should now be empty.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset, err := sl.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			state := mset.state()
+			if state.Msgs != 0 || state.FirstSeq != 5 {
+				return fmt.Errorf("stream is not empty: %v", state)
+			}
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			test(replicas)
+		})
+	}
+}
+
+func TestJetStreamConsumerResetToSequenceConstraintOnStartSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.StartSequence(3),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	for i := range 4 {
+		_, err = js.Publish("foo", []byte(fmt.Sprintf("msg%d", i+1)))
+		require_NoError(t, err)
+	}
+
+	// Fetch and ack the first message.
+	msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_Equal(t, string(msgs[0].Data), "msg3")
+	require_NoError(t, msgs[0].AckSync())
+
+	// Trying to reset below the configured starting sequence fails.
+	req := JSApiConsumerResetRequest{Seq: 2}
+	data, err := json.Marshal(req)
+	require_NoError(t, err)
+	var resp JSApiConsumerResetResponse
+	msg, err := nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", data, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+	require_NotNil(t, resp.Error)
+	require_Error(t, resp.Error, NewJSConsumerInvalidResetError(errors.New("below start seq")))
+
+	// Resetting above or equal to the configured starting sequence succeeds.
+	req = JSApiConsumerResetRequest{Seq: 3}
+	data, err = json.Marshal(req)
+	require_NoError(t, err)
+	resp = JSApiConsumerResetResponse{}
+	msg, err = nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", data, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+	require_Equal(t, resp.ResetSeq, 3)
+	require_Equal(t, resp.Delivered.Stream, 2)
+	require_Equal(t, resp.Delivered.Last, nil)
+	require_Equal(t, resp.AckFloor.Stream, 2)
+	require_Equal(t, resp.AckFloor.Last, nil)
+
+	// Fetching should now get the same message.
+	msgs, err = sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_Equal(t, string(msgs[0].Data), "msg3")
+	require_NoError(t, msgs[0].AckSync())
+}
+
+func TestJetStreamConsumerResetToSequenceConstraintOnStartTime(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	for i := range 2 {
+		_, err = js.Publish("foo", []byte(fmt.Sprintf("msg%d", i+1)))
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.StartTime(time.Now()),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	for i := range 2 {
+		_, err = js.Publish("foo", []byte(fmt.Sprintf("msg%d", i+3)))
+		require_NoError(t, err)
+	}
+
+	// Fetch and ack the first message.
+	msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_Equal(t, string(msgs[0].Data), "msg3")
+	require_NoError(t, msgs[0].AckSync())
+
+	// Trying to reset below the configured starting time fails.
+	req := JSApiConsumerResetRequest{Seq: 2}
+	data, err := json.Marshal(req)
+	require_NoError(t, err)
+	var resp JSApiConsumerResetResponse
+	msg, err := nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", data, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+	require_NotNil(t, resp.Error)
+	require_Error(t, resp.Error, NewJSConsumerInvalidResetError(errors.New("below start time")))
+
+	// Resetting to a sequence that has a starting time above or equal to the configured starting time succeeds.
+	req = JSApiConsumerResetRequest{Seq: 3}
+	data, err = json.Marshal(req)
+	require_NoError(t, err)
+	resp = JSApiConsumerResetResponse{}
+	msg, err = nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", data, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+	require_Equal(t, resp.ResetSeq, 3)
+	require_Equal(t, resp.Delivered.Stream, 2)
+	require_Equal(t, resp.Delivered.Last, nil)
+	require_Equal(t, resp.AckFloor.Stream, 2)
+	require_Equal(t, resp.AckFloor.Last, nil)
+
+	// Fetching should now get the same message.
+	msgs, err = sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_Equal(t, string(msgs[0].Data), "msg3")
+	require_NoError(t, msgs[0].AckSync())
+}

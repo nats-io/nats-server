@@ -1998,5 +1998,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerInvalidResetErr",
+    "code": 400,
+    "error_code": 10202,
+    "description": "invalid reset: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

@@ -164,6 +164,9 @@ const (
 	// JSConsumerInvalidPriorityGroupErr Provided priority group does not exist for this consumer
 	JSConsumerInvalidPriorityGroupErr ErrorIdentifier = 10160
 
+	// JSConsumerInvalidResetErr invalid reset: {err}
+	JSConsumerInvalidResetErr ErrorIdentifier = 10202
+
 	// JSConsumerInvalidSamplingErrF failed to parse consumer sampling configuration: {err}
 	JSConsumerInvalidSamplingErrF ErrorIdentifier = 10095
 
@@ -661,6 +664,7 @@ var (
 		JSConsumerInvalidGroupNameErr:                {Code: 400, ErrCode: 10162, Description: "Valid priority group name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters"},
 		JSConsumerInvalidPolicyErrF:                  {Code: 400, ErrCode: 10094, Description: "{err}"},
 		JSConsumerInvalidPriorityGroupErr:            {Code: 400, ErrCode: 10160, Description: "Provided priority group does not exist for this consumer"},
+		JSConsumerInvalidResetErr:                    {Code: 400, ErrCode: 10202, Description: "invalid reset: {err}"},
 		JSConsumerInvalidSamplingErrF:                {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
 		JSConsumerMaxDeliverBackoffErr:               {Code: 400, ErrCode: 10116, Description: "max deliver is required to be > length of backoff values"},
 		JSConsumerMaxPendingAckExcessErrF:            {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds system limit of {limit}"},
@@ -1403,6 +1407,22 @@ func NewJSConsumerInvalidPriorityGroupError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerInvalidPriorityGroupErr]
+}
+
+// NewJSConsumerInvalidResetError creates a new JSConsumerInvalidResetErr error: "invalid reset: {err}"
+func NewJSConsumerInvalidResetError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSConsumerInvalidResetErr]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSConsumerInvalidSamplingError creates a new JSConsumerInvalidSamplingErrF error: "failed to parse consumer sampling configuration: {err}"
