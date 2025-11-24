@@ -3864,6 +3864,53 @@ func TestNRGQuorumAfterLeaderStepdown(t *testing.T) {
 	}
 }
 
+func TestNRGNoLogResetOnCorruptedSendToFollower(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 2)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 2, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().(*stateAdder)
+	follower := rg.nonLeader().(*stateAdder)
+
+	leaderrg := leader.node().(*raft)
+	followerrg := follower.node().(*raft)
+
+	for i := range int64(10) {
+		leader.proposeDelta(i + 1)
+		time.Sleep(50 * time.Millisecond) // ... for multiple AEs.
+	}
+
+	// Snapshot and compact.
+	rg.waitOnTotal(t, 55)
+	leader.snapshot(t)
+
+	// Above snapshot should have resulted in compaction of the WAL.
+	var ss StreamState
+	leaderrg.wal.FastState(&ss)
+	require_Equal(t, ss.Msgs, 0)
+
+	// Stop the follower, we'll flatten their state so they have to
+	// request a snapshot.
+	require_NoError(t, followerrg.wal.Truncate(0))
+	follower.stop()
+
+	// Now we're going to subtly corrupt the snapshot on the leader.
+	stat, err := os.Stat(leaderrg.snapfile)
+	require_NoError(t, err)
+	require_NoError(t, os.Truncate(leaderrg.snapfile, stat.Size()-1))
+
+	// Now we'll bring the follower back. It should request a snapshot
+	// from the leader. Previously this would have caused the leader to
+	// blow away the entire log, but in reality we will probably just
+	// install a new snapshot at some point soon anyway.
+	follower.restart()
+	c.waitOnAllCurrent()
+	leaderrg.wal.FastState(&ss)
+	require_NotEqual(t, ss.LastSeq, 0)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
