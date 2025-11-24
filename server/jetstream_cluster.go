@@ -53,7 +53,7 @@ type jetStreamCluster struct {
 	inflight map[string]map[string]*inflightInfo
 	// Holds a map of a peer ID to the reply subject, to only respond after gaining
 	// quorum on the peer-remove action.
-	peerRemoveReply map[string]string
+	peerRemoveReply map[string]peerRemoveInfo
 	// Signals meta-leader should check the stream assignments.
 	streamsCheck bool
 	// Server.
@@ -85,6 +85,14 @@ type inflightInfo struct {
 	rg   *raftGroup
 	sync string
 	cfg  *StreamConfig
+}
+
+// Used to track inflight peer-remove info to respond 'success' after quorum.
+type peerRemoveInfo struct {
+	ci      *ClientInfo
+	subject string
+	reply   string
+	request string
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -2095,12 +2103,12 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				s := js.srv
 				if s.JetStreamIsLeader() {
 					var (
-						reply string
-						ok    bool
+						info peerRemoveInfo
+						ok   bool
 					)
 					js.mu.Lock()
 					if cc := js.cluster; cc != nil && cc.peerRemoveReply != nil {
-						if reply, ok = cc.peerRemoveReply[peer]; ok {
+						if info, ok = cc.peerRemoveReply[peer]; ok {
 							delete(cc.peerRemoveReply, peer)
 						}
 						if len(cc.peerRemoveReply) == 0 {
@@ -2109,10 +2117,11 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					}
 					js.mu.Unlock()
 
-					if reply != _EMPTY_ {
+					if info.reply != _EMPTY_ {
+						sysAcc := s.SystemAccount()
 						var resp = JSApiMetaServerRemoveResponse{ApiResponse: ApiResponse{Type: JSApiMetaServerRemoveResponseType}}
 						resp.Success = true
-						s.sendInternalAccountMsg(nil, reply, s.jsonResponse(&resp))
+						s.sendAPIResponse(info.ci, sysAcc, info.subject, info.reply, info.request, s.jsonResponse(&resp))
 					}
 				}
 			}

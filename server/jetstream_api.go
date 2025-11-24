@@ -2627,9 +2627,10 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	// So we have a valid peer.
 	if err := meta.ProposeRemovePeer(found); err == nil {
 		if cc.peerRemoveReply == nil {
-			cc.peerRemoveReply = make(map[string]string, 1)
+			cc.peerRemoveReply = make(map[string]peerRemoveInfo, 1)
 		}
-		cc.peerRemoveReply[found] = reply
+		// Only copy the request, the subject and reply are already copied.
+		cc.peerRemoveReply[found] = peerRemoveInfo{ci: ci, subject: subject, reply: reply, request: string(msg)}
 	}
 }
 
