@@ -5341,8 +5341,10 @@ sendToRoutesOrLeafs:
 	// If we do have a deliver subject we need to do something with it.
 	// Again this is when JetStream (but possibly others) wants the system
 	// to rewrite the delivered subject. The way we will do that is place it
-	// at the end of the reply subject if it exists.
-	if len(deliver) > 0 && len(reply) > 0 {
+	// at the end of the reply subject if it exists. But only if this wasn't
+	// already performed, otherwise we'd end up with a duplicate '@' suffix
+	// resulting in a protocol error.
+	if len(deliver) > 0 && len(reply) > 0 && !remapped {
 		reply = append(reply, '@')
 		reply = append(reply, deliver...)
 	}
