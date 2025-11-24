@@ -121,6 +121,9 @@ type StreamConfig struct {
 	// PersistMode allows to opt-in to different persistence mode settings.
 	PersistMode PersistModeType `json:"persist_mode,omitempty"`
 
+	// AllowBatchPublish allows fast batch publishing into the stream.
+	AllowBatchPublish bool `json:"allow_batched,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -272,6 +275,18 @@ type CounterValue struct {
 // CounterSources is the body of the Nats-Counter-Sources header.
 // e.g. {"stream":{"subject":"123"}}
 type CounterSources map[string]map[string]string
+
+// BatchFlowAck is used for flow control when fast batch publishing into a stream.
+type BatchFlowAck struct {
+	// LastSequence is the previously highest sequence seen, this is set when a gap is detected
+	LastSequence uint64 `json:"last_seq,omitempty"`
+	// CurrentSequence is the sequence of the message that triggered the ack
+	CurrentSequence uint64 `json:"seq,omitempty"`
+	// AckMessages indicates the active per-message frequency of Flow Acks
+	AckMessages uint64 `json:"messages,omitempty"`
+	//// AckBytes indicates the active per-bytes frequency of Flow Acks in unit of bytes
+	//AckBytes int64 `json:"bytes,omitempty"`
+}
 
 // StreamInfo shows config and current state for this stream.
 type StreamInfo struct {
@@ -559,6 +574,9 @@ const (
 	JSBatchId                 = "Nats-Batch-Id"
 	JSBatchSeq                = "Nats-Batch-Sequence"
 	JSBatchCommit             = "Nats-Batch-Commit"
+	JSFastBatchId             = "Nats-Fast-Batch-Id"
+	JSBatchGap                = "Nats-Batch-Gap"
+	JSFlow                    = "Nats-Flow"
 	JSSchedulePattern         = "Nats-Schedule"
 	JSScheduleTTL             = "Nats-Schedule-TTL"
 	JSScheduleTarget          = "Nats-Schedule-Target"
@@ -575,6 +593,12 @@ const (
 	JSScheduler         = "Nats-Scheduler"
 	JSScheduleNext      = "Nats-Schedule-Next"
 	JSScheduleNextPurge = "purge" // If it's a non-repeating/delayed message, the schedule is purged.
+)
+
+// Header values for fast batch publish.
+const (
+	JSFastBatchGapFail = "fail"
+	JSFastBatchGapOk   = "ok"
 )
 
 // Headers for republished messages and direct get responses.
@@ -1723,6 +1747,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		if cfg.AllowAtomicPublish {
 			return StreamConfig{}, NewJSMirrorWithAtomicPublishError()
 		}
+		if cfg.AllowBatchPublish {
+			return StreamConfig{}, NewJSMirrorWithBatchPublishError()
+		}
 		if cfg.AllowMsgSchedules {
 			return StreamConfig{}, NewJSMirrorWithMsgSchedulesError()
 		}
@@ -2478,10 +2505,12 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 	}
 
-	// If atomic publish is disabled, delete any in-progress batches.
-	if !cfg.AllowAtomicPublish {
+	// If batch publish is disabled, delete any in-progress batches.
+	if !cfg.AllowAtomicPublish || !cfg.AllowBatchPublish {
 		mset.deleteInflightBatches(false)
-		mset.deleteBatchApplyState()
+		if !cfg.AllowAtomicPublish {
+			mset.deleteBatchApplyState()
+		}
 	}
 
 	// Now update config and store's version of our config.
@@ -3336,6 +3365,10 @@ func (mset *stream) setupMirrorConsumer() error {
 						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
 						// Remove any Nats-Batch- headers, batching is not supported when mirroring.
 						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Batch-")
+						// Remove any Nats-Fast-Batch- headers, batching is not supported when mirroring.
+						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Fast-Batch-")
+						// Remove any Nats-Flow headers, batching is not supported when mirroring.
+						hdr = removeHeaderIfPresent(hdr, "Nats-Flow")
 					}
 					mset.queueInbound(msgs, subject, reply, hdr, msg, nil, nil)
 					mirror.last.Store(time.Now().UnixNano())
@@ -3918,6 +3951,10 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
 		// Remove any Nats-Batch- headers, batching is not supported when sourcing.
 		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Batch-")
+		// Remove any Nats-Fast-Batch- headers, batching is not supported when sourcing.
+		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Fast-Batch-")
+		// Remove any Nats-Flow headers, batching is not supported when sourcing.
+		hdr = removeHeaderIfPresent(hdr, "Nats-Flow")
 	}
 	// Hold onto the origin reply which has all the metadata.
 	hdr = genHeader(hdr, JSStreamSource, si.genSourceHeader(m.subj, m.rply))
@@ -4916,11 +4953,18 @@ func getMessageScheduler(hdr []byte) string {
 }
 
 // Fast lookup of batch ID.
-func getBatchId(hdr []byte) string {
+// Returns whether the batch should be handled as atomic (true) or fast (false).
+func getBatchId(hdr []byte) (string, bool) {
 	if len(hdr) == 0 {
-		return _EMPTY_
+		return _EMPTY_, false
 	}
-	return string(getHeader(JSBatchId, hdr))
+	if atomicBatchId := sliceHeader(JSBatchId, hdr); atomicBatchId != nil {
+		return string(atomicBatchId), true
+	}
+	if fastBatchId := sliceHeader(JSFastBatchId, hdr); fastBatchId != nil {
+		return string(fastBatchId), false
+	}
+	return _EMPTY_, false
 }
 
 // Fast lookup of batch sequence.
@@ -5455,11 +5499,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	var resp = &JSPubAckResponse{}
 
-	var batchId string
-	var batchSeq uint64
+	var (
+		batchId     string
+		batchSeq    uint64
+		batchAtomic bool
+	)
 	if len(hdr) > 0 {
 		// Populate batch details.
-		if batchId = getBatchId(hdr); batchId != _EMPTY_ {
+		if batchId, batchAtomic = getBatchId(hdr); batchId != _EMPTY_ {
 			batchSeq, _ = getBatchSequence(hdr)
 			// Disable consistency checking if this was already done
 			// earlier as part of the batch consistency check.
@@ -6009,6 +6056,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, mset.lseq, ts})
 		}
+		// If using fast batch publish, we occasionally send flow control messages.
+		// And, we need to ensure a PubAck is sent if the commit happens through EOB.
+		if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
+			batches := mset.batches
+			batches.mu.Lock()
+			b, commitReply := batches.fastBatchRegisterSequences(batchId, batchSeq, mset.lseq)
+			if commitReply != _EMPTY_ {
+				reply = commitReply
+				canRespond = doAck && len(reply) > 0 && isLeader
+			} else if canRespond && b != nil {
+				// If not committing, we need to send a flow control message instead.
+				canRespond = false
+				b.fastBatchFlowControl(batchSeq, mset, reply)
+			}
+			batches.mu.Unlock()
+		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
 			if batchId != _EMPTY_ {
@@ -6195,6 +6258,23 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, hdr, rpMsg, nil, seq))
 	}
 
+	// If using fast batch publish, we occasionally send flow control messages.
+	// And, we need to ensure a PubAck is sent if the commit happens through EOB.
+	if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
+		batches := mset.batches
+		batches.mu.Lock()
+		b, commitReply := batches.fastBatchRegisterSequences(batchId, batchSeq, mset.lseq)
+		if commitReply != _EMPTY_ {
+			reply = commitReply
+			canRespond = doAck && len(reply) > 0 && isLeader
+		} else if canRespond && b != nil {
+			// If not committing, we need to send a flow control message instead.
+			canRespond = false
+			b.fastBatchFlowControl(batchSeq, mset, reply)
+		}
+		batches.mu.Unlock()
+	}
+
 	// Send response here.
 	if canRespond {
 		response = append(pubAck, strconv.FormatUint(seq, 10)...)
@@ -6222,19 +6302,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	return nil
 }
 
-// processJetStreamBatchMsg processes a JetStream message that's part of an atomic batch publish.
+// processJetStreamBatchMsg processes a JetStream message that's part of an atomic or fast batch publish.
 // Handles constraints around the batch, storing messages, doing consistency checks, and performing the commit.
-func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
-	// For possible error response.
-	var response []byte
-
+func (mset *stream) processJetStreamBatchMsg(batchId string, atomic bool, subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype := mset.cfg.Name, mset.cfg.Storage
 	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
-	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, allowAtomicPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules, mset.cfg.AllowAtomicPublish
+	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, allowAtomicPublish, allowBatchPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules, mset.cfg.AllowAtomicPublish, mset.cfg.AllowBatchPublish
 	mset.mu.RUnlock()
 
 	// If message tracing (with message delivery), we will need to send the
@@ -6254,26 +6331,27 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		return NewJSClusterNotLeaderError()
 	}
 
+	respondError := func(apiErr *ApiError) error {
+		if canRespond {
+			buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
+			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
+		}
+		return apiErr
+	}
+
 	// Bail here if sealed.
 	if isSealed {
-		var resp = JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}, Error: NewJSStreamSealedError()}
-		b, _ := json.Marshal(resp)
-		mset.outq.sendMsg(reply, b)
-		return NewJSStreamSealedError()
+		return respondError(NewJSStreamSealedError())
 	}
 
 	// Check here pre-emptively if we have exceeded this server limits.
 	if js.limitsExceeded(stype) {
 		s.resourcesExceededError(stype)
-		if canRespond {
-			b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: NewJSInsufficientResourcesError()})
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
-		}
 		// Stepdown regardless.
 		if node := mset.raftNode(); node != nil {
 			node.StepDown()
 		}
-		return NewJSInsufficientResourcesError()
+		return respondError(NewJSInsufficientResourcesError())
 	}
 
 	// Check here pre-emptively if we have exceeded our account limits.
@@ -6282,13 +6360,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			err = NewJSAccountResourcesExceededError()
 		}
 		s.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), err.Error())
-		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-			resp.Error = err
-			response, _ = json.Marshal(resp)
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
-		}
-		return err
+		return respondError(err)
 	}
 
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
@@ -6296,42 +6368,32 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
 		s.RateLimitWarnf("%s", err.Error())
-		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-			resp.Error = NewJSStreamMessageExceedsMaximumError()
-			response, _ = json.Marshal(resp)
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
-		}
+		_ = respondError(NewJSStreamMessageExceedsMaximumError())
 		return err
 	}
 
-	if !allowAtomicPublish {
-		err := NewJSAtomicPublishDisabledError()
-		if canRespond {
-			b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
-		}
-		return err
+	if atomic && !allowAtomicPublish {
+		return respondError(NewJSAtomicPublishDisabledError())
+	} else if !atomic && !allowBatchPublish {
+		return respondError(NewJSBatchPublishDisabledError())
 	}
 
 	// Batch ID is too long.
 	if len(batchId) > 64 {
-		err := NewJSAtomicPublishInvalidBatchIDError()
-		if canRespond {
-			b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
+		err := NewJSBatchPublishInvalidBatchIDError()
+		if atomic {
+			err = NewJSAtomicPublishInvalidBatchIDError()
 		}
-		return err
+		return respondError(err)
 	}
 
 	batchSeq, exists := getBatchSequence(hdr)
 	if !exists {
-		err := NewJSAtomicPublishMissingSeqError()
-		if canRespond {
-			b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
+		err := NewJSBatchPublishMissingSeqError()
+		if atomic {
+			err = NewJSAtomicPublishMissingSeqError()
 		}
-		return err
+		return respondError(err)
 	}
 
 	mset.mu.Lock()
@@ -6345,11 +6407,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 
 	respondIncompleteBatch := func() error {
 		err := NewJSAtomicPublishIncompleteBatchError()
-		if canRespond {
-			buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-		}
-		return err
+		return respondError(err)
 	}
 
 	// Get batch.
@@ -6358,6 +6416,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if !ok {
 		if batchSeq != 1 {
 			batches.mu.Unlock()
+			if !atomic {
+				err := NewJSBatchPublishUnknownBatchIDError()
+				return respondError(err)
+			}
 			maxBatchSize := streamMaxBatchSize
 			opts := s.getOpts()
 			if opts.JetStreamLimits.MaxBatchSize > 0 {
@@ -6365,11 +6427,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			}
 			if batchSeq > uint64(maxBatchSize) {
 				err := NewJSAtomicPublishTooLargeBatchError(maxBatchSize)
-				if canRespond {
-					buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-					outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-				}
-				return err
+				return respondError(err)
 			}
 			return respondIncompleteBatch()
 		}
@@ -6399,10 +6457,28 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 
 		var err error
-		if b, err = batches.newBatchGroup(mset, batchId); err != nil {
-			globalInflightBatches.Add(-1)
-			batches.mu.Unlock()
-			return respondIncompleteBatch()
+		if atomic {
+			b, err = batches.newAtomicBatchGroup(mset, batchId)
+			if err != nil {
+				globalInflightBatches.Add(-1)
+				batches.mu.Unlock()
+				return respondIncompleteBatch()
+			}
+		} else {
+			var gapOk bool
+			if gapMode := bytesToString(sliceHeader(JSBatchGap, hdr)); gapMode == JSFastBatchGapOk {
+				gapOk = true
+			} else if gapMode != _EMPTY_ && gapMode != JSFastBatchGapFail {
+				globalInflightBatches.Add(-1)
+				batches.mu.Unlock()
+				return respondError(NewJSBatchPublishInvalidGapModeError())
+			}
+			ackMessages := uint64(10) // TODO(mvv): just some default for now
+			if flow := sliceHeader(JSFlow, hdr); flow != nil {
+				// TODO(mvv): error handling?
+				ackMessages = uint64(parseInt64(flow))
+			}
+			b = batches.newFastBatchGroup(mset, batchId, gapOk, ackMessages)
 		}
 		batches.group[batchId] = b
 	}
@@ -6415,11 +6491,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			err := NewJSAtomicPublishInvalidBatchCommitError()
-			if canRespond {
-				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
-			}
-			return err
+			return respondError(err)
 		}
 		commit = true
 	}
@@ -6430,22 +6502,95 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			err := NewJSRequiredApiLevelError()
-			if canRespond {
-				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, b, nil, 0))
-			}
-			return err
+			return respondError(err)
 		}
 		hdr = removeHeaderIfPresent(hdr, JSRequiredApiLevel)
 	}
 
+	// Fast publishing resets the cleanup timer.
+	// If cleanup has already happened, we can't continue.
+	cleanup := !atomic && !b.resetCleanupTimer(mset)
+
 	// Detect gaps.
 	b.lseq++
-	if b.lseq != batchSeq {
-		b.cleanupLocked(batchId, batches)
+	if b.lseq != batchSeq || cleanup {
+		reject := true
+		// If a gap is detected, we always report about it.
+		if !atomic {
+			buf, _ := json.Marshal(&BatchFlowAck{LastSequence: b.lseq - 1, CurrentSequence: batchSeq})
+			outq.sendMsg(reply, buf)
+			// If the gap is okay, we can continue without rejecting.
+			if b.gapOk && !cleanup {
+				reject = false
+				b.lseq = batchSeq
+			}
+		}
+		if reject {
+			// Revert, since we incremented for the gap check.
+			b.lseq--
+			if !atomic {
+				batches.fastBatchCommit(b, batchId, mset, reply)
+				batches.mu.Unlock()
+				return nil
+			}
+			b.cleanupLocked(batchId, batches)
+			batches.mu.Unlock()
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
+			return respondIncompleteBatch()
+		}
+	}
+
+	// If not atomic we care about going fast. Proposals happen immediately.
+	if !atomic {
+		if commit {
+			if commitEob {
+				// Revert, since we incremented for the gap check.
+				b.lseq--
+			}
+			// We'll try to immediately send a PubAck if we can.
+			// Only possible if EOB is used and the last message was already persisted
+			// Otherwise, this sets up the commit reply for the last message we're about to propose.
+			batches.fastBatchCommit(b, batchId, mset, reply)
+			if commitEob {
+				batches.mu.Unlock()
+				return nil
+			}
+		}
 		batches.mu.Unlock()
-		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
-		return respondIncompleteBatch()
+
+		// The first message in the batch responds with the settings used for flow control.
+		if batchSeq == 1 && canRespond {
+			buf, _ := json.Marshal(&BatchFlowAck{AckMessages: b.ackMessages})
+			outq.sendMsg(reply, buf)
+		}
+
+		// Proceed with proposing this message.
+
+		// We only use mset.clseq for clustering and in case we run ahead of actual commits.
+		// Check if we need to set initial value here
+		mset.clMu.Lock()
+		if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
+			lseq = recalculateClusteredSeq(mset)
+		}
+
+		var err error
+		diff := &batchStagedDiff{}
+		if hdr, msg, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+			mset.clMu.Unlock()
+			// FIXME(mvv): errors need to be handled for fast batch publish, return both a success PubAck and error?
+			return err
+		}
+		// We only reply if we're committing, or if we've reached the ack threshold.
+		if !commit && batchSeq%b.ackMessages != 0 {
+			reply = _EMPTY_
+		}
+		if !isClustered {
+			mset.clMu.Unlock()
+			return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, false, true)
+		}
+		commitSingleMsg(diff, mset, subject, reply, hdr, msg, name, jsa, mt, node, r, lseq)
+		mset.clMu.Unlock()
+		return nil
 	}
 
 	// Confirm the batch doesn't exceed the allowed size.
@@ -6458,11 +6603,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		batches.mu.Unlock()
 		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchLarge)
 		err := NewJSAtomicPublishTooLargeBatchError(maxSize)
-		if canRespond {
-			buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-		}
-		return err
+		return respondError(err)
 	}
 
 	// Persist, but optimize if we're committing because we already know last.
@@ -6508,25 +6649,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
 	if isClustered && (mset.clseq == 0 || mset.clseq < lseq+mset.clfs) {
-		// Need to unlock and re-acquire the locks in the proper order.
-		mset.clMu.Unlock()
-		// Locking order is stream -> batchMu -> clMu
-		mset.mu.RLock()
-		batch := mset.batchApply
-		var batchCount uint64
-		if batch != nil {
-			batch.mu.Lock()
-			batchCount = batch.count
-		}
-		mset.clMu.Lock()
-		// Re-capture
-		lseq = mset.lseq
-		mset.clseq = lseq + mset.clfs + batchCount
-		// Keep hold of the mset.clMu, but unlock the others.
-		if batch != nil {
-			batch.mu.Unlock()
-		}
-		mset.mu.RUnlock()
+		lseq = recalculateClusteredSeq(mset)
 	}
 
 	rollback := func(seq uint64) {
@@ -6543,10 +6666,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		rollback(seq)
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
-		if canRespond {
-			buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-		}
+		_ = respondError(apiErr)
 		return apiErr
 	}
 
@@ -6589,10 +6709,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			rollback(seq)
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
-			if canRespond {
-				buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
-				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
-			}
+			_ = respondError(apiErr)
 			return err
 		}
 
@@ -6641,7 +6758,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 					bhdr = genHeader(bhdr, JSBatchCommit, "1")
 				}
 			}
-			mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false)
+			_ = mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false)
 		}
 		mset.mu.Unlock()
 	} else {
@@ -6968,8 +7085,8 @@ func (mset *stream) internalLoop() {
 			ims := msgs.pop()
 			for _, im := range ims {
 				// If we are clustered we need to propose this message to the underlying raft group.
-				if batchId := getBatchId(im.hdr); batchId != _EMPTY_ {
-					mset.processJetStreamBatchMsg(batchId, im.subj, im.rply, im.hdr, im.msg, im.mt)
+				if batchId, atomic := getBatchId(im.hdr); batchId != _EMPTY_ {
+					mset.processJetStreamBatchMsg(batchId, atomic, im.subj, im.rply, im.hdr, im.msg, im.mt)
 				} else if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 				} else {
