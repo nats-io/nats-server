@@ -10100,7 +10100,8 @@ func TestJetStreamClusterMetaPeerRemoveResponseAfterQuorum(t *testing.T) {
 	}
 
 	// Shutdown a majority.
-	remove := s3.Name()
+	remove1 := s3.Name()
+	remove2 := s2.Name()
 	s1.Shutdown()
 	s2.Shutdown()
 	s3.Shutdown()
@@ -10111,13 +10112,14 @@ func TestJetStreamClusterMetaPeerRemoveResponseAfterQuorum(t *testing.T) {
 	defer sub.Drain()
 
 	// Since a majority is down, we'll expect to time out since there's no quorum.
-	req := &JSApiMetaServerRemoveRequest{Server: remove}
+	req := &JSApiMetaServerRemoveRequest{Server: remove1}
 	jsreq, err := json.Marshal(req)
 	require_NoError(t, err)
 	require_NoError(t, nc.PublishRequest(JSApiRemoveServer, reply, jsreq))
 	_, err = sub.NextMsg(time.Second)
 	require_Error(t, err, nats.ErrTimeout)
 
+	// Retrying the request should fail, as the leader has already removed it as its peer.
 	rmsg, err := nc.Request(JSApiRemoveServer, jsreq, time.Second)
 	require_NoError(t, err)
 	var resp JSApiMetaServerRemoveResponse
@@ -10125,7 +10127,20 @@ func TestJetStreamClusterMetaPeerRemoveResponseAfterQuorum(t *testing.T) {
 	if resp.Error == nil {
 		t.Fatalf("Expected an error, got none")
 	}
-	require_Error(t, resp.Error, NewJSClusterServerNotMemberError())
+	require_Error(t, resp.Error, NewJSClusterServerMemberChangeInflightError())
+
+	// Don't allow concurrent meta membership changes.
+	req = &JSApiMetaServerRemoveRequest{Server: remove2}
+	jsreq, err = json.Marshal(req)
+	require_NoError(t, err)
+	rmsg, err = nc.Request(JSApiRemoveServer, jsreq, time.Second)
+	require_NoError(t, err)
+	resp = JSApiMetaServerRemoveResponse{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	if resp.Error == nil {
+		t.Fatalf("Expected an error, got none")
+	}
+	require_Error(t, resp.Error, NewJSClusterServerMemberChangeInflightError())
 
 	// Bring back one server so that the peer-remove can get quorum now.
 	// The response should come in shortly after.
@@ -10142,6 +10157,20 @@ func TestJetStreamClusterMetaPeerRemoveResponseAfterQuorum(t *testing.T) {
 		require_NoError(t, resp.Error)
 	}
 	require_True(t, resp.Success)
+
+	// A retry of the first peer-remove should return an error that the peer is already removed.
+	// Both a "success" response and this error should be used to know the peer-remove was successful.
+	req = &JSApiMetaServerRemoveRequest{Server: remove1}
+	jsreq, err = json.Marshal(req)
+	require_NoError(t, err)
+	rmsg, err = nc.Request(JSApiRemoveServer, jsreq, time.Second)
+	require_NoError(t, err)
+	resp = JSApiMetaServerRemoveResponse{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	if resp.Error == nil {
+		t.Fatalf("Expected an error, got none")
+	}
+	require_Error(t, resp.Error, NewJSClusterServerNotMemberError())
 }
 
 //
