@@ -1998,5 +1998,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSClusterServerMemberChangeInflightErr",
+    "code": 400,
+    "error_code": 10202,
+    "description": "cluster member change is in progress",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
