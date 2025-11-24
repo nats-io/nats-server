@@ -15,7 +15,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -38,8 +38,8 @@ jobs:
 
       - name: Install syft
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 8e94d75ddd33f69f691467e42275782e4bfefe84 = tag v0.20.9
-        uses: anchore/sbom-action/download-syft@8e94d75ddd33f69f691467e42275782e4bfefe84
+        # Commit fbfd9c6c189226748411491745178e0c2017392d = tag v0.20.10
+        uses: anchore/sbom-action/download-syft@fbfd9c6c189226748411491745178e0c2017392d
         with:
           syft-version: "v1.27.1"
 
