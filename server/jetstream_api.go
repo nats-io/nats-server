@@ -2689,8 +2689,10 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 		return
 	}
 
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
 	var found string
-	js.mu.RLock()
 	for _, p := range meta.Peers() {
 		// If Peer is specified, it takes precedence
 		if req.Peer != _EMPTY_ {
@@ -2706,7 +2708,6 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 			break
 		}
 	}
-	js.mu.RUnlock()
 
 	if found == _EMPTY_ {
 		resp.Error = NewJSClusterServerNotMemberError()
@@ -2715,12 +2716,12 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	}
 
 	// So we have a valid peer.
-	js.mu.Lock()
-	meta.ProposeRemovePeer(found)
-	js.mu.Unlock()
-
-	resp.Success = true
-	s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if err := meta.ProposeRemovePeer(found); err == nil {
+		if cc.peerRemoveReply == nil {
+			cc.peerRemoveReply = make(map[string]string, 1)
+		}
+		cc.peerRemoveReply[found] = reply
+	}
 }
 
 func (s *Server) peerSetToNames(ps []string) []string {
