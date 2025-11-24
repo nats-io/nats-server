@@ -2399,6 +2399,13 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
+	// Another peer-remove is already in progress, don't allow multiple concurrent changes.
+	if cc.peerRemoveReply != nil {
+		resp.Error = NewJSClusterServerMemberChangeInflightError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	var found string
 	for _, p := range meta.Peers() {
 		// If Peer is specified, it takes precedence

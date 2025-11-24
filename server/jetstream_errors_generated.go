@@ -59,6 +59,9 @@ const (
 	// JSClusterRequiredErr JetStream clustering support required
 	JSClusterRequiredErr ErrorIdentifier = 10010
 
+	// JSClusterServerMemberChangeInflightErr cluster member change is in progress
+	JSClusterServerMemberChangeInflightErr ErrorIdentifier = 10202
+
 	// JSClusterServerNotMemberErr server is not a member of the cluster
 	JSClusterServerNotMemberErr ErrorIdentifier = 10044
 
@@ -626,6 +629,7 @@ var (
 		JSClusterNotLeaderErr:                        {Code: 500, ErrCode: 10009, Description: "JetStream cluster can not handle request"},
 		JSClusterPeerNotMemberErr:                    {Code: 400, ErrCode: 10040, Description: "peer not a member"},
 		JSClusterRequiredErr:                         {Code: 503, ErrCode: 10010, Description: "JetStream clustering support required"},
+		JSClusterServerMemberChangeInflightErr:       {Code: 400, ErrCode: 10202, Description: "cluster member change is in progress"},
 		JSClusterServerNotMemberErr:                  {Code: 400, ErrCode: 10044, Description: "server is not a member of the cluster"},
 		JSClusterTagsErr:                             {Code: 400, ErrCode: 10011, Description: "tags placement not supported for operation"},
 		JSClusterUnSupportFeatureErr:                 {Code: 503, ErrCode: 10036, Description: "not currently supported in clustered mode"},
@@ -1029,6 +1033,16 @@ func NewJSClusterRequiredError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSClusterRequiredErr]
+}
+
+// NewJSClusterServerMemberChangeInflightError creates a new JSClusterServerMemberChangeInflightErr error: "cluster member change is in progress"
+func NewJSClusterServerMemberChangeInflightError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSClusterServerMemberChangeInflightErr]
 }
 
 // NewJSClusterServerNotMemberError creates a new JSClusterServerNotMemberErr error: "server is not a member of the cluster"
