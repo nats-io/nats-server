@@ -2308,6 +2308,7 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 func (o *consumerMemStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
 	o.state.Delivered.Stream = sseq
+	o.state.AckFloor.Stream = sseq
 	o.mu.Unlock()
 	return nil
 }
@@ -2324,6 +2325,14 @@ func (o *consumerMemStore) UpdateStarting(sseq uint64) {
 			o.state.AckFloor.Stream = sseq
 		}
 	}
+}
+
+// Reset all values in the store, and reset the starting sequence.
+func (o *consumerMemStore) Reset(sseq uint64) error {
+	o.mu.Lock()
+	o.state = ConsumerState{}
+	o.mu.Unlock()
+	return o.SetStarting(sseq)
 }
 
 // HasState returns if this store has a recorded state.
