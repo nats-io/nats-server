@@ -489,6 +489,12 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.wal.FastState(&state)
 	n.bytes = state.Bytes
 
+	// If we've been restarted halfway through repairing our log,
+	// we need to mark ourselves as repairing again.
+	if n.needRepairing() {
+		n.repairing = true
+	}
+
 	if state.Msgs > 0 {
 		n.debug("Replaying state of %d entries", state.Msgs)
 		if first, err := n.loadFirstEntry(); err == nil {
@@ -560,7 +566,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	// If our log is empty, we might need to repair it if this node isn't new.
 	if n.pindex == 0 {
-		n.repairing = true
+		n.markRepairing()
 		// If we're new and meant to be initializing, relax the "empty log" checks temporarily.
 		if !cfg.Recovering {
 			n.initializing = true
@@ -3434,7 +3440,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 	n.debug("Truncating and repairing WAL to Term %d Index %d", term, index)
 
 	if term == 0 && index == 0 {
-		n.repairing = true
+		n.markRepairing()
 		if n.commit > 0 {
 			n.warn("Resetting WAL state")
 		} else {
@@ -3906,17 +3912,67 @@ CONTINUE:
 	}
 }
 
+// markRepairing marks this server as requiring its log to be repaired.
+// Lock should be held.
+func (n *raft) markRepairing() {
+	n.repairing = true
+	n.writeRepairing()
+}
+
 // resetRepairing resets the notion of our log needing to be repaired, for example,
 // due to it being empty/incomplete/initializing/scaling up.
 // If we were scaling up, also leaves observer mode.
 // Lock should be held.
 func (n *raft) resetRepairing() {
+	if !n.repairing {
+		return
+	}
 	n.repairing = false
+	os.Remove(filepath.Join(n.sd, repairFile))
+
 	n.initializing = false
 	if n.scaleUp {
 		n.scaleUp = false
 		n.setObserverLocked(false, extUndetermined)
 	}
+}
+
+const repairFile = "repair.idx"
+
+// needRepairing will return whether the log needs to be repaired.
+// If the file lookup succeeds but the file itself doesn't exist, we don't repair.
+// Lock should be held.
+func (n *raft) needRepairing() bool {
+	<-dios
+	_, err := os.ReadFile(filepath.Join(n.sd, repairFile))
+	dios <- struct{}{}
+
+	// Mark repairing if the file exists, or we can't access it.
+	return err == nil || !os.IsNotExist(err)
+}
+
+// writeRepairing will mark us as repairing on disk. Either we have an entirely empty log,
+// or our log is partially corrupt, and it needs to be repaired.
+// Lock should be held.
+func (n *raft) writeRepairing() {
+	// No need to write to disk if the log is memory-based,
+	// it will always come up empty after a restart.
+	if _, ok := n.wal.(*memStore); ok {
+		return
+	}
+	if err := writeRepairing(n.sd); err != nil && !n.isClosed() {
+		n.setWriteErrLocked(err)
+		n.warn("Error writing repair file for %q: %v", n.group, err)
+	}
+}
+
+// Writes out our repair file outside of a specific raft context.
+func writeRepairing(sd string) error {
+	rf := filepath.Join(sd, repairFile)
+	if _, err := os.Stat(rf); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return writeFileWithSync(rf, nil, defaultFilePerms)
 }
 
 // processPeerState is called when a peer state entry is received
@@ -4657,6 +4713,7 @@ func (n *raft) switchToLeader() {
 	n.lxfer = false
 	n.updateLeader(n.id)
 	n.switchState(Leader)
+	n.resetRepairing()
 
 	// To send out our initial peer state.
 	// In our implementation this is equivalent to sending a NOOP-entry upon becoming leader.

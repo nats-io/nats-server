@@ -148,12 +148,13 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 	for _, s := range servers {
 		var cfg *RaftConfig
 		if st == FileStorage {
+			sd := c.t.TempDir()
 			fs, err := newFileStore(
-				FileStoreConfig{StoreDir: c.t.TempDir(), BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
+				FileStoreConfig{StoreDir: sd, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
 				StreamConfig{Name: name, Storage: FileStorage},
 			)
 			require_NoError(c.t, err)
-			cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: fs}
+			cfg = &RaftConfig{Name: name, Store: sd, Log: fs}
 		} else {
 			ms, err := newMemStore(&StreamConfig{Name: name, Storage: MemoryStorage})
 			require_NoError(c.t, err)
