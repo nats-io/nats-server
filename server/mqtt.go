@@ -28,9 +28,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nuid"
 )
 
@@ -4050,16 +4052,12 @@ func mqttPubTrace(pp *mqttPublish) string {
 		pp.topic, dup, qos, retain, pp.sz, piStr)
 }
 
-// Composes a NATS message from a MQTT PUBLISH packet. The message includes an
-// internal header containint the original packet's QoS, and for QoS2 packets
-// the original subject.
-//
-// Example (QoS2, subject: "foo.bar"):
-//
-//	NATS/1.0\r\n
-//	Nmqtt-Pub:2foo.bar\r\n
-//	\r\n
-func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, headerLen int) {
+// mqttComputeNatsMsgSize computes the size the NATS message to be delivered
+// based on a MQTT PUBLISH packet.
+// encodePP: whether to encode complete MQTT PUBLISH packet header information
+//   - false: initial delivery (QoS 0/1) needs only base header
+//   - true: QoS2 storage needs to encode Nmqtt-Subject and Nmqtt-Mapped
+func mqttComputeNatsMsgSize(pp *mqttPublish, encodePP bool) int {
 	size := len(hdrLine) +
 		len(mqttNatsHeader) + 2 + 2 + // 2 for ':<qos>', and 2 for CRLF
 		2 + // end-of-header CRLF
@@ -4073,6 +4071,21 @@ func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, 
 				len(pp.mapped) + 2 // 2 for CRLF
 		}
 	}
+	return size
+}
+
+// Composes a NATS message from a MQTT PUBLISH packet. The message includes an
+// internal header containint the original packet's QoS, and for QoS2 packets
+// the original subject.
+//
+// Example (QoS2, subject: "foo.bar"):
+//
+//	NATS/1.0\r\n
+//	Nmqtt-Pub:2foo.bar\r\n
+//	\r\n
+func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, headerLen int) {
+	size := mqttComputeNatsMsgSize(pp, encodePP)
+
 	buf := bytes.NewBuffer(make([]byte, 0, size))
 
 	qos := mqttGetQoS(pp.flags)
@@ -4134,6 +4147,15 @@ func mqttNewDeliverablePubRel(pi uint16) (natsMsg []byte, headerLen int) {
 // No lock held on entry.
 func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 	qos := mqttGetQoS(pp.flags)
+
+	// Enforce max_payload using existing client max payload logic (mpay) by
+	// checking the total NATS message size that would be processed.
+	if maxPayload := atomic.LoadInt32(&c.mpay); maxPayload != jwt.NoLimit {
+		if total := mqttComputeNatsMsgSize(pp, qos == 2); total > int(maxPayload) {
+			c.maxPayloadViolation(total, maxPayload)
+			return ErrMaxPayload
+		}
+	}
 
 	switch qos {
 	case 0:

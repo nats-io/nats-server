@@ -2855,6 +2855,120 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	return nil, didLoad, ErrStoreMsgNotFound
 }
 
+// Find the previous matching message against a sublist, working BACKWARDS from start.
+func (mb *msgBlock) prevMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
+	mb.mu.Lock()
+	var didLoad bool
+	var updateLLTS bool
+	defer func() {
+		if updateLLTS {
+			mb.llts = ats.AccessTime()
+		}
+		mb.finishedWithCache()
+		mb.mu.Unlock()
+	}()
+
+	// Need messages loaded from here on out.
+	if mb.cacheNotLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return nil, false, err
+		}
+		didLoad = true
+	}
+
+	// Make sure to start at mb.last.seq if lseq < mb.last.seq
+	if seq := atomic.LoadUint64(&mb.last.seq); start > seq {
+		start = seq
+	}
+	lseq := atomic.LoadUint64(&mb.first.seq)
+
+	if sm == nil {
+		sm = new(StoreMsg)
+	}
+
+	// If the FSS state has fewer entries than sequences in the linear scan,
+	// then use intersection instead as likely going to be cheaper. This will
+	// often be the case with high numbers of deletes, as well as a smaller
+	// number of subjects in the block.
+	if uint64(mb.fss.Size()) < start-lseq {
+		// If there are no subject matches then this is effectively no-op.
+		hseq := uint64(0)
+		gsl.IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				// mb is already loaded into the cache so should be fast-ish.
+				mb.recalculateForSubj(bytesToString(subj), ss)
+			}
+			first := min(start, ss.Last)
+			// Skip if cutoff is before this subject's first, or if we already
+			// have a higher-or-equal candidate (hseq holds the highest found).
+			if first < ss.First || first <= hseq {
+				// The start cutoff is before the first sequence for this subject,
+				// or we already know of a subject with a later-or-equal msg.
+				return
+			}
+			if first == ss.Last {
+				// If the start floor is above where this subject starts then we can
+				// short-circuit, avoiding needing to scan for the next message.
+				if fsm, err := mb.cacheLookup(ss.Last, sm); err == nil {
+					sm = fsm
+					hseq = ss.Last
+				}
+				return
+			}
+			for seq := first; seq >= ss.First; seq-- {
+				// Otherwise we have a start floor that intersects where this subject
+				// has messages in the block, so we need to walk up until we find a
+				// message matching the subject.
+				if mb.dmap.Exists(seq) {
+					// Optimisation to avoid calling cacheLookup which hits time.Now().
+					// Instead we will update it only once in a defer.
+					updateLLTS = true
+					continue
+				}
+				llseq := mb.llseq
+				fsm, err := mb.cacheLookup(seq, sm)
+				if err != nil {
+					continue
+				}
+				updateLLTS = false // cacheLookup already updated it.
+				if sl.HasInterest(fsm.subj) {
+					hseq = seq
+					sm = fsm
+					break
+				}
+				// If we are here we did not match, so put the llseq back.
+				mb.llseq = llseq
+			}
+		})
+		if hseq > 0 && sm != nil {
+			return sm, didLoad && start == lseq, nil
+		}
+	} else {
+		for seq := start; seq >= lseq; seq-- {
+			if mb.dmap.Exists(seq) {
+				// Optimisation to avoid calling cacheLookup which hits time.Now().
+				// Instead we will update it only once in a defer.
+				updateLLTS = true
+				continue
+			}
+			llseq := mb.llseq
+			fsm, err := mb.cacheLookup(seq, sm)
+			if err != nil {
+				continue
+			}
+			expireOk := seq == lseq && mb.llseq != llseq && mb.llseq == seq
+			updateLLTS = false // cacheLookup already updated it.
+			if sl.HasInterest(fsm.subj) {
+				return fsm, expireOk, nil
+			}
+			// If we are here we did not match, so put the llseq back.
+			mb.llseq = llseq
+		}
+	}
+
+	return nil, didLoad, ErrStoreMsgNotFound
+}
+
 // This will traverse a message block and generate the filtered pending.
 func (mb *msgBlock) filteredPending(subj string, wc bool, seq uint64) (total, first, last uint64) {
 	mb.mu.Lock()
@@ -8166,6 +8280,44 @@ func (fs *fileStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err
 	return nil, ErrStoreEOF
 }
 
+// LoadPrevMsgMulti will find the previous message matching any entry in the sublist.
+func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	if sl == nil {
+		sm, err = fs.LoadPrevMsg(start, smp)
+		return
+	}
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if fs.closed {
+		return nil, 0, ErrStoreClosed
+	}
+	if fs.state.Msgs == 0 || start < fs.state.FirstSeq {
+		return nil, fs.state.FirstSeq, ErrStoreEOF
+	}
+	if start > fs.state.LastSeq {
+		start = fs.state.LastSeq
+	}
+
+	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
+		for i := bi; i >= 0; i-- {
+			mb := fs.blks[i]
+			if sm, expireOk, err := mb.prevMatchingMulti(sl, start, smp); err == nil {
+				if expireOk {
+					mb.tryForceExpireCache()
+				}
+				return sm, sm.seq, nil
+			} else if err != ErrStoreMsgNotFound {
+				return nil, 0, err
+			} else if expireOk {
+				mb.tryForceExpireCache()
+			}
+		}
+	}
+
+	return nil, fs.state.FirstSeq, ErrStoreEOF
+}
+
 // Type returns the type of the underlying store.
 func (fs *fileStore) Type() StorageType {
 	return FileStorage
@@ -10657,7 +10809,7 @@ type consumerFileStore struct {
 	closed  bool
 }
 
-func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
+func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
 	if fs == nil {
 		return nil, fmt.Errorf("filestore is nil")
 	}
@@ -10680,7 +10832,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
-	csi := &FileConsumerInfo{Name: name, Created: time.Now().UTC(), ConsumerConfig: *cfg}
+	csi := &FileConsumerInfo{Name: name, Created: created, ConsumerConfig: *cfg}
 	o := &consumerFileStore{
 		fs:   fs,
 		cfg:  csi,
@@ -10737,7 +10889,6 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	meta := filepath.Join(odir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
 		didCreate = true
-		csi.Created = time.Now().UTC()
 		if err := o.writeConsumerMeta(); err != nil {
 			os.RemoveAll(odir)
 			return nil, err

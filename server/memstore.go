@@ -1828,6 +1828,40 @@ func (ms *memStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err 
 	return nil, ErrStoreEOF
 }
 
+// LoadPrevMsgMulti will find the previous message matching any entry in the sublist.
+func (ms *memStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	// TODO(dlc) - for now simple linear walk to get started.
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if start > ms.state.LastSeq {
+		start = ms.state.LastSeq
+	}
+
+	// If past the start no results.
+	if start < ms.state.FirstSeq || ms.state.Msgs == 0 {
+		return nil, ms.state.FirstSeq, ErrStoreEOF
+	}
+
+	// Initial setup.
+	fseq, lseq := start, ms.state.FirstSeq
+
+	for nseq := fseq; nseq >= lseq; nseq-- {
+		sm, ok := ms.msgs[nseq]
+		if !ok {
+			continue
+		}
+		if sl.HasInterest(sm.subj) {
+			if smp == nil {
+				smp = new(StoreMsg)
+			}
+			sm.copy(smp)
+			return smp, nseq, nil
+		}
+	}
+	return nil, ms.state.LastSeq, ErrStoreEOF
+}
+
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
@@ -2129,7 +2163,7 @@ type consumerMemStore struct {
 	closed bool
 }
 
-func (ms *memStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
+func (ms *memStore) ConsumerStore(name string, _ time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
 	if ms == nil {
 		return nil, fmt.Errorf("memstore is nil")
 	}
