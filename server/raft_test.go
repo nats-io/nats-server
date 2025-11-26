@@ -2911,6 +2911,12 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	aeSnapshot := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: snapshotEntries})
 	n.createCatchup(aeSnapshot)
 	n.processAppendEntry(aeSnapshot, n.catchup.sub)
+	require_True(t, n.initializing)
+	require_True(t, n.scaleUp)
+	require_True(t, n.observer)
+
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1})
+	n.processAppendEntry(aeHeartbeat, n.aesub)
 	require_False(t, n.initializing)
 	require_False(t, n.scaleUp)
 	require_False(t, n.observer)
@@ -3909,6 +3915,79 @@ func TestNRGNoLogResetOnCorruptedSendToFollower(t *testing.T) {
 	c.waitOnAllCurrent()
 	leaderrg.wal.FastState(&ss)
 	require_NotEqual(t, ss.LastSeq, 0)
+}
+
+func TestNRGRepairingResetsAfterFullCatchup(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Reset any side-effects, but we'll revert to just being marked "repairing".
+	// This means we recovered a log that was either wiped or corrupt, so our log isn't authoritative.
+	n.resetRepairing()
+	n.repairing = true
+	require_True(t, n.repairing)
+
+	voteReply := "$TEST"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(voteReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	expectVote := func(term uint64, empty bool) {
+		t.Helper()
+		require_NoError(t, n.processVoteRequest(&voteRequest{term: term, lastTerm: 1, lastIndex: 2, candidate: nats0, reply: voteReply}))
+		require_Equal(t, n.term, term)
+		require_Equal(t, n.vote, nats0)
+
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		vr := decodeVoteResponse(msg.Data)
+		require_True(t, vr.granted)
+		require_Equal(t, vr.empty, empty)
+	}
+	expectVote(1, true)
+
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: nil})
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_True(t, n.repairing)
+	require_True(t, n.catchup != nil)
+	catchup := n.catchup
+
+	// Voting will cancel catchup. For the sake of this test, we'll just reapply the catchup.
+	expectVote(2, true)
+	n.catchup = catchup
+
+	// "Repairing" state must NOT be reset during catchup,
+	// only once we're aligned to acknowledge new append entries.
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, lterm: 2, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	n.processAppendEntry(aeMsg1, n.catchup.sub)
+	require_True(t, n.repairing)
+	require_True(t, n.catchup != nil)
+	expectVote(3, true)
+	n.catchup = catchup
+
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, lterm: 3, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	n.processAppendEntry(aeMsg2, n.catchup.sub)
+	require_True(t, n.repairing)
+	require_True(t, n.catchup != nil)
+	expectVote(4, true)
+	n.catchup = catchup
+
+	aeHeartbeat = encode(t, &appendEntry{leader: nats0, term: 4, commit: 0, pterm: 1, pindex: 2, entries: nil})
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_False(t, n.repairing)
+	require_True(t, n.catchup == nil)
+	expectVote(5, false)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before

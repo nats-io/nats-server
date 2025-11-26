@@ -227,6 +227,7 @@ type raft struct {
 	maybeLeader  bool // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
 	paused       bool // Whether or not applies are paused
 	observer     bool // The node is observing, i.e. not able to become leader
+	repairing    bool // The node is being repaired, either due to being new, wiped or corrupted.
 	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 }
@@ -557,14 +558,18 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
 
-	// If our log is empty, and we're initializing, relax the "empty log" checks temporarily.
-	if !cfg.Recovering && n.pindex == 0 {
-		n.initializing = true
-		// If we're scaling up and our log is empty, must put ourselves into observer
-		// and wait for data from the leader.
-		if !cfg.Observer && cfg.ScaleUp {
-			n.scaleUp = true
-			n.setObserverLocked(true, extUndetermined)
+	// If our log is empty, we might need to repair it if this node isn't new.
+	if n.pindex == 0 {
+		n.repairing = true
+		// If we're new and meant to be initializing, relax the "empty log" checks temporarily.
+		if !cfg.Recovering {
+			n.initializing = true
+			// If we're scaling up, must put ourselves into observer and wait for data from the leader.
+			// This prevents us from starting new elections ourselves.
+			if !cfg.Observer && cfg.ScaleUp {
+				n.scaleUp = true
+				n.setObserverLocked(true, extUndetermined)
+			}
 		}
 	}
 	n.Unlock()
@@ -1760,7 +1765,7 @@ func (n *raft) CampaignImmediately() error {
 	n.Lock()
 	defer n.Unlock()
 	n.maybeLeader = true
-	n.resetInitializing()
+	n.resetRepairing()
 	return n.campaign(minCampaignTimeout / 2)
 }
 
@@ -3429,6 +3434,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 	n.debug("Truncating and repairing WAL to Term %d Index %d", term, index)
 
 	if term == 0 && index == 0 {
+		n.repairing = true
 		if n.commit > 0 {
 			n.warn("Resetting WAL state")
 		} else {
@@ -3791,7 +3797,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.Unlock()
 				return
 			}
-			n.resetInitializing()
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
 			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
@@ -3822,7 +3827,6 @@ CONTINUE:
 				return
 			}
 			n.cachePendingEntry(ae)
-			n.resetInitializing()
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
 			n.pterm = ae.term
@@ -3888,6 +3892,9 @@ CONTINUE:
 	// The only way for the leader to receive "success" MUST be through this path.
 	var ar *appendEntryResponse
 	if sub != nil && isNew {
+		// If we were marked as "repairing", reset that now since we're caught up
+		// and aligned to acknowledge new append entries.
+		n.resetRepairing()
 		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
 	n.Unlock()
@@ -3899,10 +3906,12 @@ CONTINUE:
 	}
 }
 
-// resetInitializing resets the notion of initializing.
+// resetRepairing resets the notion of our log needing to be repaired, for example,
+// due to it being empty/incomplete/initializing/scaling up.
 // If we were scaling up, also leaves observer mode.
 // Lock should be held.
-func (n *raft) resetInitializing() {
+func (n *raft) resetRepairing() {
+	n.repairing = false
 	n.initializing = false
 	if n.scaleUp {
 		n.scaleUp = false
@@ -4410,7 +4419,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	n.Lock()
 
-	vresp := &voteResponse{n.term, n.id, false, n.pindex == 0}
+	vresp := &voteResponse{n.term, n.id, false, n.repairing}
 	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
 
 	// Ignore if we are newer. This is important so that we don't accidentally process
