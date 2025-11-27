@@ -4464,7 +4464,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	}
 
 	js.mu.RLock()
-	s, rg := js.srv, sa.Group
+	s, rg, created := js.srv, sa.Group, sa.Created
 	alreadyRunning := rg.node != nil
 	storage := sa.Config.Storage
 	restore := sa.Restore
@@ -4563,7 +4563,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa, false)
 		}
 		if mset != nil {
-			mset.setCreatedTime(sa.Created)
+			mset.setCreatedTime(created)
 		}
 	}
 
@@ -4650,7 +4650,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						mset, err = acc.lookupStream(sa.Config.Name)
 						if mset != nil {
 							mset.setStreamAssignment(sa)
-							mset.setCreatedTime(sa.Created)
+							mset.setCreatedTime(created)
 						}
 					}
 					if err != nil {
