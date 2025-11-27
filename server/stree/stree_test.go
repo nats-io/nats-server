@@ -628,8 +628,10 @@ func TestSubjectTreeMatchInvalidWildcard(t *testing.T) {
 	st.Insert(b("foo.123"), 22)
 	st.Insert(b("one.two.three.four.five"), 22)
 	st.Insert(b("'*.123"), 22)
+	st.Insert(b("bar"), 22)
 	match(t, st, "invalid.>", 0)
-	match(t, st, ">", 3)
+	match(t, st, "foo.>.bar", 0)
+	match(t, st, ">", 4)
 	match(t, st, `'*.*`, 1)
 	match(t, st, `'*.*.*'`, 0)
 	// None of these should match.
