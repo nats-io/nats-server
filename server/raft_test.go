@@ -3654,6 +3654,8 @@ func TestNRGLostQuorum(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	require_True(t, n.repairing)
+	require_True(t, n.initializing)
 	require_Equal(t, n.State(), Follower)
 	require_False(t, n.Quorum())
 	require_True(t, n.lostQuorum())
@@ -4106,6 +4108,96 @@ func TestNRGRepairAfterMajorityCorruption(t *testing.T) {
 				break
 			}
 		}
+		time.Sleep(100 * time.Millisecond)
+		for _, sm := range rg {
+			if sm == l {
+				continue
+			}
+			if n := sm.node(); n.State() == Leader || n.Leader() {
+				t.Fatal("Leader elected from corrupted logs")
+			}
+		}
+	}
+
+	// Restart the leader, and we expect it to become leader again.
+	l.restart()
+	nl := rg.waitOnLeader()
+	require_NotNil(t, nl)
+	require_Equal(t, nl, l)
+
+	// The logs should have been repaired, and the total should match.
+	rg.waitOnTotal(t, 5)
+}
+
+func TestNRGRepairAfterMinorityCorruption(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	l := rg.waitOnLeader()
+	rs := rg.nonLeader()
+	for i := range int64(5) {
+		l.(*stateAdder).proposeDelta(1)
+		// Custom rg.waitOnTotal to allow a server to be down.
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+			var err error
+			for _, sm := range rg {
+				if sm.node().State() == Closed {
+					continue
+				}
+				asm := sm.(*stateAdder)
+				if total := asm.total(); total != (i + 1) {
+					err = errors.Join(err, fmt.Errorf("Adder on %v has wrong total: %d vs %d", asm.server(), total, i+1))
+				}
+			}
+			return err
+		})
+		// Stop a random member so that its log will be outdated.
+		if i == 3 {
+			rs.stop()
+		}
+	}
+
+	// Stop all servers.
+	for _, sm := range rg {
+		sm.stop()
+	}
+
+	// Corrupt the log on one server and then bring it back together with the outdated server.
+	// The corrupted server should not be able to become leader.
+	var cs stateMachine
+	for _, sm := range rg {
+		if sm == l || sm == rs {
+			continue
+		}
+		cs = sm
+		rn := sm.node().(*raft)
+		rn.RLock()
+		blk := filepath.Join(rn.sd, msgDir, "1.blk")
+		rn.RUnlock()
+
+		stat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_LessThan(t, 0, stat.Size())
+		require_NoError(t, os.Truncate(blk, stat.Size()-1))
+
+		// Confirm the file was truncated after restart.
+		sm.restart()
+		nstat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_NotEqual(t, nstat.Size(), stat.Size())
+	}
+	rs.restart()
+	expires := time.Now().Add(2 * time.Second)
+	for time.Now().Before(expires) {
+		// Speed up the leader election on the corrupted server by purposefully having it campaign immediately.
+		// The outdated server will vote for the corrupted server, no questions asked. But the corrupted server
+		// should know it requires its log to be repaired so it can't become leader based on a majority alone.
+		n := cs.node().(*raft)
+		n.Lock()
+		n.campaign(time.Millisecond)
+		n.Unlock()
+
 		time.Sleep(100 * time.Millisecond)
 		for _, sm := range rg {
 			if sm == l {

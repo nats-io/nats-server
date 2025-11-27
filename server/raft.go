@@ -3324,12 +3324,16 @@ func (n *raft) runAsCandidate() {
 			n.RLock()
 			nterm := n.term
 			csz := n.csz
+			repairing, initializing := n.repairing, n.initializing
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
-				if !vresp.empty {
+
+				// A vote only counts toward a majority if it's a non-empty vote from an intact server,
+				// and we're not repairing ourselves either (a more up-to-date server could exist).
+				if !vresp.empty && (!repairing || initializing) {
 					votes[vresp.peer] = struct{}{}
 				} else {
 					emptyVotes[vresp.peer] = struct{}{}
