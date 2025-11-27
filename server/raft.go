@@ -477,6 +477,9 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	}
 
 	truncateAndErr := func(index uint64) {
+		// Mark ourselves as requiring our log to be repaired, this will ensure we can't become
+		// leader as long as at least a single server has a non-corrupt log.
+		n.markRepairing()
 		if err := n.wal.Truncate(index); err != nil {
 			n.setWriteErr(err)
 		}

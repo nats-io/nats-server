@@ -4046,6 +4046,87 @@ func TestNRGRepairingResetsAfterSwitchingToLeader(t *testing.T) {
 	require_False(t, n.repairing)
 }
 
+func TestNRGRepairAfterMajorityCorruption(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	l := rg.waitOnLeader()
+
+	for i := range int64(5) {
+		l.(*stateAdder).proposeDelta(1)
+		rg.waitOnTotal(t, i+1)
+	}
+
+	// Stop all servers.
+	for _, sm := range rg {
+		sm.stop()
+	}
+
+	// Corrupt the log on two servers and then bring them back.
+	// They shouldn't be able to become leader just on their own.
+	var restartedOne bool
+	for _, sm := range rg {
+		if sm == l {
+			continue
+		}
+		rn := sm.node().(*raft)
+		rn.RLock()
+		blk := filepath.Join(rn.sd, msgDir, "1.blk")
+		rn.RUnlock()
+
+		stat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_LessThan(t, 0, stat.Size())
+		require_NoError(t, os.Truncate(blk, stat.Size()-1))
+
+		// Confirm the file was truncated after restart.
+		sm.restart()
+		nstat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_NotEqual(t, nstat.Size(), stat.Size())
+
+		// We'll simulate a quick process restart here, so we also
+		// test repairing after truncate and restart still happens.
+		if !restartedOne {
+			restartedOne = true
+			sm.stop()
+			sm.restart()
+		}
+	}
+	expires := time.Now().Add(2 * time.Second)
+	for time.Now().Before(expires) {
+		// Speed up the leader election process by purposefully having one node campaign immediately.
+		for _, sm := range rg {
+			if sm != l {
+				n := sm.node().(*raft)
+				n.Lock()
+				n.campaign(time.Millisecond)
+				n.Unlock()
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+		for _, sm := range rg {
+			if sm == l {
+				continue
+			}
+			if n := sm.node(); n.State() == Leader || n.Leader() {
+				t.Fatal("Leader elected from corrupted logs")
+			}
+		}
+	}
+
+	// Restart the leader, and we expect it to become leader again.
+	l.restart()
+	nl := rg.waitOnLeader()
+	require_NotNil(t, nl)
+	require_Equal(t, nl, l)
+
+	// The logs should have been repaired, and the total should match.
+	rg.waitOnTotal(t, 5)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
