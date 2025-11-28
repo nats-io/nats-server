@@ -4256,3 +4256,36 @@ func TestNRGUncommittedMembershipChangeOnNewLeader(t *testing.T) {
 	err := n.ProposeRemovePeer(nats1)
 	require_Error(t, err, errMembershipChange)
 }
+
+func TestNRGProposeRemovePeerQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().node()
+	followers := rg.followers()
+
+	require_True(t, len(followers) == 2)
+
+	// Block follower 0 and remove follower 1
+	followers[0].node().(*raft).Lock()
+	err := leader.ProposeRemovePeer(followers[1].node().ID())
+	require_NoError(t, err)
+
+	// Should not be able to make progress
+	time.Sleep(time.Second)
+	require_True(t, leader.MembershipChangeInProgress())
+
+	// Unlock the other follower and expect the membership
+	// change to eventually finish
+	followers[0].node().(*raft).Unlock()
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if leader.MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		} else {
+			return nil
+		}
+	})
+}
