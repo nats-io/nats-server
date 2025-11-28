@@ -567,6 +567,9 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
 
+	// FIXME(mvv): only need to mark repairing after ungraceful shutdown
+	n.markRepairing()
+
 	// If our log is empty, we might need to repair it if this node isn't new.
 	if n.pindex == 0 {
 		n.markRepairing()
