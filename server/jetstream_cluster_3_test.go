@@ -6493,3 +6493,31 @@ func TestJetStreamClusterCorruptMetaSnapshot(t *testing.T) {
 	s.Start()
 	require_Equal(t, s.numRaftNodes(), 0)
 }
+
+func TestJetStreamClusterProcessSnapshotPanicAfterStreamDelete(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.RLock()
+	sa, node := mset.sa, mset.node
+	mset.mu.RUnlock()
+	require_True(t, sa == nil)
+	require_True(t, node == nil)
+	require_Error(t, mset.processSnapshot(&StreamReplicatedState{}, 0), errCatchupStreamStopped)
+
+	mset.setStreamAssignment(&streamAssignment{}) // If the stream assignment is set, but the node is nil.
+	mset.mu.RLock()
+	sa, node = mset.sa, mset.node
+	mset.mu.RUnlock()
+	require_True(t, sa != nil)
+	require_True(t, node == nil)
+	require_Error(t, mset.processSnapshot(&StreamReplicatedState{}, 0), errCatchupStreamStopped)
+}
