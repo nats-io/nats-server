@@ -1522,7 +1522,11 @@ func (js *jetStream) monitorCluster() {
 					if js.hasPeerEntries(ce.Entries) || (didSnap && !isLeader) {
 						doSnapshot(true)
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
-						doSnapshot(false)
+						if isLeader {
+							n.RequestSnapshot()
+						} else {
+							doSnapshot(false)
+						}
 					}
 					recovering = isRecovering
 				} else {
@@ -1543,10 +1547,12 @@ func (js *jetStream) monitorCluster() {
 			}
 
 		case <-t.C:
-			doSnapshot(false)
 			// Periodically check the cluster size.
 			if n.Leader() {
 				js.checkClusterSize()
+				n.RequestSnapshot()
+			} else {
+				doSnapshot(false)
 			}
 		case <-ht.C:
 			// Do this in a separate go routine.
