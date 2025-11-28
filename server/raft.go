@@ -3324,7 +3324,7 @@ func (n *raft) runAsCandidate() {
 			n.RLock()
 			nterm := n.term
 			csz := n.csz
-			repairing, initializing := n.repairing, n.initializing
+			repairing, initializing, pindex, group := n.repairing, n.initializing, n.pindex, n.group
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
@@ -3346,7 +3346,20 @@ func (n *raft) runAsCandidate() {
 					// Become LEADER if we've got voted in by ALL servers.
 					// We couldn't get quorum based on just our normal votes.
 					// But, we have heard from the full cluster, and some servers came up empty.
-					// We know for sure we have the most up-to-date log.
+					// We know for sure we have the most up-to-date log, but that log could also be empty.
+					if group == defaultMetaGroupName || initializing || !repairing {
+						n.warn("Self got voted leader by all servers, restarting WAL with %d entries", pindex)
+					} else {
+						// If we are here, this means all logs required reparation (so none were complete),
+						// and we were the one with the most up-to-date log. We have either lost "all" or "some" data,
+						// but instead of halting, we prefer to become available again. All servers will agree on the
+						// new state of the log.
+						desc := "the log was fully lost"
+						if pindex > 0 {
+							desc = "the log was partially reset"
+						}
+						n.warn("Self got voted leader by all servers, restarting WAL with %d entries, %s", pindex, desc)
+					}
 					n.switchToLeader()
 					return
 				}
