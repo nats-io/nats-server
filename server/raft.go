@@ -3257,8 +3257,10 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 		return
 	}
 
+	ps := n.peers[ar.peer]
+
 	// Update peer's last index.
-	if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
+	if ps != nil && ar.index > ps.li {
 		ps.li = ar.index
 	}
 
@@ -3269,6 +3271,12 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 
 	// Ignore items already committed.
 	if ar.index <= n.commit {
+		n.Unlock()
+		return
+	}
+
+	// Not a peer, can't count this message towards quorum
+	if ps == nil {
 		n.Unlock()
 		return
 	}
