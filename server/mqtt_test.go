@@ -4200,7 +4200,7 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 		}
 	`
 	tdir := t.TempDir()
-	conf := createConfFile(t, []byte(fmt.Sprintf(template, tdir, "foo")))
+	conf := createConfFile(t, fmt.Appendf(nil, template, tdir, "foo"))
 
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
@@ -4428,38 +4428,118 @@ func TestMQTTPublishRetainPermViolation(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.Users = []*User{
 		{
-			Username: "mqtt",
+			Username: "mqtt1",
 			Password: "pass",
 			Permissions: &Permissions{
 				Publish:   &SubjectPermission{Allow: []string{"foo"}},
 				Subscribe: &SubjectPermission{Allow: []string{"bar", "$MQTT.sub.>"}},
 			},
 		},
+		{
+			Username: "mqtt2",
+			Password: "pass",
+			Permissions: &Permissions{
+				Publish:   &SubjectPermission{Allow: []string{"foo", "bar"}},
+				Subscribe: &SubjectPermission{Allow: []string{">"}},
+			},
+		},
+		{
+			Username: "mqtt3",
+			Password: "pass",
+			Permissions: &Permissions{
+				Publish:   &SubjectPermission{Allow: []string{"foo.bar", "baz"}},
+				Subscribe: &SubjectPermission{Allow: []string{">"}},
+			},
+		},
+		{
+			Username: "mqtt4",
+			Password: "pass",
+		},
 	}
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	ci := &mqttConnInfo{
-		cleanSess: true,
-		user:      "mqtt",
-		pass:      "pass",
+	pubRetained := func(user, pass, subject string) {
+		t.Helper()
+		mc, rs := testMQTTConnect(t, &mqttConnInfo{
+			cleanSess: true,
+			user:      user,
+			pass:      pass,
+		}, o.MQTT.Host, o.MQTT.Port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
+		testMQTTPublish(t, mc, rs, 0, false, true, subject, 0, []byte("retained"))
+		testMQTTFlush(t, mc, nil, rs)
+		testMQTTDisconnect(t, mc, nil)
+	}
+	consumeRetained := func(user, pass, subject string) {
+		t.Helper()
+		mc, rs := testMQTTConnect(t, &mqttConnInfo{
+			cleanSess: true,
+			user:      user,
+			pass:      pass,
+		}, o.MQTT.Host, o.MQTT.Port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
+		testMQTTSub(t, 1, mc, rs, []*mqttFilter{{filter: subject, qos: 0}}, []byte{0})
+		testMQTTCheckPubMsg(t, mc, rs, subject, mqttPubFlagRetain, []byte("retained"))
+		testMQTTDisconnect(t, mc, nil)
+	}
+	consumeRetainedFail := func(user, pass, subject string) {
+		t.Helper()
+		mc, rs := testMQTTConnect(t, &mqttConnInfo{
+			cleanSess: true,
+			user:      user,
+			pass:      pass,
+		}, o.MQTT.Host, o.MQTT.Port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
+		testMQTTSub(t, 1, mc, rs, []*mqttFilter{{filter: subject, qos: 0}}, []byte{0})
+		testMQTTExpectNothing(t, rs)
+		testMQTTDisconnect(t, mc, nil)
 	}
 
-	mc1, rs1 := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
-	defer mc1.Close()
-	testMQTTCheckConnAck(t, rs1, mqttConnAckRCConnectionAccepted, false)
-	testMQTTPublish(t, mc1, rs1, 0, false, true, "bar", 0, []byte("retained"))
-	testMQTTFlush(t, mc1, nil, rs1)
+	// With user "mqtt", publish a retained message on "bar".
+	// Since this user has no permission, the server should not have stored it.
+	pubRetained("mqtt1", "pass", "bar")
 
-	mc2, rs2 := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
-	defer mc2.Close()
-	testMQTTCheckConnAck(t, rs2, mqttConnAckRCConnectionAccepted, false)
+	// Verify that we can't get it with a new subscription.
+	consumeRetainedFail("mqtt1", "pass", "bar")
 
-	testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
-	testMQTTExpectNothing(t, rs2)
+	// Use the user "mqtt2" that has permissions to publish on foo and bar.
+	// Publish on "foo" and check retained message can be received.
+	pubRetained("mqtt2", "pass", "foo")
+	consumeRetained("mqtt2", "pass", "foo")
 
-	testMQTTDisconnect(t, mc1, nil)
-	testMQTTDisconnect(t, mc2, nil)
+	// For user "mqtt3", we will publish on "foo/bar" and check retained
+	// message is properly received.
+	pubRetained("mqtt3", "pass", "foo/bar")
+	consumeRetained("mqtt3", "pass", "foo/bar")
+
+	// Same with user "mqtt4" that does not have permissions defined, which
+	// means allowed to pub/sub on everything.
+	pubRetained("mqtt4", "pass", "bat")
+	consumeRetained("mqtt4", "pass", "bat")
+
+	// Do a config reload and make sure that the server does not panic
+	// and we can still get the retained messages.
+	no := *o
+	// Remove the "bar" publish permission from "mqtt2"
+	no.Users[1].Permissions.Publish = &SubjectPermission{Allow: []string{"foo"}}
+	// And the "foo.bar" publish permission from "mqtt3"
+	no.Users[2].Permissions.Publish = &SubjectPermission{Allow: []string{"baz"}}
+	err := s.ReloadOptions(&no)
+	require_NoError(t, err)
+
+	// Still message on "bar" should not exist
+	consumeRetainedFail("mqtt1", "pass", "bar")
+	// This one should still be able to be received
+	consumeRetained("mqtt2", "pass", "foo")
+	// Retained message on "foo.bar" should have been removed.
+	consumeRetainedFail("mqtt3", "pass", "foo/bar")
+	// And finally, this user that had no permission should still be able
+	// to get the retained message on "bat".
+	consumeRetained("mqtt4", "pass", "bat")
 }
 
 func TestMQTTPublishViolation(t *testing.T) {

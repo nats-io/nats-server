@@ -4488,7 +4488,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 				p, ok := perms[rm.Source]
 				if !ok {
 					p = generatePubPerms(u.Permissions)
-					perms[rm.Source] = p
+					perms[rm.Source] = p // possibly nil
 				}
 				// If there is permission and no longer allowed to publish in
 				// the subject, remove the publish retained message from the map.
@@ -4517,6 +4517,13 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 
 // Helper to generate only pub permissions from a Permissions object
 func generatePubPerms(perms *Permissions) *perm {
+	// If given permissions is `nil`, then it means that permissions block
+	// has been removed (so the user is now allowed to publish on everything)
+	// or was never there in the first place. Returning `nil` will let the
+	// caller know that there are no permissions to enforce.
+	if perms == nil {
+		return nil
+	}
 	var p *perm
 	if perms.Publish.Allow != nil {
 		p = &perm{}
