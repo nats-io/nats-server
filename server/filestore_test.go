@@ -11443,3 +11443,65 @@ func TestFileStoreCompactTombstonesBelowFirstSeq(t *testing.T) {
 		require_NotEqual(t, lmb.rbytes, rbytes)
 	})
 }
+
+func TestFileStoreSyncBlocksFlushesAndSyncsMessages(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.AsyncFlush = true
+
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		require_NotNil(t, lmb)
+
+		// Wait for flusher to be ready.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if !lmb.flusher {
+				return errors.New("flusher not active")
+			}
+			return nil
+		})
+		// Now shutdown flusher and wait for it to be closed.
+		lmb.mu.Lock()
+		if lmb.qch != nil {
+			close(lmb.qch)
+			lmb.qch = nil
+		}
+		lmb.mu.Unlock()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if lmb.flusher {
+				return errors.New("flusher still active")
+			}
+			return nil
+		})
+
+		seq, _, err := fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		require_Equal(t, seq, 1)
+
+		// Update the last write timestamp to be in the past.
+		lmb.mu.Lock()
+		lwts := lmb.lwts
+		lmb.lwts = 0
+		lmb.mu.Unlock()
+		require_NotEqual(t, lwts, 0)
+
+		// Syncing should write out the data.
+		fs.syncBlocks()
+
+		// Manually reset, sync should have written the data.
+		lmb.clearCacheAndOffset()
+
+		sm, err := fs.LoadMsg(1, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.seq, 1)
+		require_Equal(t, sm.subj, "foo")
+	})
+}
