@@ -4761,9 +4761,8 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 // FlushAllPending flushes all data that was still pending to be written.
 func (fs *fileStore) FlushAllPending() {
 	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	fs.checkAndFlushLastBlock()
-	fs.mu.Unlock()
-	fs.syncBlocks()
 }
 
 // Lock should be held.
@@ -6899,11 +6898,6 @@ func (fs *fileStore) syncBlocks() {
 	if fs.closed || fs.sips > 0 {
 		fs.mu.Unlock()
 		return
-	}
-	// FIXME(mvv): this reduces the chance of a race condition where the timer
-	//  hits at the same time as the snapshot, but doesn't fully prevent it.
-	if fs.syncTmr != nil {
-		fs.syncTmr.Stop()
 	}
 	blks := append([]*msgBlock(nil), fs.blks...)
 	lmb, firstMoved, firstSeq := fs.lmb, fs.firstMoved, fs.state.FirstSeq
