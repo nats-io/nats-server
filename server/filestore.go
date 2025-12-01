@@ -6939,10 +6939,9 @@ func (fs *fileStore) syncBlocks() {
 			continue
 		}
 		// See if we can close FDs due to being idle.
-		if mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle {
+		if mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle && mb.pendingWriteSizeLocked() == 0 {
 			mb.dirtyCloseWithRemove(false)
 		}
-
 		// If our first has moved and we are set to noCompact (which is from tombstones),
 		// clear so that we might cleanup tombstones.
 		if firstMoved && mb.noCompact {
@@ -6956,12 +6955,10 @@ func (fs *fileStore) syncBlocks() {
 			markDirty = true
 		}
 
+		// Flush anything that may be pending.
+		mb.flushPendingMsgsLocked()
 		// Check if we need to sync. We will not hold lock during actual sync.
 		needSync := mb.needSync
-		if needSync {
-			// Flush anything that may be pending.
-			mb.flushPendingMsgsLocked()
-		}
 		mb.mu.Unlock()
 
 		// Check if we should compact here.
