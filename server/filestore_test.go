@@ -11005,6 +11005,90 @@ func TestFileStorePurgeMsgBlock(t *testing.T) {
 	})
 }
 
+func TestFileStorePurgeMsgBlockUpdatesSubjects(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 20 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		fst := fs.SubjectsTotals("foo")
+		require_Equal(t, fst["foo"], uint64(20))
+
+		fmb := fs.getFirstBlock()
+		fs.mu.Lock()
+		fs.purgeMsgBlock(fmb)
+		fs.mu.Unlock()
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, uint64(10))
+		require_Equal(t, state.FirstSeq, uint64(11))
+
+		fst = fs.SubjectsTotals("foo")
+		require_Equal(t, fst["foo"], uint64(10))
+	})
+}
+
+func TestFileStorePurgeMsgBlockRemovesSchedules(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		schedule := time.Now().Add(time.Hour).Format(time.RFC3339Nano)
+		hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+		hdr = genHeader(hdr, JSScheduleTarget, "foo.target.0")
+		msgSize := fileStoreMsgSize("foo.sched.0", hdr, []byte("x"))
+
+		// Force two blocks of 5 messages each.
+		fcfg.BlockSize = uint64(msgSize * 5)
+		cfg := StreamConfig{
+			Name:              "zzz",
+			Subjects:          []string{"foo.*"},
+			Storage:           FileStorage,
+			AllowMsgSchedules: true,
+		}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 10 {
+			subj := fmt.Sprintf("foo.sched.%d", i)
+			target := fmt.Sprintf("foo.target.%d", i)
+			hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+			hdr = genHeader(hdr, JSScheduleTarget, target)
+			_, _, err = fs.StoreMsg(subj, hdr, []byte("x"), 0)
+			require_NoError(t, err)
+		}
+
+		fs.mu.RLock()
+		blks := len(fs.blks)
+		sts, msgs := len(fs.scheduling.seqToSubj), int(fs.state.Msgs)
+		fs.mu.RUnlock()
+		require_True(t, blks >= 2)
+		require_Equal(t, sts, msgs)
+
+		fmb := fs.getFirstBlock()
+		fs.mu.Lock()
+		fs.purgeMsgBlock(fmb)
+		fs.mu.Unlock()
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, uint64(5))
+
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		require_Equal(t, len(fs.scheduling.seqToSubj), int(state.Msgs))
+		for seq := uint64(1); seq < state.FirstSeq; seq++ {
+			if _, ok := fs.scheduling.seqToSubj[seq]; ok {
+				t.Fatalf("expected schedule for seq %d to be removed", seq)
+			}
+		}
+	})
+}
+
 func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
