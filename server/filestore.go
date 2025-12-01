@@ -4295,6 +4295,7 @@ func (mb *msgBlock) setupWriteCache(buf []byte) error {
 	mb.ecache.Set(mb.cache)
 	mb.llts = ats.AccessTime()
 	mb.startCacheExpireTimer()
+	fmt.Printf("DEBUG: %s setupWriteCache %d empty cache\n", mb.fs.cfg.Name, mb.index)
 	return nil
 }
 
@@ -6529,6 +6530,9 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		mb.rbytes += rl
 	}
 
+	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+	fmt.Printf("DEBUG: %s mb.writeMsgRecord %d seq %d (msgs %d fseq %d lseq %d)\n", mb.fs.cfg.Name, mb.index, seq, mb.msgs, fseq, lseq)
+
 	fch, werr := mb.fch, mb.werr
 
 	// If we should be flushing, or had a write error, do so here.
@@ -7448,7 +7452,11 @@ func (mb *msgBlock) cacheAlreadyLoaded() bool {
 		return false
 	}
 	numEntries := mb.msgs + uint64(mb.dmap.Size()) + (atomic.LoadUint64(&mb.first.seq) - mb.cache.fseq)
-	return numEntries == uint64(len(mb.cache.idx))
+	res := numEntries == uint64(len(mb.cache.idx))
+	if !res {
+		panic(fmt.Sprintf("cacheAlreadyLoaded: %d != %d (msgs %d dmap %d fseq %d cfseq %d)", numEntries, len(mb.cache.idx), mb.msgs, mb.dmap.Size(), atomic.LoadUint64(&mb.first.seq), mb.cache.fseq))
+	}
+	return res
 }
 
 // Lock should be held.
