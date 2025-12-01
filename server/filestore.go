@@ -1475,7 +1475,6 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			return
 		}
 		mb.dmap.Insert(seq)
-		panic(fmt.Sprintf("no deletes, insert at %d", seq))
 	}
 
 	var le = binary.LittleEndian
@@ -4296,7 +4295,6 @@ func (mb *msgBlock) setupWriteCache(buf []byte) error {
 	mb.ecache.Set(mb.cache)
 	mb.llts = ats.AccessTime()
 	mb.startCacheExpireTimer()
-	fmt.Printf("DEBUG: %s setupWriteCache %d empty cache\n", mb.fs.cfg.Name, mb.index)
 	return nil
 }
 
@@ -4650,7 +4648,6 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 	} else {
 		needsRecord = true
 		mb.dmap.Insert(seq)
-		panic(fmt.Sprintf("no deletes, insert at %d", seq))
 	}
 	if needsRecord {
 		mb.writeMsgRecordLocked(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now, true, true)
@@ -4742,7 +4739,6 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	} else {
 		for ; seq <= lseq; seq++ {
 			mb.dmap.Insert(seq)
-			panic(fmt.Sprintf("no deletes, insert at %d", seq))
 		}
 	}
 	// Write out our placeholder.
@@ -5253,7 +5249,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	} else if !isEmpty {
 		// Out of order delete.
 		mb.dmap.Insert(seq)
-		panic(fmt.Sprintf("no deletes, insert at %d", seq))
 		// Make simple check here similar to Compact(). If we can save 50% and over a certain threshold do inline.
 		// All other more thorough cleanup will happen in syncBlocks logic.
 		// Note that we do not have to store empty records for the deleted, so don't use to calculate.
@@ -5916,10 +5911,6 @@ func (mb *msgBlock) clearCache() {
 		return
 	}
 
-	if pending := mb.pendingWriteSizeLocked(); pending > 0 {
-		panic(fmt.Sprintf("pending writes, pending %d", pending))
-	}
-
 	buf := mbcache.buf
 	mb.cache = nil
 	mb.ecache.Set(nil)
@@ -6015,10 +6006,6 @@ func (mb *msgBlock) expireCacheLocked() {
 	// If we are here we will at least expire the core msg buffer.
 	// We need to capture offset in case we do a write next before a full load.
 	if mb.cache != nil {
-		if pending := mb.pendingWriteSizeLocked(); pending > 0 {
-			panic(fmt.Sprintf("pending writes, pending %d", pending))
-		}
-
 		if !mb.cache.nra {
 			recycleMsgBlockBuf(mb.cache.buf)
 		}
@@ -6541,9 +6528,6 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		// Make sure to account for tombstones in rbytes.
 		mb.rbytes += rl
 	}
-
-	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
-	fmt.Printf("DEBUG: %s mb.writeMsgRecord %d seq %d (msgs %d fseq %d lseq %d)\n", mb.fs.cfg.Name, mb.index, seq, mb.msgs, fseq, lseq)
 
 	fch, werr := mb.fch, mb.werr
 
@@ -7240,7 +7224,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 					idx = append(idx, dbit)
 					if dms == 0 && dseq != 0 {
 						mb.dmap.Insert(dseq)
-						panic(fmt.Sprintf("no deletes, insert at %d", dseq))
 					}
 				}
 			}
@@ -7250,7 +7233,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			// Make sure our dmap has this entry if it was erased.
 			if erased && dms == 0 && seq != 0 {
 				mb.dmap.Insert(seq)
-				panic(fmt.Sprintf("no deletes, insert at %d", seq))
 			}
 
 			// Handle FSS inline here.
@@ -7294,7 +7276,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			idx = append(idx, dbit)
 			if dms == 0 {
 				mb.dmap.Insert(dseq)
-				panic(fmt.Sprintf("no deletes, insert at %d", dseq))
 			}
 		}
 	}
@@ -7464,11 +7445,7 @@ func (mb *msgBlock) cacheAlreadyLoaded() bool {
 		return false
 	}
 	numEntries := mb.msgs + uint64(mb.dmap.Size()) + (atomic.LoadUint64(&mb.first.seq) - mb.cache.fseq)
-	res := numEntries == uint64(len(mb.cache.idx))
-	if !res {
-		panic(fmt.Sprintf("cacheAlreadyLoaded: %d != %d (msgs %d dmap %d fseq %d cfseq %d)", numEntries, len(mb.cache.idx), mb.msgs, mb.dmap.Size(), atomic.LoadUint64(&mb.first.seq), mb.cache.fseq))
-	}
-	return res
+	return numEntries == uint64(len(mb.cache.idx))
 }
 
 // Lock should be held.
@@ -8612,7 +8589,6 @@ func (mb *msgBlock) readIndexInfo() error {
 					break
 				}
 				mb.dmap.Insert(seq + fseq)
-				panic(fmt.Sprintf("no deletes, insert at %d", seq+fseq))
 			}
 		}
 	}
@@ -8804,7 +8780,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				} else {
 					// Out of order delete.
 					mb.dmap.Insert(seq)
-					panic(fmt.Sprintf("no deletes, insert at %d", seq))
 				}
 				// Break if we have emptied this block or if we set a maximum purge count.
 				if mb.isEmpty() || (maxp > 0 && purged >= maxp) {
