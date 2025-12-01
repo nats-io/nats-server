@@ -9587,6 +9587,36 @@ func (fs *fileStore) forceRemoveMsgBlock(mb *msgBlock) {
 // Lock should be held.
 func (fs *fileStore) purgeMsgBlock(mb *msgBlock) {
 	mb.mu.Lock()
+	// Adjust per-subject tracking if present.
+	if err := mb.ensurePerSubjectInfoLoaded(); err == nil && mb.fss != nil {
+		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
+			subj := bytesToString(bsubj)
+			for range ss.Msgs {
+				fs.removePerSubject(subj)
+			}
+			return true
+		})
+	}
+	// Clean up scheduled message metadata if we know this block contained any.
+	if fs.scheduling != nil && mb.schedules > 0 {
+		cacheLoaded := !mb.cacheNotLoaded()
+		if !cacheLoaded {
+			cacheLoaded = mb.loadMsgsWithLock() == nil
+		}
+		if cacheLoaded {
+			var smv StoreMsg
+			fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+			for seq := fseq; seq <= lseq; seq++ {
+				sm, err := mb.cacheLookupNoCopy(seq, &smv)
+				if err != nil || sm == nil {
+					continue
+				}
+				if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+					fs.scheduling.remove(seq)
+				}
+			}
+		}
+	}
 	// Update top level accounting.
 	msgs, bytes := mb.msgs, mb.bytes
 	if msgs > fs.state.Msgs {
@@ -9598,6 +9628,8 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock) {
 	fs.state.Msgs -= msgs
 	fs.state.Bytes -= bytes
 	fs.removeMsgBlock(mb)
+	mb.tryForceExpireCacheLocked()
+	mb.finishedWithCache()
 	mb.mu.Unlock()
 	fs.selectNextFirst()
 }
