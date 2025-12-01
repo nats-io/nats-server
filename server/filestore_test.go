@@ -11029,6 +11029,12 @@ func TestFileStoreEraseMsgErr(t *testing.T) {
 		mb.mfn = _EMPTY_
 		mb.mu.Unlock()
 		fs.EraseMsg(2)
+
+		// Cleanup ".tmp" file if it was created due to the purposefully invalid file name above.
+		_, err = os.Stat(blkTmpSuffix)
+		if err == nil {
+			require_NoError(t, os.Remove(blkTmpSuffix))
+		}
 	})
 }
 
