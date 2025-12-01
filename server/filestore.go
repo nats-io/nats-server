@@ -5141,21 +5141,32 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		return false, nil
 	}
 
+	fifo := seq == atomic.LoadUint64(&mb.first.seq)
+	isLastBlock := mb == fs.lmb
+	isEmpty := mb.msgs == 1 // ... about to be zero though.
+
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
 	// Now just load regardless.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
+	var didLoad bool
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
 			fsUnlock()
 			return false, err
 		}
+		didLoad = true
+	}
+	finishedWithCache := func() {
+		if didLoad {
+			mb.finishedWithCache()
+		}
 	}
 
 	var smv StoreMsg
 	sm, err := mb.cacheLookupNoCopy(seq, &smv)
 	if err != nil {
-		mb.finishedWithCache()
+		finishedWithCache()
 		mb.mu.Unlock()
 		fsUnlock()
 		// Mimic err behavior from above check to dmap. No error returned if already removed.
@@ -5164,11 +5175,50 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		}
 		return false, err
 	}
+
+	// Check if we need to write a deleted record tombstone.
+	// This is for user initiated removes or to hold the first seq
+	// when the last block is empty.
+	// If not via limits and not empty (empty writes tombstone above if last) write tombstone.
+	if !viaLimits && !isEmpty && sm != nil {
+		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
+		lmb, err := fs.checkLastBlock(emptyRecordLen)
+		if err != nil {
+			finishedWithCache()
+			fsUnlock()
+			return false, err
+		}
+		if err := lmb.writeTombstone(sm.seq, sm.ts); err != nil {
+			finishedWithCache()
+			fsUnlock()
+			return false, err
+		}
+		mb.mu.Lock() // We'll need the lock back to carry on safely.
+	}
+
 	// Grab size
 	msz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 
 	// Set cache timestamp for last remove.
 	mb.lrts = ats.AccessTime()
+
+	// Must always perform the erase, even if the block is empty as it could contain tombstones.
+	if secure {
+		// Grab record info, but use the pre-computed record length.
+		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
+		if err != nil {
+			finishedWithCache()
+			mb.mu.Unlock()
+			fsUnlock()
+			return false, err
+		}
+		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
+			finishedWithCache()
+			mb.mu.Unlock()
+			fsUnlock()
+			return false, err
+		}
+	}
 
 	// Global stats
 	if fs.state.Msgs > 0 {
@@ -5206,28 +5256,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if ttl, err := getMessageTTL(sm.hdr); err == nil {
 			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
 			fs.ttls.Remove(seq, int64(expires))
-		}
-	}
-
-	fifo := seq == atomic.LoadUint64(&mb.first.seq)
-	isLastBlock := mb == fs.lmb
-	isEmpty := mb.msgs == 0
-
-	// Must always perform the erase, even if the block is empty as it could contain tombstones.
-	if secure {
-		// Grab record info, but use the pre-computed record length.
-		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
-		if err != nil {
-			mb.finishedWithCache()
-			mb.mu.Unlock()
-			fsUnlock()
-			return false, err
-		}
-		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
-			mb.finishedWithCache()
-			mb.mu.Unlock()
-			fsUnlock()
-			return false, err
 		}
 	}
 
@@ -5271,7 +5299,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		fs.removeMsgBlock(mb)
 		firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 	}
-	mb.finishedWithCache()
+	finishedWithCache()
 	mb.mu.Unlock()
 
 	// If we emptied the current message block and the seq was state.FirstSeq
@@ -5279,15 +5307,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// we don't lose track of the first sequence.
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
-	}
-
-	// Check if we need to write a deleted record tombstone.
-	// This is for user initiated removes or to hold the first seq
-	// when the last block is empty.
-
-	// If not via limits and not empty (empty writes tombstone above if last) write tombstone.
-	if !viaLimits && !isEmpty && sm != nil {
-		fs.writeTombstone(sm.seq, sm.ts)
 	}
 
 	if cb := fs.scb; cb != nil {
@@ -7320,8 +7339,10 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// Signals us that we need to rebuild filestore state.
 	var fsLostData *LostStreamData
 
+	var weakenCache bool
 	if mb.cache == nil {
 		mb.cache = mb.ecache.Value()
+		weakenCache = mb.cache != nil
 	}
 	if mb.cache == nil || mb.mfd == nil {
 		return nil, errNoCache
@@ -7404,8 +7425,10 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// Check last access time. If we think the block still has read interest
 	// then we will weaken the pointer but otherwise try to hold onto it.
 	if ts := ats.AccessTime(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
-		mb.cache = nil
-		mb.ecache.Weaken()
+		if weakenCache {
+			mb.cache = nil
+			mb.ecache.Weaken()
+		}
 		mb.resetCacheExpireTimer(0)
 		return fsLostData, mb.werr
 	}
