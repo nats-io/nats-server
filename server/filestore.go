@@ -478,7 +478,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 
 	// Attempt to recover our state.
-	err = fs.recoverFullState()
+	//err = fs.recoverFullState()
+	err = os.ErrNotExist
 	if err != nil {
 		if !os.IsNotExist(err) {
 			fs.warn("Recovering stream state from index errored: %v", err)
@@ -893,7 +894,7 @@ func (fs *fileStore) setupAEK() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
+		err = writeFileWithSync(keyFile, encrypted, defaultFilePerms)
 		if err != nil {
 			return err
 		}
@@ -929,7 +930,7 @@ func (fs *fileStore) writeStreamMeta() error {
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	err = writeFileWithSync(meta, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -938,7 +939,7 @@ func (fs *fileStore) writeStreamMeta() error {
 	var hb [highwayhash.Size64]byte
 	checksum := hex.EncodeToString(fs.hh.Sum(hb[:0]))
 	sum := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
-	err = fs.writeFileWithOptionalSync(sum, []byte(checksum), defaultFilePerms)
+	err = writeFileWithSync(sum, []byte(checksum), defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -1361,7 +1362,7 @@ func (mb *msgBlock) convertCipher() error {
 		// the old keyfile back.
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
 			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
-			fs.writeFileWithOptionalSync(keyFile, ekey, defaultFilePerms)
+			writeFileWithSync(keyFile, ekey, defaultFilePerms)
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
@@ -4414,7 +4415,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
+	err = writeFileWithSync(keyFile, encrypted, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -11549,7 +11550,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		err = cfs.fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
+		err = writeFileWithSync(keyFile, encrypted, defaultFilePerms)
 		if err != nil {
 			return err
 		}
@@ -11570,7 +11571,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = cfs.fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	err = writeFileWithSync(meta, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -11580,7 +11581,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	checksum := hex.EncodeToString(cfs.hh.Sum(hb[:0]))
 	sum := filepath.Join(cfs.odir, JetStreamMetaFileSum)
 
-	err = cfs.fs.writeFileWithOptionalSync(sum, []byte(checksum), defaultFilePerms)
+	err = writeFileWithSync(sum, []byte(checksum), defaultFilePerms)
 	if err != nil {
 		return err
 	}
