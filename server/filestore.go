@@ -9159,6 +9159,16 @@ func (fs *fileStore) forceRemoveMsgBlock(mb *msgBlock) {
 // Lock should be held.
 func (fs *fileStore) purgeMsgBlock(mb *msgBlock) {
 	mb.mu.Lock()
+	// Adjust per-subject tracking if present.
+	if err := mb.ensurePerSubjectInfoLoaded(); err == nil && mb.fss != nil {
+		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
+			subj := bytesToString(bsubj)
+			for range ss.Msgs {
+				fs.removePerSubject(subj)
+			}
+			return true
+		})
+	}
 	// Update top level accounting.
 	msgs, bytes := mb.msgs, mb.bytes
 	if msgs > fs.state.Msgs {
@@ -9170,6 +9180,7 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock) {
 	fs.state.Msgs -= msgs
 	fs.state.Bytes -= bytes
 	fs.removeMsgBlock(mb)
+	mb.tryForceExpireCacheLocked()
 	mb.mu.Unlock()
 	fs.selectNextFirst()
 }

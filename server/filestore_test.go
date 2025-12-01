@@ -10697,6 +10697,36 @@ func TestFileStorePurgeMsgBlock(t *testing.T) {
 	})
 }
 
+func TestFileStorePurgeMsgBlockUpdatesSubjects(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 20 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		fst := fs.SubjectsTotals("foo")
+		require_Equal(t, fst["foo"], uint64(20))
+
+		fmb := fs.getFirstBlock()
+		fs.mu.Lock()
+		fs.purgeMsgBlock(fmb)
+		fs.mu.Unlock()
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, uint64(10))
+		require_Equal(t, state.FirstSeq, uint64(11))
+
+		fst = fs.SubjectsTotals("foo")
+		require_Equal(t, fst["foo"], uint64(10))
+	})
+}
+
 func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
