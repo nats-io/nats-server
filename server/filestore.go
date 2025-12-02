@@ -5167,7 +5167,17 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	var smv StoreMsg
-	sm, err := mb.cacheLookupNoCopy(seq, &smv)
+	var sm *StoreMsg
+	var err error
+	if secure {
+		// For a secure erase we can't use NoCopy, as eraseMsg will overwrite the
+		// cache and we won't be able to access sm.subj etc anymore later on.
+		sm, err = mb.cacheLookup(seq, &smv)
+	} else {
+		// For a non-secure erase it's fine to use NoCopy, as the cache won't change
+		// from underneath us.
+		sm, err = mb.cacheLookupNoCopy(seq, &smv)
+	}
 	if err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
