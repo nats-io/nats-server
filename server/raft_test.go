@@ -4130,3 +4130,38 @@ func TestNRGProposeRemovePeerLeader(t *testing.T) {
 	require_Equal(t, len(newLeader.node().Peers()), 2)
 	require_False(t, newLeader.node().MembershipChangeInProgress())
 }
+
+func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader()
+	followers := rg.followers()
+	require_Equal(t, len(followers), 2)
+
+	// Remove one follower
+	require_NoError(t, leader.node().ProposeRemovePeer(followers[0].node().ID()))
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.node().MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		} else {
+			return nil
+		}
+	})
+
+	require_Equal(t, len(leader.node().Peers()), 2)
+
+	// Stop the leader and restart it.
+	// If bug is present: the leader resurrects the previously removed peer.
+	leader.stop()
+	followers[1].stop()
+
+	leader.restart()
+	require_Equal(t, len(leader.node().Peers()), 2)
+
+	followers[1].restart()
+	require_Equal(t, len(leader.node().Peers()), 2)
+}

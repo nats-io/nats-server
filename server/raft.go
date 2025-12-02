@@ -925,16 +925,20 @@ func (n *raft) ProposeAddPeer(peer string) error {
 // As a leader if we are proposing to remove a peer assume its already gone.
 func (n *raft) doRemovePeerAsLeader(peer string) {
 	n.Lock()
+	defer n.Unlock()
+	n.doRemovePeerLocked(peer)
+}
+
+func (n *raft) doRemovePeerLocked(peer string) {
 	if n.removed == nil {
 		n.removed = map[string]time.Time{}
 	}
 	n.removed[peer] = time.Now()
 	if _, ok := n.peers[peer]; ok {
 		delete(n.peers, peer)
-		// We should decrease our cluster size since we are tracking this peer and the peer is most likely already gone.
 		n.adjustClusterSizeAndQuorum()
+		n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 	}
-	n.Unlock()
 }
 
 // ProposeRemovePeer is called to remove a peer from the group.
@@ -3180,19 +3184,7 @@ func (n *raft) applyCommit(index uint64) error {
 			peer := string(e.Data)
 			n.debug("Removing peer %q", peer)
 
-			// Make sure we have our removed map.
-			if n.removed == nil {
-				n.removed = make(map[string]time.Time)
-			}
-			n.removed[peer] = time.Now()
-
-			if _, ok := n.peers[peer]; ok {
-				delete(n.peers, peer)
-				// We should decrease our cluster size since we are tracking this peer.
-				n.adjustClusterSizeAndQuorum()
-				// Write out our new state.
-				n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
-			}
+			n.doRemovePeerLocked(peer)
 
 			// Remove from string intern map.
 			peers.Delete(peer)
