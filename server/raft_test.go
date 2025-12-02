@@ -4289,3 +4289,58 @@ func TestNRGProposeRemovePeerQuorum(t *testing.T) {
 		}
 	})
 }
+
+// Test outline:
+//   - In a R3 cluster, PeerRemove the leader and block on of
+//     the followers.
+//   - Verify that the membership change can't make progress,
+//     the leader should not count its own ack towards quorum.
+//   - Release the previously blocked follower and expect the
+//     membership change to take place.
+func TestNRGProposeRemovePeerLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().node()
+	followers := rg.followers()
+	leaderID := leader.ID()
+	require_True(t, len(followers) == 2)
+
+	// Block follower 0 and remove the leader
+	followers[0].node().(*raft).Lock()
+	err := leader.ProposeRemovePeer(leader.ID())
+	require_NoError(t, err)
+
+	// Should not be able to make progress
+	time.Sleep(time.Second)
+	require_True(t, leader.MembershipChangeInProgress())
+
+	// Unlock the follower and expect the membership
+	// change to eventually finish
+	followers[0].node().(*raft).Unlock()
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if leader.MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		} else {
+			return nil
+		}
+	})
+
+	// Old leader steps down
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		newLeader := rg.waitOnLeader()
+		if newLeader.node().ID() == leaderID {
+			return errors.New("leader has not changed yet")
+		}
+		return nil
+	})
+
+	newLeader := rg.waitOnLeader()
+	require_Equal(t, leader.State(), Closed)
+	require_NotEqual(t, leader.ID(), newLeader.node().ID())
+	require_Equal(t, len(newLeader.node().Peers()), 2)
+	require_False(t, newLeader.node().MembershipChangeInProgress())
+}
