@@ -2201,6 +2201,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 	sendq := as.jsa.sendq
 	quitCh := as.jsa.quitCh
 	ci := ClientInfo{Account: accName, Cluster: cluster}
+	acc := c.acc
 	as.mu.RUnlock()
 
 	// The account session manager does not have a suhtdown API per-se, instead,
@@ -2261,7 +2262,13 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 				c.pa.reply = []byte(r.reply)
 				c.pa.size = nsize
 				c.pa.szb = []byte(strconv.Itoa(nsize))
+				c.pa.mapped = nil
 
+				if acc.hasMappings() {
+					if changed := c.selectMappedSubject(); changed {
+						c.traceOutOp("MAPPINGS", fmt.Appendf(nil, "%s -> %s", c.pa.mapped, c.pa.subject))
+					}
+				}
 				c.processInboundClientMsg(msg)
 				c.flushClients(0)
 			}

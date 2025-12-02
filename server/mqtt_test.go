@@ -26,6 +26,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -7818,6 +7819,137 @@ func TestMQTTMaxPayloadEnforced(t *testing.T) {
 	testMQTTSendPublishPacket(t, mc, 0, false, false, "foo", 0, oversized)
 
 	testMQTTExpectDisconnect(t, mc)
+}
+
+func TestMQTTJSApiMapping(t *testing.T) {
+	td := t.TempDir()
+	hubDir := filepath.Join(td, "hub")
+	hubConf := createConfFile(t, fmt.Appendf(nil, `
+        server_name: hub
+        listen: "127.0.0.1:-1"
+        jetstream {
+            domain: "HUB"
+            store_dir: "%s"
+        }
+        mqtt {
+            listen: "127.0.0.1:-1"
+        }
+        leafnodes {
+            listen: "127.0.0.1:-1"
+        }
+        accounts: {
+            SYS: { users: [ { user:s, password:x } ] }
+            HUB: {
+                jetstream: true
+                users: [ { user:h, password:x } ]
+            }
+        }
+        system_account: SYS
+    `, hubDir))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafDir := filepath.Join(td, "leaf")
+	leafTmpl := `
+        server_name: leaf
+        listen: "127.0.0.1:-1"
+        jetstream {
+            domain: "LEAF"
+            store_dir: "%s"
+        }
+        mqtt {
+            listen: "127.0.0.1:-1"
+            js_api_timeout: "500ms"
+        }
+        leafnodes {
+            remotes [
+                { urls: [ nats-leaf://s:x@127.0.0.1:%d ], account: SYS }
+                { urls: [ nats-leaf://h:x@127.0.0.1:%d ], account: HUB }
+            ]
+        }
+        accounts: {
+            SYS: { users: [ { user:s, password:x } ] }
+            HUB: {
+                jetstream: false
+                users: [ { user:h, password:x } ]
+                mappings: {
+                    "$JS.API.>" : "$JS.HUB.API.>"
+                    %s
+                }
+            }
+            LEAF: {
+                jetstream: true
+                users: [ { user:l, password:x } ]
+            }
+        }
+        system_account: SYS
+    `
+	leafConf := createConfFile(t, fmt.Appendf(nil, leafTmpl, leafDir, ohub.LeafNode.Port, ohub.LeafNode.Port, ""))
+	leaf, oleaf := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, leaf, 2)
+
+	testRetained := func(user string, port int, msg string) {
+		t.Helper()
+		// Create a producer
+		c, r := testMQTTConnect(t, &mqttConnInfo{
+			cleanSess: true,
+			clientID:  "pub",
+			user:      user,
+			pass:      "x",
+		}, "127.0.0.1", port)
+		defer c.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+		testMQTTPublish(t, c, r, 0, false, true, "foo", 0, []byte(msg))
+		c.Close()
+
+		// Create a consumer
+		c, r = testMQTTConnect(t, &mqttConnInfo{
+			cleanSess: true,
+			clientID:  "sub",
+			user:      user,
+			pass:      "x",
+		}, "127.0.0.1", port)
+		defer c.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+		testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
+		testMQTTCheckPubMsg(t, c, r, "foo", mqttPubFlagRetain, []byte(msg))
+	}
+
+	// Connect to leaf
+	testRetained("l", oleaf.MQTT.Port, "hi leaf")
+
+	// Now same test in the hub
+	testRetained("h", ohub.MQTT.Port, "hi hub")
+
+	// Now test the hub account in the leaf node. We expect it to fail
+	// because we don't have the mapping for the sessions to be persisted
+	// in the hub.
+	_, _, err := testMQTTConnectRetryWithError(t, &mqttConnInfo{
+		cleanSess: true,
+		clientID:  "sub",
+		user:      "h",
+		pass:      "x",
+	}, oleaf.MQTT.Host, oleaf.MQTT.Port, 0)
+	if err == nil {
+		t.Fatal("Expected failure to connect, but did connect")
+	}
+
+	// Config reload the leaf server to add the missing mapping.
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(leafTmpl,
+		leafDir, ohub.LeafNode.Port, ohub.LeafNode.Port, `"$MQTT.sess.LEAF.>" : "$MQTT.sess.HUB.>"`))
+
+	c, r := testMQTTConnect(t, &mqttConnInfo{
+		cleanSess: true,
+		clientID:  "sub",
+		user:      "h",
+		pass:      "x",
+	}, "127.0.0.1", oleaf.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
+	testMQTTCheckPubMsg(t, c, r, "foo", mqttPubFlagRetain, []byte("hi hub"))
 }
 
 //////////////////////////////////////////////////////////////////////////
