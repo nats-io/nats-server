@@ -306,6 +306,7 @@ var (
 	errEntryLoadFailed   = errors.New("raft: could not load entry from WAL")
 	errEntryStoreFailed  = errors.New("raft: could not store entry to WAL")
 	errNodeClosed        = errors.New("raft: node is closed")
+	errNodeRemoved       = errors.New("raft: peer was removed")
 	errBadSnapName       = errors.New("raft: snapshot name could not be parsed")
 	errNoSnapAvailable   = errors.New("raft: no snapshot available")
 	errCatchupsRunning   = errors.New("raft: snapshot can not be installed while catchups running")
@@ -3152,8 +3153,19 @@ func (n *raft) applyCommit(index uint64) error {
 
 	n.commit = index
 	ae.buf = nil
-
 	var committed []*Entry
+
+	defer func() {
+		// Pass to the upper layers if we have normal entries. It is
+		// entirely possible that 'committed' might be an empty slice here,
+		// which will happen if we've processed updates inline (like peer
+		// states). In which case the upper layer will just call down with
+		// Applied() with no further action.
+		n.apply.push(newCommittedEntry(index, committed))
+		// Place back in the pool.
+		ae.returnToPool()
+	}()
+
 	for _, e := range ae.entries {
 		switch e.Type {
 		case EntryNormal:
@@ -3204,6 +3216,9 @@ func (n *raft) applyCommit(index uint64) error {
 			// We pass these up as well.
 			committed = append(committed, e)
 
+			// We are done with this membership change
+			n.membChanging = false
+
 		case EntryRemovePeer:
 			peer := string(e.Data)
 			n.debug("Removing peer %q", peer)
@@ -3222,29 +3237,22 @@ func (n *raft) applyCommit(index uint64) error {
 				n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 			}
 
-			// If this is us and we are the leader we should attempt to stepdown.
-			if peer == n.id && n.State() == Leader {
-				n.stepdownLocked(n.selectNextLeader())
-			}
-
 			// Remove from string intern map.
 			peers.Delete(peer)
 
 			// We pass these up as well.
 			committed = append(committed, e)
-		}
-		if e.ChangesMembership() {
+
+			// We are done with this membership change
 			n.membChanging = false
+
+			// If this is us and we are the leader signal the caller
+			// to attempt to stepdown.
+			if peer == n.id && n.State() == Leader {
+				return errNodeRemoved
+			}
 		}
 	}
-	// Pass to the upper layers if we have normal entries. It is
-	// entirely possible that 'committed' might be an empty slice here,
-	// which will happen if we've processed updates inline (like peer
-	// states). In which case the upper layer will just call down with
-	// Applied() with no further action.
-	n.apply.push(newCommittedEntry(index, committed))
-	// Place back in the pool.
-	ae.returnToPool()
 	return nil
 }
 
@@ -3296,18 +3304,35 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 	}
 	results[ar.peer] = struct{}{}
 
-	// We don't count ourselves to account for leader changes, so add 1.
-	if nr := len(results); nr+1 >= n.qn {
+	acks := len(results)
+	if n.peers[n.ID()] != nil {
+		// Count the leader if it's still part of membership
+		acks += 1
+	}
+
+	var applyErr error
+	if acks >= n.qn {
 		// We have a quorum.
 		for index := n.commit + 1; index <= ar.index; index++ {
-			if err := n.applyCommit(index); err != nil && err != errNodeClosed {
-				n.error("Got an error applying commit for %d: %v", index, err)
+			if applyErr = n.applyCommit(index); applyErr != nil {
+				switch applyErr {
+				case errNodeClosed, errNodeRemoved:
+				default:
+					n.error("Got an error applying commit for %d: %v", index, applyErr)
+				}
 				break
 			}
 		}
 		sendHB = n.prop.len() == 0
 	}
 	n.Unlock()
+
+	if applyErr == errNodeRemoved {
+		// Leader was peer-removed. Attempt a step-down to
+		// a new leader before shutting down.
+		n.StepDown()
+		n.Stop()
+	}
 
 	if sendHB {
 		n.sendHeartbeat()
