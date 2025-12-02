@@ -47,6 +47,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
 
@@ -11510,4 +11511,47 @@ func TestFileStoreSyncBlocksFlushesAndSyncsMessages(t *testing.T) {
 		require_Equal(t, sm.seq, 1)
 		require_Equal(t, sm.subj, "foo")
 	})
+}
+
+func TestJetStreamFileStoreSubjectsRemovedAfterSecureErase(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test.*"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("test.1", []byte("msg1"))
+	require_NoError(t, err)
+	_, err = js.Publish("test.2", []byte("msg2"))
+	require_NoError(t, err)
+	_, err = js.Publish("test.3", []byte("msg3"))
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	require_NoError(t, err)
+	require_Equal(t, si.State.NumSubjects, 3)
+	require_Len(t, len(si.State.Subjects), 3)
+
+	// The bug happened here: the underlying eraseMsg() call in removeMsg() would
+	// corrupt the sm.subj from the shallow cache lookup. We would then pass the
+	// corrupted subject into removeSeqPerSubject() & removePerSubject(), resulting
+	// in them being no-ops. This is now fixed.
+	require_NoError(t, js.SecureDeleteMsg("TEST", 1))
+
+	si, err = js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	require_NoError(t, err)
+	require_Equal(t, si.State.NumSubjects, 2)
+	require_Len(t, len(si.State.Subjects), 2)
+
+	_, exists := si.State.Subjects["test.1"]
+	require_False(t, exists)
+	require_Equal(t, si.State.Subjects["test.2"], uint64(1))
+	require_Equal(t, si.State.Subjects["test.3"], uint64(1))
 }
