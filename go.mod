@@ -2,12 +2,12 @@ module github.com/nats-io/nats-server/v2
 
 go 1.24.0
 
-toolchain go1.24.10
+toolchain go1.24.11
 
 require (
-	github.com/antithesishq/antithesis-sdk-go v0.4.3-default-no-op
+	github.com/antithesishq/antithesis-sdk-go v0.5.0-default-no-op
 	github.com/google/go-tpm v0.9.7
-	github.com/klauspost/compress v1.18.1
+	github.com/klauspost/compress v1.18.2
 	github.com/nats-io/jwt/v2 v2.8.0
 	github.com/nats-io/nats.go v1.47.0
 	github.com/nats-io/nkeys v0.4.12
