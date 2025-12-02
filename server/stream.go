@@ -575,9 +575,6 @@ const (
 	JSBatchId                 = "Nats-Batch-Id"
 	JSBatchSeq                = "Nats-Batch-Sequence"
 	JSBatchCommit             = "Nats-Batch-Commit"
-	JSFastBatchId             = "Nats-Fast-Batch-Id"
-	JSBatchGap                = "Nats-Batch-Gap"
-	JSFlow                    = "Nats-Flow"
 	JSSchedulePattern         = "Nats-Schedule"
 	JSScheduleTTL             = "Nats-Schedule-TTL"
 	JSScheduleTarget          = "Nats-Schedule-Target"
@@ -3364,10 +3361,6 @@ func (mset *stream) setupMirrorConsumer() error {
 						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
 						// Remove any Nats-Batch- headers, batching is not supported when mirroring.
 						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Batch-")
-						// Remove any Nats-Fast-Batch- headers, batching is not supported when mirroring.
-						hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Fast-Batch-")
-						// Remove any Nats-Flow headers, batching is not supported when mirroring.
-						hdr = removeHeaderIfPresent(hdr, "Nats-Flow")
 					}
 					mset.queueInbound(msgs, subject, reply, hdr, msg, nil, nil)
 					mirror.last.Store(time.Now().UnixNano())
@@ -3950,10 +3943,6 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
 		// Remove any Nats-Batch- headers, batching is not supported when sourcing.
 		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Batch-")
-		// Remove any Nats-Fast-Batch- headers, batching is not supported when sourcing.
-		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Fast-Batch-")
-		// Remove any Nats-Flow headers, batching is not supported when sourcing.
-		hdr = removeHeaderIfPresent(hdr, "Nats-Flow")
 	}
 	// Hold onto the origin reply which has all the metadata.
 	hdr = genHeader(hdr, JSStreamSource, si.genSourceHeader(m.subj, m.rply))
@@ -4914,10 +4903,11 @@ func getFastBatch(reply string) (b FastBatch, ok bool) {
 	if o == -1 {
 		return
 	}
-	version := reply[o+1 : n]
-	if version == "0" || version == "1" || version == "2" {
-		b.commitEob = version == "2"
-		b.commit = b.commitEob || version == "1"
+	op := reply[o+1 : n]
+	// FIXME(mvv): formalize op codes
+	if op == "0" || op == "1" || op == "2" || op == "3" {
+		b.commitEob = op == "3"
+		b.commit = b.commitEob || op == "2"
 		p := o
 		// Batch seq.
 		if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
@@ -4929,18 +4919,15 @@ func getFastBatch(reply string) (b FastBatch, ok bool) {
 				return
 			}
 		}
-		// Batch id.
-		if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
-			return
-		} else {
-			b.id = reply[o+1 : p]
-			p = o
-		}
 		// Gap mode.
 		if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
 			return
 		} else {
-			b.gapOk = reply[o+1:p] == "ok"
+			gapMode := reply[o+1 : p]
+			if gapMode != "ok" && gapMode != "fail" {
+				return // Not recognized.
+			}
+			b.gapOk = gapMode == "ok"
 			p = o
 		}
 		// Ack flow.
@@ -4951,6 +4938,13 @@ func getFastBatch(reply string) (b FastBatch, ok bool) {
 			if b.flow <= 0 {
 				b.flow = 10
 			}
+			p = o
+		}
+		// Batch id.
+		if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
+			return
+		} else {
+			b.id = reply[o+1 : p]
 		}
 		ok = true
 		return
@@ -6060,7 +6054,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
 			batches := mset.batches
 			batches.mu.Lock()
-			b, commitReply := batches.fastBatchRegisterSequences(batchId, batchSeq, mset.lseq)
+			b, flowRespond, commitReply := batches.fastBatchRegisterSequences(batchId, batchSeq, mset.lseq)
+			if !flowRespond {
+				reply = _EMPTY_
+				canRespond = false
+			}
 			if commitReply != _EMPTY_ {
 				reply = commitReply
 				canRespond = doAck && len(reply) > 0 && isLeader
@@ -6262,7 +6260,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
 		batches := mset.batches
 		batches.mu.Lock()
-		b, commitReply := batches.fastBatchRegisterSequences(batchId, batchSeq, mset.lseq)
+		b, flowRespond, commitReply := batches.fastBatchRegisterSequences(batchId, batchSeq, mset.lseq)
+		if !flowRespond {
+			reply = _EMPTY_
+			canRespond = false
+		}
 		if commitReply != _EMPTY_ {
 			reply = commitReply
 			canRespond = doAck && len(reply) > 0 && isLeader
@@ -6853,10 +6855,6 @@ func (mset *stream) processJetStreamFastBatchMsg(subject, reply string, hdr, msg
 		mset.clMu.Unlock()
 		// FIXME(mvv): errors need to be handled for fast batch publish, return both a success PubAck and error?
 		return err
-	}
-	// We only reply if we're committing, or if we've reached the ack threshold.
-	if !batch.commit && batch.seq%b.ackMessages != 0 {
-		reply = _EMPTY_
 	}
 	if !isClustered {
 		mset.clMu.Unlock()

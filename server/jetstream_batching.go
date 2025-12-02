@@ -121,8 +121,9 @@ func (b *batchGroup) readyForCommit() bool {
 
 // fastBatchRegisterSequences registers the highest stored batch and stream sequence and returns
 // whether a PubAck should be sent if the batch has been committed.
+// TODO(mvv): docs about flow acks
 // Lock should be held.
-func (batches *batching) fastBatchRegisterSequences(batchId string, batchSeq, streamSeq uint64) (*batchGroup, string) {
+func (batches *batching) fastBatchRegisterSequences(batchId string, batchSeq, streamSeq uint64) (*batchGroup, bool, string) {
 	if b, ok := batches.group[batchId]; ok {
 		b.sseq = streamSeq
 		b.pseq = batchSeq
@@ -130,11 +131,12 @@ func (batches *batching) fastBatchRegisterSequences(batchId string, batchSeq, st
 		// Return the reply and clean up the batch now.
 		if b.lseq == batchSeq && b.reply != _EMPTY_ {
 			b.cleanupLocked(batchId, batches)
-			return b, b.reply
+			return b, true, b.reply
 		}
-		return b, _EMPTY_
+		// If not committing, send flow ack when we've reached the ack threshold.
+		return b, batchSeq%b.ackMessages == 0, _EMPTY_
 	}
-	return nil, _EMPTY_
+	return nil, false, _EMPTY_
 }
 
 // fastBatchFlowControl sends a fast batch flow control message for the current highest sequence.
