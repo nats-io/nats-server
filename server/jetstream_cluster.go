@@ -9647,7 +9647,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		if _, err = mset.store.SkipMsg(seq); err != nil {
 			return 0, errCatchupWrongSeqForSkip
 		}
-	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl); err != nil {
+	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl, false); err != nil {
 		return 0, err
 	}
 

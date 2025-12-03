@@ -2319,11 +2319,11 @@ func TestJetStreamAtomicBatchPublishPartiallyAppliedBatchOnRecovery(t *testing.T
 		ts := time.Now().UnixNano()
 		hdr := genHeader(nil, "Nats-Batch-Id", "ID")
 		hdr = genHeader(hdr, "Nats-Batch-Sequence", "1")
-		require_NoError(t, mset.store.StoreRawMsg("foo", hdr, nil, 2, ts, 0))
+		require_NoError(t, mset.store.StoreRawMsg("foo", hdr, nil, 2, ts, 0, false))
 
 		hdr = genHeader(nil, "Nats-Batch-Id", "ID")
 		hdr = genHeader(hdr, "Nats-Batch-Sequence", "2")
-		require_NoError(t, mset.store.StoreRawMsg("foo", hdr, nil, 3, ts, 0))
+		require_NoError(t, mset.store.StoreRawMsg("foo", hdr, nil, 3, ts, 0, false))
 
 		// Unpause applies on the remaining follower.
 		for _, s := range c.servers {

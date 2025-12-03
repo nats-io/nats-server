@@ -3965,7 +3965,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				mset.retrySourceConsumerAtSeq(iName, si.sseq)
 				mset.mu.Unlock()
 			} else {
-				// Log some warning for errors other than errLastSeqMismatch or errMaxMsgs.
+				// Log some warning for errors other than errLastSeqMismatch.
 				if !errors.Is(err, errLastSeqMismatch) {
 					s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
 						iName, accName, sname, err)
@@ -6103,7 +6103,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 		}
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
+		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl, canConsistencyCheck)
 	}
 
 	if err != nil {
