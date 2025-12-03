@@ -611,41 +611,46 @@ func checkMsgHeadersPreClusteredProposal(
 	// We need to deny here otherwise we'd need to bump CLFS, and it could succeed on some
 	// peers and not others depending on consumer ack state (if interest policy).
 	// So we deny here, if we allow that means we know it would succeed on every peer.
-	if discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
-		// Error if over DiscardNew per subject threshold.
-		if discardNewPer {
-			totalMsgsForSubject := i.ops
-			if i, ok = mset.inflight[subject]; ok {
-				totalMsgsForSubject += i.ops
+	if discard == DiscardNew {
+		if maxMsgs > 0 || maxBytes > 0 {
+			// Track usual max msgs/bytes thresholds for DiscardNew.
+			var state StreamState
+			mset.store.FastState(&state)
+
+			totalMsgs := state.Msgs
+			totalBytes := state.Bytes
+			for _, i = range mset.inflight {
+				totalMsgs += i.ops
+				totalBytes += i.bytes
 			}
-			if maxMsgsPer > 0 && totalMsgsForSubject > uint64(maxMsgsPer) {
-				err = ErrMaxMsgsPerSubject
+			for _, i = range diff.inflight {
+				totalMsgs += i.ops
+				totalBytes += i.bytes
+			}
+
+			if maxMsgs > 0 && totalMsgs > uint64(maxMsgs) {
+				err = ErrMaxMsgs
+			} else if maxBytes > 0 && totalBytes > uint64(maxBytes) {
+				err = ErrMaxBytes
+			}
+			if err != nil {
 				return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
 			}
 		}
 
-		// Track usual max msgs/bytes thresholds for DiscardNew.
-		var state StreamState
-		mset.store.FastState(&state)
-
-		totalMsgs := state.Msgs
-		totalBytes := state.Bytes
-		for _, i = range mset.inflight {
-			totalMsgs += i.ops
-			totalBytes += i.bytes
-		}
-		for _, i = range diff.inflight {
-			totalMsgs += i.ops
-			totalBytes += i.bytes
-		}
-
-		if maxMsgs > 0 && totalMsgs > uint64(maxMsgs) {
-			err = ErrMaxMsgs
-		} else if maxBytes > 0 && totalBytes > uint64(maxBytes) {
-			err = ErrMaxBytes
-		}
-		if err != nil {
-			return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
+		// Similarly, check DiscardNew per-subject threshold to not need to bump CLFS.
+		if discardNewPer && maxMsgsPer > 0 {
+			// Get the current total for this subject.
+			totalMsgsForSubject := mset.store.SubjectsTotals(subject)[subject]
+			// Add inflight count in this batch and for this stream.
+			totalMsgsForSubject += i.ops
+			if i, ok = mset.inflight[subject]; ok {
+				totalMsgsForSubject += i.ops
+			}
+			if totalMsgsForSubject > uint64(maxMsgsPer) {
+				err = ErrMaxMsgsPerSubject
+				return hdr, msg, 0, NewJSStreamStoreFailedError(err, Unless(err)), err
+			}
 		}
 	}
 
