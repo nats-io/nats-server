@@ -1138,15 +1138,56 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			discardNewPerSubj: true,
 			batch: []BatchItem{
 				{subject: "foo"},
-				{subject: "foo", err: ErrMaxMsgsPerSubject},
 			},
 			validate: func(mset *stream, commit bool) {
 				if !commit {
 					require_Len(t, len(mset.inflight), 0)
 				} else {
 					require_Len(t, len(mset.inflight), 1)
-					require_Equal(t, *mset.inflight["foo"], inflightSubjectRunningTotal{bytes: 19 * 2, ops: 2})
+					require_Equal(t, *mset.inflight["foo"], inflightSubjectRunningTotal{bytes: 19, ops: 1})
 				}
+			},
+		},
+		{
+			title:             "discard-new-max-msgs-per-subj-duplicate",
+			discardNew:        true,
+			discardNewPerSubj: true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{subject: "foo", err: ErrMaxMsgsPerSubject},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Len(t, len(mset.inflight), 0)
+			},
+		},
+		{
+			title:             "discard-new-max-msgs-per-subj-inflight",
+			discardNew:        true,
+			discardNewPerSubj: true,
+			init: func(mset *stream) {
+				mset.inflight = map[string]*inflightSubjectRunningTotal{"foo": {bytes: 123, ops: 1}}
+			},
+			batch: []BatchItem{
+				{subject: "foo", err: ErrMaxMsgsPerSubject},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Len(t, len(mset.inflight), 1)
+				require_Equal(t, *mset.inflight["foo"], inflightSubjectRunningTotal{bytes: 123, ops: 1})
+			},
+		},
+		{
+			title:             "discard-new-max-msgs-per-subj-pre-existing",
+			discardNew:        true,
+			discardNewPerSubj: true,
+			init: func(mset *stream) {
+				_, _, err := mset.store.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			},
+			batch: []BatchItem{
+				{subject: "foo", err: ErrMaxMsgsPerSubject},
+			},
+			validate: func(mset *stream, commit bool) {
+				require_Len(t, len(mset.inflight), 0)
 			},
 		},
 		{
@@ -1375,12 +1416,13 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			}
 			if test.discardNewPerSubj {
 				require_True(t, test.discardNew)
-				discardNewPer, maxMsgs, maxMsgsPer = true, -1, 1
+				discardNewPer, maxMsgs, maxBytes, maxMsgsPer = true, -1, -1, 1
 			}
 
 			diff := &batchStagedDiff{}
 			mset.clMu.Lock()
 			defer mset.clMu.Unlock()
+			var hadError bool
 			for _, m := range test.batch {
 				var hdr []byte
 				for key, values := range m.header {
@@ -1394,12 +1436,15 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				} else if err != nil {
 					require_NoError(t, err)
 				}
+				if err != nil {
+					hadError = true
+				}
 				if test.validate != nil {
 					test.validate(mset, false)
 				}
 				mset.clseq++
 			}
-			if test.validate != nil {
+			if test.validate != nil && !hadError {
 				diff.commit(mset)
 				test.validate(mset, true)
 			}
