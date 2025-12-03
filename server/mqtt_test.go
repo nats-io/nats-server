@@ -685,13 +685,7 @@ func TestMQTTStart(t *testing.T) {
 	defer s2.Shutdown()
 	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
 	s2.SetLogger(l, false, false)
-
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		s2.Start()
-		wg.Done()
-	}()
+	s2.Start()
 
 	select {
 	case e := <-l.fatalCh:
@@ -7951,6 +7945,121 @@ func TestMQTTJSApiMapping(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
 	testMQTTCheckPubMsg(t, c, r, "foo", mqttPubFlagRetain, []byte("hi hub"))
+}
+
+func TestMQTTMappingsQoS0(t *testing.T) {
+	td := t.TempDir()
+	dir := filepath.Join(td, "js")
+	conf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: server
+		jetstream {
+			domain: "A"
+			store_dir: "%s"
+		}
+		mqtt {
+			listen: "127.0.0.1:-1"
+		}
+		accounts: {
+			A: {
+				jetstream: true
+				users: [ { user:a, password:x }]
+				exports: [ { stream: "foo.>" }]
+				mappings: { "baz.>" : "bazz.>" }
+			}
+			B: {
+				jetstream: true
+				users: [ { user:b, password:x }]
+				imports: [ { stream: { account: A, subject: "foo.>" }, to: "bar.>" } ]
+			}
+			C: {
+				jetstream: true
+				users: [ { user:c, password:x }]
+				imports: [ { stream: { account: A, subject: "foo.>" }, to: "baz.>" } ]
+			}
+			D: {
+				jetstream: true
+				users: [ { user:d, password:x }]
+				# Same imports than for account C
+				imports: [ { stream: { account: A, subject: "foo.>" }, to: "baz.>" } ]
+			}
+		}
+	`, dir))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// First, we check for mapping inside the same account A.
+	aSubConn, aSubReader := testMQTTConnect(t, &mqttConnInfo{
+		cleanSess: true,
+		clientID:  "sub",
+		user:      "a",
+		pass:      "x",
+	}, "127.0.0.1", o.MQTT.Port)
+	defer aSubConn.Close()
+	testMQTTCheckConnAck(t, aSubReader, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, aSubConn, aSubReader, []*mqttFilter{{filter: "#", qos: 0}}, []byte{0})
+	testMQTTFlush(t, aSubConn, nil, aSubReader)
+
+	aPubConn, aPubReader := testMQTTConnect(t, &mqttConnInfo{
+		cleanSess: true,
+		clientID:  "pub",
+		user:      "a",
+		pass:      "x",
+	}, "127.0.0.1", o.MQTT.Port)
+	defer aPubConn.Close()
+	testMQTTCheckConnAck(t, aPubReader, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, aPubConn, aPubReader, 0, false, true, "baz/x", 0, []byte("msg1"))
+	// Because of mapping, the subscription should receive the message on "bazz/x"
+	testMQTTCheckPubMsg(t, aSubConn, aSubReader, "bazz/x", 0, []byte("msg1"))
+
+	// Helper to create a connection and sub for a given user on given topic
+	createSub := func(user, topic string) (net.Conn, *mqttReader) {
+		t.Helper()
+		c, r := testMQTTConnect(t, &mqttConnInfo{
+			cleanSess: true,
+			clientID:  nuid.Next(),
+			user:      user,
+			pass:      "x",
+		}, "127.0.0.1", o.MQTT.Port)
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+		testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: topic, qos: 0}}, []byte{0})
+		testMQTTFlush(t, c, nil, r)
+		return c, r
+	}
+	bConn1, bReader1 := createSub("b", "bar/#")
+	defer bConn1.Close()
+	bConn2, bReader2 := createSub("b", "bar/+")
+	defer bConn2.Close()
+	cConn1, cReader1 := createSub("c", "baz/#")
+	defer cConn1.Close()
+	cConn2, cReader2 := createSub("c", "baz/+")
+	defer cConn2.Close()
+	dConn1, dReader1 := createSub("d", "baz/#")
+	defer dConn1.Close()
+	dConn2, dReader2 := createSub("d", "baz/+")
+	defer dConn2.Close()
+
+	// Now from "A" publisher, publishes on "foo/x", and with mapping across
+	// accounts, we should get the expected results. We send 2 messages in
+	// a row and verify that we get those, and no more than that.
+	testMQTTPublish(t, aPubConn, aPubReader, 0, false, true, "foo/x", 0, []byte("msg2"))
+	testMQTTPublish(t, aPubConn, aPubReader, 0, false, true, "foo/x", 0, []byte("msg3"))
+
+	// "B" consumers should receive on "bar/x"
+	conns := []net.Conn{bConn1, bConn2}
+	readers := []*mqttReader{bReader1, bReader2}
+	for i := range 2 {
+		testMQTTCheckPubMsg(t, conns[i], readers[i], "bar/x", 0, []byte("msg2"))
+		testMQTTCheckPubMsg(t, conns[i], readers[i], "bar/x", 0, []byte("msg3"))
+		testMQTTExpectNothing(t, readers[i])
+	}
+	// For "C" and "D" consumers, it should be "baz/x"
+	conns = []net.Conn{cConn1, cConn2, dConn1, dConn2}
+	readers = []*mqttReader{cReader1, cReader2, dReader1, dReader2}
+	for i := range 2 {
+		testMQTTCheckPubMsg(t, conns[i], readers[i], "baz/x", 0, []byte("msg2"))
+		testMQTTCheckPubMsg(t, conns[i], readers[i], "baz/x", 0, []byte("msg3"))
+		testMQTTExpectNothing(t, readers[i])
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
