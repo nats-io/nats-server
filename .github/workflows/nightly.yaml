@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout code
+      - name: Checkout NATS
         uses: actions/checkout@v6
         with:
           path: src/github.com/nats-io/nats-server
@@ -27,9 +27,25 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
+      - name: Checkout NSC
+        uses: actions/checkout@v6
+        with:
+          repository: nats-io/nsc
+          path: src/github.com/nats-io/nsc
+          fetch-depth: 1
+          fetch-tags: true
+
+      - name: Checkout NATS CLI
+        uses: actions/checkout@v6
+        with:
+          repository: nats-io/natscli
+          path: src/github.com/nats-io/natscli
+          fetch-depth: 1
+          fetch-tags: true
+
+      - name: Build Docker nightly
+        uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
         with:
           name: ${{ inputs.target || 'nightly' }}
-          workdir: src/github.com/nats-io/nats-server
           hub_username: "${{ secrets.DOCKER_USERNAME }}"
           hub_password: "${{ secrets.DOCKER_PASSWORD }}"
