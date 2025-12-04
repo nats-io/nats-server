@@ -4298,7 +4298,7 @@ func TestNRGProposeRemovePeerLeader(t *testing.T) {
 	require_False(t, newLeader.node().MembershipChangeInProgress())
 }
 
-func TestNRGProposeRemovePeerAllFollowers(t *testing.T) {
+func TestNRGProposeRemovePeerAll(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -4321,8 +4321,13 @@ func TestNRGProposeRemovePeerAllFollowers(t *testing.T) {
 	}
 
 	peers := leader.node().Peers()
+	leaderID := leader.node().ID()
+
+	// The leader is the only one left...
 	require_Equal(t, len(peers), 1)
-	require_Equal(t, peers[0].ID, leader.node().ID())
+	require_Equal(t, peers[0].ID, leaderID)
+	// and we can't remove it
+	require_Error(t, leader.node().ProposeRemovePeer(leaderID), errRemoveLastNode)
 }
 
 func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
