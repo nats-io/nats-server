@@ -1328,6 +1328,27 @@ func jsStreamUpdate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) (*StreamConf
 	return &resp.Config, nil
 }
 
+// jsConsumerCreate is for sending a consumer create for fields that nats.go does not know about yet.
+func jsConsumerCreate(t testing.TB, nc *nats.Conn, stream string, cfg ConsumerConfig, pedantic bool) (*ConsumerConfig, error) {
+	t.Helper()
+
+	j, err := json.Marshal(CreateConsumerRequest{Stream: stream, Config: cfg, Pedantic: pedantic})
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, stream, cfg.Durable), j, time.Second*3)
+	require_NoError(t, err)
+
+	var resp JSApiConsumerCreateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+
+	require_NotNil(t, resp.ConsumerInfo)
+	return resp.Config, nil
+}
+
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	t.Helper()
 	checkFor(t, 10*time.Second, 20*time.Millisecond, func() error {
