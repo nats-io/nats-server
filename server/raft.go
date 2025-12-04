@@ -946,14 +946,10 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	return nil
 }
 
-// As a leader if we are proposing to remove a peer assume its already gone.
-func (n *raft) doRemovePeerAsLeader(peer string) {
-	n.Lock()
-	defer n.Unlock()
-	n.doRemovePeerLocked(peer)
-}
-
-func (n *raft) doRemovePeerLocked(peer string) {
+// Remove the peer with the given id from our membership,
+// and adjusts cluster size and quorum accordingly.
+// Lock should be held.
+func (n *raft) removePeer(peer string) {
 	if n.removed == nil {
 		n.removed = map[string]time.Time{}
 	}
@@ -2661,7 +2657,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 }
 
 // Build and send appendEntry request for the given entry that changes
-// membership (EntryPeerAdd / EntryPeerRemove).
+// membership (EntryAddPeer / EntryRemovePeer).
 // Returns true if the entry made it to the WAL and was sent to the followers
 func (n *raft) sendMembershipChange(e *Entry) bool {
 	n.Lock()
@@ -2678,6 +2674,13 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 		return false
 	}
 
+	if e.Type == EntryRemovePeer {
+		n.removePeer(string(e.Data))
+		if n.csz == 1 {
+			n.tryCommit(n.pindex)
+			return true
+		}
+	}
 	return true
 }
 
@@ -2775,10 +2778,7 @@ func (n *raft) runAsLeader() {
 			es, sz := n.prop.pop(), 0
 			for _, b := range es {
 				if b.ChangesMembership() {
-					sent := n.sendMembershipChange(b.Entry)
-					if sent && b.Type == EntryRemovePeer {
-						n.doRemovePeerAsLeader(string(b.Data))
-					}
+					n.sendMembershipChange(b.Entry)
 					continue
 				}
 				entries = append(entries, b.Entry)
@@ -3227,7 +3227,7 @@ func (n *raft) applyCommit(index uint64) error {
 			peer := string(e.Data)
 			n.debug("Removing peer %q", peer)
 
-			n.doRemovePeerLocked(peer)
+			n.removePeer(peer)
 
 			// Remove from string intern map.
 			peers.Delete(peer)
@@ -3248,18 +3248,39 @@ func (n *raft) applyCommit(index uint64) error {
 	return nil
 }
 
-// Used to track a success response and apply entries.
-func (n *raft) trackResponse(ar *appendEntryResponse) {
-	if n.State() == Closed {
-		return
+// Check if there is a quorum for the given index, and if
+// so, commit the corresponding entry.
+// Return true if the index was committed, false otherwise.
+// Lock should be held.
+func (n *raft) tryCommit(index uint64) (bool, error) {
+	acks := len(n.acks[index])
+	// Count the leader if it's still part of membership
+	if n.peers[n.ID()] != nil {
+		acks += 1
 	}
+	if acks < n.qn {
+		return false, nil
+	}
+	// We have a quorum
+	for i := n.commit + 1; i <= index; i++ {
+		if err := n.applyCommit(i); err != nil {
+			if err != errNodeClosed && err != errNodeRemoved {
+				n.error("Got an error applying commit for %d: %v", i, err)
+			}
+			return false, err
+		}
+	}
+	return true, nil
+}
 
-	n.Lock()
-
+// Used to track a success response. Returns true if the
+// response was tracked, false if the response was ignored
+// (the response is old, the index is already committed, ...)
+// Lock should be held.
+func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
-		n.Unlock()
-		return
+		return false
 	}
 
 	ps := n.peers[ar.peer]
@@ -3276,19 +3297,15 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 
 	// Ignore items already committed.
 	if ar.index <= n.commit {
-		n.Unlock()
-		return
+		return false
 	}
 
 	// Not a peer, can't count this message towards quorum
 	if ps == nil {
-		n.Unlock()
-		return
+		return false
 	}
 
-	// See if we have items to apply.
-	var sendHB bool
-
+	// Keep track of the response
 	results := n.acks[ar.index]
 	if results == nil {
 		results = make(map[string]struct{})
@@ -3296,39 +3313,7 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 	}
 	results[ar.peer] = struct{}{}
 
-	acks := len(results)
-	if n.peers[n.ID()] != nil {
-		// Count the leader if it's still part of membership
-		acks += 1
-	}
-
-	var applyErr error
-	if acks >= n.qn {
-		// We have a quorum.
-		for index := n.commit + 1; index <= ar.index; index++ {
-			if applyErr = n.applyCommit(index); applyErr != nil {
-				switch applyErr {
-				case errNodeClosed, errNodeRemoved:
-				default:
-					n.error("Got an error applying commit for %d: %v", index, applyErr)
-				}
-				break
-			}
-		}
-		sendHB = n.prop.len() == 0
-	}
-	n.Unlock()
-
-	if applyErr == errNodeRemoved {
-		// Leader was peer-removed. Attempt a step-down to
-		// a new leader before shutting down.
-		n.StepDown()
-		n.Stop()
-	}
-
-	if sendHB {
-		n.sendHeartbeat()
-	}
+	return true
 }
 
 // Used to adjust cluster size and peer count based on added official peers.
@@ -4063,7 +4048,29 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		// The remote node successfully committed the append entry.
 		// They agree with our leadership and are happy with the state of the log.
 		// In this case ar.term doesn't matter.
-		n.trackResponse(ar)
+		var err error
+		var committed bool
+
+		n.Lock()
+		if n.trackResponse(ar) {
+			committed, err = n.tryCommit(ar.index)
+		}
+		n.Unlock()
+
+		// Leader was peer-removed. Attempt a step-down to
+		// a new leader before shutting down.
+		if err == errNodeRemoved {
+			n.StepDown()
+			n.Stop()
+		}
+
+		// Send a heartbeat if there is no other message lined
+		// up, so that followers can apply without waiting for
+		// the next message.
+		if committed && n.prop.len() == 0 {
+			n.sendHeartbeat()
+		}
+
 		arPool.Put(ar)
 	} else if ar.reply != _EMPTY_ {
 		// The remote node didn't commit the append entry, and they believe they
