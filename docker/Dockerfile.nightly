@@ -10,7 +10,8 @@ ENV GOOS=$TARGETOS \
     GO111MODULE=on \
     CGO_ENABLED=0
 
-RUN apk add --no-cache git ca-certificates
+RUN APK_NOTRIGGERS=1 apk add --no-cache git ca-certificates
+RUN update-ca-certificates
 RUN mkdir -p /src/nats-server /src/natscli /src/nsc
 
 COPY . /src/nats-server
