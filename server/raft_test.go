@@ -2900,7 +2900,7 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	require_True(t, vr.granted)
 	require_True(t, vr.empty)
 
-	// Reset to check if snapshot on catchup can also reset this.
+	// Reset to check if snapshot on catchup does not reset, but a later new append entry does.
 	n.initializing = true
 	n.scaleUp = true
 	n.SetObserver(true)
@@ -2911,6 +2911,12 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	aeSnapshot := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: snapshotEntries})
 	n.createCatchup(aeSnapshot)
 	n.processAppendEntry(aeSnapshot, n.catchup.sub)
+	require_True(t, n.initializing)
+	require_True(t, n.scaleUp)
+	require_True(t, n.observer)
+
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1})
+	n.processAppendEntry(aeHeartbeat, n.aesub)
 	require_False(t, n.initializing)
 	require_False(t, n.scaleUp)
 	require_False(t, n.observer)
@@ -3648,6 +3654,8 @@ func TestNRGLostQuorum(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	require_True(t, n.repairing)
+	require_True(t, n.initializing)
 	require_Equal(t, n.State(), Follower)
 	require_False(t, n.Quorum())
 	require_True(t, n.lostQuorum())
@@ -3909,6 +3917,306 @@ func TestNRGNoLogResetOnCorruptedSendToFollower(t *testing.T) {
 	c.waitOnAllCurrent()
 	leaderrg.wal.FastState(&ss)
 	require_NotEqual(t, ss.LastSeq, 0)
+}
+
+func TestNRGRepairingResetsAfterFullCatchup(t *testing.T) {
+	test := func(t *testing.T, restart bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		s := c.servers[0] // RunBasicJetStreamServer not available
+		defer c.shutdown()
+
+		storeDir := t.TempDir()
+		fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, srv: s}
+		scfg := StreamConfig{Name: "RAFT", Storage: FileStorage}
+		fs, err := newFileStore(fcfg, scfg)
+		require_NoError(t, err)
+
+		cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+
+		err = s.bootstrapRaftNode(cfg, nil, false)
+		require_NoError(t, err)
+		n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+		require_NoError(t, err)
+
+		// Create a sample entry, the content doesn't matter, just that it's stored.
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+
+		nats0 := "S1Nunr6R" // "nats-0"
+
+		// Reset any side-effects, but we'll revert to just being marked "repairing".
+		// This means we recovered a log that was either wiped or corrupt, so our log isn't authoritative.
+		n.resetRepairing()
+		n.markRepairing()
+		require_True(t, n.repairing)
+
+		voteReply := "$TEST"
+		nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer nc.Close()
+
+		sub, err := nc.SubscribeSync(voteReply)
+		require_NoError(t, err)
+		defer sub.Drain()
+		require_NoError(t, nc.Flush())
+
+		expectVote := func(term uint64, empty bool) {
+			t.Helper()
+			require_NoError(t, n.processVoteRequest(&voteRequest{term: term, lastTerm: 1, lastIndex: 2, candidate: nats0, reply: voteReply}))
+			require_Equal(t, n.term, term)
+			require_Equal(t, n.vote, nats0)
+
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			vr := decodeVoteResponse(msg.Data)
+			require_True(t, vr.granted)
+			require_Equal(t, vr.empty, empty)
+		}
+		expectVote(1, true)
+
+		aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: nil})
+		n.processAppendEntry(aeHeartbeat, n.aesub)
+		require_True(t, n.repairing)
+		require_True(t, n.catchup != nil)
+		catchup := n.catchup
+
+		// Voting will cancel catchup. For the sake of this test, we'll just reapply the catchup.
+		expectVote(2, true)
+		n.catchup = catchup
+
+		// "Repairing" state must NOT be reset during catchup,
+		// only once we're aligned to acknowledge new append entries.
+		aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, lterm: 2, commit: 0, pterm: 0, pindex: 0, entries: entries})
+		n.processAppendEntry(aeMsg1, n.catchup.sub)
+		require_True(t, n.repairing)
+		require_True(t, n.catchup != nil)
+		expectVote(3, true)
+		n.catchup = catchup
+
+		// Our log isn't empty anymore, but we should still be able to mark
+		// our log as "repairing" if we've restarted halfway through catchup.
+		if restart {
+			n.Stop()
+			n.WaitForStop()
+			require_NoError(t, fs.Stop())
+			fs, err = newFileStore(fcfg, scfg)
+			require_NoError(t, err)
+			cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+			n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+			require_NoError(t, err)
+			require_True(t, n.repairing)
+
+			// Get us into catchup mode again.
+			aeHeartbeat = encode(t, &appendEntry{leader: nats0, term: 3, commit: 0, pterm: 1, pindex: 2, entries: nil})
+			n.processAppendEntry(aeHeartbeat, n.aesub)
+			require_True(t, n.repairing)
+			require_True(t, n.catchup != nil)
+			catchup = n.catchup
+		}
+
+		aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, lterm: 3, commit: 0, pterm: 1, pindex: 1, entries: entries})
+		n.processAppendEntry(aeMsg2, n.catchup.sub)
+		require_True(t, n.repairing)
+		require_True(t, n.catchup != nil)
+		expectVote(4, true)
+		n.catchup = catchup
+
+		aeHeartbeat = encode(t, &appendEntry{leader: nats0, term: 4, commit: 0, pterm: 1, pindex: 2, entries: nil})
+		n.processAppendEntry(aeHeartbeat, n.aesub)
+		require_False(t, n.repairing)
+		require_True(t, n.catchup == nil)
+		expectVote(5, false)
+	}
+
+	t.Run("Simple", func(t *testing.T) { test(t, false) })
+	t.Run("Restart", func(t *testing.T) { test(t, true) })
+}
+
+func TestNRGRepairingResetsAfterSwitchingToLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.markRepairing()
+	require_True(t, n.repairing)
+
+	// Switching to candidate state still keeps the repairing flag set.
+	n.switchToCandidate()
+	require_True(t, n.repairing)
+
+	// Switching to leader clears the flag.
+	n.switchToLeader()
+	require_False(t, n.repairing)
+}
+
+func TestNRGRepairAfterMajorityCorruption(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	l := rg.waitOnLeader()
+
+	for i := range int64(5) {
+		l.(*stateAdder).proposeDelta(1)
+		rg.waitOnTotal(t, i+1)
+	}
+
+	// Stop all servers.
+	for _, sm := range rg {
+		sm.stop()
+	}
+
+	// Corrupt the log on two servers and then bring them back.
+	// They shouldn't be able to become leader just on their own.
+	var restartedOne bool
+	for _, sm := range rg {
+		if sm == l {
+			continue
+		}
+		rn := sm.node().(*raft)
+		rn.RLock()
+		blk := filepath.Join(rn.sd, msgDir, "1.blk")
+		rn.RUnlock()
+
+		stat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_LessThan(t, 0, stat.Size())
+		require_NoError(t, os.Truncate(blk, stat.Size()-1))
+
+		// Confirm the file was truncated after restart.
+		sm.restart()
+		nstat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_NotEqual(t, nstat.Size(), stat.Size())
+
+		// We'll simulate a quick process restart here, so we also
+		// test repairing after truncate and restart still happens.
+		if !restartedOne {
+			restartedOne = true
+			sm.stop()
+			sm.restart()
+		}
+	}
+	expires := time.Now().Add(2 * time.Second)
+	for time.Now().Before(expires) {
+		// Speed up the leader election process by purposefully having one node campaign immediately.
+		for _, sm := range rg {
+			if sm != l {
+				n := sm.node().(*raft)
+				n.Lock()
+				n.campaign(time.Millisecond)
+				n.Unlock()
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+		for _, sm := range rg {
+			if sm == l {
+				continue
+			}
+			if n := sm.node(); n.State() == Leader || n.Leader() {
+				t.Fatal("Leader elected from corrupted logs")
+			}
+		}
+	}
+
+	// Restart the leader, and we expect it to become leader again.
+	l.restart()
+	nl := rg.waitOnLeader()
+	require_NotNil(t, nl)
+	require_Equal(t, nl, l)
+
+	// The logs should have been repaired, and the total should match.
+	rg.waitOnTotal(t, 5)
+}
+
+func TestNRGRepairAfterMinorityCorruption(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	l := rg.waitOnLeader()
+	rs := rg.nonLeader()
+	for i := range int64(5) {
+		l.(*stateAdder).proposeDelta(1)
+		// Custom rg.waitOnTotal to allow a server to be down.
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+			var err error
+			for _, sm := range rg {
+				if sm.node().State() == Closed {
+					continue
+				}
+				asm := sm.(*stateAdder)
+				if total := asm.total(); total != (i + 1) {
+					err = errors.Join(err, fmt.Errorf("Adder on %v has wrong total: %d vs %d", asm.server(), total, i+1))
+				}
+			}
+			return err
+		})
+		// Stop a random member so that its log will be outdated.
+		if i == 3 {
+			rs.stop()
+		}
+	}
+
+	// Stop all servers.
+	for _, sm := range rg {
+		sm.stop()
+	}
+
+	// Corrupt the log on one server and then bring it back together with the outdated server.
+	// The corrupted server should not be able to become leader.
+	var cs stateMachine
+	for _, sm := range rg {
+		if sm == l || sm == rs {
+			continue
+		}
+		cs = sm
+		rn := sm.node().(*raft)
+		rn.RLock()
+		blk := filepath.Join(rn.sd, msgDir, "1.blk")
+		rn.RUnlock()
+
+		stat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_LessThan(t, 0, stat.Size())
+		require_NoError(t, os.Truncate(blk, stat.Size()-1))
+
+		// Confirm the file was truncated after restart.
+		sm.restart()
+		nstat, err := os.Stat(blk)
+		require_NoError(t, err)
+		require_NotEqual(t, nstat.Size(), stat.Size())
+	}
+	rs.restart()
+	expires := time.Now().Add(2 * time.Second)
+	for time.Now().Before(expires) {
+		// Speed up the leader election on the corrupted server by purposefully having it campaign immediately.
+		// The outdated server will vote for the corrupted server, no questions asked. But the corrupted server
+		// should know it requires its log to be repaired so it can't become leader based on a majority alone.
+		n := cs.node().(*raft)
+		n.Lock()
+		n.campaign(time.Millisecond)
+		n.Unlock()
+
+		time.Sleep(100 * time.Millisecond)
+		for _, sm := range rg {
+			if sm == l {
+				continue
+			}
+			if n := sm.node(); n.State() == Leader || n.Leader() {
+				t.Fatal("Leader elected from corrupted logs")
+			}
+		}
+	}
+
+	// Restart the leader, and we expect it to become leader again.
+	l.restart()
+	nl := rg.waitOnLeader()
+	require_NotNil(t, nl)
+	require_Equal(t, nl, l)
+
+	// The logs should have been repaired, and the total should match.
+	rg.waitOnTotal(t, 5)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
