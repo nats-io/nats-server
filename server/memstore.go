@@ -193,7 +193,7 @@ func (ms *memStore) recoverMsgSchedulingState() {
 
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
-func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) error {
 	if ms.msgs == nil {
 		return ErrStoreClosed
 	}
@@ -209,31 +209,29 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 	}
 
 	// Check if we are discarding new messages when we reach the limit.
-	if ms.cfg.Discard == DiscardNew {
+	// If we are clustered, we do the enforcement above and should not disqualify
+	// the message here since it could cause replicas to drift.
+	if discardNewCheck && ms.cfg.Discard == DiscardNew {
 		if asl && ms.cfg.DiscardNewPer {
 			return ErrMaxMsgsPerSubject
 		}
-		// If we are discard new and limits policy and clustered, we do the enforcement
-		// above and should not disqualify the message here since it could cause replicas to drift.
-		if ms.cfg.Retention == LimitsPolicy || ms.cfg.Replicas == 1 {
-			if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
-				// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
-				if !asl {
-					return ErrMaxMsgs
-				}
+		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
+			// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
+			if !asl {
+				return ErrMaxMsgs
 			}
-			if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) >= uint64(ms.cfg.MaxBytes) {
-				if !asl {
-					return ErrMaxBytes
-				}
-				// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					ms.recalculateForSubj(subj, ss)
-				}
-				sm, ok := ms.msgs[ss.First]
-				if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
-					return ErrMaxBytes
-				}
+		}
+		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) > uint64(ms.cfg.MaxBytes) {
+			if !asl {
+				return ErrMaxBytes
+			}
+			// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				ms.recalculateForSubj(subj, ss)
+			}
+			sm, ok := ms.msgs[ss.First]
+			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
+				return ErrMaxBytes
 			}
 		}
 	}
@@ -329,9 +327,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) error {
 	ms.mu.Lock()
-	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl, discardNewCheck)
 	cb := ms.scb
 	// Check if first message timestamp requires expiry
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
@@ -353,7 +351,8 @@ func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 func (ms *memStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error) {
 	ms.mu.Lock()
 	seq, ts := ms.state.LastSeq+1, time.Now().UnixNano()
-	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	// This is called for a R1 with no expected sequence number, so perform DiscardNew checks on the store-level.
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl, true)
 	cb := ms.scb
 	ms.mu.Unlock()
 

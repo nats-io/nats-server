@@ -4424,7 +4424,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
-func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) (err error) {
+func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) (err error) {
 	if fs.closed {
 		return ErrStoreClosed
 	}
@@ -4441,7 +4441,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 
 	var fseq uint64
 	// Check if we are discarding new messages when we reach the limit.
-	if fs.cfg.Discard == DiscardNew {
+	// If we are clustered, we do the enforcement above and should not disqualify
+	// the message here since it could cause replicas to drift.
+	if discardNewCheck && fs.cfg.Discard == DiscardNew {
 		var asl bool
 		if psmax && psmc >= mmp {
 			// If we are instructed to discard new per subject, this is an error.
@@ -4453,16 +4455,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 			}
 			asl = true
 		}
-		// If we are discard new and limits policy and clustered, we do the enforcement
-		// above and should not disqualify the message here since it could cause replicas to drift.
-		if fs.cfg.Retention == LimitsPolicy || fs.cfg.Replicas == 1 {
-			if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) && !asl {
-				return ErrMaxMsgs
-			}
-			if fs.cfg.MaxBytes > 0 && fs.state.Bytes+fileStoreMsgSize(subj, hdr, msg) >= uint64(fs.cfg.MaxBytes) {
-				if !asl || fs.sizeForSeq(fseq) <= int(fileStoreMsgSize(subj, hdr, msg)) {
-					return ErrMaxBytes
-				}
+		if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) && !asl {
+			return ErrMaxMsgs
+		}
+		if fs.cfg.MaxBytes > 0 && fs.state.Bytes+fileStoreMsgSize(subj, hdr, msg) > uint64(fs.cfg.MaxBytes) {
+			if !asl || fs.sizeForSeq(fseq) < int(fileStoreMsgSize(subj, hdr, msg)) {
+				return ErrMaxBytes
 			}
 		}
 	}
@@ -4586,9 +4584,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) error {
 	fs.mu.Lock()
-	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl, discardNewCheck)
 	cb := fs.scb
 	// Check if first message timestamp requires expiry
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
@@ -4609,7 +4607,8 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error) {
 	fs.mu.Lock()
 	seq, ts := fs.state.LastSeq+1, time.Now().UnixNano()
-	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	// This is called for a R1 with no expected sequence number, so perform DiscardNew checks on the store-level.
+	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl, true)
 	cb := fs.scb
 	fs.mu.Unlock()
 
