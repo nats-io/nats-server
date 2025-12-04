@@ -306,6 +306,7 @@ var (
 	errBadAppendEntry    = errors.New("raft: append entry corrupt")
 	errNoInternalClient  = errors.New("raft: no internal client")
 	errMembershipChange  = errors.New("raft: membership change in progress")
+	errRemoveLastNode    = errors.New("raft: cannot remove the last peer")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -959,6 +960,11 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	if n.membChanging {
 		n.Unlock()
 		return errMembershipChange
+	}
+
+	if len(n.peers) <= 1 {
+		n.Unlock()
+		return errRemoveLastNode
 	}
 
 	prop := n.prop
