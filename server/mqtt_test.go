@@ -5232,6 +5232,54 @@ func TestMQTTRetainedMsgCleanup(t *testing.T) {
 	}
 }
 
+func TestMQTTRestoreRetainedMsgs(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	ci := &mqttConnInfo{clientID: "retain", cleanSess: true}
+	c, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	// Send several retained messages on different topic
+	testMQTTPublish(t, c, r, 1, false, true, "foo", 1, []byte("msg1"))
+	testMQTTPublish(t, c, r, 1, false, true, "bar", 1, []byte("msg2"))
+	testMQTTPublish(t, c, r, 1, false, true, "baz", 1, []byte("msg3"))
+
+	// Remove the two last ones (by sending empty body)
+	testMQTTPublish(t, c, r, 1, false, true, "bar", 1, []byte(""))
+	testMQTTPublish(t, c, r, 1, false, true, "baz", 1, []byte(""))
+	testMQTTFlush(t, c, nil, r)
+	testMQTTDisconnect(t, c, nil)
+
+	// Now restart the server. We had a bug where we would wait to restore retained
+	// messages based on stream last sequence, which was wrong.
+	s.Shutdown()
+	s, err := NewServer(o)
+	require_NoError(t, err)
+	l := &captureWarnLogger{warn: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+	s.Start()
+	// s = testMQTTRunServer(t, o)
+	// defer testMQTTShutdownServer(s)
+
+	time.Sleep(500 * time.Millisecond)
+	start := time.Now()
+	c, r = testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	dur := time.Since(start)
+	if dur > 2*time.Second {
+		var warnMsg string
+		select {
+		case warnMsg = <-l.warn:
+		default:
+		}
+		t.Fatalf("Likely timing out restoring retained messages (%s)", warnMsg)
+	}
+}
+
 func TestMQTTConnAckFirstPacket(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.NoLog, o.Debug, o.Trace = true, false, false
