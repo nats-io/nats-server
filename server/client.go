@@ -5503,6 +5503,9 @@ func (c *client) processPingTimer() {
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		pingInterval = opts.Cluster.PingInterval
 	}
+	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
+		pingInterval = opts.Websocket.PingInterval
+	}
 	pingInterval = adjustPingInterval(c.kind, pingInterval)
 	now := time.Now()
 	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
@@ -5584,6 +5587,9 @@ func (c *client) setPingTimer() {
 	d := opts.PingInterval
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		d = opts.Cluster.PingInterval
+	}
+	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
+		d = opts.Websocket.PingInterval
 	}
 	d = adjustPingInterval(c.kind, d)
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
@@ -6618,6 +6624,9 @@ func (c *client) setFirstPingTimer() {
 
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		d = opts.Cluster.PingInterval
+	}
+	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
+		d = opts.Websocket.PingInterval
 	}
 	if !opts.DisableShortFirstPing {
 		if c.kind != CLIENT {
