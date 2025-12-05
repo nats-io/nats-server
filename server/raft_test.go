@@ -4364,3 +4364,26 @@ func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
 	followers[1].restart()
 	require_Equal(t, len(leader.node().Peers()), 2)
 }
+
+func TestNRGAddPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+
+	require_Equal(t, leader.node().ClusterSize(), 3)
+
+	for range 6 {
+		rg = append(rg, c.addMemRaftNode("TEST", newStateAdder))
+	}
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.node().ClusterSize() != 9 {
+			return errors.New("node additions still in progress")
+		}
+		return nil
+	})
+
+	require_Equal(t, leader.node().ClusterSize(), 9)
+}
