@@ -636,8 +636,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	}
 
 	msetNode := mset.raftNode()
+	mset.cfgMu.RLock()
+	replicas := mset.cfg.Replicas
+	mset.cfgMu.RUnlock()
 	switch {
-	case mset.cfg.Replicas <= 1:
+	case replicas <= 1:
 		return nil // No further checks for R=1 streams
 
 	case node == nil:
