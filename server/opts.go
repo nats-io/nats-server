@@ -511,6 +511,9 @@ type Options struct {
 
 	// configDigest represents the state of configuration.
 	configDigest string
+
+	// configWarnings holds warnings from config parsing to be logged once the server starts.
+	configWarnings []error
 }
 
 // WebsocketOpts are options for websocket
@@ -1027,6 +1030,9 @@ func (o *Options) processConfigFile(configFile string, m map[string]any) error {
 			}
 		}
 	}
+
+	// Store warnings in Options so they can be logged once the server starts.
+	o.configWarnings = warnings
 
 	if len(errors) > 0 || len(warnings) > 0 {
 		return &processConfigErr{
@@ -6186,8 +6192,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			if cerr, ok := err.(*processConfigErr); !ok || len(cerr.Errors()) != 0 {
 				return nil, err
 			}
-			// If we get here we only have warnings and can still continue
-			fmt.Fprint(os.Stderr, err)
+			// If we get here we only have warnings; they are stored in opts.configWarnings
+			// and will be logged when the server starts.
 		} else if opts.CheckConfig {
 			// Report configuration file syntax test was successful and exit.
 			return opts, nil
