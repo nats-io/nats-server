@@ -263,8 +263,9 @@ type mqttAccountSessionManager struct {
 	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
 	rmsCache   *sync.Map                      // map[subject]mqttRetainedMsg
 	jsa        mqttJSA
-	rrmLastSeq uint64        // Restore retained messages expected last sequence
-	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded
+	rrmNum     uint64        // Number of restored retained messages.
+	rrmTotal   uint64        // Total of retained messages to restore.
+	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded.
 	domainTk   string        // Domain (with trailing "."), or possibly empty. This is added to session subject.
 }
 
@@ -1475,16 +1476,13 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		return nil, err
 	}
 
-	var lastSeq uint64
+	var rmTotal uint64
 	var rmDoneCh chan struct{}
 	st := si.State
-	if st.Msgs > 0 {
-		lastSeq = st.LastSeq
-		if lastSeq > 0 {
-			rmDoneCh = make(chan struct{})
-			as.rrmLastSeq = lastSeq
-			as.rrmDoneCh = rmDoneCh
-		}
+	if rmTotal = st.Msgs; rmTotal > 0 {
+		rmDoneCh = make(chan struct{})
+		as.rrmTotal = rmTotal
+		as.rrmDoneCh = rmDoneCh
 	}
 
 	// Opportunistically delete the old (legacy) consumer, from v2.10.10 and
@@ -1509,14 +1507,14 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		return nil, fmt.Errorf("create retained messages consumer for account %q: %v", accName, err)
 	}
 
-	if lastSeq > 0 {
+	if rmTotal > 0 {
 		ttl := time.NewTimer(mqttJSAPITimeout)
 		defer ttl.Stop()
 
 		select {
 		case <-rmDoneCh:
 		case <-ttl.C:
-			s.Warnf("Timing out waiting to load %v retained messages", st.Msgs)
+			s.Warnf("Timing out waiting to load %v retained messages", rmTotal)
 		case <-quitCh:
 			return nil, ErrServerNotRunning
 		}
@@ -1998,10 +1996,10 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	if err != nil {
 		return
 	}
-	// If lastSeq is 0 (nothing to recover, or done doing it) and this is
+	// If rrmTotal is 0 (nothing to recover, or done doing it) and this is
 	// from our own server, ignore.
 	as.mu.RLock()
-	if as.rrmLastSeq == 0 && rm.Origin == as.jsa.id {
+	if as.rrmTotal == 0 && rm.Origin == as.jsa.id {
 		as.mu.RUnlock()
 		return
 	}
@@ -2013,12 +2011,14 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	// Handle this retained message, no need to copy the bytes.
 	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm, false)
 
-	// If we were recovering (lastSeq > 0), then check if we are done.
+	// If we were recovering (rrmTotal > 0), then check if we are done.
 	as.mu.Lock()
-	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
-		as.rrmLastSeq = 0
-		close(as.rrmDoneCh)
-		as.rrmDoneCh = nil
+	if as.rrmTotal > 0 {
+		if as.rrmNum++; as.rrmNum == as.rrmTotal {
+			as.rrmTotal = 0
+			close(as.rrmDoneCh)
+			as.rrmDoneCh = nil
+		}
 	}
 	as.mu.Unlock()
 }
@@ -2201,6 +2201,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 	sendq := as.jsa.sendq
 	quitCh := as.jsa.quitCh
 	ci := ClientInfo{Account: accName, Cluster: cluster}
+	acc := c.acc
 	as.mu.RUnlock()
 
 	// The account session manager does not have a suhtdown API per-se, instead,
@@ -2261,7 +2262,13 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 				c.pa.reply = []byte(r.reply)
 				c.pa.size = nsize
 				c.pa.szb = []byte(strconv.Itoa(nsize))
+				c.pa.mapped = nil
 
+				if acc.hasMappings() {
+					if changed := c.selectMappedSubject(); changed {
+						c.traceOutOp("MAPPINGS", fmt.Appendf(nil, "%s -> %s", c.pa.mapped, c.pa.subject))
+					}
+				}
 				c.processInboundClientMsg(msg)
 				c.flushClients(0)
 			}
@@ -4488,7 +4495,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 				p, ok := perms[rm.Source]
 				if !ok {
 					p = generatePubPerms(u.Permissions)
-					perms[rm.Source] = p
+					perms[rm.Source] = p // possibly nil
 				}
 				// If there is permission and no longer allowed to publish in
 				// the subject, remove the publish retained message from the map.
@@ -4517,6 +4524,13 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 
 // Helper to generate only pub permissions from a Permissions object
 func generatePubPerms(perms *Permissions) *perm {
+	// If given permissions is `nil`, then it means that permissions block
+	// has been removed (so the user is now allowed to publish on everything)
+	// or was never there in the first place. Returning `nil` will let the
+	// caller know that there are no permissions to enforce.
+	if perms == nil {
+		return nil
+	}
 	var p *perm
 	if perms.Publish.Allow != nil {
 		p = &perm{}
@@ -4844,8 +4858,9 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 			return
 		}
 		topic = pc.mqtt.pp.topic
-		// Check for service imports where subject mapping is in play.
-		if len(pc.pa.mapped) > 0 && len(pc.pa.psi) > 0 {
+		// If the subject is different than the one in pp.subject, then some
+		// mapping/transform occurred and we need to recreate the topic.
+		if subject != bytesToString(pc.mqtt.pp.subject) {
 			topic = natsSubjectStrToMQTTTopic(subject)
 		}
 

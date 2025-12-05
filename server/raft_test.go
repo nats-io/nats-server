@@ -4110,3 +4110,257 @@ func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
 		}
 	}
 }
+
+func TestNRGProposeRemovePeer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.leader().node()
+	rg.waitOnLeader()
+
+	peerId := rg.nonLeader().node().ID()
+	require_NoError(t, n.ProposeRemovePeer(peerId))
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		var err error
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				err = errors.New("has not removed peer")
+				break
+			}
+
+		}
+		return err
+	})
+}
+
+func TestNRGProposeRemovePeerConcurrent(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.leader().node()
+
+	locked := rg.lockFollowers()
+
+	// Attempt to remove the first follower, should succeed.
+	err := n.ProposeRemovePeer(locked[0].node().ID())
+	require_NoError(t, err)
+
+	// Check that membership change is in progress.
+	require_True(t, n.MembershipChangeInProgress())
+
+	// Attempt to remove the second follower, should fail.
+	err = n.ProposeRemovePeer(locked[1].node().ID())
+	require_Error(t, err, errMembershipChange)
+
+	for _, l := range locked {
+		l.node().(*raft).Unlock()
+	}
+
+	// Expect only one peer removal to succeed
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		var err error
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				err = errors.New("has not removed peer")
+				break
+			}
+
+		}
+		return err
+	})
+}
+
+func TestNRGUncommittedMembershipChangeOnNewLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	entries := []*Entry{newEntry(EntryRemovePeer, []byte(nats2))}
+	aeRemovePeer := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+
+	// plant a EntryRemovePeer in the log
+	n.processAppendEntry(aeRemovePeer, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_False(t, n.Healthy())
+
+	// become the new leader
+	n.term = 2
+	n.switchToLeader()
+	go n.runAsLeader()
+
+	// expect the membership to be still in progress
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if n.MembershipChangeInProgress() {
+			return nil
+		} else {
+			return errors.New("membership not in progress")
+		}
+	})
+
+	err := n.ProposeRemovePeer(nats1)
+	require_Error(t, err, errMembershipChange)
+}
+
+func TestNRGProposeRemovePeerQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().node()
+	followers := rg.followers()
+
+	require_True(t, len(followers) == 2)
+
+	// Block follower 0 and remove follower 1
+	followers[0].node().(*raft).Lock()
+	err := leader.ProposeRemovePeer(followers[1].node().ID())
+	require_NoError(t, err)
+
+	// Should not be able to make progress
+	time.Sleep(time.Second)
+	require_True(t, leader.MembershipChangeInProgress())
+
+	// Unlock the other follower and expect the membership
+	// change to eventually finish
+	followers[0].node().(*raft).Unlock()
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if leader.MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		} else {
+			return nil
+		}
+	})
+}
+
+// Test outline:
+//   - In a R3 cluster, PeerRemove the leader and block on of
+//     the followers.
+//   - Verify that the membership change can't make progress,
+//     the leader should not count its own ack towards quorum.
+//   - Release the previously blocked follower and expect the
+//     membership change to take place.
+func TestNRGProposeRemovePeerLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().node()
+	followers := rg.followers()
+	leaderID := leader.ID()
+	require_True(t, len(followers) == 2)
+
+	// Block follower 0 and remove the leader
+	followers[0].node().(*raft).Lock()
+	err := leader.ProposeRemovePeer(leader.ID())
+	require_NoError(t, err)
+
+	// Should not be able to make progress
+	time.Sleep(time.Second)
+	require_True(t, leader.MembershipChangeInProgress())
+
+	// Unlock the follower and expect the membership
+	// change to eventually finish
+	followers[0].node().(*raft).Unlock()
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if leader.MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		} else {
+			return nil
+		}
+	})
+
+	// Old leader steps down
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		newLeader := rg.waitOnLeader()
+		if newLeader.node().ID() == leaderID {
+			return errors.New("leader has not changed yet")
+		}
+		return nil
+	})
+
+	newLeader := rg.waitOnLeader()
+	require_Equal(t, leader.State(), Closed)
+	require_NotEqual(t, leader.ID(), newLeader.node().ID())
+	require_Equal(t, len(newLeader.node().Peers()), 2)
+	require_False(t, newLeader.node().MembershipChangeInProgress())
+}
+
+func TestNRGProposeRemovePeerAll(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader()
+	followers := rg.followers()
+	require_Equal(t, len(followers), 2)
+
+	for _, follower := range followers {
+		require_NoError(t, leader.node().ProposeRemovePeer(follower.node().ID()))
+		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+			if leader.node().MembershipChangeInProgress() {
+				return errors.New("membership still in progress")
+			} else {
+				return nil
+			}
+		})
+	}
+
+	peers := leader.node().Peers()
+	leaderID := leader.node().ID()
+
+	// The leader is the only one left...
+	require_Equal(t, len(peers), 1)
+	require_Equal(t, peers[0].ID, leaderID)
+	// and we can't remove it
+	require_Error(t, leader.node().ProposeRemovePeer(leaderID), errRemoveLastNode)
+}
+
+func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader()
+	followers := rg.followers()
+	require_Equal(t, len(followers), 2)
+
+	// Remove one follower
+	require_NoError(t, leader.node().ProposeRemovePeer(followers[0].node().ID()))
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.node().MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		} else {
+			return nil
+		}
+	})
+
+	require_Equal(t, len(leader.node().Peers()), 2)
+
+	// Stop the leader and restart it.
+	// If bug is present: the leader resurrects the previously removed peer.
+	leader.stop()
+	followers[1].stop()
+
+	leader.restart()
+	require_Equal(t, len(leader.node().Peers()), 2)
+
+	followers[1].restart()
+	require_Equal(t, len(leader.node().Peers()), 2)
+}

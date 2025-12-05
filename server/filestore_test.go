@@ -47,6 +47,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
 
@@ -10961,6 +10962,12 @@ func TestFileStoreEraseMsgErr(t *testing.T) {
 		mb.mfn = _EMPTY_
 		mb.mu.Unlock()
 		fs.EraseMsg(2)
+
+		// Cleanup ".tmp" file if it was created due to the purposefully invalid file name above.
+		_, err = os.Stat(blkTmpSuffix)
+		if err == nil {
+			require_NoError(t, os.Remove(blkTmpSuffix))
+		}
 	})
 }
 
@@ -11002,6 +11009,90 @@ func TestFileStorePurgeMsgBlock(t *testing.T) {
 		require_Equal(t, state.LastSeq, 20)
 		require_Equal(t, state.Msgs, 10)
 		require_Equal(t, state.Bytes, 10*33)
+	})
+}
+
+func TestFileStorePurgeMsgBlockUpdatesSubjects(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 10 * 33
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 20 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		fst := fs.SubjectsTotals("foo")
+		require_Equal(t, fst["foo"], uint64(20))
+
+		fmb := fs.getFirstBlock()
+		fs.mu.Lock()
+		fs.purgeMsgBlock(fmb)
+		fs.mu.Unlock()
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, uint64(10))
+		require_Equal(t, state.FirstSeq, uint64(11))
+
+		fst = fs.SubjectsTotals("foo")
+		require_Equal(t, fst["foo"], uint64(10))
+	})
+}
+
+func TestFileStorePurgeMsgBlockRemovesSchedules(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		schedule := time.Now().Add(time.Hour).Format(time.RFC3339Nano)
+		hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+		hdr = genHeader(hdr, JSScheduleTarget, "foo.target.0")
+		msgSize := fileStoreMsgSize("foo.sched.0", hdr, []byte("x"))
+
+		// Force two blocks of 5 messages each.
+		fcfg.BlockSize = uint64(msgSize * 5)
+		cfg := StreamConfig{
+			Name:              "zzz",
+			Subjects:          []string{"foo.*"},
+			Storage:           FileStorage,
+			AllowMsgSchedules: true,
+		}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 10 {
+			subj := fmt.Sprintf("foo.sched.%d", i)
+			target := fmt.Sprintf("foo.target.%d", i)
+			hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+			hdr = genHeader(hdr, JSScheduleTarget, target)
+			_, _, err = fs.StoreMsg(subj, hdr, []byte("x"), 0)
+			require_NoError(t, err)
+		}
+
+		fs.mu.RLock()
+		blks := len(fs.blks)
+		sts, msgs := len(fs.scheduling.seqToSubj), int(fs.state.Msgs)
+		fs.mu.RUnlock()
+		require_True(t, blks >= 2)
+		require_Equal(t, sts, msgs)
+
+		fmb := fs.getFirstBlock()
+		fs.mu.Lock()
+		fs.purgeMsgBlock(fmb)
+		fs.mu.Unlock()
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, uint64(5))
+
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		require_Equal(t, len(fs.scheduling.seqToSubj), int(state.Msgs))
+		for seq := uint64(1); seq < state.FirstSeq; seq++ {
+			if _, ok := fs.scheduling.seqToSubj[seq]; ok {
+				t.Fatalf("expected schedule for seq %d to be removed", seq)
+			}
+		}
 	})
 }
 
@@ -11132,4 +11223,109 @@ func TestFileStoreIdxAccountingForSkipMsgs(t *testing.T) {
 
 	t.Run("SkipMsg", func(t *testing.T) { test(t, false) })
 	t.Run("SkipMsgs", func(t *testing.T) { test(t, true) })
+}
+
+func TestFileStoreSyncBlocksFlushesAndSyncsMessages(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.AsyncFlush = true
+
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		require_NotNil(t, lmb)
+
+		// Wait for flusher to be ready.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if !lmb.flusher {
+				return errors.New("flusher not active")
+			}
+			return nil
+		})
+		// Now shutdown flusher and wait for it to be closed.
+		lmb.mu.Lock()
+		if lmb.qch != nil {
+			close(lmb.qch)
+			lmb.qch = nil
+		}
+		lmb.mu.Unlock()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			lmb.mu.RLock()
+			defer lmb.mu.RUnlock()
+			if lmb.flusher {
+				return errors.New("flusher still active")
+			}
+			return nil
+		})
+
+		seq, _, err := fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		require_Equal(t, seq, 1)
+
+		// Update the last write timestamp to be in the past.
+		lmb.mu.Lock()
+		lwts := lmb.lwts
+		lmb.lwts = 0
+		lmb.mu.Unlock()
+		require_NotEqual(t, lwts, 0)
+
+		// Syncing should write out the data.
+		fs.syncBlocks()
+
+		// Manually reset, sync should have written the data.
+		lmb.clearCacheAndOffset()
+
+		sm, err := fs.LoadMsg(1, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.seq, 1)
+		require_Equal(t, sm.subj, "foo")
+	})
+}
+
+func TestJetStreamFileStoreSubjectsRemovedAfterSecureErase(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test.*"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("test.1", []byte("msg1"))
+	require_NoError(t, err)
+	_, err = js.Publish("test.2", []byte("msg2"))
+	require_NoError(t, err)
+	_, err = js.Publish("test.3", []byte("msg3"))
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	require_NoError(t, err)
+	require_Equal(t, si.State.NumSubjects, 3)
+	require_Len(t, len(si.State.Subjects), 3)
+
+	// The bug happened here: the underlying eraseMsg() call in removeMsg() would
+	// corrupt the sm.subj from the shallow cache lookup. We would then pass the
+	// corrupted subject into removeSeqPerSubject() & removePerSubject(), resulting
+	// in them being no-ops. This is now fixed.
+	require_NoError(t, js.SecureDeleteMsg("TEST", 1))
+
+	si, err = js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	require_NoError(t, err)
+	require_Equal(t, si.State.NumSubjects, 2)
+	require_Len(t, len(si.State.Subjects), 2)
+
+	_, exists := si.State.Subjects["test.1"]
+	require_False(t, exists)
+	require_Equal(t, si.State.Subjects["test.2"], uint64(1))
+	require_Equal(t, si.State.Subjects["test.3"], uint64(1))
 }

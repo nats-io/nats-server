@@ -595,6 +595,11 @@ type WebsocketOpts struct {
 	// time needed for the TLS Handshake.
 	HandshakeTimeout time.Duration
 
+	// How often to send pings to WebSocket clients. When set to a non-zero
+	// duration, this overrides the default PingInterval for WebSocket connections.
+	// If not set or zero, the server's default PingInterval will be used.
+	PingInterval time.Duration
+
 	// Headers to be added to the upgrade response.
 	// Useful for adding custom headers like Strict-Transport-Security.
 	Headers map[string]string
@@ -1685,7 +1690,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "reconnect_error_reports":
 		o.ReconnectErrorReports = int(v.(int64))
 	case "websocket", "ws":
-		if err := parseWebsocket(tk, o, errors); err != nil {
+		if err := parseWebsocket(tk, o, errors, warnings); err != nil {
 			*errors = append(*errors, err)
 			return
 		}
@@ -5313,7 +5318,7 @@ func parseStringArray(fieldName string, tk token, lt *token, mv any, errors *[]e
 	}
 }
 
-func parseWebsocket(v any, o *Options, errors *[]error) error {
+func parseWebsocket(v any, o *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -5414,6 +5419,8 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 					o.Websocket.Headers[key] = headerValue
 				}
 			}
+		case "ping_interval":
+			o.Websocket.PingInterval = parseDuration("ping_interval", tk, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

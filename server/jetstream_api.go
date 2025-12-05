@@ -2689,8 +2689,17 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 		return
 	}
 
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	// Another peer-remove is already in progress, don't allow multiple concurrent changes.
+	if cc.peerRemoveReply != nil {
+		resp.Error = NewJSClusterServerMemberChangeInflightError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	var found string
-	js.mu.RLock()
 	for _, p := range meta.Peers() {
 		// If Peer is specified, it takes precedence
 		if req.Peer != _EMPTY_ {
@@ -2706,7 +2715,6 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 			break
 		}
 	}
-	js.mu.RUnlock()
 
 	if found == _EMPTY_ {
 		resp.Error = NewJSClusterServerNotMemberError()
@@ -2714,13 +2722,21 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 		return
 	}
 
-	// So we have a valid peer.
-	js.mu.Lock()
-	meta.ProposeRemovePeer(found)
-	js.mu.Unlock()
+	if err := meta.ProposeRemovePeer(found); err != nil {
+		if err == errMembershipChange {
+			resp.Error = NewJSClusterServerMemberChangeInflightError()
+		} else {
+			resp.Error = NewJSRaftGeneralError(err)
+		}
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 
-	resp.Success = true
-	s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if cc.peerRemoveReply == nil {
+		cc.peerRemoveReply = make(map[string]peerRemoveInfo, 1)
+	}
+	// Only copy the request, the subject and reply are already copied.
+	cc.peerRemoveReply[found] = peerRemoveInfo{ci: ci, subject: subject, reply: reply, request: string(msg)}
 }
 
 func (s *Server) peerSetToNames(ps []string) []string {
