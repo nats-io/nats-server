@@ -3281,7 +3281,7 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 			for _, a := range test.order {
 				if a.add {
 					rf := &mqttRetainedMsgRef{sseq: a.seq}
-					asm.handleRetainedMsg(test.subject, rf, nil, false)
+					asm.handleRetainedMsg(test.subject, rf, nil)
 				} else {
 					asm.handleRetainedMsgDel(test.subject, a.seq)
 				}
@@ -3294,7 +3294,7 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 		t.Run("clear_"+subject, func(t *testing.T) {
 			// Now add a new message, which should clear the floor.
 			rf := &mqttRetainedMsgRef{sseq: 3}
-			asm.handleRetainedMsg(subject, rf, nil, false)
+			asm.handleRetainedMsg(subject, rf, nil)
 			check(t, subject, true, 3, 0)
 			// Now do a non network delete and make sure it is gone.
 			asm.handleRetainedMsgDel(subject, 0)
@@ -3315,7 +3315,7 @@ func TestMQTTRetainedMsgDel(t *testing.T) {
 	var i uint64
 	for i = 0; i < 3; i++ {
 		rf := &mqttRetainedMsgRef{sseq: i}
-		asm.handleRetainedMsg("subject", rf, nil, false)
+		asm.handleRetainedMsg("subject", rf, nil)
 	}
 	asm.handleRetainedMsgDel("subject", 2)
 	if asm.sl.count > 0 {
@@ -3403,6 +3403,102 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("expected %q to have 1 message but had %d", expected, n)
 		}
+	}
+}
+
+func TestMQTTRetainedNoMsgBodyCorruption(t *testing.T) {
+	f := func() {
+		o := testMQTTDefaultOptions()
+		s := testMQTTRunServer(t, o)
+		defer testMQTTShutdownServer(s)
+
+		// Send a retained message.
+		c, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+		defer c.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+		testMQTTPublish(t, c, r, 0, false, true, "foo/bar", 0, []byte("retained 1"))
+		testMQTTFlush(t, c, nil, r)
+
+		checkRetained := func(msg string) {
+			t.Helper()
+			c, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+			defer c.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+			testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo/#", qos: 0}}, []byte{0})
+			testMQTTCheckPubMsg(t, c, r, "foo/bar", mqttPubFlagRetain, []byte(msg))
+		}
+		// Subscribe to make it load into the cache.
+		checkRetained("retained 1")
+
+		// Now send another one.
+		testMQTTPublish(t, c, r, 0, false, true, "foo/bar", 0, []byte("retained 2"))
+		testMQTTFlush(t, c, nil, r)
+
+		// Check it is updated
+		checkRetained("retained 2")
+
+		// Now we will simulate an update coming from another server
+		// if we were in cluster mode.
+		nc := natsConnect(t, s.ClientURL())
+		defer nc.Close()
+
+		msg := nats.NewMsg("$MQTT.rmsgs.foo.bar")
+		msg.Header.Set(mqttNatsRetainedMessageOrigin, "XXXXXXXX")
+		msg.Header.Set(mqttNatsRetainedMessageTopic, "foo/bar")
+		msg.Header.Set(mqttNatsRetainedMessageFlags, "1")
+		msg.Data = []byte("retained 3")
+
+		// Have a continuous flow of updates coming in
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		ch := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			for {
+				nc.PublishMsg(msg)
+				select {
+				case <-ch:
+					return
+				default:
+				}
+			}
+		}()
+
+		s.mu.RLock()
+		sm := &s.mqtt.sessmgr
+		s.mu.RUnlock()
+		sm.mu.RLock()
+		as := sm.sessions[globalAccountName]
+		sm.mu.RUnlock()
+		require_True(t, as != nil)
+		as.mu.RLock()
+		cache := as.rmsCache
+		as.mu.RUnlock()
+
+		// Wait to make sure at least the first update occurs
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			v, ok := cache.Load("foo.bar")
+			if !ok {
+				return errors.New("not in the cache")
+			}
+			rm := v.(*mqttRetainedMsg)
+			if !bytes.Equal(rm.Msg, []byte("retained 3")) {
+				return fmt.Errorf("Retained message not updated, got %q", rm.Msg)
+			}
+			return nil
+		})
+		// Repeat starting a subscription to check the retained message and
+		// make sure it is not corrupted. With the bug, the payload will at
+		// the very least contain trailing "\r\n" and possibly be corrupted
+		// (and the race detector would report a race).
+		for range 50 {
+			checkRetained("retained 3")
+		}
+		close(ch)
+		wg.Wait()
+	}
+	for range 5 {
+		f()
 	}
 }
 
