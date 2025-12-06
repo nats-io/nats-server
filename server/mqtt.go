@@ -1992,6 +1992,10 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 // No lock held on entry.
 func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	h, m := c.msgParts(rmsg)
+	// We need to strip the trailing "\r\n".
+	if l := len(m); l >= LEN_CR_LF {
+		m = m[:l-LEN_CR_LF]
+	}
 	rm, err := mqttDecodeRetainedMessage(h, m)
 	if err != nil {
 		return
@@ -2008,8 +2012,10 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	// At this point we either recover from our own server, or process a remote retained message.
 	seq, _, _ := ackReplyInfo(reply)
 
-	// Handle this retained message, no need to copy the bytes.
-	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm, false)
+	// Handle this retained message. The `rm.Msg` references some buffer owned
+	// by the caller. handleRetainedMsg() will take care of making a copy of
+	// `rm.Msg` it `rm` ends-up being stored in the cache.
+	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm)
 
 	// If we were recovering (rrmTotal > 0), then check if we are done.
 	as.mu.Lock()
@@ -2286,7 +2292,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 // If a message for this topic already existed, the existing record is updated
 // with the provided information.
 // Lock not held on entry.
-func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetainedMsgRef, rm *mqttRetainedMsg, copyBytesToCache bool) {
+func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetainedMsgRef, rm *mqttRetainedMsg) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 	if as.retmsgs == nil {
@@ -2313,7 +2319,9 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetai
 
 			// Update the in-memory retained message cache but only for messages
 			// that are already in the cache, i.e. have been (recently) used.
-			as.setCachedRetainedMsg(key, rm, true, copyBytesToCache)
+			// If that is the case, we ask setCachedRetainedMsg() to make a copy
+			// of rm.Msg bytes slice.
+			as.setCachedRetainedMsg(key, rm, true, true)
 			return
 		}
 	}
@@ -3122,7 +3130,17 @@ func (as *mqttAccountSessionManager) getCachedRetainedMsg(subject string) *mqttR
 	return rm
 }
 
-func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace bool, copyBytesToCache bool) {
+// If cache is enabled, the expiration for the `rm` is bumped by
+// `mqttRetainedCacheTTL` seconds.
+// If `onlyReplace` is true, then the `rm` object is stored in the cache using
+// the `subject` key only if there was already an object stored under that key.
+// If `copyMsgBytes` is true, then the `rm.Msg` bytes are copied (because it
+// references some buffer that is not owned by the caller).
+//
+// Note: currently `onlyReplace` and `cloneMsgBytes` always have the same
+// value (all `true` or all `false`) however we use different booleans to
+// better express the intent.
+func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace, copyMsgBytes bool) {
 	if as.rmsCache == nil || rm == nil {
 		return
 	}
@@ -3132,7 +3150,7 @@ func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mq
 			return
 		}
 	}
-	if copyBytesToCache {
+	if copyMsgBytes {
 		rm.Msg = copyBytes(rm.Msg)
 	}
 	as.rmsCache.Store(subject, rm)
@@ -4409,9 +4427,9 @@ func (c *client) mqttHandlePubRetain() {
 		rf := &mqttRetainedMsgRef{
 			sseq: smr.Sequence,
 		}
-		// Add/update the map. `true` to copy the payload bytes if needs to
-		// update rmsCache.
-		asm.handleRetainedMsg(key, rf, rm, true)
+		// Add/update the map. The `rm.Msg` bytes slice will be copied if the object
+		// happens to be stored in the rmsCache.
+		asm.handleRetainedMsg(key, rf, rm)
 	} else {
 		c.mu.Lock()
 		acc := c.acc
