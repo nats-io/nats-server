@@ -90,7 +90,7 @@ type ProcessJetStreamMsgHandler func(*inMsg)
 
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
-	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64) error
+	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64, discardNewCheck bool) error
 	SkipMsg(seq uint64) (uint64, error)
 	SkipMsgs(seq uint64, num uint64) error
 	FlushAllPending()
@@ -99,6 +99,7 @@ type StreamStore interface {
 	LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	LoadLastMsg(subject string, sm *StoreMsg) (*StoreMsg, error)
 	LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err error)
+	LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() (uint64, error)
@@ -125,7 +126,7 @@ type StreamStore interface {
 	UpdateConfig(cfg *StreamConfig) error
 	Delete(inline bool) error
 	Stop() error
-	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
+	ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error)
 	AddConsumer(o ConsumerStore) error
 	RemoveConsumer(o ConsumerStore) error
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)

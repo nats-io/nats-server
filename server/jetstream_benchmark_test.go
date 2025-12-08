@@ -2244,6 +2244,66 @@ func BenchmarkJetStreamParallelStartup(b *testing.B) {
 	}
 }
 
+func BenchmarkJetStreamScanForSources(b *testing.B) {
+	_, s, shutdown, nc, js := startJSClusterAndConnect(b, 1)
+	defer shutdown()
+
+	jsStreamCreate(b, nc, &StreamConfig{
+		Name:     "origin",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	})
+
+	jsStreamCreate(b, nc, &StreamConfig{
+		Name:     "stream",
+		Subjects: []string{"bar"},
+		Storage:  FileStorage,
+		Sources: []*StreamSource{
+			{
+				Name:          "origin",
+				FilterSubject: "foo",
+			},
+		},
+	})
+
+	// Start by publishing some messages to the sourcing stream.
+	for range 1000 {
+		_, err := js.Publish("bar", nil)
+		require_NoError(b, err)
+	}
+
+	// Then publish a message to the origin stream.
+	_, err := js.Publish("foo", nil)
+	require_NoError(b, err)
+
+	// Wait for the sourced message from the origin stream.
+	checkFor(b, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("stream")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 1001 {
+			return fmt.Errorf("waiting for sourcing")
+		}
+		return nil
+	})
+
+	// Now publish a LOT more messages to the sourcing stream
+	// which previously the reverse scan would have had to scan
+	// over linearly.
+	for range 100_000 {
+		_, err := js.Publish("bar", nil)
+		require_NoError(b, err)
+	}
+
+	mset, err := s.globalAccount().lookupStream("stream")
+	require_NoError(b, err)
+
+	b.Run("StartingSequenceForSources", func(b *testing.B) {
+		mset.startingSequenceForSources()
+	})
+}
+
 // Helper function to stand up a JS-enabled single server or cluster
 func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Server, shutdown func(), nc *nats.Conn, js nats.JetStreamContext) {
 	b.Helper()

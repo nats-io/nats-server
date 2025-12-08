@@ -819,11 +819,19 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			ipqLimitByLen[*inMsg](mlen),
 			ipqLimitBySize[*inMsg](msz),
 		),
-		gets: newIPQueue[*directGetReq](s, qpfx+"direct gets"),
-		qch:  make(chan struct{}),
-		mqch: make(chan struct{}),
-		uch:  make(chan struct{}, 4),
-		sch:  make(chan struct{}, 1),
+		gets:    newIPQueue[*directGetReq](s, qpfx+"direct gets"),
+		qch:     make(chan struct{}),
+		mqch:    make(chan struct{}),
+		uch:     make(chan struct{}, 4),
+		sch:     make(chan struct{}, 1),
+		created: time.Now().UTC(),
+	}
+
+	// Add created timestamp used for the store, must match that of the stream assignment if it exists.
+	if sa != nil {
+		js.mu.RLock()
+		mset.created = sa.Created
+		js.mu.RUnlock()
 	}
 
 	// Start our signaling routine to process consumers.
@@ -887,7 +895,6 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		fsCfg.SyncAlways = false
 		fsCfg.AsyncFlush = true
 	}
-
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
 		return nil, NewJSStreamStoreFailedError(err)
@@ -3958,7 +3965,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				mset.retrySourceConsumerAtSeq(iName, si.sseq)
 				mset.mu.Unlock()
 			} else {
-				// Log some warning for errors other than errLastSeqMismatch or errMaxMsgs.
+				// Log some warning for errors other than errLastSeqMismatch.
 				if !errors.Is(err, errLastSeqMismatch) {
 					s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
 						iName, accName, sname, err)
@@ -4068,28 +4075,61 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 		return
 	}
 
+	// From the provided list of sources, we build a sublist that contains
+	// the interested filters (including transforms). As we figure out the
+	// starting sequence for each source, we will eliminate the source from
+	// the map and then refresh the sublist, which in turn makes the sublist
+	// ideally more specific. This allows LoadPrevMsgsMulti to work most
+	// effectively.
+	// Because this is a SimpleSublist we can't just remove the entries per
+	// source so we have no other option but to rebuild it from scratch, but
+	// this is cheap enough to do so not the end of the world.
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for iName := range iNames {
+			si := mset.sources[iName]
+			if si == nil {
+				continue
+			}
+			if si.sf == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(si.sf, struct{}{})
+			}
+			for _, sf := range si.sfs {
+				if sf == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(sf, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
 	var smv StoreMsg
-	for seq := state.LastSeq; seq >= state.FirstSeq; {
-		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+	for last := state.LastSeq; ; {
+		sm, seq, err := mset.store.LoadPrevMsgMulti(sl, last, &smv)
 		if err == ErrStoreEOF || err != nil {
 			break
 		}
-		seq = sm.seq - 1
+		last = seq - 1
 		if len(sm.hdr) == 0 {
 			continue
 		}
-
-		ss := getHeader(JSStreamSource, sm.hdr)
+		ss := sliceHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
 		}
-		streamName, indexName, sseq := streamAndSeq(bytesToString(ss))
 
+		streamName, indexName, sseq := streamAndSeq(bytesToString(ss))
 		if _, ok := iNames[indexName]; ok {
 			si := mset.sources[indexName]
 			si.sseq = sseq
 			si.dseq = 0
 			delete(iNames, indexName)
+			refreshSublist()
 		} else if indexName == _EMPTY_ && streamName != _EMPTY_ {
 			for iName := range iNames {
 				// TODO streamSource is a linear walk, to optimize later
@@ -4098,6 +4138,7 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 					si.sseq = sseq
 					si.dseq = 0
 					delete(iNames, iName)
+					refreshSublist()
 					break
 				}
 			}
@@ -4179,26 +4220,61 @@ func (mset *stream) startingSequenceForSources() {
 		}
 	}()
 
+	// Generate a list of sources and, from that, a sublist that contains
+	// the interested filters (including transforms). As we figure out the
+	// starting sequence for each source, we will eliminate the source from
+	// the map and then refresh the sublist, which in turn makes the sublist
+	// ideally more specific. This allows LoadPrevMsgsMulti to work most
+	// effectively.
+	// Because this is a SimpleSublist we can't just remove the entries per
+	// source so we have no other option but to rebuild it from scratch, but
+	// this is cheap enough to do so not the end of the world.
+	sources := map[string]*StreamSource{}
+	for _, src := range mset.cfg.Sources {
+		sources[src.composeIName()] = src
+	}
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for _, src := range sources {
+			if src.FilterSubject == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(src.FilterSubject, struct{}{})
+			}
+			for _, tr := range src.SubjectTransforms {
+				if tr.Destination == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(tr.Destination, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
 	update := func(iName string, seq uint64) {
 		// Only update active in case we have older ones in here that got configured out.
 		if si := mset.sources[iName]; si != nil {
 			if _, ok := seqs[iName]; !ok {
 				seqs[iName] = seq
+				delete(sources, iName)
+				refreshSublist()
 			}
 		}
 	}
 
 	var smv StoreMsg
-	for seq := state.LastSeq; ; {
-		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+	for last := state.LastSeq; ; {
+		sm, seq, err := mset.store.LoadPrevMsgMulti(sl, last, &smv)
 		if err == ErrStoreEOF || err != nil {
 			break
 		}
-		seq = sm.seq - 1
+		last = seq - 1
 		if len(sm.hdr) == 0 {
 			continue
 		}
-		ss := getHeader(JSStreamSource, sm.hdr)
+		ss := sliceHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
 		}
@@ -4528,8 +4604,6 @@ func (mset *stream) unsubscribe(sub *subscription) {
 
 func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	mset.mu.Lock()
-	mset.created = time.Now().UTC()
-
 	switch mset.cfg.Storage {
 	case MemoryStorage:
 		ms, err := newMemStore(&mset.cfg)
@@ -4802,14 +4876,18 @@ func getMessageSchedule(hdr []byte) (time.Time, bool) {
 		return time.Time{}, true
 	}
 	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
-	if val == _EMPTY_ {
+	schedule, _, ok := parseMsgSchedule(val, time.Now().UTC().UnixNano())
+	return schedule, ok
+}
+
+// Fast lookup and calculation of next message schedule.
+func nextMessageSchedule(hdr []byte, ts int64) (time.Time, bool) {
+	if len(hdr) == 0 {
 		return time.Time{}, true
 	}
-	if !strings.HasPrefix(val, "@at ") {
-		return time.Time{}, false
-	}
-	t, err := time.Parse(time.RFC3339, val[4:])
-	return t, err == nil
+	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
+	schedule, _, ok := parseMsgSchedule(val, ts)
+	return schedule, ok
 }
 
 // Fast lookup of the message schedule TTL from headers.
@@ -6025,7 +6103,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 		}
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
+		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl, canConsistencyCheck)
 	}
 
 	if err != nil {

@@ -185,7 +185,7 @@ func (ms *memStore) recoverMsgSchedulingState() {
 		if len(sm.hdr) == 0 {
 			continue
 		}
-		if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+		if schedule, ok := nextMessageSchedule(sm.hdr, sm.ts); ok && !schedule.IsZero() {
 			ms.scheduling.init(seq, sm.subj, schedule.UnixNano())
 		}
 	}
@@ -193,7 +193,7 @@ func (ms *memStore) recoverMsgSchedulingState() {
 
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
-func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) error {
 	if ms.msgs == nil {
 		return ErrStoreClosed
 	}
@@ -209,31 +209,29 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 	}
 
 	// Check if we are discarding new messages when we reach the limit.
-	if ms.cfg.Discard == DiscardNew {
+	// If we are clustered, we do the enforcement above and should not disqualify
+	// the message here since it could cause replicas to drift.
+	if discardNewCheck && ms.cfg.Discard == DiscardNew {
 		if asl && ms.cfg.DiscardNewPer {
 			return ErrMaxMsgsPerSubject
 		}
-		// If we are discard new and limits policy and clustered, we do the enforcement
-		// above and should not disqualify the message here since it could cause replicas to drift.
-		if ms.cfg.Retention == LimitsPolicy || ms.cfg.Replicas == 1 {
-			if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
-				// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
-				if !asl {
-					return ErrMaxMsgs
-				}
+		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
+			// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
+			if !asl {
+				return ErrMaxMsgs
 			}
-			if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) >= uint64(ms.cfg.MaxBytes) {
-				if !asl {
-					return ErrMaxBytes
-				}
-				// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					ms.recalculateForSubj(subj, ss)
-				}
-				sm, ok := ms.msgs[ss.First]
-				if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
-					return ErrMaxBytes
-				}
+		}
+		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) > uint64(ms.cfg.MaxBytes) {
+			if !asl {
+				return ErrMaxBytes
+			}
+			// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				ms.recalculateForSubj(subj, ss)
+			}
+			sm, ok := ms.msgs[ss.First]
+			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
+				return ErrMaxBytes
 			}
 		}
 	}
@@ -310,10 +308,18 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 
 	// Message scheduling.
 	if ms.scheduling != nil {
-		if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
+		if schedule, ok := nextMessageSchedule(hdr, ts); ok && !schedule.IsZero() {
 			ms.scheduling.add(seq, subj, schedule.UnixNano())
 		} else {
 			ms.scheduling.removeSubject(subj)
+		}
+
+		// Check for a repeating schedule and update such that it triggers again.
+		if scheduleNext := bytesToString(sliceHeader(JSScheduleNext, hdr)); scheduleNext != _EMPTY_ && scheduleNext != JSScheduleNextPurge {
+			scheduler := getMessageScheduler(hdr)
+			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
+				ms.scheduling.update(scheduler, next.UnixNano())
+			}
 		}
 	}
 
@@ -321,9 +327,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
+func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) error {
 	ms.mu.Lock()
-	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl, discardNewCheck)
 	cb := ms.scb
 	// Check if first message timestamp requires expiry
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
@@ -345,7 +351,8 @@ func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 func (ms *memStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error) {
 	ms.mu.Lock()
 	seq, ts := ms.state.LastSeq+1, time.Now().UnixNano()
-	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
+	// This is called for a R1 with no expected sequence number, so perform DiscardNew checks on the store-level.
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl, true)
 	cb := ms.scb
 	ms.mu.Unlock()
 
@@ -1828,6 +1835,40 @@ func (ms *memStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err 
 	return nil, ErrStoreEOF
 }
 
+// LoadPrevMsgMulti will find the previous message matching any entry in the sublist.
+func (ms *memStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	// TODO(dlc) - for now simple linear walk to get started.
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if start > ms.state.LastSeq {
+		start = ms.state.LastSeq
+	}
+
+	// If past the start no results.
+	if start < ms.state.FirstSeq || ms.state.Msgs == 0 {
+		return nil, ms.state.FirstSeq, ErrStoreEOF
+	}
+
+	// Initial setup.
+	fseq, lseq := start, ms.state.FirstSeq
+
+	for nseq := fseq; nseq >= lseq; nseq-- {
+		sm, ok := ms.msgs[nseq]
+		if !ok {
+			continue
+		}
+		if sl.HasInterest(sm.subj) {
+			if smp == nil {
+				smp = new(StoreMsg)
+			}
+			sm.copy(smp)
+			return smp, nseq, nil
+		}
+	}
+	return nil, ms.state.LastSeq, ErrStoreEOF
+}
+
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
@@ -2129,7 +2170,7 @@ type consumerMemStore struct {
 	closed bool
 }
 
-func (ms *memStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
+func (ms *memStore) ConsumerStore(name string, _ time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
 	if ms == nil {
 		return nil, fmt.Errorf("memstore is nil")
 	}

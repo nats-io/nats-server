@@ -22,7 +22,7 @@ jobs:
     if: github.ref != 'refs/heads/main'
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -67,7 +67,7 @@ jobs:
     runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -89,7 +89,7 @@ jobs:
     runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -107,7 +107,7 @@ jobs:
     runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -132,7 +132,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -149,7 +149,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -166,7 +166,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -183,7 +183,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -200,7 +200,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -217,7 +217,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -234,7 +234,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -251,7 +251,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -268,7 +268,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -285,7 +285,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -302,7 +302,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -319,7 +319,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -336,7 +336,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -353,7 +353,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -370,7 +370,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -387,7 +387,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6
@@ -404,7 +404,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Go
         uses: actions/setup-go@v6

@@ -15,10 +15,6 @@ inputs:
     default: nightly
     required: false
 
-  workdir:
-    description: The working directory for actions requiring it
-    required: true
-
 runs:
   using: composite
   steps:
@@ -29,23 +25,18 @@ runs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Set up Go
-      uses: actions/setup-go@v6
-      with:
-        go-version: stable
-
     - name: Generate build metadata
       shell: sh
       run: |
         echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
-        echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        echo "GIT_COMMIT=$(cd ${{ inputs.workdir }}/nats-server && git rev-parse --short HEAD)" >> $GITHUB_ENV
         echo "BUILD_NAME=$(echo ${{ inputs.name }} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g')" >> $GITHUB_ENV
 
     - name: Build and push Docker images
       uses: docker/build-push-action@v6
       with:
-        context: "${{ inputs.workdir }}"
-        file: "${{ inputs.workdir }}/docker/Dockerfile.nightly"
+        context: "${{ github.workspace }}/src/github.com/nats-io"
+        file: "${{ github.workspace }}/src/github.com/nats-io/nats-server/docker/Dockerfile.nightly"
         build-args: |
           VERSION=nightly-${{ env.BUILD_DATE }}
           GIT_COMMIT=${{ env.GIT_COMMIT }}

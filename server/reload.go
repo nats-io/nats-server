@@ -2126,9 +2126,6 @@ func (s *Server) reloadAuthorization() {
 		resetCh <- struct{}{}
 	}
 
-	// Check that publish retained messages sources are still allowed to publish.
-	s.mqttCheckPubRetainedPerms()
-
 	// Close clients that have moved accounts
 	for _, client := range cclients {
 		client.closeConnection(ClientClosed)
@@ -2168,6 +2165,10 @@ func (s *Server) reloadAuthorization() {
 			s.Errorf(err.Error())
 		}
 	}
+
+	// Check that publish retained messages sources are still allowed to publish.
+	// Do this after dealing with JetStream.
+	s.mqttCheckPubRetainedPerms()
 }
 
 // Returns true if given client current account has changed (or user

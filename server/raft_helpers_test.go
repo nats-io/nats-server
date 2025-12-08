@@ -57,6 +57,17 @@ func (sg smGroup) leader() stateMachine {
 	return nil
 }
 
+func (sg smGroup) followers() []stateMachine {
+	var f []stateMachine
+	for _, sm := range sg {
+		if sm.node().Leader() {
+			continue
+		}
+		f = append(f, sm)
+	}
+	return f
+}
+
 // Wait on a leader to be elected.
 func (sg smGroup) waitOnLeader() stateMachine {
 	expires := time.Now().Add(10 * time.Second)

@@ -719,3 +719,125 @@ func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreMsgLoadPrevMsgMulti(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}},
+		func(t *testing.T, fs StreamStore) {
+			// Put 1k msgs in
+			for i := range 1000 {
+				subj := fmt.Sprintf("foo.%d", i+1)
+				fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+			}
+
+			var sm StoreMsg
+			var count int
+			var state StreamState
+			fs.FastState(&state)
+
+			sl := gsl.NewSimpleSublist()
+			sl.Insert("foo.5", struct{}{})
+			sl.Insert("foo.15", struct{}{})
+			sl.Insert("foo.105", struct{}{})
+
+			for seq := state.LastSeq; seq > 5; seq-- {
+				var err error
+				_, seq, err = fs.LoadPrevMsgMulti(sl, seq, &sm)
+				require_NoError(t, err)
+				require_Equal(t, sm.subj, fmt.Sprintf("foo.%d", sm.seq))
+				count++
+			}
+
+			_, _, err := fs.LoadPrevMsgMulti(sl, 4, &sm)
+			require_Error(t, err, ErrStoreEOF)
+			require_Equal(t, count, 3)
+		},
+	)
+}
+
+func TestStoreDiscardNew(t *testing.T) {
+	test := func(t *testing.T, updateConfig func(cfg *StreamConfig), expectedErr error) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Discard: DiscardNew}
+		updateConfig(&cfg)
+		testAllStoreAllPermutations(t, false, cfg, func(t *testing.T, fs StreamStore) {
+			ts := time.Now().UnixNano()
+			expectedSeq := uint64(1)
+			requireState := func() {
+				t.Helper()
+				state := fs.State()
+				require_Equal(t, state.Msgs, 1)
+				require_Equal(t, state.FirstSeq, expectedSeq)
+				require_Equal(t, state.LastSeq, expectedSeq)
+			}
+
+			_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+
+			err = fs.StoreRawMsg("foo", nil, nil, 0, ts, 0, true)
+			if expectedErr == nil {
+				require_NoError(t, err)
+				expectedSeq++
+			} else {
+				require_Equal(t, err, expectedErr)
+			}
+			requireState()
+
+			// For a clustered stream DiscardNew should only be enforced by the stream leader.
+			// Followers MUST always accept data that they've received from the leader,
+			// otherwise we risk stream desync if some servers decide to reject.
+			err = fs.StoreRawMsg("foo", nil, nil, 0, ts, 0, false)
+			require_NoError(t, err)
+			expectedSeq++
+
+			// Since DiscardNew we must only add to the stream, and not act like
+			// DiscardOld based on MaxMsgs/MaxBytes limits, unless MaxMsgsPer is set.
+			if cfg.MaxMsgsPer > 0 {
+				requireState()
+			} else {
+				state := fs.State()
+				require_Equal(t, state.Msgs, 2)
+				require_Equal(t, state.FirstSeq, expectedSeq-1)
+				require_Equal(t, state.LastSeq, expectedSeq)
+			}
+		})
+	}
+
+	t.Run("MaxMsgs", func(t *testing.T) { test(t, func(cfg *StreamConfig) { cfg.MaxMsgs = 1 }, ErrMaxMsgs) })
+	t.Run("MaxBytes", func(t *testing.T) { test(t, func(cfg *StreamConfig) { cfg.MaxBytes = 33 }, ErrMaxBytes) })
+	t.Run("MaxMsgsPer", func(t *testing.T) { test(t, func(cfg *StreamConfig) { cfg.MaxMsgsPer = 1 }, nil) })
+	t.Run("MaxMsgsPer_DiscardNewPer", func(t *testing.T) {
+		test(t, func(cfg *StreamConfig) {
+			cfg.DiscardNewPer = true
+			cfg.MaxMsgsPer = 1
+		}, ErrMaxMsgsPerSubject)
+	})
+	t.Run("MaxMsgsPer_MaxMsgs", func(t *testing.T) {
+		test(t, func(cfg *StreamConfig) {
+			// Without DiscardNewPerSubject we can replace the message with the new one if it fits (it will for this test).
+			cfg.MaxMsgs = 1
+			cfg.MaxMsgsPer = 1
+		}, nil)
+	})
+	t.Run("MaxMsgsPer_MaxBytes", func(t *testing.T) {
+		test(t, func(cfg *StreamConfig) {
+			// Without DiscardNewPerSubject we can replace the message with the new one if it fits (it will for this test).
+			cfg.MaxBytes = 33
+			cfg.MaxMsgsPer = 1
+		}, nil)
+	})
+	t.Run("MaxMsgsPer_MaxMsgs_DiscardNewPer", func(t *testing.T) {
+		test(t, func(cfg *StreamConfig) {
+			cfg.DiscardNewPer = true
+			cfg.MaxMsgs = 1
+			cfg.MaxMsgsPer = 1
+		}, ErrMaxMsgsPerSubject)
+	})
+	t.Run("MaxMsgsPer_MaxBytes_DiscardNewPer", func(t *testing.T) {
+		test(t, func(cfg *StreamConfig) {
+			cfg.DiscardNewPer = true
+			cfg.MaxBytes = 33
+			cfg.MaxMsgsPer = 1
+		}, ErrMaxMsgsPerSubject)
+	})
+}

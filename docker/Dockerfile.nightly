@@ -1,7 +1,8 @@
-FROM golang:alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:alpine AS builder
 
 ARG VERSION="nightly"
 ARG GIT_COMMIT
+
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -10,29 +11,37 @@ ENV GOOS=$TARGETOS \
     GO111MODULE=on \
     CGO_ENABLED=0
 
-RUN apk add --no-cache git ca-certificates
-RUN mkdir -p /src/nats-server /src/natscli /src/nsc
+RUN apk add --no-cache ca-certificates
+RUN update-ca-certificates
 
-COPY . /src/nats-server
-RUN git clone --depth 1 https://github.com/nats-io/natscli /src/natscli
-RUN git clone --depth 1 https://github.com/nats-io/nsc /src/nsc
+WORKDIR /src
+RUN mkdir -p /src/out/$GOOS/$GOARCH
 
-WORKDIR /src/nats-server
-RUN go install -v -trimpath -ldflags "-w -X server.serverVersion=${VERSION},server.gitCommit=${GIT_COMMIT}" .
+COPY ./nats-server/ /src/nats-server/
+COPY ./nsc/         /src/nsc/
+COPY ./natscli/     /src/natscli/
 
-WORKDIR /src/natscli
-RUN go install -v -trimpath -ldflags "-w -X main.version=${VERSION}" ./nats
+RUN cd /src/nats-server && go build -trimpath \
+       -ldflags "-w -X server.serverVersion=${VERSION},server.gitCommit=${GIT_COMMIT}" \
+       -o /src/out/$TARGETOS/$TARGETARCH/nats-server .
 
-WORKDIR /src/nsc
-RUN go install -v -trimpath .
+RUN cd /src/natscli && go build -trimpath \
+       -ldflags "-w -X main.version=${VERSION}" \
+       -o /src/out/$TARGETOS/$TARGETARCH/nats ./nats
 
-FROM alpine:latest
+RUN cd /src/nsc && go build -trimpath \
+       -o /src/out/$TARGETOS/$TARGETARCH/nsc .
 
-COPY docker/nats-server.conf /nats/conf/nats-server.conf
-COPY --from=builder /go/bin/nats-server /bin/nats-server
-COPY --from=builder /go/bin/nats /bin/nats
-COPY --from=builder /go/bin/nsc /bin/nsc
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+FROM --platform=$TARGETPLATFORM alpine:latest
+
+ARG TARGETOS
+ARG TARGETARCH
+
+COPY ./nats-server/docker/nats-server.conf                     /nats/conf/nats-server.conf
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt         /etc/ssl/certs/
+COPY --from=builder /src/out/$TARGETOS/$TARGETARCH/nats-server /bin/nats-server
+COPY --from=builder /src/out/$TARGETOS/$TARGETARCH/nats        /bin/nats
+COPY --from=builder /src/out/$TARGETOS/$TARGETARCH/nsc         /bin/nsc
 
 EXPOSE 4222 8222 6222 5222
 

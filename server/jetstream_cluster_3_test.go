@@ -6438,3 +6438,129 @@ func TestJetStreamClusterAccountFileStoreLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterCorruptMetaSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Restart the server so it generates a snapshot.
+	s := c.randomServer()
+	s.Shutdown()
+	s.WaitForShutdown()
+	s = c.restartServer(s)
+	require_False(t, s.isShuttingDown())
+
+	// Perform a couple leader elections to add a couple more entries to the Raft log.
+	// Once we corrupt the snapshot, we shouldn't recover with only the log.
+	for range 2 {
+		c.waitOnLeader()
+		ml := c.leader()
+		require_NotNil(t, ml)
+		meta := ml.getJetStream().getMetaGroup()
+		require_NoError(t, meta.StepDown())
+	}
+
+	// Stop the meta group of our selected server early, making sure it can't generate a new snapshot.
+	meta := s.getJetStream().getMetaGroup().(*raft)
+	meta.Stop()
+	meta.WaitForStop()
+
+	meta.RLock()
+	snapfile := meta.snapfile
+	meta.RUnlock()
+	configFile := s.getOpts().ConfigFile
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	// Truncate/corrupt the snapshot.
+	require_NoError(t, os.Truncate(snapfile, 0))
+
+	// The server should not start up.
+	opts := LoadConfig(configFile)
+	s, err = NewServer(opts)
+	require_NoError(t, err)
+	s.Start()
+	require_Equal(t, s.numRaftNodes(), 0)
+}
+
+func TestJetStreamClusterProcessSnapshotPanicAfterStreamDelete(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.RLock()
+	sa, node := mset.sa, mset.node
+	mset.mu.RUnlock()
+	require_True(t, sa == nil)
+	require_True(t, node == nil)
+	require_Error(t, mset.processSnapshot(&StreamReplicatedState{}, 0), errCatchupStreamStopped)
+
+	mset.setStreamAssignment(&streamAssignment{}) // If the stream assignment is set, but the node is nil.
+	mset.mu.RLock()
+	sa, node = mset.sa, mset.node
+	mset.mu.RUnlock()
+	require_True(t, sa != nil)
+	require_True(t, node == nil)
+	require_Error(t, mset.processSnapshot(&StreamReplicatedState{}, 0), errCatchupStreamStopped)
+}
+
+func TestJetStreamClusterDiscardNewPerSubjectRejectsWithoutCLFSBump(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:                 "TEST",
+		Subjects:             []string{"foo"},
+		Replicas:             3,
+		Discard:              nats.DiscardNew,
+		DiscardNewPerSubject: true,
+		MaxMsgsPerSubject:    1,
+	})
+	require_NoError(t, err)
+
+	// First publish should succeed.
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	// The second should fail, since the limit is hit.
+	_, err = js.Publish("foo", nil)
+	require_Error(t, err, ErrMaxMsgsPerSubject)
+
+	// Retry after deleting, it should succeed afterward.
+	require_NoError(t, js.DeleteMsg("TEST", 1))
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// CLFS should NOT be bumped.
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_Equal(t, mset.getCLFS(), 0)
+	}
+}

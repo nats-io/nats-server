@@ -5341,8 +5341,10 @@ sendToRoutesOrLeafs:
 	// If we do have a deliver subject we need to do something with it.
 	// Again this is when JetStream (but possibly others) wants the system
 	// to rewrite the delivered subject. The way we will do that is place it
-	// at the end of the reply subject if it exists.
-	if len(deliver) > 0 && len(reply) > 0 {
+	// at the end of the reply subject if it exists. But only if this wasn't
+	// already performed, otherwise we'd end up with a duplicate '@' suffix
+	// resulting in a protocol error.
+	if len(deliver) > 0 && len(reply) > 0 && !remapped {
 		reply = append(reply, '@')
 		reply = append(reply, deliver...)
 	}
@@ -5501,6 +5503,9 @@ func (c *client) processPingTimer() {
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		pingInterval = opts.Cluster.PingInterval
 	}
+	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
+		pingInterval = opts.Websocket.PingInterval
+	}
 	pingInterval = adjustPingInterval(c.kind, pingInterval)
 	now := time.Now()
 	// Determine RTT measurement interval from options.
@@ -5584,6 +5589,9 @@ func (c *client) setPingTimer() {
 	d := opts.PingInterval
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		d = opts.Cluster.PingInterval
+	}
+	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
+		d = opts.Websocket.PingInterval
 	}
 	d = adjustPingInterval(c.kind, d)
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
@@ -6618,6 +6626,9 @@ func (c *client) setFirstPingTimer() {
 
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		d = opts.Cluster.PingInterval
+	}
+	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
+		d = opts.Websocket.PingInterval
 	}
 	if !opts.DisableShortFirstPing {
 		if c.kind != CLIENT {

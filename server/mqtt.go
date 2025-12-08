@@ -28,9 +28,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nuid"
 )
 
@@ -261,8 +263,9 @@ type mqttAccountSessionManager struct {
 	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
 	rmsCache   *sync.Map                      // map[subject]mqttRetainedMsg
 	jsa        mqttJSA
-	rrmLastSeq uint64        // Restore retained messages expected last sequence
-	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded
+	rrmNum     uint64        // Number of restored retained messages.
+	rrmTotal   uint64        // Total of retained messages to restore.
+	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded.
 	domainTk   string        // Domain (with trailing "."), or possibly empty. This is added to session subject.
 }
 
@@ -1473,16 +1476,13 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		return nil, err
 	}
 
-	var lastSeq uint64
+	var rmTotal uint64
 	var rmDoneCh chan struct{}
 	st := si.State
-	if st.Msgs > 0 {
-		lastSeq = st.LastSeq
-		if lastSeq > 0 {
-			rmDoneCh = make(chan struct{})
-			as.rrmLastSeq = lastSeq
-			as.rrmDoneCh = rmDoneCh
-		}
+	if rmTotal = st.Msgs; rmTotal > 0 {
+		rmDoneCh = make(chan struct{})
+		as.rrmTotal = rmTotal
+		as.rrmDoneCh = rmDoneCh
 	}
 
 	// Opportunistically delete the old (legacy) consumer, from v2.10.10 and
@@ -1507,14 +1507,14 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		return nil, fmt.Errorf("create retained messages consumer for account %q: %v", accName, err)
 	}
 
-	if lastSeq > 0 {
+	if rmTotal > 0 {
 		ttl := time.NewTimer(mqttJSAPITimeout)
 		defer ttl.Stop()
 
 		select {
 		case <-rmDoneCh:
 		case <-ttl.C:
-			s.Warnf("Timing out waiting to load %v retained messages", st.Msgs)
+			s.Warnf("Timing out waiting to load %v retained messages", rmTotal)
 		case <-quitCh:
 			return nil, ErrServerNotRunning
 		}
@@ -1992,14 +1992,18 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 // No lock held on entry.
 func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	h, m := c.msgParts(rmsg)
+	// We need to strip the trailing "\r\n".
+	if l := len(m); l >= LEN_CR_LF {
+		m = m[:l-LEN_CR_LF]
+	}
 	rm, err := mqttDecodeRetainedMessage(h, m)
 	if err != nil {
 		return
 	}
-	// If lastSeq is 0 (nothing to recover, or done doing it) and this is
+	// If rrmTotal is 0 (nothing to recover, or done doing it) and this is
 	// from our own server, ignore.
 	as.mu.RLock()
-	if as.rrmLastSeq == 0 && rm.Origin == as.jsa.id {
+	if as.rrmTotal == 0 && rm.Origin == as.jsa.id {
 		as.mu.RUnlock()
 		return
 	}
@@ -2008,15 +2012,19 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	// At this point we either recover from our own server, or process a remote retained message.
 	seq, _, _ := ackReplyInfo(reply)
 
-	// Handle this retained message, no need to copy the bytes.
-	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm, false)
+	// Handle this retained message. The `rm.Msg` references some buffer owned
+	// by the caller. handleRetainedMsg() will take care of making a copy of
+	// `rm.Msg` it `rm` ends-up being stored in the cache.
+	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm)
 
-	// If we were recovering (lastSeq > 0), then check if we are done.
+	// If we were recovering (rrmTotal > 0), then check if we are done.
 	as.mu.Lock()
-	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
-		as.rrmLastSeq = 0
-		close(as.rrmDoneCh)
-		as.rrmDoneCh = nil
+	if as.rrmTotal > 0 {
+		if as.rrmNum++; as.rrmNum == as.rrmTotal {
+			as.rrmTotal = 0
+			close(as.rrmDoneCh)
+			as.rrmDoneCh = nil
+		}
 	}
 	as.mu.Unlock()
 }
@@ -2199,6 +2207,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 	sendq := as.jsa.sendq
 	quitCh := as.jsa.quitCh
 	ci := ClientInfo{Account: accName, Cluster: cluster}
+	acc := c.acc
 	as.mu.RUnlock()
 
 	// The account session manager does not have a suhtdown API per-se, instead,
@@ -2259,7 +2268,13 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 				c.pa.reply = []byte(r.reply)
 				c.pa.size = nsize
 				c.pa.szb = []byte(strconv.Itoa(nsize))
+				c.pa.mapped = nil
 
+				if acc.hasMappings() {
+					if changed := c.selectMappedSubject(); changed {
+						c.traceOutOp("MAPPINGS", fmt.Appendf(nil, "%s -> %s", c.pa.mapped, c.pa.subject))
+					}
+				}
 				c.processInboundClientMsg(msg)
 				c.flushClients(0)
 			}
@@ -2277,7 +2292,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 // If a message for this topic already existed, the existing record is updated
 // with the provided information.
 // Lock not held on entry.
-func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetainedMsgRef, rm *mqttRetainedMsg, copyBytesToCache bool) {
+func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetainedMsgRef, rm *mqttRetainedMsg) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 	if as.retmsgs == nil {
@@ -2304,7 +2319,9 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetai
 
 			// Update the in-memory retained message cache but only for messages
 			// that are already in the cache, i.e. have been (recently) used.
-			as.setCachedRetainedMsg(key, rm, true, copyBytesToCache)
+			// If that is the case, we ask setCachedRetainedMsg() to make a copy
+			// of rm.Msg bytes slice.
+			as.setCachedRetainedMsg(key, rm, true, true)
 			return
 		}
 	}
@@ -3113,7 +3130,17 @@ func (as *mqttAccountSessionManager) getCachedRetainedMsg(subject string) *mqttR
 	return rm
 }
 
-func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace bool, copyBytesToCache bool) {
+// If cache is enabled, the expiration for the `rm` is bumped by
+// `mqttRetainedCacheTTL` seconds.
+// If `onlyReplace` is true, then the `rm` object is stored in the cache using
+// the `subject` key only if there was already an object stored under that key.
+// If `copyMsgBytes` is true, then the `rm.Msg` bytes are copied (because it
+// references some buffer that is not owned by the caller).
+//
+// Note: currently `onlyReplace` and `cloneMsgBytes` always have the same
+// value (all `true` or all `false`) however we use different booleans to
+// better express the intent.
+func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace, copyMsgBytes bool) {
 	if as.rmsCache == nil || rm == nil {
 		return
 	}
@@ -3123,7 +3150,7 @@ func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mq
 			return
 		}
 	}
-	if copyBytesToCache {
+	if copyMsgBytes {
 		rm.Msg = copyBytes(rm.Msg)
 	}
 	as.rmsCache.Store(subject, rm)
@@ -4050,16 +4077,12 @@ func mqttPubTrace(pp *mqttPublish) string {
 		pp.topic, dup, qos, retain, pp.sz, piStr)
 }
 
-// Composes a NATS message from a MQTT PUBLISH packet. The message includes an
-// internal header containint the original packet's QoS, and for QoS2 packets
-// the original subject.
-//
-// Example (QoS2, subject: "foo.bar"):
-//
-//	NATS/1.0\r\n
-//	Nmqtt-Pub:2foo.bar\r\n
-//	\r\n
-func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, headerLen int) {
+// mqttComputeNatsMsgSize computes the size the NATS message to be delivered
+// based on a MQTT PUBLISH packet.
+// encodePP: whether to encode complete MQTT PUBLISH packet header information
+//   - false: initial delivery (QoS 0/1) needs only base header
+//   - true: QoS2 storage needs to encode Nmqtt-Subject and Nmqtt-Mapped
+func mqttComputeNatsMsgSize(pp *mqttPublish, encodePP bool) int {
 	size := len(hdrLine) +
 		len(mqttNatsHeader) + 2 + 2 + // 2 for ':<qos>', and 2 for CRLF
 		2 + // end-of-header CRLF
@@ -4073,6 +4096,21 @@ func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, 
 				len(pp.mapped) + 2 // 2 for CRLF
 		}
 	}
+	return size
+}
+
+// Composes a NATS message from a MQTT PUBLISH packet. The message includes an
+// internal header containint the original packet's QoS, and for QoS2 packets
+// the original subject.
+//
+// Example (QoS2, subject: "foo.bar"):
+//
+//	NATS/1.0\r\n
+//	Nmqtt-Pub:2foo.bar\r\n
+//	\r\n
+func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, headerLen int) {
+	size := mqttComputeNatsMsgSize(pp, encodePP)
+
 	buf := bytes.NewBuffer(make([]byte, 0, size))
 
 	qos := mqttGetQoS(pp.flags)
@@ -4134,6 +4172,15 @@ func mqttNewDeliverablePubRel(pi uint16) (natsMsg []byte, headerLen int) {
 // No lock held on entry.
 func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 	qos := mqttGetQoS(pp.flags)
+
+	// Enforce max_payload using existing client max payload logic (mpay) by
+	// checking the total NATS message size that would be processed.
+	if maxPayload := atomic.LoadInt32(&c.mpay); maxPayload != jwt.NoLimit {
+		if total := mqttComputeNatsMsgSize(pp, qos == 2); total > int(maxPayload) {
+			c.maxPayloadViolation(total, maxPayload)
+			return ErrMaxPayload
+		}
+	}
 
 	switch qos {
 	case 0:
@@ -4380,9 +4427,9 @@ func (c *client) mqttHandlePubRetain() {
 		rf := &mqttRetainedMsgRef{
 			sseq: smr.Sequence,
 		}
-		// Add/update the map. `true` to copy the payload bytes if needs to
-		// update rmsCache.
-		asm.handleRetainedMsg(key, rf, rm, true)
+		// Add/update the map. The `rm.Msg` bytes slice will be copied if the object
+		// happens to be stored in the rmsCache.
+		asm.handleRetainedMsg(key, rf, rm)
 	} else {
 		c.mu.Lock()
 		acc := c.acc
@@ -4466,7 +4513,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 				p, ok := perms[rm.Source]
 				if !ok {
 					p = generatePubPerms(u.Permissions)
-					perms[rm.Source] = p
+					perms[rm.Source] = p // possibly nil
 				}
 				// If there is permission and no longer allowed to publish in
 				// the subject, remove the publish retained message from the map.
@@ -4495,6 +4542,13 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 
 // Helper to generate only pub permissions from a Permissions object
 func generatePubPerms(perms *Permissions) *perm {
+	// If given permissions is `nil`, then it means that permissions block
+	// has been removed (so the user is now allowed to publish on everything)
+	// or was never there in the first place. Returning `nil` will let the
+	// caller know that there are no permissions to enforce.
+	if perms == nil {
+		return nil
+	}
 	var p *perm
 	if perms.Publish.Allow != nil {
 		p = &perm{}
@@ -4822,8 +4876,9 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 			return
 		}
 		topic = pc.mqtt.pp.topic
-		// Check for service imports where subject mapping is in play.
-		if len(pc.pa.mapped) > 0 && len(pc.pa.psi) > 0 {
+		// If the subject is different than the one in pp.subject, then some
+		// mapping/transform occurred and we need to recreate the topic.
+		if subject != bytesToString(pc.mqtt.pp.subject) {
 			topic = natsSubjectStrToMQTTTopic(subject)
 		}
 
