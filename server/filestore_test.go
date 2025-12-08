@@ -11329,3 +11329,34 @@ func TestJetStreamFileStoreSubjectsRemovedAfterSecureErase(t *testing.T) {
 	require_Equal(t, si.State.Subjects["test.2"], uint64(1))
 	require_Equal(t, si.State.Subjects["test.3"], uint64(1))
 }
+
+func TestFileStorePreserveLastSeqAfterCompact(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		_, err = fs.Compact(2)
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 0)
+		require_Equal(t, before.FirstSeq, 2)
+		require_Equal(t, before.LastSeq, 1)
+
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+	})
+}
