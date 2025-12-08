@@ -3447,6 +3447,8 @@ func TestMQTTRetainedNoMsgBodyCorruption(t *testing.T) {
 		msg.Header.Set(mqttNatsRetainedMessageTopic, "foo/bar")
 		msg.Header.Set(mqttNatsRetainedMessageFlags, "1")
 		msg.Data = []byte("retained 3")
+		nc.PublishMsg(msg)
+		natsFlush(t, nc)
 
 		// Have a continuous flow of updates coming in
 		wg := sync.WaitGroup{}
@@ -3476,7 +3478,7 @@ func TestMQTTRetainedNoMsgBodyCorruption(t *testing.T) {
 		as.mu.RUnlock()
 
 		// Wait to make sure at least the first update occurs
-		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
 			v, ok := cache.Load("foo.bar")
 			if !ok {
 				return errors.New("not in the cache")
@@ -8191,7 +8193,7 @@ func TestMQTTMappingsQoS0(t *testing.T) {
 	// "B" consumers should receive on "bar/x"
 	conns := []net.Conn{bConn1, bConn2}
 	readers := []*mqttReader{bReader1, bReader2}
-	for i := range 2 {
+	for i := range len(conns) {
 		testMQTTCheckPubMsg(t, conns[i], readers[i], "bar/x", 0, []byte("msg2"))
 		testMQTTCheckPubMsg(t, conns[i], readers[i], "bar/x", 0, []byte("msg3"))
 		testMQTTExpectNothing(t, readers[i])
@@ -8199,7 +8201,7 @@ func TestMQTTMappingsQoS0(t *testing.T) {
 	// For "C" and "D" consumers, it should be "baz/x"
 	conns = []net.Conn{cConn1, cConn2, dConn1, dConn2}
 	readers = []*mqttReader{cReader1, cReader2, dReader1, dReader2}
-	for i := range 2 {
+	for i := range len(conns) {
 		testMQTTCheckPubMsg(t, conns[i], readers[i], "baz/x", 0, []byte("msg2"))
 		testMQTTCheckPubMsg(t, conns[i], readers[i], "baz/x", 0, []byte("msg3"))
 		testMQTTExpectNothing(t, readers[i])
