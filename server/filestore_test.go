@@ -5077,13 +5077,12 @@ func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
 	defer fs.Stop()
 
 	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
-	numMsgs := 10_000
 
-	fs.StoreMsg(subj, nil, msg, 0)
-	for i := 0; i < numMsgs; i++ {
-		fs.SkipMsg(0)
-	}
-	fs.StoreMsg(subj, nil, msg, 0)
+	_, _, err = fs.StoreMsg(subj, nil, msg, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.SkipMsgs(0, 10_000))
+	_, _, err = fs.StoreMsg(subj, nil, msg, 0)
+	require_NoError(t, err)
 	require_Equal(t, fs.numMsgBlocks(), 3)
 }
 
@@ -11554,4 +11553,103 @@ func TestJetStreamFileStoreSubjectsRemovedAfterSecureErase(t *testing.T) {
 	require_False(t, exists)
 	require_Equal(t, si.State.Subjects["test.2"], uint64(1))
 	require_Equal(t, si.State.Subjects["test.3"], uint64(1))
+}
+
+func TestFileStorePreserveLastSeqAfterCompact(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		_, err = fs.Compact(2)
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 0)
+		require_Equal(t, before.FirstSeq, 2)
+		require_Equal(t, before.LastSeq, 1)
+
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+	})
+}
+
+func TestFileStoreSkipMsgAndCompactRequiresAppend(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Store one very long message.
+		msg := make([]byte, 256*1024)
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+
+		// Skip and compact to that sequence, the block will be preserved and tombstones would be written.
+		_, err = fs.SkipMsg(2)
+		require_NoError(t, err)
+		_, err = fs.Compact(2)
+		require_NoError(t, err)
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 0)
+		require_Equal(t, state.FirstSeq, 3)
+		require_Equal(t, state.LastSeq, 2)
+
+		// Skipping again would result in the bug. We tried to write to the start of the file,
+		// but the old message data would still be there. Instead, now add the SkipMsg to the end.
+		_, err = fs.SkipMsg(3)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		mb.clearCacheAndOffset()
+		require_NoError(t, mb.loadMsgsWithLock())
+	})
+}
+
+func TestFileStoreCompactRewritesFileWithSwap(t *testing.T) {
+	fcfg := FileStoreConfig{Cipher: NoCipher, Compression: NoCompression, StoreDir: t.TempDir()}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := make([]byte, 256*1024)
+	for range 20 {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// Compact should realize the block's data was largely removed, the file should be rewritten
+	_, err = fs.Compact(20)
+	require_NoError(t, err)
+
+	state := fs.State()
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.FirstSeq, 20)
+	require_Equal(t, state.LastSeq, 20)
+
+	mb := fs.getFirstBlock()
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	mb.clearCacheAndOffset()
+	require_NoError(t, mb.loadMsgsWithLock())
+
+	mbcache := mb.cache
+	require_NotNil(t, mbcache)
+	require_Len(t, len(mbcache.idx), 1)
+	require_Equal(t, mbcache.idx[0], 0)
 }

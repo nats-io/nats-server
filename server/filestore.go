@@ -4640,17 +4640,6 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 		atomic.StoreUint64(&mb.first.seq, seq+1)
 		mb.first.ts = 0
 		needsRecord = mb == mb.fs.lmb
-		if needsRecord && mb.rbytes > 0 {
-			// We want to make sure since we have no messages
-			// that we write to the beginning since we only need last one.
-			mb.rbytes, mb.cache = 0, &cache{}
-			mb.ecache.Set(mb.cache)
-			// If encrypted we need to reset counter since we just keep one.
-			if mb.bek != nil {
-				// Recreate to reset counter.
-				mb.bek, _ = genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
-			}
-		}
 	} else {
 		needsRecord = true
 		mb.dmap.Insert(seq)
@@ -5196,7 +5185,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// Check if we need to write a deleted record tombstone.
 	// This is for user initiated removes or to hold the first seq
 	// when the last block is empty.
-	// If not via limits and not empty (empty writes tombstone above if last) write tombstone.
+	// If not via limits and not empty (empty writes tombstone below if last) write tombstone.
 	if !viaLimits && !isEmpty && sm != nil {
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
@@ -5312,7 +5301,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// We will write a tombstone at the end.
 	var firstSeqNeedsUpdate bool
 	if isEmpty {
-		// This writes tombstone iff mb == lmb, so no need to do below.
+		// This writes tombstone iff mb == lmb, so no need to do above.
 		fs.removeMsgBlock(mb)
 		firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 	}
@@ -8960,7 +8949,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	atomic.StoreUint64(&lmb.last.seq, fs.state.LastSeq)
 	lmb.last.ts = fs.state.LastTime.UnixNano()
 
-	if lseq := atomic.LoadUint64(&lmb.last.seq); lseq > 1 {
+	if lseq := atomic.LoadUint64(&lmb.last.seq); lseq > 0 {
 		// Leave a tombstone so we can remember our starting sequence in case
 		// full state becomes corrupted.
 		fs.writeTombstone(lseq, lmb.last.ts)
@@ -9133,12 +9122,21 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
 				goto SKIP
 			}
+
+			// We will write to a new file and mv/rename it in case of failure.
+			mfn := filepath.Join(smb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, smb.index))
 			<-dios
-			err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms)
+			err := os.WriteFile(mfn, nbuf, defaultFilePerms)
 			dios <- struct{}{}
 			if err != nil {
+				os.Remove(mfn)
 				goto SKIP
 			}
+			if err := os.Rename(mfn, smb.mfn); err != nil {
+				os.Remove(mfn)
+				goto SKIP
+			}
+
 			// Make sure to remove fss state.
 			smb.fss = nil
 			smb.clearCacheAndOffset()
