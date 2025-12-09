@@ -11394,3 +11394,36 @@ func TestFileStoreSkipMsgAndCompactRequiresAppend(t *testing.T) {
 		require_NoError(t, mb.loadMsgsWithLock())
 	})
 }
+
+func TestFileStoreCompactRewritesFileWithSwap(t *testing.T) {
+	fcfg := FileStoreConfig{Cipher: NoCipher, Compression: NoCompression, StoreDir: t.TempDir()}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := make([]byte, 256*1024)
+	for range 20 {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// Compact should realize the block's data was largely removed, the file should be rewritten
+	_, err = fs.Compact(20)
+	require_NoError(t, err)
+
+	state := fs.State()
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.FirstSeq, 20)
+	require_Equal(t, state.LastSeq, 20)
+
+	mb := fs.getFirstBlock()
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	mb.clearCacheAndOffset()
+	require_NoError(t, mb.loadMsgsWithLock())
+
+	mbcache := mb.cache
+	require_NotNil(t, mbcache)
+	require_Len(t, len(mbcache.idx), 1)
+	require_Equal(t, mbcache.idx[0], 0)
+}
