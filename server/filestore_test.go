@@ -5066,13 +5066,12 @@ func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
 	defer fs.Stop()
 
 	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
-	numMsgs := 10_000
 
-	fs.StoreMsg(subj, nil, msg, 0)
-	for i := 0; i < numMsgs; i++ {
-		fs.SkipMsg(0)
-	}
-	fs.StoreMsg(subj, nil, msg, 0)
+	_, _, err = fs.StoreMsg(subj, nil, msg, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.SkipMsgs(0, 10_000))
+	_, _, err = fs.StoreMsg(subj, nil, msg, 0)
+	require_NoError(t, err)
 	require_Equal(t, fs.numMsgBlocks(), 3)
 }
 
@@ -10950,5 +10949,40 @@ func TestFileStorePreserveLastSeqAfterCompact(t *testing.T) {
 		if state := fs.State(); !reflect.DeepEqual(state, before) {
 			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
 		}
+	})
+}
+
+func TestFileStoreSkipMsgAndCompactRequiresAppend(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Store one very long message.
+		msg := make([]byte, 256*1024)
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+
+		// Skip and compact to that sequence, the block will be preserved and tombstones would be written.
+		_, err = fs.SkipMsg(2)
+		require_NoError(t, err)
+		_, err = fs.Compact(2)
+		require_NoError(t, err)
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 0)
+		require_Equal(t, state.FirstSeq, 3)
+		require_Equal(t, state.LastSeq, 2)
+
+		// Skipping again would result in the bug. We tried to write to the start of the file,
+		// but the old message data would still be there. Instead, now add the SkipMsg to the end.
+		_, err = fs.SkipMsg(3)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		mb.clearCacheAndOffset()
+		require_NoError(t, mb.loadMsgsWithLock())
 	})
 }

@@ -4401,16 +4401,6 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 		atomic.StoreUint64(&mb.first.seq, seq+1)
 		mb.first.ts = 0
 		needsRecord = mb == mb.fs.lmb
-		if needsRecord && mb.rbytes > 0 {
-			// We want to make sure since we have no messages
-			// that we write to the beginning since we only need last one.
-			mb.rbytes, mb.cache = 0, &cache{}
-			// If encrypted we need to reset counter since we just keep one.
-			if mb.bek != nil {
-				// Recreate to reset counter.
-				mb.bek, _ = genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
-			}
-		}
 	} else {
 		needsRecord = true
 		mb.dmap.Insert(seq)
@@ -4939,7 +4929,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// Check if we need to write a deleted record tombstone.
 	// This is for user initiated removes or to hold the first seq
 	// when the last block is empty.
-	// If not via limits and not empty (empty writes tombstone above if last) write tombstone.
+	// If not via limits and not empty (empty writes tombstone below if last) write tombstone.
 	if !viaLimits && !isEmpty && sm != nil {
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
@@ -5051,7 +5041,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// We will write a tombstone at the end.
 	var firstSeqNeedsUpdate bool
 	if isEmpty {
-		// This writes tombstone iff mb == lmb, so no need to do below.
+		// This writes tombstone iff mb == lmb, so no need to do above.
 		fs.removeMsgBlock(mb)
 		firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 	}
