@@ -580,8 +580,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// Do age checks too, make sure to call in place.
 	if fs.cfg.MaxAge != 0 {
-		err := fs.expireMsgsOnRecover()
-		if isPermissionError(err) {
+		if err = fs.expireMsgsOnRecover(); err != nil {
 			return nil, err
 		}
 		fs.startAgeChk()
@@ -2537,11 +2536,15 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			mb.selectNextFirst()
 		}
 		// Check if empty after processing, could happen if tail of messages are all deleted.
+		var err error
 		if mb.msgs == 0 {
-			deleteEmptyBlock(mb)
+			err = deleteEmptyBlock(mb)
 		}
 		mb.finishedWithCache()
 		mb.mu.Unlock()
+		if err != nil {
+			return err
+		}
 		break
 	}
 
@@ -2581,8 +2584,13 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 
 	// Check if we have no messages and blocks left.
 	if fs.lmb == nil && last.seq != 0 {
-		if lmb, _ := fs.newMsgBlockForWrite(); lmb != nil {
-			fs.writeTombstone(last.seq, last.ts)
+		if lmb, err := fs.newMsgBlockForWrite(); err != nil || lmb == nil {
+			if err == nil {
+				err = errors.New("lmb missing")
+			}
+			return err
+		} else if err = fs.writeTombstone(last.seq, last.ts); err != nil {
+			return err
 		}
 		// Clear any global subject state.
 		fs.psim, fs.tsl = fs.psim.Empty(), 0
@@ -10821,16 +10829,14 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	err := os.WriteFile(fn, buf, defaultFilePerms)
 	// if file system is not writable isPermissionError is set to true
 	dios <- struct{}{}
-	if isPermissionError(err) {
+	if err != nil {
 		return err
 	}
 
 	// Update dirty if successful.
-	if err == nil {
-		fs.mu.Lock()
-		fs.dirty -= priorDirty
-		fs.mu.Unlock()
-	}
+	fs.mu.Lock()
+	fs.dirty -= priorDirty
+	fs.mu.Unlock()
 
 	// Attempt to write both files, an error in one should not prevent the other from being written.
 	ttlErr := fs.writeTTLState()
