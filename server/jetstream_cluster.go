@@ -2622,8 +2622,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		}
 
 		// Make sure all pending data is flushed before allowing snapshots.
-		mset.flushAllPending()
-		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
+		if err := mset.flushAllPending(); err != nil {
+			// FIXME(mvv): stop the raft node on error? if the stream is not able to flush, having the raft node
+			//  continue will only grow the log indefinitely. Do check for similar errors like ErrStoreClosed
+			//  that are normal and can be ignored since we'd already be stopping at that point.
+			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
+		} else if err = n.InstallSnapshot(mset.stateSnapshot()); err == nil {
 			lastState = curState
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
 			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
@@ -9499,8 +9503,7 @@ RETRY:
 					if lseq >= snap.LastSeq {
 						// We MUST ensure all data is flushed up to this point, if the store hadn't already.
 						// Because the snapshot needs to represent what has been persisted.
-						mset.flushAllPending()
-						return nil
+						return mset.flushAllPending()
 					}
 
 					// Make sure we do not spin and make things worse.
@@ -9672,8 +9675,8 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 }
 
 // flushAllPending will flush any pending writes as a result of installing a snapshot or performing catchup.
-func (mset *stream) flushAllPending() {
-	mset.store.FlushAllPending()
+func (mset *stream) flushAllPending() error {
+	return mset.store.FlushAllPending()
 }
 
 func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {

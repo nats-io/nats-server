@@ -105,8 +105,7 @@ func (b *batchGroup) readyForCommit() bool {
 	if !b.timer.Stop() {
 		return false
 	}
-	b.store.FlushAllPending()
-	return true
+	return b.store.FlushAllPending() == nil
 }
 
 // cleanup deletes underlying resources associated with the batch and unregisters it from the stream's batches.
