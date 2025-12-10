@@ -4686,13 +4686,17 @@ func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, 
 // we will place an empty record marking the sequence as used. The
 // sequence will be marked erased.
 // fs lock should be held.
-func (mb *msgBlock) skipMsg(seq uint64, now int64) {
+func (mb *msgBlock) skipMsg(seq uint64, now int64) error {
 	if mb == nil {
-		return
+		return nil
 	}
 	var needsRecord bool
 
 	mb.mu.Lock()
+	if err := mb.werr; err != nil {
+		mb.mu.Unlock()
+		return err
+	}
 	// If we are empty can just do meta.
 	if mb.msgs == 0 {
 		atomic.StoreUint64(&mb.last.seq, seq)
@@ -4705,12 +4709,16 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 		mb.dmap.Insert(seq)
 	}
 	if needsRecord {
-		mb.writeMsgRecordLocked(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now, true, true)
+		if err := mb.writeMsgRecordLocked(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now, true, true); err != nil {
+			mb.mu.Unlock()
+			return err
+		}
 	}
 	mb.mu.Unlock()
 	if !needsRecord {
 		mb.kickFlusher()
 	}
+	return nil
 }
 
 // SkipMsg will use the next sequence number but not store anything.
@@ -4736,7 +4744,9 @@ func (fs *fileStore) SkipMsg(seq uint64) (uint64, error) {
 	}
 
 	// Write skip msg.
-	mb.skipMsg(seq, now)
+	if err = mb.skipMsg(seq, now); err != nil {
+		return 0, err
+	}
 
 	// Update fs state.
 	fs.state.LastSeq, fs.state.LastTime = seq, time.Unix(0, now).UTC()
