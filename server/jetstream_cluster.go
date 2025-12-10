@@ -639,6 +639,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	mset.cfgMu.RLock()
 	replicas := mset.cfg.Replicas
 	mset.cfgMu.RUnlock()
+	var nrgWerr error
+	if node != nil {
+		nrgWerr = node.GetWriteErr()
+	}
+	streamWerr := mset.getWriteErr()
 	switch {
 	case replicas <= 1:
 		return nil // No further checks for R=1 streams
@@ -653,6 +658,12 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	case node != msetNode:
 		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
 		return errors.New("cluster node skew detected")
+
+	case nrgWerr != nil:
+		return fmt.Errorf("node write error: %v", nrgWerr)
+
+	case streamWerr != nil:
+		return fmt.Errorf("stream write error: %v", streamWerr)
 
 	case !mset.isMonitorRunning():
 		return errors.New("monitor goroutine not running")
@@ -2609,7 +2620,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		// Before we actually calculate the detailed state and encode it, let's check the
 		// simple state to detect any changes.
-		curState := mset.store.FilteredState(0, _EMPTY_)
+		curState, _ := mset.store.FilteredState(0, _EMPTY_)
 
 		// If the state hasn't changed but the log has gone way over
 		// the compaction size then we will want to compact anyway.
@@ -2621,8 +2632,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		}
 
 		// Make sure all pending data is flushed before allowing snapshots.
-		mset.flushAllPending()
-		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
+		if err := mset.flushAllPending(); err != nil {
+			// If the pending data couldn't be flushed, we have no safe way to continue.
+			s.Errorf("Failed to flush pending data for '%s > %s' [%s]: %v", accName, mset.name(), n.Group(), err)
+			assert.Unreachable("Stream snapshot flush failed", map[string]any{
+				"account": accName,
+				"stream":  mset.name(),
+				"group":   n.Group(),
+				"err":     err,
+			})
+			mset.setWriteErr(err)
+			n.Stop()
+		} else if err = n.InstallSnapshot(mset.stateSnapshot()); err == nil {
 			lastState = curState
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
 			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
@@ -2777,7 +2798,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						aq.recycle(&ces)
 						return
 					}
-					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
+					s.Errorf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
 					if isClusterResetErr(err) {
 						if mset.isMirror() && mset.IsLeader() {
 							mset.retryMirrorConsumer()
@@ -2799,6 +2820,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					} else if isOutOfSpaceErr(err) {
 						// If applicable this will tear all of this down, but don't assume so and return.
 						s.handleOutOfSpace(mset)
+					} else {
+						// Encountered an unexpected error, can't continue.
+						mset.setWriteErr(err)
+						aq.recycle(&ces)
+						return
 					}
 				}
 			}
@@ -3592,7 +3618,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 
 			if isRecovering || !mset.IsLeader() {
-				if err := mset.processSnapshot(ss, ce.Index); err != nil {
+				if err := mset.processSnapshot(ss, ce.Index); err != nil && err != errAlreadyLeader {
 					return 0, err
 				}
 			}
@@ -3742,7 +3768,10 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 	// Messages to be skipped have no subject or timestamp or msg or hdr.
 	if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
 		// Skip and update our lseq.
-		last, _ := mset.store.SkipMsg(0)
+		last, err := mset.store.SkipMsg(0)
+		if err != nil {
+			return err
+		}
 		if needLock {
 			mset.mu.Lock()
 		}
@@ -3827,9 +3856,11 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			// should be reset. This is possible if the other side has a stale snapshot and no longer
 			// has those messages. So compact and retry to reset.
 			if state.Msgs == 0 {
-				mset.store.Compact(lseq + 1)
-				// Retry
-				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+				_, err = mset.store.Compact(lseq + 1)
+				if err == nil {
+					// Retry
+					err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+				}
 			}
 			// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
 			// and what we got.
@@ -3841,6 +3872,11 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		}
 		s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
 			mset.accountLocked(needLock), mset.nameLocked(needLock), err)
+
+		// There are some errors that we can't recover from.
+		if err != ErrMaxMsgs && err != ErrMaxBytes && err != ErrMaxMsgsPerSubject && err != ErrMsgTooLarge && err != ErrStoreClosed {
+			return err
+		}
 	}
 	return nil
 }
@@ -9161,14 +9197,17 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplica
 
 // processSnapshotDeletes will update our current store based on the snapshot
 // but only processing deletes and new FirstSeq / purges.
-func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) {
+func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) error {
 	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
 	// Always adjust if FirstSeq has moved beyond our state.
 	var didReset bool
 	if snap.FirstSeq > state.FirstSeq {
-		mset.store.Compact(snap.FirstSeq)
+		if _, err := mset.store.Compact(snap.FirstSeq); err != nil {
+			mset.mu.Unlock()
+			return err
+		}
 		mset.store.FastState(&state)
 		mset.lseq = state.LastSeq
 		mset.clearAllPreAcksBelowFloor(state.FirstSeq)
@@ -9183,8 +9222,9 @@ func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) {
 	}
 
 	if len(snap.Deleted) > 0 {
-		mset.store.SyncDeleted(snap.Deleted)
+		return mset.store.SyncDeleted(snap.Deleted)
 	}
+	return nil
 }
 
 func (mset *stream) setCatchupPeer(peer string, lag uint64) {
@@ -9294,7 +9334,9 @@ var (
 // Process a stream snapshot.
 func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
 	// Update any deletes, etc.
-	mset.processSnapshotDeletes(snap)
+	if err := mset.processSnapshotDeletes(snap); err != nil {
+		return err
+	}
 	mset.setCLFS(snap.Failed)
 
 	mset.mu.Lock()
@@ -9509,9 +9551,13 @@ RETRY:
 					if lseq >= snap.LastSeq {
 						// We MUST ensure all data is flushed up to this point, if the store hadn't already.
 						// Because the snapshot needs to represent what has been persisted.
-						mset.flushAllPending()
-						s.Noticef("Catchup for stream '%s > %s' complete (took %v)", mset.account(), mset.name(), time.Since(start).Round(time.Millisecond))
-						return nil
+						err = mset.flushAllPending()
+						if err == nil {
+							s.Noticef("Catchup for stream '%s > %s' complete (took %v)", mset.account(), mset.name(), time.Since(start).Round(time.Millisecond))
+						} else {
+							s.Noticef("Catchup for stream '%s > %s' errored: %v (took %v)", mset.account(), mset.name(), err, time.Since(start).Round(time.Millisecond))
+						}
+						return err
 					}
 
 					// Make sure we do not spin and make things worse.
@@ -9683,8 +9729,8 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 }
 
 // flushAllPending will flush any pending writes as a result of installing a snapshot or performing catchup.
-func (mset *stream) flushAllPending() {
-	mset.store.FlushAllPending()
+func (mset *stream) flushAllPending() error {
+	return mset.store.FlushAllPending()
 }
 
 func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {

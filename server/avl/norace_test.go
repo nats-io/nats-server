@@ -98,8 +98,7 @@ func TestNoRaceSeqSetEncodeLarge(t *testing.T) {
 	expected := time.Millisecond
 
 	start := time.Now()
-	b, err := ss.Encode(nil)
-	require_NoError(t, err)
+	b := ss.Encode(nil)
 
 	if elapsed := time.Since(start); elapsed > expected {
 		t.Fatalf("Expected encode of %d items with encoded size %v to take less than %v, got %v",

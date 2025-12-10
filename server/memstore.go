@@ -421,8 +421,9 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 }
 
 // FlushAllPending flushes all data that was still pending to be written.
-func (ms *memStore) FlushAllPending() {
+func (ms *memStore) FlushAllPending() error {
 	// Noop, in-memory store doesn't use async applying.
+	return nil
 }
 
 // RegisterStorageUpdates registers a callback for updates to storage changes.
@@ -528,13 +529,13 @@ loop:
 }
 
 // FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.
-func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
+func (ms *memStore) FilteredState(sseq uint64, subj string) (SimpleState, error) {
 	// This needs to be a write lock, as filteredStateLocked can
 	// mutate the per-subject state.
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	return ms.filteredStateLocked(sseq, subj, false)
+	return ms.filteredStateLocked(sseq, subj, false), nil
 }
 
 func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubject bool) SimpleState {
@@ -1428,7 +1429,7 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 
 	}
 	eq := compareFn(subject)
-	if ss := ms.FilteredState(1, subject); ss.Msgs > 0 {
+	if ss, _ := ms.FilteredState(1, subject); ss.Msgs > 0 {
 		if keep > 0 {
 			if keep >= ss.Msgs {
 				return 0, nil
@@ -2273,10 +2274,7 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 	b := buf[0:n]
 
 	if numDeleted > 0 {
-		buf, err := ms.dmap.Encode(nil)
-		if err != nil {
-			return nil, err
-		}
+		buf := ms.dmap.Encode(nil)
 		b = append(b, buf...)
 	}
 
@@ -2284,7 +2282,11 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 }
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
-func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
+func (ms *memStore) SyncDeleted(dbs DeleteBlocks) error {
+	if len(dbs) == 0 {
+		return nil
+	}
+
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
@@ -2293,7 +2295,7 @@ func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
 	if len(dbs) == 1 {
 		min, max, num := ms.dmap.State()
 		if pmin, pmax, pnum := dbs[0].State(); pmin == min && pmax == max && pnum == num {
-			return
+			return nil
 		}
 	}
 	lseq := ms.state.LastSeq
@@ -2307,6 +2309,7 @@ func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
 			return true
 		})
 	}
+	return nil
 }
 
 func (o *consumerMemStore) Update(state *ConsumerState) error {

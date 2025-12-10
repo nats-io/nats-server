@@ -6393,7 +6393,8 @@ func TestNoRaceFileStoreFilteredStateWithLargeDeletes(t *testing.T) {
 	defer debug.SetGCPercent(gcp)
 
 	start := time.Now()
-	fss := fs.FilteredState(1, _EMPTY_)
+	fss, err := fs.FilteredState(1, _EMPTY_)
+	require_NoError(t, err)
 	elapsed := time.Since(start)
 
 	require_True(t, fss.Msgs == uint64(toStore/2))
@@ -7614,7 +7615,8 @@ func TestNoRaceFileStoreNumPending(t *testing.T) {
 		t.Helper()
 		np, lvs, err := fs.NumPending(sseq, filter, false)
 		require_NoError(t, err)
-		ss := fs.FilteredState(sseq, filter)
+		ss, err := fs.FilteredState(sseq, filter)
+		require_NoError(t, err)
 		sss := sanityCheck(sseq, filter)
 		if lvs != state.LastSeq {
 			t.Fatalf("Expected NumPending to return valid through last of %d but got %d", state.LastSeq, lvs)

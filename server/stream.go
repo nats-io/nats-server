@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
@@ -473,6 +474,7 @@ type stream struct {
 	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
 	uch       chan struct{}     // The channel to signal updates to the monitor routine.
 	inMonitor bool              // True if the monitor routine has been started.
+	werr      error             // If a write error was encountered, and if so what error.
 
 	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
 	clusteredCounterTotal       map[string]*msgCounterRunningTotal      // Inflight counter totals.
@@ -2604,7 +2606,10 @@ func (mset *stream) purgeLocked(preq *JSApiStreamPurgeRequest, needLock bool) (p
 	// Purge consumers.
 	// Check for filtered purge.
 	if preq != nil && preq.Subject != _EMPTY_ {
-		ss := store.FilteredState(fseq, preq.Subject)
+		ss, err := store.FilteredState(fseq, preq.Subject)
+		if err != nil {
+			return purged, err
+		}
 		fseq = ss.First
 	}
 
@@ -5528,7 +5533,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				var state StreamState
 				mset.store.FastState(&state)
 				if state.FirstSeq == 0 {
-					mset.store.Compact(lseq + 1)
+					if _, err := mset.store.Compact(lseq + 1); err != nil {
+						return err
+					}
 					mset.lseq = lseq
 					isMisMatch = false
 				}
@@ -6133,17 +6140,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.srv.Warnf("Filesystem permission denied while writing msg, disabling JetStream: %v", err)
 			return err
 		}
-		// If we did not succeed increment clfs in case we are clustered.
-		bumpCLFS()
 
 		switch err {
 		case ErrMaxMsgs, ErrMaxBytes, ErrMaxMsgsPerSubject, ErrMsgTooLarge:
 			s.RateLimitDebugf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
 		case ErrStoreClosed:
 		default:
-			s.Errorf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
+			// We don't want to respond back to the user, and definitely not up CLFS either.
+			// This was likely an IO issue, so only log and return the error. This will stop
+			// the stream if it was replicated.
+			s.RateLimitErrorf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
+			mset.setWriteErrLocked(err)
+			return err
 		}
 
+		// If we did not succeed increment clfs in case we are clustered.
+		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSStreamStoreFailedError(err, Unless(err))
@@ -6176,14 +6188,20 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// No errors, this is the normal path.
 	if rollupSub {
-		mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1}, false)
+		if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1}, false); err != nil {
+			return err
+		}
 	} else if rollupAll {
-		mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: 1}, false)
+		if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: 1}, false); err != nil {
+			return err
+		}
 	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
 		// Purge the message schedule.
 		scheduler := getMessageScheduler(hdr)
 		if scheduler != _EMPTY_ {
-			mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false)
+			if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -6507,10 +6525,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	}
 
 	// Ensure the batch is prepared for the commit and will not be cleaned up while committing.
-	if !b.readyForCommit() {
+	if abandonReason := b.readyForCommit(); abandonReason != nil {
 		// Don't do cleanup, this is already done.
 		batches.mu.Unlock()
-		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
+		mset.sendStreamBatchAbandonedAdvisory(batchId, *abandonReason)
 		return respondIncompleteBatch()
 	}
 
@@ -8046,6 +8064,43 @@ func (mset *stream) isMonitorRunning() bool {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return mset.inMonitor
+}
+
+// setWriteErr stores the write error in the stream.
+func (mset *stream) setWriteErr(err error) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.setWriteErrLocked(err)
+}
+
+func (mset *stream) setWriteErrLocked(err error) {
+	if mset.werr != nil {
+		return
+	}
+	// Ignore non-write errors.
+	if err == ErrStoreClosed {
+		return
+	}
+	mset.srv.Errorf("JetStream stream '%s > %s' critical write error: %v", mset.acc.Name, mset.cfg.Name, err)
+	mset.werr = err
+	assert.Unreachable("Stream encountered write error", map[string]any{
+		"account": mset.acc.Name,
+		"stream":  mset.cfg.Name,
+		"err":     err,
+	})
+
+	// If stream is replicated, put it in observer mode to make sure another server can pick it up.
+	if node := mset.node; node != nil {
+		node.StepDown()
+		node.SetObserver(true)
+	}
+}
+
+// getWriteErr returns the write error stored in the stream (if any).
+func (mset *stream) getWriteErr() error {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.werr
 }
 
 // Adjust accounting for sent messages as part of replication.

@@ -101,12 +101,14 @@ func newBatchStore(mset *stream, batchId string) (StreamStore, error) {
 // If the timer has already cleaned up the batch, we can't commit.
 // Otherwise, we ensure the timer does not clean up the batch in the meantime.
 // Lock should be held.
-func (b *batchGroup) readyForCommit() bool {
+func (b *batchGroup) readyForCommit() *BatchAbandonReason {
 	if !b.timer.Stop() {
-		return false
+		return &BatchTimeout
 	}
-	b.store.FlushAllPending()
-	return true
+	if b.store.FlushAllPending() != nil {
+		return &BatchIncomplete
+	}
+	return nil
 }
 
 // cleanup deletes underlying resources associated with the batch and unregisters it from the stream's batches.
