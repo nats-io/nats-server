@@ -5041,12 +5041,14 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 	}
 
 	start := time.Now()
-	total, _ := fs.NumPending(4000, "zzz", false)
+	total, _, err := fs.NumPending(4000, "zzz", false)
+	require_NoError(t, err)
 	require_LessThan(t, time.Since(start), 15*time.Millisecond)
 	require_Equal(t, total, 6001)
 
 	start = time.Now()
-	total, _ = fs.NumPending(6000, "zzz", false)
+	total, _, err = fs.NumPending(6000, "zzz", false)
+	require_NoError(t, err)
 	require_LessThan(t, time.Since(start), 25*time.Millisecond)
 	require_Equal(t, total, 4001)
 
@@ -5055,12 +5057,14 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 	fs.RemoveMsg(9000)
 
 	start = time.Now()
-	total, _ = fs.NumPending(4000, "zzz", false)
+	total, _, err = fs.NumPending(4000, "zzz", false)
+	require_NoError(t, err)
 	require_LessThan(t, time.Since(start), 50*time.Millisecond)
 	require_Equal(t, total, 6000)
 
 	start = time.Now()
-	total, _ = fs.NumPending(6000, "zzz", false)
+	total, _, err = fs.NumPending(6000, "zzz", false)
+	require_NoError(t, err)
 	require_LessThan(t, time.Since(start), 50*time.Millisecond)
 	require_Equal(t, total, 4000)
 }
@@ -6481,7 +6485,8 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 		return cloads
 	}
 
-	total, _ := fs.NumPending(0, "foo.*.*", true)
+	total, _, err := fs.NumPending(0, "foo.*.*", true)
+	require_NoError(t, err)
 	require_Equal(t, total, 1000)
 	// Make sure no blocks were loaded to calculate this as a new consumer.
 	require_Equal(t, calcCacheLoads(), 0)
@@ -6503,7 +6508,8 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 	// Make sure partials work properly.
 	for _, filter := range []string{"foo.10.*", "*.22.*", "*.*.222", "foo.5.999", "*.2.*"} {
 		sseq := uint64(rand.Intn(250) + 200) // Between 200-450
-		total, _ = fs.NumPending(sseq, filter, true)
+		total, _, err = fs.NumPending(sseq, filter, true)
+		require_NoError(t, err)
 		checkResult(sseq, total, filter)
 	}
 }
@@ -7096,7 +7102,8 @@ func TestFileStoreFSSExpireNumPending(t *testing.T) {
 	nb := fs.numMsgBlocks()
 	// Now execute NumPending() such that we load lots of blocks and make sure fss do not expire.
 	start := time.Now()
-	n, _ := fs.NumPending(100_000, "foo.A.*", false)
+	n, _, err := fs.NumPending(100_000, "foo.A.*", false)
+	require_NoError(t, err)
 	elapsed := time.Since(start)
 
 	require_Equal(t, n, 50_000)
@@ -8505,7 +8512,8 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 	}
 
 	// Use new function.
-	total, _ := fs.NumPendingMulti(startSeq, filters, false)
+	total, _, err := fs.NumPendingMulti(startSeq, filters, false)
+	require_NoError(t, err)
 
 	// Check our results.
 	var checkTotal uint64

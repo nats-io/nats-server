@@ -113,8 +113,8 @@ type StreamStore interface {
 	AllLastSeqs() ([]uint64, error)
 	MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error)
 	SubjectForSeq(seq uint64) (string, error)
-	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
-	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64)
+	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64, err error)
+	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64, err error)
 	State() StreamState
 	FastState(*StreamState)
 	EncodedStreamState(failed uint64) (enc []byte, err error)
