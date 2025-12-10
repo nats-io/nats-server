@@ -7789,7 +7789,10 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 		} else {
 			reason = "cache buf empty"
 		}
-		mb.fs.warn("Cache lookup detected no cache: %s", reason)
+		mb.fs.warn("Cache lookup for sequence %d in block %d detected no cache: %s", seq, mb.index, reason)
+		if mb.cache != nil {
+			mb.tryForceExpireCacheLocked()
+		}
 		return nil, errNoCache
 	}
 	// Check partial cache status.
