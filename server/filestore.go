@@ -2311,7 +2311,9 @@ func (fs *fileStore) recoverMsgs() error {
 			// out from underneath of us this is possible.
 			mb.mu.Lock()
 			if mb.first.seq == 0 {
-				mb.dirtyCloseWithRemove(true)
+				if err := mb.dirtyCloseWithRemove(true); err != nil {
+					return err
+				}
 				fs.removeMsgBlockFromList(mb)
 				mb.mu.Unlock()
 				continue
@@ -2443,8 +2445,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			}
 			return true
 		})
-		err := mb.dirtyCloseWithRemove(true)
-		if isPermissionError(err) {
+		if err := mb.dirtyCloseWithRemove(true); err != nil {
 			return err
 		}
 		deleted++
@@ -2464,7 +2465,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			bytes += mb.bytes
 			err := deleteEmptyBlock(mb)
 			mb.mu.Unlock()
-			if isPermissionError(err) {
+			if err != nil {
 				return err
 			}
 			continue
@@ -4549,7 +4550,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 		if isPermissionError(err) {
 			return nil, err
 		}
-		mb.dirtyCloseWithRemove(true)
+		_ = mb.dirtyCloseWithRemove(true)
 		return nil, fmt.Errorf("Error creating msg block file: %v", err)
 	}
 	mb.mfd = mfd
@@ -7144,6 +7145,30 @@ func (fs *fileStore) syncBlocks() {
 	fs.firstMoved = false
 	fs.mu.Unlock()
 
+	// Can't continue if the lmb had a write error previously.
+	if lmb == nil {
+		return
+	}
+	lmb.mu.RLock()
+	werr := lmb.werr
+	lmb.mu.RUnlock()
+	if werr != nil {
+		return
+	}
+
+	storeErrOnLmbLocked := func(err error) {
+		// Since we're running asynchronously, the lmb could have changed.
+		// Re-capture and store the error to prevent further writes to the store.
+		if lmb = fs.lmb; lmb != nil {
+			lmb.werr = err
+		}
+	}
+	storeErrOnLmb := func(err error) {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		storeErrOnLmbLocked(err)
+	}
+
 	var fsDmapLoaded bool
 	var fsDmap avl.SequenceSet
 
@@ -7157,7 +7182,12 @@ func (fs *fileStore) syncBlocks() {
 		}
 		// See if we can close FDs due to being idle.
 		if mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle && mb.pendingWriteSizeLocked() == 0 {
-			mb.dirtyCloseWithRemove(false)
+			if err := mb.dirtyCloseWithRemove(false); err != nil {
+				mb.werr = err
+				mb.mu.Unlock()
+				storeErrOnLmb(err)
+				return
+			}
 		}
 		// If our first has moved and we are set to noCompact (which is from tombstones),
 		// clear so that we might cleanup tombstones.
@@ -7173,9 +7203,18 @@ func (fs *fileStore) syncBlocks() {
 		}
 
 		// Flush anything that may be pending.
-		mb.flushPendingMsgsLocked()
+		if _, err := mb.flushPendingMsgsLocked(); err != nil {
+			mb.werr = err
+			mb.mu.Unlock()
+			storeErrOnLmb(err)
+			return
+		}
 		// Check if we need to sync. We will not hold lock during actual sync.
 		needSync := mb.needSync
+
+		// Reset. Because we let go of the lock, we could write new data to this mb which might or
+		// might not be synced later if we would've reset after letting go of the lock.
+		mb.needSync = false
 		mb.mu.Unlock()
 
 		// Check if we should compact here.
@@ -7212,25 +7251,38 @@ func (fs *fileStore) syncBlocks() {
 		if needSync {
 			mb.mu.Lock()
 			var fd *os.File
+			var err error
 			var didOpen bool
 			if mb.mfd != nil {
 				fd = mb.mfd
 			} else {
 				<-dios
-				fd, _ = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+				fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
 				dios <- struct{}{}
 				didOpen = true
+				if err != nil && !os.IsNotExist(err) {
+					mb.werr = err
+					mb.mu.Unlock()
+					storeErrOnLmb(err)
+					return
+				}
 			}
 			// If we have an fd.
 			if fd != nil {
-				canClear := fd.Sync() == nil
+				if err = fd.Sync(); err != nil {
+					mb.werr = err
+					mb.mu.Unlock()
+					storeErrOnLmb(err)
+					return
+				}
 				// If we opened the file close the fd.
 				if didOpen {
-					fd.Close()
-				}
-				// Only clear sync flag on success.
-				if canClear {
-					mb.needSync = false
+					if err = fd.Close(); err != nil {
+						mb.werr = err
+						mb.mu.Unlock()
+						storeErrOnLmb(err)
+						return
+					}
 				}
 			}
 			mb.mu.Unlock()
@@ -7241,6 +7293,7 @@ func (fs *fileStore) syncBlocks() {
 		return
 	}
 	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	fs.setSyncTimer()
 	if markDirty {
 		fs.dirty++
@@ -7249,15 +7302,26 @@ func (fs *fileStore) syncBlocks() {
 	// Sync state file if we are not running with sync always.
 	if !fs.fcfg.SyncAlways {
 		fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
+		var fd *os.File
+		var err error
 		<-dios
-		fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms)
+		fd, err = os.OpenFile(fn, os.O_RDWR, defaultFilePerms)
 		dios <- struct{}{}
+		if err != nil && !os.IsNotExist(err) {
+			storeErrOnLmbLocked(err)
+			return
+		}
 		if fd != nil {
-			fd.Sync()
-			fd.Close()
+			if err = fd.Sync(); err != nil {
+				storeErrOnLmbLocked(err)
+				return
+			}
+			if err = fd.Close(); err != nil {
+				storeErrOnLmbLocked(err)
+				return
+			}
 		}
 	}
-	fs.mu.Unlock()
 }
 
 // Select the message block where this message should be found.
@@ -7557,9 +7621,6 @@ func (mb *msgBlock) writeAt(buf []byte, woff int64) (int, error) {
 // flushPendingMsgsLocked writes out any messages for this message block.
 // Lock should be held.
 func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
-	// Signals us that we need to rebuild filestore state.
-	var fsLostData *LostStreamData
-
 	var weakenCache bool
 	if mb.cache == nil {
 		mb.cache = mb.ecache.Value()
@@ -7607,7 +7668,8 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	for lbb := lob; lbb > 0; lbb = len(buf) {
 		n, err := mb.writeAt(buf, wp)
 		if err != nil {
-			mb.dirtyCloseWithRemove(false)
+			// Ignore the errors here, we'll try reloading just to figure out and return the lost data if we can.
+			_ = mb.dirtyCloseWithRemove(false)
 			ld, _, _ := mb.rebuildStateLocked()
 			mb.werr = err
 			return ld, err
@@ -7619,7 +7681,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Cache may be gone.
 	if mb.cache == nil || mb.mfd == nil {
-		return fsLostData, mb.werr
+		return nil, mb.werr
 	}
 
 	// Update write pointer.
@@ -7629,7 +7691,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	if mb.syncAlways {
 		if err := mb.mfd.Sync(); err != nil {
 			mb.werr = err
-			return fsLostData, err
+			return nil, err
 		}
 	} else {
 		mb.needSync = true
@@ -7640,7 +7702,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// not releasing the lock during I/O operation. Therefore this will always
 	// return zero.
 	if mb.pendingWriteSizeLocked() > 0 {
-		return fsLostData, mb.werr
+		return nil, mb.werr
 	}
 
 	// Check last access time. If we think the block still has read interest
@@ -7651,13 +7713,13 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 			mb.ecache.Weaken()
 		}
 		mb.resetCacheExpireTimer(0)
-		return fsLostData, mb.werr
+		return nil, mb.werr
 	}
 
 	// If not, we'll just drop the cache altogether & recycle the buffer.
 	mb.cache.nra = false
 	mb.expireCacheLocked()
-	return fsLostData, mb.werr
+	return nil, mb.werr
 }
 
 // Lock should be held.
@@ -9335,8 +9397,12 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			return true
 		})
 		// Now close.
-		mb.dirtyCloseWithRemove(true)
+		err := mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
+		if err != nil {
+			fs.mu.Unlock()
+			return purged, err
+		}
 		deleted++
 	}
 
@@ -9392,7 +9458,11 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	if isEmpty := smb.msgs == 0; isEmpty {
 		// Only remove if not the last block.
 		if smb != fs.lmb {
-			smb.dirtyCloseWithRemove(true)
+			if err = smb.dirtyCloseWithRemove(true); err != nil {
+				smb.mu.Unlock()
+				fs.mu.Unlock()
+				return purged, err
+			}
 			deleted++
 		} else {
 			// Make sure to sync changes.
@@ -9552,8 +9622,12 @@ func (fs *fileStore) reset() error {
 		mb.mu.Lock()
 		purged += mb.msgs
 		bytes += mb.bytes
-		mb.dirtyCloseWithRemove(true)
+		err := mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
+		if err != nil {
+			fs.mu.Unlock()
+			return err
+		}
 	}
 
 	// Reset
@@ -10017,23 +10091,23 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) error {
 		close(mb.qch)
 		mb.qch = nil
 	}
-	if mb.mfd != nil {
-		mb.mfd.Close()
+	if fd := mb.mfd; fd != nil {
 		mb.mfd = nil
+		if err := fd.Close(); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	if remove {
 		// Clear any tracking by subject if we are removing.
 		mb.fss = nil
 		if mb.mfn != _EMPTY_ {
-			err := os.Remove(mb.mfn)
-			if isPermissionError(err) {
+			if err := os.Remove(mb.mfn); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 			mb.mfn = _EMPTY_
 		}
 		if mb.kfn != _EMPTY_ {
-			err := os.Remove(mb.kfn)
-			if isPermissionError(err) {
+			if err := os.Remove(mb.kfn); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
