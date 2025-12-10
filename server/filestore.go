@@ -4489,8 +4489,15 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 			close(lmb.qch)
 			lmb.qch = nil
 		}
+		// If we had a write error before, don't allow continuing into a new block.
+		if err := lmb.werr; err != nil {
+			return nil, err
+		}
 		// Flush any pending messages.
-		lmb.flushPendingMsgsLocked()
+		if _, err := lmb.flushPendingMsgsLocked(); err != nil {
+			lmb.mu.Unlock()
+			return nil, err
+		}
 		// Determine if we can reclaim any resources here.
 		lmb.closeFDsLockedNoCheck()
 		if lmb.cache != nil {
@@ -4868,7 +4875,7 @@ func (fs *fileStore) SkipMsg(seq uint64) (uint64, error) {
 	return seq, nil
 }
 
-// Skip multiple msgs. We will determine if we can fit into current lmb or we need to create a new block.
+// SkipMsgs skips multiple msgs. We will determine if we can fit into current lmb or we need to create a new block.
 func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -4913,8 +4920,11 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 		}
 	}
 	// Write out our placeholder.
-	mb.writeMsgRecordLocked(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true, true)
+	err := mb.writeMsgRecordLocked(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true, true)
 	mb.mu.Unlock()
+	if err != nil {
+		return err
+	}
 
 	// Now update FS accounting.
 	// Update fs state.
@@ -7555,8 +7565,8 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		mb.cache = mb.ecache.Value()
 		weakenCache = mb.cache != nil
 	}
-	if mb.cache == nil || mb.mfd == nil {
-		return nil, errNoCache
+	if mb.cache == nil || mb.mfd == nil || mb.werr != nil {
+		return nil, mb.werr
 	}
 
 	buf, err := mb.bytesPending()
