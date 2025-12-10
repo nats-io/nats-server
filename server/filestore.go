@@ -4920,10 +4920,10 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 }
 
 // FlushAllPending flushes all data that was still pending to be written.
-func (fs *fileStore) FlushAllPending() {
+func (fs *fileStore) FlushAllPending() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	fs.checkAndFlushLastBlock()
+	return fs.checkAndFlushLastBlock()
 }
 
 // Lock should be held.
@@ -6515,20 +6515,31 @@ func (fs *fileStore) runMsgScheduling() {
 }
 
 // Lock should be held.
-func (fs *fileStore) checkAndFlushLastBlock() {
+func (fs *fileStore) checkAndFlushLastBlock() error {
 	lmb := fs.lmb
 	if lmb == nil {
-		return
+		return nil
 	}
-	if lmb.pendingWriteSize() > 0 {
-		// Since fs lock is held need to pull this apart in case we need to rebuild state.
-		lmb.mu.Lock()
-		ld, _ := lmb.flushPendingMsgsLocked()
+	lmb.mu.Lock()
+	if err := lmb.werr; err != nil {
 		lmb.mu.Unlock()
-		if ld != nil {
-			fs.rebuildStateLocked(ld)
-		}
+		return err
 	}
+
+	if lmb.pendingWriteSizeLocked() == 0 {
+		lmb.mu.Unlock()
+		return nil
+	}
+	ld, err := lmb.flushPendingMsgsLocked()
+	lmb.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Since fs lock is held need to unlock the mb in case we need to rebuild state.
+	if ld != nil {
+		fs.rebuildStateLocked(ld)
+	}
+	return nil
 }
 
 // This will check all the checksums on messages and report back any sequence numbers with errors.
