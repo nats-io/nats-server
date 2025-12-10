@@ -7627,7 +7627,10 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Check if we are in sync always mode.
 	if mb.syncAlways {
-		mb.mfd.Sync()
+		if err := mb.mfd.Sync(); err != nil {
+			mb.werr = err
+			return fsLostData, err
+		}
 	} else {
 		mb.needSync = true
 	}
