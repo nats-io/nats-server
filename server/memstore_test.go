@@ -690,7 +690,10 @@ func TestMemStoreNumPending(t *testing.T) {
 
 	check := func(sseq uint64, filter string) {
 		t.Helper()
-		np, lvs := ms.NumPending(sseq, filter, false)
+		np, lvs, err := ms.NumPending(sseq, filter, false)
+		if err != nil {
+			t.Fatalf("NumPending error: %v", err)
+		}
 		ss := ms.FilteredState(sseq, filter)
 		sss := sanityCheck(sseq, filter)
 		if lvs != state.LastSeq {
@@ -735,7 +738,10 @@ func TestMemStoreNumPending(t *testing.T) {
 
 	checkLastOnly := func(sseq uint64, filter string) {
 		t.Helper()
-		np, lvs := ms.NumPending(sseq, filter, true)
+		np, lvs, err := ms.NumPending(sseq, filter, true)
+		if err != nil {
+			t.Fatalf("NumPending error: %v", err)
+		}
 		ss := sanityCheckLastOnly(sseq, filter)
 		if lvs != state.LastSeq {
 			t.Fatalf("Expected NumPending to return valid through last of %d but got %d", state.LastSeq, lvs)
@@ -1112,7 +1118,8 @@ func TestMemStoreNumPendingMulti(t *testing.T) {
 	}
 
 	// Use new function.
-	total, _ := ms.NumPendingMulti(startSeq, filters, false)
+	total, _, err := ms.NumPendingMulti(startSeq, filters, false)
+	require_NoError(t, err)
 
 	// Check our results.
 	var checkTotal uint64
@@ -1143,7 +1150,8 @@ func TestMemStoreNumPendingBug(t *testing.T) {
 		ms.StoreMsg(subj, nil, nil, 0)
 		ms.StoreMsg(subj, nil, nil, 0)
 	}
-	total, _ := ms.NumPending(4, "foo.*", false)
+	total, _, err := ms.NumPending(4, "foo.*", false)
+	require_NoError(t, err)
 
 	var checkTotal uint64
 	var smv StoreMsg
@@ -1386,7 +1394,8 @@ func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesScan(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		total, _ := ms.NumPending(600_000, "foo.*.baz", false)
+		total, _, err := ms.NumPending(600_000, "foo.*.baz", false)
+		require_NoError(b, err)
 		if total != 1 {
 			b.Fatalf("Expected total of 2 got %d", total)
 		}
@@ -1413,7 +1422,8 @@ func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesExclude(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		total, _ := ms.NumPending(400_000, "foo.*.baz", false)
+		total, _, err := ms.NumPending(400_000, "foo.*.baz", false)
+		require_NoError(b, err)
 		if total != 1 {
 			b.Fatalf("Expected total of 2 got %d", total)
 		}

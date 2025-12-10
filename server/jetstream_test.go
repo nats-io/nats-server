@@ -22028,7 +22028,8 @@ func TestJetStreamDirectGetBatchParallelWriteDeadlock(t *testing.T) {
 	// We'll lock the message blocks such that we can't read, but NumPending should still function.
 	fs := mset.store.(*fileStore)
 	fs.lockAllMsgBlocks()
-	total, validThrough := fs.NumPending(1, _EMPTY_, false)
+	total, validThrough, err := fs.NumPending(1, _EMPTY_, false)
+	require_NoError(t, err)
 	require_Equal(t, total, 2)
 	require_Equal(t, validThrough, 2)
 

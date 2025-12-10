@@ -3140,6 +3140,12 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		})
 	}
 
+	np, err := o.checkNumPending()
+	if err != nil {
+		o.mu.Unlock()
+		return nil
+	}
+
 	cfg := o.cfg
 	info := &ConsumerInfo{
 		Stream:  o.stream,
@@ -3156,7 +3162,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		},
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
-		NumPending:     o.checkNumPending(),
+		NumPending:     np,
 		PushBound:      o.isPushMode() && o.active,
 		TimeStamp:      time.Now().UTC(),
 		PriorityGroups: priorityGroups,
@@ -5104,17 +5110,17 @@ func (o *consumer) setMaxPendingBytes(limit int) {
 // The race is a getNextMsg skips a deleted msg, and then the decStreamPending call fires.
 // This does some quick sanity checks to see if we should re-calculate num pending.
 // Lock should be held.
-func (o *consumer) checkNumPending() uint64 {
+func (o *consumer) checkNumPending() (uint64, error) {
 	if o.mset != nil && o.mset.store != nil {
 		var state StreamState
 		o.mset.store.FastState(&state)
 		npc := o.numPending()
 		if o.sseq > state.LastSeq && npc > 0 || npc > state.Msgs {
 			// Re-calculate.
-			o.streamNumPending()
+			return o.streamNumPending()
 		}
 	}
-	return o.numPending()
+	return o.numPending(), nil
 }
 
 // Lock should be held.
@@ -5141,7 +5147,7 @@ func (o *consumer) checkNumPendingOnEOF() {
 }
 
 // Call into streamNumPending after acquiring the consumer lock.
-func (o *consumer) streamNumPendingLocked() uint64 {
+func (o *consumer) streamNumPendingLocked() (uint64, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.streamNumPending()
@@ -5150,22 +5156,25 @@ func (o *consumer) streamNumPendingLocked() uint64 {
 // Will force a set from the stream store of num pending.
 // Depends on delivery policy, for last per subject we calculate differently.
 // Lock should be held.
-func (o *consumer) streamNumPending() uint64 {
+func (o *consumer) streamNumPending() (uint64, error) {
 	if o.mset == nil || o.mset.store == nil {
 		o.npc, o.npf = 0, 0
-		return 0
+		return 0, nil
 	}
-	npc, npf := o.calculateNumPending()
+	npc, npf, err := o.calculateNumPending()
+	if err != nil {
+		return 0, err
+	}
 	o.npc, o.npf = int64(npc), npf
-	return o.numPending()
+	return o.numPending(), nil
 }
 
 // Will calculate num pending but only requires a read lock.
 // Depends on delivery policy, for last per subject we calculate differently.
 // At least RLock should be held.
-func (o *consumer) calculateNumPending() (npc, npf uint64) {
+func (o *consumer) calculateNumPending() (npc, npf uint64, err error) {
 	if o.mset == nil || o.mset.store == nil {
-		return 0, 0
+		return 0, 0, nil
 	}
 
 	isLastPerSubject := o.cfg.DeliverPolicy == DeliverLastPerSubject
