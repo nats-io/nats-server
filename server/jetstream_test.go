@@ -19399,7 +19399,7 @@ func TestJetStreamRecoversStreamFirstSeqWhenNotEmpty(t *testing.T) {
 		require_NoError(t, os.Truncate(filepath.Join(path, f.Name()), st.Size()-1))
 	}
 
-	s.restartJetStream()
+	require_NoError(t, s.restartJetStream())
 
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)

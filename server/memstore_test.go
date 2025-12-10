@@ -694,7 +694,8 @@ func TestMemStoreNumPending(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NumPending error: %v", err)
 		}
-		ss := ms.FilteredState(sseq, filter)
+		ss, err := ms.FilteredState(sseq, filter)
+		require_NoError(t, err)
 		sss := sanityCheck(sseq, filter)
 		if lvs != state.LastSeq {
 			t.Fatalf("Expected NumPending to return valid through last of %d but got %d", state.LastSeq, lvs)

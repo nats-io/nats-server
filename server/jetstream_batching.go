@@ -147,12 +147,14 @@ func newBatchStore(mset *stream, batchId string) (StreamStore, error) {
 // If the timer has already cleaned up the batch, we can't commit.
 // Otherwise, we ensure the timer does not clean up the batch in the meantime.
 // Lock should be held.
-func (b *atomicBatch) readyForCommit() bool {
+func (b *atomicBatch) readyForCommit() *BatchAbandonReason {
 	if !b.timer.Stop() {
-		return false
+		return &BatchTimeout
 	}
-	b.store.FlushAllPending()
-	return true
+	if b.store.FlushAllPending() != nil {
+		return &BatchIncomplete
+	}
+	return nil
 }
 
 // newFastBatch creates a fast batch publish object.

@@ -89,6 +89,7 @@ type RaftNode interface {
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
+	GetWriteErr() error
 }
 
 // RaftNodeCheckpoint is used as an alternative to a direct InstallSnapshot.
@@ -4699,11 +4700,18 @@ func (n *raft) setWriteErrLocked(err error) {
 	}
 	// If this is a not found report but do not disable.
 	if os.IsNotExist(err) {
-		n.error("Resource not found: %v", err)
+		n.warn("Resource not found: %v", err)
 		return
 	}
 	n.error("Critical write error: %v", err)
 	n.werr = err
+	n.shutdown()
+	assert.Unreachable("Raft encountered write error", map[string]any{
+		"n.accName": n.accName,
+		"n.group":   n.group,
+		"n.id":      n.id,
+		"err":       err,
+	})
 
 	if isPermissionError(err) {
 		go n.s.handleWritePermissionError()
@@ -4718,6 +4726,13 @@ func (n *raft) setWriteErrLocked(err error) {
 // Helper to check if we are closed when we do not hold a lock already.
 func (n *raft) isClosed() bool {
 	return n.State() == Closed
+}
+
+// GetWriteErr returns the write error (if any).
+func (n *raft) GetWriteErr() error {
+	n.RLock()
+	defer n.RUnlock()
+	return n.werr
 }
 
 // Capture our write error if any and hold.
