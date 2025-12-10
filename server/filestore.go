@@ -6736,9 +6736,12 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	}
 
 	fch, werr := mb.fch, mb.werr
+	if werr != nil {
+		return werr
+	}
 
 	// If we should be flushing, or had a write error, do so here.
-	if (flush && mb.fs.fip) || werr != nil {
+	if flush && mb.fs.fip {
 		ld, err := mb.flushPendingMsgsLocked()
 		if ld != nil {
 			// We have the mb lock here, this needs the mb locks so do in its own go routine.
@@ -7582,9 +7585,6 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		wp += int64(n)
 		buf = buf[n:]
 	}
-
-	// Clear any error.
-	mb.werr = nil
 
 	// Cache may be gone.
 	if mb.cache == nil || mb.mfd == nil {
