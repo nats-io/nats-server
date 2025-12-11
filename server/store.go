@@ -118,7 +118,7 @@ type StreamStore interface {
 	State() StreamState
 	FastState(*StreamState)
 	EncodedStreamState(failed uint64) (enc []byte, err error)
-	SyncDeleted(dbs DeleteBlocks)
+	SyncDeleted(dbs DeleteBlocks) error
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
