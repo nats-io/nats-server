@@ -5268,7 +5268,10 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	} else {
 		// This is a batch request, capture initial numPending.
 		isBatchRequest = true
-		np, validThrough = store.NumPending(seq, req.NextFor, false)
+		var err error
+		if np, validThrough, err = store.NumPending(seq, req.NextFor, false); err != nil {
+			return
+		}
 	}
 
 	// Grab MaxBytes
@@ -5361,7 +5364,10 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	if isBatchRequest {
 		// Update if the stream's last sequence has moved past our validThrough.
 		if mset.lseq > validThrough {
-			np, _ = store.NumPending(seq, req.NextFor, false)
+			var err error
+			if np, _, err = store.NumPending(seq, req.NextFor, false); err != nil {
+				return
+			}
 		}
 		hdr := fmt.Appendf(nil, eob, np, lseq)
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))

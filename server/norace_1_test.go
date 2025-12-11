@@ -7612,7 +7612,8 @@ func TestNoRaceFileStoreNumPending(t *testing.T) {
 
 	check := func(sseq uint64, filter string) {
 		t.Helper()
-		np, lvs := fs.NumPending(sseq, filter, false)
+		np, lvs, err := fs.NumPending(sseq, filter, false)
+		require_NoError(t, err)
 		ss := fs.FilteredState(sseq, filter)
 		sss := sanityCheck(sseq, filter)
 		if lvs != state.LastSeq {
@@ -7657,7 +7658,8 @@ func TestNoRaceFileStoreNumPending(t *testing.T) {
 
 	checkLastOnly := func(sseq uint64, filter string) {
 		t.Helper()
-		np, lvs := fs.NumPending(sseq, filter, true)
+		np, lvs, err := fs.NumPending(sseq, filter, true)
+		require_NoError(t, err)
 		ss := sanityCheckLastOnly(sseq, filter)
 		if lvs != state.LastSeq {
 			t.Fatalf("Expected NumPending to return valid through last of %d but got %d", state.LastSeq, lvs)

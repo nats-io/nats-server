@@ -2335,7 +2335,9 @@ func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
 				if state.Delivered.Consumer != 0 || state.Delivered.Stream != 100 {
 					t.Fatalf("Incorrect consumer state: consumer_seq=%d, stream_seq=%d", state.Delivered.Consumer, state.Delivered.Stream)
 				}
-				if np := o.checkNumPending(); np != 0 {
+				np, err := o.checkNumPending()
+				require_NoError(t, err)
+				if np != 0 {
 					t.Fatalf("Did not expect NumPending, got %d", np)
 				}
 			}
