@@ -104,35 +104,38 @@ const (
 	// wildcard '#' semantic.
 	mqttMultiLevelSidSuffix = " fwc"
 
+	// This is the prefix used for all subjects used by MQTT code.
+	mqttPrefix = "$MQTT."
+
 	// This is the prefix for NATS subscriptions subjects associated as delivery
 	// subject of JS consumer. We want to make them unique so will prevent users
 	// MQTT subscriptions to start with this.
-	mqttSubPrefix = "$MQTT.sub."
+	mqttSubPrefix = mqttPrefix + "sub."
 
 	// Stream name for MQTT messages on a given account
 	mqttStreamName          = "$MQTT_msgs"
-	mqttStreamSubjectPrefix = "$MQTT.msgs."
+	mqttStreamSubjectPrefix = mqttPrefix + "msgs."
 
 	// Stream name for MQTT retained messages on a given account
 	mqttRetainedMsgsStreamName    = "$MQTT_rmsgs"
-	mqttRetainedMsgsStreamSubject = "$MQTT.rmsgs."
+	mqttRetainedMsgsStreamSubject = mqttPrefix + "rmsgs."
 
 	// Stream name for MQTT sessions on a given account
 	mqttSessStreamName          = "$MQTT_sess"
-	mqttSessStreamSubjectPrefix = "$MQTT.sess."
+	mqttSessStreamSubjectPrefix = mqttPrefix + "sess."
 
 	// Stream name prefix for MQTT sessions on a given account
 	mqttSessionsStreamNamePrefix = "$MQTT_sess_"
 
 	// Stream name and subject for incoming MQTT QoS2 messages
 	mqttQoS2IncomingMsgsStreamName          = "$MQTT_qos2in"
-	mqttQoS2IncomingMsgsStreamSubjectPrefix = "$MQTT.qos2.in."
+	mqttQoS2IncomingMsgsStreamSubjectPrefix = mqttPrefix + "qos2.in."
 
 	// Stream name and subjects for outgoing MQTT QoS (PUBREL) messages
 	mqttOutStreamName               = "$MQTT_out"
-	mqttOutSubjectPrefix            = "$MQTT.out."
-	mqttPubRelSubjectPrefix         = "$MQTT.out.pubrel."
-	mqttPubRelDeliverySubjectPrefix = "$MQTT.deliver.pubrel."
+	mqttOutSubjectPrefix            = mqttPrefix + "out."
+	mqttPubRelSubjectPrefix         = mqttPrefix + "out.pubrel."
+	mqttPubRelDeliverySubjectPrefix = mqttPrefix + "deliver.pubrel."
 	mqttPubRelConsumerDurablePrefix = "$MQTT_PUBREL_"
 
 	// As per spec, MQTT server may not redeliver QoS 1 and 2 messages to
@@ -150,7 +153,7 @@ const (
 	mqttMaxAckTotalLimit = 0xFFFF
 
 	// Prefix of the reply subject for JS API requests.
-	mqttJSARepliesPrefix = "$MQTT.JSA."
+	mqttJSARepliesPrefix = mqttPrefix + "JSA."
 
 	// Those are tokens that are used for the reply subject of JS API requests.
 	// For instance "$MQTT.JSA.<node id>.SC.<number>" is the reply subject
