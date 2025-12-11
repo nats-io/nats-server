@@ -2359,8 +2359,8 @@ func (fs *fileStore) recoverMsgs() error {
 
 	if len(fs.blks) > 0 {
 		fs.lmb = fs.blks[len(fs.blks)-1]
-	} else {
-		_, err = fs.newMsgBlockForWrite()
+	} else if _, err = fs.newMsgBlockForWrite(); err != nil {
+		return err
 	}
 
 	// Check if we encountered any lost data.
@@ -2374,13 +2374,12 @@ func (fs *fileStore) recoverMsgs() error {
 		for _, mb := range emptyBlks {
 			// Need the mb lock here.
 			mb.mu.Lock()
-			fs.forceRemoveMsgBlock(mb)
+			err = fs.forceRemoveMsgBlock(mb)
 			mb.mu.Unlock()
+			if err != nil {
+				return err
+			}
 		}
-	}
-
-	if err != nil {
-		return err
 	}
 
 	// Check for keyfiles orphans.
@@ -4956,13 +4955,13 @@ func (fs *fileStore) FlushAllPending() error {
 }
 
 // Lock should be held.
-func (fs *fileStore) rebuildFirst() {
+func (fs *fileStore) rebuildFirst() error {
 	if len(fs.blks) == 0 {
-		return
+		return nil
 	}
 	fmb := fs.blks[0]
 	if fmb == nil {
-		return
+		return nil
 	}
 
 	ld, _, _ := fmb.rebuildState()
@@ -4971,8 +4970,11 @@ func (fs *fileStore) rebuildFirst() {
 	fmb.mu.RUnlock()
 	if isEmpty {
 		fmb.mu.Lock()
-		fs.forceRemoveMsgBlock(fmb)
+		err := fs.forceRemoveMsgBlock(fmb)
 		fmb.mu.Unlock()
+		if err != nil {
+			return err
+		}
 	}
 	fs.selectNextFirst()
 	fs.rebuildStateLocked(ld)
@@ -5493,7 +5495,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	var firstSeqNeedsUpdate bool
 	if isEmpty {
 		// This writes tombstone iff mb == lmb, so no need to do above.
-		fs.removeMsgBlock(mb)
+		if err = fs.removeMsgBlock(mb); err != nil {
+			finishedWithCache()
+			mb.mu.Unlock()
+			fsUnlock()
+			return false, err
+		}
 		firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 	}
 	finishedWithCache()
@@ -6060,7 +6067,7 @@ func (mb *msgBlock) selectNextFirst() {
 // Select the next FirstSeq
 // Also cleans up empty blocks at the start only containing tombstones.
 // Lock should be held.
-func (fs *fileStore) selectNextFirst() {
+func (fs *fileStore) selectNextFirst() error {
 	if len(fs.blks) > 0 {
 		for len(fs.blks) > 1 {
 			mb := fs.blks[0]
@@ -6070,8 +6077,11 @@ func (fs *fileStore) selectNextFirst() {
 				mb.mu.Unlock()
 				break
 			}
-			fs.forceRemoveMsgBlock(mb)
+			err := fs.forceRemoveMsgBlock(mb)
 			mb.mu.Unlock()
+			if err != nil {
+				return err
+			}
 		}
 		mb := fs.blks[0]
 		mb.mu.RLock()
@@ -6089,6 +6099,7 @@ func (fs *fileStore) selectNextFirst() {
 	}
 	// Mark first as moved. Plays into tombstone cleanup for syncBlocks.
 	fs.firstMoved = true
+	return nil
 }
 
 // Lock should be held.
@@ -7248,10 +7259,14 @@ func (fs *fileStore) syncBlocks() {
 			if shouldRemove {
 				fs.mu.Lock()
 				mb.mu.Lock()
-				fs.removeMsgBlock(mb)
+				err := fs.removeMsgBlock(mb)
 				mb.mu.Unlock()
 				fs.mu.Unlock()
 				needSync = false
+				if err != nil {
+					storeErrOnLmb(err)
+					return
+				}
 			}
 		}
 
@@ -9128,7 +9143,11 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					if mb.isEmpty() {
 						// Since we are removing this block don't need to write tombstones.
 						tombs = tombs[:te]
-						fs.removeMsgBlock(mb)
+						if err = fs.removeMsgBlock(mb); err != nil {
+							mb.mu.Unlock()
+							fs.mu.Unlock()
+							return 0, err
+						}
 						i--
 						// keep flag set, if set previously
 						firstSeqNeedsUpdate = firstSeqNeedsUpdate || seq == fs.state.FirstSeq
@@ -9186,6 +9205,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err := fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
+				fs.mu.Unlock()
 				return purged, err
 			}
 		}
@@ -9257,7 +9277,10 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	if lseq := atomic.LoadUint64(&lmb.last.seq); lseq > 0 {
 		// Leave a tombstone so we can remember our starting sequence in case
 		// full state becomes corrupted.
-		fs.writeTombstone(lseq, lmb.last.ts)
+		if err := fs.writeTombstone(lseq, lmb.last.ts); err != nil {
+			fs.mu.Unlock()
+			return 0, err
+		}
 	}
 	// Close FDs since we'll move the file. We re-enable the FD after the purge is complete.
 	lmb.closeFDs()
@@ -9556,6 +9579,7 @@ SKIP:
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err := fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
+				fs.mu.Unlock()
 				return purged, err
 			}
 		}
@@ -9799,6 +9823,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// If we end up not needing to write tombstones, this block will be cleaned up at the end.
 	tmb, err := fs.newMsgBlockForWrite()
 	if err != nil {
+		fs.mu.Unlock()
 		return err
 	}
 
@@ -9811,7 +9836,10 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// If the selected block is not found or the message was deleted, we'll need to write a tombstone
 	// at the truncated sequence so we don't roll backward on our last sequence and timestamp.
 	if lsm == nil || removeSmb {
-		fs.writeTombstone(seq, lastTime)
+		if err = fs.writeTombstone(seq, lastTime); err != nil {
+			fs.mu.Unlock()
+			return err
+		}
 	}
 
 	var purged, bytes uint64
@@ -9839,13 +9867,20 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			mb.mu.Unlock()
 			for _, tomb := range tombs {
 				if tomb.seq < seq {
-					fs.writeTombstone(tomb.seq, tomb.ts)
+					if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
+						fs.mu.Unlock()
+						return err
+					}
 				}
 			}
 			mb.mu.Lock()
 		}
-		fs.forceRemoveMsgBlock(mb)
+		err = fs.forceRemoveMsgBlock(mb)
 		mb.mu.Unlock()
+		if err != nil {
+			fs.mu.Unlock()
+			return err
+		}
 	}
 
 	hasWrittenTombstones := len(tmb.tombs()) > 0
@@ -9861,13 +9896,20 @@ func (fs *fileStore) Truncate(seq uint64) error {
 				smb.mu.Unlock()
 				for _, tomb := range tombs {
 					if tomb.seq < seq {
-						fs.writeTombstone(tomb.seq, tomb.ts)
+						if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
+							fs.mu.Unlock()
+							return err
+						}
 					}
 				}
 				smb.mu.Lock()
 			}
-			fs.forceRemoveMsgBlock(smb)
+			err = fs.forceRemoveMsgBlock(smb)
 			smb.mu.Unlock()
+			if err != nil {
+				fs.mu.Unlock()
+				return err
+			}
 			goto SKIP
 		}
 
@@ -9908,8 +9950,12 @@ SKIP:
 	if !hasWrittenTombstones {
 		fs.lmb = smb
 		tmb.mu.Lock()
-		fs.forceRemoveMsgBlock(tmb)
+		err = fs.forceRemoveMsgBlock(tmb)
 		tmb.mu.Unlock()
+		if err != nil {
+			fs.mu.Unlock()
+			return err
+		}
 	}
 
 	// Reset last.
@@ -9986,33 +10032,44 @@ func (fs *fileStore) removeMsgBlockFromList(mb *msgBlock) {
 
 // Removes the msgBlock
 // Both locks should be held.
-func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
+func (fs *fileStore) removeMsgBlock(mb *msgBlock) error {
 	// Check for us being last message block
 	lseq, lts := atomic.LoadUint64(&mb.last.seq), mb.last.ts
 	if mb == fs.lmb {
 		// Creating a new message write block requires that the lmb lock is not held.
 		mb.mu.Unlock()
 		// Write the tombstone to remember since this was last block.
-		if lmb, _ := fs.newMsgBlockForWrite(); lmb != nil {
-			fs.writeTombstone(lseq, lts)
+		if lmb, err := fs.newMsgBlockForWrite(); err != nil || lmb == nil {
+			if err != nil {
+				err = errors.New("lmb missing")
+			}
+			return err
+		} else if err = fs.writeTombstone(lseq, lts); err != nil {
+			return err
 		}
 		mb.mu.Lock()
 	} else if lseq == fs.state.LastSeq {
 		// Need to write a tombstone for the last sequence if we're removing the block containing it.
-		fs.writeTombstone(lseq, lts)
+		if err := fs.writeTombstone(lseq, lts); err != nil {
+			return err
+		}
 	}
 	// Only delete message block after (potentially) writing a tombstone.
 	// But only if it doesn't contain any tombstones for prior blocks.
-	if mb.numPriorTombsLocked() == 0 {
-		fs.forceRemoveMsgBlock(mb)
+	if mb.numPriorTombsLocked() > 0 {
+		return nil
 	}
+	return fs.forceRemoveMsgBlock(mb)
 }
 
 // Removes the msgBlock, without writing tombstones to ensure the last sequence is preserved.
 // Both locks should be held.
-func (fs *fileStore) forceRemoveMsgBlock(mb *msgBlock) {
-	mb.dirtyCloseWithRemove(true)
+func (fs *fileStore) forceRemoveMsgBlock(mb *msgBlock) error {
+	if err := mb.dirtyCloseWithRemove(true); err != nil {
+		return err
+	}
 	fs.removeMsgBlockFromList(mb)
+	return nil
 }
 
 // Purges and removes the msgBlock from the store.
