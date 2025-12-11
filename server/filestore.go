@@ -2736,7 +2736,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	var didLoad bool
 	if mb.fssNotLoaded() {
 		// Make sure we have fss loaded.
-		mb.loadMsgsWithLock()
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return nil, false, err
+		}
 		didLoad = true
 	}
 	// Mark fss activity.
@@ -3340,7 +3342,10 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
-			mb.loadMsgsWithLock()
+			if err := mb.loadMsgsWithLock(); err != nil {
+				mb.mu.Unlock()
+				return nil
+			}
 			shouldExpire = true
 		}
 		// Mark fss activity.
@@ -3404,7 +3409,10 @@ func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
-			mb.loadMsgsWithLock()
+			if err := mb.loadMsgsWithLock(); err != nil {
+				mb.mu.Unlock()
+				return nil, err
+			}
 			shouldExpire = true
 		}
 
@@ -3520,6 +3528,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 
 		// Iterate the fss and check against our subs. We will delete from subs as we add.
 		// Once len(subs) == 0 we are done.
+		var ierr error
 		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
 			// Already been processed and accounted for was not matched in the first place.
 			if subs[string(bsubj)] == nil {
@@ -3538,7 +3547,9 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 				// Need to search for the real last since recorded last is > maxSeq.
 				var didLoad bool
 				if mb.cacheNotLoaded() {
-					mb.loadMsgsWithLock()
+					if ierr = mb.loadMsgsWithLock(); ierr != nil {
+						return false
+					}
 					didLoad = true
 				}
 				var smv StoreMsg
@@ -3561,6 +3572,9 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 			return true
 		})
 		mb.mu.Unlock()
+		if ierr != nil {
+			return nil, ierr
+		}
 
 		// If maxAllowed was sepcified check that we will not exceed that.
 		if maxAllowed > 0 && len(seqs) > maxAllowed {
@@ -3576,7 +3590,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
 // Optimized for stream num pending calculations for consumers.
-func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64) {
+func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64, err error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -3584,7 +3598,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	validThrough = fs.state.LastSeq
 
 	if fs.state.Msgs == 0 || sseq > fs.state.LastSeq {
-		return 0, validThrough
+		return 0, validThrough, nil
 	}
 
 	// If sseq is less then our first set to first.
@@ -3614,9 +3628,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
 		if sseq == 0 {
-			return fs.state.Msgs, validThrough
+			return fs.state.Msgs, validThrough, nil
 		}
-		return fs.state.LastSeq - sseq + 1, validThrough
+		return fs.state.LastSeq - sseq + 1, validThrough, nil
 	}
 
 	_tsa, _fsa := [32]string{}, [32]string{}
@@ -3644,7 +3658,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	if lastPerSubject {
 		// If we want all and our start sequence is equal or less than first return number of subjects.
 		if isAll && sseq <= fs.state.FirstSeq {
-			return uint64(fs.psim.Size()), validThrough
+			return uint64(fs.psim.Size()), validThrough, nil
 		}
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
@@ -3677,7 +3691,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			// We need to discount the total by subjects seen before sseq, but also add them right back in if they are >= sseq for this blk.
 			// This only should be subjects we know have the last blk in this block.
 			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+				if err = mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return 0, 0, err
+				}
 				shouldExpire = true
 			}
 			var smv StoreMsg
@@ -3718,7 +3735,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
-		return total, validThrough
+		return total, validThrough, nil
 	}
 
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
@@ -3737,7 +3754,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			// If we are here we need to at least scan the subject fss.
 			// Make sure we have fss loaded.
 			if mb.fssNotLoaded() {
-				mb.loadMsgsWithLock()
+				if err = mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return 0, 0, err
+				}
 				shouldExpire = true
 			}
 			// Mark fss activity.
@@ -3766,7 +3786,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			if havePartial {
 				// Make sure we have the cache loaded.
 				if mb.cacheNotLoaded() {
-					mb.loadMsgsWithLock()
+					if err = mb.loadMsgsWithLock(); err != nil {
+						mb.mu.Unlock()
+						return 0, 0, err
+					}
 					shouldExpire = true
 				}
 				// Clear on partial.
@@ -3791,7 +3814,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			mb.mu.Unlock()
 			total += t
 		}
-		return total, validThrough
+		return total, validThrough, nil
 	}
 
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
@@ -3806,7 +3829,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	})
 	// See if we were asked for all, if so we are done.
 	if sseq <= fs.state.FirstSeq {
-		return total, validThrough
+		return total, validThrough, nil
 	}
 
 	// If we are here we need to calculate partials for the first blocks.
@@ -3839,7 +3862,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				// We need to adjust for all matches in this block.
 				// Make sure we have fss loaded. This loads whole block now.
 				if mb.fssNotLoaded() {
-					mb.loadMsgsWithLock()
+					if err = mb.loadMsgsWithLock(); err != nil {
+						mb.mu.Unlock()
+						return 0, 0, err
+					}
 					shouldExpire = true
 				}
 				// Mark fss activity.
@@ -3852,7 +3878,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		} else {
 			// This is the last block. We need to scan per message here.
 			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+				if err = mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return 0, 0, err
+				}
 				shouldExpire = true
 			}
 			var last = atomic.LoadUint64(&mb.last.seq)
@@ -3892,13 +3921,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// Make final adjustment.
 	total -= adjust
 
-	return total, validThrough
+	return total, validThrough, nil
 }
 
 // NumPending will return the number of pending messages matching any subject in the sublist starting at sequence.
 // Optimized for stream num pending calculations for consumers with lots of filtered subjects.
 // Subjects should not overlap, this property is held when doing multi-filtered consumers.
-func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64) {
+func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64, err error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -3906,7 +3935,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	validThrough = fs.state.LastSeq
 
 	if fs.state.Msgs == 0 || sseq > fs.state.LastSeq {
-		return 0, validThrough
+		return 0, validThrough, nil
 	}
 
 	// If sseq is less then our first set to first.
@@ -3935,9 +3964,9 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
 		if sseq == 0 {
-			return fs.state.Msgs, validThrough
+			return fs.state.Msgs, validThrough, nil
 		}
-		return fs.state.LastSeq - sseq + 1, validThrough
+		return fs.state.LastSeq - sseq + 1, validThrough, nil
 	}
 	// Setup the isMatch function.
 	isMatch := func(subj string) bool {
@@ -3955,7 +3984,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	if lastPerSubject {
 		// If we want all and our start sequence is equal or less than first return number of subjects.
 		if isAll && sseq <= fs.state.FirstSeq {
-			return uint64(fs.psim.Size()), validThrough
+			return uint64(fs.psim.Size()), validThrough, nil
 		}
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
@@ -3988,7 +4017,10 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			// We need to discount the total by subjects seen before sseq, but also add them right back in if they are >= sseq for this blk.
 			// This only should be subjects we know have the last blk in this block.
 			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+				if err = mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return 0, 0, err
+				}
 				shouldExpire = true
 			}
 			var smv StoreMsg
@@ -4029,7 +4061,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			mb.llts = ats.AccessTime()
 		}
 		mb.mu.Unlock()
-		return total, validThrough
+		return total, validThrough, nil
 	}
 
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
@@ -4047,7 +4079,10 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			// If we are here we need to at least scan the subject fss.
 			// Make sure we have fss loaded.
 			if mb.fssNotLoaded() {
-				mb.loadMsgsWithLock()
+				if err = mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return 0, 0, err
+				}
 				shouldExpire = true
 			}
 			// Mark fss activity.
@@ -4077,7 +4112,10 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			if havePartial {
 				// Make sure we have the cache loaded.
 				if mb.cacheNotLoaded() {
-					mb.loadMsgsWithLock()
+					if err = mb.loadMsgsWithLock(); err != nil {
+						mb.mu.Unlock()
+						return 0, 0, err
+					}
 					shouldExpire = true
 				}
 				// Clear on partial.
@@ -4111,7 +4149,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			mb.mu.Unlock()
 			total += t
 		}
-		return total, validThrough
+		return total, validThrough, nil
 	}
 
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
@@ -4126,7 +4164,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 
 	// See if we were asked for all, if so we are done.
 	if sseq <= fs.state.FirstSeq {
-		return total, validThrough
+		return total, validThrough, nil
 	}
 
 	// If we are here we need to calculate partials for the first blocks.
@@ -4159,7 +4197,10 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 				// We need to adjust for all matches in this block.
 				// Make sure we have fss loaded. This loads whole block now.
 				if mb.fssNotLoaded() {
-					mb.loadMsgsWithLock()
+					if err = mb.loadMsgsWithLock(); err != nil {
+						mb.mu.Unlock()
+						return 0, 0, err
+					}
 					shouldExpire = true
 				}
 				// Mark fss activity.
@@ -4171,7 +4212,10 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		} else {
 			// This is the last block. We need to scan per message here.
 			if mb.cacheNotLoaded() {
-				mb.loadMsgsWithLock()
+				if err = mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return 0, 0, err
+				}
 				shouldExpire = true
 			}
 			var last = atomic.LoadUint64(&mb.last.seq)
@@ -4211,7 +4255,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	// Make final adjustment.
 	total -= adjust
 
-	return total, validThrough
+	return total, validThrough, nil
 }
 
 // SubjectsTotals return message totals per subject.
@@ -4636,17 +4680,6 @@ func (mb *msgBlock) skipMsg(seq uint64, now int64) {
 		atomic.StoreUint64(&mb.first.seq, seq+1)
 		mb.first.ts = 0
 		needsRecord = mb == mb.fs.lmb
-		if needsRecord && mb.rbytes > 0 {
-			// We want to make sure since we have no messages
-			// that we write to the beginning since we only need last one.
-			mb.rbytes, mb.cache = 0, &cache{}
-			mb.ecache.Set(mb.cache)
-			// If encrypted we need to reset counter since we just keep one.
-			if mb.bek != nil {
-				// Recreate to reset counter.
-				mb.bek, _ = genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
-			}
-		}
 	} else {
 		needsRecord = true
 		mb.dmap.Insert(seq)
@@ -5192,7 +5225,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// Check if we need to write a deleted record tombstone.
 	// This is for user initiated removes or to hold the first seq
 	// when the last block is empty.
-	// If not via limits and not empty (empty writes tombstone above if last) write tombstone.
+	// If not via limits and not empty (empty writes tombstone below if last) write tombstone.
 	if !viaLimits && !isEmpty && sm != nil {
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
@@ -5308,7 +5341,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// We will write a tombstone at the end.
 	var firstSeqNeedsUpdate bool
 	if isEmpty {
-		// This writes tombstone iff mb == lmb, so no need to do below.
+		// This writes tombstone iff mb == lmb, so no need to do above.
 		fs.removeMsgBlock(mb)
 		firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 	}
@@ -5373,11 +5406,11 @@ func (mb *msgBlock) compact() {
 // writing new messages. We will silently bail on any issues with the underlying block and let someone else detect.
 // if fseq > 0 we will attempt to cleanup stale tombstones.
 // Write lock needs to be held.
-func (mb *msgBlock) compactWithFloor(floor uint64) {
+func (mb *msgBlock) compactWithFloor(floor uint64) error {
 	wasLoaded := mb.cache != nil && mb.cacheAlreadyLoaded()
 	if !wasLoaded {
 		if err := mb.loadMsgsWithLock(); err != nil {
-			return
+			return err
 		}
 	}
 	defer mb.finishedWithCache()
@@ -5397,7 +5430,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
-			return
+			return fmt.Errorf("message overrun")
 		}
 		hdr := buf[index : index+msgHdrSize]
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
@@ -5406,7 +5439,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 		dlen := int(rl) - msgHdrSize
 		// Do some quick sanity checks here.
 		if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
-			return
+			return fmt.Errorf("sanity check failed")
 		}
 		// Only need to process non-deleted messages.
 		seq := le.Uint64(hdr[4:])
@@ -5438,7 +5471,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 	if mb.cmp != NoCompression && len(nbuf) > 0 {
 		cbuf, err := mb.cmp.Compress(nbuf)
 		if err != nil {
-			return
+			return err
 		}
 		meta := &CompressionInfo{
 			Algorithm:    mb.cmp,
@@ -5452,7 +5485,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 		// Recreate to reset counter.
 		rbek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
 		if err != nil {
-			return
+			return err
 		}
 		rbek.XORKeyStream(nbuf, nbuf)
 	}
@@ -5467,11 +5500,11 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 	dios <- struct{}{}
 	if err != nil {
 		os.Remove(mfn)
-		return
+		return err
 	}
 	if err := os.Rename(mfn, mb.mfn); err != nil {
 		os.Remove(mfn)
-		return
+		return err
 	}
 
 	// Make sure to sync
@@ -5494,8 +5527,11 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 	mb.clearCacheAndOffset()
 	// If we entered with the msgs loaded make sure to reload them.
 	if wasLoaded {
-		mb.loadMsgsWithLock()
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // Grab info from a slot.
@@ -5810,9 +5846,7 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 	mb.resetPerSubjectInfo()
 
 	// Load msgs again.
-	mb.loadMsgsWithLock()
-
-	return purged, bytes, nil
+	return purged, bytes, mb.loadMsgsWithLock()
 }
 
 // Helper to determine if the mb is empty.
@@ -7784,7 +7818,10 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 		} else {
 			reason = "cache buf empty"
 		}
-		mb.fs.warn("Cache lookup detected no cache: %s", reason)
+		mb.fs.warn("Cache lookup for sequence %d in block %d detected no cache: %s", seq, mb.index, reason)
+		if mb.cache != nil {
+			mb.tryForceExpireCacheLocked()
+		}
 		return nil, errNoCache
 	}
 	// Check partial cache status.
@@ -8738,7 +8775,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		}
 
 		if mb.cacheNotLoaded() {
-			mb.loadMsgsWithLock()
+			if err := mb.loadMsgsWithLock(); err != nil {
+				mb.mu.Unlock()
+				return 0, err
+			}
 			shouldExpire = true
 		}
 
@@ -8944,7 +8984,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	atomic.StoreUint64(&lmb.last.seq, fs.state.LastSeq)
 	lmb.last.ts = fs.state.LastTime.UnixNano()
 
-	if lseq := atomic.LoadUint64(&lmb.last.seq); lseq > 1 {
+	if lseq := atomic.LoadUint64(&lmb.last.seq); lseq > 0 {
 		// Leave a tombstone so we can remember our starting sequence in case
 		// full state becomes corrupted.
 		fs.writeTombstone(lseq, lmb.last.ts)
@@ -9117,12 +9157,21 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
 				goto SKIP
 			}
+
+			// We will write to a new file and mv/rename it in case of failure.
+			mfn := filepath.Join(smb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, smb.index))
 			<-dios
-			err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms)
+			err := os.WriteFile(mfn, nbuf, defaultFilePerms)
 			dios <- struct{}{}
 			if err != nil {
+				os.Remove(mfn)
 				goto SKIP
 			}
+			if err := os.Rename(mfn, smb.mfn); err != nil {
+				os.Remove(mfn)
+				goto SKIP
+			}
+
 			// Make sure to remove fss state.
 			smb.fss = nil
 			smb.clearCacheAndOffset()
@@ -9702,8 +9751,8 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return
 		}
+		defer mb.finishedWithCache()
 	}
-	defer mb.finishedWithCache()
 
 	startSlot := int(ss.First - mb.cache.fseq)
 	if startSlot < 0 {
@@ -9839,8 +9888,8 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 		if mb.fss != nil {
 			return nil
 		}
+		defer mb.finishedWithCache()
 	}
-	defer mb.finishedWithCache()
 
 	// Create new one regardless.
 	mb.fss = mb.fss.Empty()

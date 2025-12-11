@@ -861,17 +861,17 @@ func (ms *memStore) subjectsTotalsLocked(filterSubject string) map[string]uint64
 }
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
-func (ms *memStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64) {
+func (ms *memStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64, err error) {
 	// This needs to be a write lock, as filteredStateLocked can mutate the per-subject state.
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
 	ss := ms.filteredStateLocked(sseq, filter, lastPerSubject)
-	return ss.Msgs, ms.state.LastSeq
+	return ss.Msgs, ms.state.LastSeq, nil
 }
 
 // NumPending will return the number of pending messages matching any subject in the sublist starting at sequence.
-func (ms *memStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64) {
+func (ms *memStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64, err error) {
 	if sl == nil {
 		return ms.NumPending(sseq, fwcs, lastPerSubject)
 	}
@@ -886,7 +886,7 @@ func (ms *memStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerS
 	}
 	// If past the end no results.
 	if sseq > ms.state.LastSeq {
-		return 0, ms.state.LastSeq
+		return 0, ms.state.LastSeq, nil
 	}
 
 	update := func(fss *SimpleState) {
@@ -924,7 +924,7 @@ func (ms *memStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerS
 
 	// If we did not encounter any partials we can return here.
 	if !havePartial {
-		return ss.Msgs, ms.state.LastSeq
+		return ss.Msgs, ms.state.LastSeq, nil
 	}
 
 	// If we are here we need to scan the msgs.
@@ -1015,7 +1015,7 @@ func (ms *memStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerS
 		ss.Msgs -= adjust
 	}
 
-	return ss.Msgs, ms.state.LastSeq
+	return ss.Msgs, ms.state.LastSeq, nil
 }
 
 // Will check the msg limit for this tracked subject.
