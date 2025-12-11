@@ -2285,7 +2285,11 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 }
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
-func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
+func (ms *memStore) SyncDeleted(dbs DeleteBlocks) error {
+	if len(dbs) == 0 {
+		return nil
+	}
+
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
@@ -2294,7 +2298,7 @@ func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
 	if len(dbs) == 1 {
 		min, max, num := ms.dmap.State()
 		if pmin, pmax, pnum := dbs[0].State(); pmin == min && pmax == max && pnum == num {
-			return
+			return nil
 		}
 	}
 	lseq := ms.state.LastSeq
@@ -2308,6 +2312,7 @@ func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
 			return true
 		})
 	}
+	return nil
 }
 
 func (o *consumerMemStore) Update(state *ConsumerState) error {

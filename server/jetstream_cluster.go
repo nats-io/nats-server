@@ -9165,14 +9165,17 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplica
 
 // processSnapshotDeletes will update our current store based on the snapshot
 // but only processing deletes and new FirstSeq / purges.
-func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) {
+func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) error {
 	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
 	// Always adjust if FirstSeq has moved beyond our state.
 	var didReset bool
 	if snap.FirstSeq > state.FirstSeq {
-		mset.store.Compact(snap.FirstSeq)
+		if _, err := mset.store.Compact(snap.FirstSeq); err != nil {
+			mset.mu.Unlock()
+			return err
+		}
 		mset.store.FastState(&state)
 		mset.lseq = state.LastSeq
 		mset.clearAllPreAcksBelowFloor(state.FirstSeq)
@@ -9187,8 +9190,9 @@ func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) {
 	}
 
 	if len(snap.Deleted) > 0 {
-		mset.store.SyncDeleted(snap.Deleted)
+		return mset.store.SyncDeleted(snap.Deleted)
 	}
+	return nil
 }
 
 func (mset *stream) setCatchupPeer(peer string, lag uint64) {
@@ -9298,7 +9302,9 @@ var (
 // Process a stream snapshot.
 func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
 	// Update any deletes, etc.
-	mset.processSnapshotDeletes(snap)
+	if err := mset.processSnapshotDeletes(snap); err != nil {
+		return err
+	}
 	mset.setCLFS(snap.Failed)
 
 	mset.mu.Lock()
