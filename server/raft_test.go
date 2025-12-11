@@ -2254,6 +2254,11 @@ func TestNRGQuorumAccounting(t *testing.T) {
 	nats1 := "yrzKKRBu" // "nats-1"
 	nats2 := "cnrtt3eg" // "nats-2"
 
+	n.Lock()
+	n.addPeer(nats1)
+	n.addPeer(nats2)
+	n.Unlock()
+
 	// Timeline
 	aeHeartbeat1Response := &appendEntryResponse{term: 1, index: 1, peer: nats1, success: true}
 	aeHeartbeat2Response := &appendEntryResponse{term: 1, index: 1, peer: nats2, success: true}
@@ -2282,6 +2287,11 @@ func TestNRGRevalidateQuorumAfterLeaderChange(t *testing.T) {
 
 	nats1 := "yrzKKRBu" // "nats-1"
 	nats2 := "cnrtt3eg" // "nats-2"
+
+	n.Lock()
+	n.addPeer(nats1)
+	n.addPeer(nats2)
+	n.Unlock()
 
 	// Timeline
 	aeHeartbeat1Response := &appendEntryResponse{term: 1, index: 1, peer: nats1, success: true}
@@ -3648,6 +3658,8 @@ func TestNRGLostQuorum(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	nats0 := "S1Nunr6R" // "nats-0"
+
 	require_Equal(t, n.State(), Follower)
 	require_False(t, n.Quorum())
 	require_True(t, n.lostQuorum())
@@ -3659,7 +3671,7 @@ func TestNRGLostQuorum(t *testing.T) {
 	// Respond to a vote request.
 	sub, err := nc.Subscribe(n.vsubj, func(m *nats.Msg) {
 		req := decodeVoteRequest(m.Data, m.Reply)
-		resp := voteResponse{term: req.term, peer: "random", granted: true}
+		resp := voteResponse{term: req.term, peer: nats0, granted: true}
 		m.Respond(resp.encode())
 	})
 	require_NoError(t, err)
@@ -3671,6 +3683,10 @@ func TestNRGLostQuorum(t *testing.T) {
 	require_Equal(t, n.State(), Candidate)
 	require_False(t, n.Quorum())
 	require_True(t, n.lostQuorum())
+
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
 
 	n.runAsCandidate()
 	require_Equal(t, n.State(), Leader)
@@ -3815,6 +3831,11 @@ func TestNRGQuorumAfterLeaderStepdown(t *testing.T) {
 
 	nats0 := "S1Nunr6R" // "nats-0"
 	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.Lock()
+	n.addPeer(nats0)
+	n.addPeer(nats1)
+	n.Unlock()
 
 	// Become leader.
 	n.switchToCandidate()
@@ -4410,4 +4431,81 @@ func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
 
 	followers[1].restart()
 	require_Equal(t, len(leader.node().Peers()), 2)
+}
+
+func TestNRGAddPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+
+	require_Equal(t, leader.node().ClusterSize(), 3)
+
+	for range 6 {
+		rg = append(rg, c.addMemRaftNode("TEST", newStateAdder))
+	}
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.node().ClusterSize() != 9 {
+			return errors.New("node additions still in progress")
+		}
+		return nil
+	})
+
+	require_Equal(t, leader.node().ClusterSize(), 9)
+}
+
+func TestNRGDisjointMajorities(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader()
+	followers := rg.followers()
+	require_Equal(t, len(followers), 2)
+
+	// Lock all followers, a majority.
+	locked := rg.lockFollowers()
+	require_Equal(t, len(locked), 2)
+
+	defer func() {
+		for _, l := range locked {
+			l.node().(*raft).Unlock()
+		}
+	}()
+
+	// Add one node (cluster size is 4)
+	c.addMemRaftNode("TEST", newStateAdder)
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.node().ClusterSize() != 4 {
+			return errors.New("node addition still in progress")
+		}
+		return nil
+	})
+
+	// Attempt another node addition
+	c.addMemRaftNode("TEST", newStateAdder)
+
+	// If bug is present:
+	// The leader is able to form a majority because it would
+	// add peers immediately, and readjust cluster size and
+	// quorum only after committing EntryAddPeer. This allowed
+	// the leader to commit the entries using only newly added
+	// nodes (the original followers are locked and not
+	// acknowledging the EntryAddPeer proposals!)
+	// This should not never happen. In a real scenario the
+	// followers could be partitioned, and they actually have
+	// a majority... so they could diverge and we end up with
+	// two different histories.
+	//
+	// Here wait a little bit, and check that the leader is
+	// unable to make any progess.
+	time.Sleep(time.Second)
+
+	require_Equal(t, leader.node().ClusterSize(), 4)
+	require_Equal(t, leader.node().MembershipChangeInProgress(), true)
 }

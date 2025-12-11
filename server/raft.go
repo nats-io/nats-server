@@ -951,21 +951,6 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	return nil
 }
 
-// Remove the peer with the given id from our membership,
-// and adjusts cluster size and quorum accordingly.
-// Lock should be held.
-func (n *raft) removePeer(peer string) {
-	if n.removed == nil {
-		n.removed = map[string]time.Time{}
-	}
-	n.removed[peer] = time.Now()
-	if _, ok := n.peers[peer]; ok {
-		delete(n.peers, peer)
-		n.adjustClusterSizeAndQuorum()
-		n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
-	}
-}
-
 // ProposeRemovePeer is called to remove a peer from the group.
 func (n *raft) ProposeRemovePeer(peer string) error {
 	n.Lock()
@@ -2659,6 +2644,45 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 	prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
 }
 
+// Adds peer with the given id to our membership,
+// and adjusts cluster size and quorum accordingly.
+// Lock should be held.
+func (n *raft) addPeer(peer string) {
+	// If we were on the removed list reverse that here.
+	if n.removed != nil {
+		delete(n.removed, peer)
+	}
+
+	if lp, ok := n.peers[peer]; !ok {
+		// We are not tracking this one automatically so we need
+		// to bump cluster size.
+		n.peers[peer] = &lps{time.Time{}, 0, true}
+	} else {
+		// Mark as added.
+		lp.kp = true
+	}
+
+	// Adjust cluster size and quorum if needed.
+	n.adjustClusterSizeAndQuorum()
+	// Write out our new state.
+	n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+}
+
+// Remove the peer with the given id from our membership,
+// and adjusts cluster size and quorum accordingly.
+// Lock should be held.
+func (n *raft) removePeer(peer string) {
+	if n.removed == nil {
+		n.removed = map[string]time.Time{}
+	}
+	n.removed[peer] = time.Now()
+	if _, ok := n.peers[peer]; ok {
+		delete(n.peers, peer)
+		n.adjustClusterSizeAndQuorum()
+		n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+	}
+}
+
 // Build and send appendEntry request for the given entry that changes
 // membership (EntryAddPeer / EntryRemovePeer).
 // Returns true if the entry made it to the WAL and was sent to the followers
@@ -2675,6 +2699,10 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	if err != nil {
 		n.membChanging = false
 		return false
+	}
+
+	if e.Type == EntryAddPeer {
+		n.addPeer(string(e.Data))
 	}
 
 	if e.Type == EntryRemovePeer {
@@ -3202,22 +3230,8 @@ func (n *raft) applyCommit(index uint64) error {
 			// Store our peer in our global peer map for all peers.
 			peers.LoadOrStore(newPeer, newPeer)
 
-			// If we were on the removed list reverse that here.
-			if n.removed != nil {
-				delete(n.removed, newPeer)
-			}
+			n.addPeer(newPeer)
 
-			if lp, ok := n.peers[newPeer]; !ok {
-				// We are not tracking this one automatically so we need to bump cluster size.
-				n.peers[newPeer] = &lps{time.Time{}, 0, true}
-			} else {
-				// Mark as added.
-				lp.kp = true
-			}
-			// Adjust cluster size and quorum if needed.
-			n.adjustClusterSizeAndQuorum()
-			// Write out our new state.
-			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 			// We pass these up as well.
 			committed = append(committed, e)
 
@@ -3363,8 +3377,6 @@ func (n *raft) trackPeer(peer string) error {
 	}
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now()
-	} else if !isRemoved {
-		n.peers[peer] = &lps{time.Now(), 0, false}
 	}
 	n.Unlock()
 
