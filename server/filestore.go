@@ -1353,6 +1353,8 @@ func (mb *msgBlock) convertCipher() error {
 		// Check for compression, and make sure we can parse with old cipher and key file.
 		if nbuf, err := mb.decompressIfNeeded(buf); err != nil {
 			return err
+		} else if _, _, err = mb.rebuildStateFromBufLocked(nbuf, false); err != nil {
+			return err
 		} else if err = mb.indexCacheBuf(nbuf); err != nil {
 			return err
 		}
@@ -1391,8 +1393,9 @@ func (mb *msgBlock) convertToEncrypted() error {
 	// Check for compression.
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
 		return err
-	}
-	if err := mb.indexCacheBuf(buf); err != nil {
+	} else if _, _, err = mb.rebuildStateFromBufLocked(buf, false); err != nil {
+		return err
+	} else if err = mb.indexCacheBuf(buf); err != nil {
 		// This likely indicates this was already encrypted or corrupt.
 		mb.cache = nil
 		return err
@@ -1427,8 +1430,6 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, []uint64, error) {
 // Rebuild the state of the blk based on what we have on disk in the N.blk file.
 // Lock should be held.
 func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
-	startLastSeq := atomic.LoadUint64(&mb.last.seq)
-
 	// Remove the .fss file and clear any cache we have set.
 	mb.clearCacheAndOffset()
 
@@ -1455,12 +1456,6 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		return ld, nil, err
 	}
 
-	// Clear state we need to rebuild.
-	mb.msgs, mb.bytes, mb.rbytes, mb.fss = 0, 0, 0, nil
-	atomic.StoreUint64(&mb.last.seq, 0)
-	mb.last.ts = 0
-	firstNeedsSet := true
-
 	// Check if we need to decrypt.
 	if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
 		return nil, nil, err
@@ -1469,6 +1464,19 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
 		return nil, nil, err
 	}
+	return mb.rebuildStateFromBufLocked(buf, true)
+}
+
+// Lock should be held.
+func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*LostStreamData, []uint64, error) {
+	var err error
+	startLastSeq := atomic.LoadUint64(&mb.last.seq)
+
+	// Clear state we need to rebuild.
+	mb.msgs, mb.bytes, mb.rbytes, mb.fss = 0, 0, 0, nil
+	atomic.StoreUint64(&mb.last.seq, 0)
+	mb.last.ts = 0
+	firstNeedsSet := true
 
 	mb.rbytes = uint64(len(buf))
 
@@ -1482,6 +1490,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	var le = binary.LittleEndian
 
 	truncate := func(index uint32) {
+		// There are cases where we're not allowed to truncate, like for an encrypted or compressed
+		// block since the index will be the decrypted and decompressed index.
+		if !allowTruncate {
+			return
+		}
+
 		var fd *os.File
 		if mb.mfd != nil {
 			fd = mb.mfd
@@ -7167,7 +7181,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 	mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
 	mbLastSeq := atomic.LoadUint64(&mb.last.seq)
-	fseq := mbFirstSeq
 
 	// Sanity check here since we calculate size to allocate based on this.
 	if mbFirstSeq > (mbLastSeq + 1) { // Purged state first == last + 1
@@ -7176,8 +7189,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		return errCorruptState
 	}
 
-	// Capture beginning size of dmap.
-	dms := uint64(mb.dmap.Size())
 	idxSz := mbLastSeq - mbFirstSeq + 1
 
 	if mb.cache == nil {
@@ -7218,7 +7229,9 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	var seq, ttls, schedules uint64
 	var sm StoreMsg // Used for finding TTL headers
 
-	// To ensure the sequence keeps moving up.
+	// To ensure the sequence keeps moving up. As well as confirming our index
+	// is aligned with the mb's first and last sequence.
+	var first uint64
 	var last uint64
 
 	for index < lbuf {
@@ -7259,17 +7272,25 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			index += rl
 			continue
 		}
-		last = seq
-
 		// We defer checksum checks to individual msg cache lookups to amortorize costs and
 		// not introduce latency for first message from a newly loaded block.
 		if seq >= mbFirstSeq {
+			last = seq
+
+			// If the first sequence doesn't align with what we had in-memory, we need to rebuild.
+			if first == 0 {
+				first = seq
+				if mbFirstSeq != first {
+					return errCorruptState
+				}
+			}
+
 			// Track that we do not have holes.
 			if slot := int(seq - mbFirstSeq); slot != len(idx) {
 				// If we have a hole fill it.
 				for dseq := mbFirstSeq + uint64(len(idx)); dseq < seq; dseq++ {
 					idx = append(idx, dbit)
-					if dms == 0 && dseq != 0 {
+					if dseq != 0 {
 						mb.dmap.Insert(dseq)
 					}
 				}
@@ -7278,8 +7299,9 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			idx = append(idx, index)
 
 			// Make sure our dmap has this entry if it was erased.
-			if erased && dms == 0 && seq != 0 {
-				mb.dmap.Insert(seq)
+			// If not, that means this erased message was not accounted for in our in-memory state.
+			if erased && seq != 0 && !mb.dmap.Exists(seq) {
+				return errCorruptState
 			}
 
 			// Handle FSS inline here.
@@ -7314,22 +7336,15 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		index += rl
 	}
 
-	// Track holes at the end of the block, these would be missed in the
-	// earlier loop if we've ran out of block file to look at, but should
-	// be easily noticed because the seq will be below the last seq from
-	// the index.
-	if last > 0 && last+1 >= mbFirstSeq && last+1 <= mbLastSeq {
-		for dseq := last + 1; dseq <= mbLastSeq; dseq++ {
-			idx = append(idx, dbit)
-			if dms == 0 {
-				mb.dmap.Insert(dseq)
-			}
-		}
+	// If we ended up with a smaller or larger index, or the first/last sequence
+	// doesn't align with what we had in-memory, we need to rebuild.
+	if len(idx) != int(idxSz) || (first > 0 && mbFirstSeq != first) || (last > 0 && mbLastSeq != last) {
+		return errCorruptState
 	}
 
 	mb.cache.buf = buf
 	mb.cache.idx = idx
-	mb.cache.fseq = fseq
+	mb.cache.fseq = mbFirstSeq
 	mb.cache.wp = int(lbuf)
 	mb.ttls = ttls
 	mb.schedules = schedules
@@ -7641,11 +7656,12 @@ checkCache:
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
 			var ld *LostStreamData
-			if ld, _, err = mb.rebuildStateLocked(); ld != nil {
-				// We do not know if fs is locked or not at this point.
-				// This should be an exceptional condition so do so in Go routine.
-				go mb.fs.rebuildState(ld)
-			}
+			ld, _, err = mb.rebuildStateLocked()
+			// We do not know if fs is locked or not at this point.
+			// This should be an exceptional condition so do so in Go routine.
+			// Always rebuild the filestore's state if indexing fails, even if no data was lost,
+			// our in-memory state was stale in that case.
+			go mb.fs.rebuildState(ld)
 		}
 		if err != nil {
 			return err
