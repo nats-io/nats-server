@@ -923,21 +923,6 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	return nil
 }
 
-// Remove the peer with the given id from our membership,
-// and adjusts cluster size and quorum accordingly.
-// Lock should be held.
-func (n *raft) removePeer(peer string) {
-	if n.removed == nil {
-		n.removed = map[string]time.Time{}
-	}
-	n.removed[peer] = time.Now()
-	if _, ok := n.peers[peer]; ok {
-		delete(n.peers, peer)
-		n.adjustClusterSizeAndQuorum()
-		n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
-	}
-}
-
 // ProposeRemovePeer is called to remove a peer from the group.
 func (n *raft) ProposeRemovePeer(peer string) error {
 	n.Lock()
@@ -2641,6 +2626,21 @@ func (n *raft) addPeer(peer string) {
 	n.adjustClusterSizeAndQuorum()
 	// Write out our new state.
 	n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+}
+
+// Remove the peer with the given id from our membership,
+// and adjusts cluster size and quorum accordingly.
+// Lock should be held.
+func (n *raft) removePeer(peer string) {
+	if n.removed == nil {
+		n.removed = map[string]time.Time{}
+	}
+	n.removed[peer] = time.Now()
+	if _, ok := n.peers[peer]; ok {
+		delete(n.peers, peer)
+		n.adjustClusterSizeAndQuorum()
+		n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+	}
 }
 
 // Build and send appendEntry request for the given entry that changes
