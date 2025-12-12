@@ -487,7 +487,7 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	require_Equal(t, ss.FirstSeq, 1)
 	require_Equal(t, ss.LastSeq, 20_000)
 	require_Equal(t, ss.Msgs, 2)
-	require_Equal(t, len(ss.Deleted), 2)
+	require_Equal(t, len(ss.Deleted), 1)
 	require_Equal(t, ss.Deleted.NumDeleted(), 19_998)
 }
 
