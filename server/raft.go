@@ -3401,9 +3401,9 @@ func (n *raft) runAsCandidate() {
 	n.requestVote()
 
 	// We vote for ourselves.
-	votes := map[string]struct{}{
-		n.ID(): {},
-	}
+	n.votes.push(&voteResponse{term: n.term, peer: n.ID(), granted: true})
+
+	votes := map[string]struct{}{}
 	emptyVotes := map[string]struct{}{}
 
 	for n.State() == Candidate {
@@ -4210,6 +4210,9 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 	if !shouldStore {
 		ae.returnToPool()
+	}
+	if n.csz == 1 {
+		n.tryCommit(n.pindex)
 	}
 	return nil
 }
