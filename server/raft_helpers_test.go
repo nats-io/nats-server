@@ -402,6 +402,9 @@ func (rg smGroup) waitOnTotal(t *testing.T, expected int64) {
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		var err error
 		for _, sm := range rg {
+			if sm.node().State() == Closed {
+				continue
+			}
 			asm := sm.(*stateAdder)
 			if total := asm.total(); total != expected {
 				err = errors.Join(err, fmt.Errorf("Adder on %v has wrong total: %d vs %d",
