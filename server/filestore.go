@@ -5436,8 +5436,11 @@ func (mb *msgBlock) compactWithFloor(floor uint64) error {
 
 	var le = binary.LittleEndian
 	var firstSet bool
+	var last uint64
+	var msgs uint64
 
 	fseq := atomic.LoadUint64(&mb.first.seq)
+	lseq := atomic.LoadUint64(&mb.last.seq)
 	isDeleted := func(seq uint64) bool {
 		return seq == 0 || seq&ebit != 0 || mb.dmap.Exists(seq) || seq < fseq
 	}
@@ -5457,6 +5460,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) error {
 		}
 		// Only need to process non-deleted messages.
 		seq := le.Uint64(hdr[4:])
+		ts := int64(le.Uint64(hdr[12:]))
 
 		if !isDeleted(seq) {
 			// Check for tombstones.
@@ -5470,10 +5474,16 @@ func (mb *msgBlock) compactWithFloor(floor uint64) error {
 				}
 			} else {
 				// Normal message here.
+				msgs++
 				nbuf = append(nbuf, buf[index:index+rl]...)
 				if !firstSet {
 					firstSet = true
 					atomic.StoreUint64(&mb.first.seq, seq)
+				}
+				if seq >= last {
+					last = seq
+					atomic.StoreUint64(&mb.last.seq, last)
+					mb.last.ts = ts
 				}
 			}
 		}
@@ -5536,6 +5546,17 @@ func (mb *msgBlock) compactWithFloor(floor uint64) error {
 	// Remove any seqs from the beginning of the blk.
 	for seq, nfseq := fseq, atomic.LoadUint64(&mb.first.seq); seq < nfseq; seq++ {
 		mb.dmap.Delete(seq)
+	}
+	// Remove any seqs from the ending of the blk.
+	for seq, nlseq := lseq, atomic.LoadUint64(&mb.last.seq); seq > nlseq; seq-- {
+		mb.dmap.Delete(seq)
+	}
+	// If the block itself has no messages anymore (could still contain tombstones though),
+	// then we need to account for that by resetting the last sequence and timestamp.
+	if msgs == 0 {
+		atomic.StoreUint64(&mb.last.seq, fseq-1)
+		mb.last.ts = 0
+		mb.dmap.Empty()
 	}
 	// Make sure we clear the cache since no longer valid.
 	mb.clearCacheAndOffset()
@@ -6601,6 +6622,14 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 			mb.cache.fseq = seq
 		}
 	} else {
+		// If the block is empty, still adjust the accounting accordingly.
+		tseq := seq &^ tbit
+		if mb.msgs == 0 && tseq > atomic.LoadUint64(&mb.last.seq) {
+			atomic.StoreUint64(&mb.last.seq, tseq)
+			mb.last.ts = ts
+			atomic.StoreUint64(&mb.first.seq, tseq+1)
+			mb.first.ts = 0
+		}
 		// Make sure to account for tombstones in rbytes.
 		mb.rbytes += rl
 	}
