@@ -4357,3 +4357,59 @@ func TestNRGAppendEntryResurrectsLeader(t *testing.T) {
 	require_Equal(t, len(n.peers), 1)
 	require_Equal(t, n.ClusterSize(), 1)
 }
+
+func TestNRGSingleNodeElection(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+
+	// Remove the cluster leader, and then again
+	for range 2 {
+		leader := rg.waitOnLeader().node()
+		require_NoError(t, leader.ProposeRemovePeer(leader.ID()))
+		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+			if leader.State() == Leader {
+				return errors.New("Removed node is still leader")
+			}
+			return nil
+		})
+		require_False(t, leader.MembershipChangeInProgress())
+	}
+
+	// The remaining follower must be able to become leader
+	// on its own
+	newLeader := rg.waitOnLeader()
+	require_Equal(t, len(newLeader.node().Peers()), 1)
+	require_Equal(t, newLeader.node().ClusterSize(), 1)
+	require_False(t, newLeader.node().MembershipChangeInProgress())
+
+	adder := newLeader.(*stateAdder)
+	adder.proposeDelta(1)
+	adder.proposeDelta(10)
+	adder.proposeDelta(100)
+
+	rg.waitOnTotal(t, 111)
+
+	// Add two nodes back
+	rg = append(rg, c.addMemRaftNode("TEST", newStateAdder))
+	rg = append(rg, c.addMemRaftNode("TEST", newStateAdder))
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if newLeader.node().ClusterSize() != 3 {
+			return errors.New("node additions still in progress")
+		}
+		return nil
+	})
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if newLeader.node().MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		}
+		return nil
+	})
+
+	rg.waitOnTotal(t, 111)
+	require_Equal(t, newLeader.node().ClusterSize(), 3)
+	require_False(t, newLeader.node().MembershipChangeInProgress())
+}
