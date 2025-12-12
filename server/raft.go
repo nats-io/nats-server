@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -86,6 +87,7 @@ type RaftNode interface {
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
+	RequestSnapshot() error
 }
 
 type WAL interface {
@@ -202,6 +204,8 @@ type raft struct {
 	vreply string // Vote responses subject
 	asubj  string // Append entries subject
 	areply string // Append entries responses subject
+	ssubj  string // Snapshot request subject
+	sreply string // Snaspshot response subject
 
 	sq    *sendq        // Send queue for outbound RPC messages
 	aesub *subscription // Subscription for handleAppendEntry callbacks
@@ -220,8 +224,10 @@ type raft struct {
 	apply *ipQueue[*CommittedEntry]      // Apply queue (committed entries to be passed to upper layer)
 	reqs  *ipQueue[*voteRequest]         // Vote requests
 	votes *ipQueue[*voteResponse]        // Vote responses
-	leadc chan bool                      // Leader changes
-	quit  chan struct{}                  // Raft group shutdown
+	snaps *ipQueue[*snapshotResponse]    // Snapshot responses
+
+	leadc chan bool     // Leader changes
+	quit  chan struct{} // Raft group shutdown
 
 	lxfer        bool // Are we doing a leadership transfer?
 	hcbehind     bool // Were we falling behind at the last health check? (see: isCurrent)
@@ -236,6 +242,19 @@ type raft struct {
 type proposedEntry struct {
 	*Entry
 	reply string // Optional, to respond once proposal handled
+}
+
+// snapshotRequest is sent by the leader to a follower to request a snapshot.
+type snapshotRequest struct {
+	// TODO include request index
+	Reply string `json:"reply"` // Reply subject
+}
+
+// snapshotResponse is a response to a snapshotRequest
+type snapshotResponse struct {
+	Index uint64
+	Term  uint64
+	Data  []byte
 }
 
 // cacthupState structure that holds our subscription, and catchup term and index
@@ -431,6 +450,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
 		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
 		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
+		snaps:    newIPQueue[*snapshotResponse](s, qpfx+"snapshotResponse"),
 		accName:  accName,
 		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
@@ -1924,6 +1944,35 @@ func (n *raft) Delete() {
 	n.debug("Deleted")
 }
 
+// RequestSnapshot will ask a specific peer to send back a snapshot
+func (n *raft) RequestSnapshot() error {
+	var peerID string
+	n.Lock()
+	for k, _ := range n.peers {
+		peerID = k
+		break
+	}
+	n.Unlock() // Unlock before sending RPC to avoid deadlock if handler needs lock
+
+	if peerID == _EMPTY_ {
+		return fmt.Errorf("raft: no peers to request a snapshot")
+	}
+
+	n.warn("RequestSnapshot %s", peerID)
+
+	// Send the request to the specific peer.
+	req := snapshotRequest{Reply: n.sreply}
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("raft: failed to marshal snapshot request")
+	}
+
+	subject := fmt.Sprintf(raftSnapshotSubj, n.group, peerID)
+	n.sendRPC(subject, _EMPTY_, reqBytes)
+
+	return nil
+}
+
 func (n *raft) shutdown() {
 	// First call to Stop or Delete should close the quit chan
 	// to notify the runAs goroutines to stop what they're doing.
@@ -1940,6 +1989,7 @@ const (
 	raftAppendSubj     = "$NRG.AE.%s"
 	raftPropSubj       = "$NRG.P.%s"
 	raftRemovePeerSubj = "$NRG.RP.%s"
+	raftSnapshotSubj   = "$NRG.SR.%s.%s"
 	raftReply          = "$NRG.R.%s"
 	raftCatchupReply   = "$NRG.CR.%s"
 )
@@ -1987,6 +2037,7 @@ func (n *raft) createInternalSubs() error {
 	n.asubj, n.areply = fmt.Sprintf(raftAppendSubj, n.group), n.newInbox()
 	n.psubj = fmt.Sprintf(raftPropSubj, n.group)
 	n.rpsubj = fmt.Sprintf(raftRemovePeerSubj, n.group)
+	n.ssubj, n.sreply = fmt.Sprintf(raftSnapshotSubj, n.group, n.id), n.newInbox()
 
 	// Votes
 	if _, err := n.subscribe(n.vreply, n.handleVoteResponse); err != nil {
@@ -2004,8 +2055,66 @@ func (n *raft) createInternalSubs() error {
 	} else {
 		n.aesub = sub
 	}
+	// SnapshotRequest
+	if _, err := n.subscribe(n.ssubj, n.handleSnapshotRequest); err != nil {
+		return err
+	}
+	if _, err := n.subscribe(n.sreply, n.handleSnapshotReply); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (n *raft) handleSnapshotRequest(_ *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+	n.Lock()
+	defer n.Unlock()
+
+	var req snapshotRequest
+	var resp snapshotResponse
+
+	if err := json.Unmarshal(msg, &req); err != nil {
+		n.warn("Error unmarshalling snapshot request: %v", err)
+		return
+	}
+
+	snap, err := n.loadLastSnapshot()
+	if err != nil {
+		n.warn("Error loading last snapshot: %v", err)
+		return
+	}
+
+	resp.Index = snap.lastIndex
+	resp.Term = snap.lastTerm
+	resp.Data = snap.data
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		n.warn("Error marshalling snapshot response: %v", err)
+		return
+	}
+	n.warn("send snapshot response %d %d %d", resp.Term, resp.Index, len(resp.Data))
+	n.sendRPC(req.Reply, _EMPTY_, respBytes)
+}
+
+func (n *raft) handleSnapshotReply(_ *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+	var resp snapshotResponse
+	if err := json.Unmarshal(msg, &resp); err != nil {
+		n.warn("Error unmarshalling snapshot response: %v", err)
+		return
+	}
+	n.snaps.push(&resp)
+}
+
+func (n *raft) processSnapshotResponse(snap *snapshotResponse) {
+	n.Lock()
+	defer n.Unlock()
+	n.warn("processSnapshotResponse %d %d %d", snap.Term, snap.Index, len(snap.Data))
+	n.installSnapshot(&snapshot{
+		lastTerm:  snap.Term,
+		lastIndex: snap.Index,
+		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+		data:      snap.Data,
+	})
 }
 
 func randElectionTimeout() time.Duration {
@@ -2863,6 +2972,12 @@ func (n *raft) runAsLeader() {
 			}
 		case <-n.entry.ch:
 			n.processAppendEntries()
+		case <-n.snaps.ch:
+			responses := n.snaps.pop()
+			for _, s := range responses {
+				n.processSnapshotResponse(s)
+			}
+			n.snaps.recycle(&responses)
 		}
 	}
 }
