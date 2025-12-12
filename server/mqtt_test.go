@@ -4204,7 +4204,7 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 		authorization {
 			mqtt_perms = {
 				publish = ["%s"]
-				subscribe = ["foo", "bar", "$MQTT.sub.>"]
+				subscribe = ["foo", "bar"]
 			}
 			users = [
 				{user: mqtt, password: pass, permissions: $mqtt_perms}
@@ -4447,7 +4447,7 @@ func TestMQTTPublishRetainPermViolation(t *testing.T) {
 			Password: "pass",
 			Permissions: &Permissions{
 				Publish:   &SubjectPermission{Allow: []string{"foo"}},
-				Subscribe: &SubjectPermission{Allow: []string{"bar", "$MQTT.sub.>"}},
+				Subscribe: &SubjectPermission{Allow: []string{"bar"}},
 			},
 		},
 		{
@@ -4585,7 +4585,7 @@ func TestMQTTPublishRetainPermViolation(t *testing.T) {
 	consumeRetained("mqtt4", "bat", true)
 }
 
-func TestMQTTPublishViolation(t *testing.T) {
+func TestMQTTPermissionsViolation(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.Users = []*User{
 		{
@@ -4593,7 +4593,19 @@ func TestMQTTPublishViolation(t *testing.T) {
 			Password: "pass",
 			Permissions: &Permissions{
 				Publish:   &SubjectPermission{Allow: []string{"foo.bar"}},
-				Subscribe: &SubjectPermission{Allow: []string{"foo.*", "$MQTT.sub.>"}},
+				Subscribe: &SubjectPermission{Allow: []string{"foo.*"}, Deny: []string{"foo.baz"}},
+			},
+		},
+		{
+			Username: "mqtt2",
+			Password: "pass",
+			Permissions: &Permissions{
+				Publish: &SubjectPermission{Allow: []string{"foo"}},
+				// We use to require explicit allow permission on "$MQTT.sub.>" when any
+				// subscribe permission were provided. We now implicitly allow it, but
+				// we want to make sure that, if needs arise, one can block the server
+				// to subscribe on "$MQTT.sub".
+				Subscribe: &SubjectPermission{Allow: []string{"foo"}, Deny: []string{"$MQTT.sub.>"}},
 			},
 		},
 	}
@@ -4609,6 +4621,8 @@ func TestMQTTPublishViolation(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/+", qos: 1}}, []byte{1})
+	// Should not be allowed to subscribe on specifically on "foo/baz"
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/baz", qos: 1}}, []byte{mqttSubAckFailure})
 	testMQTTFlush(t, mc, nil, rc)
 
 	ci.clientID = "pub"
@@ -4643,6 +4657,18 @@ func TestMQTTPublishViolation(t *testing.T) {
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, true)
 	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/+", qos: 1}}, []byte{1})
 	testMQTTExpectNothing(t, rc)
+	mc.Close()
+
+	ci.cleanSess = true
+	ci.user = "mqtt2"
+	ci.clientID = "sub"
+	mc, rc = testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+	// This should fail because although this user is allowed to subscribe on "foo"
+	// we deny permission to subscribe on "$MQTT.sub.>", so the server won't be
+	// able to create the internal NATS subscription for the JS consumer.
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/baz", qos: 1}}, []byte{mqttSubAckFailure})
 }
 
 func TestMQTTCleanSession(t *testing.T) {
@@ -7930,7 +7956,15 @@ func TestMQTTJSApiMapping(t *testing.T) {
             SYS: { users: [ { user:s, password:x } ] }
             HUB: {
                 jetstream: true
-                users: [ { user:h, password:x } ]
+                users: [
+                    {
+                        user:h
+                        password:x
+                        permissions: {
+                            subscribe: {allow: ["foo", "bar", "_INBOX.>"], deny: ["baz"] }
+                        }
+                    }
+                ]
             }
         }
         system_account: SYS
