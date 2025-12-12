@@ -500,31 +500,31 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	switch sortOpt {
 	case ByCid, ByStart:
-		sort.Sort(byCid{pconns})
+		sort.Sort(SortByCid{pconns})
 	case BySubs:
-		sort.Sort(sort.Reverse(bySubs{pconns}))
+		sort.Sort(sort.Reverse(SortBySubs{pconns}))
 	case ByPending:
-		sort.Sort(sort.Reverse(byPending{pconns}))
+		sort.Sort(sort.Reverse(SortByPending{pconns}))
 	case ByOutMsgs:
-		sort.Sort(sort.Reverse(byOutMsgs{pconns}))
+		sort.Sort(sort.Reverse(SortByOutMsgs{pconns}))
 	case ByInMsgs:
-		sort.Sort(sort.Reverse(byInMsgs{pconns}))
+		sort.Sort(sort.Reverse(SortByInMsgs{pconns}))
 	case ByOutBytes:
-		sort.Sort(sort.Reverse(byOutBytes{pconns}))
+		sort.Sort(sort.Reverse(SortByOutBytes{pconns}))
 	case ByInBytes:
-		sort.Sort(sort.Reverse(byInBytes{pconns}))
+		sort.Sort(sort.Reverse(SortByInBytes{pconns}))
 	case ByLast:
-		sort.Sort(sort.Reverse(byLast{pconns}))
+		sort.Sort(sort.Reverse(SortByLast{pconns}))
 	case ByIdle:
-		sort.Sort(sort.Reverse(byIdle{pconns, c.Now}))
+		sort.Sort(sort.Reverse(SortByIdle{pconns, c.Now}))
 	case ByUptime:
-		sort.Sort(byUptime{pconns, time.Now()})
+		sort.Sort(SortByUptime{pconns, time.Now()})
 	case ByStop:
-		sort.Sort(sort.Reverse(byStop{pconns}))
+		sort.Sort(sort.Reverse(SortByStop{pconns}))
 	case ByReason:
-		sort.Sort(byReason{pconns})
+		sort.Sort(SortByReason{pconns})
 	case ByRTT:
-		sort.Sort(sort.Reverse(byRTT{pconns}))
+		sort.Sort(sort.Reverse(SortByRTT{pconns}))
 	}
 
 	minoff := c.Offset
