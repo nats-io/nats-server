@@ -2438,14 +2438,14 @@ func TestMQTTSubQoS2Restart(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	topic := "foo"
+	pubTopic := "foo/bar"
 
 	publish := func(msg string) {
 		t.Helper()
 		mcp, mpr := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 		defer mcp.Close()
 		testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
-		testMQTTPublish(t, mcp, mpr, 2, false, false, topic, 1, []byte(msg))
+		testMQTTPublish(t, mcp, mpr, 2, false, false, pubTopic, 1, []byte(msg))
 		testMQTTFlush(t, mcp, nil, mpr)
 	}
 
@@ -2454,7 +2454,8 @@ func TestMQTTSubQoS2Restart(t *testing.T) {
 		c, r := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
 		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, present)
 		if !present {
-			testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: topic, qos: 2}}, []byte{2})
+			testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo/bar", qos: 2}}, []byte{2})
+			testMQTTSub(t, 2, c, r, []*mqttFilter{{filter: "foo/+", qos: 2}}, []byte{2})
 			testMQTTFlush(t, c, nil, r)
 		}
 		return c, r
@@ -2463,24 +2464,61 @@ func TestMQTTSubQoS2Restart(t *testing.T) {
 	c, r := createSub(false)
 	defer c.Close()
 
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	checkSub := func(count int) {
+		t.Helper()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			for c := range js.Consumers(mqttOutStreamName) {
+				acc := s.GlobalAccount()
+				res := acc.sl.Match(c.Config.DeliverSubject)
+				if n := len(res.psubs); n != count {
+					return fmt.Errorf("Expected %v subscription on %q, got %v",
+						count, c.Config.DeliverSubject, n)
+				} else {
+					// We got the JS consumer and verified that it has the
+					// expected number of subscription, so we are done.
+					return nil
+				}
+			}
+			// No JS consumer was found.
+			return fmt.Errorf("Did not find a JS consumer for %q", mqttOutStreamName)
+		})
+	}
+	checkSub(1)
+
 	publish("msg1")
 
 	consume := func(msg string) {
 		t.Helper()
-		_, pi := testMQTTGetPubMsg(t, c, r, topic, []byte(msg))
-		testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
-		testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
-		testMQTTSendPIPacket(mqttPacketPubComp, t, c, pi)
+		var pis []uint16
+		for range 2 {
+			b, pl := testMQTTReadPacket(t, r)
+			if pt := b & mqttPacketMask; pt != mqttPacketPub {
+				t.Fatalf("Expected PUBLISH packet %x, got %x", mqttPacketPub, pt)
+			}
+			flags, pi, _, _ := testMQTTGetPubMsgExEx(t, c, r, b, pl, pubTopic, []byte(msg))
+			require_Equal(t, flags, byte(mqttPubQoS2))
+			pis = append(pis, pi)
+		}
+		for _, pi := range pis {
+			testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
+			testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+			testMQTTSendPIPacket(mqttPacketPubComp, t, c, pi)
+		}
 		testMQTTExpectNothing(t, r)
 	}
 
 	consume("msg1")
 	testMQTTDisconnect(t, c, nil)
+	c.Close()
+	checkSub(0)
 
 	publish("msg2")
 
 	c, r = createSub(true)
 	defer c.Close()
+	checkSub(1)
 	consume("msg2")
 
 	publish("msg3")
