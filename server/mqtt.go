@@ -315,6 +315,7 @@ type mqttSession struct {
 	subs                   map[string]byte // Key is MQTT SUBSCRIBE filter, value is the subscription QoS
 	cons                   map[string]*ConsumerConfig
 	pubRelConsumer         *ConsumerConfig
+	pubRelSubscribed       bool
 	pubRelDeliverySubject  string
 	pubRelDeliverySubjectB []byte
 	pubRelSubject          string
@@ -3917,6 +3918,8 @@ CHECK:
 		ec := es.c
 		es.c = c
 		es.clean = cleanSess
+		// Clear this flag so we resubscribe to PUBREL subject is needed.
+		es.pubRelSubscribed = false
 		es.mu.Unlock()
 		if ec != nil {
 			// Remove "will" of existing client before closing
@@ -5235,16 +5238,22 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 
 	sess.mu.Lock()
+	pubRelSubscribed := sess.pubRelSubscribed
 	pubRelDeliverySubjectB := sess.pubRelDeliverySubjectB
 	pubRelDeliverySubject := sess.pubRelDeliverySubject
 	pubRelConsumer := sess.pubRelConsumer
 	sess.mu.Unlock()
 
 	// Subscribe before the consumer is created so we don't loose any messages.
-	_, err := c.processSub(pubRelDeliverySubjectB, nil, pubRelDeliverySubjectB, mqttDeliverPubRelCb, false)
-	if err != nil {
-		c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", pubRelDeliverySubject, err)
-		return err
+	if !pubRelSubscribed {
+		_, err := c.processSub(pubRelDeliverySubjectB, nil, pubRelDeliverySubjectB, mqttDeliverPubRelCb, false)
+		if err != nil {
+			c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", pubRelDeliverySubject, err)
+			return err
+		}
+		sess.mu.Lock()
+		sess.pubRelSubscribed = true
+		sess.mu.Unlock()
 	}
 
 	// If the JS consumer already exists, we are done.
