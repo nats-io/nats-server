@@ -1671,7 +1671,17 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.rdqi.Empty()
 		o.pending = nil
 		o.resetPendingDeliveries()
-		// ok if they are nil, we protect inside unsubscribe()
+		if o.acc != nil && o.acc.sl != nil {
+			if o.ackSub != nil {
+				o.acc.sl.Remove(o.ackSub)
+			}
+			if o.reqSub != nil {
+				o.acc.sl.Remove(o.reqSub)
+			}
+			if o.fcSub != nil {
+				o.acc.sl.Remove(o.fcSub)
+			}
+		}
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
 		o.unsubscribe(o.fcSub)
@@ -6074,6 +6084,19 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	mset := o.mset
 	o.mset = nil
 	o.active = false
+
+	if a != nil && a.sl != nil {
+		if o.ackSub != nil {
+			a.sl.Remove(o.ackSub)
+		}
+		if o.reqSub != nil {
+			a.sl.Remove(o.reqSub)
+		}
+		if o.fcSub != nil {
+			a.sl.Remove(o.fcSub)
+		}
+	}
+
 	o.unsubscribe(o.ackSub)
 	o.unsubscribe(o.reqSub)
 	o.unsubscribe(o.fcSub)
