@@ -3099,7 +3099,8 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 		// Check the filtered subject state and make sure that is tracked properly.
 		checkFiltered := func(subject string, ss SimpleState) {
 			t.Helper()
-			fss := fs.FilteredState(1, subject)
+			fss, err := fs.FilteredState(1, subject)
+			require_NoError(t, err)
 			if fss != ss {
 				t.Fatalf("Expected FilteredState of %+v, got %+v", ss, fss)
 			}
@@ -3394,7 +3395,9 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 		fs.StoreMsg("A", nil, []byte("META"), 0)
 		fs.StoreMsg("B", nil, fill, 0)
 
-		if fss := fs.FilteredState(1, "A"); fss.Msgs != 2 {
+		fss, err := fs.FilteredState(1, "A")
+		require_NoError(t, err)
+		if fss.Msgs != 2 {
 			t.Fatalf("Expected to find 2 `A` msgs, got %d", fss.Msgs)
 		}
 
@@ -3405,7 +3408,9 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("Expected PurgeEx to remove 1 `A` msgs, got %d", n)
 		}
-		if fss := fs.FilteredState(1, "A"); fss.Msgs != 1 {
+		fss, err = fs.FilteredState(1, "A")
+		require_NoError(t, err)
+		if fss.Msgs != 1 {
 			t.Fatalf("Expected to find 1 `A` msgs, got %d", fss.Msgs)
 		}
 	})
@@ -4442,7 +4447,9 @@ func TestFileStoreFSSExpireNumPendingBug(t *testing.T) {
 		_, _, err = fs.StoreMsg("KV.X", nil, []byte("Y"), 0)
 		require_NoError(t, err)
 
-		if fss := fs.FilteredState(1, "KV.X"); fss.Msgs != 1 {
+		fss, err := fs.FilteredState(1, "KV.X")
+		require_NoError(t, err)
+		if fss.Msgs != 1 {
 			t.Fatalf("Expected only 1 msg, got %d", fss.Msgs)
 		}
 	})
@@ -4851,7 +4858,8 @@ func TestFileStoreAllFilteredStateWithDeleted(t *testing.T) {
 		}
 
 		checkFilteredState := func(start, msgs, first, last int) {
-			fss := fs.FilteredState(uint64(start), _EMPTY_)
+			fss, err := fs.FilteredState(uint64(start), _EMPTY_)
+			require_NoError(t, err)
 			if fss.Msgs != uint64(msgs) {
 				t.Fatalf("Expected %d msgs, got %d", msgs, fss.Msgs)
 			}
@@ -7393,8 +7401,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
 	var ss SimpleState
 	fs.mu.RLock()
-	fs.numFilteredPending("foo.baz", &ss)
+	err = fs.numFilteredPending("foo.baz", &ss)
 	fs.mu.RUnlock()
+	require_NoError(t, err)
 	require_Equal(t, ss.Msgs, 2)
 	require_Equal(t, ss.First, 1002)
 	require_Equal(t, ss.Last, 1003)
@@ -7469,8 +7478,9 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
 	var ss SimpleState
 	fs.mu.RLock()
-	fs.numFilteredPending("foo.22.*", &ss)
+	err = fs.numFilteredPending("foo.22.*", &ss)
 	fs.mu.RUnlock()
+	require_NoError(t, err)
 	require_Equal(t, ss.Msgs, 4)
 	require_Equal(t, ss.First, 1003)
 	require_Equal(t, ss.Last, 1006)
@@ -7548,8 +7558,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	// Call into numFilterePending(), we want to make sure it updates fblk.
 	var ss SimpleState
 	fs.mu.Lock()
-	fs.numFilteredPending("foo.22.bar", &ss)
+	err = fs.numFilteredPending("foo.22.bar", &ss)
 	fs.mu.Unlock()
+	require_NoError(t, err)
 	require_Equal(t, ss.Msgs, 3)
 	require_Equal(t, ss.First, 3)
 	require_Equal(t, ss.Last, 7)
@@ -7580,8 +7591,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 
 	// Now call wildcard version of numFilteredPending to make sure it clears.
 	fs.mu.Lock()
-	fs.numFilteredPending("foo.*.baz", &ss)
+	err = fs.numFilteredPending("foo.*.baz", &ss)
 	fs.mu.Unlock()
+	require_NoError(t, err)
 	require_Equal(t, ss.Msgs, 3)
 	require_Equal(t, ss.First, 4)
 	require_Equal(t, ss.Last, 8)

@@ -2604,7 +2604,10 @@ func (mset *stream) purgeLocked(preq *JSApiStreamPurgeRequest, needLock bool) (p
 	// Purge consumers.
 	// Check for filtered purge.
 	if preq != nil && preq.Subject != _EMPTY_ {
-		ss := store.FilteredState(fseq, preq.Subject)
+		ss, err := store.FilteredState(fseq, preq.Subject)
+		if err != nil {
+			return purged, err
+		}
 		fseq = ss.First
 	}
 
