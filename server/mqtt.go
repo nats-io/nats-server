@@ -1968,7 +1968,7 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 //
 // Run from various go routines (JS consumer, etc..).
 // No lock held on entry.
-func (as *mqttAccountSessionManager) processRetainedMsg(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
+func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	h, m := c.msgParts(rmsg)
 	// We need to strip the trailing "\r\n".
 	if l := len(m); l >= LEN_CR_LF {
@@ -3918,6 +3918,8 @@ CHECK:
 		ec := es.c
 		es.c = c
 		es.clean = cleanSess
+		// Clear this flag so we resubscribe to PUBREL subject is needed.
+		es.pubRelSubscribed = false
 		es.mu.Unlock()
 		if ec != nil {
 			// Remove "will" of existing client before closing
@@ -5234,6 +5236,31 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 // Make sure we are set up to deliver PUBREL messages to this QoS2-subscribed
 // session.
 func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
+
+	sess.mu.Lock()
+	pubRelSubscribed := sess.pubRelSubscribed
+	pubRelDeliverySubjectB := sess.pubRelDeliverySubjectB
+	pubRelDeliverySubject := sess.pubRelDeliverySubject
+	pubRelConsumer := sess.pubRelConsumer
+	sess.mu.Unlock()
+
+	// Subscribe before the consumer is created so we don't loose any messages.
+	if !pubRelSubscribed {
+		_, err := c.processSub(pubRelDeliverySubjectB, nil, pubRelDeliverySubjectB, mqttDeliverPubRelCb, false)
+		if err != nil {
+			c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", pubRelDeliverySubject, err)
+			return err
+		}
+		sess.mu.Lock()
+		sess.pubRelSubscribed = true
+		sess.mu.Unlock()
+	}
+
+	// If the JS consumer already exists, we are done.
+	if pubRelConsumer != nil {
+		return nil
+	}
+
 	opts := c.srv.getOpts()
 	ackWait := opts.MQTT.AckWait
 	if ackWait == 0 {
@@ -5245,61 +5272,42 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	}
 
 	sess.mu.Lock()
-	pubRelSubscribed := sess.pubRelSubscribed
 	pubRelSubject := sess.pubRelSubject
-	pubRelDeliverySubjectB := sess.pubRelDeliverySubjectB
-	pubRelDeliverySubject := sess.pubRelDeliverySubject
-	pubRelConsumer := sess.pubRelConsumer
 	tmaxack := sess.tmaxack
 	idHash := sess.idHash
 	id := sess.id
 	sess.mu.Unlock()
 
-	// Subscribe before the consumer is created so we don't loose any messages.
-	if !pubRelSubscribed {
-		_, err := c.processSub(pubRelDeliverySubjectB, nil, pubRelDeliverySubjectB,
-			mqttDeliverPubRelCb, false)
-		if err != nil {
-			c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", pubRelDeliverySubject, err)
-			return err
-		}
-		pubRelSubscribed = true
+	// Check that the limit of subs' maxAckPending are not going over the limit
+	if after := tmaxack + maxAckPending; after > mqttMaxAckTotalLimit {
+		return fmt.Errorf("max_ack_pending for all consumers would be %v which exceeds the limit of %v",
+			after, mqttMaxAckTotalLimit)
 	}
 
-	// Create the consumer if needed.
-	if pubRelConsumer == nil {
-		// Check that the limit of subs' maxAckPending are not going over the limit
-		if after := tmaxack + maxAckPending; after > mqttMaxAckTotalLimit {
-			return fmt.Errorf("max_ack_pending for all consumers would be %v which exceeds the limit of %v",
-				after, mqttMaxAckTotalLimit)
-		}
-
-		ccr := &CreateConsumerRequest{
-			Stream: mqttOutStreamName,
-			Config: ConsumerConfig{
-				DeliverSubject: pubRelDeliverySubject,
-				Durable:        mqttPubRelConsumerDurablePrefix + idHash,
-				AckPolicy:      AckExplicit,
-				DeliverPolicy:  DeliverNew,
-				FilterSubject:  pubRelSubject,
-				AckWait:        ackWait,
-				MaxAckPending:  maxAckPending,
-				MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
-			},
-		}
-		if opts.MQTT.ConsumerInactiveThreshold > 0 {
-			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
-		}
-		if _, err := sess.jsa.createDurableConsumer(ccr); err != nil {
-			c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", id, err)
-			return err
-		}
-		pubRelConsumer = &ccr.Config
-		tmaxack += maxAckPending
+	ccr := &CreateConsumerRequest{
+		Stream: mqttOutStreamName,
+		Config: ConsumerConfig{
+			DeliverSubject: pubRelDeliverySubject,
+			Durable:        mqttPubRelConsumerDurablePrefix + idHash,
+			AckPolicy:      AckExplicit,
+			DeliverPolicy:  DeliverNew,
+			FilterSubject:  pubRelSubject,
+			AckWait:        ackWait,
+			MaxAckPending:  maxAckPending,
+			MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
+		},
 	}
+	if opts.MQTT.ConsumerInactiveThreshold > 0 {
+		ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
+	}
+	if _, err := sess.jsa.createDurableConsumer(ccr); err != nil {
+		c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", id, err)
+		return err
+	}
+	pubRelConsumer = &ccr.Config
+	tmaxack += maxAckPending
 
 	sess.mu.Lock()
-	sess.pubRelSubscribed = pubRelSubscribed
 	sess.pubRelConsumer = pubRelConsumer
 	sess.tmaxack = tmaxack
 	sess.mu.Unlock()
