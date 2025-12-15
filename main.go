@@ -38,12 +38,12 @@ Server Options:
     -c, --config <file>              Configuration file
     -t                               Test configuration and exit
     -sl,--signal <command>[=<pid>]   Send a command to a running nats-server:
-                                       ldm - graceful shutdown (evicts clients gradually) (SIGUSR2)
-                                       quit - graceful shutdown (SIGINT)
-                                       term - graceful shutdown (SIGTERM)
-                                       stop - immediate termination (SIGKILL)
-                                       reload - reload configuration (SIGHUP)
-                                       reopen - reopen log files (SIGUSR1)
+                                       ldm - lame duck mode: evicts clients gradually, then shuts down gracefully (SIGUSR2)
+                                       quit - shuts down gracefully (SIGINT)
+                                       term - shuts down gracefully (SIGTERM)
+                                       stop - terminates immediately (SIGKILL)
+                                       reload - reloads server configuration (SIGHUP)
+                                       reopen - reopens log files (SIGUSR1)
                                      <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/nats-server.pid)
         --client_advertise <string>  Client URL to advertise to other servers
         --ports_file_dir <dir>       Creates a ports file in the specified directory (<executable_name>_<pid>.ports).
