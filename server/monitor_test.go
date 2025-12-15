@@ -1335,7 +1335,7 @@ func TestMonitorConnzSortByIdleTime(t *testing.T) {
 
 	for name, conns := range cases {
 		t.Run(name, func(t *testing.T) {
-			sort.Sort(byIdle{conns, now})
+			sort.Sort(SortByIdle{conns, now})
 
 			idleDurations := getIdleDurations(conns, now)
 
