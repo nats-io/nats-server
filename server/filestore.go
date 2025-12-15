@@ -3197,7 +3197,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 }
 
 // FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.
-func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
+func (fs *fileStore) FilteredState(sseq uint64, subj string) (SimpleState, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -3214,14 +3214,16 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 		// Make sure we track sequences
 		ss.First = fs.state.FirstSeq
 		ss.Last = fs.state.LastSeq
-		return ss
+		return ss, nil
 	}
 
 	// If we want all msgs that match we can shortcircuit.
 	// TODO(dlc) - This can be extended for all cases but would
 	// need to be careful on total msgs calculations etc.
 	if sseq == fs.state.FirstSeq {
-		fs.numFilteredPending(subj, &ss)
+		if err := fs.numFilteredPending(subj, &ss); err != nil {
+			return ss, err
+		}
 	} else {
 		wc := subjectHasWildcard(subj)
 		// Tracking subject state.
@@ -3231,8 +3233,10 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 			if sseq > atomic.LoadUint64(&mb.last.seq) {
 				continue
 			}
-			// FIXME(mvv): error
-			t, f, l, _ := mb.filteredPending(subj, wc, sseq)
+			t, f, l, err := mb.filteredPending(subj, wc, sseq)
+			if err != nil {
+				return ss, err
+			}
 			ss.Msgs += t
 			if ss.First == 0 || (f > 0 && f < ss.First) {
 				ss.First = f
@@ -3243,7 +3247,7 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 		}
 	}
 
-	return ss
+	return ss, nil
 }
 
 // This is used to see if we can selectively jump start blocks based on filter subject and a starting block index.
@@ -3291,20 +3295,20 @@ func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool, bi int) (int, e
 
 // Optimized way for getting all num pending matching a filter subject.
 // Lock should be held.
-func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
-	fs.numFilteredPendingWithLast(filter, true, ss)
+func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) error {
+	return fs.numFilteredPendingWithLast(filter, true, ss)
 }
 
 // Optimized way for getting all num pending matching a filter subject and first sequence only.
 // Lock should be held.
-func (fs *fileStore) numFilteredPendingNoLast(filter string, ss *SimpleState) {
-	fs.numFilteredPendingWithLast(filter, false, ss)
+func (fs *fileStore) numFilteredPendingNoLast(filter string, ss *SimpleState) error {
+	return fs.numFilteredPendingWithLast(filter, false, ss)
 }
 
 // Optimized way for getting all num pending matching a filter subject.
 // Optionally look up last sequence. Sometimes do not need last and this avoids cost.
 // Read lock should be held.
-func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *SimpleState) {
+func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *SimpleState) error {
 	isAll := filter == _EMPTY_ || filter == fwcs
 
 	// If isAll we do not need to do anything special to calculate the first and last and total.
@@ -3312,7 +3316,7 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 		ss.First = fs.state.FirstSeq
 		ss.Last = fs.state.LastSeq
 		ss.Msgs = fs.state.Msgs
-		return
+		return nil
 	}
 	// Always reset.
 	ss.First, ss.Last, ss.Msgs = 0, 0, 0
@@ -3339,14 +3343,16 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 
 	// Did not find anything.
 	if stop == 0 {
-		return
+		return nil
 	}
 
 	// Do start
 	mb := fs.bim[start]
 	if mb != nil {
-		// FIXME(mvv): error
-		_, f, _, _ := mb.filteredPending(filter, wc, 0)
+		_, f, _, err := mb.filteredPending(filter, wc, 0)
+		if err != nil {
+			return err
+		}
 		ss.First = f
 	}
 
@@ -3361,8 +3367,9 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 			if mb == nil {
 				continue
 			}
-			// FIXME(mvv): error
-			if _, f, _, _ := mb.filteredPending(filter, wc, 0); f > 0 {
+			if _, f, _, err := mb.filteredPending(filter, wc, 0); err != nil {
+				return err
+			} else if f > 0 {
 				ss.First = f
 				break
 			}
@@ -3391,11 +3398,14 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 	// Now gather last sequence if asked to do so.
 	if last {
 		if mb = fs.bim[stop]; mb != nil {
-			// FIXME(mvv): error
-			_, _, l, _ := mb.filteredPending(filter, wc, 0)
+			_, _, l, err := mb.filteredPending(filter, wc, 0)
+			if err != nil {
+				return err
+			}
 			ss.Last = l
 		}
 	}
+	return nil
 }
 
 // SubjectsState returns a map of SimpleState for all matching subjects.
@@ -8634,7 +8644,9 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 	// let's check the psim to see if we can skip ahead.
 	if start <= fs.state.FirstSeq {
 		var ss SimpleState
-		fs.numFilteredPendingNoLast(filter, &ss)
+		if err := fs.numFilteredPendingNoLast(filter, &ss); err != nil {
+			return nil, 0, err
+		}
 		// Nothing available.
 		if ss.Msgs == 0 {
 			return nil, fs.state.LastSeq, ErrStoreEOF
@@ -9130,9 +9142,9 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	// If we have a "keep" designation need to get full filtered state so we know how many to purge.
 	var maxp uint64
 	if keep > 0 {
-		ss := fs.FilteredState(1, subject)
-		if keep >= ss.Msgs {
-			return 0, nil
+		ss, err := fs.FilteredState(1, subject)
+		if err != nil || keep >= ss.Msgs {
+			return 0, err
 		}
 		maxp = ss.Msgs - keep
 	}

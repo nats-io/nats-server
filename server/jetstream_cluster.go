@@ -2610,7 +2610,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		// Before we actually calculate the detailed state and encode it, let's check the
 		// simple state to detect any changes.
-		curState := mset.store.FilteredState(0, _EMPTY_)
+		curState, err := mset.store.FilteredState(0, _EMPTY_)
+		if err != nil {
+			// FIXME(mvv): also stop the raft node here?
+			return
+		}
 
 		// If the state hasn't changed but the log has gone way over
 		// the compaction size then we will want to compact anyway.

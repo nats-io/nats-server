@@ -1230,7 +1230,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		o.mu.Unlock()
 	} else {
 		// Select starting sequence number
-		o.selectStartingSeqNo()
+		if err := o.selectStartingSeqNo(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Now register with mset and create the ack subscription.
@@ -5713,7 +5715,7 @@ func (o *consumer) hasSkipListPending() bool {
 }
 
 // Will select the starting sequence.
-func (o *consumer) selectStartingSeqNo() {
+func (o *consumer) selectStartingSeqNo() error {
 	if o.mset == nil || o.mset.store == nil {
 		o.sseq = 1
 	} else {
@@ -5728,7 +5730,10 @@ func (o *consumer) selectStartingSeqNo() {
 				} else {
 					// If we are partitioned here this will be properly set when we become leader.
 					for _, filter := range o.subjf {
-						ss := o.mset.store.FilteredState(1, filter.subject)
+						ss, err := o.mset.store.FilteredState(1, filter.subject)
+						if err != nil {
+							return err
+						}
 						if ss.Last > o.sseq {
 							o.sseq = ss.Last
 						}
@@ -5774,7 +5779,10 @@ func (o *consumer) selectStartingSeqNo() {
 					nseq := state.LastSeq
 					for _, filter := range o.subjf {
 						// Use first sequence since this is more optimized atm.
-						ss := o.mset.store.FilteredState(state.FirstSeq, filter.subject)
+						ss, err := o.mset.store.FilteredState(state.FirstSeq, filter.subject)
+						if err != nil {
+							return err
+						}
 						if ss.First >= o.sseq && ss.First < nseq {
 							nseq = ss.First
 						}
@@ -5816,8 +5824,11 @@ func (o *consumer) selectStartingSeqNo() {
 	// Set our starting sequence state.
 	// But only if we're not clustered, if clustered we propose upon becoming leader.
 	if o.store != nil && o.sseq > 0 && o.cfg.replicas(&o.mset.cfg) == 1 {
-		o.store.SetStarting(o.sseq - 1)
+		if err := o.store.SetStarting(o.sseq - 1); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // Test whether a config represents a durable subscriber.

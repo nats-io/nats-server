@@ -492,13 +492,13 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 }
 
 // FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.
-func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
+func (ms *memStore) FilteredState(sseq uint64, subj string) (SimpleState, error) {
 	// This needs to be a write lock, as filteredStateLocked can
 	// mutate the per-subject state.
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	return ms.filteredStateLocked(sseq, subj, false)
+	return ms.filteredStateLocked(sseq, subj, false), nil
 }
 
 func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubject bool) SimpleState {
@@ -1392,7 +1392,7 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 
 	}
 	eq := compareFn(subject)
-	if ss := ms.FilteredState(1, subject); ss.Msgs > 0 {
+	if ss, _ := ms.FilteredState(1, subject); ss.Msgs > 0 {
 		if keep > 0 {
 			if keep >= ss.Msgs {
 				return 0, nil
