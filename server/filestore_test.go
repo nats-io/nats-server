@@ -3418,15 +3418,19 @@ func TestFileStoreFilteredPendingBug(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		fs.StoreMsg("foo", nil, []byte("msg"), 0)
-		fs.StoreMsg("bar", nil, []byte("msg"), 0)
-		fs.StoreMsg("baz", nil, []byte("msg"), 0)
+		_, _, err = fs.StoreMsg("foo", nil, []byte("msg"), 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("bar", nil, []byte("msg"), 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("baz", nil, []byte("msg"), 0)
+		require_NoError(t, err)
 
 		fs.mu.Lock()
 		mb := fs.lmb
 		fs.mu.Unlock()
 
-		total, f, l := mb.filteredPending("foo", false, 3)
+		total, f, l, err := mb.filteredPending("foo", false, 3)
+		require_NoError(t, err)
 		if total != 0 {
 			t.Fatalf("Expected total of 0 but got %d", total)
 		}
