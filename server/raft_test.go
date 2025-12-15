@@ -1585,6 +1585,10 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	nats1 := "yrzKKRBu" // "nats-1"
 	nats0 := "S1Nunr6R" // "nats-0"
 
+	n.Lock()
+	n.addPeer(nats1)
+	n.Unlock()
+
 	// Timeline, other leader
 	aeMsg1 := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
 	aeMsg2 := encode(t, &appendEntry{leader: nats1, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
@@ -2052,6 +2056,10 @@ func TestNRGHealthCheckWaitForCatchup(t *testing.T) {
 
 	nats0 := "S1Nunr6R" // "nats-0"
 
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
+
 	// Timeline
 	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
@@ -2110,6 +2118,10 @@ func TestNRGHealthCheckWaitForDoubleCatchup(t *testing.T) {
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
+
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
 
 	// Timeline
 	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
@@ -2193,6 +2205,10 @@ func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
 
 	nats0 := "S1Nunr6R" // "nats-0"
 
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
+
 	// Timeline
 	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
@@ -2241,6 +2257,10 @@ func TestNRGAppendEntryCanEstablishQuorumAfterLeaderChange(t *testing.T) {
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
+
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
 
 	// Timeline
 	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
@@ -4038,6 +4058,11 @@ func TestNRGUncommittedMembershipChangeOnNewLeader(t *testing.T) {
 	nats1 := "yrzKKRBu" // "nats-1"
 	nats2 := "cnrtt3eg" // "nats-2"
 
+	n.Lock()
+	n.addPeer(nats1)
+	n.addPeer(nats2)
+	n.Unlock()
+
 	entries := []*Entry{newEntry(EntryRemovePeer, []byte(nats2))}
 	aeRemovePeer := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
 
@@ -4294,4 +4319,41 @@ func TestNRGDisjointMajorities(t *testing.T) {
 
 	require_Equal(t, leader.node().ClusterSize(), 4)
 	require_Equal(t, leader.node().MembershipChangeInProgress(), true)
+}
+
+func TestNRGAppendEntryResurrectsLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	S2 := "z3WIzPtj" // S-2
+
+	n.addPeer(S2)
+
+	require_Equal(t, len(n.peers), 2)
+	require_Equal(t, n.ClusterSize(), 2)
+
+	// PeerRemove S2
+	entries := []*Entry{newEntry(EntryRemovePeer, []byte(S2))}
+	aeRemovePeer := encode(t, &appendEntry{
+		leader: S2, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	n.processAppendEntry(aeRemovePeer, n.aesub)
+
+	// Heartbeat commits the PeerRemove
+	aeHeartBeat := encode(t, &appendEntry{
+		leader: S2, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+	n.processAppendEntry(aeHeartBeat, n.aesub)
+
+	require_Equal(t, len(n.peers), 1)
+	require_Equal(t, n.ClusterSize(), 1)
+
+	// If bug is present: receiving a appendEntry from the old leader
+	// will resurrect it. In practice, this has been observed with
+	// LeaderTransfer entries, but any type of entry will do...
+	aeHeartBeat2 := encode(t, &appendEntry{
+		leader: S2, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+	n.processAppendEntry(aeHeartBeat2, n.aesub)
+
+	// Expect the cluster size to be unchanged
+	require_Equal(t, len(n.peers), 1)
+	require_Equal(t, n.ClusterSize(), 1)
 }
