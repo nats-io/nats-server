@@ -3257,8 +3257,8 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 			tb, ub, _ := fs.Utilization()
 
 			fs.mu.RLock()
-			if len(fs.blks) == 0 {
-				t.Fatalf("No blocks?")
+			if len(fs.blks) < 2 {
+				t.Fatalf("Not enough blocks?")
 			}
 			mb := fs.blks[0]
 			fs.mu.RUnlock()
@@ -3269,7 +3269,7 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 
 			fs.FastState(&ssa)
 			if !reflect.DeepEqual(ssb, ssa) {
-				t.Fatalf("States do not match; %+v vs %+v", ssb, ssa)
+				t.Fatalf("States do not match\n; %+v \nvs %+v", ssb, ssa)
 			}
 			ta, ua, _ := fs.Utilization()
 			if ub != ua {
@@ -3283,6 +3283,16 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 		// Actual testing here.
 		loadMsgs(1000)
 		checkState(1000, 1, 1000)
+
+		// Create a new lmb, since we'll compact the current one and that's not allowed on lmb.
+		fs.mu.RLock()
+		blks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_Len(t, blks, 1)
+		state := fs.State()
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		require_NoError(t, fs.writeTombstone(state.LastSeq, state.LastTime.UnixNano()))
 
 		// Now delete a few messages.
 		deleteMsgs(1)
@@ -3722,7 +3732,7 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		require_NoError(t, err)
 
 		// Make sure we have our state file prior to Purge call.
-		fs.forceWriteFullState()
+		require_NoError(t, fs.forceWriteFullState())
 
 		// Capture the current index.db file.
 		sfile := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
@@ -3740,7 +3750,7 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		require_Equal(t, state.FirstSeq, 1)
 
 		// Make sure we can recover same state.
-		fs.Stop()
+		require_NoError(t, fs.Stop())
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -3752,20 +3762,20 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 
 		// Also make sure we can recover properly with no index.db present.
 		// We want to make sure we preserve any tombstones from the subject based purge.
-		fs.Stop()
-		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
 
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
 		defer fs.Stop()
 
 		if state := fs.State(); !reflect.DeepEqual(state, before) {
-			t.Fatalf("Expected state of %+v, got %+v without index.db state", before, state)
+			t.Fatalf("Expected state of\n %+v, got\n %+v without index.db state", before, state)
 		}
 
 		// If we had an index.db from after PurgeEx but before Stop() would rewrite, make sure we
 		// properly can recover with the old index file. This would be a crash after the PurgeEx() call.
-		fs.Stop()
+		require_NoError(t, fs.Stop())
 		err = os.WriteFile(sfile, buf, defaultFilePerms)
 		require_NoError(t, err)
 
@@ -9630,32 +9640,54 @@ func TestFileStoreAllLastSeqs(t *testing.T) {
 }
 
 func TestFileStoreRecoverDoesNotResetStreamState(t *testing.T) {
-	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 5 * time.Second, Retention: WorkQueuePolicy}
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir()},
-		cfg)
-
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	subj, msg := "foo", []byte("Hello World")
-	toStore := 500
-	for i := 0; i < toStore; i++ {
-		_, _, err := fs.StoreMsg(subj, nil, msg, 0)
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 2 * time.Second, Retention: WorkQueuePolicy}
+		created := time.Now()
+		fcfg.BlockSize = 1024
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
-	}
-	time.Sleep(5 * time.Second)
-	fs, err = newFileStoreWithCreated(fs.fcfg, cfg, time.Now(), prf(&fs.fcfg), nil) //Expire all messages so stream does not hold any message, this is to simulate consumer consuming all messages.
-	require_NoError(t, err)
-	require_NoError(t, fs.Stop())      //To Ensure there is a state file created
-	require_True(t, len(fs.blks) == 1) //Since all messages are expire there should be only 1 blk file exist
-	os.Remove(fs.blks[0].mfn)          // we can change it to have a consumer and consumer all messages too, but removing blk files will simulate same behavior
+		defer fs.Stop()
 
-	//Now at this point stream has only index.db file and no blk files as all are deleted. previously it used to reset the stream state to 0
-	// now it will use index.db to populate stream state if could not be recovered from blk files.
-	fs, err = newFileStoreWithCreated(fs.fcfg, cfg, time.Now(), prf(&fs.fcfg), nil)
-	require_NoError(t, err)
-	require_True(t, fs.state.FirstSeq|fs.state.LastSeq != 0)
+		subj, msg := "foo", []byte("Hello World")
+		toStore := 500
+		for i := 0; i < toStore; i++ {
+			_, _, err := fs.StoreMsg(subj, nil, msg, 0)
+			require_NoError(t, err)
+		}
+		fs.mu.RLock()
+		blks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_True(t, blks > 1)
+
+		// Simulate a consumer consuming all messages, but this test
+		// expires all messages from the stream instead.
+		time.Sleep(2500 * time.Millisecond)
+
+		// Capture the state before stopping the store.
+		fs.mu.RLock()
+		blks = len(fs.blks)
+		var mfn string
+		if blks > 0 {
+			mfn = fs.blks[0].mfn
+		}
+		fs.mu.RUnlock()
+
+		// Stream state should exist after shutting down.
+		require_NoError(t, fs.Stop())
+		_, err = os.Stat(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+		require_NoError(t, err)
+
+		// A single block should have remained, but remove it so we need to restore from the index file.
+		// The first/last sequences should be preserved and restored from the index.
+		require_Len(t, blks, 1)
+		require_NoError(t, os.Remove(mfn))
+
+		fs, err = newFileStoreWithCreated(fs.fcfg, cfg, time.Now(), prf(&fs.fcfg), nil)
+		require_NoError(t, err)
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		require_True(t, fs.state.FirstSeq|fs.state.LastSeq != 0)
+	})
 }
 
 func TestFileStoreAccessTimeSpinUp(t *testing.T) {
@@ -11215,14 +11247,13 @@ func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 		fmb.dmap.Empty()
 		require_NoError(t, fmb.loadMsgsWithLock())
 		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
-		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 6)
+		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 5)
 		require_Equal(t, fmb.msgs, 2)
-		require_Len(t, fmb.dmap.Size(), 3)
+		require_Len(t, fmb.dmap.Size(), 2)
 		require_True(t, fmb.dmap.Exists(3))
 		require_True(t, fmb.dmap.Exists(4))
-		require_True(t, fmb.dmap.Exists(6))
 
-		// Rebuilding should update the last sequence.
+		// Rebuilding should have the state remain the same.
 		_, _, err = fmb.rebuildStateLocked()
 		require_NoError(t, err)
 		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
@@ -11239,18 +11270,17 @@ func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 		fmb.dmap.Empty()
 		require_NoError(t, fmb.loadMsgsWithLock())
 		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
-		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 5)
+		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 2)
 		require_Equal(t, fmb.msgs, 1)
-		require_Len(t, fmb.dmap.Size(), 3)
-		require_True(t, fmb.dmap.Exists(3))
-		require_True(t, fmb.dmap.Exists(4))
-		require_True(t, fmb.dmap.Exists(5))
+		require_Len(t, fmb.dmap.Size(), 0)
 
-		// Rebuilding should update the first/last sequences to a single message.
+		// Rebuilding should have the state remain the same.
 		_, _, err = fmb.rebuildStateLocked()
 		require_NoError(t, err)
 		require_Equal(t, atomic.LoadUint64(&fmb.first.seq), 2)
 		require_Equal(t, atomic.LoadUint64(&fmb.last.seq), 2)
+		require_Equal(t, fmb.msgs, 1)
+		require_Len(t, fmb.dmap.Size(), 0)
 	})
 }
 
@@ -11660,4 +11690,340 @@ func TestFileStoreCompactRewritesFileWithSwap(t *testing.T) {
 	require_NotNil(t, mbcache)
 	require_Len(t, len(mbcache.idx), 1)
 	require_Equal(t, mbcache.idx[0], 0)
+}
+
+func TestFileStoreIndexCacheBufIdxMismatch(t *testing.T) {
+	const (
+		KindTruncateFull = iota
+		KindTruncatePartial
+		KindCompactHead
+		KindCompactTail
+		KindCompact
+	)
+	test := func(t *testing.T, kind int) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			for range 5 {
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+
+			mb := fs.getFirstBlock()
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+
+			var deleted int
+			compactHead := kind == KindCompactHead || kind == KindCompact
+			compactTail := kind == KindCompactTail || kind == KindCompact
+			if compactHead || compactTail {
+				require_Equal(t, atomic.LoadUint64(&mb.first.seq), 1)
+				require_Equal(t, atomic.LoadUint64(&mb.last.seq), 5)
+				if compactHead {
+					atomic.StoreUint64(&mb.first.seq, 2)
+					deleted++
+				}
+				if compactTail {
+					mb.dmap.Insert(5)
+					deleted++
+				}
+				require_NoError(t, mb.compactWithFloor(0, nil))
+
+				// Revert the state, upon reload we need to recognize this.
+				atomic.StoreUint64(&mb.first.seq, 1)
+				atomic.StoreUint64(&mb.last.seq, 5)
+			}
+
+			mb.clearCacheAndOffset()
+			switch kind {
+			case KindTruncateFull:
+				// Truncate to be empty.
+				require_NoError(t, os.Truncate(mb.mfn, 0))
+
+				// When loading messages, we should realize our in-memory state doesn't match what's on disk.
+				// The block needs to be rebuilt and re-indexed.
+				require_NoError(t, mb.loadMsgsWithLock())
+				require_Equal(t, mb.msgs, 0)
+				require_Equal(t, atomic.LoadUint64(&mb.first.seq), 6)
+				require_Equal(t, atomic.LoadUint64(&mb.last.seq), 5)
+				for i := range 5 {
+					seq := uint64(i + 1)
+					_, err = mb.cacheLookup(seq, nil)
+					require_Error(t, err, ErrStoreMsgNotFound)
+				}
+			case KindTruncatePartial:
+				// Truncate to half of the original file.
+				stat, err := os.Stat(mb.mfn)
+				require_NoError(t, err)
+				require_NoError(t, os.Truncate(mb.mfn, stat.Size()/2))
+
+				// When loading messages, we should realize our in-memory state doesn't match what's on disk.
+				// The block needs to be rebuilt and re-indexed.
+				require_NoError(t, mb.loadMsgsWithLock())
+				require_Equal(t, mb.msgs, 2)
+				require_Equal(t, atomic.LoadUint64(&mb.first.seq), 1)
+				require_Equal(t, atomic.LoadUint64(&mb.last.seq), 2)
+				for i := range 5 {
+					seq := uint64(i + 1)
+					_, err = mb.cacheLookup(seq, nil)
+					if seq <= 2 {
+						require_NoError(t, err)
+					} else {
+						require_Error(t, err, ErrStoreMsgNotFound)
+					}
+				}
+			case KindCompact, KindCompactHead, KindCompactTail:
+				// Since we've reverted the state after compacting, our in-memory state doesn't match what's on disk.
+				// The block needs to be rebuilt and re-indexed.
+				require_NoError(t, mb.loadMsgsWithLock())
+				require_Equal(t, mb.msgs, uint64(5-deleted))
+				if compactHead {
+					require_Equal(t, atomic.LoadUint64(&mb.first.seq), 2)
+				} else {
+					require_Equal(t, atomic.LoadUint64(&mb.first.seq), 1)
+				}
+				if compactTail {
+					require_Equal(t, atomic.LoadUint64(&mb.last.seq), 4)
+				} else {
+					require_Equal(t, atomic.LoadUint64(&mb.last.seq), 5)
+				}
+				for i := range 5 {
+					seq := uint64(i + 1)
+					_, err = mb.cacheLookup(seq, nil)
+					if seq == 1 && compactHead {
+						require_Error(t, err, ErrStoreMsgNotFound)
+					} else if seq == 5 && compactTail {
+						require_Error(t, err, ErrStoreMsgNotFound)
+					} else {
+						require_NoError(t, err)
+					}
+				}
+			}
+		})
+	}
+
+	t.Run("TruncateFull", func(t *testing.T) { test(t, KindTruncateFull) })
+	t.Run("TruncatePartial", func(t *testing.T) { test(t, KindTruncatePartial) })
+	t.Run("CompactHead", func(t *testing.T) { test(t, KindCompactHead) })
+	t.Run("CompactTail", func(t *testing.T) { test(t, KindCompactTail) })
+	t.Run("Compact", func(t *testing.T) { test(t, KindCompact) })
+}
+
+func TestFileStoreIndexCacheBufTombstoneMismatch(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 3 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+
+		// Not only clear the cache, also clear the dmap.
+		// indexCacheBuf should still properly index.
+		mb.clearCacheAndOffset()
+		mb.dmap.Empty()
+		require_NoError(t, mb.loadMsgsWithLock())
+
+		mbcache := mb.cache
+		require_NotNil(t, mbcache)
+		require_Len(t, len(mbcache.idx), 3)
+		require_Equal(t, mbcache.idx[0], 0)
+		require_Equal(t, mbcache.idx[1], 33)
+		require_Equal(t, mbcache.idx[2], 66)
+	})
+}
+
+func TestFileStoreIndexCacheBufTombstoneMismatchAfterCompact(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 3 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+
+		require_NoError(t, mb.compactWithFloor(0, nil))
+
+		// Not only clear the cache, also clear the dmap.
+		mb.clearCacheAndOffset()
+		mb.dmap.Empty()
+		require_NoError(t, mb.loadMsgsWithLock())
+
+		require_Equal(t, mb.dmap.Size(), 1)
+		require_True(t, mb.dmap.Exists(2))
+		mbcache := mb.cache
+		require_NotNil(t, mbcache)
+		require_Len(t, len(mbcache.idx), 3)
+		require_Equal(t, mbcache.idx[0], 0)
+		// Since the block was compacted, this will be both dbit and exist in the dmap which is checked above.
+		require_Equal(t, mbcache.idx[1], dbit)
+		// Due to the compact, this message will be one entry earlier in the file than it was before.
+		require_Equal(t, mbcache.idx[2], 33)
+	})
+}
+
+func TestFileStoreIndexCacheBufEraseMsgMismatch(t *testing.T) {
+	fcfg := FileStoreConfig{Cipher: NoCipher, Compression: NoCompression, StoreDir: t.TempDir()}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for range 3 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+	_, err = fs.EraseMsg(2)
+	require_NoError(t, err)
+
+	// Revert the state in the filestore itself, as well as the block.
+	// This simulates recovery based on a stale stream state file that should be recognized during runtime.
+	before := fs.State()
+	fs.mu.Lock()
+	msgs := fs.state.Msgs
+	fs.state.Msgs = 3
+	fs.mu.Unlock()
+	require_Equal(t, msgs, 2)
+
+	mb := fs.getFirstBlock()
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	// Not only clear the cache, also clear the dmap.
+	// indexCacheBuf should still properly index.
+	mb.clearCacheAndOffset()
+	mb.dmap.Empty()
+	require_NoError(t, mb.loadMsgsWithLock())
+
+	mbcache := mb.cache
+	require_NotNil(t, mbcache)
+	require_Len(t, len(mbcache.idx), 3)
+	require_Equal(t, mbcache.idx[0], 0)
+	require_Equal(t, mbcache.idx[1], 33)
+	require_Equal(t, mbcache.idx[2], 66)
+
+	// This looks backwards but is intentional. The above asserts unlock based on the defer if they fail,
+	// so need to do the reverse here while we inspect the filestore as a whole.
+	mb.mu.Unlock()
+	defer mb.mu.Lock()
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			return fmt.Errorf("expected state\n of %+v,\n got %+v", before, state)
+		}
+		return nil
+	})
+}
+
+func TestFileStoreCompactRestoresLastSeq(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var tss []int64
+		for range 4 {
+			_, ts, err := fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			tss = append(tss, ts)
+		}
+
+		checkMbState := func(fseq, lseq, msgs uint64) {
+			t.Helper()
+			mb := fs.getFirstBlock()
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+
+			require_Equal(t, atomic.LoadUint64(&mb.first.seq), fseq)
+			require_Equal(t, atomic.LoadUint64(&mb.last.seq), lseq)
+			require_Equal(t, mb.first.ts, tss[fseq-1])
+			require_Equal(t, mb.last.ts, tss[lseq-1])
+			require_Equal(t, mb.msgs, msgs)
+			deletes := lseq - fseq + 1 - msgs
+			require_Equal(t, mb.dmap.Size(), int(deletes))
+		}
+		checkMbState(1, 4, 4)
+
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+		checkMbState(2, 4, 3)
+
+		_, err = fs.RemoveMsg(4)
+		require_NoError(t, err)
+		checkMbState(2, 4, 2)
+
+		mb := fs.getFirstBlock()
+		mb.mu.Lock()
+		err = mb.compactWithFloor(0, nil)
+		mb.mu.Unlock()
+		require_NoError(t, err)
+		checkMbState(2, 3, 2)
+	})
+}
+
+func TestFileStoreCompactFullyResetsFirstAndLastSeq(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var tss []int64
+		for range 2 {
+			_, ts, err := fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			tss = append(tss, ts)
+		}
+
+		checkMbState := func(fseq, lseq, msgs uint64) {
+			t.Helper()
+			mb := fs.getFirstBlock()
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+
+			require_Equal(t, atomic.LoadUint64(&mb.first.seq), fseq)
+			require_Equal(t, mb.first.ts, tss[fseq-1])
+			if lseq == 0 {
+				require_Equal(t, atomic.LoadUint64(&mb.last.seq), fseq-1)
+				require_Equal(t, mb.last.ts, 0)
+			} else {
+				require_Equal(t, atomic.LoadUint64(&mb.last.seq), lseq)
+				require_Equal(t, mb.last.ts, tss[lseq-1])
+			}
+			require_Equal(t, mb.msgs, msgs)
+			deletes := lseq - fseq + 1 - msgs
+			require_Equal(t, mb.dmap.Size(), int(deletes))
+		}
+		checkMbState(1, 2, 2)
+
+		mb := fs.getFirstBlock()
+		// Load the cache before compacting so that the compact itself needs to (re)load it.
+		require_NoError(t, mb.loadMsgs())
+		mb.mu.Lock()
+		// Manually 'delete' the whole block contents such that a call to rebuildState and indexCacheBuf
+		// can't fix this. A call to compact needs to end with correctly resetting the first and last seq.
+		mb.dmap.Insert(1)
+		mb.dmap.Insert(2)
+		mb.msgs = 0
+		err = mb.compactWithFloor(0, nil)
+		mb.mu.Unlock()
+		require_NoError(t, err)
+		checkMbState(1, 0, 0)
+	})
 }
