@@ -3806,8 +3806,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if isNew && ae.leader != noLeader && ae.leader == n.leader {
 		if ps := n.peers[ae.leader]; ps != nil {
 			ps.ts = time.Now()
-		} else {
-			n.peers[ae.leader] = &lps{time.Now(), 0, true}
 		}
 	}
 

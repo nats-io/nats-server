@@ -3022,7 +3022,7 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 		return sub, nil
 	}
 
-	if err := c.addShadowSubscriptions(acc, sub, true); err != nil {
+	if err := c.addShadowSubscriptions(acc, sub); err != nil {
 		c.Errorf(err.Error())
 	}
 
@@ -3052,10 +3052,7 @@ type ime struct {
 // If the client's account has stream imports and there are matches for this
 // subscription's subject, then add shadow subscriptions in the other accounts
 // that export this subject.
-//
-// enact=false allows MQTT clients to get the list of shadow subscriptions
-// without enacting them, in order to first obtain matching "retained" messages.
-func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact bool) error {
+func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	if acc == nil {
 		return ErrMissingAccount
 	}
@@ -3158,7 +3155,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact b
 	for i := 0; i < len(ims); i++ {
 		ime := &ims[i]
 		// We will create a shadow subscription.
-		nsub, err := c.addShadowSub(sub, ime, enact)
+		nsub, err := c.addShadowSub(sub, ime)
 		if err != nil {
 			return err
 		}
@@ -3175,7 +3172,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact b
 }
 
 // Add in the shadow subscription.
-func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscription, error) {
+func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error) {
 	c.mu.Lock()
 	nsub := *sub // copy
 	c.mu.Unlock()
@@ -3202,10 +3199,6 @@ func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscri
 		}
 	}
 	// Else use original subject
-
-	if !enact {
-		return &nsub, nil
-	}
 
 	c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
 
@@ -3237,7 +3230,7 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 		return true
 	}
 
-	allowed := true
+	allowed, checkAllow := true, true
 
 	// Optional queue group.
 	var queue string
@@ -3245,8 +3238,14 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 		queue = optQueue[0]
 	}
 
+	// For CLIENT connections that are MQTT, or other types of connections, we will
+	// implicitly allow anything that starts with the "$MQTT." prefix. However,
+	// we don't just return here, we skip the check for "allow" but will check "deny".
+	if (c.isMqtt() || (c.kind != CLIENT)) && strings.HasPrefix(subject, mqttPrefix) {
+		checkAllow = false
+	}
 	// Check allow list. If no allow list that means all are allowed. Deny can overrule.
-	if c.perms.sub.allow != nil {
+	if checkAllow && c.perms.sub.allow != nil {
 		r := c.perms.sub.allow.Match(subject)
 		allowed = len(r.psubs) > 0
 		if queue != _EMPTY_ && len(r.qsubs) > 0 {
@@ -4063,9 +4062,15 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 	if ok {
 		return v.(bool)
 	}
-	allowed := true
+	allowed, checkAllow := true, true
+	// For CLIENT connections that are MQTT, or other types of connections, we will
+	// implicitly allow anything that starts with the "$MQTT." prefix. However,
+	// we don't just return here, we skip the check for "allow" but will check "deny".
+	if (c.isMqtt() || c.kind != CLIENT) && strings.HasPrefix(subject, mqttPrefix) {
+		checkAllow = false
+	}
 	// Cache miss, check allow then deny as needed.
-	if c.perms.pub.allow != nil {
+	if checkAllow && c.perms.pub.allow != nil {
 		np, _ := c.perms.pub.allow.NumInterest(subject)
 		allowed = np != 0
 	}
@@ -5796,7 +5801,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 		oldShadows := sub.shadow
 		sub.shadow = nil
 		c.mu.Unlock()
-		c.addShadowSubscriptions(acc, sub, true)
+		c.addShadowSubscriptions(acc, sub)
 		for _, nsub := range oldShadows {
 			nsub.im.acc.sl.Remove(nsub)
 		}

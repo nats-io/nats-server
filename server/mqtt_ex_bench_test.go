@@ -187,8 +187,6 @@ func (bc mqttBenchContext) runAndReport(b *testing.B, name string, extraArgs ...
 func (bc *mqttBenchContext) startServer(b *testing.B, disableRMSCache bool) func() {
 	b.Helper()
 	b.StopTimer()
-	prevDisableRMSCache := testDisableRMSCache
-	testDisableRMSCache = disableRMSCache
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(b, o)
 
@@ -198,15 +196,12 @@ func (bc *mqttBenchContext) startServer(b *testing.B, disableRMSCache bool) func
 	mqttInitTestServer(b, mqttNewDial("", "", bc.Host, bc.Port, ""))
 	return func() {
 		testMQTTShutdownServer(s)
-		testDisableRMSCache = prevDisableRMSCache
 	}
 }
 
 func (bc *mqttBenchContext) startCluster(b *testing.B, disableRMSCache bool) func() {
 	b.Helper()
 	b.StopTimer()
-	prevDisableRMSCache := testDisableRMSCache
-	testDisableRMSCache = disableRMSCache
 	conf := `
 		listen: 127.0.0.1:-1
 		server_name: %s
@@ -234,7 +229,6 @@ func (bc *mqttBenchContext) startCluster(b *testing.B, disableRMSCache bool) fun
 	mqttInitTestServer(b, mqttNewDial("", "", bc.Host, bc.Port, ""))
 	return func() {
 		cl.shutdown()
-		testDisableRMSCache = prevDisableRMSCache
 	}
 }
 
