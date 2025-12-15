@@ -1287,8 +1287,13 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 // headers and msgId in them. Would need signaling from the storage layer.
 // mset.mu and mset.ddMu locks should be held.
 func (mset *stream) rebuildDedupe() {
+	duplicates := mset.cfg.Duplicates
+	if duplicates <= 0 {
+		return
+	}
+
 	// We have some messages. Lookup starting sequence by duplicate time window.
-	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.cfg.Duplicates))
+	sseq := mset.store.GetSeqFromTime(time.Now().Add(-duplicates))
 	if sseq == 0 {
 		return
 	}
@@ -1578,7 +1583,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	if cfg.MaxAge != 0 && cfg.MaxAge < 100*time.Millisecond {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms"))
 	}
-	if cfg.Duplicates == 0 && cfg.Mirror == nil {
+	if cfg.Duplicates == 0 && cfg.Mirror == nil && len(cfg.Sources) == 0 {
 		maxWindow := StreamDefaultDuplicatesWindow
 		if lim.Duplicates > 0 && maxWindow > lim.Duplicates {
 			if pedantic {
@@ -4765,6 +4770,11 @@ func (mset *stream) storeMsgId(dde *ddentry) {
 // storeMsgIdLocked will store the message id for duplicate detection.
 // mset.ddMu lock should be held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
+	// Zero means disabled.
+	if mset.cfg.Duplicates <= 0 {
+		return
+	}
+
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)
 	}
