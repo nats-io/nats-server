@@ -1925,8 +1925,9 @@ func TestFileStoreSnapshot(t *testing.T) {
 			// Should not call compact on last msg block.
 			if mb != fs.lmb {
 				mb.mu.Lock()
-				mb.compact()
+				err = mb.compact()
 				mb.mu.Unlock()
+				require_NoError(t, err)
 			}
 		}
 		fs.mu.RUnlock()
@@ -3293,8 +3294,9 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 			fs.mu.RUnlock()
 
 			mb.mu.Lock()
-			mb.compact()
+			err = mb.compact()
 			mb.mu.Unlock()
+			require_NoError(t, err)
 
 			fs.FastState(&ssa)
 			if !reflect.DeepEqual(ssb, ssa) {
@@ -3366,8 +3368,14 @@ func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
 		// Do compact by hand, make sure we can still access msgs past the interior deletes.
 		fs.mu.RLock()
 		lmb := fs.lmb
-		lmb.dirtyCloseWithRemove(false)
-		lmb.compact()
+		if err = lmb.dirtyCloseWithRemove(false); err != nil {
+			fs.mu.RUnlock()
+			require_NoError(t, err)
+		}
+		if err = lmb.compact(); err != nil {
+			fs.mu.RUnlock()
+			require_NoError(t, err)
+		}
 		fs.mu.RUnlock()
 
 		if _, err = fs.LoadMsg(900, nil); err != nil {
@@ -3732,8 +3740,9 @@ func TestFileStoreRebuildStateDmapAccountingBug(t *testing.T) {
 		check()
 
 		mb.mu.Lock()
-		mb.compact()
+		err = mb.compact()
 		mb.mu.Unlock()
+		require_NoError(t, err)
 
 		// Now delete first.
 		_, err = fs.RemoveMsg(1)
@@ -6059,8 +6068,9 @@ func TestFileStoreMsgBlockCompactionAndHoles(t *testing.T) {
 
 	// Do compaction, should remove all excess now.
 	mb.mu.Lock()
-	mb.compact()
+	err = mb.compact()
 	mb.mu.Unlock()
+	require_NoError(t, err)
 
 	ta, ua, _ := fs.Utilization()
 	require_Equal(t, ub, ua)
@@ -6892,8 +6902,9 @@ func TestFileStoreEraseMsgWithDbitSlots(t *testing.T) {
 	fs.mu.RUnlock()
 	// Compact.
 	mb.mu.Lock()
-	mb.compact()
+	err = mb.compact()
 	mb.mu.Unlock()
+	require_NoError(t, err)
 
 	removed, err := fs.EraseMsg(1)
 	require_NoError(t, err)
@@ -6920,8 +6931,9 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	fs.mu.RUnlock()
 	// Compact.
 	mb.mu.Lock()
-	mb.compact()
+	err = mb.compact()
 	mb.mu.Unlock()
+	require_NoError(t, err)
 
 	removed, err := fs.EraseMsg(2)
 	require_NoError(t, err)
@@ -7231,8 +7243,9 @@ func TestFileStoreRecoverWithRemovesAndNoIndexDB(t *testing.T) {
 	lmb := fs.lmb
 	fs.mu.RUnlock()
 	lmb.mu.Lock()
-	lmb.compact()
+	err = lmb.compact()
 	lmb.mu.Unlock()
+	require_NoError(t, err)
 	// Stop but remove index.db
 	sfile := filepath.Join(sd, msgDir, streamStreamStateFile)
 	fs.Stop()
@@ -7930,7 +7943,10 @@ func TestFileStoreDmapBlockRecoverAfterCompact(t *testing.T) {
 	// Compact and rebuild the first blk. Do not have it call indexCacheBuf which will fix it up.
 	mb := fs.getFirstBlock()
 	mb.mu.Lock()
-	mb.compact()
+	if err = mb.compact(); err != nil {
+		mb.mu.Unlock()
+		require_NoError(t, err)
+	}
 	// Empty out dmap state.
 	mb.dmap.Empty()
 	ld, tombs, err := mb.rebuildStateLocked()
@@ -8062,9 +8078,10 @@ func TestFileStoreRestoreDeleteTombstonesExceedingMaxBlkSize(t *testing.T) {
 			mb.ensureRawBytesLoaded()
 			bytes, rbytes, shouldCompact := mb.bytes, mb.rbytes, mb.shouldCompactSync()
 			// Do the compact and make sure nothing changed.
-			mb.compact()
+			err = mb.compact()
 			nbytes, nrbytes := mb.bytes, mb.rbytes
 			mb.mu.Unlock()
+			require_NoError(t, err)
 			require_True(t, shouldCompact)
 			require_Equal(t, bytes, nbytes)
 			require_Equal(t, rbytes, nrbytes)
@@ -8966,7 +8983,7 @@ func TestFileStoreDontSpamCompactWhenMostlyTombstones(t *testing.T) {
 	require_True(t, fmb.shouldCompactInline())
 
 	// Compact will be successful, but since it doesn't clean up tombstones it will be ineffective.
-	fmb.compact()
+	require_NoError(t, fmb.compact())
 
 	// We should not allow compacting again as we're not removing tombstones inline.
 	// Otherwise, we would spam compaction.
@@ -11339,7 +11356,7 @@ func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 		require_True(t, fmb.dmap.Exists(6))
 
 		// Now compact and reload and the block should still have the correct deletes.
-		fmb.compact()
+		require_NoError(t, fmb.compact())
 		fmb.clearCache()
 		fmb.dmap.Empty()
 		require_NoError(t, fmb.loadMsgsWithLock())
@@ -11362,7 +11379,7 @@ func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 		_, err = fs.RemoveMsg(5)
 		fmb.mu.Lock()
 		require_NoError(t, err)
-		fmb.compact()
+		require_NoError(t, fmb.compact())
 		fmb.clearCache()
 		fmb.dmap.Empty()
 		require_NoError(t, fmb.loadMsgsWithLock())
