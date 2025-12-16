@@ -6136,17 +6136,21 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.srv.Warnf("Filesystem permission denied while writing msg, disabling JetStream: %v", err)
 			return err
 		}
-		// If we did not succeed increment clfs in case we are clustered.
-		bumpCLFS()
 
 		switch err {
 		case ErrMaxMsgs, ErrMaxBytes, ErrMaxMsgsPerSubject, ErrMsgTooLarge:
 			s.RateLimitDebugf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
 		case ErrStoreClosed:
 		default:
+			// We don't want to respond back to the user, and definitely not up CLFS either.
+			// This was likely an IO issue, so only log and return the error. This will stop
+			// the stream if it was replicated.
 			s.Errorf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
+			return err
 		}
 
+		// If we did not succeed increment clfs in case we are clustered.
+		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSStreamStoreFailedError(err, Unless(err))

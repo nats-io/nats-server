@@ -4448,6 +4448,7 @@ func (n *raft) setWriteErrLocked(err error) {
 	}
 	n.error("Critical write error: %v", err)
 	n.werr = err
+	n.shutdown()
 
 	if isPermissionError(err) {
 		go n.s.handleWritePermissionError()

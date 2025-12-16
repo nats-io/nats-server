@@ -2609,11 +2609,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		// Before we actually calculate the detailed state and encode it, let's check the
 		// simple state to detect any changes.
-		curState, err := mset.store.FilteredState(0, _EMPTY_)
-		if err != nil {
-			// FIXME(mvv): also stop the raft node here?
-			return
-		}
+		curState, _ := mset.store.FilteredState(0, _EMPTY_)
 
 		// If the state hasn't changed but the log has gone way over
 		// the compaction size then we will want to compact anyway.
@@ -2626,10 +2622,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		// Make sure all pending data is flushed before allowing snapshots.
 		if err := mset.flushAllPending(); err != nil {
-			// FIXME(mvv): stop the raft node on error? if the stream is not able to flush, having the raft node
-			//  continue will only grow the log indefinitely. Do check for similar errors like ErrStoreClosed
-			//  that are normal and can be ignored since we'd already be stopping at that point.
-			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
+			// If the pending data couldn't be flushed, we have no safe way to continue.
+			s.Errorf("Failed to flush pending data for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
+			n.Stop()
 		} else if err = n.InstallSnapshot(mset.stateSnapshot()); err == nil {
 			lastState = curState
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
@@ -2785,7 +2780,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						aq.recycle(&ces)
 						return
 					}
-					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
+					s.Errorf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
 					if isClusterResetErr(err) {
 						if mset.isMirror() && mset.IsLeader() {
 							mset.retryMirrorConsumer()
@@ -2807,6 +2802,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					} else if isOutOfSpaceErr(err) {
 						// If applicable this will tear all of this down, but don't assume so and return.
 						s.handleOutOfSpace(mset)
+					} else {
+						// Encountered an unexpected error, can't continue.
+						aq.recycle(&ces)
+						return
 					}
 				}
 			}
@@ -3849,6 +3848,11 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		}
 		s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
 			mset.accountLocked(needLock), mset.nameLocked(needLock), err)
+
+		// There are some errors that we can't recover from.
+		if err != ErrMaxMsgs && err != ErrMaxBytes && err != ErrMaxMsgsPerSubject && err != ErrMsgTooLarge && err != ErrStoreClosed {
+			return err
+		}
 	}
 	return nil
 }

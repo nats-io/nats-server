@@ -3772,31 +3772,26 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	js.mu.RUnlock()
 
 	// If no meta leader.
-	if meta == nil || meta.GroupLeader() == _EMPTY_ {
-		if !details {
-			health.Status = na
-			health.Error = "JetStream has not established contact with a meta leader"
+	metaNoLeader := meta != nil && meta.GroupLeader() == _EMPTY_
+	metaClosed := meta != nil && meta.State() == Closed
+	metaUnhealthy := meta != nil && !meta.Healthy()
+	if meta == nil || metaNoLeader || metaClosed || metaUnhealthy {
+		var desc string
+		if metaClosed {
+			desc = "JetStream meta layer is not running"
+		} else if meta == nil || metaNoLeader {
+			desc = "JetStream has not established contact with a meta leader"
 		} else {
-			health.Errors = []HealthzError{
-				{
-					Type:  HealthzErrorJetStream,
-					Error: "JetStream has not established contact with a meta leader",
-				},
-			}
+			desc = "JetStream is not current with the meta leader"
 		}
-		return health
-	}
-
-	// If we are not current with the meta leader.
-	if !meta.Healthy() {
 		if !details {
 			health.Status = na
-			health.Error = "JetStream is not current with the meta leader"
+			health.Error = desc
 		} else {
 			health.Errors = []HealthzError{
 				{
 					Type:  HealthzErrorJetStream,
-					Error: "JetStream is not current with the meta leader",
+					Error: desc,
 				},
 			}
 		}

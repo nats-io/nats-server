@@ -5156,6 +5156,10 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 func (fs *fileStore) FlushAllPending() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	// Return previous write errors immediately.
+	if fs.werr != nil {
+		return fs.werr
+	}
 	return fs.checkAndFlushLastBlock()
 }
 
@@ -7988,7 +7992,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Check if we are in sync always mode.
 	if mb.syncAlways {
-		if err := mb.mfd.Sync(); err != nil {
+		if err = mb.mfd.Sync(); err != nil {
 			mb.werr = err
 			return nil, err
 		}
