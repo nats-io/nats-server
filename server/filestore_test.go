@@ -3292,7 +3292,9 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 			if ub != ua {
 				t.Fatalf("Expected used to be the same, got %d vs %d", ub, ua)
 			}
-			if ta >= tb {
+			// When using both encryption and compression, we're not always
+			// guaranteed to have a smaller file after compaction.
+			if ta >= tb && (fcfg.Cipher == NoCipher || fcfg.Compression == NoCompression) {
 				t.Fatalf("Expected total after to be less then before, got %d vs %d", tb, ta)
 			}
 		}
