@@ -1929,24 +1929,21 @@ func TestFileStoreSnapshot(t *testing.T) {
 		snap = snapshot()
 		verifySnapshot(snap)
 
-		// Now check to make sure that we get the correct error when trying to delete or erase
-		// a message when a snapshot is in progress and that closing the reader releases that condition.
+		// Now check to make sure that we can still delete/erase messages.
 		sr, err := fs.Snapshot(5*time.Second, false, true)
 		if err != nil {
 			t.Fatalf("Error creating snapshot")
 		}
-		if _, err := fs.RemoveMsg(122); err != ErrStoreSnapshotInProgress {
-			t.Fatalf("Did not get the correct error on remove during snapshot: %v", err)
-		}
-		if _, err := fs.EraseMsg(122); err != ErrStoreSnapshotInProgress {
-			t.Fatalf("Did not get the correct error on remove during snapshot: %v", err)
-		}
+		_, err = fs.RemoveMsg(122)
+		require_NoError(t, err)
 
 		// Now make sure we can do these when we close the reader and release the snapshot condition.
 		sr.Reader.Close()
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if _, err := fs.RemoveMsg(122); err != nil {
-				return fmt.Errorf("Got an error on remove after snapshot: %v", err)
+			fs.mu.RLock()
+			defer fs.mu.RUnlock()
+			if fs.sips != 0 {
+				return errors.New("snapshot is not finished")
 			}
 			return nil
 		})
@@ -1964,6 +1961,37 @@ func TestFileStoreSnapshot(t *testing.T) {
 		if _, err := sr.Reader.Read(buf[:]); err != io.EOF {
 			t.Fatalf("Expected read to produce an error, got none")
 		}
+	})
+}
+
+func TestFileStoreSnapshotAndSyncBlocks(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		scfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		fs, err := newFileStoreWithCreated(fcfg, scfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fs.cancelSyncTimer()
+		fs.syncBlocks()
+
+		fs.mu.Lock()
+		if fs.syncTmr == nil {
+			fs.mu.Unlock()
+			t.Fatal("Expected sync timer to be set")
+		}
+		// Simulate a snapshot being in progress. This should not prevent us syncing blocks.
+		fs.sips++
+		fs.mu.Unlock()
+
+		fs.cancelSyncTimer()
+		fs.syncBlocks()
+
+		fs.mu.Lock()
+		if fs.syncTmr == nil {
+			fs.mu.Unlock()
+			t.Fatal("Expected sync timer to be set")
+		}
+		fs.mu.Unlock()
 	})
 }
 

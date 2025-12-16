@@ -4875,10 +4875,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		fsUnlock()
 		return false, ErrStoreClosed
 	}
-	if !viaLimits && fs.sips > 0 {
-		fsUnlock()
-		return false, ErrStoreSnapshotInProgress
-	}
 	// If in encrypted mode negate secure rewrite here.
 	if secure && fs.prf != nil {
 		secure = false
@@ -6612,8 +6608,7 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
 	fs.mu.Lock()
-	// If closed or a snapshot is in progress bail.
-	if fs.closed || fs.sips > 0 {
+	if fs.closed {
 		fs.mu.Unlock()
 		return
 	}
@@ -8877,10 +8872,6 @@ func (fs *fileStore) reset() error {
 		fs.mu.Unlock()
 		return ErrStoreClosed
 	}
-	if fs.sips > 0 {
-		fs.mu.Unlock()
-		return ErrStoreSnapshotInProgress
-	}
 
 	var purged, bytes uint64
 	cb := fs.scb
@@ -8976,10 +8967,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	if fs.closed {
 		fs.mu.Unlock()
 		return ErrStoreClosed
-	}
-	if fs.sips > 0 {
-		fs.mu.Unlock()
-		return ErrStoreSnapshotInProgress
 	}
 
 	// Any existing state file will no longer be applicable. We will force write a new one
