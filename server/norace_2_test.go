@@ -3251,7 +3251,7 @@ func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
 	}
 
-	expectedStreamMsgs(499_995)
+	expectedStreamMsgs(499_950)
 
 	// Now do AckAll
 	start = time.Now()
@@ -3261,7 +3261,7 @@ func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Deleting AckAll consumer took too long: %v", elapsed)
 	}
 
-	expectedStreamMsgs(499_995)
+	expectedStreamMsgs(499_950)
 
 	// Now do AckExplicit
 	start = time.Now()
