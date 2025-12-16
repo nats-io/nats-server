@@ -10424,3 +10424,50 @@ func TestJetStreamConsumerNoWaitNoMessagesOnEosWithDeliveredMsgs(t *testing.T) {
 	require_Equal(t, msg.Header.Get("Status"), "404")
 	require_Equal(t, msg.Header.Get("Description"), "No Messages")
 }
+
+func TestJetStreamConsumerEfficientInterestStateCheck(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: InterestPolicy,
+		Subjects:  []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER", nats.BindStream("TEST"))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, mset.store.SkipMsgs(3, 10_000_000))
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	// Only acknowledge the first message, but the last two will have been marked as delivered.
+	// This will create a very large gap between the ack floor and the delivered sequence.
+	msgs, err := sub.Fetch(3)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 3)
+	require_NoError(t, msgs[0].AckSync())
+
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// We used to do a linear scan, which was terribly slow for this case. Instead,
+	// we should efficiently skip over deletes or messages that don't match our filter.
+	var ss StreamState
+	mset.store.FastState(&ss)
+	start := time.Now()
+	require_NoError(t, o.checkStateForInterestStream(&ss))
+	elapsed := time.Since(start)
+	require_LessThan(t, elapsed, 50*time.Millisecond)
+}
