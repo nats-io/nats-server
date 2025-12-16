@@ -40,6 +40,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/ats"
@@ -4819,6 +4820,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	defer func() {
 		if err != nil && fs.werr == nil {
 			fs.werr = err
+			assert.Unreachable("Filestore encountered error during write", map[string]any{
+				"name": fs.cfg.Name,
+				"err":  err,
+			})
 		}
 	}()
 
@@ -6934,6 +6939,11 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	defer func() {
 		if rerr != nil && mb.werr == nil {
 			mb.werr = rerr
+			assert.Unreachable("Filestore msg block encountered write error", map[string]any{
+				"name":     mb.fs.cfg.Name,
+				"mb.index": mb.index,
+				"err":      rerr,
+			})
 		}
 	}()
 
@@ -7453,6 +7463,10 @@ func (fs *fileStore) syncBlocks() {
 	storeFsWerrLocked := func(err error) {
 		if fs.werr == nil {
 			fs.werr = err
+			assert.Unreachable("Filestore encountered error during sync", map[string]any{
+				"name": fs.cfg.Name,
+				"err":  err,
+			})
 		}
 	}
 	storeFsWerr := func(err error) {
@@ -7975,6 +7989,11 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 			_ = mb.dirtyCloseWithRemove(false)
 			ld, _, _ := mb.rebuildStateLocked()
 			mb.werr = err
+			assert.Unreachable("Filestore msg block encountered flush error", map[string]any{
+				"name":     mb.fs.cfg.Name,
+				"mb.index": mb.index,
+				"err":      err,
+			})
 			return ld, err
 		}
 		// Update our write offset.
@@ -7994,6 +8013,11 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	if mb.syncAlways {
 		if err = mb.mfd.Sync(); err != nil {
 			mb.werr = err
+			assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
+				"name":     mb.fs.cfg.Name,
+				"mb.index": mb.index,
+				"err":      err,
+			})
 			return nil, err
 		}
 	} else {

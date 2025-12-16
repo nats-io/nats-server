@@ -4449,6 +4449,12 @@ func (n *raft) setWriteErrLocked(err error) {
 	n.error("Critical write error: %v", err)
 	n.werr = err
 	n.shutdown()
+	assert.Unreachable("Raft encountered write error", map[string]any{
+		"n.accName": n.accName,
+		"n.group":   n.group,
+		"n.id":      n.id,
+		"err":       err,
+	})
 
 	if isPermissionError(err) {
 		go n.s.handleWritePermissionError()
