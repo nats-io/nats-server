@@ -5531,7 +5531,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				var state StreamState
 				mset.store.FastState(&state)
 				if state.FirstSeq == 0 {
-					mset.store.Compact(lseq + 1)
+					if _, err := mset.store.Compact(lseq + 1); err != nil {
+						return err
+					}
 					mset.lseq = lseq
 					isMisMatch = false
 				}
@@ -6183,14 +6185,20 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// No errors, this is the normal path.
 	if rollupSub {
-		mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1}, false)
+		if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1}, false); err != nil {
+			return err
+		}
 	} else if rollupAll {
-		mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: 1}, false)
+		if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: 1}, false); err != nil {
+			return err
+		}
 	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
 		// Purge the message schedule.
 		scheduler := getMessageScheduler(hdr)
 		if scheduler != _EMPTY_ {
-			mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false)
+			if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false); err != nil {
+				return err
+			}
 		}
 	}
 
