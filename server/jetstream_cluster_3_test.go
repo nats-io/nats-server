@@ -6564,3 +6564,69 @@ func TestJetStreamClusterDiscardNewPerSubjectRejectsWithoutCLFSBump(t *testing.T
 		require_Equal(t, mset.getCLFS(), 0)
 	}
 }
+
+func TestJetStreamClusterStreamDesyncDuringSnapshot(t *testing.T) {
+	const (
+		KindRemoveMsg = iota
+		KindReset
+		KindTruncate
+	)
+	test := func(t *testing.T, kind int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: 3,
+			Storage:  nats.FileStorage,
+		})
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+		pubAck, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 2)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+		mset, err := rs.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		fs := mset.store.(*fileStore)
+		fs.mu.Lock()
+		fs.sips++
+		fs.mu.Unlock()
+
+		switch kind {
+		case KindRemoveMsg:
+			require_NoError(t, js.DeleteMsg("TEST", 1))
+		case KindReset:
+			for _, s := range c.servers {
+				mset, err = s.globalAccount().lookupStream("TEST")
+				require_NoError(t, err)
+				require_NoError(t, mset.store.Truncate(0))
+			}
+		case KindTruncate:
+			for _, s := range c.servers {
+				mset, err = s.globalAccount().lookupStream("TEST")
+				require_NoError(t, err)
+				require_NoError(t, mset.store.Truncate(1))
+			}
+		}
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+	}
+
+	t.Run("RemoveMsg", func(t *testing.T) { test(t, KindRemoveMsg) })
+	t.Run("Reset", func(t *testing.T) { test(t, KindReset) })
+	t.Run("Truncate", func(t *testing.T) { test(t, KindTruncate) })
+}
