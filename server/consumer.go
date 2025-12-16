@@ -6461,6 +6461,10 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 	if asflr&(1<<63) != 0 {
 		return errAckFloorInvalid
 	}
+	dflr := asflr
+	if len(state.Pending) > 0 && state.Delivered.Stream > dflr {
+		dflr = state.Delivered.Stream
+	}
 
 	// Check if the underlying stream's last sequence is less than our floor.
 	// This can happen if the stream has been reset and has not caught up yet.
@@ -6479,7 +6483,7 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 	}
 
 	var retryAsflr uint64
-	for seq = fseq; asflr > 0 && seq <= asflr; seq++ {
+	for seq = fseq; dflr > 0 && seq <= dflr; seq++ {
 		if filters != nil {
 			_, nseq, err = store.LoadNextMsgMulti(filters, seq, &smv)
 		} else {
@@ -6489,14 +6493,24 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 		if nseq > seq {
 			seq = nseq
 		}
-		// Only ack though if no error and seq <= ack floor.
-		if err == nil && seq <= asflr {
-			didRemove := mset.ackMsg(o, seq)
-			// Removing the message could fail. For example if clustered since we need to propose it.
-			// Overwrite retry floor (only the first time) to allow us to check next time if the removal was successful.
-			if didRemove && retryAsflr == 0 {
-				retryAsflr = seq
+		if err == nil {
+			// Only ack though if no error and seq <= ack floor.
+			if seq <= asflr {
+				didRemove := mset.ackMsg(o, seq)
+				// Removing the message could fail. For example if clustered since we need to propose it.
+				// Overwrite retry floor (only the first time) to allow us to check next time if the removal was successful.
+				if didRemove && retryAsflr == 0 {
+					retryAsflr = seq
+				}
+			} else if seq <= dflr {
+				// If we have pending, we will need to walk through to delivered in case we missed any of those acks as well.
+				if _, ok := state.Pending[seq]; !ok {
+					// The filters are already taken into account,
+					mset.ackMsg(o, seq)
+				}
 			}
+		} else if err == ErrStoreEOF {
+			break
 		}
 	}
 	// If retry floor was not overwritten, set to ack floor+1, we don't need to account for any retries below it.
@@ -6510,21 +6524,7 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 	if retryAsflr > o.chkflr {
 		o.chkflr = retryAsflr
 	}
-	// See if we need to process this update if our parent stream is not a limits policy stream.
-	state, _ = o.store.State()
 	o.mu.Unlock()
-
-	// If we have pending, we will need to walk through to delivered in case we missed any of those acks as well.
-	if state != nil && len(state.Pending) > 0 && state.AckFloor.Stream > 0 {
-		for seq := state.AckFloor.Stream + 1; seq <= state.Delivered.Stream; seq++ {
-			if _, ok := state.Pending[seq]; !ok {
-				// Want to call needAck since it is filter aware.
-				if o.needAck(seq, _EMPTY_) {
-					mset.ackMsg(o, seq)
-				}
-			}
-		}
-	}
 	return nil
 }
 
