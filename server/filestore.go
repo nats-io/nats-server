@@ -7516,6 +7516,12 @@ func (fs *fileStore) syncBlocks() {
 			mb.mu.Unlock()
 			continue
 		}
+		// Bubble up an individual block error into the broader filestore.
+		if err := mb.werr; err != nil {
+			mb.mu.Unlock()
+			storeFsWerr(err)
+			continue
+		}
 		// See if we can close FDs due to being idle.
 		if mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle && mb.pendingWriteSizeLocked() == 0 {
 			if err := mb.dirtyCloseWithRemove(false); err != nil {
