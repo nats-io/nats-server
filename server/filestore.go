@@ -7395,7 +7395,7 @@ func (fs *fileStore) syncBlocks() {
 				mb.werr = err
 				mb.mu.Unlock()
 				storeFsWerr(err)
-				return
+				continue
 			}
 		}
 		// If our first has moved and we are set to noCompact (which is from tombstones),
@@ -7416,7 +7416,7 @@ func (fs *fileStore) syncBlocks() {
 			mb.werr = err
 			mb.mu.Unlock()
 			storeFsWerr(err)
-			return
+			continue
 		}
 		// Check if we need to sync. We will not hold lock during actual sync.
 		needSync := mb.needSync
@@ -7454,7 +7454,7 @@ func (fs *fileStore) syncBlocks() {
 			fs.mu.RUnlock()
 			if err != nil {
 				storeFsWerr(err)
-				return
+				continue
 			}
 
 			// Check if we should remove. This will not be common, so we will re-take fs write lock here vs changing
@@ -7468,7 +7468,7 @@ func (fs *fileStore) syncBlocks() {
 				needSync = false
 				if err != nil {
 					storeFsWerr(err)
-					return
+					continue
 				}
 			}
 		}
@@ -7490,7 +7490,7 @@ func (fs *fileStore) syncBlocks() {
 					mb.werr = err
 					mb.mu.Unlock()
 					storeFsWerr(err)
-					return
+					continue
 				}
 			}
 			// If we have an fd.
@@ -7499,7 +7499,7 @@ func (fs *fileStore) syncBlocks() {
 					mb.werr = err
 					mb.mu.Unlock()
 					storeFsWerr(err)
-					return
+					continue
 				}
 				// If we opened the file close the fd.
 				if didOpen {
@@ -7507,7 +7507,7 @@ func (fs *fileStore) syncBlocks() {
 						mb.werr = err
 						mb.mu.Unlock()
 						storeFsWerr(err)
-						return
+						continue
 					}
 				}
 			}
