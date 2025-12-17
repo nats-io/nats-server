@@ -1236,8 +1236,10 @@ func (fs *fileStore) recoverMsgBlock(index uint32) (*msgBlock, error) {
 	}
 
 	// If we get data loss rebuilding the message block state record that with the fs itself.
-	ld, tombs, _ := mb.rebuildState()
-	if ld != nil {
+	ld, tombs, err := mb.rebuildState()
+	if err != nil {
+		return nil, err
+	} else if ld != nil {
 		fs.addLostData(ld)
 	}
 	// Collect all tombstones.
@@ -1499,6 +1501,10 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	defer recycleMsgBlockBuf(buf)
 
 	if err != nil || len(buf) == 0 {
+		// Only allow continuing to mark lost data if the file itself doesn't exist, or was empty.
+		if err != nil && err != errNoBlkData {
+			return nil, nil, err
+		}
 		var ld *LostStreamData
 		// No data to rebuild from here.
 		if mb.msgs > 0 {
@@ -1515,7 +1521,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			mb.dmap.Empty()
 			atomic.StoreUint64(&mb.first.seq, atomic.LoadUint64(&mb.last.seq)+1)
 		}
-		return ld, nil, err
+		return ld, nil, nil
 	}
 
 	// Check if we need to decrypt.
@@ -1549,15 +1555,37 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		mb.dmap.Insert(seq)
 	}
 
+	// For tombstones that we find and collect.
+	var (
+		tombstones      []uint64
+		maxTombstoneSeq uint64
+		maxTombstoneTs  int64
+	)
+
+	defer func() {
+		// For empty msg blocks make sure we recover last seq correctly based off of first.
+		// Or if we seem to have no messages but had a tombstone, which we use to remember
+		// sequences and timestamps now, use that to properly setup the first and last.
+		if mb.msgs == 0 {
+			fseq := atomic.LoadUint64(&mb.first.seq)
+			if fseq > 0 {
+				atomic.StoreUint64(&mb.last.seq, fseq-1)
+			} else if fseq == 0 && maxTombstoneSeq > 0 {
+				atomic.StoreUint64(&mb.first.seq, maxTombstoneSeq+1)
+				mb.first.ts = 0
+				if mb.last.seq == 0 {
+					atomic.StoreUint64(&mb.last.seq, maxTombstoneSeq)
+					mb.last.ts = maxTombstoneTs
+				}
+			}
+		}
+	}()
+
 	var le = binary.LittleEndian
 
+	// There are cases where we're not allowed to truncate, like for an encrypted or compressed
+	// block since the index will be the decrypted and decompressed index.
 	truncate := func(index uint32) error {
-		// There are cases where we're not allowed to truncate, like for an encrypted or compressed
-		// block since the index will be the decrypted and decompressed index.
-		if !allowTruncate {
-			return nil
-		}
-
 		var fd *os.File
 		if mb.mfd != nil {
 			fd = mb.mfd
@@ -1599,13 +1627,6 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		return &ld
 	}
 
-	// For tombstones that we find and collect.
-	var (
-		tombstones      []uint64
-		maxTombstoneSeq uint64
-		maxTombstoneTs  int64
-	)
-
 	// To detect gaps from compaction, and to ensure the sequence keeps moving up.
 	var last uint64
 	var hb [highwayhash.Size64]byte
@@ -1629,10 +1650,13 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
-			if err = truncate(index); err != nil {
-				return nil, nil, err
+			err = errBadMsg{mb.mfn, fmt.Sprintf("message overrun (index %d lbuf %d)", index, lbuf)}
+			if allowTruncate {
+				if err = truncate(index); err != nil {
+					return nil, nil, err
+				}
 			}
-			return gatherLost(lbuf - index), tombstones, nil
+			return gatherLost(lbuf - index), tombstones, err
 		}
 
 		hdr := buf[index : index+msgHdrSize]
@@ -1648,10 +1672,13 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		dlen := int(rl) - msgHdrSize
 		// Do some quick sanity checks here.
 		if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
-			if err = truncate(index); err != nil {
-				return nil, nil, err
+			err = errBadMsg{mb.mfn, fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d index %d lbuf %d)", dlen, slen, rl, index, lbuf)}
+			if allowTruncate {
+				if err = truncate(index); err != nil {
+					return nil, nil, err
+				}
 			}
-			return gatherLost(lbuf - index), tombstones, errBadMsg{mb.mfn, fmt.Sprintf("sanity check failed (dlen %d slen %d rl %d index %d lbuf %d)", dlen, slen, rl, index, lbuf)}
+			return gatherLost(lbuf - index), tombstones, err
 		}
 
 		// Check for checksum failures before additional processing.
@@ -1668,10 +1695,13 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 			}
 			checksum := hh.Sum(hb[:0])
 			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
-				if err = truncate(index); err != nil {
-					return nil, nil, err
+				err = errBadMsg{mb.mfn, "invalid checksum"}
+				if allowTruncate {
+					if err = truncate(index); err != nil {
+						return nil, nil, err
+					}
 				}
-				return gatherLost(lbuf - index), tombstones, errBadMsg{mb.mfn, "invalid checksum"}
+				return gatherLost(lbuf - index), tombstones, err
 			}
 			copy(mb.lchk[0:], checksum)
 		}
@@ -1749,23 +1779,6 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 		// Advance to next record.
 		index += rl
-	}
-
-	// For empty msg blocks make sure we recover last seq correctly based off of first.
-	// Or if we seem to have no messages but had a tombstone, which we use to remember
-	// sequences and timestamps now, use that to properly setup the first and last.
-	if mb.msgs == 0 {
-		fseq := atomic.LoadUint64(&mb.first.seq)
-		if fseq > 0 {
-			atomic.StoreUint64(&mb.last.seq, fseq-1)
-		} else if fseq == 0 && maxTombstoneSeq > 0 {
-			atomic.StoreUint64(&mb.first.seq, maxTombstoneSeq+1)
-			mb.first.ts = 0
-			if mb.last.seq == 0 {
-				atomic.StoreUint64(&mb.last.seq, maxTombstoneSeq)
-				mb.last.ts = maxTombstoneTs
-			}
-		}
 	}
 
 	return nil, tombstones, nil
@@ -5383,10 +5396,10 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) error {
 		fs.psim, fs.tsl = fs.psim.Empty(), 0
 		for _, mb := range fs.blks {
 			ld, _, err := mb.rebuildState()
-			if ld != nil {
-				fs.addLostData(ld)
-			} else if err != nil {
+			if err != nil {
 				return err
+			} else if ld != nil {
+				fs.addLostData(ld)
 			}
 			if err = fs.populateGlobalPerSubjectInfo(mb); err != nil {
 				return err
@@ -6872,7 +6885,7 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 		// Make sure encryption loaded if needed for the block.
 		fs.loadEncryptionForMsgBlock(mb)
 		// FIXME(dlc) - check tombstones here too?
-		if ld, _, err := mb.rebuildState(); err != nil && ld != nil {
+		if ld, _, _ := mb.rebuildState(); ld != nil {
 			// Rebuild fs state too.
 			fs.rebuildStateLocked(ld)
 		}
@@ -8202,7 +8215,7 @@ checkCache:
 	if err != nil {
 		mb.fs.warn("loadBlock error: %v", err)
 		if err == errNoBlkData {
-			if ld, _, err := mb.rebuildStateLocked(); err != nil && ld != nil {
+			if ld, _, _ := mb.rebuildStateLocked(); ld != nil {
 				// Rebuild fs state too.
 				go mb.fs.rebuildState(ld)
 			}
