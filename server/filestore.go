@@ -2554,7 +2554,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		// This will load fss as well.
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
-			break
+			return err
 		}
 
 		var smv StoreMsg
@@ -5645,12 +5645,16 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
+			mb.mu.Lock()
 			finishedWithCache()
+			mb.mu.Unlock()
 			fsUnlock()
 			return false, err
 		}
 		if err := lmb.writeTombstone(sm.seq, sm.ts); err != nil {
+			mb.mu.Lock()
 			finishedWithCache()
+			mb.mu.Unlock()
 			fsUnlock()
 			return false, err
 		}
