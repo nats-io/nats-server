@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -4724,12 +4725,8 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	}
 	// Persist any returned errors to be used in the future.
 	defer func() {
-		if err != nil && fs.werr == nil {
-			fs.werr = err
-			assert.Unreachable("Filestore encountered error during write", map[string]any{
-				"name": fs.cfg.Name,
-				"err":  err,
-			})
+		if err != nil {
+			fs.setWriteErr(err)
 		}
 	}()
 
@@ -4856,6 +4853,19 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	return nil
 }
 
+// Lock should be held.
+func (fs *fileStore) setWriteErr(err error) {
+	if fs.werr != nil {
+		return
+	}
+	fs.werr = err
+	assert.Unreachable("Filestore encountered error during write", map[string]any{
+		"name":  fs.cfg.Name,
+		"err":   err,
+		"stack": string(debug.Stack()),
+	})
+}
+
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
 func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) error {
 	fs.mu.Lock()
@@ -4973,6 +4983,7 @@ func (fs *fileStore) SkipMsg(seq uint64) (uint64, error) {
 
 	// Write skip msg.
 	if err = mb.skipMsg(seq, now); err != nil {
+		fs.setWriteErr(err)
 		return 0, err
 	}
 
@@ -5047,6 +5058,7 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	err := mb.writeMsgRecordLocked(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true, true)
 	mb.mu.Unlock()
 	if err != nil {
+		fs.setWriteErr(err)
 		return err
 	}
 
@@ -5496,6 +5508,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
+			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5524,7 +5537,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		mb.mu.Unlock()
 		fsUnlock()
 		// Mimic err behavior from above check to dmap. No error returned if already removed.
-		if err == errDeletedMsg {
+		if err == ErrStoreMsgNotFound || err == errDeletedMsg {
 			err = nil
 		}
 		return false, err
@@ -5541,6 +5554,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			mb.mu.Lock()
 			finishedWithCache()
 			mb.mu.Unlock()
+			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5548,6 +5562,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			mb.mu.Lock()
 			finishedWithCache()
 			mb.mu.Unlock()
+			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5573,6 +5588,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
+			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5608,6 +5624,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if err = mb.ensurePerSubjectInfoLoaded(); err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
+		fs.setWriteErr(err)
 		fsUnlock()
 		return false, err
 	}
@@ -5616,6 +5633,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if _, err = mb.removeSeqPerSubject(sm.subj, seq); err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
+		fs.setWriteErr(err)
 		fsUnlock()
 		return false, err
 	}
@@ -5651,6 +5669,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			if err = mb.compact(); err != nil {
 				finishedWithCache()
 				mb.mu.Unlock()
+				fs.setWriteErr(err)
 				fsUnlock()
 				return false, err
 			}
@@ -5672,6 +5691,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if err = fs.removeMsgBlock(mb); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
+			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5685,6 +5705,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// we don't lose track of the first sequence.
 	if firstSeqNeedsUpdate {
 		if err = fs.selectNextFirst(); err != nil {
+			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -7386,6 +7407,7 @@ func (fs *fileStore) syncBlocks() {
 			assert.Unreachable("Filestore encountered error during sync", map[string]any{
 				"name": fs.cfg.Name,
 				"err":  err,
+				"stack": string(debug.Stack()),
 			})
 		}
 	}
@@ -9248,6 +9270,11 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	if keep > 0 {
 		ss, err := fs.FilteredState(1, subject)
 		if err != nil || keep >= ss.Msgs {
+			if err != nil {
+				fs.mu.Lock()
+				fs.setWriteErr(err)
+				fs.mu.Unlock()
+			}
 			return 0, err
 		}
 		maxp = ss.Msgs - keep
@@ -9279,6 +9306,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		t, f, l, err := mb.filteredPendingLocked(subject, wc, atomic.LoadUint64(&mb.first.seq))
 		if err != nil {
 			mb.mu.Unlock()
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9299,6 +9327,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		if mb.cacheNotLoaded() {
 			if err := mb.loadMsgsWithLock(); err != nil {
 				mb.mu.Unlock()
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return 0, err
 			}
@@ -9333,6 +9362,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				nr, err := mb.removeSeqPerSubject(sm.subj, seq)
 				if err != nil {
 					mb.mu.Unlock()
+					fs.setWriteErr(err)
 					fs.mu.Unlock()
 					return purged, err
 				}
@@ -9352,6 +9382,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 						tombs = tombs[:te]
 						if err = fs.removeMsgBlock(mb); err != nil {
 							mb.mu.Unlock()
+							fs.setWriteErr(err)
 							fs.mu.Unlock()
 							return 0, err
 						}
@@ -9402,6 +9433,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	}
 	if firstSeqNeedsUpdate {
 		if err = fs.selectNextFirst(); err != nil {
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9415,6 +9447,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err = fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9422,6 +9455,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
 		if lmb := fs.lmb; lmb != nil {
 			if err = lmb.flushPendingMsgs(); err != nil {
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9500,6 +9534,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	err := os.Rename(mdir, pdir)
 	dios <- struct{}{}
 	if err != nil {
+		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9515,12 +9550,14 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	err = os.MkdirAll(mdir, defaultDirPerms)
 	dios <- struct{}{}
 	if err != nil {
+		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
 
 	// Make sure we have a lmb to write to.
 	if _, err = fs.newMsgBlockForWrite(); err != nil {
+		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9540,6 +9577,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		// Leave a tombstone so we can remember our starting sequence in case
 		// full state becomes corrupted.
 		if err := fs.writeTombstone(lseq, lmb.last.ts); err != nil {
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return 0, err
 		}
@@ -9608,6 +9646,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		// Make sure we do subject cleanup as well.
 		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
 			mb.mu.Unlock()
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return 0, err
 		}
@@ -9622,6 +9661,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		err := mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
 		if err != nil {
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9642,7 +9682,10 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	// Make sure we have the messages loaded.
 	if smb.cacheNotLoaded() {
 		if err = smb.loadMsgsWithLock(); err != nil {
-			goto SKIP
+			smb.mu.Unlock()
+			fs.setWriteErr(err)
+			fs.mu.Unlock()
+			return purged, err
 		}
 		defer smb.finishedWithCache()
 	}
@@ -9667,6 +9710,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			// Update fss
 			if _, err := smb.removeSeqPerSubject(sm.subj, mseq); err != nil {
 				smb.mu.Unlock()
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9681,6 +9725,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		if smb != fs.lmb {
 			if err = smb.dirtyCloseWithRemove(true); err != nil {
 				smb.mu.Unlock()
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9754,12 +9799,14 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			if err != nil {
 				_ = os.Remove(mfn)
 				smb.mu.Unlock()
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
 			if err = os.Rename(mfn, smb.mfn); err != nil {
 				_ = os.Remove(mfn)
 				smb.mu.Unlock()
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9781,6 +9828,7 @@ SKIP:
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err = fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9788,6 +9836,7 @@ SKIP:
 		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
 		if lmb := fs.lmb; lmb != nil {
 			if err = lmb.flushPendingMsgs(); err != nil {
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -10039,6 +10088,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// If we end up not needing to write tombstones, this block will be cleaned up at the end.
 	tmb, err := fs.newMsgBlockForWrite()
 	if err != nil {
+		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return err
 	}
@@ -10053,6 +10103,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// at the truncated sequence so we don't roll backward on our last sequence and timestamp.
 	if lsm == nil || removeSmb {
 		if err = fs.writeTombstone(seq, lastTime); err != nil {
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10084,6 +10135,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			for _, tomb := range tombs {
 				if tomb.seq < seq {
 					if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
+						fs.setWriteErr(err)
 						fs.mu.Unlock()
 						return err
 					}
@@ -10094,6 +10146,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		err = fs.forceRemoveMsgBlock(mb)
 		mb.mu.Unlock()
 		if err != nil {
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10113,6 +10166,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 				for _, tomb := range tombs {
 					if tomb.seq < seq {
 						if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
+							fs.setWriteErr(err)
 							fs.mu.Unlock()
 							return err
 						}
@@ -10123,6 +10177,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			err = fs.forceRemoveMsgBlock(smb)
 			smb.mu.Unlock()
 			if err != nil {
+				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return err
 			}
@@ -10132,6 +10187,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		// Make sure writeable.
 		if err := smb.enableForWriting(fs.fip); err != nil {
 			smb.mu.Unlock()
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10140,6 +10196,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		nmsgs, nbytes, err := smb.truncate(seq, lastTime)
 		if err != nil {
 			smb.mu.Unlock()
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return fmt.Errorf("smb.truncate: %w", err)
 		}
@@ -10169,6 +10226,7 @@ SKIP:
 		err = fs.forceRemoveMsgBlock(tmb)
 		tmb.mu.Unlock()
 		if err != nil {
+			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10189,6 +10247,7 @@ SKIP:
 
 	// Reset our subject lookup info.
 	if err = fs.resetGlobalPerSubjectInfo(); err != nil {
+		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return err
 	}
