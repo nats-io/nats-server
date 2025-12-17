@@ -1870,6 +1870,10 @@ func TestJetStreamJWTClusterAccountNRGPersistsAfterRestart(t *testing.T) {
 	defer c.shutdown()
 
 	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:     "TEST",
 		Replicas: 3,
