@@ -7440,6 +7440,12 @@ func (fs *fileStore) syncBlocks() {
 			}
 			fs.mu.RLock()
 			mb.mu.Lock()
+			// If the block has already been removed in the meantime, we can simply skip.
+			if _, ok := fs.bim[mb.index]; !ok {
+				mb.mu.Unlock()
+				fs.mu.RUnlock()
+				continue
+			}
 			err := mb.compactWithFloor(firstSeq, &fsDmap)
 			if err != nil && mb.werr == nil {
 				mb.werr = err
