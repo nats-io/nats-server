@@ -639,6 +639,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	mset.cfgMu.RLock()
 	replicas := mset.cfg.Replicas
 	mset.cfgMu.RUnlock()
+	var nrgWerr error
+	if node != nil {
+		nrgWerr = node.GetWriteErr()
+	}
+	streamWerr := mset.getWriteErr()
 	switch {
 	case replicas <= 1:
 		return nil // No further checks for R=1 streams
@@ -653,6 +658,12 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	case node != msetNode:
 		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
 		return errors.New("cluster node skew detected")
+
+	case nrgWerr != nil:
+		return fmt.Errorf("node write error: %v", nrgWerr)
+
+	case streamWerr != nil:
+		return fmt.Errorf("stream write error: %v", streamWerr)
 
 	case !mset.isMonitorRunning():
 		return errors.New("monitor goroutine not running")
@@ -2626,6 +2637,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// If the pending data couldn't be flushed, we have no safe way to continue.
 			s.Errorf("Failed to flush pending data for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
 			n.Stop()
+			mset.setWriteErr(err)
 			assert.Unreachable("Stream snapshot flush failed", map[string]any{
 				"account": accName,
 				"stream":  mset.name(),
@@ -2811,6 +2823,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						s.handleOutOfSpace(mset)
 					} else {
 						// Encountered an unexpected error, can't continue.
+						mset.setWriteErr(err)
 						aq.recycle(&ces)
 						return
 					}
