@@ -12817,3 +12817,77 @@ func TestFileStoreSelectMsgBlockBinarySearch(t *testing.T) {
 		test()
 	})
 }
+
+func TestFileStoreSyncBlocksNoErrorOnConcurrentRemovedBlock(t *testing.T) {
+	fcfg := FileStoreConfig{Cipher: NoCipher, Compression: NoCompression, StoreDir: t.TempDir()}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.mu.Lock()
+	if fs.syncTmr != nil {
+		fs.syncTmr.Stop()
+		fs.syncTmr = nil
+	}
+	fs.mu.Unlock()
+
+	// 1.blk
+	for range 2 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// 2.blk
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+
+	// 3.blk
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, err = fs.RemoveMsg(3)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	mb := fs.blks[1]
+	fs.mu.RUnlock()
+	require_Equal(t, mb.index, 2)
+	mb.mu.RLock()
+	shouldCompactSync := mb.shouldCompactSync()
+	mb.mu.RUnlock()
+	require_True(t, shouldCompactSync)
+
+	var ready sync.WaitGroup
+	var wg sync.WaitGroup
+	ready.Add(1)
+	wg.Add(1)
+	mb.mu.Lock()
+	go func() {
+		ready.Done()
+		defer wg.Done()
+		// Wait some time for fs.syncBlocks to wait on the mb's lock.
+		time.Sleep(200 * time.Millisecond)
+		// Remove the block while fs.syncBlocks is still waiting.
+		fs.mu.Lock()
+		err = fs.forceRemoveMsgBlock(mb)
+		fs.mu.Unlock()
+		mb.mu.Unlock()
+		require_NoError(t, err)
+	}()
+
+	ready.Wait()
+	fs.syncBlocks()
+	wg.Wait()
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	require_True(t, mb.werr == nil)
+	require_True(t, fs.werr == nil)
+}
