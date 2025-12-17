@@ -473,6 +473,7 @@ type stream struct {
 	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
 	uch       chan struct{}     // The channel to signal updates to the monitor routine.
 	inMonitor bool              // True if the monitor routine has been started.
+	werr      error             // If a write error was encountered, and if so what error.
 
 	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
 	clusteredCounterTotal       map[string]*msgCounterRunningTotal      // Inflight counter totals.
@@ -8061,6 +8062,22 @@ func (mset *stream) isMonitorRunning() bool {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return mset.inMonitor
+}
+
+// setWriteErr stores the write error in the stream.
+func (mset *stream) setWriteErr(err error) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	if mset.werr == nil {
+		mset.werr = err
+	}
+}
+
+// getWriteErr returns the write error stored in the stream (if any).
+func (mset *stream) getWriteErr() error {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.werr
 }
 
 // Adjust accounting for sent messages as part of replication.

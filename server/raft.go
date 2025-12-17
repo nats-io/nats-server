@@ -87,6 +87,7 @@ type RaftNode interface {
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
+	GetWriteErr() error
 }
 
 type WAL interface {
@@ -4469,6 +4470,13 @@ func (n *raft) setWriteErrLocked(err error) {
 // Helper to check if we are closed when we do not hold a lock already.
 func (n *raft) isClosed() bool {
 	return n.State() == Closed
+}
+
+// GetWriteErr returns the write error (if any).
+func (n *raft) GetWriteErr() error {
+	n.RLock()
+	defer n.RUnlock()
+	return n.werr
 }
 
 // Capture our write error if any and hold.
