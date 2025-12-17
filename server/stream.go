@@ -53,11 +53,11 @@ type StreamConfig struct {
 	Description  string           `json:"description,omitempty"`
 	Subjects     []string         `json:"subjects,omitempty"`
 	Retention    RetentionPolicy  `json:"retention"`
-	MaxConsumers int              `json:"max_consumers,omitempty"`
-	MaxMsgs      int64            `json:"max_msgs,omitempty"`
-	MaxBytes     int64            `json:"max_bytes,omitempty"`
-	MaxAge       time.Duration    `json:"max_age,omitempty"`
-	MaxMsgsPer   int64            `json:"max_msgs_per_subject,omitempty"`
+	MaxConsumers int              `json:"max_consumers"`
+	MaxMsgs      int64            `json:"max_msgs"`
+	MaxBytes     int64            `json:"max_bytes"`
+	MaxAge       time.Duration    `json:"max_age"`
+	MaxMsgsPer   int64            `json:"max_msgs_per_subject"`
 	MaxMsgSize   int32            `json:"max_msg_size,omitempty"`
 	Discard      DiscardPolicy    `json:"discard"`
 	Storage      StorageType      `json:"storage"`
@@ -67,7 +67,7 @@ type StreamConfig struct {
 	Placement    *Placement       `json:"placement,omitempty"`
 	Mirror       *StreamSource    `json:"mirror,omitempty"`
 	Sources      []*StreamSource  `json:"sources,omitempty"`
-	Compression  StoreCompression `json:"compression,omitempty"`
+	Compression  StoreCompression `json:"compression"`
 	FirstSeq     uint64           `json:"first_seq,omitempty"`
 
 	// Allow applying a subject transform to incoming messages before doing anything else
@@ -77,9 +77,9 @@ type StreamConfig struct {
 	RePublish *RePublish `json:"republish,omitempty"`
 
 	// Allow higher performance, direct access to get individual messages. E.g. KeyValue
-	AllowDirect bool `json:"allow_direct,omitempty"`
+	AllowDirect bool `json:"allow_direct"`
 	// Allow higher performance and unified direct access for mirrors as well.
-	MirrorDirect bool `json:"mirror_direct,omitempty"`
+	MirrorDirect bool `json:"mirror_direct"`
 
 	// Allow KV like semantics to also discard new on a per subject basis
 	DiscardNewPer bool `json:"discard_new_per_subject,omitempty"`
@@ -87,23 +87,23 @@ type StreamConfig struct {
 	// Optional qualifiers. These can not be modified after set to true.
 
 	// Sealed will seal a stream so no messages can get out or in.
-	Sealed bool `json:"sealed,omitempty"`
+	Sealed bool `json:"sealed"`
 	// DenyDelete will restrict the ability to delete messages.
-	DenyDelete bool `json:"deny_delete,omitempty"`
+	DenyDelete bool `json:"deny_delete"`
 	// DenyPurge will restrict the ability to purge messages.
-	DenyPurge bool `json:"deny_purge,omitempty"`
+	DenyPurge bool `json:"deny_purge"`
 	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
-	AllowRollup bool `json:"allow_rollup_hdrs,omitempty"`
+	AllowRollup bool `json:"allow_rollup_hdrs"`
 
 	// The following defaults will apply to consumers when created against
 	// this stream, unless overridden manually.
 	// TODO(nat): Can/should we name these better?
-	ConsumerLimits StreamConsumerLimits `json:"consumer_limits,omitempty"`
+	ConsumerLimits StreamConsumerLimits `json:"consumer_limits"`
 
 	// AllowMsgTTL allows header initiated per-message TTLs. If disabled,
 	// then the `NATS-TTL` header will be ignored.
-	AllowMsgTTL bool `json:"allow_msg_ttl,omitempty"`
+	AllowMsgTTL bool `json:"allow_msg_ttl"`
 
 	// SubjectDeleteMarkerTTL sets the TTL of delete marker messages left behind by
 	// subject delete markers.
