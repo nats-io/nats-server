@@ -83,6 +83,7 @@ type RaftNode interface {
 	Stop()
 	WaitForStop()
 	Delete()
+	IsDeleted() bool
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
@@ -231,6 +232,7 @@ type raft struct {
 	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	membChanging bool // There is a membership change proposal in progress
+	deleted      bool // If the node was deleted.
 }
 
 type proposedEntry struct {
@@ -1917,11 +1919,18 @@ func (n *raft) Delete() {
 	n.Lock()
 	defer n.Unlock()
 
+	n.deleted = true
 	if wal := n.wal; wal != nil {
 		wal.Delete(false)
 	}
 	os.RemoveAll(n.sd)
 	n.debug("Deleted")
+}
+
+func (n *raft) IsDeleted() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.deleted
 }
 
 func (n *raft) shutdown() {
