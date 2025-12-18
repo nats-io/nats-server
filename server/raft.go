@@ -82,6 +82,7 @@ type RaftNode interface {
 	Stop()
 	WaitForStop()
 	Delete()
+	IsDeleted() bool
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
@@ -228,6 +229,7 @@ type raft struct {
 	observer     bool // The node is observing, i.e. not able to become leader
 	pobserver    bool // Were we previously an observer?
 	membChanging bool // There is a membership change proposal in progress
+	deleted      bool // If the node was deleted.
 }
 
 type proposedEntry struct {
@@ -1876,11 +1878,18 @@ func (n *raft) Delete() {
 	n.Lock()
 	defer n.Unlock()
 
+	n.deleted = true
 	if wal := n.wal; wal != nil {
 		wal.Delete()
 	}
 	os.RemoveAll(n.sd)
 	n.debug("Deleted")
+}
+
+func (n *raft) IsDeleted() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.deleted
 }
 
 func (n *raft) shutdown() {

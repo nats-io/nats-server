@@ -6532,3 +6532,75 @@ func TestJetStreamClusterStreamDesyncDuringSnapshot(t *testing.T) {
 	t.Run("Reset", func(t *testing.T) { test(t, KindReset) })
 	t.Run("Truncate", func(t *testing.T) { test(t, KindTruncate) })
 }
+
+func TestJetStreamClusterDeletedNodeDoesNotReviveStreamAfterCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if s == rs {
+			continue
+		}
+		s.Shutdown()
+		s.WaitForShutdown()
+	}
+
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	snap := mset.stateSnapshot()
+
+	// Reset the entire store so we can catchup based on the above snapshot.
+	fs := mset.store.(*fileStore)
+	require_NoError(t, fs.reset())
+
+	// Mark the node as leaderless, and get the upper-layer to start a catchup from a snapshot.
+	node := mset.raftNode()
+	node.(*raft).hasleader.Store(false)
+	node.ApplyQ().push(newCommittedEntry(10, []*Entry{{EntrySnapshot, snap}}))
+
+	// Since the node is leaderless, it will retry after some time. We wait a little here to ensure
+	// it's waiting there as well, and then we delete the node outright.
+	time.Sleep(time.Second)
+	node.Delete()
+
+	// The stream's goroutine should eventually be stopped. This will fail if the stream is revived.
+	var retries int
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		mset, err = rs.globalAccount().lookupStream("TEST")
+		if err != nil {
+			retries = 0
+			return err
+		}
+		if mset.isMonitorRunning() {
+			retries = 0
+			return errors.New("monitor still running")
+		}
+		if state := mset.raftNode().State(); state != Closed {
+			retries = 0
+			return errors.New("node not closed")
+		}
+		retries++
+		if retries < 3 {
+			return errors.New("still confirming stable state")
+		}
+		return nil
+	})
+}
