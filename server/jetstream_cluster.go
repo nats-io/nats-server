@@ -2635,15 +2635,15 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		// Make sure all pending data is flushed before allowing snapshots.
 		if err := mset.flushAllPending(); err != nil {
 			// If the pending data couldn't be flushed, we have no safe way to continue.
-			s.Errorf("Failed to flush pending data for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
+			s.Errorf("Failed to flush pending data for '%s > %s' [%s]: %v", accName, mset.name(), n.Group(), err)
 			n.Stop()
-			mset.setWriteErr(err)
 			assert.Unreachable("Stream snapshot flush failed", map[string]any{
 				"account": accName,
 				"stream":  mset.name(),
 				"group":   n.Group(),
 				"err":     err,
 			})
+			mset.setWriteErr(err)
 		} else if err = n.InstallSnapshot(mset.stateSnapshot()); err == nil {
 			lastState = curState
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
