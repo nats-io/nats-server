@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
@@ -6148,7 +6149,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			// We don't want to respond back to the user, and definitely not up CLFS either.
 			// This was likely an IO issue, so only log and return the error. This will stop
 			// the stream if it was replicated.
-			s.Errorf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
+			s.RateLimitErrorf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
+			mset.setWriteErrLocked(err)
 			return err
 		}
 
@@ -8068,8 +8070,17 @@ func (mset *stream) isMonitorRunning() bool {
 func (mset *stream) setWriteErr(err error) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
+	mset.setWriteErrLocked(err)
+}
+
+func (mset *stream) setWriteErrLocked(err error) {
 	if mset.werr == nil {
 		mset.werr = err
+		assert.Unreachable("Stream encountered write error", map[string]any{
+			"account": mset.acc.Name,
+			"stream":  mset.cfg.Name,
+			"err":     err,
+		})
 	}
 }
 
