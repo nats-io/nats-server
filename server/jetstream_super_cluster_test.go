@@ -4815,3 +4815,111 @@ func TestJetStreamSuperClusterConsumerPauseAdvisories(t *testing.T) {
 	checkAdvisory(msg, true, deadline)
 	require_Len(t, len(ch), 0) // Should only receive one advisory.
 }
+
+func TestJetStreamSuperClusterConsumerAckSubjectWithStreamImportProtocolError(t *testing.T) {
+	template := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {domain: hub, max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		accounts {
+			SYS {}
+			one {
+				jetstream: enabled
+				users [{user: one, password: password}]
+				exports [{stream: >}]
+			}
+			two {
+				users [{user: two, password: password}]
+				imports [{stream: {subject: >, account: one}}]
+			}
+		}
+		system_account: SYS
+		cluster {
+			listen: 127.0.0.1:%d
+			name: %s
+			routes = ["nats://127.0.0.1:%d"]
+		}
+		gateway {
+			name: %s
+			listen: 127.0.0.1:%d
+			gateways = [{name: %s, urls: ["nats://127.0.0.1:%d"]}]
+		}
+		leaf {listen: 127.0.0.1:-1}
+	`
+	storeDir1 := t.TempDir()
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(template,
+		"S1", storeDir1, 23222, "A", 23222, "A", 11222, "B", 11223)))
+	s1, _ := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	storeDir2 := t.TempDir()
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(template,
+		"S2", storeDir2, 23223, "B", 23223, "B", 11223, "A", 11222)))
+	s2, o2 := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	waitForInboundGateways(t, s1, 1, 2*time.Second)
+	waitForInboundGateways(t, s2, 1, 2*time.Second)
+	waitForOutboundGateways(t, s1, 1, 2*time.Second)
+	waitForOutboundGateways(t, s2, 1, 2*time.Second)
+
+	meta := s2.getJetStream().getMetaGroup()
+	require_NoError(t, meta.CampaignImmediately())
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if !s1.JetStreamIsLeader() && !s2.JetStreamIsLeader() {
+			return fmt.Errorf("neither server is leader")
+		}
+		return nil
+	})
+
+	leafCfg := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes {
+			remotes [ { url: "nats://one:password@127.0.0.1:%d" } ]
+		}
+	`, o2.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafCfg)
+	defer leaf.Shutdown()
+
+	ncl := clientConnectToServer(t, leaf)
+	defer ncl.Close()
+	js, err := ncl.JetStream(nats.Domain("hub"))
+	require_NoError(t, err)
+
+	checkLeafNodeConnected(t, leaf)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Placement: &nats.Placement{Cluster: "A"}}, nats.MaxWait(200*time.Millisecond))
+	require_NoError(t, err)
+
+	for range 2 {
+		_, err = js.Publish("TEST", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe("TEST", "DURABLE")
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	msg := msgs[0]
+	require_Equal(t, msg.Subject, "TEST")
+	require_NoError(t, msg.AckSync())
+
+	// Since the JetStream ACK subject can encode the publish subject into the reply subject,
+	// if we subscribe on a stream import this would previously result in a protocol error.
+	nc2 := natsConnect(t, fmt.Sprintf("nats://two:password@127.0.0.1:%d", o2.Port))
+	defer nc2.Close()
+	sub2, err := nc2.Subscribe(">", func(msg *nats.Msg) {})
+	require_NoError(t, err)
+	defer sub2.Drain()
+	require_NoError(t, nc2.Flush())
+
+	// Ensure we can still receive messages. Would previously timeout due to the protocol error.
+	msgs, err = sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	msg = msgs[0]
+	require_Equal(t, msg.Subject, "TEST")
+	require_NoError(t, msg.AckSync())
+}

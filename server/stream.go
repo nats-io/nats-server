@@ -3801,28 +3801,61 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 		return
 	}
 
+	// From the provided list of sources, we build a sublist that contains
+	// the interested filters (including transforms). As we figure out the
+	// starting sequence for each source, we will eliminate the source from
+	// the map and then refresh the sublist, which in turn makes the sublist
+	// ideally more specific. This allows LoadPrevMsgsMulti to work most
+	// effectively.
+	// Because this is a SimpleSublist we can't just remove the entries per
+	// source so we have no other option but to rebuild it from scratch, but
+	// this is cheap enough to do so not the end of the world.
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for iName := range iNames {
+			si := mset.sources[iName]
+			if si == nil {
+				continue
+			}
+			if si.sf == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(si.sf, struct{}{})
+			}
+			for _, sf := range si.sfs {
+				if sf == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(sf, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
 	var smv StoreMsg
-	for seq := state.LastSeq; seq >= state.FirstSeq; {
-		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+	for last := state.LastSeq; ; {
+		sm, seq, err := mset.store.LoadPrevMsgMulti(sl, last, &smv)
 		if err == ErrStoreEOF || err != nil {
 			break
 		}
-		seq = sm.seq - 1
+		last = seq - 1
 		if len(sm.hdr) == 0 {
 			continue
 		}
-
-		ss := getHeader(JSStreamSource, sm.hdr)
+		ss := sliceHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
 		}
-		streamName, indexName, sseq := streamAndSeq(bytesToString(ss))
 
+		streamName, indexName, sseq := streamAndSeq(bytesToString(ss))
 		if _, ok := iNames[indexName]; ok {
 			si := mset.sources[indexName]
 			si.sseq = sseq
 			si.dseq = 0
 			delete(iNames, indexName)
+			refreshSublist()
 		} else if indexName == _EMPTY_ && streamName != _EMPTY_ {
 			for iName := range iNames {
 				// TODO streamSource is a linear walk, to optimize later
@@ -3831,6 +3864,7 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 					si.sseq = sseq
 					si.dseq = 0
 					delete(iNames, iName)
+					refreshSublist()
 					break
 				}
 			}
@@ -3912,26 +3946,61 @@ func (mset *stream) startingSequenceForSources() {
 		}
 	}()
 
+	// Generate a list of sources and, from that, a sublist that contains
+	// the interested filters (including transforms). As we figure out the
+	// starting sequence for each source, we will eliminate the source from
+	// the map and then refresh the sublist, which in turn makes the sublist
+	// ideally more specific. This allows LoadPrevMsgsMulti to work most
+	// effectively.
+	// Because this is a SimpleSublist we can't just remove the entries per
+	// source so we have no other option but to rebuild it from scratch, but
+	// this is cheap enough to do so not the end of the world.
+	sources := map[string]*StreamSource{}
+	for _, src := range mset.cfg.Sources {
+		sources[src.composeIName()] = src
+	}
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for _, src := range sources {
+			if src.FilterSubject == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(src.FilterSubject, struct{}{})
+			}
+			for _, tr := range src.SubjectTransforms {
+				if tr.Destination == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(tr.Destination, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
 	update := func(iName string, seq uint64) {
 		// Only update active in case we have older ones in here that got configured out.
 		if si := mset.sources[iName]; si != nil {
 			if _, ok := seqs[iName]; !ok {
 				seqs[iName] = seq
+				delete(sources, iName)
+				refreshSublist()
 			}
 		}
 	}
 
 	var smv StoreMsg
-	for seq := state.LastSeq; ; {
-		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+	for last := state.LastSeq; ; {
+		sm, seq, err := mset.store.LoadPrevMsgMulti(sl, last, &smv)
 		if err == ErrStoreEOF || err != nil {
 			break
 		}
-		seq = sm.seq - 1
+		last = seq - 1
 		if len(sm.hdr) == 0 {
 			continue
 		}
-		ss := getHeader(JSStreamSource, sm.hdr)
+		ss := sliceHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
 		}

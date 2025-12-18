@@ -12,7 +12,7 @@ jobs:
     runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: src/github.com/nats-io/nats-server
 

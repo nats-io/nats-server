@@ -481,11 +481,11 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	ss, err := DecodeStreamState(snap)
 	require_NoError(t, err)
 
-	require_True(t, ss.FirstSeq == 1)
-	require_True(t, ss.LastSeq == 20_000)
-	require_True(t, ss.Msgs == 2)
-	require_True(t, len(ss.Deleted) <= 2)
-	require_True(t, ss.Deleted.NumDeleted() == 19_998)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 20_000)
+	require_Equal(t, ss.Msgs, 2)
+	require_Equal(t, len(ss.Deleted), 2)
+	require_Equal(t, ss.Deleted.NumDeleted(), 19_998)
 }
 
 func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
@@ -3251,7 +3251,7 @@ func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
 	}
 
-	expectedStreamMsgs(499_995)
+	expectedStreamMsgs(499_950)
 
 	// Now do AckAll
 	start = time.Now()
@@ -3261,7 +3261,7 @@ func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Deleting AckAll consumer took too long: %v", elapsed)
 	}
 
-	expectedStreamMsgs(499_995)
+	expectedStreamMsgs(499_950)
 
 	// Now do AckExplicit
 	start = time.Now()

@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -211,6 +212,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 		err    error
 		pos    int
 		max    = len(buf)
+		mpay   = int(atomic.LoadInt32(&c.mpay))
 	)
 	for pos != max {
 		if r.fs {
@@ -324,7 +326,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 				// When we have the final frame and we have read the full payload,
 				// we can decompress it.
 				if r.ff && r.rem == 0 {
-					b, err = r.decompress()
+					b, err = r.decompress(mpay)
 					if err != nil {
 						return bufs, err
 					}
@@ -398,7 +400,16 @@ func (r *wsReadInfo) ReadByte() (byte, error) {
 	return b, nil
 }
 
-func (r *wsReadInfo) decompress() ([]byte, error) {
+// decompress decompresses the collected buffers.
+// The size of the decompressed buffer will be limited to the `mpay` value.
+// If, while decompressing, the resulting uncompressed buffer exceeds this
+// limit, the decompression stops and an empty buffer and the ErrMaxPayload
+// error are returned.
+func (r *wsReadInfo) decompress(mpay int) ([]byte, error) {
+	// If not limit is specified, use the default maximum payload size.
+	if mpay <= 0 {
+		mpay = MAX_PAYLOAD_SIZE
+	}
 	r.coff = 0
 	// As per https://tools.ietf.org/html/rfc7692#section-7.2.2
 	// add 0x00, 0x00, 0xff, 0xff and then a final block so that flate reader
@@ -413,8 +424,15 @@ func (r *wsReadInfo) decompress() ([]byte, error) {
 	} else {
 		d.(flate.Resetter).Reset(r, nil)
 	}
-	// This will do the decompression.
-	b, err := io.ReadAll(d)
+	// Use a LimitedReader to limit the decompressed size.
+	// We use "limit+1" bytes for "N" so we can detect if the limit is exceeded.
+	lr := io.LimitedReader{R: d, N: int64(mpay + 1)}
+	b, err := io.ReadAll(&lr)
+	if err == nil && len(b) > mpay {
+		// Decompressed data exceeds the maximum payload size.
+		b, err = nil, ErrMaxPayload
+	}
+	lr.R = nil
 	decompressorPool.Put(d)
 	// Now reset the compressed buffers list.
 	r.cbufs = nil

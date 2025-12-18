@@ -51,6 +51,9 @@ type jetStreamCluster struct {
 	// concurrent requests for same account and stream we need to let it process to get
 	// a response but they need to be same group, peers etc. and sync subjects.
 	inflight map[string]map[string]*inflightInfo
+	// Holds a map of a peer ID to the reply subject, to only respond after gaining
+	// quorum on the peer-remove action.
+	peerRemoveReply map[string]peerRemoveInfo
 	// Signals meta-leader should check the stream assignments.
 	streamsCheck bool
 	// Server.
@@ -82,6 +85,14 @@ type inflightInfo struct {
 	rg   *raftGroup
 	sync string
 	cfg  *StreamConfig
+}
+
+// Used to track inflight peer-remove info to respond 'success' after quorum.
+type peerRemoveInfo struct {
+	ci      *ClientInfo
+	subject string
+	reply   string
+	request string
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -621,8 +632,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	}
 
 	msetNode := mset.raftNode()
+	mset.cfgMu.RLock()
+	replicas := mset.cfg.Replicas
+	mset.cfgMu.RUnlock()
 	switch {
-	case mset.cfg.Replicas <= 1:
+	case replicas <= 1:
 		return nil // No further checks for R=1 streams
 
 	case node == nil:
@@ -2083,8 +2097,36 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 			js.applyMetaSnapshot(e.Data, ru, isRecovering)
 			didSnap = true
 		} else if e.Type == EntryRemovePeer {
-			if !isRecovering {
-				js.processRemovePeer(string(e.Data))
+			if !js.isMetaRecovering() {
+				peer := string(e.Data)
+				js.processRemovePeer(peer)
+
+				// The meta leader can now respond to the peer-removal,
+				// since a quorum of nodes has this in their log.
+				s := js.srv
+				if s.JetStreamIsLeader() {
+					var (
+						info peerRemoveInfo
+						ok   bool
+					)
+					js.mu.Lock()
+					if cc := js.cluster; cc != nil && cc.peerRemoveReply != nil {
+						if info, ok = cc.peerRemoveReply[peer]; ok {
+							delete(cc.peerRemoveReply, peer)
+						}
+						if len(cc.peerRemoveReply) == 0 {
+							cc.peerRemoveReply = nil
+						}
+					}
+					js.mu.Unlock()
+
+					if info.reply != _EMPTY_ {
+						sysAcc := s.SystemAccount()
+						var resp = JSApiMetaServerRemoveResponse{ApiResponse: ApiResponse{Type: JSApiMetaServerRemoveResponseType}}
+						resp.Success = true
+						s.sendAPIResponse(info.ci, sysAcc, info.subject, info.reply, info.request, s.jsonResponse(&resp))
+					}
+				}
 			}
 		} else if e.Type == EntryAddPeer {
 			if !isRecovering {
@@ -4060,7 +4102,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	}
 
 	js.mu.RLock()
-	s, rg := js.srv, sa.Group
+	s, rg, created := js.srv, sa.Group, sa.Created
 	alreadyRunning := rg.node != nil
 	storage := sa.Config.Storage
 	restore := sa.Restore
@@ -4158,7 +4200,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa, false)
 		}
 		if mset != nil {
-			mset.setCreatedTime(sa.Created)
+			mset.setCreatedTime(created)
 		}
 	}
 
@@ -4245,7 +4287,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						mset, err = acc.lookupStream(sa.Config.Name)
 						if mset != nil {
 							mset.setStreamAssignment(sa)
-							mset.setCreatedTime(sa.Created)
+							mset.setCreatedTime(created)
 						}
 					}
 					if err != nil {
@@ -6006,6 +6048,9 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
+
+	// Clear replies for peer-removes.
+	js.cluster.peerRemoveReply = nil
 
 	if isLeader {
 		if meta := js.cluster.meta; meta != nil && meta.IsObserver() {
@@ -8894,6 +8939,10 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 	mset.store.FastState(&state)
 	sreq := mset.calculateSyncRequest(&state, snap, index)
 
+	if mset.sa == nil || mset.node == nil {
+		mset.mu.Unlock()
+		return errCatchupStreamStopped
+	}
 	s, js, subject, n, st := mset.srv, mset.js, mset.sa.Sync, mset.node, mset.cfg.Storage
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
