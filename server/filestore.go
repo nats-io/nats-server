@@ -10561,8 +10561,12 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) error {
 			if err != nil {
 				err = errors.New("lmb missing")
 			}
+			// Re-acquire mb lock
+			mb.mu.Lock()
 			return err
 		} else if err = fs.writeTombstone(lseq, lts); err != nil {
+			// Re-acquire mb lock
+			mb.mu.Lock()
 			return err
 		}
 		mb.mu.Lock()
