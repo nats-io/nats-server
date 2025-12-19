@@ -4209,7 +4209,7 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			PTerm:         n.pterm,
 			PIndex:        n.pindex,
 			SystemAcc:     n.IsSystemAccount(),
-			TrafficAcc:    n.acc.GetName(),
+			TrafficAcc:    n.t.Account().GetName(),
 			IPQPropLen:    n.prop.len(),
 			IPQEntryLen:   n.entry.len(),
 			IPQRespLen:    n.resp.len(),

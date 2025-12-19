@@ -5304,3 +5304,56 @@ func TestNRGReplayAddPeerKeepsClusterSize(t *testing.T) {
 	n.WaitForStop()
 	fs.Stop()
 }
+
+func TestNRGPartitionedPeerRemove(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R2S", 2)
+	defer c.shutdown()
+
+	hub, _, rg := c.createMockMemRaftGroup("MOCK", 2, newStateAdder)
+	defer hub.healPartitions()
+
+	leader := rg.waitOnLeader().node()
+	require_Equal(t, leader.ClusterSize(), 2)
+	require_Equal(t, len(rg.followers()), 1)
+	follower := rg.followers()[0].node()
+
+	// Remove the follower while the leader is partitioned away
+	hub.partition(leader.ID(), 1)
+	leader.ProposeRemovePeer(follower.ID())
+
+	// Follower can't get elected as leader, but let's try anyway
+	follower.CampaignImmediately()
+
+	// Expect progress on the leader side
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.ClusterSize() != 1 {
+			return errors.New("node removal still in progress")
+		}
+		return nil
+	})
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		}
+		return nil
+	})
+
+	require_Equal(t, leader.ClusterSize(), 1)
+	require_False(t, leader.MembershipChangeInProgress())
+
+	// Follower has not changed
+	require_Equal(t, follower.State(), Follower)
+	require_Equal(t, follower.ClusterSize(), 2)
+	require_False(t, follower.MembershipChangeInProgress())
+
+	// Heal the partition, and expect the follower to get the bad news...
+	hub.heal(leader.ID())
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if follower.ClusterSize() != 1 {
+			return errors.New("node removal still in progress")
+		}
+		return nil
+	})
+}

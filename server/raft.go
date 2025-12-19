@@ -153,7 +153,6 @@ type raft struct {
 
 	created time.Time      // Time that the group was created
 	accName string         // Account name of the asset this raft group is for
-	acc     *Account       // Account that NRG traffic will be sent/received in
 	group   string         // Raft group
 	sd      string         // Store directory
 	id      string         // Node ID
@@ -200,7 +199,6 @@ type raft struct {
 	vote   string // Our current vote state
 
 	s  *Server    // Reference to top-level server
-	c  *client    // Internal client for subscriptions
 	js *jetStream // JetStream, if running, to see if we are out of resources
 
 	hasleader atomic.Bool // Is there a group leader right now?
@@ -219,7 +217,7 @@ type raft struct {
 	asubj  string // Append entries subject
 	areply string // Append entries responses subject
 
-	sq    *sendq        // Send queue for outbound RPC messages
+	t     raftTransport // Transport that handles Raft messaging
 	aesub *subscription // Subscription for handleAppendEntry callbacks
 
 	wtv []byte // Term and vote to be written
@@ -314,6 +312,8 @@ type RaftConfig struct {
 	// We need to protect against losing state due to the new peers starting with an empty log.
 	// Therefore, these empty servers can't try to become leader until they at least have _some_ state.
 	ScaleUp bool
+
+	Transport raftTransportFactory
 }
 
 var (
@@ -457,6 +457,12 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
 	}
+
+	factory := cfg.Transport
+	if factory == nil {
+		factory = defaultRaftTransport
+	}
+	n.t = factory(s, n)
 
 	// Setup our internal subscriptions for proposals, votes and append entries.
 	// If we fail to do this for some reason then this is fatal — we cannot
@@ -652,7 +658,7 @@ func (n *raft) IsSystemAccount() bool {
 func (n *raft) GetTrafficAccountName() string {
 	n.RLock()
 	defer n.RUnlock()
-	return n.acc.GetName()
+	return n.t.Account().GetName()
 }
 
 func (n *raft) RecreateInternalSubs() error {
@@ -702,7 +708,7 @@ func (n *raft) recreateInternalSubsLocked() error {
 			}
 		}
 	}
-	if n.aesub != nil && n.acc == nrgAcc {
+	if n.aesub != nil && n.t.Account() == nrgAcc {
 		// Subscriptions already exist and the account NRG state
 		// hasn't changed.
 		return nil
@@ -713,33 +719,11 @@ func (n *raft) recreateInternalSubsLocked() error {
 	// the next step...
 	n.cancelCatchup()
 
-	// If we have an existing client then tear down any existing
-	// subscriptions and close the internal client.
-	if c := n.c; c != nil {
-		c.mu.Lock()
-		subs := make([]*subscription, 0, len(c.subs))
-		for _, sub := range c.subs {
-			subs = append(subs, sub)
-		}
-		c.mu.Unlock()
-		for _, sub := range subs {
-			n.unsubscribe(sub)
-		}
-		c.closeConnection(InternalClient)
-	}
-
-	if n.acc != nrgAcc {
+	if n.t.Account() != nrgAcc {
 		n.debug("Subscribing in '%s'", nrgAcc.GetName())
 	}
 
-	c := n.s.createInternalSystemClient()
-	c.registerWithAccount(nrgAcc)
-	if nrgAcc.sq == nil {
-		nrgAcc.sq = n.s.newSendQ(nrgAcc)
-	}
-	n.c = c
-	n.sq = nrgAcc.sq
-	n.acc = nrgAcc
+	n.t.Reset(nrgAcc)
 
 	// Recreate any internal subscriptions for voting, append
 	// entries etc in the new account.
@@ -2192,17 +2176,12 @@ func (n *raft) newInbox() string {
 // Our internal subscribe.
 // Lock should be held.
 func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
-	if n.c == nil {
-		return nil, errNoInternalClient
-	}
-	return n.s.systemSubscribe(subject, _EMPTY_, false, n.c, cb)
+	return n.t.Subscribe(subject, cb)
 }
 
 // Lock should be held.
 func (n *raft) unsubscribe(sub *subscription) {
-	if n.c != nil && sub != nil {
-		n.c.processUnsub(sub.sid)
-	}
+	n.t.Unsubscribe(sub)
 }
 
 // Lock should be held.
@@ -2327,19 +2306,7 @@ runner:
 	n.Lock()
 	defer n.Unlock()
 
-	if c := n.c; c != nil {
-		var subs []*subscription
-		c.mu.Lock()
-		for _, sub := range c.subs {
-			subs = append(subs, sub)
-		}
-		c.mu.Unlock()
-		for _, sub := range subs {
-			n.unsubscribe(sub)
-		}
-		c.closeConnection(InternalClient)
-		n.c = nil
-	}
+	n.t.Close()
 
 	// Unregistering ipQueues do not prevent them from push/pop
 	// just will remove them from the central monitoring map
@@ -4872,15 +4839,11 @@ func (n *raft) requestVote() {
 }
 
 func (n *raft) sendRPC(subject, reply string, msg []byte) {
-	if n.sq != nil {
-		n.sq.send(subject, reply, nil, msg)
-	}
+	n.t.Publish(subject, reply, msg)
 }
 
 func (n *raft) sendReply(subject string, msg []byte) {
-	if n.sq != nil {
-		n.sq.send(subject, _EMPTY_, nil, msg)
-	}
+	n.t.Publish(subject, _EMPTY_, msg)
 }
 
 func (n *raft) wonElection(votes int) bool {
