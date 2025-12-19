@@ -2274,10 +2274,7 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 	b := buf[0:n]
 
 	if numDeleted > 0 {
-		buf, err := ms.dmap.Encode(nil)
-		if err != nil {
-			return nil, err
-		}
+		buf := ms.dmap.Encode(nil)
 		b = append(b, buf...)
 	}
 

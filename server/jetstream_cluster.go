@@ -3618,7 +3618,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 
 			if isRecovering || !mset.IsLeader() {
-				if err := mset.processSnapshot(ss, ce.Index); err != nil {
+				if err := mset.processSnapshot(ss, ce.Index); err != nil && err != errAlreadyLeader {
 					return 0, err
 				}
 			}
@@ -3768,7 +3768,10 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 	// Messages to be skipped have no subject or timestamp or msg or hdr.
 	if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
 		// Skip and update our lseq.
-		last, _ := mset.store.SkipMsg(0)
+		last, err := mset.store.SkipMsg(0)
+		if err != nil {
+			return err
+		}
 		if needLock {
 			mset.mu.Lock()
 		}
@@ -3853,9 +3856,11 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			// should be reset. This is possible if the other side has a stale snapshot and no longer
 			// has those messages. So compact and retry to reset.
 			if state.Msgs == 0 {
-				mset.store.Compact(lseq + 1)
-				// Retry
-				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+				_, err = mset.store.Compact(lseq + 1)
+				if err == nil {
+					// Retry
+					err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+				}
 			}
 			// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
 			// and what we got.
