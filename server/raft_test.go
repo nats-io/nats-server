@@ -4627,3 +4627,33 @@ func TestNRGSingleNodeElection(t *testing.T) {
 	require_Equal(t, newLeader.node().ClusterSize(), 3)
 	require_False(t, newLeader.node().MembershipChangeInProgress())
 }
+
+func TestNRGUpperLayerHealthcheck(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+	rn := leader.node()
+
+	start := time.Now()
+	rn.SetUpperLayerHealthcheck(func() error {
+		// Let's have normal operations for a bit before we signal
+		// an error.
+		if time.Since(start) > time.Second {
+			return fmt.Errorf("time has passed")
+		}
+		return nil
+	})
+
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		rn := leader.node()
+		if rn.Leader() {
+			return fmt.Errorf("shouldn't still be leader")
+		}
+		if !rn.IsObserver() {
+			return fmt.Errorf("should be observer")
+		}
+		return nil
+	})
+}

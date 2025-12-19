@@ -87,6 +87,7 @@ type RaftNode interface {
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
+	SetUpperLayerHealthcheck(f func() error)
 }
 
 type WAL interface {
@@ -233,6 +234,8 @@ type raft struct {
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	membChanging bool // There is a membership change proposal in progress
 	deleted      bool // If the node was deleted.
+
+	hcf func() error // Healthcheck function from the upper layer, optional
 }
 
 type proposedEntry struct {
@@ -623,6 +626,15 @@ func (n *raft) GetTrafficAccountName() string {
 	n.RLock()
 	defer n.RUnlock()
 	return n.acc.GetName()
+}
+
+// If provided, periodically check when leader if the upper layer is still responding.
+// If it does not return that it is happy then we will step down. The healthcheck
+// function can block, which is fine, because during that time runAsLeader can't send HBs.
+func (n *raft) SetUpperLayerHealthcheck(f func() error) {
+	n.Lock()
+	defer n.Unlock()
+	n.hcf = f
 }
 
 func (n *raft) RecreateInternalSubs() error {
@@ -2798,6 +2810,9 @@ func (n *raft) runAsLeader() {
 	lq := time.NewTicker(lostQuorumCheck)
 	defer lq.Stop()
 
+	hcf := time.NewTicker(hbInterval * 30)
+	defer hcf.Stop()
+
 	for n.State() == Leader {
 		select {
 		case <-n.s.quitCh:
@@ -2853,6 +2868,17 @@ func (n *raft) runAsLeader() {
 		case <-lq.C:
 			if n.lostQuorum() {
 				n.stepdown(noLeader)
+				return
+			}
+		case <-hcf.C:
+			if n.hcf == nil {
+				continue
+			}
+			if err := n.hcf(); err != nil {
+				n.warn("Upper layer healthcheck failed: %v", err)
+				n.warn("Stepping down and switching to observer mode")
+				n.stepdown(noLeader)
+				n.setObserver(true, extUndetermined)
 				return
 			}
 		case <-n.votes.ch:
