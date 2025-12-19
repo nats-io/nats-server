@@ -1075,6 +1075,30 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	}
 }
 
+func (mset *stream) upperLayerHealthcheck() error {
+	// Check that nothing looks to be holding the lock for a long time.
+	// TODO(nat): we could check mset.mu etc here, but I'm not convinced we
+	// have eliminated all of the expensive or linear scans that may genuinely
+	// hold the lock and aren't worthy of a leadership change.
+	start := time.Now()
+	mset.cfgMu.RLock()
+	memory := mset.cfg.Storage == MemoryStorage
+	mset.cfgMu.RUnlock()
+	if time.Since(start) > 3*time.Second {
+		return fmt.Errorf("extreme stream lock contention")
+	}
+	if !memory {
+		// Check that we can acquire dios in a timely fashion.
+		select {
+		case <-dios:
+			dios <- struct{}{}
+		case <-time.After(3 * time.Second):
+			return fmt.Errorf("extreme dios contention")
+		}
+	}
+	return nil
+}
+
 func (mset *stream) monitorQuitC() <-chan struct{} {
 	if mset == nil {
 		return nil

@@ -955,6 +955,18 @@ func (js *jetStream) setupMetaGroup() error {
 		return err
 	}
 
+	// Quick healthcheck function to prove the metalayer *looks* functional.
+	n.SetUpperLayerHealthcheck(func() error {
+		// Check that we can acquire dios in a timely fashion.
+		select {
+		case <-dios:
+			dios <- struct{}{}
+		case <-time.After(3 * time.Second):
+			return fmt.Errorf("extreme dios contention")
+		}
+		return nil
+	})
+
 	// If we are bootstrapped with no state, start campaign early.
 	if bootstrap {
 		n.Campaign()
@@ -4354,11 +4366,15 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 				mset.startClusterSubs()
 				mset.mu.Unlock()
 
-				js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
+				// TODO(nat): Check error condition here, send SA result if err.
+				rn, _ := js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
 					"stream":  mset.name(),
 				})
+				if rn != nil {
+					rn.SetUpperLayerHealthcheck(mset.upperLayerHealthcheck)
+				}
 			}
 			mset.monitorWg.Add(1)
 			// Start monitoring..
@@ -4545,11 +4561,14 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 					s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 					if osa != nil {
 						// Process the raft group and make sure it's running if needed.
-						js.createRaftGroup(acc.GetName(), osa.Group, osa.recovering, storage, pprofLabels{
+						rn, _ := js.createRaftGroup(acc.GetName(), osa.Group, osa.recovering, storage, pprofLabels{
 							"type":    "stream",
 							"account": mset.accName(),
 							"stream":  mset.name(),
 						})
+						if rn != nil {
+							rn.SetUpperLayerHealthcheck(mset.upperLayerHealthcheck)
+						}
 						mset.setStreamAssignment(osa)
 					}
 					if rg.node != nil {
@@ -5160,12 +5179,16 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		storage = MemoryStorage
 	}
 	// No-op if R1.
-	js.createRaftGroup(accName, rg, recovering, storage, pprofLabels{
+	rn, _ := js.createRaftGroup(accName, rg, recovering, storage, pprofLabels{
 		"type":     "consumer",
 		"account":  mset.accName(),
 		"stream":   ca.Stream,
 		"consumer": ca.Name,
 	})
+	if rn != nil {
+		// For now consider a consumer to be healthy if the parent stream is.
+		rn.SetUpperLayerHealthcheck(mset.upperLayerHealthcheck)
+	}
 
 	// Check if we already have this consumer running.
 	var didCreate, isConfigUpdate, needsLocalResponse bool
