@@ -11075,7 +11075,7 @@ func (fs *fileStore) _writeFullState(force, needLock bool) error {
 		buf = binary.AppendUvarint(buf, mb.ttls)      // Field is new in version 2
 		buf = binary.AppendUvarint(buf, mb.schedules) // Field is new in version 3
 		if numDeleted > 0 {
-			dmap, _ := mb.dmap.Encode(scratch[:0])
+			dmap := mb.dmap.Encode(scratch[:0])
 			dmapTotalLen += len(dmap)
 			buf = append(buf, dmap...)
 		}
@@ -11582,10 +11582,7 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 				i += binary.PutUvarint(scratch[i:], num)
 				b = append(b, scratch[0:i]...)
 			case *avl.SequenceSet:
-				buf, err := db.Encode(scratch[:0])
-				if err != nil {
-					return nil, err
-				}
+				buf := db.Encode(scratch[:0])
 				b = append(b, buf...)
 			default:
 				return nil, errors.New("no impl")
