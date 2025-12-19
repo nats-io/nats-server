@@ -126,21 +126,26 @@ func (sg smGroup) lockFollowers() []stateMachine {
 // Create a raft group and place on numMembers servers at random.
 // Filestore based.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
-	return c.createRaftGroupEx(name, numMembers, smf, FileStorage)
+	return c.createRaftGroupEx(name, numMembers, smf, defaultRaftTransport, FileStorage)
 }
 
 func (c *cluster) createMemRaftGroup(name string, numMembers int, smf smFactory) smGroup {
-	return c.createRaftGroupEx(name, numMembers, smf, MemoryStorage)
+	return c.createRaftGroupEx(name, numMembers, smf, defaultRaftTransport, MemoryStorage)
 }
 
-func (c *cluster) createRaftGroupEx(name string, numMembers int, smf smFactory, st StorageType) smGroup {
+func (c *cluster) createMockMemRaftGroup(name string, members int, smf smFactory) (*raftTransportHub, raftTransportFactory, smGroup) {
+	hub, rtf := mockTransportFactory()
+	return hub, rtf, c.createRaftGroupEx(name, members, smf, rtf, MemoryStorage)
+}
+
+func (c *cluster) createRaftGroupEx(name string, numMembers int, smf smFactory, rtf raftTransportFactory, st StorageType) smGroup {
 	c.t.Helper()
 	if numMembers > len(c.servers) {
 		c.t.Fatalf("Members > Peers: %d vs  %d", numMembers, len(c.servers))
 	}
 	servers := append([]*Server{}, c.servers...)
 	rand.Shuffle(len(servers), func(i, j int) { servers[i], servers[j] = servers[j], servers[i] })
-	return c.createRaftGroupWithPeers(name, servers[:numMembers], smf, st)
+	return c.createRaftGroupWithPeers(name, servers[:numMembers], smf, rtf, st)
 }
 
 func (c *cluster) createWAL(name string, st StorageType) WAL {
@@ -189,7 +194,7 @@ func (c *cluster) createStateMachine(s *Server, cfg *RaftConfig, peers []string,
 	return sm
 }
 
-func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf smFactory, st StorageType) smGroup {
+func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf smFactory, rtf raftTransportFactory, st StorageType) smGroup {
 	c.t.Helper()
 
 	var sg smGroup
@@ -197,34 +202,40 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 
 	for _, s := range servers {
 		cfg := &RaftConfig{
-			Name:  name,
-			Store: c.t.TempDir(),
-			Log:   c.createWAL(name, st)}
+			Name:      name,
+			Store:     c.t.TempDir(),
+			Log:       c.createWAL(name, st),
+			Transport: rtf}
 		sg = append(sg, c.createStateMachine(s, cfg, peers, smf))
 	}
 	return sg
 }
 
-func (c *cluster) addNodeEx(name string, smf smFactory, st StorageType) stateMachine {
+func (c *cluster) addNodeEx(name string, smf smFactory, rtf raftTransportFactory, st StorageType) stateMachine {
 	c.t.Helper()
 
 	server := c.addInNewServer()
 
 	cfg := &RaftConfig{
-		Name:  name,
-		Store: c.t.TempDir(),
-		Log:   c.createWAL(name, st)}
+		Name:      name,
+		Store:     c.t.TempDir(),
+		Log:       c.createWAL(name, st),
+		Transport: rtf}
 
 	peers := serverPeerNames(c.servers)
 	return c.createStateMachine(server, cfg, peers, smf)
 }
 
 func (c *cluster) addRaftNode(name string, smf smFactory) stateMachine {
-	return c.addNodeEx(name, smf, FileStorage)
+	return c.addNodeEx(name, smf, defaultRaftTransport, FileStorage)
 }
 
 func (c *cluster) addMemRaftNode(name string, smf smFactory) stateMachine {
-	return c.addNodeEx(name, smf, MemoryStorage)
+	return c.addNodeEx(name, smf, defaultRaftTransport, MemoryStorage)
+}
+
+func (c *cluster) addMockMemRaftNode(name string, rtf raftTransportFactory, smf smFactory) stateMachine {
+	return c.addNodeEx(name, smf, rtf, MemoryStorage)
 }
 
 // Driver program for the state machine.
