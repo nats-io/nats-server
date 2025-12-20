@@ -60,13 +60,16 @@ type parser struct {
 
 	// pedantic reports error when configuration is not correct.
 	pedantic bool
+
+	//parses the file without environment variable and include support
+	safe bool
 }
 
 // Parse will return a map of keys to any, although concrete types
 // underly them. The values supported are string, bool, int64, float64, DateTime.
 // Arrays and nested Maps are also supported.
 func Parse(data string) (map[string]any, error) {
-	p, err := parse(data, "", false)
+	p, err := parse(data, "", false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -75,11 +78,41 @@ func Parse(data string) (map[string]any, error) {
 
 // ParseWithChecks is equivalent to Parse but runs in pedantic mode.
 func ParseWithChecks(data string) (map[string]any, error) {
-	p, err := parse(data, "", true)
+	p, err := parse(data, "", true, false)
 	if err != nil {
 		return nil, err
 	}
 	return p.mapping, nil
+}
+
+// ParseWithChecksDigest is equivalent to Parse but runs in pedantic mode.
+func ParseWithChecksDigest(data string) (map[string]any, string, error) {
+	p, err := parse(data, "", true, false)
+	if err != nil {
+		return nil, "", err
+	}
+
+	digest, err := p.digest()
+	if err != nil {
+		return nil, "", err
+	}
+
+	return p.mapping, digest, nil
+}
+
+// ParseSafelyWithChecksDigest is equivalent to ParseWithChecksDigest but disables include and variables
+func ParseSafelyWithChecksDigest(data string) (map[string]any, string, error) {
+	p, err := parse(data, "", true, true)
+	if err != nil {
+		return nil, _EMPTY_, err
+	}
+
+	digest, err := p.digest()
+	if err != nil {
+		return nil, "", err
+	}
+
+	return p.mapping, digest, nil
 }
 
 // ParseFile is a helper to open file, etc. and parse the contents.
@@ -89,7 +122,7 @@ func ParseFile(fp string) (map[string]any, error) {
 		return nil, fmt.Errorf("error opening config file: %v", err)
 	}
 
-	p, err := parse(string(data), fp, false)
+	p, err := parse(string(data), fp, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +136,7 @@ func ParseFileWithChecks(fp string) (map[string]any, error) {
 		return nil, err
 	}
 
-	p, err := parse(string(data), fp, true)
+	p, err := parse(string(data), fp, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -134,19 +167,49 @@ func ParseFileWithChecksDigest(fp string) (map[string]any, string, error) {
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
-	p, err := parse(string(data), fp, true)
+	p, err := parse(string(data), fp, true, false)
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
 	// Filter out any environment variables before taking the digest.
 	cleanupUsedEnvVars(p.mapping)
-	digest := sha256.New()
-	e := json.NewEncoder(digest)
-	err = e.Encode(p.mapping)
+
+	digest, err := p.digest()
+	if err != nil {
+		return nil, "", err
+	}
+
+	return p.mapping, digest, nil
+}
+
+// ParseFileSafelyWithChecksDigest parse the file in pedantic mode without allowing include or environment variables, returns the digest and config
+func ParseFileSafelyWithChecksDigest(fp string) (map[string]any, string, error) {
+	data, err := os.ReadFile(fp)
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
-	return p.mapping, fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+	p, err := parse(string(data), fp, true, true)
+	if err != nil {
+		return nil, _EMPTY_, err
+	}
+
+	digest, err := p.digest()
+	if err != nil {
+		return nil, "", err
+	}
+
+	return p.mapping, digest, nil
+}
+
+func (p *parser) digest() (string, error) {
+	digest := sha256.New()
+	e := json.NewEncoder(digest)
+	err := e.Encode(p.mapping)
+	if err != nil {
+		return _EMPTY_, err
+	}
+
+	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
 }
 
 type token struct {
@@ -180,7 +243,7 @@ func (t *token) Position() int {
 	return t.item.pos
 }
 
-func parse(data, fp string, pedantic bool) (p *parser, err error) {
+func parse(data, fp string, pedantic bool, safe bool) (p *parser, err error) {
 	p = &parser{
 		mapping:  make(map[string]any),
 		lx:       lex(data),
@@ -189,6 +252,7 @@ func parse(data, fp string, pedantic bool) (p *parser, err error) {
 		ikeys:    make([]item, 0, 4),
 		fp:       filepath.Dir(fp),
 		pedantic: pedantic,
+		safe:     safe,
 	}
 	p.pushContext(p.mapping)
 
@@ -371,6 +435,10 @@ func (p *parser) processItem(it item, fp string) error {
 		p.popContext()
 		setValue(it, array)
 	case itemVariable:
+		if p.safe {
+			return fmt.Errorf("variable references are not allowed in safe mode, but got '%s' on line %d", it.val, it.line)
+		}
+
 		value, found, err := p.lookupVariable(it.val)
 		if err != nil {
 			return fmt.Errorf("variable reference for '%s' on line %d could not be parsed: %s",
@@ -396,6 +464,10 @@ func (p *parser) processItem(it item, fp string) error {
 			p.setValue(value)
 		}
 	case itemInclude:
+		if p.safe {
+			return fmt.Errorf("file includes are not allowed in safe mode, but got '%s' on line %d", it.val, it.line)
+		}
+
 		var (
 			m   map[string]any
 			err error
