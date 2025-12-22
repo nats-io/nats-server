@@ -31,6 +31,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/micro"
 	"github.com/nats-io/nkeys"
 )
 
@@ -2491,4 +2492,66 @@ func TestAuthCalloutProxyRequiredInUserNotInAuthJWT(t *testing.T) {
 
 	// Auth callout should have been invoked once.
 	require_Equal(t, 1, int(invoked.Load()))
+}
+
+func TestAuthCalloutErrorInHeader(t *testing.T) {
+	srv, _ := RunServerWithConfig(createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		server_name: A
+		accounts {
+			AUTH: {
+				users: [ { user: auth, password: auth } ]
+			}
+			APP: {
+				users: [ { user: user, password: pass } ]
+			}
+			SYS: {}
+		}
+		system_account: SYS
+
+		authorization {
+			timeout: 1s
+			auth_callout {
+				issuer: "`+authCalloutIssuer+`"
+				auth_users: [ auth ]
+				account: AUTH
+			}
+		}
+	`)))
+	t.Cleanup(srv.WaitForShutdown)
+	t.Cleanup(srv.Shutdown)
+
+	authConn, err := nats.Connect(srv.ClientURL(), nats.UserInfo("auth", "auth"))
+	require_NoError(t, err)
+	t.Cleanup(authConn.Close)
+
+	authErrSub, err := authConn.SubscribeSync(authErrorAccountEventSubj)
+	require_NoError(t, err)
+
+	_, err = micro.AddService(authConn, micro.Config{
+		Name:        "AuthCalloutError",
+		Version:     "0.1.0",
+		Description: "Returns an authorization error as service error message headers.",
+		Endpoint: &micro.EndpointConfig{
+			Subject: AuthCalloutSubject,
+			Handler: micro.HandlerFunc(func(req micro.Request) {
+				req.Error("500", "custom error message", nil)
+			}),
+		},
+	})
+	require_NoError(t, err)
+
+	_, err = nats.Connect(srv.ClientURL(), nats.UserInfo("user", "pass"))
+	require_Error(t, err)
+
+	msg, err := authErrSub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	var dmsg DisconnectEventMsg
+	err = json.Unmarshal(msg.Data, &dmsg)
+	require_NoError(t, err)
+
+	if !strings.Contains(dmsg.Reason, "500: custom error message") {
+		t.Fatalf("reason %q does not contain %q", dmsg.Reason, "500: custom error message")
+	}
 }
