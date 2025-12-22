@@ -9044,6 +9044,11 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		// Leave a tombstone so we can remember our starting sequence in case
 		// full state becomes corrupted.
 		fs.writeTombstone(lseq, lmb.last.ts)
+		if lmb.mfd != nil {
+			// We must ensure tombstone is durably written to disk before returning;
+			// otherwise, a crash could leave the stream in an unrecoverable state with no sequence
+			lmb.mfd.Sync()
+		}
 	}
 
 	cb := fs.scb
