@@ -3142,19 +3142,19 @@ func (mset *stream) resetClusteredState(err error) bool {
 	stype, tierName, replicas := mset.cfg.Storage, mset.tier, mset.cfg.Replicas
 	mset.mu.RUnlock()
 
+	// The stream might already be deleted and not assigned to us anymore.
+	// In any case, don't revive the stream if it's already closed.
+	if mset.closed.Load() || (node != nil && node.IsDeleted()) {
+		s.Warnf("Will not reset stream '%s > %s', stream is closed", acc, mset.name())
+		// Explicitly returning true here, we want the outside to break out of the monitoring loop as well.
+		return true
+	}
+
 	assert.Unreachable("Reset clustered state", map[string]any{
 		"stream":  name,
 		"account": acc.Name,
 		"err":     err,
 	})
-
-	// The stream might already be deleted and not assigned to us anymore.
-	// In any case, don't revive the stream if it's already closed.
-	if mset.closed.Load() {
-		s.Warnf("Will not reset stream '%s > %s', stream is closed", acc, mset.name())
-		// Explicitly returning true here, we want the outside to break out of the monitoring loop as well.
-		return true
-	}
 
 	// Stepdown regardless if we are the leader here.
 	if node != nil {
