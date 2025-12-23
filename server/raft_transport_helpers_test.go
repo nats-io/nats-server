@@ -47,8 +47,8 @@ func (h *raftTransportHub) unregister(t *mockTransport) {
 
 // Simulate a network partition. Nodes assigned to different `partitionID`s
 // will not be able to exchange messages, effectively isolating them.
-// By default, all nodes are considered  to be in partition ID 0. `
-// See heal(nodeID)`,  `healPartitions()` to heal a partition.
+// By default, all nodes are considered to be in partition ID 0.
+// See `heal(nodeID)`, `healPartitions()` to heal a partition.
 func (h *raftTransportHub) partition(nodeID string, partitionID int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

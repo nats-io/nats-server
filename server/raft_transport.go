@@ -95,7 +95,9 @@ func (t *defaultTransport) Close() {
 }
 
 func (t *defaultTransport) Publish(subject string, reply string, msg []byte) {
-	t.sq.send(subject, reply, nil, msg)
+	if t.sq != nil {
+		t.sq.send(subject, reply, nil, msg)
+	}
 }
 
 func (t *defaultTransport) Subscribe(subject string, cb msgHandler) (*subscription, error) {

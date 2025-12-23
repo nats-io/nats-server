@@ -273,7 +273,6 @@ type catchupState struct {
 type lps struct {
 	ts time.Time // Last timestamp
 	li uint64    // Last index replicated
-	kp bool      // Known peer
 }
 
 const (
@@ -995,6 +994,10 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	if werr := n.werr; werr != nil {
 		n.RUnlock()
 		return werr
+	}
+	if _, ok := n.peers[peer]; ok {
+		n.RUnlock()
+		return nil
 	}
 	if n.membChangeIndex > 0 {
 		n.RUnlock()
@@ -2918,19 +2921,14 @@ func (n *raft) addPeer(peer string) {
 		delete(n.removed, peer)
 	}
 
-	if lp, ok := n.peers[peer]; !ok {
+	if _, ok := n.peers[peer]; !ok {
 		// We are not tracking this one automatically so we need
 		// to bump cluster size.
-		n.peers[peer] = &lps{time.Time{}, 0, true}
-	} else {
-		// Mark as added.
-		lp.kp = true
+		n.peers[peer] = &lps{time.Time{}, 0}
 	}
 
 	// Adjust cluster size and quorum if needed.
 	n.adjustClusterSizeAndQuorum()
-	// Write out our new state.
-	n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 }
 
 // Remove the peer with the given id from our membership,
@@ -2944,7 +2942,50 @@ func (n *raft) removePeer(peer string) {
 	if _, ok := n.peers[peer]; ok {
 		delete(n.peers, peer)
 		n.adjustClusterSizeAndQuorum()
-		n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+	}
+}
+
+// loadPendingMembershipChange returns a copy of the pending
+// uncommitted membership change tracked in membChangeIndex.
+// Lock should be held.
+func (n *raft) loadPendingMembershipChange() *Entry {
+	if n.membChangeIndex == 0 {
+		return nil
+	}
+
+	ae, err := n.loadEntry(n.membChangeIndex)
+	if ae == nil {
+		n.error("Could not load pending membership change entry: %v", err)
+		return nil
+	}
+	defer ae.returnToPool()
+
+	if len(ae.entries) != 1 || !ae.entries[0].ChangesMembership() {
+		n.error("Did not find a membership change entry at index %v", n.membChangeIndex)
+		return nil
+	}
+
+	e := ae.entries[0]
+	return &Entry{Type: e.Type, Data: copyBytes(e.Data)}
+}
+
+// undoMembershipChange will undo the effects of the given membership change entry.
+// Lock should be held.
+func (n *raft) undoMembershipChange(e *Entry) {
+	if e == nil {
+		return
+	}
+
+	peer := string(e.Data)
+	switch e.Type {
+	case EntryAddPeer:
+		// We could call removePeer, but that
+		// would add `peer` in the removed set,
+		// which could prevent future additions.
+		delete(n.peers, peer)
+		n.adjustClusterSizeAndQuorum()
+	case EntryRemovePeer:
+		n.addPeer(peer)
 	}
 }
 
@@ -3181,13 +3222,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		if len(n.progress) == 0 {
 			n.progress = nil
 		}
-		// Check if this is a new peer and if so go ahead and propose adding them.
-		_, exists := n.peers[peer]
 		n.Unlock()
-		if !exists {
-			n.debug("Catchup done for %q, will add into peers", peer)
-			n.ProposeAddPeer(peer)
-		}
 		indexUpdatesQ.unregister()
 	}()
 
@@ -3451,44 +3486,24 @@ func (n *raft) applyCommit(index uint64) error {
 					data:      e.Data,
 				})
 			}
-		case EntryPeerState:
-			if n.State() != Leader {
-				if ps, err := decodePeerState(e.Data); err == nil {
-					n.processPeerState(ps)
-				}
-			}
 		case EntryAddPeer:
-			newPeer := string(e.Data)
-			n.debug("Added peer %q", newPeer)
-
-			// Store our peer in our global peer map for all peers.
-			peers.LoadOrStore(newPeer, newPeer)
-
-			n.addPeer(newPeer)
-
 			// We pass these up as well.
 			committed = append(committed, e)
 
 			// We are done with this membership change
 			n.membChangeIndex = 0
-
+			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 		case EntryRemovePeer:
-			peer := string(e.Data)
-			n.debug("Removing peer %q", peer)
-
-			n.removePeer(peer)
-
-			// Remove from string intern map.
-			peers.Delete(peer)
-
 			// We pass these up as well.
 			committed = append(committed, e)
 
 			// We are done with this membership change
 			n.membChangeIndex = 0
+			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 
 			// If this is us and we are the leader signal the caller
 			// to attempt to stepdown.
+			peer := string(e.Data)
 			if peer == n.id && n.State() == Leader {
 				return errNodeRemoved
 			}
@@ -3575,25 +3590,20 @@ func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 // Used to adjust cluster size and peer count based on added official peers.
 // lock should be held.
 func (n *raft) adjustClusterSizeAndQuorum() {
-	pcsz, ncsz := n.csz, 0
-	for _, peer := range n.peers {
-		if peer.kp {
-			ncsz++
-		}
-	}
-	n.csz = ncsz
+	pcsz := n.csz
+	n.csz = len(n.peers)
 	n.qn = n.csz/2 + 1
 
-	if ncsz > pcsz {
-		n.debug("Expanding our clustersize: %d -> %d", pcsz, ncsz)
+	if n.csz > pcsz {
+		n.debug("Expanding our clustersize: %d -> %d", pcsz, n.csz)
 		n.lsut = time.Now()
-	} else if ncsz < pcsz {
-		n.debug("Decreasing our clustersize: %d -> %d", pcsz, ncsz)
+	} else if n.csz < pcsz {
+		n.debug("Decreasing our clustersize: %d -> %d", pcsz, n.csz)
 		if n.State() == Leader {
 			go n.sendHeartbeat()
 		}
 	}
-	if ncsz != pcsz {
+	if n.csz != pcsz {
 		n.recreateInternalSubsLocked()
 	}
 }
@@ -3611,7 +3621,7 @@ func (n *raft) trackPeer(peer string) error {
 		}
 	}
 	if n.State() == Leader {
-		if lp, ok := n.peers[peer]; !ok || !lp.kp {
+		if _, ok := n.peers[peer]; !ok {
 			// Check if this peer had been removed previously.
 			needPeerAdd = !isRemoved
 		}
@@ -3820,6 +3830,12 @@ func (n *raft) truncateWAL(term, index uint64) {
 		})
 	}
 
+	// Check if we are truncating an uncommitted membership change.
+	var membChangeEntry *Entry
+	if n.membChangeIndex > 0 && n.membChangeIndex > index {
+		membChangeEntry = n.loadPendingMembershipChange()
+	}
+
 	defer func() {
 		// Check to see if we invalidated any snapshots that might have held state
 		// from the entries we are truncating.
@@ -3850,9 +3866,8 @@ func (n *raft) truncateWAL(term, index uint64) {
 	}
 	// Set after we know we have truncated properly.
 	n.pterm, n.pindex = term, index
-
-	// Check if we're truncating an uncommitted membership change.
 	if n.membChangeIndex > 0 && n.membChangeIndex > index {
+		n.undoMembershipChange(membChangeEntry)
 		n.membChangeIndex = 0
 	}
 }
@@ -4266,22 +4281,28 @@ CONTINUE:
 					}
 				}
 			}
+		case EntryPeerState:
+			if ps, err := decodePeerState(e.Data); err == nil {
+				n.processPeerState(ps)
+			}
 		case EntryAddPeer:
 			// When receiving or restoring, mark membership as changing.
 			// Set to the index where this entry was stored (pindex is now this entry's index)
 			n.membChangeIndex = n.pindex
-			if newPeer := string(e.Data); len(newPeer) == idLen {
-				// Track directly, but wait for commit to be official
-				if _, ok := n.peers[newPeer]; !ok {
-					n.peers[newPeer] = &lps{time.Time{}, 0, false}
-				}
-				// Store our peer in our global peer map for all peers.
-				peers.LoadOrStore(newPeer, newPeer)
-			}
+			peer := string(e.Data)
+			// Store our peer in our global peer map for all peers.
+			peers.LoadOrStore(peer, peer)
+			n.addPeer(peer)
+			n.debug("Added peer %q", peer)
 		case EntryRemovePeer:
 			// When receiving or restoring, mark membership as changing.
 			// Set to the index where this entry was stored (pindex is now this entry's index)
 			n.membChangeIndex = n.pindex
+			peer := string(e.Data)
+			// Remove from string intern map.
+			peers.Delete(peer)
+			n.removePeer(peer)
+			n.debug("Removed peer %q", peer)
 		}
 	}
 
@@ -4347,10 +4368,9 @@ func (n *raft) processPeerState(ps *peerState) {
 	n.peers = make(map[string]*lps)
 	for _, peer := range ps.knownPeers {
 		if lp := old[peer]; lp != nil {
-			lp.kp = true
 			n.peers[peer] = lp
 		} else {
-			n.peers[peer] = &lps{time.Time{}, 0, true}
+			n.peers[peer] = &lps{time.Time{}, 0}
 		}
 	}
 	n.debug("Update peers from leader to %+v", n.peers)
@@ -4594,10 +4614,8 @@ func decodePeerState(buf []byte) (*peerState, error) {
 // Lock should be held.
 func (n *raft) peerNames() []string {
 	var peers []string
-	for name, peer := range n.peers {
-		if peer.kp {
-			peers = append(peers, name)
-		}
+	for name := range n.peers {
+		peers = append(peers, name)
 	}
 	return peers
 }

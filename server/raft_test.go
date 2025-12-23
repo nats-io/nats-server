@@ -3897,9 +3897,6 @@ func TestNRGQuorumAfterLeaderStepdown(t *testing.T) {
 	require_NoError(t, n.trackPeer(nats1))
 	require_True(t, n.Quorum())
 	require_Len(t, len(n.peers), 3)
-	for _, ps := range n.peers {
-		ps.kp = true
-	}
 
 	// If we hand off leadership to another server, we should
 	// still be reporting we have quorum.
@@ -4494,6 +4491,41 @@ func TestNRGUncommittedMembershipChangeGetsTruncated(t *testing.T) {
 	require_Equal(t, n.membChangeIndex, 0)
 }
 
+func TestNRGUncommittedPeerRemovalGetsRolledBackOnTruncate(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	n.Lock()
+	n.addPeer(nats1)
+	n.addPeer(nats2)
+	initialClusterSize := n.csz
+	initialQuorum := n.qn
+	initialPeers := len(n.peers)
+	n.Unlock()
+
+	entries := []*Entry{newEntry(EntryRemovePeer, []byte(nats2))}
+	aeRemovePeer := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+
+	n.processAppendEntry(aeRemovePeer, n.aesub)
+	require_True(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.ClusterSize(), initialClusterSize-1)
+	require_Equal(t, n.quorumNeeded(), initialQuorum)
+	n.RLock()
+	require_Equal(t, len(n.peers), initialPeers-1)
+	n.RUnlock()
+
+	n.truncateWAL(n.pterm, n.pindex-1)
+	require_False(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.ClusterSize(), initialClusterSize)
+	require_Equal(t, n.quorumNeeded(), initialQuorum)
+	n.RLock()
+	require_Equal(t, len(n.peers), initialPeers)
+	n.RUnlock()
+}
+
 func TestNRGUncommittedMembershipChangeOnNewLeaderForwardedRemovePeerProposal(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
@@ -4764,14 +4796,14 @@ func TestNRGAddPeers(t *testing.T) {
 		rg = append(rg, c.addMemRaftNode("TEST", newStateAdder))
 	}
 
-	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
-		if leader.node().ClusterSize() != 9 {
-			return errors.New("node additions still in progress")
-		}
-		return nil
-	})
-
-	require_Equal(t, leader.node().ClusterSize(), 9)
+	for _, n := range rg {
+		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+			if n.node().ClusterSize() != 9 {
+				return errors.New("node additions still in progress")
+			}
+			return nil
+		})
+	}
 }
 
 func TestNRGDisjointMajorities(t *testing.T) {
@@ -5728,4 +5760,188 @@ func TestNRGPartitionedPeerRemove(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNRGPeerAddAndPartitionLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	hub, rtf, rg := c.createMockMemRaftGroup("MOCK", 3, newStateAdder)
+
+	leader := rg.waitOnLeader()
+	followers := rg.followers()
+
+	// When the leader sends a EntryAddPeer, isolate it from
+	// the rest of the cluster.
+	hub.setAfterMsgHook(func(subject, reply string, msg []byte) {
+		if subject != "$NRG.AE.MOCK" {
+			return
+		}
+		ae, _ := decodeAppendEntry(msg, nil, reply)
+		if ae == nil || len(ae.entries) != 1 {
+			return
+		}
+		if ae.leader != leader.node().ID() {
+			return
+		}
+		if ae.entries[0].Type == EntryAddPeer {
+			hub.partition(leader.node().ID(), 1)
+		}
+	})
+
+	// Add a new node and expect a new leader to be elected
+	newNode := c.addMockMemRaftNode("MOCK", rtf, newStateAdder)
+	newGroup := append(followers, newNode)
+	newLeader := newGroup.waitOnLeader()
+	require_True(t, newLeader != nil)
+
+	// If bug is present: The new leader has not yet committed the
+	// appendEntry containing EntryAddPeer. The new leader (and
+	// followers) would not update their cluster size until the
+	// EntryAddPeer was committed, allowing the following
+	// sequence of events:
+	// 1) the new leader has initially cluster size of 3
+	// 2) it sends a peerState message with cluster size 3
+	// 3) the leader commits the EntryAddPeer from the previous
+	//    leader, and adjusts its cluster size to 4.
+	// 4) the followers commit the EntryAddPeer, incrementing
+	//    their cluster size to 4. Next, the EntryPeerState is
+	//    committed and the cluster size goes back to 3.
+	// 5) At this point cluster size from the leader has diverged
+	//    from the cluster size of its followers.
+
+	// Expect all nodes to report cluster size of 4
+	for _, n := range newGroup {
+		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+			if n.node().ClusterSize() != 4 {
+				return errors.New("node addition still in progress")
+			}
+			return nil
+		})
+	}
+
+	// Finally bring back the old leader
+	hub.healPartitions()
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if leader.node().MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		}
+		if leader.node().ClusterSize() != 4 {
+			return errors.New("node addition still in progress")
+		}
+		return nil
+	})
+}
+
+func TestNRGPeerRemoveAndPartitionLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	hub, _, rg := c.createMockMemRaftGroup("MOCK", 5, newStateAdder)
+
+	leader := rg.waitOnLeader()
+	followers := rg.followers()
+
+	// When the leader sends a EntryRemovePeer, isolate it from
+	// the rest of the cluster.
+	hub.setAfterMsgHook(func(subject, reply string, msg []byte) {
+		if subject != "$NRG.AE.MOCK" {
+			return
+		}
+		ae, _ := decodeAppendEntry(msg, nil, reply)
+		if ae == nil || len(ae.entries) != 1 {
+			return
+		}
+		if ae.leader != leader.node().ID() {
+			return
+		}
+		if ae.entries[0].Type == EntryRemovePeer {
+			hub.partition(leader.node().ID(), 1)
+		}
+	})
+
+	leader.node().ProposeRemovePeer(leader.node().ID())
+
+	// Expect followers to elect a new leader
+	newLeader := followers.waitOnLeader()
+	require_True(t, newLeader != nil)
+
+	// Expect all nodes to report cluster size 4
+	for _, n := range followers {
+		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+			if n.node().ClusterSize() != 4 {
+				return errors.New("node addition still in progress")
+			}
+			return nil
+		})
+	}
+}
+
+func TestNRGLeaderWithoutQuorumAfterPeerAdd(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	hub, rtf, rg := c.createMockMemRaftGroup("MOCK", 3, newStateAdder)
+	defer hub.healPartitions()
+
+	leader := rg.waitOnLeader()
+	followers := rg.followers()
+
+	// Setup a after message hook to create a partition as soon as
+	// the leader publishes a EntryAddPeer. The partition will
+	// prevent committing the entry.
+	hub.setAfterMsgHook(func(subject, reply string, msg []byte) {
+		if subject != "$NRG.AE.MOCK" {
+			return
+		}
+		ae, _ := decodeAppendEntry(msg, nil, reply)
+		if ae == nil || len(ae.entries) != 1 {
+			return
+		}
+		if ae.leader != leader.node().ID() {
+			return
+		}
+
+		// After EntryAddPeer is published, partition the
+		// leader and one of the followers. This partition
+		// can't commit the entry.
+		if ae.entries[0].Type == EntryAddPeer {
+			hub.partition(leader.node().ID(), 1)
+			hub.partition(followers[0].node().ID(), 1)
+		}
+	})
+
+	newNode := c.addMockMemRaftNode("MOCK", rtf, newStateAdder)
+
+	// At some point here the cluster gets partitioned in two
+	// parts: {leader, followers[0]} and {newNode, followers[1]}.
+	// Neither side should be able to make progress.
+	newGroup := smGroup{newNode, followers[1]}
+	newLeader := newGroup.waitOnLeader()
+
+	// If the bug is present: we managed to elect a new leader,
+	// in a 4 node cluster, with only two nodes in the partition!
+	// This is because of the following sequence of events:
+	// 1) the follower has received the EntryPeerAdd
+	// 2) the leader and the other follower have partitioned away
+	// 3) the entry is uncommitted, however the follower has added
+	///   the new peer to its peer set, but won't adjust cluster
+	//    size and quorum until after the entry is committed.
+	// 4) follower becomes a canditate and will become leader with
+	//    a single vote from the new node
+	require_Equal(t, newLeader, nil)
+
+	// Check that node addition completes after healing the partition
+	hub.healPartitions()
+	rg = append(rg, newNode)
+	newLeader = rg.waitOnLeader()
+	require_True(t, newLeader != nil)
+	for _, n := range rg {
+		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+			if n.node().ClusterSize() != 4 {
+				return errors.New("node addition still in progress")
+			}
+			return nil
+		})
+	}
 }
