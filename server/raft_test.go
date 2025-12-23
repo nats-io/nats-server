@@ -3952,6 +3952,144 @@ func TestNRGNoLogResetOnCorruptedSendToFollower(t *testing.T) {
 	require_NotEqual(t, ss.LastSeq, 0)
 }
 
+func TestNRGTruncateLogWithMisalignedSnapshotGap(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0] // RunBasicJetStreamServer not available
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, srv: s}
+	scfg := StreamConfig{Name: "RAFT", Storage: FileStorage}
+	fs, err := newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+
+	err = s.bootstrapRaftNode(cfg, nil, false)
+	require_NoError(t, err)
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2, entries: entries})
+
+	for i, ae := range []*appendEntry{aeMsg1, aeMsg2, aeMsg3} {
+		n.processAppendEntry(ae, n.aesub)
+		require_Equal(t, n.pindex, uint64(i+1))
+	}
+
+	// Manually call back down to applied, and then snapshot.
+	n.Applied(1)
+	require_NoError(t, n.InstallSnapshot(nil))
+
+	state := n.wal.State()
+	require_Equal(t, state.FirstSeq, 2)
+	require_Equal(t, state.LastSeq, 3)
+
+	// Manually compact the WAL further so it doesn't align anymore with the snapshot.
+	_, err = n.wal.Compact(3)
+	require_NoError(t, err)
+	state = n.wal.State()
+	require_Equal(t, state.FirstSeq, 3)
+	require_Equal(t, state.LastSeq, 3)
+
+	// Restart.
+	n.Stop()
+	n.WaitForStop()
+	require_NoError(t, fs.Stop())
+	fs, err = newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+	cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// The gap between the snapshot and the WAL should be detected, and the WAL should truncate.
+	// Can't continue normally with missing entries.
+	state = n.wal.State()
+	require_Equal(t, state.Msgs, 0)
+	require_Equal(t, state.FirstSeq, 2)
+	require_Equal(t, state.LastSeq, 1)
+	require_Equal(t, n.pindex, 1)
+
+	// Should be able to re-populate the missing messages.
+	// Need to re-encode them, though, since they would have been returned to the pool before.
+	aeMsg2 = encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 = encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2, entries: entries})
+	for i, ae := range []*appendEntry{aeMsg2, aeMsg3} {
+		n.processAppendEntry(ae, n.aesub)
+		require_Equal(t, n.pindex, uint64(i+2))
+	}
+}
+
+func TestNRGTruncateLogWithMissingSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0] // RunBasicJetStreamServer not available
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, srv: s}
+	scfg := StreamConfig{Name: "RAFT", Storage: FileStorage}
+	fs, err := newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+
+	err = s.bootstrapRaftNode(cfg, nil, false)
+	require_NoError(t, err)
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2, entries: entries})
+
+	for i, ae := range []*appendEntry{aeMsg1, aeMsg2, aeMsg3} {
+		n.processAppendEntry(ae, n.aesub)
+		require_Equal(t, n.pindex, uint64(i+1))
+	}
+
+	// Manually simulate a snapshot being made, only compacting but not actually installing a snapshot.
+	_, err = n.wal.Compact(2)
+	require_NoError(t, err)
+
+	state := n.wal.State()
+	require_Equal(t, state.FirstSeq, 2)
+	require_Equal(t, state.LastSeq, 3)
+
+	// Restart.
+	n.Stop()
+	n.WaitForStop()
+	require_NoError(t, fs.Stop())
+	fs, err = newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+	cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// The gap between the snapshot and the WAL should be detected, and the WAL should truncate.
+	// Can't continue normally with missing entries.
+	state = n.wal.State()
+	require_Equal(t, state.Msgs, 0)
+	require_Equal(t, state.FirstSeq, 0)
+	require_Equal(t, state.LastSeq, 0)
+	require_Equal(t, n.pindex, 0)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:
