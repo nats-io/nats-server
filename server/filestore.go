@@ -295,6 +295,8 @@ const (
 	msgDir = "msgs"
 	// This is where we temporarily move the messages dir.
 	purgeDir = "__msgs__"
+	// This is where we temporarily move the new message block during purge.
+	newMsgDir = "__new_msgs__"
 	// used to scan blk file names.
 	blkScan = "%d.blk"
 	// suffix of a block file
@@ -1745,10 +1747,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 	// Check for any left over purged messages.
 	<-dios
-	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
-	if _, err := os.Stat(pdir); err == nil {
-		os.RemoveAll(pdir)
-	}
+	fs.recoverPartialPurge()
 	// Grab our stream state file and load it in.
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 	buf, err := os.ReadFile(fn)
@@ -2259,10 +2258,7 @@ func (fs *fileStore) recoverMsgs() error {
 
 	// Check for any left over purged messages.
 	<-dios
-	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
-	if _, err := os.Stat(pdir); err == nil {
-		os.RemoveAll(pdir)
-	}
+	fs.recoverPartialPurge()
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	f, err := os.Open(mdir)
 	if err != nil {
@@ -8987,52 +8983,16 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		mb.dirtyClose()
 	}
 
-	fs.blks = nil
-	fs.lmb = nil
-	fs.bim = make(map[uint32]*msgBlock)
-	// Clear any per subject tracking.
-	fs.psim, fs.tsl = fs.psim.Empty(), 0
-	fs.sdm.empty()
-	// Mark dirty.
-	fs.dirty++
-
-	// Move the msgs directory out of the way, will delete out of band.
-	// FIXME(dlc) - These can error and we need to change api above to propagate?
-	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
-	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
-	// If purge directory still exists then we need to wait
-	// in place and remove since rename would fail.
-	if _, err := os.Stat(pdir); err == nil {
-		<-dios
-		os.RemoveAll(pdir)
-		dios <- struct{}{}
+	// Check if we need to set the first seq to a new number.
+	if fseq > fs.state.FirstSeq {
+		fs.state.FirstSeq = fseq
+		fs.state.LastSeq = fseq - 1
 	}
-
-	<-dios
-	os.Rename(mdir, pdir)
-	dios <- struct{}{}
-
-	go func() {
-		<-dios
-		os.RemoveAll(pdir)
-		dios <- struct{}{}
-	}()
-
-	// Create new one.
-	<-dios
-	os.MkdirAll(mdir, defaultDirPerms)
-	dios <- struct{}{}
 
 	// Make sure we have a lmb to write to.
 	if _, err := fs.newMsgBlockForWrite(); err != nil {
 		fs.mu.Unlock()
 		return purged, err
-	}
-
-	// Check if we need to set the first seq to a new number.
-	if fseq > fs.state.FirstSeq {
-		fs.state.FirstSeq = fseq
-		fs.state.LastSeq = fseq - 1
 	}
 
 	lmb := fs.lmb
@@ -9045,6 +9005,61 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		// full state becomes corrupted.
 		fs.writeTombstone(lseq, lmb.last.ts)
 	}
+	// Close FDs since we'll move the file. We re-enable the FD after the purge is complete.
+	lmb.closeFDs()
+
+	fs.blks = nil
+	fs.lmb = nil
+	fs.bim = make(map[uint32]*msgBlock)
+	// Clear any per subject tracking.
+	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	fs.sdm.empty()
+	// Mark dirty.
+	fs.dirty++
+	fs.addMsgBlock(lmb)
+
+	// Move the msgs directory out of the way, will delete out of band.
+	// FIXME(dlc) - These can error and we need to change api above to propagate?
+	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+	ndir := filepath.Join(fs.fcfg.StoreDir, newMsgDir)
+	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
+	<-dios
+	// If purge directory still exists then we need to wait
+	// in place and remove since rename would fail.
+	if _, err := os.Stat(ndir); err == nil {
+		os.RemoveAll(ndir)
+	}
+	if _, err := os.Stat(pdir); err == nil {
+		os.RemoveAll(pdir)
+	}
+
+	// Create directory to move the new tombstone to.
+	os.MkdirAll(ndir, defaultDirPerms)
+	// Move out the block containing the tombstone. Also move the key file if encrypted.
+	// The block file itself MUST be moved last to ensure we can assume the prior renames
+	// were successful during recovery.
+	for _, mbf := range []string{fmt.Sprintf(keyScan, lmb.index), fmt.Sprintf(blkScan, lmb.index)} {
+		b := filepath.Join(mdir, mbf)
+		a := filepath.Join(ndir, mbf)
+		os.Rename(b, a)
+	}
+	// Purge all remaining messages.
+	os.Rename(mdir, pdir)
+	// Rename the directory back to be left only with the tombstone.
+	os.Rename(ndir, mdir)
+	dios <- struct{}{}
+
+	// Remove the purged messages directory asynchronously.
+	go func() {
+		<-dios
+		os.RemoveAll(pdir)
+		dios <- struct{}{}
+	}()
+
+	// Re-enable writing for the lmb.
+	lmb.mu.Lock()
+	lmb.enableForWriting(fs.fip)
+	lmb.mu.Unlock()
 
 	cb := fs.scb
 	fs.mu.Unlock()
@@ -9059,6 +9074,30 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	}
 
 	return purged, nil
+}
+
+// Lock and dios should be held.
+func (fs *fileStore) recoverPartialPurge() {
+	ndir := filepath.Join(fs.fcfg.StoreDir, newMsgDir)
+	if entries, err := os.ReadDir(ndir); err == nil {
+		// If it's empty, that means we got hard killed before moving the tombstone, and we need to remove it.
+		isEmpty := !slices.ContainsFunc(entries, func(e os.DirEntry) bool {
+			// The directory is considered empty if it's missing a block file.
+			return strings.HasSuffix(e.Name(), blkSuffix)
+		})
+		if isEmpty {
+			os.RemoveAll(ndir)
+		} else {
+			// Otherwise, it contains the tombstone after purge, and the old messages need to be purged instead.
+			mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+			os.RemoveAll(mdir)
+			os.Rename(ndir, mdir)
+		}
+	}
+	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
+	if _, err := os.Stat(pdir); err == nil {
+		os.RemoveAll(pdir)
+	}
 }
 
 // Compact will remove all messages from this store up to
