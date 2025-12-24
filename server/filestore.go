@@ -9703,31 +9703,31 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	<-dios
 	// If purge directory still exists then we need to wait
 	// in place and remove since rename would fail.
-	if _, err := os.Stat(ndir); err != nil && !os.IsNotExist(err) {
-		dios <- struct{}{}
-		fs.setWriteErr(err)
-		fs.mu.Unlock()
-		return purged, err
-	} else if err == nil {
+	if _, err := os.Stat(ndir); err == nil {
 		if err = os.RemoveAll(ndir); err != nil {
 			dios <- struct{}{}
 			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
-	}
-	if _, err := os.Stat(pdir); err != nil && !os.IsNotExist(err) {
+	} else if !os.IsNotExist(err) {
 		dios <- struct{}{}
 		fs.setWriteErr(err)
 		fs.mu.Unlock()
-		return 0, err
-	} else if err == nil {
+		return purged, err
+	}
+	if _, err := os.Stat(pdir); err == nil {
 		if err = os.RemoveAll(pdir); err != nil {
 			dios <- struct{}{}
 			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
+	} else if !os.IsNotExist(err) {
+		dios <- struct{}{}
+		fs.setWriteErr(err)
+		fs.mu.Unlock()
+		return purged, err
 	}
 
 	// Create directory to move the new tombstone to.
@@ -11067,10 +11067,8 @@ func (fs *fileStore) Delete(inline bool) error {
 	}
 
 	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
-	// If purge directory still exists then we need to wait
-	// in place and remove since rename would fail.
 	if _, err := os.Stat(pdir); err == nil {
-		os.RemoveAll(pdir)
+		_ = os.RemoveAll(pdir)
 	}
 
 	// Quickly close all blocks and simulate a purge w/o overhead an new write block.
