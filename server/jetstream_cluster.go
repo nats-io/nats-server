@@ -1541,7 +1541,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	// Do removals first.
 	for _, sa := range saDel {
 		js.setStreamAssignmentRecovering(sa)
-		if isRecovering {
+		if isRecovering && ru != nil {
 			key := sa.recoveryKey()
 			ru.removeStreams[key] = sa
 			delete(ru.addStreams, key)
@@ -1568,7 +1568,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	// sure to process any changes.
 	for _, sa := range saChk {
 		js.setStreamAssignmentRecovering(sa)
-		if isRecovering {
+		if isRecovering && ru != nil {
 			key := sa.recoveryKey()
 			ru.updateStreams[key] = sa
 			delete(ru.addStreams, key)
@@ -1581,7 +1581,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	// Now do the deltas for existing stream's consumers.
 	for _, ca := range caDel {
 		js.setConsumerAssignmentRecovering(ca)
-		if isRecovering {
+		if isRecovering && ru != nil {
 			key := ca.recoveryKey()
 			skey := ca.streamRecoveryKey()
 			if _, ok := ru.removeConsumers[skey]; !ok {
@@ -1597,7 +1597,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	}
 	for _, ca := range caAdd {
 		js.setConsumerAssignmentRecovering(ca)
-		if isRecovering {
+		if isRecovering && ru != nil {
 			key := ca.recoveryKey()
 			skey := ca.streamRecoveryKey()
 			if consumers, ok := ru.removeConsumers[skey]; ok {
@@ -1858,7 +1858,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				if isRecovering {
+				if isRecovering && ru != nil {
 					js.setStreamAssignmentRecovering(sa)
 					key := sa.recoveryKey()
 					ru.addStreams[key] = sa
@@ -1872,7 +1872,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				if isRecovering {
+				if isRecovering && ru != nil {
 					js.setStreamAssignmentRecovering(sa)
 					key := sa.recoveryKey()
 					ru.removeStreams[key] = sa
@@ -1890,7 +1890,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				if isRecovering {
+				if isRecovering && ru != nil {
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
 					skey := ca.streamRecoveryKey()
@@ -1910,7 +1910,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				if isRecovering {
+				if isRecovering && ru != nil {
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
 					skey := ca.streamRecoveryKey()
@@ -1930,7 +1930,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				if isRecovering {
+				if isRecovering && ru != nil {
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
 					skey := ca.streamRecoveryKey()
@@ -1951,7 +1951,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				if isRecovering {
+				if isRecovering && ru != nil {
 					js.setStreamAssignmentRecovering(sa)
 					key := sa.recoveryKey()
 					ru.updateStreams[key] = sa
