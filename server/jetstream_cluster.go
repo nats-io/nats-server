@@ -1617,6 +1617,9 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 
 // Called on recovery to make sure we do not process like original.
 func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
+	if sa == nil {
+		return
+	}
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	sa.responded = true
