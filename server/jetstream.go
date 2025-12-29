@@ -1142,6 +1142,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 	}
 
 	js.mu.Lock()
+	// Accounts get reset to nil on shutdown, since we re-acquire the locks here, we need to check again.
+	if js.accounts == nil {
+		js.mu.Unlock()
+		return NewJSNotEnabledError()
+	}
+
 	if jsa, ok := js.accounts[a.Name]; ok {
 		a.mu.Lock()
 		a.js = jsa
