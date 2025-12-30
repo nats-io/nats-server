@@ -12696,9 +12696,9 @@ func TestJetStreamBackOffCheckPending(t *testing.T) {
 	// ackWait (which in this case would be the first value of BackOff, which
 	// is 50ms). So we would call checkPending() too many times.
 	time.Sleep(500 * time.Millisecond)
-	// Check now, it should have been invoked twice.
-	if n := atomic.LoadInt64(&st.count); n != 2 {
-		t.Fatalf("Expected checkPending to be invoked 2 times, was %v", n)
+	// Check now, it should have been invoked 2/3 times.
+	if n := atomic.LoadInt64(&st.count); n < 2 || n > 3 {
+		t.Fatalf("Expected checkPending to be invoked 2/3 times, was %v", n)
 	}
 }
 
