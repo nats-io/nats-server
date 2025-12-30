@@ -11165,6 +11165,57 @@ func TestFileStorePurgeMsgBlockRemovesSchedules(t *testing.T) {
 	})
 }
 
+func TestFileStorePurgeMsgBlockAccounting(t *testing.T) {
+	test := func(t *testing.T, update func(cfg *nats.StreamConfig)) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		cfg := &nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Storage:  nats.FileStorage,
+		}
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		subj, data := "foo", make([]byte, 1024*1024)
+		for range 10 {
+			_, err = js.Publish(subj, data)
+			require_NoError(t, err)
+		}
+
+		gacc := s.globalAccount()
+		mset, err := gacc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		stats := gacc.JetStreamUsage()
+		require_Equal(t, state.Bytes, stats.JetStreamTier.Store)
+
+		update(cfg)
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+
+		state = mset.state()
+		stats = gacc.JetStreamUsage()
+		require_Equal(t, state.Bytes, fileStoreMsgSizeRaw(len(subj), 0, len(data)))
+		require_Equal(t, state.Bytes, stats.JetStreamTier.Store)
+	}
+
+	t.Run("MaxMsgs", func(t *testing.T) {
+		test(t, func(cfg *nats.StreamConfig) {
+			cfg.MaxMsgs = 1
+		})
+	})
+	t.Run("MaxBytes", func(t *testing.T) {
+		test(t, func(cfg *nats.StreamConfig) {
+			cfg.MaxBytes = int64(fileStoreMsgSizeRaw(3, 0, 1024*1024))
+		})
+	})
+}
+
 func TestFileStoreMissingDeletesAfterCompact(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
