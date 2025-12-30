@@ -5068,14 +5068,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		// If we have a callback registered we need to release lock regardless since cb might need it to lookup msg, etc.
 		fs.mu.Unlock()
 		// Storage updates.
-		if cb != nil {
-			var subj string
-			if sm != nil {
-				subj = sm.subj
-			}
-			delta := int64(msz)
-			cb(-1, -delta, seq, subj)
-		}
+		delta := int64(msz)
+		cb(-1, -delta, seq, sm.subj)
 
 		if !needFSLock {
 			fs.mu.Lock()
@@ -8127,13 +8121,17 @@ func (fs *fileStore) Utilization() (total, reported uint64, err error) {
 	return total, reported, nil
 }
 
-func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
-	if len(hdr) == 0 {
+func fileStoreMsgSizeRaw(slen, hlen, mlen int) uint64 {
+	if hlen == 0 {
 		// length of the message record (4bytes) + seq(8) + ts(8) + subj_len(2) + subj + msg + hash(8)
-		return uint64(22 + len(subj) + len(msg) + 8)
+		return uint64(22 + slen + mlen + 8)
 	}
 	// length of the message record (4bytes) + seq(8) + ts(8) + subj_len(2) + subj + hdr_len(4) + hdr + msg + hash(8)
-	return uint64(22 + len(subj) + 4 + len(hdr) + len(msg) + 8)
+	return uint64(22 + slen + 4 + hlen + mlen + 8)
+}
+
+func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
+	return fileStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
 }
 
 func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
@@ -9237,6 +9235,14 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock) {
 	mb.tryForceExpireCacheLocked()
 	mb.mu.Unlock()
 	fs.selectNextFirst()
+
+	if cb := fs.scb; cb != nil {
+		// If we have a callback registered, we need to release lock regardless since consumers will recalculate pending.
+		fs.mu.Unlock()
+		// Storage updates.
+		cb(-int64(msgs), -int64(bytes), 0, _EMPTY_)
+		fs.mu.Lock()
+	}
 }
 
 // Called by purge to simply get rid of the cache and close our fds.
