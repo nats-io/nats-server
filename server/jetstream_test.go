@@ -21994,10 +21994,11 @@ func TestJetStreamScheduledMessageParse(t *testing.T) {
 	require_Equal(t, now.Add(5*time.Second), sts)
 
 	// A schedule on an interval should not spam loads of times if it hasn't run in a long while.
+	now = time.Now().UTC().Round(time.Second)
 	sts, repeat, ok = parseMsgSchedule("@every 5s", 0)
 	require_True(t, ok)
 	require_True(t, repeat)
-	require_True(t, sts.After(time.Unix(0, 0).UTC().Add(5*time.Second)))
+	require_True(t, !sts.Before(now.Add(5*time.Second)))
 
 	// A schedule can only run at least once every second.
 	_, _, ok = parseMsgSchedule("@every 999ms", 0)
