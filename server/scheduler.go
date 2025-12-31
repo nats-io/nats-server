@@ -317,6 +317,33 @@ func parseMsgSchedule(pattern string, ts int64) (time.Time, bool, bool) {
 		}
 		return next, true, true
 	}
-	return time.Time{}, false, false
 
+	// Predefined schedules for cron.
+	switch pattern {
+	case "@yearly", "@annually":
+		pattern = "0 0 0 1 1 *"
+	case "@monthly":
+		pattern = "0 0 0 1 * *"
+	case "@weekly":
+		pattern = "0 0 0 * * 0"
+	case "@daily", "@midnight":
+		pattern = "0 0 0 * * *"
+	case "@hourly":
+		pattern = "0 0 * * * *"
+	}
+
+	// Parse the cron pattern.
+	next, err := parseCron(pattern, ts)
+	if err != nil {
+		return time.Time{}, false, false
+	}
+	// If this schedule would trigger multiple times, for example after a restart, skip ahead and only fire once.
+	if now := time.Now().UTC(); next.Before(now) {
+		ts = now.Round(time.Second).UnixNano()
+		next, err = parseCron(pattern, ts)
+		if err != nil {
+			return time.Time{}, false, false
+		}
+	}
+	return next, true, true
 }
