@@ -5369,14 +5369,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		// If we have a callback registered we need to release lock regardless since cb might need it to lookup msg, etc.
 		fs.mu.Unlock()
 		// Storage updates.
-		if cb != nil {
-			var subj string
-			if sm != nil {
-				subj = sm.subj
-			}
-			delta := int64(msz)
-			cb(-1, -delta, seq, subj)
-		}
+		delta := int64(msz)
+		cb(-1, -delta, seq, sm.subj)
 
 		if !needFSLock {
 			fs.mu.Lock()
@@ -9789,6 +9783,14 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock) {
 	mb.finishedWithCache()
 	mb.mu.Unlock()
 	fs.selectNextFirst()
+
+	if cb := fs.scb; cb != nil {
+		// If we have a callback registered, we need to release lock regardless since consumers will recalculate pending.
+		fs.mu.Unlock()
+		// Storage updates.
+		cb(-int64(msgs), -int64(bytes), 0, _EMPTY_)
+		fs.mu.Lock()
+	}
 }
 
 // Called by purge to simply get rid of the cache and close our fds.
