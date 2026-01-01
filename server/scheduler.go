@@ -312,8 +312,8 @@ func parseMsgSchedule(pattern string, ts int64) (time.Time, bool, bool) {
 		}
 		// If this schedule would trigger multiple times, for example after a restart, skip ahead and only fire once.
 		next := time.Unix(0, ts).UTC().Round(time.Second).Add(dur)
-		if now := time.Now().UTC().Round(time.Second); next.Before(now) {
-			next = now
+		if now := time.Now().UTC(); next.Before(now) {
+			next = now.Round(time.Second).Add(dur)
 		}
 		return next, true, true
 	}
