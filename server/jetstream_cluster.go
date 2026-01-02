@@ -3763,7 +3763,10 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		mt = mset.getAndDeleteMsgTrace(lseq)
 	}
 	// Process the actual message here.
-	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+	var hdrIdx *jsHdrIndex
+	hdr, hdrIdx = indexJsHdr(hdr)
+	err = mset.processJetStreamMsg(subject, reply, hdr, hdrIdx, msg, lseq, ts, mt, sourced, needLock)
+	hdrIdx.returnToPool()
 
 	// If we have inflight make sure to clear after processing.
 	// TODO(dlc) - technically check on inflight != nil could cause datarace.
@@ -3830,7 +3833,9 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			if state.Msgs == 0 {
 				mset.store.Compact(lseq + 1)
 				// Retry
-				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+				hdr, hdrIdx = indexJsHdr(hdr)
+				err = mset.processJetStreamMsg(subject, reply, hdr, hdrIdx, msg, lseq, ts, mt, sourced, needLock)
+				hdrIdx.returnToPool()
 			}
 			// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
 			// and what we got.
@@ -8927,7 +8932,7 @@ func (mset *stream) stateSnapshotLocked() []byte {
 const streamLagWarnThreshold = 10_000
 
 // processClusteredInboundMsg will propose the inbound message to the underlying raft group.
-func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte, mt *msgTrace, sourced bool) (retErr error) {
+func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr []byte, hdrIdx *jsHdrIndex, msg []byte, mt *msgTrace, sourced bool) (retErr error) {
 	// For possible error response.
 	var response []byte
 
@@ -8945,7 +8950,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We also invoke this in clustering mode for message tracing when not
 	// performing message delivery.
 	if node == nil || mt.traceOnly() {
-		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced, true)
+		return mset.processJetStreamMsg(subject, reply, hdr, hdrIdx, msg, 0, 0, mt, sourced, true)
 	}
 
 	// If message tracing (with message delivery), we will need to send the
@@ -9049,7 +9054,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, hdrIdx, msg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {
 			var buf [256]byte

@@ -238,7 +238,7 @@ func (batch *batchApply) rejectBatchState(mset *stream) {
 // mset.mu lock must NOT be held or used.
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
-	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
+	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, hdrIdx *jsHdrIndex, msg []byte, sourced bool, name string,
 	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules bool,
 	discard DiscardPolicy, discardNewPer bool, maxMsgSize int, maxMsgs int64, maxMsgsPer int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
@@ -252,10 +252,13 @@ func checkMsgHeadersPreClusteredProposal(
 			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
 			return hdr, msg, 0, NewJSStreamHeaderExceedsMaximumError(), err
 		}
+	}
+
+	if hdrIdx != nil {
 		// Counter increments.
 		// Only supported on counter streams, and payload must be empty (if not coming from a source).
 		var ok bool
-		if incr, ok = getMessageIncr(hdr); !ok {
+		if incr, ok = hdrIdx.getMessageIncr(); !ok {
 			apiErr := NewJSMessageIncrInvalidError()
 			return hdr, msg, 0, apiErr, apiErr
 		} else if incr != nil && !sourced {
@@ -269,14 +272,14 @@ func checkMsgHeadersPreClusteredProposal(
 			} else {
 				// Check for incompatible headers.
 				var doErr bool
-				if getRollup(hdr) != _EMPTY_ ||
-					getExpectedStream(hdr) != _EMPTY_ ||
-					getExpectedLastMsgId(hdr) != _EMPTY_ ||
-					getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
+				if hdrIdx.getRollup() != _EMPTY_ ||
+					hdrIdx.getExpectedStream() != _EMPTY_ ||
+					hdrIdx.getExpectedLastMsgId() != _EMPTY_ ||
+					hdrIdx.getExpectedLastSeqPerSubjectForSubject() != _EMPTY_ {
 					doErr = true
-				} else if _, ok = getExpectedLastSeq(hdr); ok {
+				} else if _, ok = hdrIdx.getExpectedLastSeq(); ok {
 					doErr = true
-				} else if _, ok = getExpectedLastSeqPerSubject(hdr); ok {
+				} else if _, ok = hdrIdx.getExpectedLastSeqPerSubject(); ok {
 					doErr = true
 				}
 
@@ -287,11 +290,11 @@ func checkMsgHeadersPreClusteredProposal(
 			}
 		}
 		// Expected stream name can also be pre-checked.
-		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
+		if sname := hdrIdx.getExpectedStream(); sname != _EMPTY_ && sname != name {
 			return hdr, msg, 0, NewJSStreamNotMatchError(), errStreamMismatch
 		}
 		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream, or if the TTL is invalid.
-		if ttl, err := getMessageTTL(hdr); !sourced && (ttl != 0 || err != nil) {
+		if ttl, err := hdrIdx.getMessageTTL(); !sourced && (ttl != 0 || err != nil) {
 			if !allowTTL {
 				return hdr, msg, 0, NewJSMessageTTLDisabledError(), errMsgTTLDisabled
 			} else if err != nil {
@@ -300,7 +303,7 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 		// Check for MsgIds here at the cluster level to avoid excessive CLFS accounting.
 		// Will help during restarts.
-		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
+		if msgId := hdrIdx.getMsgId(); msgId != _EMPTY_ {
 			// Dedupe if staged.
 			if _, ok = diff.msgIds[msgId]; ok {
 				return hdr, msg, 0, NewJSAtomicPublishContainsDuplicateMessageError(), errMsgIdDuplicate
@@ -439,9 +442,9 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 	}
 
-	if len(hdr) > 0 {
+	if hdrIdx != nil {
 		// Expected last sequence.
-		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.clseq-mset.clfs {
+		if seq, exists := hdrIdx.getExpectedLastSeq(); exists && seq != mset.clseq-mset.clfs {
 			mlseq := mset.clseq - mset.clfs
 			err := fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
 			return hdr, msg, 0, NewJSStreamWrongLastSequenceError(mlseq), err
@@ -452,10 +455,10 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 
 		// Expected last sequence per subject.
-		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
+		if seq, exists := hdrIdx.getExpectedLastSeqPerSubject(); exists {
 			// Allow override of the subject used for the check.
 			seqSubj := subject
-			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
+			if optSubj := hdrIdx.getExpectedLastSeqPerSubjectForSubject(); optSubj != _EMPTY_ {
 				seqSubj = optSubj
 			}
 
@@ -509,13 +512,13 @@ func checkMsgHeadersPreClusteredProposal(
 					diff.expectedPerSubject[seqSubj] = e
 				}
 			}
-		} else if getExpectedLastSeqPerSubjectForSubject(hdr) != _EMPTY_ {
+		} else if hdrIdx.getExpectedLastSeqPerSubjectForSubject() != _EMPTY_ {
 			apiErr := NewJSStreamExpectedLastSeqPerSubjectInvalidError()
 			return hdr, msg, 0, apiErr, apiErr
 		}
 
 		// Message scheduling.
-		if schedule, ok := getMessageSchedule(hdr); !ok {
+		if schedule, ok := hdrIdx.getMessageSchedule(); !ok {
 			apiErr := NewJSMessageSchedulesPatternInvalidError()
 			if !allowMsgSchedules {
 				apiErr = NewJSMessageSchedulesDisabledError()
@@ -525,12 +528,12 @@ func checkMsgHeadersPreClusteredProposal(
 			if !allowMsgSchedules {
 				apiErr := NewJSMessageSchedulesDisabledError()
 				return hdr, msg, 0, apiErr, apiErr
-			} else if scheduleTtl, ok := getMessageScheduleTTL(hdr); !ok {
+			} else if scheduleTtl, ok := hdrIdx.getMessageScheduleTTL(); !ok {
 				apiErr := NewJSMessageSchedulesTTLInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
 			} else if scheduleTtl != _EMPTY_ && !allowTTL {
 				return hdr, msg, 0, NewJSMessageTTLDisabledError(), errMsgTTLDisabled
-			} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
+			} else if scheduleTarget := hdrIdx.getMessageScheduleTarget(); scheduleTarget == _EMPTY_ ||
 				!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
 				apiErr := NewJSMessageSchedulesTargetInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
@@ -547,7 +550,7 @@ func checkMsgHeadersPreClusteredProposal(
 
 				// Add a rollup sub header if it doesn't already exist.
 				// Otherwise, it must exist already as a rollup on the subject.
-				if rollup := getRollup(hdr); rollup == _EMPTY_ {
+				if rollup := hdrIdx.getRollup(); rollup == _EMPTY_ {
 					hdr = genHeader(hdr, JSMsgRollup, JSMsgRollupSubject)
 				} else if rollup != JSMsgRollupSubject {
 					apiErr := NewJSMessageSchedulesRollupInvalidError()
@@ -557,7 +560,7 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 
 		// Check for any rollups.
-		if rollup := getRollup(hdr); rollup != _EMPTY_ {
+		if rollup := hdrIdx.getRollup(); rollup != _EMPTY_ {
 			if !allowRollup || denyPurge {
 				err := errors.New("rollup not permitted")
 				return hdr, msg, 0, NewJSStreamRollupFailedError(err), err

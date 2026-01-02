@@ -22023,7 +22023,7 @@ func TestJetStreamDirectGetBatchParallelWriteDeadlock(t *testing.T) {
 	mset, err := s.globalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	for range 2 {
-		require_NoError(t, mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 0, 0, nil, false, true))
+		require_NoError(t, mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, nil, 0, 0, nil, false, true))
 	}
 
 	// We'll lock the message blocks such that we can't read, but NumPending should still function.
@@ -22051,7 +22051,7 @@ func TestJetStreamDirectGetBatchParallelWriteDeadlock(t *testing.T) {
 		read.Wait()
 		<-time.After(100 * time.Millisecond)
 		wg.Done()
-		mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 0, 0, nil, false, true)
+		mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, nil, 0, 0, nil, false, true)
 	}()
 	go func() {
 		// Run some time after we've entered processJetStreamMsg above.
@@ -22326,6 +22326,36 @@ func TestJetStreamServerEncryptionRecoveryWithoutStreamStateFile(t *testing.T) {
 					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
 				}
 			}
+		})
+	}
+}
+
+func TestJetStreamHdrIndexUpdateHdr(t *testing.T) {
+	updateKey := "Nats-Update-Header"
+	for _, test := range []struct {
+		title     string
+		updateHdr func(hdr []byte)
+	}{
+		{title: "SetHeader", updateHdr: func(hdr []byte) { setHeader(updateKey, "s", hdr) }},
+		{title: "GenHeader", updateHdr: func(hdr []byte) { genHeader(hdr, updateKey, "s") }},
+		{title: "RemoveHeaderIfPresent", updateHdr: func(hdr []byte) { removeHeaderIfPresent(hdr, updateKey) }},
+		{title: "RemoveHeaderIfPrefixPresent", updateHdr: func(hdr []byte) { removeHeaderIfPrefixPresent(hdr, updateKey) }},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			hdr := genHeader(nil, "Nats-Batch-Id", "uuid")
+			hdr = genHeader(hdr, updateKey, "long_value")
+			hdr = genHeader(hdr, "Nats-Batch-Sequence", "seq")
+
+			var idx *jsHdrIndex
+			hdr, idx = indexJsHdr(hdr)
+			defer idx.returnToPool()
+			require_NotNil(t, idx)
+			require_Equal(t, string(idx.batchId), "uuid")
+			require_Equal(t, string(idx.batchSeq), "seq")
+
+			test.updateHdr(hdr)
+			require_Equal(t, string(idx.batchId), "uuid")
+			require_Equal(t, string(idx.batchSeq), "seq")
 		})
 	}
 }
