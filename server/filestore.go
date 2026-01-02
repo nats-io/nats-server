@@ -11593,6 +11593,31 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	return nil
 }
 
+// ForceUpdate updates the consumer state without the backwards check.
+// This is used during recovery when we need to reset the consumer to an earlier sequence.
+func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
+	o.fs.warn("Consumer %q force updating state: %+v", o.name, state)
+	// Sanity checks.
+	if state.AckFloor.Consumer > state.Delivered.Consumer {
+		return fmt.Errorf("bad ack floor for consumer")
+	}
+	if state.AckFloor.Stream > state.Delivered.Stream {
+		return fmt.Errorf("bad ack floor for stream")
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.state.Delivered = state.Delivered
+	o.state.AckFloor = state.AckFloor
+	o.state.Pending = make(map[uint64]*Pending)
+	o.state.Redelivered = make(map[uint64]uint64)
+
+	o.kickFlusher()
+
+	return nil
+}
+
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
 // Lock should be held.
 func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
