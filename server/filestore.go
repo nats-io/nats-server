@@ -7623,6 +7623,10 @@ func (fs *fileStore) syncBlocks() {
 			// If we have an fd.
 			if fd != nil {
 				if err = fd.Sync(); err != nil {
+					// Close fd if we opened it, but ignore its error since sync takes precedence.
+					if didOpen {
+						_ = fd.Close()
+					}
 					mb.mu.Unlock()
 					storeFsWerr(err)
 					continue
@@ -7664,6 +7668,8 @@ func (fs *fileStore) syncBlocks() {
 		}
 		if fd != nil {
 			if err = fd.Sync(); err != nil {
+				// Close fd, but ignore its error since sync takes precedence.
+				_ = fd.Close()
 				fs.setWriteErr(err)
 				return
 			}
@@ -13194,6 +13200,7 @@ func writeAtomically(name string, data []byte, perm fs.FileMode, sync bool) erro
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
+		// Close fd, but ignore its error since write takes precedence.
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err
@@ -13214,6 +13221,8 @@ func writeAtomically(name string, data []byte, perm fs.FileMode, sync bool) erro
 			return err
 		}
 		if err = d.Sync(); err != nil {
+			// Close fd, but ignore its error since write takes precedence.
+			_ = d.Close()
 			return err
 		}
 		if err = d.Close(); err != nil {
