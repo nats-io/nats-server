@@ -295,6 +295,8 @@ const (
 	msgDir = "msgs"
 	// This is where we temporarily move the messages dir.
 	purgeDir = "__msgs__"
+	// This is where we temporarily move the new message block during purge.
+	newMsgDir = "__new_msgs__"
 	// used to scan blk file names.
 	blkScan = "%d.blk"
 	// suffix of a block file
@@ -1748,10 +1750,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 	// Check for any left over purged messages.
 	<-dios
-	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
-	if _, err := os.Stat(pdir); err == nil {
-		os.RemoveAll(pdir)
-	}
+	fs.recoverPartialPurge()
 	// Grab our stream state file and load it in.
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 	buf, err := os.ReadFile(fn)
@@ -2262,10 +2261,7 @@ func (fs *fileStore) recoverMsgs() error {
 
 	// Check for any left over purged messages.
 	<-dios
-	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
-	if _, err := os.Stat(pdir); err == nil {
-		os.RemoveAll(pdir)
-	}
+	fs.recoverPartialPurge()
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	f, err := os.Open(mdir)
 	if err != nil {
@@ -9043,6 +9039,18 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	}
 
 	return purged, nil
+}
+
+// Lock and dios should be held.
+func (fs *fileStore) recoverPartialPurge() {
+	ndir := filepath.Join(fs.fcfg.StoreDir, newMsgDir)
+	if _, err := os.Stat(ndir); err == nil {
+		os.RemoveAll(ndir)
+	}
+	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
+	if _, err := os.Stat(pdir); err == nil {
+		os.RemoveAll(pdir)
+	}
 }
 
 // Compact will remove all messages from this store up to
