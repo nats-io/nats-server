@@ -1174,6 +1174,12 @@ func (s *Server) ReloadOptions(newOpts *Options) error {
 		return err
 	}
 
+	// Log any warnings from config parsing.
+	for _, warn := range newOpts.configWarnings {
+		s.Warnf("Configuration warning: %v", warn)
+	}
+	newOpts.configWarnings = nil
+
 	s.recheckPinnedCerts(curOpts, newOpts)
 
 	s.mu.Lock()
