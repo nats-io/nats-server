@@ -2311,6 +2311,46 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 	return nil
 }
 
+func (o *consumerMemStore) ForceUpdate(state *ConsumerState) error {
+	// Sanity checks.
+	if state.AckFloor.Consumer > state.Delivered.Consumer {
+		return fmt.Errorf("bad ack floor for consumer")
+	}
+	if state.AckFloor.Stream > state.Delivered.Stream {
+		return fmt.Errorf("bad ack floor for stream")
+	}
+
+	// Copy to our state.
+	var pending map[uint64]*Pending
+	var redelivered map[uint64]uint64
+	if len(state.Pending) > 0 {
+		pending = make(map[uint64]*Pending, len(state.Pending))
+		for seq, p := range state.Pending {
+			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
+				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
+			}
+		}
+	}
+	if len(state.Redelivered) > 0 {
+		redelivered = make(map[uint64]uint64, len(state.Redelivered))
+		for seq, dc := range state.Redelivered {
+			redelivered[seq] = dc
+		}
+	}
+
+	// Replace our state.
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.state.Delivered = state.Delivered
+	o.state.AckFloor = state.AckFloor
+	o.state.Pending = pending
+	o.state.Redelivered = redelivered
+
+	return nil
+}
+
 // SetStarting sets our starting stream sequence.
 func (o *consumerMemStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()

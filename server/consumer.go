@@ -963,7 +963,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	mset.mu.RLock()
-	s, js, jsa, cfg, acc := mset.srv, mset.js, mset.jsa, mset.cfg, mset.acc
+	s, js, jsa, cfg, acc, lseq := mset.srv, mset.js, mset.jsa, mset.cfg, mset.acc, mset.lseq
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
@@ -1227,7 +1227,49 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		// Restore our saved state.
 		o.mu.Lock()
 		o.readStoredState()
+
+		replicas := o.cfg.replicas(&mset.cfg)
+
+		// Starting sequence represents the next sequence to be delivered, so decrement it
+		// since that's the minimum amount the stream should have as its last sequence.
+		sseq := o.sseq
+		if sseq > 0 {
+			sseq--
+		}
+
 		o.mu.Unlock()
+
+		// A stream observing data loss rolls back in its sequence. Check if we need to reconcile the consumer state
+		// to ensure new messages aren't skipped.
+		// Only performed for non-replicated consumers for now.
+		if replicas == 1 && lseq < sseq && isRecovering {
+			s.Warnf("JetStream consumer '%s > %s > %s' delivered sequence %d past last stream sequence of %d",
+				o.acc.Name, o.stream, o.name, sseq, lseq)
+
+			o.mu.Lock()
+			o.reconcileStateWithStream(lseq)
+
+			// Save the reconciled state
+			state := &ConsumerState{
+				Delivered: SequencePair{
+					Stream:   o.sseq - 1,
+					Consumer: o.dseq - 1,
+				},
+				AckFloor: SequencePair{
+					Stream:   o.asflr,
+					Consumer: o.adflr,
+				},
+				Pending:     o.pending,
+				Redelivered: o.rdc,
+			}
+			err := o.store.ForceUpdate(state)
+			o.mu.Unlock()
+			if err != nil {
+				s.Errorf("JetStream consumer '%s > %s > %s' errored while updating state: %v", o.acc.Name, o.stream, o.name, err)
+				mset.mu.Unlock()
+				return nil, NewJSConsumerStoreFailedError(err)
+			}
+		}
 	} else {
 		// Select starting sequence number
 		o.selectStartingSeqNo()
@@ -5708,6 +5750,67 @@ type lastSeqSkipList struct {
 // Lock should be held.
 func (o *consumer) hasSkipListPending() bool {
 	return o.lss != nil && len(o.lss.seqs) > 0
+}
+
+// reconcileStateWithStream reconciles consumer state when the stream has reverted
+// due to data loss (e.g., VM crash). This handles the case where consumer state
+// is ahead of the stream's last sequence.
+// Lock should be held.
+func (o *consumer) reconcileStateWithStream(streamLastSeq uint64) {
+	// If an ack floor is higher than stream last sequence,
+	// reset back down but keep the highest known sequences.
+	if o.asflr > streamLastSeq {
+		o.asflr = streamLastSeq
+		// Delivery floor is one below the delivered sequence,
+		// but if it is zero somehow, ensure we don't underflow.
+		o.adflr = o.dseq
+		if o.adflr > 0 {
+			o.adflr--
+		}
+		o.pending = nil
+		o.rdc = nil
+	}
+
+	// Remove pending entries that are beyond the stream's last sequence
+	if len(o.pending) > 0 {
+		for seq := range o.pending {
+			if seq > streamLastSeq {
+				delete(o.pending, seq)
+			}
+		}
+	}
+
+	// Remove redelivered entries that are beyond the stream's last sequence
+	if len(o.rdc) > 0 {
+		for seq := range o.rdc {
+			if seq > streamLastSeq {
+				delete(o.rdc, seq)
+			}
+		}
+	}
+
+	// Update starting sequence and delivery sequence based on pending state
+	if len(o.pending) == 0 {
+		o.sseq = o.asflr + 1
+		o.dseq = o.adflr + 1
+	} else {
+		// Find highest stream sequence in pending
+		var maxStreamSeq uint64
+		var maxConsumerSeq uint64
+
+		for streamSeq, p := range o.pending {
+			if streamSeq > maxStreamSeq {
+				maxStreamSeq = streamSeq
+			}
+			if p.Sequence > maxConsumerSeq {
+				maxConsumerSeq = p.Sequence
+			}
+		}
+
+		// Set next sequences based on highest pending
+		o.sseq = maxStreamSeq + 1
+		o.dseq = maxConsumerSeq + 1
+	}
 }
 
 // Will select the starting sequence.
