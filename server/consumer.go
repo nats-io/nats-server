@@ -963,7 +963,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	mset.mu.RLock()
-	s, js, jsa, cfg, acc := mset.srv, mset.js, mset.jsa, mset.cfg, mset.acc
+	s, js, jsa, cfg, acc, lseq := mset.srv, mset.js, mset.jsa, mset.cfg, mset.acc, mset.lseq
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
@@ -1228,6 +1228,31 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		o.mu.Lock()
 		o.readStoredState()
 		o.mu.Unlock()
+
+		// only for streams with r1; if we are recovering and the consumer sequence is greater than the last sequence,
+		// we need to select a new starting sequence
+		// run only for single replica streams
+		if mset.cfg.Replicas == 1 && o.sseq > 2 && lseq < o.sseq && isRecovering {
+			o.srv.Warnf("Consumer %q recovering with sseq %d greater than stream last seq %d, selecting new start", o.name, o.sseq, lseq)
+
+			// set starting sequences to in-memory state
+			state := &ConsumerState{}
+			o.mu.Lock()
+			o.selectStartingSeqNo()
+
+			state.Delivered.Stream = o.sseq
+			state.Delivered.Consumer = o.dseq
+			state.AckFloor.Stream = o.asflr
+			state.AckFloor.Consumer = o.adflr
+			o.mu.Unlock()
+			err := o.store.ForceUpdate(state)
+			if err != nil {
+				s.Warnf("Consumer %q error updating state: %v", o.name, err)
+				return nil, NewJSConsumerStoreFailedError(err)
+			}
+
+			o.srv.Warnf("Consumer %q adjusted starting sequence to %d", o.name, o.sseq)
+		}
 	} else {
 		// Select starting sequence number
 		o.selectStartingSeqNo()

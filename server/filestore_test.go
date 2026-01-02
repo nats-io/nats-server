@@ -8518,6 +8518,94 @@ func TestFileStoreRecoverFullStateDetectCorruptState(t *testing.T) {
 	require_Error(t, err, errCorruptState)
 }
 
+func TestFileStoreResetConsumerToStreamState(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 30; i++ {
+		_, _, err = fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	err = fs.writeFullState()
+	require_NoError(t, err)
+
+	obs, err := fs.ConsumerStore("c1", time.Now(), &ConsumerConfig{
+		Durable:       "c1",
+		FilterSubject: "foo.*",
+		AckPolicy:     AckNone,
+		DeliverPolicy: DeliverAll,
+	})
+
+	require_NoError(t, err)
+	defer obs.Stop()
+
+	state := &ConsumerState{}
+	state.Delivered = SequencePair{
+		Consumer: 5,
+		Stream:   5,
+	}
+
+	state.AckFloor = SequencePair{
+		Consumer: 5,
+		Stream:   5,
+	}
+
+	// set to 5
+	err = obs.Update(state)
+	require_NoError(t, err)
+
+	currState, err := obs.State()
+	require_NoError(t, err)
+
+	require_Equal(t, fs.state.LastSeq, uint64(30))
+	require_Equal(t, fs.state.FirstSeq, uint64(1))
+	require_Equal(t, currState.AckFloor, state.AckFloor)
+	require_Equal(t, currState.Delivered, state.Delivered)
+	require_Equal(t, len(currState.Redelivered), len(state.Redelivered))
+	require_Equal(t, len(currState.Pending), len(state.Pending))
+
+	// reset our state to 0.
+	fs.state.FirstSeq = 0
+	fs.state.LastSeq = 0
+
+	// set back to lower values
+	newState := &ConsumerState{}
+	newState.Delivered = SequencePair{
+		Consumer: 1,
+		Stream:   4,
+	}
+
+	newState.AckFloor = SequencePair{
+		Consumer: 1,
+		Stream:   3,
+	}
+
+	// update should fail but force update should pass
+	err = obs.Update(newState)
+	require_Error(t, err, fmt.Errorf("old update ignored"))
+
+	err = obs.ForceUpdate(newState)
+	require_NoError(t, err)
+
+	fullState, err := obs.State()
+	require_NoError(t, err)
+
+	borrowedState, err := obs.BorrowState()
+	require_NoError(t, err)
+
+	require_Equal(t, fullState.Delivered, borrowedState.Delivered)
+	require_Equal(t, fullState.AckFloor, borrowedState.AckFloor)
+	require_Equal(t, newState.Delivered, borrowedState.Delivered)
+	require_Equal(t, newState.AckFloor, borrowedState.AckFloor)
+	require_Equal(t, len(newState.Redelivered), len(borrowedState.Redelivered))
+	require_Equal(t, len(newState.Pending), len(borrowedState.Pending))
+}
+
 func TestFileStoreNumPendingMulti(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
