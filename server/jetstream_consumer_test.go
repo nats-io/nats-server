@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
+	"os"
 	"reflect"
 	"runtime"
 	"slices"
@@ -10095,4 +10096,74 @@ func TestJetStreamConsumerEfficientInterestStateCheck(t *testing.T) {
 	require_NoError(t, o.checkStateForInterestStream(&ss))
 	elapsed := time.Since(start)
 	require_LessThan(t, elapsed, 50*time.Millisecond)
+}
+
+func TestJetStreamConsumerWithCorruptStateIsDeleted(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: %q}
+	`, storeDir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DURABLE"})
+	require_NoError(t, err)
+
+	// Consumer should be returned in names and info requests.
+	var names []string
+	for name := range js.ConsumerNames("TEST") {
+		names = append(names, name)
+	}
+	require_Len(t, len(names), 1)
+	require_Equal(t, names[0], "DURABLE")
+
+	_, err = js.ConsumerInfo("TEST", "DURABLE")
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("DURABLE")
+	require_NotNil(t, o)
+	fs := o.store.(*consumerFileStore)
+	fs.mu.Lock()
+	ifn := fs.ifn
+	fs.mu.Unlock()
+
+	// Stop the server and zero the consumer's data file.
+	s.Shutdown()
+	stat, err := os.Stat(ifn)
+	require_NoError(t, err)
+	require_LessThan(t, 0, stat.Size())
+	buf := bytes.Repeat([]byte{0}, int(stat.Size()))
+	require_NoError(t, os.WriteFile(ifn, buf, defaultFilePerms))
+
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Reconnect.
+	nc.Close()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// The consumer should be recognized to have corrupt state and be deleted automatically,
+	// so it doesn't show up in requests.
+	names = make([]string, 0)
+	for name := range js.ConsumerNames("TEST") {
+		names = append(names, name)
+	}
+	require_Len(t, len(names), 0)
+
+	_, err = js.ConsumerInfo("TEST", "DURABLE")
+	require_Error(t, err, nats.ErrConsumerNotFound)
 }
