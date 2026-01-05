@@ -1430,7 +1430,9 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
+				_, hdrIdx := indexJsHdr(hdr)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, hdrIdx, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
+				hdrIdx.returnToPool()
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else if err != nil {
@@ -1627,7 +1629,9 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	require_True(t, commitReady)
 
 	// Simulate the first message of the batch is committed.
-	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false, true)
+	_, hdrIdx := indexJsHdr(hdr1)
+	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, hdrIdx, nil, 0, 0, nil, false, true)
+	hdrIdx.returnToPool()
 	require_NoError(t, err)
 
 	// Simulate a hard kill, upon recovery the rest of the batch should be applied.
@@ -1717,7 +1721,9 @@ func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) 
 	require_True(t, commitReady)
 
 	// Simulate the first message of the batch is committed.
-	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false, true)
+	_, hdrIdx := indexJsHdr(hdr1)
+	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, hdrIdx, nil, 0, 0, nil, false, true)
+	hdrIdx.returnToPool()
 	require_NoError(t, err)
 
 	// Simulate a hard kill, upon recovery the rest of the batch should be applied.
