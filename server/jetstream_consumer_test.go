@@ -10542,3 +10542,48 @@ func TestJetStreamConsumerWithCorruptStateIsDeleted(t *testing.T) {
 	_, err = js.ConsumerInfo("TEST", "DURABLE")
 	require_Error(t, err, nats.ErrConsumerNotFound)
 }
+
+func TestJetStreamConsumerNoDeleteAfterConcurrentShutdownAndLeaderChange(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: %q}
+	`, storeDir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	fs := o.store.(*consumerFileStore)
+	fs.mu.Lock()
+	odir := fs.odir
+	fs.mu.Unlock()
+
+	// Simulate a server shutting down at the same time that a replicated consumer becomes leader.
+	// Previously the consumer would be deleted due to not being able to create the required subscriptions.
+	s.Shutdown()
+
+	// We'll revert required settings to ensure we can set it as leader.
+	o.mu.Lock()
+	o.mset = mset
+	o.closed = false
+	o.leader.Store(false)
+	fs.mu.Lock()
+	fs.closed = false
+	fs.odir = odir
+	fs.mu.Unlock()
+	o.mu.Unlock()
+	o.setLeader(true)
+
+	// Check the consumer was not deleted.
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+	mset, err = s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o = mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+}
