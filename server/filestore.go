@@ -9112,7 +9112,12 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		if err = smb.loadMsgsWithLock(); err != nil {
 			goto SKIP
 		}
-		defer smb.finishedWithCache()
+		defer func() {
+			// The lock is released once we get here, so need to re-acquire.
+			smb.mu.Lock()
+			smb.finishedWithCache()
+			smb.mu.Unlock()
+		}()
 	}
 	for mseq := atomic.LoadUint64(&smb.first.seq); mseq < seq; mseq++ {
 		sm, err := smb.cacheLookupNoCopy(mseq, &smv)
