@@ -385,6 +385,8 @@ func TestNRGLeaderTransfer(t *testing.T) {
 	leader := rg.leader()
 	sub, err := nc.SubscribeSync(leader.node().(*raft).asubj)
 	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
 
 	preferredID := rg.nonLeader().node().ID()
 	leader.node().StepDown(preferredID)
@@ -406,15 +408,13 @@ func TestNRGLeaderTransfer(t *testing.T) {
 
 		if len(ae.entries) == 1 {
 			e := ae.entries[0]
-			if e.Type == EntryLeaderTransfer &&
-				string(e.Data) == preferredID {
+			if e.Type == EntryLeaderTransfer && string(e.Data) == preferredID {
 				return nil
 			}
 		}
 
 		return fmt.Errorf("Expect EntryLeaderTransfer")
 	})
-	require_NoError(t, sub.Unsubscribe())
 }
 
 func TestNRGSwitchStateClearsQueues(t *testing.T) {
