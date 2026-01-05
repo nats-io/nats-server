@@ -8081,6 +8081,12 @@ func (mset *stream) setWriteErrLocked(err error) {
 			"stream":  mset.cfg.Name,
 			"err":     err,
 		})
+
+		// If stream is replicated, put it in observer mode to make sure another server can pick it up.
+		if node := mset.node; node != nil {
+			node.StepDown()
+			node.SetObserver(true)
+		}
 	}
 }
 
