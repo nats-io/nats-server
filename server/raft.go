@@ -1694,11 +1694,6 @@ func (n *raft) StepDown(preferred ...string) error {
 			}
 		}
 	}
-
-	// Clear our vote state.
-	n.vote = noVote
-	n.writeTermVote()
-
 	n.Unlock()
 
 	if len(preferred) > 0 && maybeLeader == noLeader {
@@ -3911,10 +3906,6 @@ CONTINUE:
 						// Here we can become a leader but need to wait for resume of the apply queue.
 						n.lxfer = true
 					}
-				} else if n.vote != noVote {
-					// Since we are here we are not the chosen one but we should clear any vote preference.
-					n.vote = noVote
-					n.writeTermVote()
 				}
 			}
 		case EntryAddPeer:
