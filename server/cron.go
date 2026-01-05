@@ -46,31 +46,36 @@ import (
 )
 
 // parseCron parses the given cron pattern and returns the next time it will fire based on the provided ts.
-func parseCron(pattern string, ts int64) (time.Time, error) {
+func parseCron(pattern string, tz string, ts int64) (time.Time, error) {
 	fields := strings.Fields(pattern)
 	if len(fields) != 6 {
 		return time.Time{}, fmt.Errorf("pattern requires 6 fields, got %d", len(fields))
 	}
 
-	var err error
-	field := func(field string, r bounds) uint64 {
-		if err != nil {
-			return 0
-		}
-		var bits uint64
-		bits, err = getField(field, r)
-		return bits
+	// Load the time zone.
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.Time{}, err
 	}
 
-	var (
-		second     = field(fields[0], seconds)
-		minute     = field(fields[1], minutes)
-		hour       = field(fields[2], hours)
-		dayOfMonth = field(fields[3], dom)
-		month      = field(fields[4], months)
-		dayOfWeek  = field(fields[5], dow)
-	)
-	if err != nil {
+	// Parse each field.
+	var second, minute, hour, dayOfMonth, month, dayOfWeek uint64
+	if second, err = getField(fields[0], seconds); err != nil {
+		return time.Time{}, err
+	}
+	if minute, err = getField(fields[1], minutes); err != nil {
+		return time.Time{}, err
+	}
+	if hour, err = getField(fields[2], hours); err != nil {
+		return time.Time{}, err
+	}
+	if dayOfMonth, err = getField(fields[3], dom); err != nil {
+		return time.Time{}, err
+	}
+	if month, err = getField(fields[4], months); err != nil {
+		return time.Time{}, err
+	}
+	if dayOfWeek, err = getField(fields[5], dow); err != nil {
 		return time.Time{}, err
 	}
 
@@ -81,7 +86,7 @@ func parseCron(pattern string, ts int64) (time.Time, error) {
 	// If the field doesn't match the schedule, then increment the field until it matches.
 	// While incrementing the field, a wrap-around brings it back to the beginning
 	// of the field list (since it is necessary to re-verify previous field values)
-	next := time.Unix(0, ts).UTC().Round(time.Second)
+	next := time.Unix(0, ts).In(loc).Round(time.Second)
 
 	// Start at the earliest possible time (the upcoming second).
 	next = next.Add(time.Second - time.Duration(next.Nanosecond())*time.Nanosecond)
@@ -99,7 +104,7 @@ WRAP:
 	for 1<<uint(next.Month())&month == 0 {
 		if !truncated {
 			truncated = true
-			next = time.Date(next.Year(), next.Month(), 1, 0, 0, 0, 0, time.UTC)
+			next = time.Date(next.Year(), next.Month(), 1, 0, 0, 0, 0, loc)
 		}
 		if next = next.AddDate(0, 1, 0); next.Month() == time.January {
 			goto WRAP
@@ -108,7 +113,7 @@ WRAP:
 	for !dayMatches(dayOfMonth, dayOfWeek, next) {
 		if !truncated {
 			truncated = true
-			next = time.Date(next.Year(), next.Month(), next.Day(), 0, 0, 0, 0, time.UTC)
+			next = time.Date(next.Year(), next.Month(), next.Day(), 0, 0, 0, 0, loc)
 		}
 		if next = next.AddDate(0, 0, 1); next.Day() == 1 {
 			goto WRAP
@@ -117,7 +122,7 @@ WRAP:
 	for 1<<uint(next.Hour())&hour == 0 {
 		if !truncated {
 			truncated = true
-			next = time.Date(next.Year(), next.Month(), next.Day(), next.Hour(), 0, 0, 0, time.UTC)
+			next = time.Date(next.Year(), next.Month(), next.Day(), next.Hour(), 0, 0, 0, loc)
 		}
 		if next = next.Add(time.Hour); next.Hour() == 0 {
 			goto WRAP
@@ -149,8 +154,8 @@ WRAP:
 // list of "ranges".
 func getField(field string, r bounds) (uint64, error) {
 	var bits uint64
-	ranges := strings.FieldsFunc(field, func(r rune) bool { return r == ',' })
-	for _, expr := range ranges {
+	ranges := strings.FieldsFuncSeq(field, func(r rune) bool { return r == ',' })
+	for expr := range ranges {
 		bit, err := getRange(expr, r)
 		if err != nil {
 			return bits, err

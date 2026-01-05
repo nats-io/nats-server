@@ -21982,7 +21982,7 @@ func TestJetStreamScheduledMessageParse(t *testing.T) {
 	// @at <ts>
 	t.Run("@at", func(t *testing.T) {
 		ts := time.Now().UTC()
-		sts, repeat, ok := parseMsgSchedule(fmt.Sprintf("@at %s", ts.Format(time.RFC3339Nano)), 0)
+		sts, repeat, ok := parseMsgSchedule(fmt.Sprintf("@at %s", ts.Format(time.RFC3339Nano)), _EMPTY_, 0)
 		require_True(t, ok)
 		require_False(t, repeat)
 		require_Equal(t, ts, sts)
@@ -21991,34 +21991,34 @@ func TestJetStreamScheduledMessageParse(t *testing.T) {
 	// @every <duration>
 	t.Run("@every", func(t *testing.T) {
 		now := time.Now().UTC().Round(time.Second)
-		sts, repeat, ok := parseMsgSchedule("@every 5s", now.UnixNano())
+		sts, repeat, ok := parseMsgSchedule("@every 5s", _EMPTY_, now.UnixNano())
 		require_True(t, ok)
 		require_True(t, repeat)
 		require_Equal(t, now.Add(5*time.Second), sts)
 
 		// A schedule on an interval should not spam loads of times if it hasn't run in a long while.
 		now = time.Now().UTC().Round(time.Second)
-		sts, repeat, ok = parseMsgSchedule("@every 5s", 0)
+		sts, repeat, ok = parseMsgSchedule("@every 5s", _EMPTY_, 0)
 		require_True(t, ok)
 		require_True(t, repeat)
 		require_True(t, !sts.Before(now.Add(5*time.Second)))
 
 		// A schedule can only run at least once every second.
-		_, _, ok = parseMsgSchedule("@every 999ms", 0)
+		_, _, ok = parseMsgSchedule("@every 999ms", _EMPTY_, 0)
 		require_False(t, ok)
 	})
 
 	// <cron> pattern
 	t.Run("cron", func(t *testing.T) {
 		now := time.Now().UTC().Round(time.Second)
-		sts, repeat, ok := parseMsgSchedule("* * * * * *", now.UnixNano())
+		sts, repeat, ok := parseMsgSchedule("* * * * * *", _EMPTY_, now.UnixNano())
 		require_True(t, ok)
 		require_True(t, repeat)
 		require_Equal(t, now.Add(time.Second), sts)
 
 		// A schedule based on cron should not spam loads of times if it hasn't run in a long while.
 		now = time.Now().UTC().Round(time.Second)
-		sts, repeat, ok = parseMsgSchedule("* * * * * *", 0)
+		sts, repeat, ok = parseMsgSchedule("* * * * * *", _EMPTY_, 0)
 		require_True(t, ok)
 		require_True(t, repeat)
 		require_True(t, !sts.Before(now.Add(time.Second)))
@@ -22059,12 +22059,25 @@ func TestJetStreamScheduledMessageParse(t *testing.T) {
 						now = now.AddDate(0, 0, 1)
 					}
 				}
-				sts, repeat, ok = parseMsgSchedule(p.pattern, now.UnixNano())
+				sts, repeat, ok = parseMsgSchedule(p.pattern, _EMPTY_, now.UnixNano())
 				require_True(t, ok)
 				require_True(t, repeat)
 				require_Equal(t, p.delay(now), sts)
 			})
 		}
+	})
+
+	// <cron> pattern with time zone
+	t.Run("cron_tz", func(t *testing.T) {
+		tz := "Europe/Amsterdam"
+		loc, err := time.LoadLocation(tz)
+		require_NoError(t, err)
+
+		now := time.Now().UTC().Round(time.Second)
+		sts, repeat, ok := parseMsgSchedule("* * * * * *", tz, now.UnixNano())
+		require_True(t, ok)
+		require_True(t, repeat)
+		require_Equal(t, now.In(loc).Add(time.Second).String(), sts.String())
 	})
 }
 
