@@ -2785,7 +2785,7 @@ func TestMQTTPubSubMatrix(t *testing.T) {
 			s := testMQTTRunServer(t, o)
 			defer testMQTTShutdownServer(s)
 
-			nc := natsConnect(t, s.ClientURL())
+			nc := natsConnect(t, s.ClientURL(), nats.SkipSubjectValidation())
 			defer nc.Close()
 
 			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -7562,7 +7562,7 @@ func TestMQTTSubjectWildcardStart(t *testing.T) {
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
-	nc := natsConnect(t, s.ClientURL())
+	nc := natsConnect(t, s.ClientURL(), nats.SkipSubjectValidation())
 	defer nc.Close()
 
 	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
