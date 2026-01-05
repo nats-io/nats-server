@@ -1446,7 +1446,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		if o.cfg.AckPolicy != AckNone {
 			if o.ackSub, err = o.subscribeInternal(o.ackSubj, o.pushAck); err != nil {
 				o.mu.Unlock()
-				o.deleteWithoutAdvisory()
 				return
 			}
 		}
@@ -1455,7 +1454,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Will error if wrong mode to provide feedback to users.
 		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
 			o.mu.Unlock()
-			o.deleteWithoutAdvisory()
 			return
 		}
 
@@ -1465,7 +1463,6 @@ func (o *consumer) setLeader(isLeader bool) {
 			fcsubj := fmt.Sprintf(jsFlowControl, stream, o.name)
 			if o.fcSub, err = o.subscribeInternal(fcsubj, o.processFlowControl); err != nil {
 				o.mu.Unlock()
-				o.deleteWithoutAdvisory()
 				return
 			}
 		}
