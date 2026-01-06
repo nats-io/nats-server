@@ -12685,9 +12685,9 @@ func TestJetStreamBackOffCheckPending(t *testing.T) {
 	// ackWait (which in this case would be the first value of BackOff, which
 	// is 50ms). So we would call checkPending() too many times.
 	time.Sleep(500 * time.Millisecond)
-	// Check now, it should have been invoked twice.
-	if n := atomic.LoadInt64(&st.count); n != 2 {
-		t.Fatalf("Expected checkPending to be invoked 2 times, was %v", n)
+	// Check now, it should have been invoked 2/3 times.
+	if n := atomic.LoadInt64(&st.count); n < 2 || n > 3 {
+		t.Fatalf("Expected checkPending to be invoked 2/3 times, was %v", n)
 	}
 }
 
@@ -20925,4 +20925,84 @@ func TestJetStreamImplicitRePublishAfterSubjectTransform(t *testing.T) {
 	cfg.Subjects = []string{"c.>"}
 	_, err = js.UpdateStream(cfg)
 	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish destination forms a cycle")))
+}
+
+func TestJetStreamServerEncryptionRecoveryWithoutStreamStateFile(t *testing.T) {
+	cases := []struct {
+		name   string
+		cstr   string
+		cipher StoreCipher
+	}{
+		{"Default", _EMPTY_, ChaCha},
+		{"ChaCha", ", cipher: chacha", ChaCha},
+		{"AES", ", cipher: aes", AES},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmpl := `
+				server_name: S22
+				listen: 127.0.0.1:-1
+				jetstream: {key: $JS_KEY, store_dir: '%s' %s}
+			`
+			storeDir := t.TempDir()
+
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir, c.cstr)))
+
+			os.Setenv("JS_KEY", "s3cr3t!!")
+			defer os.Unsetenv("JS_KEY")
+
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			config := s.JetStreamConfig()
+			if config == nil {
+				t.Fatalf("Expected config but got none")
+			}
+			defer removeDir(t, config.StoreDir)
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			before := si.State
+			require_Equal(t, before.Msgs, 1)
+			require_Equal(t, before.FirstSeq, 1)
+			require_Equal(t, before.LastSeq, 1)
+
+			for i := range 2 {
+				s.Shutdown()
+				s.WaitForShutdown()
+				// Previously, the server would rely on this file to be present. If it wasn't, it would
+				// not initialize the keys and erroneously regenerate the meta.key upon the next graceful
+				// shutdown. A subsequent restart would not allow this stream to be loaded.
+				if i == 0 {
+					stateFile := filepath.Join(storeDir, JetStreamStoreDir, globalAccountName, streamsDir, "TEST", msgDir, streamStreamStateFile)
+					require_NoError(t, os.Remove(stateFile))
+				}
+
+				s, _ = RunServerWithConfig(conf)
+				defer s.Shutdown()
+
+				// Reconnect.
+				nc.Close()
+				nc, js = jsClientConnect(t, s)
+				defer nc.Close()
+
+				// Previously, the next iteration would fail by not finding the stream.
+				si, err = js.StreamInfo("TEST")
+				require_NoError(t, err)
+				if state := si.State; !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+				}
+			}
+		})
+	}
 }

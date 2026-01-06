@@ -719,8 +719,17 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 	_, err = js.AddStream(cfg)
 	require_NoError(t, err)
 
+	sl := c.streamLeader(aExpPub, "testR1-1")
+	require_NotNil(t, sl)
+	acc, err := sl.lookupAccount(aExpPub)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("testR1-1")
+	require_NoError(t, err)
+	require_Equal(t, mset.lastSeq(), 0)
+
 	_, err = js.Publish("testR1-1", nil)
 	require_NoError(t, err)
+	require_Equal(t, mset.lastSeq(), 1)
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	delete(accClaim.Limits.JetStreamTieredLimits, "R1")
@@ -739,6 +748,7 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 	_, err = js.Publish("testR1-1", nil)
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: no JetStream default or applicable tiered limit present")
+	require_Equal(t, mset.lastSeq(), 1)
 
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
@@ -1860,6 +1870,10 @@ func TestJetStreamJWTClusterAccountNRGPersistsAfterRestart(t *testing.T) {
 	defer c.shutdown()
 
 	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:     "TEST",
 		Replicas: 3,

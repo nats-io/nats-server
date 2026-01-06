@@ -2910,11 +2910,14 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 	msg := []byte("Hello")
 
 	for _, store := range []StreamStore{fs, ms} {
-		store.StoreMsg("foo.A", nil, msg, 0)
+		_, _, err = store.StoreMsg("foo.A", nil, msg, 0)
+		require_NoError(t, err)
 		for i := 0; i < 1_000_000; i++ {
-			store.StoreMsg("foo.B", nil, msg, 0)
+			_, _, err = store.StoreMsg("foo.B", nil, msg, 0)
+			require_NoError(t, err)
 		}
-		store.StoreMsg("foo.C", nil, msg, 0)
+		_, _, err = store.StoreMsg("foo.C", nil, msg, 0)
+		require_NoError(t, err)
 
 		var ss StreamState
 		store.FastState(&ss)
@@ -2925,7 +2928,19 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, p, 1_000_000)
 
+		// Preload the caches so this test only measures the reverse walk.
+		preloadCaches := func() {
+			if fs, ok := store.(*fileStore); ok {
+				fs.mu.Lock()
+				defer fs.mu.Unlock()
+				for _, mb := range fs.blks {
+					require_NoError(t, mb.loadMsgs())
+				}
+			}
+		}
+
 		// Now simulate a walk backwards as we currently do when searching for starting sequence numbers in sourced streams.
+		preloadCaches()
 		start := time.Now()
 		var smv StoreMsg
 		for seq := ss.LastSeq; seq > 0; seq-- {
@@ -2938,6 +2953,7 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 		elapsed := time.Since(start)
 
 		// Now use the optimized load prev.
+		preloadCaches()
 		seq, seen := ss.LastSeq, 0
 		start = time.Now()
 		for {
@@ -2956,8 +2972,8 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 		case *memStore:
 			require_True(t, elapsedNew < elapsed)
 		case *fileStore:
-			// Bigger gains for filestore, 10x
-			require_True(t, elapsedNew*10 < elapsed)
+			// Bigger gains for filestore.
+			require_LessThan(t, elapsedNew*10, elapsed)
 		}
 	}
 }
