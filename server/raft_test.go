@@ -385,6 +385,8 @@ func TestNRGLeaderTransfer(t *testing.T) {
 	leader := rg.leader()
 	sub, err := nc.SubscribeSync(leader.node().(*raft).asubj)
 	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
 
 	preferredID := rg.nonLeader().node().ID()
 	leader.node().StepDown(preferredID)
@@ -406,15 +408,13 @@ func TestNRGLeaderTransfer(t *testing.T) {
 
 		if len(ae.entries) == 1 {
 			e := ae.entries[0]
-			if e.Type == EntryLeaderTransfer &&
-				string(e.Data) == preferredID {
+			if e.Type == EntryLeaderTransfer && string(e.Data) == preferredID {
 				return nil
 			}
 		}
 
 		return fmt.Errorf("Expect EntryLeaderTransfer")
 	})
-	require_NoError(t, sub.Unsubscribe())
 }
 
 func TestNRGSwitchStateClearsQueues(t *testing.T) {
@@ -4523,4 +4523,85 @@ func TestNRGAppendEntryResurrectsLeader(t *testing.T) {
 	// Expect the cluster size to be unchanged
 	require_Equal(t, len(n.peers), 1)
 	require_Equal(t, n.ClusterSize(), 1)
+}
+
+func TestNRGSingleNodeElection(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+
+	// Remove the cluster leader, and then again
+	for range 2 {
+		leader := rg.waitOnLeader().node()
+		require_NoError(t, leader.ProposeRemovePeer(leader.ID()))
+		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+			if leader.State() == Leader {
+				return errors.New("Removed node is still leader")
+			}
+			return nil
+		})
+		require_False(t, leader.MembershipChangeInProgress())
+	}
+
+	// The remaining follower must be able to become leader
+	// on its own
+	newLeader := rg.waitOnLeader()
+	require_Equal(t, len(newLeader.node().Peers()), 1)
+	require_Equal(t, newLeader.node().ClusterSize(), 1)
+	require_False(t, newLeader.node().MembershipChangeInProgress())
+
+	adder := newLeader.(*stateAdder)
+	adder.proposeDelta(1)
+	adder.proposeDelta(10)
+	adder.proposeDelta(100)
+
+	rg.waitOnTotal(t, 111)
+
+	// Add two nodes back
+	rg = append(rg, c.addMemRaftNode("TEST", newStateAdder))
+	rg = append(rg, c.addMemRaftNode("TEST", newStateAdder))
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if newLeader.node().ClusterSize() != 3 {
+			return errors.New("node additions still in progress")
+		}
+		return nil
+	})
+
+	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
+		if newLeader.node().MembershipChangeInProgress() {
+			return errors.New("membership still in progress")
+		}
+		return nil
+	})
+
+	rg.waitOnTotal(t, 111)
+	require_Equal(t, newLeader.node().ClusterSize(), 3)
+	require_False(t, newLeader.node().MembershipChangeInProgress())
+}
+
+func TestNRGMustNotResetVoteOnStepDownOrLeaderTransfer(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Vote for a new leader.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, candidate: nats0}))
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, nats0)
+
+	// Stepping down as leader must NOT reset the vote info.
+	n.state.Store(int32(Leader))
+	require_NoError(t, n.StepDown())
+	require_Equal(t, n.vote, nats0)
+
+	// A leader transfer must NOT reset the vote info.
+	// This is automatically cleared once the intended leader starts a new election with a higher term.
+	entries := []*Entry{newEntry(EntryLeaderTransfer, []byte(nats0))}
+	aeLeaderTransfer := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	n.processAppendEntry(aeLeaderTransfer, n.aesub)
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, nats0)
 }

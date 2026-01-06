@@ -6847,11 +6847,16 @@ func TestJetStreamClusterSDMMaxAgeProposeExpiryShortRetry(t *testing.T) {
 			mset, err := acc.lookupStream("TEST")
 			require_NoError(t, err)
 
+			// Manually store a message with a timestamp far in the past.
 			if fs, ok := mset.store.(*fileStore); ok {
 				require_NoError(t, fs.StoreRawMsg("foo", nil, nil, 1, 1, 0))
 			} else if ms, ok := mset.store.(*memStore); ok {
 				require_NoError(t, ms.StoreRawMsg("foo", nil, nil, 1, 1, 0))
 			}
+			// We'll also need to manually adjust the upper-layer last sequence.
+			mset.mu.Lock()
+			mset.lseq = 1
+			mset.mu.Unlock()
 
 			cfg.MaxAge = time.Hour
 			_, err = jsStreamUpdate(t, nc, cfg)

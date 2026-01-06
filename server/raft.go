@@ -83,6 +83,7 @@ type RaftNode interface {
 	Stop()
 	WaitForStop()
 	Delete()
+	IsDeleted() bool
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
@@ -231,6 +232,7 @@ type raft struct {
 	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	membChanging bool // There is a membership change proposal in progress
+	deleted      bool // If the node was deleted.
 }
 
 type proposedEntry struct {
@@ -1735,11 +1737,6 @@ func (n *raft) StepDown(preferred ...string) error {
 			}
 		}
 	}
-
-	// Clear our vote state.
-	n.vote = noVote
-	n.writeTermVote()
-
 	n.Unlock()
 
 	if len(preferred) > 0 && maybeLeader == noLeader {
@@ -1920,11 +1917,18 @@ func (n *raft) Delete() {
 	n.Lock()
 	defer n.Unlock()
 
+	n.deleted = true
 	if wal := n.wal; wal != nil {
 		wal.Delete(false)
 	}
 	os.RemoveAll(n.sd)
 	n.debug("Deleted")
+}
+
+func (n *raft) IsDeleted() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.deleted
 }
 
 func (n *raft) shutdown() {
@@ -3401,9 +3405,9 @@ func (n *raft) runAsCandidate() {
 	n.requestVote()
 
 	// We vote for ourselves.
-	votes := map[string]struct{}{
-		n.ID(): {},
-	}
+	n.votes.push(&voteResponse{term: n.term, peer: n.ID(), granted: true})
+
+	votes := map[string]struct{}{}
 	emptyVotes := map[string]struct{}{}
 
 	for n.State() == Candidate {
@@ -3968,10 +3972,6 @@ CONTINUE:
 						// Here we can become a leader but need to wait for resume of the apply queue.
 						n.lxfer = true
 					}
-				} else if n.vote != noVote {
-					// Since we are here we are not the chosen one but we should clear any vote preference.
-					n.vote = noVote
-					n.writeTermVote()
 				}
 			}
 		case EntryAddPeer:
@@ -4210,6 +4210,9 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 	if !shouldStore {
 		ae.returnToPool()
+	}
+	if n.csz == 1 {
+		n.tryCommit(n.pindex)
 	}
 	return nil
 }

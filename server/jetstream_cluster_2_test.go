@@ -352,7 +352,7 @@ func TestJetStreamClusterAckPendingWithExpired(t *testing.T) {
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+			return fmt.Errorf("Unexpected error: %v", err)
 		}
 		if si.State.Msgs != 0 {
 			return fmt.Errorf("Expected 0 msgs, got state: %+v", si.State)
@@ -362,13 +362,16 @@ func TestJetStreamClusterAckPendingWithExpired(t *testing.T) {
 
 	// Once expired these messages can not be redelivered so should not be considered ack pending at this point.
 	// Now ack..
-	ci, err = sub.ConsumerInfo()
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if ci.NumAckPending != 0 {
-		t.Fatalf("Expected nothing to be ack pending, got %d", ci.NumAckPending)
-	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		ci, err = sub.ConsumerInfo()
+		if err != nil {
+			return fmt.Errorf("Unexpected error: %v", err)
+		}
+		if ci.NumAckPending != 0 {
+			return fmt.Errorf("Expected nothing to be ack pending, got %d", ci.NumAckPending)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterAckPendingWithMaxRedelivered(t *testing.T) {

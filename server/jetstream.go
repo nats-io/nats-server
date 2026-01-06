@@ -1142,6 +1142,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 	}
 
 	js.mu.Lock()
+	// Accounts get reset to nil on shutdown, since we re-acquire the locks here, we need to check again.
+	if js.accounts == nil {
+		js.mu.Unlock()
+		return NewJSNotEnabledError()
+	}
+
 	if jsa, ok := js.accounts[a.Name]; ok {
 		a.mu.Lock()
 		a.js = jsa
@@ -1370,7 +1376,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			}
 			obs, err := mset.addConsumerWithAssignment(&cfg.ConsumerConfig, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
 			if err != nil {
-				s.Warnf("    Error adding consumer %q: %v", cfg.Name, err)
+				s.Warnf("    Error adding consumer '%s > %s > %s': %v", a.Name, mset.name(), cfg.Name, err)
 				continue
 			}
 			if isEphemeral {
@@ -1378,9 +1384,6 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			}
 			if !cfg.Created.IsZero() {
 				obs.setCreatedTime(cfg.Created)
-			}
-			if err != nil {
-				s.Warnf("    Error restoring consumer %q state: %v", cfg.Name, err)
 			}
 		}
 	}

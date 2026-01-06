@@ -3303,7 +3303,9 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 			if ub != ua {
 				t.Fatalf("Expected used to be the same, got %d vs %d", ub, ua)
 			}
-			if ta >= tb {
+			// When using both encryption and compression, we're not always
+			// guaranteed to have a smaller file after compaction.
+			if ta >= tb && (fcfg.Cipher == NoCipher || fcfg.Compression == NoCompression) {
 				t.Fatalf("Expected total after to be less then before, got %d vs %d", tb, ta)
 			}
 		}
@@ -11160,6 +11162,57 @@ func TestFileStorePurgeMsgBlockRemovesSchedules(t *testing.T) {
 				t.Fatalf("expected schedule for seq %d to be removed", seq)
 			}
 		}
+	})
+}
+
+func TestFileStorePurgeMsgBlockAccounting(t *testing.T) {
+	test := func(t *testing.T, update func(cfg *nats.StreamConfig)) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		cfg := &nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Storage:  nats.FileStorage,
+		}
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		subj, data := "foo", make([]byte, 1024*1024)
+		for range 10 {
+			_, err = js.Publish(subj, data)
+			require_NoError(t, err)
+		}
+
+		gacc := s.globalAccount()
+		mset, err := gacc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		stats := gacc.JetStreamUsage()
+		require_Equal(t, state.Bytes, stats.JetStreamTier.Store)
+
+		update(cfg)
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+
+		state = mset.state()
+		stats = gacc.JetStreamUsage()
+		require_Equal(t, state.Bytes, fileStoreMsgSizeRaw(len(subj), 0, len(data)))
+		require_Equal(t, state.Bytes, stats.JetStreamTier.Store)
+	}
+
+	t.Run("MaxMsgs", func(t *testing.T) {
+		test(t, func(cfg *nats.StreamConfig) {
+			cfg.MaxMsgs = 1
+		})
+	})
+	t.Run("MaxBytes", func(t *testing.T) {
+		test(t, func(cfg *nats.StreamConfig) {
+			cfg.MaxBytes = int64(fileStoreMsgSizeRaw(3, 0, 1024*1024))
+		})
 	})
 }
 
