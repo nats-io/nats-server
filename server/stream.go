@@ -8074,19 +8074,25 @@ func (mset *stream) setWriteErr(err error) {
 }
 
 func (mset *stream) setWriteErrLocked(err error) {
-	if mset.werr == nil {
-		mset.werr = err
-		assert.Unreachable("Stream encountered write error", map[string]any{
-			"account": mset.acc.Name,
-			"stream":  mset.cfg.Name,
-			"err":     err,
-		})
+	if mset.werr != nil {
+		return
+	}
+	// Ignore non-write errors.
+	if err == ErrStoreClosed {
+		return
+	}
 
-		// If stream is replicated, put it in observer mode to make sure another server can pick it up.
-		if node := mset.node; node != nil {
-			node.StepDown()
-			node.SetObserver(true)
-		}
+	mset.werr = err
+	assert.Unreachable("Stream encountered write error", map[string]any{
+		"account": mset.acc.Name,
+		"stream":  mset.cfg.Name,
+		"err":     err,
+	})
+
+	// If stream is replicated, put it in observer mode to make sure another server can pick it up.
+	if node := mset.node; node != nil {
+		node.StepDown()
+		node.SetObserver(true)
 	}
 }
 
