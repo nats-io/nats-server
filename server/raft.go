@@ -2261,10 +2261,10 @@ func (n *raft) runAsFollower() {
 			n.votes.popOne()
 		case <-n.resp.ch:
 			// Ignore append entry responses received from before the state change.
-			n.resp.drain()
+			n.drainOrRenotify(n.resp)
 		case <-n.prop.ch:
 			// Ignore proposals received from before the state change.
-			n.prop.drain()
+			n.drainOrRenotify(n.prop)
 		case <-n.reqs.ch:
 			// We've just received a vote request from the network.
 			// Because of drain() it is possible that we get nil from popOne().
@@ -2272,6 +2272,24 @@ func (n *raft) runAsFollower() {
 				n.processVoteRequest(voteReq)
 			}
 		}
+	}
+}
+
+// For runAsFollower and runAsCandidate, to ensure that we don't hang onto
+// things like append entry responses or proposals from a previous leadership
+// if we are staying in this state, but that we don't nuke them if we're about
+// to become a leader.
+func (n *raft) drainOrRenotify(ipq interface {
+	drain() int
+	renotify()
+}) {
+	if n.State() == Leader {
+		// We're in the process of switching to leader but haven't switched
+		// to runAsLeader yet, put the notification back so runAsLeader will
+		// fetch it on the next select{}.
+		ipq.renotify()
+	} else {
+		ipq.drain()
 	}
 }
 
@@ -3412,10 +3430,10 @@ func (n *raft) runAsCandidate() {
 			n.processAppendEntries()
 		case <-n.resp.ch:
 			// Ignore append entry responses received from before the state change.
-			n.resp.drain()
+			n.drainOrRenotify(n.resp)
 		case <-n.prop.ch:
 			// Ignore proposals received from before the state change.
-			n.prop.drain()
+			n.drainOrRenotify(n.prop)
 		case <-n.s.quitCh:
 			return
 		case <-n.quit:
