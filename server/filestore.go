@@ -201,7 +201,7 @@ type fileStore struct {
 	sips        int
 	dirty       int
 	closing     bool
-	closed      bool
+	closed      atomic.Bool // Atomic to reduce contention on ConsumerStores.
 	fip         bool
 	receivedAny bool
 	firstMoved  bool
@@ -2594,7 +2594,7 @@ func copyMsgBlocks(src []*msgBlock) []*msgBlock {
 func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	fs.mu.RLock()
 	lastSeq := fs.state.LastSeq
-	closed := fs.closed
+	closed := fs.isClosed()
 	fs.mu.RUnlock()
 
 	if closed {
@@ -4492,7 +4492,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
 func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) (err error) {
-	if fs.closed {
+	if fs.isClosed() {
 		return ErrStoreClosed
 	}
 
@@ -5165,7 +5165,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 
 	fsLock()
 
-	if fs.closed {
+	if fs.isClosed() {
 		fsUnlock()
 		return false, ErrStoreClosed
 	}
@@ -5611,10 +5611,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 }
 
 func (fs *fileStore) isClosed() bool {
-	fs.mu.RLock()
-	closed := fs.closed
-	fs.mu.RUnlock()
-	return closed
+	return fs.closed.Load()
 }
 
 // Will spin up our flush loop.
@@ -6995,11 +6992,10 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
-	fs.mu.Lock()
-	if fs.closed {
-		fs.mu.Unlock()
+	if fs.isClosed() {
 		return
 	}
+	fs.mu.Lock()
 	blks := append([]*msgBlock(nil), fs.blks...)
 	lmb, firstMoved, firstSeq := fs.lmb, fs.firstMoved, fs.state.FirstSeq
 	// Clear first moved.
@@ -7089,11 +7085,10 @@ func (fs *fileStore) syncBlocks() {
 		}
 	}
 
-	fs.mu.Lock()
-	if fs.closed {
-		fs.mu.Unlock()
+	if fs.isClosed() {
 		return
 	}
+	fs.mu.Lock()
 	fs.setSyncTimer()
 	if markDirty {
 		fs.dirty++
@@ -7939,16 +7934,13 @@ func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 
 // Will return message for the given sequence number.
 func (fs *fileStore) msgForSeqLocked(seq uint64, sm *StoreMsg, needFSLock bool) (*StoreMsg, error) {
+	if fs.isClosed() {
+		return nil, ErrStoreClosed
+	}
 	// TODO(dlc) - Since Store, Remove, Skip all hold the write lock on fs this will
 	// be stalled. Need another lock if want to happen in parallel.
 	if needFSLock {
 		fs.mu.RLock()
-	}
-	if fs.closed {
-		if needFSLock {
-			fs.mu.RUnlock()
-		}
-		return nil, ErrStoreClosed
 	}
 	// Indicates we want first msg.
 	if seq == 0 {
@@ -8128,10 +8120,14 @@ func (fs *fileStore) LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 
 // loadLast will load the last message for a subject. Subject should be non empty and not ">".
 func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err error) {
+	if fs.isClosed() {
+		return nil, ErrStoreClosed
+	}
+
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if fs.closed || fs.lmb == nil {
+	if fs.lmb == nil {
 		return nil, ErrStoreClosed
 	}
 
@@ -8228,15 +8224,15 @@ func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, e
 
 // LoadNextMsgMulti will find the next message matching any entry in the sublist.
 func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	if fs.isClosed() {
+		return nil, 0, ErrStoreClosed
+	}
 	if sl == nil {
 		return fs.LoadNextMsg(_EMPTY_, false, start, smp)
 	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if fs.closed {
-		return nil, 0, ErrStoreClosed
-	}
 	if fs.state.Msgs == 0 || start > fs.state.LastSeq {
 		return nil, fs.state.LastSeq, ErrStoreEOF
 	}
@@ -8265,12 +8261,13 @@ func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 }
 
 func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, uint64, error) {
+	if fs.isClosed() {
+		return nil, 0, ErrStoreClosed
+	}
+
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if fs.closed {
-		return nil, 0, ErrStoreClosed
-	}
 	if fs.state.Msgs == 0 || start > fs.state.LastSeq {
 		return nil, fs.state.LastSeq, ErrStoreEOF
 	}
@@ -8336,12 +8333,13 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 
 // Will load the next non-deleted msg starting at the start sequence and walking backwards.
 func (fs *fileStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err error) {
+	if fs.isClosed() {
+		return nil, ErrStoreClosed
+	}
+
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if fs.closed {
-		return nil, ErrStoreClosed
-	}
 	if fs.state.Msgs == 0 || start < fs.state.FirstSeq {
 		return nil, ErrStoreEOF
 	}
@@ -8389,6 +8387,10 @@ func (fs *fileStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err
 
 // LoadPrevMsgMulti will find the previous message matching any entry in the sublist.
 func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	if fs.isClosed() {
+		return nil, 0, ErrStoreClosed
+	}
+
 	if sl == nil {
 		sm, err = fs.LoadPrevMsg(start, smp)
 		return
@@ -8396,9 +8398,6 @@ func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if fs.closed {
-		return nil, 0, ErrStoreClosed
-	}
 	if fs.state.Msgs == 0 || start < fs.state.FirstSeq {
 		return nil, fs.state.FirstSeq, ErrStoreEOF
 	}
@@ -8952,11 +8951,11 @@ func (fs *fileStore) Purge() (uint64, error) {
 }
 
 func (fs *fileStore) purge(fseq uint64) (uint64, error) {
-	fs.mu.Lock()
-	if fs.closed {
-		fs.mu.Unlock()
+	if fs.isClosed() {
 		return 0, ErrStoreClosed
 	}
+
+	fs.mu.Lock()
 
 	purged := fs.state.Msgs
 	rbytes := int64(fs.state.Bytes)
@@ -9295,11 +9294,11 @@ SKIP:
 
 // Will completely reset our store.
 func (fs *fileStore) reset() error {
-	fs.mu.Lock()
-	if fs.closed {
-		fs.mu.Unlock()
+	if fs.isClosed() {
 		return ErrStoreClosed
 	}
+
+	fs.mu.Lock()
 
 	var purged, bytes uint64
 	cb := fs.scb
@@ -9386,17 +9385,16 @@ func (mb *msgBlock) tombsLocked() []msgId {
 
 // Truncate will truncate a stream store up to seq. Sequence needs to be valid.
 func (fs *fileStore) Truncate(seq uint64) error {
+	if fs.isClosed() {
+		return ErrStoreClosed
+	}
+
 	// Check for request to reset.
 	if seq == 0 {
 		return fs.reset()
 	}
 
 	fs.mu.Lock()
-
-	if fs.closed {
-		fs.mu.Unlock()
-		return ErrStoreClosed
-	}
 
 	// Any existing state file will no longer be applicable. We will force write a new one
 	// at the end, after we release the lock.
@@ -10243,6 +10241,10 @@ func (fs *fileStore) forceWriteFullStateLocked() error {
 // 3. MBs - Index, Bytes, First and Last Sequence and Timestamps, and the deleted map (avl.seqset).
 // 4. Last block index and hash of record inclusive to this stream state.
 func (fs *fileStore) _writeFullState(force, needLock bool) error {
+	if fs.isClosed() {
+		return nil
+	}
+
 	fsLock := func() {
 		if needLock {
 			fs.mu.Lock()
@@ -10256,7 +10258,7 @@ func (fs *fileStore) _writeFullState(force, needLock bool) error {
 
 	start := time.Now()
 	fsLock()
-	if fs.closed || fs.dirty == 0 {
+	if fs.dirty == 0 {
 		fsUnlock()
 		return nil
 	}
@@ -10507,8 +10509,12 @@ func (fs *fileStore) Stop() error {
 
 // Stop the current filestore.
 func (fs *fileStore) stop(delete, writeState bool) error {
+	if fs.isClosed() {
+		return ErrStoreClosed
+	}
+
 	fs.mu.Lock()
-	if fs.closed || fs.closing {
+	if fs.closing {
 		fs.mu.Unlock()
 		return ErrStoreClosed
 	}
@@ -10544,7 +10550,7 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 
 	// Mark as closed. Last message block needs to be cleared after
 	// writeFullState has completed.
-	fs.closed = true
+	fs.closed.Store(true)
 	fs.lmb = nil
 
 	// We should update the upper usage layer on a stop.
@@ -10763,11 +10769,12 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 
 // Create a snapshot of this stream and its consumer's state along with messages.
 func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumers bool) (*SnapshotResult, error) {
-	fs.mu.Lock()
-	if fs.closed {
-		fs.mu.Unlock()
+	if fs.isClosed() {
 		return nil, ErrStoreClosed
 	}
+
+	fs.mu.Lock()
+
 	// Only allow one at a time.
 	if fs.sips > 0 {
 		fs.mu.Unlock()
