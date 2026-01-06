@@ -6,6 +6,7 @@ toolchain go1.24.11
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.5.0-default-no-op
+	github.com/arl/statsviz v0.8.0
 	github.com/google/go-tpm v0.9.8
 	github.com/klauspost/compress v1.18.2
 	github.com/nats-io/jwt/v2 v2.8.0
@@ -17,6 +18,8 @@ require (
 	golang.org/x/sys v0.39.0
 	golang.org/x/time v0.14.0
 )
+
+require github.com/gorilla/websocket v1.5.3 // indirect
 
 // We don't usually pin non-tagged commits but so far no release has
 // been made that includes https://github.com/minio/highwayhash/pull/29.

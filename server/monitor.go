@@ -1509,7 +1509,8 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>Gateways<span class="endpoint"> %s</span></a>
 	<a href=.%s>Raft Groups<span class="endpoint"> %s</span></a>
 	<a href=.%s>Health Probe<span class="endpoint"> %s</span></a>
-	<a href=.%s class=last>Expvar<span class="endpoint"> %s</span></a>
+	<a href=.%s>Expvar<span class="endpoint"> %s</span></a>
+	<a href=.%s class=last>Statsviz<span class="endpoint"> %s</span></a>
     <a href=https://docs.nats.io/running-a-nats-service/nats_admin/monitoring class="help">Help</a>
   </body>
 </html>`,
@@ -1527,6 +1528,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		s.basePath(RaftzPath), RaftzPath,
 		s.basePath(HealthzPath), HealthzPath,
 		s.basePath(ExpvarzPath), ExpvarzPath,
+		s.basePath(StatsvizPath), StatsvizPath,
 	)
 }
 

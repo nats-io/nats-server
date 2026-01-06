@@ -44,6 +44,8 @@ import (
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 
+	"github.com/arl/statsviz"
+
 	"expvar"
 
 	"github.com/klauspost/compress/s2"
@@ -3048,6 +3050,7 @@ const (
 	IPQueuesPath     = "/ipqueuesz"
 	RaftzPath        = "/raftz"
 	ExpvarzPath      = "/debug/vars"
+	StatsvizPath     = "/debug/statsviz"
 )
 
 func (s *Server) basePath(p string) string {
@@ -3168,6 +3171,11 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(RaftzPath), s.HandleRaftz)
 	// Expvarz
 	mux.Handle(s.basePath(ExpvarzPath), expvar.Handler())
+	// Statsviz
+	_ = statsviz.Register(mux,
+		statsviz.Root(StatsvizPath),
+		statsviz.SendFrequency(250*time.Millisecond),
+	)
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
