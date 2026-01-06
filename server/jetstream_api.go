@@ -2766,6 +2766,48 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers, false)
 }
 
+<<<<<<< HEAD
+=======
+// Request to activate degraded mode (for two-node clusters).
+func (s *Server) jsServerDegradedActivateRequest(_ *subscription, c *client, _ *Account, _, _ string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	_, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	if acc != s.SystemAccount() {
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	// TODO(nat): Only allow this for R2?
+	// But what if we have to peer-remove and/or peer-add to recover the system?
+
+	if !raftOverrideDegraded.CompareAndSwap(false, true) {
+		return
+	}
+
+	s.Warnf("Cluster DEGRADED state enabled")
+
+	s.rnMu.Lock()
+	defer s.rnMu.Unlock()
+	for _, rg := range s.raftNodes {
+		if rg.State() != Leader {
+			rg.(*raft).switchToLeader()
+		}
+	}
+}
+
+>>>>>>> 65d221e30 (NRG: Don't drain response or proposal queues when switching to leader)
 // Request to have an account purged
 func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
