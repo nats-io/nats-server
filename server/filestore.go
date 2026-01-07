@@ -2182,7 +2182,7 @@ func (fs *fileStore) recoverMsgs() error {
 	if fs.ld != nil {
 		var emptyBlks []*msgBlock
 		for _, mb := range fs.blks {
-			if mb.msgs == 0 && mb.rbytes == 0 {
+			if mb.msgs == 0 && mb.rbytes == 0 && mb != fs.lmb {
 				emptyBlks = append(emptyBlks, mb)
 			}
 		}
