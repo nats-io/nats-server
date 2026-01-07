@@ -980,6 +980,8 @@ func (js *jetStream) setupMetaGroup() error {
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
 
+	js.startManagementSub()
+
 	// Set to true before we start.
 	js.metaRecovering = true
 	js.srv.startGoRoutine(
@@ -6556,14 +6558,6 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.peerStreamCancelMove == nil {
 		cc.peerStreamCancelMove, _ = s.systemSubscribe(JSApiServerStreamCancelMove, _EMPTY_, false, c, s.jsLeaderServerStreamCancelMoveRequest)
 	}
-	if cc.degradedActivate == nil {
-		subj := fmt.Sprintf(JSApiServerDegradedActivate, js.srv.Name())
-		cc.degradedActivate, _ = s.systemSubscribe(subj, _EMPTY_, false, c, s.jsServerDegradedActivateRequest)
-	}
-	if cc.degradedStatus == nil {
-		subj := fmt.Sprintf(JSApiServerDegradedStatus, js.srv.Name())
-		cc.degradedStatus, _ = s.systemSubscribe(subj, _EMPTY_, false, c, s.jsServerDegradedStatusRequest)
-	}
 	if js.accountPurge == nil {
 		js.accountPurge, _ = s.systemSubscribe(JSApiAccountPurge, _EMPTY_, false, c, s.jsLeaderAccountPurgeRequest)
 	}
@@ -6599,6 +6593,32 @@ func (js *jetStream) stopUpdatesSub() {
 	if js.accountPurge != nil {
 		cc.s.sysUnsubscribe(js.accountPurge)
 		js.accountPurge = nil
+	}
+}
+
+// Lock should be held.
+func (js *jetStream) startManagementSub() {
+	cc, s, c := js.cluster, js.srv, js.cluster.c
+	if cc.degradedActivate == nil {
+		subj := fmt.Sprintf(JSApiServerDegradedActivate, js.srv.Name())
+		cc.degradedActivate, _ = s.systemSubscribe(subj, _EMPTY_, false, c, s.jsServerDegradedActivateRequest)
+	}
+	if cc.degradedStatus == nil {
+		subj := fmt.Sprintf(JSApiServerDegradedStatus, js.srv.Name())
+		cc.degradedStatus, _ = s.systemSubscribe(subj, _EMPTY_, false, c, s.jsServerDegradedStatusRequest)
+	}
+}
+
+// Lock should be held.
+func (js *jetStream) stopManagementSub() {
+	cc := js.cluster
+	if cc.degradedActivate != nil {
+		cc.s.sysUnsubscribe(cc.degradedActivate)
+		cc.degradedActivate = nil
+	}
+	if cc.degradedStatus != nil {
+		cc.s.sysUnsubscribe(cc.degradedStatus)
+		cc.degradedStatus = nil
 	}
 }
 
