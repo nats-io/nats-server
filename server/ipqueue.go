@@ -15,8 +15,10 @@ package server
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const ipQueueDefaultMaxRecycleSize = 4 * 1024
@@ -32,14 +34,27 @@ type ipQueue[T any] struct {
 	sz   uint64 // Calculated size (only if calc != nil)
 	name string
 	m    *sync.Map
+	sm   *sync.Map // Sampling map.
+	ewma float64   // Exponentially-weighted moving average of len + in progress.
 	ipQueueOpts[T]
 }
 
+func (s *Server) sampleIPQs() {
+	s.ipQueuesSampling.Range(func(ipq any, _ any) bool {
+		ipq.(interface{ sample() }).sample()
+		return true
+	})
+	s.ipQueuesSampleTmr = time.AfterFunc(10*time.Second, s.sampleIPQs)
+}
+
+var ipqEWMAAlpha = 1 - math.Exp(-10.0/60.0)
+
 type ipQueueOpts[T any] struct {
-	mrs  int              // Max recycle size
-	calc func(e T) uint64 // Calc function for tracking size
-	msz  uint64           // Limit by total calculated size
-	mlen int              // Limit by number of entries
+	mrs      int              // Max recycle size
+	calc     func(e T) uint64 // Calc function for tracking size
+	msz      uint64           // Limit by total calculated size
+	mlen     int              // Limit by number of entries
+	sampling bool             // Register sampling for averages.
 }
 
 type ipQueueOpt[T any] func(*ipQueueOpts[T])
@@ -80,6 +95,14 @@ func ipqLimitByLen[T any](max int) ipQueueOpt[T] {
 	}
 }
 
+// This option allows sampling to provide 60-second averages of the IPQ
+// length + in progress.
+func ipqSampling[T any]() ipQueueOpt[T] {
+	return func(o *ipQueueOpts[T]) {
+		o.sampling = true
+	}
+}
+
 var errIPQLenLimitReached = errors.New("IPQ len limit reached")
 var errIPQSizeLimitReached = errors.New("IPQ size limit reached")
 
@@ -96,6 +119,7 @@ func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt[T]) *ipQueue[T
 		},
 		name: name,
 		m:    &s.ipQueues,
+		sm:   &s.ipQueuesSampling,
 		ipQueueOpts: ipQueueOpts[T]{
 			mrs: ipQueueDefaultMaxRecycleSize,
 		},
@@ -104,6 +128,9 @@ func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt[T]) *ipQueue[T
 		o(&q.ipQueueOpts)
 	}
 	s.ipQueues.Store(name, q)
+	if q.sampling {
+		s.ipQueuesSampling.Store(q, struct{}{})
+	}
 	return q
 }
 
@@ -283,4 +310,21 @@ func (q *ipQueue[T]) unregister() {
 		return
 	}
 	q.m.Delete(q.name)
+	if q.sampling {
+		q.sm.Delete(q)
+	}
+}
+
+// Take a new sample. This is called by timer and should not be called
+// directly otherwise.
+func (q *ipQueue[T]) sample() {
+	sample := float64(len(q.elts) - q.pos + int(q.inprogress))
+	q.ewma = ipqEWMAAlpha*sample + (1-ipqEWMAAlpha)*q.ewma
+}
+
+// Return a sample of the length + in progress over the last 60 seconds.
+// This requires ipqSampling to be set when creating the IPQ or it will
+// just return zero.
+func (q *ipQueue[T]) average() float64 {
+	return q.ewma
 }

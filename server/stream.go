@@ -283,6 +283,7 @@ type StreamInfo struct {
 	Mirror     *StreamSourceInfo   `json:"mirror,omitempty"`
 	Sources    []*StreamSourceInfo `json:"sources,omitempty"`
 	Alternates []StreamAlternate   `json:"alternates,omitempty"`
+	Backlog    uint                `json:"backlog_avg,omitempty"`
 	// TimeStamp indicates when the info was gathered
 	TimeStamp time.Time `json:"ts"`
 }
@@ -818,6 +819,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			}),
 			ipqLimitByLen[*inMsg](mlen),
 			ipqLimitBySize[*inMsg](msz),
+			ipqSampling[*inMsg](),
 		),
 		gets:    newIPQueue[*directGetReq](s, qpfx+"direct gets"),
 		qch:     make(chan struct{}),

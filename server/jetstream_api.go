@@ -1946,6 +1946,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		Mirror:     mset.mirrorInfo(),
 		Sources:    mset.sourcesInfo(),
 		Alternates: js.streamAlternates(ci, config.Name),
+		Backlog:    uint(mset.msgs.average()),
 		TimeStamp:  time.Now().UTC(),
 	}
 	if clusterWideConsCount > 0 {

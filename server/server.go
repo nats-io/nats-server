@@ -350,7 +350,9 @@ type Server struct {
 	sysAccOnlyNoAuthUser string
 
 	// IPQueues map
-	ipQueues sync.Map
+	ipQueues          sync.Map
+	ipQueuesSampling  sync.Map
+	ipQueuesSampleTmr *time.Timer
 
 	// To limit logging frequency
 	rateLimitLogging   sync.Map
@@ -793,6 +795,9 @@ func NewServer(opts *Options) (*Server, error) {
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
 	}
+
+	// Start the IPQ sampling timer.
+	s.ipQueuesSampleTmr = time.AfterFunc(10*time.Second, s.sampleIPQs)
 
 	// Delayed API response queue. Create regardless if JetStream is configured
 	// or not (since it can be enabled/disabled with config reload, we want this
@@ -2615,6 +2620,7 @@ func (s *Server) Shutdown() {
 	s.grRunning = false
 	s.grMu.Unlock()
 	s.mu.Unlock()
+	s.ipQueuesSampleTmr.Stop()
 
 	if accRes != nil {
 		accRes.Close()
