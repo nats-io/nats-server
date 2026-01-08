@@ -2744,7 +2744,9 @@ func TestMonitorCluster(t *testing.T) {
 		opts.Cluster.TLSConfig != nil,
 		opts.Cluster.TLSConfig != nil,
 		DEFAULT_ROUTE_POOL_SIZE,
-		0, _EMPTY_,
+		0,
+		_EMPTY_,
+		time.Time{},
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -2760,7 +2762,7 @@ func TestMonitorCluster(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = ClusterOptsVarz{"", "", 0, 0, nil, 2, false, false, 0, 0, _EMPTY_}
+		_ = ClusterOptsVarz{"", "", 0, 0, nil, 2, false, false, 0, 0, _EMPTY_, time.Time{}}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -2915,7 +2917,9 @@ func TestMonitorGateway(t *testing.T) {
 		opts.Gateway.ConnectRetries,
 		[]RemoteGatewayOptsVarz{{"B", 1, nil}},
 		opts.Gateway.RejectUnknown,
-		0, _EMPTY_,
+		0,
+		_EMPTY_,
+		time.Time{},
 	}
 	// Since URLs array is not guaranteed to be always the same order,
 	// we don't add it in the expected GatewayOptsVarz, instead we
@@ -2953,7 +2957,7 @@ func TestMonitorGateway(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in GatewayOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = GatewayOptsVarz{"", "", 0, 0, 0, false, false, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false, 0, "default"}
+		_ = GatewayOptsVarz{"", "", 0, 0, 0, false, false, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false, 0, "default", time.Time{}}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -3139,7 +3143,9 @@ func TestMonitorLeafNode(t *testing.T) {
 			},
 		},
 		false,
-		0, _EMPTY_,
+		0,
+		_EMPTY_,
+		time.Time{},
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -3164,7 +3170,7 @@ func TestMonitorLeafNode(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = LeafNodeOptsVarz{"", 0, 0, 0, false, false, []RemoteLeafOptsVarz{{"", 0, nil, nil, false}}, false, 0, _EMPTY_}
+		_ = LeafNodeOptsVarz{"", 0, 0, 0, false, false, []RemoteLeafOptsVarz{{"", 0, nil, nil, false}}, false, 0, _EMPTY_, time.Time{}}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -6405,4 +6411,47 @@ func TestMonitorVarzMetadata(t *testing.T) {
 	if !reflect.DeepEqual(expected, v.Metadata) {
 		t.Fatalf("expected: %v, got: %v", expected, v.Metadata)
 	}
+}
+
+func TestMonitorVarzTLSCertEndDate(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	tlsConfig, err := GenTLSConfig(
+		&TLSConfigOpts{
+			CertFile: "../test/configs/certs/server-cert.pem",
+			KeyFile:  "../test/configs/certs/server-key.pem",
+			CaFile:   "../test/configs/certs/ca.pem",
+		})
+	if err != nil {
+		t.Fatalf("Error generating TLS config: %v", err)
+	}
+
+	opts.TLSConfig = tlsConfig
+	opts.Cluster.TLSConfig = tlsConfig
+	opts.Gateway.TLSConfig = tlsConfig
+	opts.LeafNode.TLSConfig = tlsConfig
+	opts.MQTT.TLSConfig = tlsConfig
+	opts.Websocket.TLSConfig = tlsConfig
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	v := pollVarz(t, s, 0, url, nil)
+
+	expected := time.Date(2032, 8, 24, 20, 23, 02, 0, time.UTC)
+
+	check := func(t *testing.T, notAfter time.Time) {
+		t.Helper()
+		if notAfter != expected {
+			t.Fatalf("Expected expiration date '%v', got '%v'", expected, notAfter)
+		}
+	}
+
+	check(t, v.TLSCertNotAfter)
+	check(t, v.Cluster.TLSCertNotAfter)
+	check(t, v.Gateway.TLSCertNotAfter)
+	check(t, v.LeafNode.TLSCertNotAfter)
+	check(t, v.MQTT.TLSCertNotAfter)
+	check(t, v.Websocket.TLSCertNotAfter)
 }
