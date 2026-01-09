@@ -344,9 +344,18 @@ type StreamSource struct {
 	FilterSubject     string                   `json:"filter_subject,omitempty"`
 	SubjectTransforms []SubjectTransformConfig `json:"subject_transforms,omitempty"`
 	External          *ExternalStream          `json:"external,omitempty"`
+	Consumer          *StreamConsumerSource    `json:"consumer,omitempty"`
 
 	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
+}
+
+// StreamConsumerSource dictates a durable consumer with a specific name is used for sourcing.
+// This config also determines whether the durable will be ServerManaged or managed by the user.
+type StreamConsumerSource struct {
+	Name           string `json:"name,omitempty"`
+	ServerManaged  bool   `json:"server_managed,omitempty"`
+	DeliverSubject string `json:"deliver_subject,omitempty"`
 }
 
 // ExternalStream allows you to qualify access to a stream source in another account or domain.
@@ -2870,12 +2879,12 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		var needsRetry bool
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.handleFlowControl(m)
+			mset.handleFlowControl(m, mset.mirror.dseq, mset.mirror.sseq)
 		} else {
 			// For idle heartbeats make sure we did not miss anything and check if we are considered stalled.
-			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
+			if ldseq := parseInt64(sliceHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
 				needsRetry = true
-			} else if fcReply := getHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
+			} else if fcReply := sliceHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
 				// Other side thinks we are stalled, so send flow control reply.
 				mset.outq.sendMsg(string(fcReply), nil)
 			}
@@ -2901,6 +2910,10 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		mset.mirror.sseq++
 	} else if sseq <= mset.mirror.sseq {
 		// Ignore older messages.
+		// If the deliver sequence matches, we only updated delivered accounting.
+		if dseq == mset.mirror.dseq+1 {
+			mset.mirror.dseq++
+		}
 		mset.mu.Unlock()
 		return true
 	} else if mset.mirror.cname == _EMPTY_ {
@@ -3149,9 +3162,12 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	// Determine subjects etc.
 	var deliverSubject string
+	var durableDeliverSubject string
+	var durableServerManaged bool
 	ext := mset.cfg.Mirror.External
-
-	if ext != nil && ext.DeliverPrefix != _EMPTY_ {
+	if mset.cfg.Mirror.Consumer != nil && !mset.cfg.Mirror.Consumer.ServerManaged {
+		durableDeliverSubject = mset.cfg.Mirror.Consumer.DeliverSubject
+	} else if ext != nil && ext.DeliverPrefix != _EMPTY_ {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".M"), "..", ".")
 	} else {
 		deliverSubject = syncSubject("$JS.M")
@@ -3159,6 +3175,7 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	// Now send off request to create/update our consumer. This will be all API based even in single server mode.
 	// We calculate durable names apriori so we do not need to save them off.
+	// If we're using a pre-existing consumer, we'll send a consumer reset request instead.
 
 	var state StreamState
 	mset.store.FastState(&state)
@@ -3166,17 +3183,25 @@ func (mset *stream) setupMirrorConsumer() error {
 	req := &CreateConsumerRequest{
 		Stream: mset.cfg.Mirror.Name,
 		Config: ConsumerConfig{
-			DeliverSubject:    deliverSubject,
-			DeliverPolicy:     DeliverByStartSequence,
-			OptStartSeq:       state.LastSeq + 1,
-			AckPolicy:         AckNone,
-			AckWait:           22 * time.Hour,
-			MaxDeliver:        1,
-			Heartbeat:         sourceHealthHB,
-			FlowControl:       true,
-			Direct:            true,
-			InactiveThreshold: sourceHealthCheckInterval,
+			DeliverSubject: deliverSubject,
+			DeliverPolicy:  DeliverByStartSequence,
+			OptStartSeq:    state.LastSeq + 1,
+			Heartbeat:      sourceHealthHB,
 		},
+	}
+
+	if mset.cfg.Mirror.Consumer == nil || !mset.cfg.Mirror.Consumer.ServerManaged {
+		req.Config.AckPolicy = AckNone
+		req.Config.AckWait = 22 * time.Hour
+		req.Config.MaxDeliver = 1
+		req.Config.FlowControl = true
+		req.Config.Direct = true
+		req.Config.InactiveThreshold = sourceHealthCheckInterval
+	} else {
+		mirror.cname = mset.cfg.Mirror.Consumer.Name
+		durableServerManaged = true
+		req.Config.Durable = mirror.cname
+		req.Config.AckPolicy = AckFlowControl
 	}
 
 	// Only use start optionals on first time.
@@ -3228,7 +3253,6 @@ func (mset *stream) setupMirrorConsumer() error {
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
 	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		mset.unsubscribe(sub)
 		_, msg := c.msgParts(rmsg)
 
 		var ccr JSApiConsumerCreateResponse
@@ -3249,7 +3273,11 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	var subject string
-	if req.Config.FilterSubject != _EMPTY_ {
+	if durableDeliverSubject != _EMPTY_ {
+		subject = fmt.Sprintf(JSApiConsumerResetT, mset.cfg.Mirror.Name, mirror.cname)
+	} else if durableServerManaged {
+		subject = fmt.Sprintf(JSApiDurableCreateT, mset.cfg.Mirror.Name, mirror.cname)
+	} else if req.Config.FilterSubject != _EMPTY_ {
 		req.Config.Name = fmt.Sprintf("mirror-%s", createConsumerName())
 		subject = fmt.Sprintf(JSApiConsumerCreateExT, mset.cfg.Mirror.Name, req.Config.Name, req.Config.FilterSubject)
 	} else {
@@ -3260,16 +3288,21 @@ func (mset *stream) setupMirrorConsumer() error {
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
 
-	// Marshal now that we are done with `req`.
-	b, _ := json.Marshal(req)
-
 	// Reset
 	mirror.msgs = nil
 	mirror.err = nil
 	mirror.sip = true
 
-	// Send the consumer create request
-	mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
+	if durableDeliverSubject != _EMPTY_ {
+		// Send the consumer reset request
+		mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, nil, nil, 0))
+	} else {
+		// Marshal now that we are done with `req`.
+		b, _ := json.Marshal(req)
+
+		// Send the consumer create request
+		mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
+	}
 
 	go func() {
 
@@ -3298,17 +3331,34 @@ func (mset *stream) setupMirrorConsumer() error {
 		// If none is running, this will not block.
 		mirrorWg.Wait()
 
+	SELECT:
 		select {
 		case ccr := <-respCh:
 			mset.mu.Lock()
 			// Mirror config has been removed.
 			if mset.mirror == nil {
+				mset.unsubscribe(crSub)
 				mset.mu.Unlock()
 				return
 			}
 			ready := sync.WaitGroup{}
 			mirror := mset.mirror
 			mirror.err = nil
+
+			// When using a durable server-managed consumer, we create the consumer first. However, if the consumer
+			// already exists this could be an error since the create request may be incompatible as an update request.
+			// So, we'll always call the reset API regardless to guarantee ordered delivery, or will time out otherwise.
+			if durableServerManaged && ccr.ApiResponse.Type == JSApiConsumerCreateResponseType && mirror.cname != _EMPTY_ {
+				// Send the consumer reset request
+				subject = fmt.Sprintf(JSApiConsumerResetT, mset.cfg.Mirror.Name, mirror.cname)
+				mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, nil, nil, 0))
+				mset.mu.Unlock()
+				goto SELECT
+			}
+
+			// We can now unsubscribe.
+			mset.unsubscribe(crSub)
+
 			if ccr.Error != nil || ccr.ConsumerInfo == nil {
 				mset.srv.Warnf("JetStream error response for create mirror consumer: %+v", ccr.Error)
 				mirror.err = ccr.Error
@@ -3322,6 +3372,17 @@ func (mset *stream) setupMirrorConsumer() error {
 				// Create a new queue each time
 				mirror.msgs = newIPQueue[*inMsg](mset.srv, qname)
 				msgs := mirror.msgs
+				if durableDeliverSubject != _EMPTY_ {
+					deliverSubject = durableDeliverSubject
+					if ccr.ConsumerInfo.Config.AckPolicy != AckFlowControl {
+						mirror.err = NewJSMirrorConsumerRequiresAckFCError()
+						retry = true
+						mset.mu.Unlock()
+						return
+					}
+				} else {
+					deliverSubject = ccr.ConsumerInfo.Config.DeliverSubject
+				}
 				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 					hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
 					if len(hdr) > 0 {
@@ -3342,13 +3403,8 @@ func (mset *stream) setupMirrorConsumer() error {
 				// Save our sub.
 				mirror.sub = sub
 
-				// When an upstream stream expires messages or in general has messages that we want
-				// that are no longer available we need to adjust here.
-				var state StreamState
-				mset.store.FastState(&state)
-
 				// Check if we need to skip messages.
-				if state.LastSeq != ccr.ConsumerInfo.Delivered.Stream {
+				if state.LastSeq < ccr.ConsumerInfo.Delivered.Stream {
 					// Check to see if delivered is past our last and we have no msgs. This will help the
 					// case when mirroring a stream that has a very high starting sequence number.
 					if state.Msgs == 0 && ccr.ConsumerInfo.Delivered.Stream > state.LastSeq {
@@ -3363,6 +3419,9 @@ func (mset *stream) setupMirrorConsumer() error {
 				mirror.cname = ccr.ConsumerInfo.Name
 				mirror.dseq = 0
 				mirror.sseq = ccr.ConsumerInfo.Delivered.Stream
+				if durableDeliverSubject != _EMPTY_ && state.LastSeq > mirror.sseq {
+					mirror.sseq = state.LastSeq
+				}
 				mirror.qch = make(chan struct{})
 				mirror.wg.Add(1)
 				ready.Add(1)
@@ -3517,9 +3576,12 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 
 	// Determine subjects etc.
 	var deliverSubject string
+	var durableDeliverSubject string
+	var durableServerManaged bool
 	ext := ssi.External
-
-	if ext != nil && ext.DeliverPrefix != _EMPTY_ {
+	if ssi.Consumer != nil && !ssi.Consumer.ServerManaged {
+		durableDeliverSubject = ssi.Consumer.DeliverSubject
+	} else if ext != nil && ext.DeliverPrefix != _EMPTY_ {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".S"), "..", ".")
 	} else {
 		deliverSubject = syncSubject("$JS.S")
@@ -3528,15 +3590,23 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 	req := &CreateConsumerRequest{
 		Stream: si.name,
 		Config: ConsumerConfig{
-			DeliverSubject:    deliverSubject,
-			AckPolicy:         AckNone,
-			AckWait:           22 * time.Hour,
-			MaxDeliver:        1,
-			Heartbeat:         sourceHealthHB,
-			FlowControl:       true,
-			Direct:            true,
-			InactiveThreshold: sourceHealthCheckInterval,
+			DeliverSubject: deliverSubject,
+			Heartbeat:      sourceHealthHB,
 		},
+	}
+
+	if ssi.Consumer == nil || !ssi.Consumer.ServerManaged {
+		req.Config.AckPolicy = AckNone
+		req.Config.AckWait = 22 * time.Hour
+		req.Config.MaxDeliver = 1
+		req.Config.FlowControl = true
+		req.Config.Direct = true
+		req.Config.InactiveThreshold = sourceHealthCheckInterval
+	} else {
+		si.cname = ssi.Consumer.Name
+		durableServerManaged = true
+		req.Config.Durable = si.cname
+		req.Config.AckPolicy = AckFlowControl
 	}
 
 	// If starting, check any configs.
@@ -3582,7 +3652,6 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
 	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		mset.unsubscribe(sub)
 		_, msg := c.msgParts(rmsg)
 		var ccr JSApiConsumerCreateResponse
 		if err := json.Unmarshal(msg, &ccr); err != nil {
@@ -3601,7 +3670,11 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 	}
 
 	var subject string
-	if req.Config.FilterSubject != _EMPTY_ {
+	if durableDeliverSubject != _EMPTY_ {
+		subject = fmt.Sprintf(JSApiConsumerResetT, si.name, si.cname)
+	} else if durableServerManaged {
+		subject = fmt.Sprintf(JSApiDurableCreateT, si.name, si.cname)
+	} else if req.Config.FilterSubject != _EMPTY_ {
 		req.Config.Name = fmt.Sprintf("src-%s", createConsumerName())
 		subject = fmt.Sprintf(JSApiConsumerCreateExT, si.name, req.Config.Name, req.Config.FilterSubject)
 	} else if len(req.Config.FilterSubjects) == 1 {
@@ -3619,16 +3692,21 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
 
-	// Marshal request.
-	b, _ := json.Marshal(req)
-
 	// Reset
 	si.msgs = nil
 	si.err = nil
 	si.sip = true
 
-	// Send the consumer create request
-	mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
+	if durableDeliverSubject != _EMPTY_ {
+		// Send the consumer reset request
+		mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, nil, nil, 0))
+	} else {
+		// Marshal request.
+		b, _ := json.Marshal(req)
+
+		// Send the consumer create request
+		mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
+	}
 
 	go func() {
 
@@ -3653,12 +3731,30 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 			mset.mu.Unlock()
 		}()
 
+	SELECT:
 		select {
 		case ccr := <-respCh:
 			mset.mu.Lock()
 			// Check that it has not been removed or canceled (si.sub would be nil)
-			if si := mset.sources[iname]; si != nil {
+			if si := mset.sources[iname]; si == nil {
+				mset.unsubscribe(crSub)
+			} else {
 				si.err = nil
+
+				// When using a durable server-managed consumer, we create the consumer first. However, if the consumer
+				// already exists this could be an error since the create request may be incompatible as an update request.
+				// So, we'll always call the reset API regardless to guarantee ordered delivery, or will time out otherwise.
+				if durableServerManaged && ccr.ApiResponse.Type == JSApiConsumerCreateResponseType && si.cname != _EMPTY_ {
+					// Send the consumer reset request
+					subject = fmt.Sprintf(JSApiConsumerResetT, si.name, si.cname)
+					mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, nil, nil, 0))
+					mset.mu.Unlock()
+					goto SELECT
+				}
+
+				// We can now unsubscribe.
+				mset.unsubscribe(crSub)
+
 				if ccr.Error != nil || ccr.ConsumerInfo == nil {
 					// Note: this warning can happen a few times when starting up the server when sourcing streams are
 					// defined, this is normal as the streams are re-created in no particular order and it is possible
@@ -3684,8 +3780,8 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 					}
 
 					// Setup actual subscription to process messages from our source.
-					if si.sseq != ccr.ConsumerInfo.Delivered.Stream {
-						si.sseq = ccr.ConsumerInfo.Delivered.Stream + 1
+					if si.sseq < ccr.ConsumerInfo.Delivered.Stream {
+						si.sseq = ccr.ConsumerInfo.Delivered.Stream
 					}
 					// Capture consumer name.
 					si.cname = ccr.ConsumerInfo.Name
@@ -3697,6 +3793,17 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 					si.last.Store(time.Now().UnixNano())
 
 					msgs := mset.smsgs
+					if durableDeliverSubject != _EMPTY_ {
+						deliverSubject = durableDeliverSubject
+						if ccr.ConsumerInfo.Config.AckPolicy != AckFlowControl {
+							si.err = NewJSSourceConsumerRequiresAckFCError()
+							retry = true
+							mset.mu.Unlock()
+							return
+						}
+					} else {
+						deliverSubject = ccr.ConsumerInfo.Config.DeliverSubject
+					}
 					sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 						hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
 						mset.queueInbound(msgs, subject, reply, hdr, msg, si, nil)
@@ -3814,20 +3921,39 @@ func (m *inMsg) isControlMsg() bool {
 
 // Sends a reply to a flow control request.
 // Lock should be held.
-func (mset *stream) sendFlowControlReply(reply string) {
+func (mset *stream) sendFlowControlReply(reply string, hdr []byte) {
 	if mset.isLeader() && mset.outq != nil {
-		mset.outq.sendMsg(reply, nil)
+		dseq := parseInt64(sliceHeader(JSLastConsumerSeq, hdr))
+		sseq := parseInt64(sliceHeader(JSLastStreamSeq, hdr))
+
+		// If we're responding to flow control without being delivered messages (for example after a restart),
+		// we'll only have the stream sequence.
+		if sseq > 0 {
+			if dseq <= 0 {
+				dseq = 0
+			}
+			const t = "NATS/1.0\r\n%s: %d\r\n%s: %d\r\n\r\n"
+			hdr = fmt.Appendf(nil, t, JSLastConsumerSeq, dseq, JSLastStreamSeq, sseq)
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		} else {
+			mset.outq.sendMsg(reply, nil)
+		}
 	}
 }
 
 // handleFlowControl will properly handle flow control messages for both R==1 and R>1.
 // Lock should be held.
-func (mset *stream) handleFlowControl(m *inMsg) {
+func (mset *stream) handleFlowControl(m *inMsg, dseq, sseq uint64) {
 	// If we are clustered we will send the flow control message through the replication stack.
 	if mset.isClustered() {
+		// Append the current delivery and stream sequences, to be sent after replication.
+		m.hdr = genHeader(m.hdr, JSLastConsumerSeq, strconv.FormatUint(dseq, 10))
+		m.hdr = genHeader(m.hdr, JSLastStreamSeq, strconv.FormatUint(sseq, 10))
 		mset.node.Propose(encodeStreamMsg(_EMPTY_, m.rply, m.hdr, nil, 0, 0, false))
 	} else {
-		mset.outq.sendMsg(m.rply, nil)
+		const t = "NATS/1.0\r\n%s: %d\r\n%s: %d\r\n\r\n"
+		hdr := fmt.Appendf(nil, t, JSLastConsumerSeq, dseq, JSLastStreamSeq, sseq)
+		mset.outq.send(newJSPubMsg(m.rply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }
 
@@ -3854,13 +3980,13 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		var needsRetry bool
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.handleFlowControl(m)
+			mset.handleFlowControl(m, si.dseq, si.sseq)
 		} else {
 			// For idle heartbeats make sure we did not miss anything.
-			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
+			if ldseq := parseInt64(sliceHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
 				needsRetry = true
 				mset.retrySourceConsumerAtSeq(si.iname, si.sseq+1)
-			} else if fcReply := getHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
+			} else if fcReply := sliceHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
 				// Other side thinks we are stalled, so send flow control reply.
 				mset.outq.sendMsg(string(fcReply), nil)
 			}
@@ -3880,6 +4006,14 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	if dseq == si.dseq+1 {
 		si.dseq++
 		si.sseq = sseq
+	} else if sseq <= si.sseq {
+		// Ignore older messages.
+		// If the deliver sequence matches, we only updated delivered accounting.
+		if dseq == si.dseq+1 {
+			si.dseq++
+		}
+		mset.mu.Unlock()
+		return true
 	} else if dseq > si.dseq {
 		if si.cname == _EMPTY_ {
 			si.cname = tokenAt(m.rply, 4)
