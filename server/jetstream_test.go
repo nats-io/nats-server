@@ -22462,60 +22462,134 @@ func TestJetStreamDurableStreamMirrorAndSourceIncorrectConsumerConfig(t *testing
 	}, false)
 	require_NoError(t, err)
 
+	checkMirror := func(expected string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror == nil {
+				return errors.New("no mirror")
+			}
+			if si.Mirror.Error == nil {
+				return errors.New("expected mirror error")
+			}
+			if si.Mirror.Error.Description != expected {
+				return si.Mirror.Error
+			}
+			return nil
+		})
+	}
+
 	// Mirror.
 	_, err = jsStreamCreate(t, nc, &StreamConfig{
-		Name: "M",
-		Mirror: &StreamSource{
-			Name:                   "O",
-			ConsumerName:           "C",
-			ConsumerDeliverSubject: "deliver-subject",
-		},
+		Name:    "M",
+		Mirror:  &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "deliver-subject"}},
 		Storage: FileStorage,
 	})
 	require_NoError(t, err)
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		si, err := js.StreamInfo("M")
-		if err != nil {
-			return err
-		}
-		if si.Mirror == nil {
-			return errors.New("no mirror")
-		}
-		if si.Mirror.Error == nil {
-			return errors.New("expected mirror error")
-		}
-		if si.Mirror.Error.Description != NewJSMirrorConsumerRequiresAckFCError().Description {
-			return si.Mirror.Error
-		}
-		return nil
-	})
+	checkMirror(NewJSMirrorConsumerRequiresAckFCError().Description)
+	require_NoError(t, js.DeleteStream("M"))
+
+	cfg := &StreamConfig{
+		Name:    "M",
+		Mirror:  &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", ServerManaged: true}},
+		Storage: FileStorage,
+	}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	checkMirror("ack policy can not be updated")
+
+	// Check mirror config is not updatable.
+	cfg.Mirror.OptStartSeq = 1
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamMirrorNotUpdatableError())
+
+	checkSource := func(expected string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("S")
+			if err != nil {
+				return err
+			}
+			if len(si.Sources) != 1 {
+				return errors.New("no source")
+			}
+			sourceErr := si.Sources[0].Error
+			if sourceErr == nil {
+				return errors.New("expected source error")
+			}
+			if sourceErr.Description != expected {
+				return sourceErr
+			}
+			return nil
+		})
+	}
 
 	// Source.
 	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "S",
+		Sources: []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "C"}}},
+		Storage: FileStorage,
+	})
+	require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
 		Name: "S",
-		Sources: []*StreamSource{{
-			Name:                   "O",
-			ConsumerName:           "C",
-			ConsumerDeliverSubject: "deliver-subject",
-		}},
+		Sources: []*StreamSource{
+			{Name: "O", FilterSubject: "a", Consumer: &StreamConsumerSource{Name: "C", ServerManaged: true}},
+			{Name: "O", FilterSubject: "b", Consumer: &StreamConsumerSource{Name: "C", ServerManaged: true}},
+		},
+		Storage: FileStorage,
+	})
+	require_Error(t, err, NewJSSourceDurableConsumerDuplicateDetectedError())
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "S",
+		Sources: []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "deliver-subject"}}},
 		Storage: FileStorage,
 	})
 	require_NoError(t, err)
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		si, err := js.StreamInfo("S")
-		if err != nil {
-			return err
-		}
-		if len(si.Sources) != 1 {
-			return errors.New("no source")
-		}
-		sourceErr := si.Sources[0].Error
-		if sourceErr == nil {
-			return errors.New("expected source error")
-		}
-		if sourceErr.Description != NewJSSourceConsumerRequiresAckFCError().Description {
-			return sourceErr
-		}
-		return nil
-	})
+	checkSource(NewJSSourceConsumerRequiresAckFCError().Description)
+	require_NoError(t, js.DeleteStream("S"))
+
+	cfg = &StreamConfig{
+		Name:    "S",
+		Sources: []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "C", ServerManaged: true}}},
+		Storage: FileStorage,
+	}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	checkSource("ack policy can not be updated")
+
+	// Updating start seq shouldn't be allowed.
+	cfg.Sources[0].OptStartSeq = 1
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("stream source consumer start sequence can not be updated")))
+	require_NoError(t, js.DeleteStream("S"))
+
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	cfg.Sources[0].OptStartSeq = 2
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("stream source consumer start sequence can not be updated")))
+	require_NoError(t, js.DeleteStream("S"))
+
+	// Updating start time shouldn't be allowed.
+	cfg.Sources[0].OptStartSeq = 0
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	now := time.Now()
+	cfg.Sources[0].OptStartTime = &now
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("stream source consumer start time can not be updated")))
+	require_NoError(t, js.DeleteStream("S"))
+
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	now = now.Add(time.Second)
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("stream source consumer start time can not be updated")))
+	require_NoError(t, js.DeleteStream("S"))
 }
