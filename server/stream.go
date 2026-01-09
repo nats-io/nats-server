@@ -837,9 +837,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Add created timestamp used for the store, must match that of the stream assignment if it exists.
 	if sa != nil {
-		js.mu.RLock()
+		// The following assignment does not require mutex
+		// protection: sa.Created is immutable.
 		mset.created = sa.Created
-		js.mu.RUnlock()
 	}
 
 	// Start our signaling routine to process consumers.
