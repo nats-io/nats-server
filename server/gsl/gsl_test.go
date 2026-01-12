@@ -470,6 +470,18 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 		require_Len(t, len(got), 0)
 		require_NoDuplicates(t, got)
 	})
+
+	t.Run("PWCDoesntHideLiteral", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublist[int]()
+		require_NoError(t, sl.Insert("one.*.six", 11))
+		require_NoError(t, sl.Insert("one.two.seven", 22))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 2)
+		require_NoDuplicates(t, got)
+	})
 }
 
 // --- TEST HELPERS ---

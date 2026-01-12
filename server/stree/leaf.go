@@ -25,14 +25,16 @@ type leaf[T any] struct {
 	// We will only store the suffix here and assume all prior prefix paths have
 	// been checked once we arrive at this leafnode.
 	suffix []byte
+	mgen   uint32
 }
 
 func newLeaf[T any](suffix []byte, value T) *leaf[T] {
-	return &leaf[T]{value, copyBytes(suffix)}
+	return &leaf[T]{value, copyBytes(suffix), 0}
 }
 
-func (n *leaf[T]) isLeaf() bool                               { return true }
-func (n *leaf[T]) base() *meta                                { return nil }
+func (n *leaf[T]) isLeaf() bool { return true }
+func (n *leaf[T]) base() *meta  { return nil }
+
 func (n *leaf[T]) match(subject []byte) bool                  { return bytes.Equal(subject, n.suffix) }
 func (n *leaf[T]) setSuffix(suffix []byte)                    { n.suffix = copyBytes(suffix) }
 func (n *leaf[T]) isFull() bool                               { return true }
