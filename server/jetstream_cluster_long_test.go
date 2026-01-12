@@ -21,6 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
+	_ "net/http/pprof"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1145,7 +1148,48 @@ func TestLongClusterJetStreamRestartThenScaleStreamReplicas(t *testing.T) {
 }
 
 func TestLongFileStoreEnforceMsgPerSubjectLimit(t *testing.T) {
+	// Start pprof HTTP server for debugging
+	pprofAddr := "localhost:6060"
+	go func() {
+		t.Logf("Starting pprof server on http://%s/debug/pprof/", pprofAddr)
+		if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+			t.Logf("pprof server error: %v", err)
+		}
+	}()
+
+	// Helper to log memory stats
+	logMemStats := func(phase string) {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		t.Logf("[%s] Alloc=%dMB, TotalAlloc=%dMB, Sys=%dMB, NumGC=%d, HeapObjects=%d, HeapInuse=%dMB",
+			phase,
+			m.Alloc/1024/1024,
+			m.TotalAlloc/1024/1024,
+			m.Sys/1024/1024,
+			m.NumGC,
+			m.HeapObjects,
+			m.HeapInuse/1024/1024)
+	}
+
+	// Start periodic memory stats logging
+	stopMemStats := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				logMemStats("periodic")
+			case <-stopMemStats:
+				return
+			}
+		}
+	}()
+	defer close(stopMemStats)
+
 	td := t.TempDir()
+	logMemStats("before filestore creation")
+
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: td, BlockSize: 1024},
 		StreamConfig{
@@ -1155,12 +1199,16 @@ func TestLongFileStoreEnforceMsgPerSubjectLimit(t *testing.T) {
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	t.Logf("Starting publishes")
+	logMemStats("after filestore creation")
+	t.Logf("Starting initial 100k publishes")
 	for i := 0; i < 100_000; i++ {
 		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%06d", i), nil, nil, 0)
 		require_NoError(t, err)
 	}
+	logMemStats("after initial 100k publishes")
+
 	// Now update some of them. Leave a bit of a mess with some big gaps.
+	t.Logf("Starting 5M random updates")
 	for i := 0; i < 5_000_000; i++ {
 		n := rand.Int31n(100_000)
 		if n < 5000 {
@@ -1168,10 +1216,17 @@ func TestLongFileStoreEnforceMsgPerSubjectLimit(t *testing.T) {
 		}
 		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%06d", n), nil, nil, 0)
 		require_NoError(t, err)
+		if i%500_000 == 0 {
+			logMemStats(fmt.Sprintf("after %d updates", i))
+		}
 	}
+	logMemStats("after all 5M updates")
 	t.Logf("Publish complete")
 
 	require_NoError(t, fs.Stop())
+	logMemStats("after filestore stop")
+
+	t.Logf("Reopening filestore with MaxMsgsPer=1")
 	fs, err = newFileStore(
 		FileStoreConfig{StoreDir: td, BlockSize: 1024},
 		StreamConfig{
@@ -1181,12 +1236,17 @@ func TestLongFileStoreEnforceMsgPerSubjectLimit(t *testing.T) {
 	)
 	require_NoError(t, err)
 	defer fs.Stop()
+	logMemStats("after filestore reopen with MaxMsgsPer=1")
 
 	// Mangle the filestore state and then see how long it takes to enforce
 	// the per-subject limit.
 	fs.state.Msgs++
+	t.Logf("Starting enforceMsgPerSubjectLimit - pprof available at http://%s/debug/pprof/", pprofAddr)
+	logMemStats("before enforceMsgPerSubjectLimit")
 	start := time.Now()
 	fs.enforceMsgPerSubjectLimit(false)
-	require_LessThan(t, time.Since(start), time.Minute)
-	t.Logf("Took %s", time.Since(start))
+	elapsed := time.Since(start)
+	logMemStats("after enforceMsgPerSubjectLimit")
+	require_LessThan(t, elapsed, time.Minute)
+	t.Logf("enforceMsgPerSubjectLimit took %s", elapsed)
 }
