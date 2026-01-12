@@ -24,10 +24,10 @@ import (
 // The reason this exists is to not only save some memory in our filestore but to greatly optimize matching
 // a wildcard subject to certain members, e.g. consumer NumPending calculations.
 type SubjectTree[T any] struct {
-	mu   sync.Mutex // Needed to protect mgen below, as well as leaf mgens.
+	mu   sync.Mutex // Only used for guarding against concurrent FindGeneration/MatchGeneration calls.
 	root node
 	size int
-	mgen uint32
+	mgen uint64
 }
 
 // NewSubjectTree creates a new SubjectTree with values T.
@@ -40,8 +40,6 @@ func (t *SubjectTree[T]) Size() int {
 	if t == nil {
 		return 0
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	return t.size
 }
 
@@ -50,8 +48,6 @@ func (t *SubjectTree[T]) Empty() *SubjectTree[T] {
 	if t == nil {
 		return NewSubjectTree[T]()
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.root, t.size = nil, 0
 	return t
 }
@@ -61,8 +57,6 @@ func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 	if t == nil {
 		return nil, false
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	// Make sure we never insert anything with a noPivot byte.
 	if bytes.IndexByte(subject, noPivot) >= 0 {
@@ -76,25 +70,26 @@ func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 	return old, updated
 }
 
-// Find will find the value and return it or false if it was not found, using the
-// supplied match generation number (as provided by NextMatchGen) for deduplication.
+// Find will find the value and return it or false if it was not found.
 func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
-	return t.FindGeneration(subject, t.NextMatchGen())
+	return t.FindGeneration(subject, nil)
 }
 
-// FindGeneration will find the value and return it or false if it was not found.
-func (t *SubjectTree[T]) FindGeneration(subject []byte, mgen uint32) (*T, bool) {
+// FindGeneration will find the value and return it or false if it was not found, using the
+// supplied match generation number (as provided by LockGeneration) for deduplication.
+// LockGeneration MUST BE CALLED FIRST to take the lock.
+func (t *SubjectTree[T]) FindGeneration(subject []byte, mgen *uint64) (*T, bool) {
 	if t == nil {
 		return nil, false
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	var si int
 	for n := t.root; n != nil; {
 		if n.isLeaf() {
-			if ln := n.(*leaf[T]); ln.match(subject[si:]) && ln.mgen < mgen {
-				ln.mgen = mgen
+			if ln := n.(*leaf[T]); ln.match(subject[si:]) && (mgen == nil || ln.mgen != *mgen) {
+				if mgen != nil {
+					ln.mgen = *mgen
+				}
 				return &ln.value, true
 			}
 			return nil, false
@@ -122,8 +117,6 @@ func (t *SubjectTree[T]) Delete(subject []byte) (*T, bool) {
 	if t == nil {
 		return nil, false
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	val, deleted := t.delete(&t.root, subject, 0)
 	if deleted {
@@ -132,32 +125,30 @@ func (t *SubjectTree[T]) Delete(subject []byte) (*T, bool) {
 	return val, deleted
 }
 
-// NextMatchGen returns a generation number for repeated calls to MatchGeneration or FindGeneration with full
-// callback deduplication.
-func (t *SubjectTree[T]) NextMatchGen() uint32 {
+// LockGeneration returns a generation number for repeated calls to MatchGeneration or FindGeneration with full
+// callback deduplication. When finished with this generation, the returned function must be called to release
+// the lock. This stops multiple generations from conflicting and producing unexpected results.
+func (t *SubjectTree[T]) LockGeneration() (uint64, func()) {
 	if t == nil {
-		return 0
+		return 0, func() {}
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	t.mgen++
-	return t.mgen
+	return t.mgen, t.mu.Unlock
 }
 
 // Match will match against a subject that can have wildcards and invoke the callback func for each matched value.
 func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
-	t.MatchGeneration(filter, cb, t.NextMatchGen())
+	t.MatchGeneration(filter, cb, nil)
 }
 
 // MatchGeneration will match against a subject that can have wildcards and invoke the callback func for each
-// matched value, using the supplied match generation number (as provided by NextMatchGen) for deduplication.
-func (t *SubjectTree[T]) MatchGeneration(filter []byte, cb func(subject []byte, val *T), mgen uint32) {
+// matched value, using the supplied match generation number (as provided by LockGeneration) for deduplication.
+// LockGeneration MUST BE CALLED FIRST to take the lock.
+func (t *SubjectTree[T]) MatchGeneration(filter []byte, cb func(subject []byte, val *T), mgen *uint64) {
 	if t == nil || t.root == nil || len(filter) == 0 || cb == nil {
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	// We need to break this up into chunks based on wildcards, either pwc '*' or fwc '>'.
 	var raw [16][]byte
 	parts := genParts(filter, raw[:0])
@@ -170,8 +161,6 @@ func (t *SubjectTree[T]) IterOrdered(cb func(subject []byte, val *T) bool) {
 	if t == nil || t.root == nil {
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	var _pre [256]byte
 	t.iter(t.root, _pre[:0], true, cb)
 }
@@ -181,8 +170,6 @@ func (t *SubjectTree[T]) IterFast(cb func(subject []byte, val *T) bool) {
 	if t == nil || t.root == nil {
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	var _pre [256]byte
 	t.iter(t.root, _pre[:0], false, cb)
 }
@@ -338,7 +325,7 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 
 // Internal function which can be called recursively to match all leaf nodes to a given filter subject which
 // once here has been decomposed to parts. These parts only care about wildcards, both pwc and fwc.
-func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subject []byte, val *T), mgen uint32) {
+func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subject []byte, val *T), mgen *uint64) {
 	// Capture if we are sitting on a terminal fwc.
 	var hasFWC bool
 	if lp := len(parts); lp > 0 && len(parts[lp-1]) > 0 && parts[lp-1][0] == fwc {
@@ -355,11 +342,13 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 		if n.isLeaf() {
 			if len(nparts) == 0 || (hasFWC && len(nparts) == 1) {
 				ln := n.(*leaf[T])
-				if int32(ln.mgen-mgen) >= 0 {
+				if mgen != nil && ln.mgen == *mgen {
 					return
 				}
 				cb(append(pre, ln.suffix...), &ln.value)
-				ln.mgen = mgen
+				if mgen != nil {
+					ln.mgen = *mgen
+				}
 			}
 			return
 		}
@@ -388,15 +377,19 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 				}
 				if cn.isLeaf() {
 					ln := cn.(*leaf[T])
-					if int32(ln.mgen-mgen) >= 0 {
+					if mgen != nil && ln.mgen == *mgen {
 						continue
 					}
 					if len(ln.suffix) == 0 {
 						cb(append(pre, ln.suffix...), &ln.value)
-						ln.mgen = mgen
+						if mgen != nil {
+							ln.mgen = *mgen
+						}
 					} else if hasTermPWC && bytes.IndexByte(ln.suffix, tsep) < 0 {
 						cb(append(pre, ln.suffix...), &ln.value)
-						ln.mgen = mgen
+						if mgen != nil {
+							ln.mgen = *mgen
+						}
 					}
 				} else if hasTermPWC {
 					// We have terminal pwc so call into match again with the child node.

@@ -25,7 +25,7 @@ type leaf[T any] struct {
 	// We will only store the suffix here and assume all prior prefix paths have
 	// been checked once we arrive at this leafnode.
 	suffix []byte
-	mgen   uint32
+	mgen   uint64
 }
 
 func newLeaf[T any](suffix []byte, value T) *leaf[T] {

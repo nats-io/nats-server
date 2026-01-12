@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"math"
 	"math/rand"
 	"strings"
 	"testing"
@@ -1787,4 +1788,86 @@ func TestIterComplexTree(t *testing.T) {
 		return true
 	})
 	require_Equal(t, count, 20)
+}
+
+func TestGenerationalFind(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.bar.baz"), 1)
+	st.Insert(b("foo.bar.qux"), 2)
+	st.Insert(b("foo.baz.bar"), 3)
+	st.Insert(b("bar.foo.baz"), 4)
+
+	t.Run("Initial", func(t *testing.T) {
+		mgen, done := st.LockGeneration()
+		defer done()
+
+		// First match should succeed. Second should not as duplicated.
+		_, ok := st.FindGeneration(b("foo.bar.baz"), &mgen)
+		require_True(t, ok)
+		_, ok = st.FindGeneration(b("foo.bar.baz"), &mgen)
+		require_False(t, ok)
+
+		// A different literal should have the same behavior.
+		_, ok = st.FindGeneration(b("foo.bar.qux"), &mgen)
+		require_True(t, ok)
+		_, ok = st.FindGeneration(b("foo.bar.qux"), &mgen)
+		require_False(t, ok)
+	})
+
+	t.Run("Next", func(t *testing.T) {
+		mgen, done := st.LockGeneration()
+		defer done()
+
+		// Now we should be able to match again.
+		_, ok := st.FindGeneration(b("foo.bar.baz"), &mgen)
+		require_True(t, ok)
+		_, ok = st.FindGeneration(b("foo.bar.qux"), &mgen)
+		require_True(t, ok)
+	})
+}
+
+func TestGenerationalFindWraparound(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.bar.baz"), 1)
+	st.Insert(b("foo.bar.qux"), 2)
+	st.Insert(b("foo.baz.bar"), 3)
+	st.Insert(b("bar.foo.baz"), 4)
+
+	t.Run("Wraparound", func(t *testing.T) {
+		// The next time we call LockGeneration, we will overflow uint64.
+		// That wraps us around to mgen==0, but we have to skip that in
+		// this test because the default value of mgen in each of the leaf
+		// entries is zero. In the real world, they would be non-zero.
+		st.mgen = math.MaxUint64
+		mgen, done := st.LockGeneration()
+		done()
+		require_Equal(t, mgen, 0)
+		mgen, done = st.LockGeneration()
+		defer done()
+		require_Equal(t, mgen, 1)
+
+		// First match should succeed. Second should not as duplicated.
+		_, ok := st.FindGeneration(b("foo.bar.baz"), &mgen)
+		require_True(t, ok)
+		_, ok = st.FindGeneration(b("foo.bar.baz"), &mgen)
+		require_False(t, ok)
+
+		// A different literal should have the same behavior.
+		_, ok = st.FindGeneration(b("foo.bar.qux"), &mgen)
+		require_True(t, ok)
+		_, ok = st.FindGeneration(b("foo.bar.qux"), &mgen)
+		require_False(t, ok)
+	})
+
+	t.Run("Continue", func(t *testing.T) {
+		mgen, done := st.LockGeneration()
+		defer done()
+		require_Equal(t, mgen, 2)
+
+		// Now we should be able to match again.
+		_, ok := st.FindGeneration(b("foo.bar.baz"), &mgen)
+		require_True(t, ok)
+		_, ok = st.FindGeneration(b("foo.bar.qux"), &mgen)
+		require_True(t, ok)
+	})
 }

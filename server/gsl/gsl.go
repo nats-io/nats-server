@@ -468,11 +468,12 @@ func visitLevel[T comparable](l *level[T], depth int) int {
 // once for each subject, regardless of overlapping subscriptions in the sublist.
 func IntersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], sl *GenericSublist[T2], cb func(subj []byte, entry *T1)) {
 	var _subj [255]byte
-	mgen := st.NextMatchGen()
+	mgen, done := st.LockGeneration()
+	defer done()
 	intersectStree(st, sl.root, _subj[:0], cb, mgen)
 }
 
-func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T2], subj []byte, cb func(subj []byte, entry *T1), mgen uint32) {
+func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T2], subj []byte, cb func(subj []byte, entry *T1), mgen uint64) {
 	nsubj := subj
 	if len(nsubj) > 0 {
 		nsubj = append(subj, '.')
@@ -481,7 +482,7 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 		// We've reached a full wildcard, do a FWC match on the stree at this point
 		// and don't keep iterating downward.
 		nsubj := append(nsubj, '>')
-		st.MatchGeneration(nsubj, cb, mgen)
+		st.MatchGeneration(nsubj, cb, &mgen)
 		return
 	}
 	if r.pwc != nil {
@@ -491,7 +492,7 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 		var done bool
 		nsubj := append(nsubj, '*')
 		if len(r.pwc.subs) > 0 {
-			st.MatchGeneration(nsubj, cb, mgen)
+			st.MatchGeneration(nsubj, cb, &mgen)
 			done = true
 		}
 		if r.pwc.next.numNodes() > 0 {
@@ -506,9 +507,9 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 		nsubj := append(nsubj, t...)
 		if len(n.subs) > 0 {
 			if subjectHasWildcard(bytesToString(nsubj)) {
-				st.MatchGeneration(nsubj, cb, mgen)
+				st.MatchGeneration(nsubj, cb, &mgen)
 			} else {
-				if e, ok := st.FindGeneration(nsubj, mgen); ok {
+				if e, ok := st.FindGeneration(nsubj, &mgen); ok {
 					cb(nsubj, e)
 				}
 			}
