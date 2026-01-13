@@ -3337,7 +3337,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 	sub.shadow = nil
 	if len(shadowSubs) > 0 {
 		isSpokeLeaf = c.isSpokeLeafNode()
-		updateRoute = !isSpokeLeaf && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) && c.srv != nil
+		updateRoute = !isSpokeLeaf && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF || c.kind == JETSTREAM) && c.srv != nil
 	}
 	sub.close()
 	c.mu.Unlock()
