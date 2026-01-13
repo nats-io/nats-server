@@ -11464,3 +11464,22 @@ func TestFileStoreCompactFullyResetsFirstAndLastSeq(t *testing.T) {
 		checkMbState(1, 0, 0)
 	})
 }
+
+func TestFileStoreDoesntRebuildSubjectStateWithNoTrack(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// This implicitly was calling resetGlobalPerSubjectInfo and
+		// populating "foo" back into the psim.
+		require_NoError(t, fs.Truncate(1))
+
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		require_Equal(t, fs.psim.Size(), 0)
+	})
+}
