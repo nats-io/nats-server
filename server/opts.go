@@ -2326,7 +2326,7 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 			case "cluster_traffic":
 				vv, ok := mv.(string)
 				if !ok {
-					return &configErr{tk, fmt.Sprintf("Expected either 'system' or 'account' string value for %q, got %v", mk, mv)}
+					return &configErr{tk, fmt.Sprintf("Expected either 'system' or 'owner' string value for %q, got %v", mk, mv)}
 				}
 				switch vv {
 				case "system", _EMPTY_:
