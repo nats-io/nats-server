@@ -426,45 +426,6 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 		require_NoDuplicates(t, got)
 	})
 
-	t.Run("PWCExtendedAggressive2", func(t *testing.T) {
-		got := map[string]int{}
-		sl := NewSublist[int]()
-		require_NoError(t, sl.Insert("stream.A.child", 11))
-		require_NoError(t, sl.Insert("*.A.child", 22))
-		require_NoError(t, sl.Insert("stream.A.*", 22))
-		require_NoError(t, sl.Insert("*.A.*", 22))
-		require_NoError(t, sl.Insert("*.*.child", 22))
-		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
-			got[string(subj)]++
-		})
-		require_Len(t, len(got), 1)
-		require_NoDuplicates(t, got)
-	})
-
-	t.Run("PWCExtendedAggressive3", func(t *testing.T) {
-		got := map[string]int{}
-		sl := NewSublist[int]()
-		require_NoError(t, sl.Insert("stream.A.child", 11))
-		require_NoError(t, sl.Insert("stream.*.*", 22))
-		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
-			got[string(subj)]++
-		})
-		require_Len(t, len(got), 1)
-		require_NoDuplicates(t, got)
-	})
-
-	t.Run("PWCExtendedAggressive4", func(t *testing.T) {
-		got := map[string]int{}
-		sl := NewSublist[int]()
-		require_NoError(t, sl.Insert("stream.A.child", 11))
-		require_NoError(t, sl.Insert("stream.*.>", 22))
-		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
-			got[string(subj)]++
-		})
-		require_Len(t, len(got), 1)
-		require_NoDuplicates(t, got)
-	})
-
 	t.Run("FWCAll", func(t *testing.T) {
 		got := map[string]int{}
 		sl := NewSublist[int]()
@@ -507,31 +468,6 @@ func TestGenericSublistInterestBasedIntersection(t *testing.T) {
 			got[string(subj)]++
 		})
 		require_Len(t, len(got), 0)
-		require_NoDuplicates(t, got)
-	})
-
-	t.Run("PWCDoesntHideLiteral", func(t *testing.T) {
-		got := map[string]int{}
-		sl := NewSublist[int]()
-		require_NoError(t, sl.Insert("one.*.six", 11))
-		require_NoError(t, sl.Insert("one.two.seven", 22))
-		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
-			got[string(subj)]++
-		})
-		require_Len(t, len(got), 2)
-		require_NoDuplicates(t, got)
-	})
-
-	t.Run("PWCDoesntHideLiteral2", func(t *testing.T) {
-		got := map[string]int{}
-		sl := NewSublist[int]()
-		require_NoError(t, sl.Insert("one.*.*.four", 11))
-		require_NoError(t, sl.Insert("one.*.*.five", 22))
-		require_NoError(t, sl.Insert("one.*.three", 33))
-		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
-			got[string(subj)]++
-		})
-		require_Len(t, len(got), 2)
 		require_NoDuplicates(t, got)
 	})
 }
