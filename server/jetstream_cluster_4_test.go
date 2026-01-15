@@ -2142,6 +2142,7 @@ func TestJetStreamClusterAccountNRGConfigNoPanic(t *testing.T) {
 
 		accounts {
 			ONE { jetstream: { cluster_traffic: system } }
+			TWO { jetstream: { cluster_traffic: owner } }
 		}
 	`
 
@@ -2152,6 +2153,10 @@ func TestJetStreamClusterAccountNRGConfigNoPanic(t *testing.T) {
 		acc, err := s.lookupAccount("ONE")
 		require_NoError(t, err)
 		require_Equal(t, acc.nrgAccount, _EMPTY_) // Empty for the system account
+
+		acc, err = s.lookupAccount("TWO")
+		require_NoError(t, err)
+		require_Equal(t, acc.nrgAccount, "TWO")
 	}
 }
 

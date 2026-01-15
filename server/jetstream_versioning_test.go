@@ -1,4 +1,4 @@
-// Copyright 2024-2025 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -23,6 +23,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -658,7 +659,12 @@ func TestJetStreamApiErrorOnRequiredApiLevel(t *testing.T) {
 			var resp ApiResponse
 			require_NoError(t, json.Unmarshal(msg.Data, &resp))
 			require_True(t, resp.Error != nil)
-			require_Error(t, resp.Error, NewJSRequiredApiLevelError())
+			// Peer remove or stepdown is not supported if not clustered.
+			if strings.Contains(apiSubject, ".STEPDOWN.") || strings.Contains(apiSubject, ".PEER.") {
+				require_Error(t, resp.Error, NewJSClusterRequiredError())
+			} else {
+				require_Error(t, resp.Error, NewJSRequiredApiLevelError())
+			}
 		})
 	}
 }

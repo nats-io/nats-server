@@ -1773,6 +1773,14 @@ func TestSublistHasInterest(t *testing.T) {
 	sl.Remove(qsub)
 }
 
+func TestSublistHasInterestOverlapping(t *testing.T) {
+	sl := NewSublistWithCache()
+	require_NoError(t, sl.Insert(newSub("stream.A.child")))
+	require_NoError(t, sl.Insert(newSub("stream.*")))
+	require_True(t, sl.HasInterest("stream.A.child"))
+	require_True(t, sl.HasInterest("stream.A"))
+}
+
 func TestSublistNumInterest(t *testing.T) {
 	sl := NewSublistWithCache()
 	fooSub := newSub("foo")
