@@ -221,6 +221,10 @@ type RemoteLeafOpts struct {
 	URLs              []*url.URL       `json:"urls,omitempty"`
 	Credentials       string           `json:"-"`
 	Nkey              string           `json:"-"`
+	Username          string           `json:"-"`
+	Password          string           `json:"-"`
+	Token             string           `json:"-"`
+	CredentialsFile   string           `json:"-"`
 	SignatureCB       SignatureHandler `json:"-"`
 	TLS               bool             `json:"-"`
 	TLSConfig         *tls.Config      `json:"-"`
@@ -2993,6 +2997,19 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 					continue
 				}
 				remote.Nkey = nk
+			case "username":
+				remote.Username = v.(string)
+			case "password":
+				remote.Password = v.(string)
+			case "token":
+				remote.Token = v.(string)
+			case "credentials_file", "auth_file":
+				p, err := expandPath(v.(string))
+				if err != nil {
+					*errors = append(*errors, &configErr{tk, err.Error()})
+					continue
+				}
+				remote.CredentialsFile = p
 			case "tls":
 				tc, err := parseTLS(tk, true)
 				if err != nil {
