@@ -818,7 +818,9 @@ func matchLevelForAny(l *level, toks []string, np, nq *int) bool {
 				*nq += len(qsub)
 			}
 		}
-		return len(n.plist) > 0 || len(n.psubs) > 0 || len(n.qsubs) > 0
+		if len(n.plist) > 0 || len(n.psubs) > 0 || len(n.qsubs) > 0 {
+			return true
+		}
 	}
 	if pwc != nil {
 		if np != nil && nq != nil {

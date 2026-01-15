@@ -251,7 +251,9 @@ func matchLevelForAny[T comparable](l *level[T], toks []string, np *int) bool {
 		if np != nil {
 			*np += len(n.subs)
 		}
-		return len(n.subs) > 0
+		if len(n.subs) > 0 {
+			return true
+		}
 	}
 	if pwc != nil {
 		if np != nil {

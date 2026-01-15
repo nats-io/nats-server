@@ -235,6 +235,14 @@ func TestGenericSublistHasInterest(t *testing.T) {
 	require_NoError(t, s.Remove("*", 66))
 }
 
+func TestGenericSublistHasInterestOverlapping(t *testing.T) {
+	s := NewSublist[int]()
+	require_NoError(t, s.Insert("stream.A.child", 11))
+	require_NoError(t, s.Insert("stream.*", 11))
+	require_True(t, s.HasInterest("stream.A.child"))
+	require_True(t, s.HasInterest("stream.A"))
+}
+
 func TestGenericSublistNumInterest(t *testing.T) {
 	s := NewSublist[int]()
 	require_NoError(t, s.Insert("foo", 11))
