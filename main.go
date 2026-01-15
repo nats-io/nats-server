@@ -41,6 +41,7 @@ Server Options:
                                      <pid> can be either a PID (e.g. 1) or the path to a PID file (e.g. /var/run/nats-server.pid)
         --client_advertise <string>  Client URL to advertise to other servers
         --ports_file_dir <dir>       Creates a ports file in the specified directory (<executable_name>_<pid>.ports).
+        --uds <path;opts>            UNIX domain socket: "/path;group=grp;mode=0660" (Linux only).
 
 Logging Options:
     -l, --log <file>                 File to redirect log output

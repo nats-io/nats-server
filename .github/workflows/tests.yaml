@@ -346,6 +346,23 @@ jobs:
       - name: Run unit tests
         run: ./scripts/runTestsOnTravis.sh mqtt_tests
 
+  uds:
+    name: Test UDS
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: ./scripts/runTestsOnTravis.sh uds_tests
+
   msgtrace:
     name: Test Message Tracing
     needs: [build-latest, build-supported, lint]

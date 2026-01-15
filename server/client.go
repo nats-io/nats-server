@@ -6455,7 +6455,8 @@ func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
 		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket,
 			jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeLeafnodeWS,
 			jwt.ConnectionTypeMqtt, jwt.ConnectionTypeMqttWS,
-			jwt.ConnectionTypeInProcess:
+			jwt.ConnectionTypeInProcess,
+			ConnectionTypeUnix: // see uds.go
 			m[i] = struct{}{}
 		default:
 			unknown = append(unknown, i)

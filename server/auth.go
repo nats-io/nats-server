@@ -1137,6 +1137,59 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			return comparePasswords(password, c.opts.Password)
 		}
 	}
+
+	// Check if client uses UDS and peer creds have been initialized
+	if c.isUDSPeer() && s.hasUDSPeerCredentialSupport() &&
+		// Only authenticate via peer creds, if client did not try (and fail)
+		// to use different authentication pass.
+		c.opts.Username == _EMPTY_ && c.opts.Password == _EMPTY_ &&
+		c.opts.Token == _EMPTY_ && c.opts.Nkey == _EMPTY_ && c.opts.JWT == _EMPTY_ {
+
+		peerCreds, err := c.getUDSPeerCreds()
+		if err != nil {
+			// This should not fail for semantic reasons, a domain socket has peer creds
+			// If it still fails, it's likely some temporary condition and we can't
+			// do anything about it.
+			c.Debugf("UDS auth: Failed to get peer creds from connection: %v", err)
+			return false
+		}
+
+		// TODO: Is lock here really required?
+		s.mu.RLock()
+		authResult, err := udsAuthenticatePeer(s.users, s.uds.peerCredentialQueries, peerCreds)
+		s.mu.RUnlock()
+
+		if err != nil {
+			// Very likely a syntax error in server config, justifies a warning?
+			c.Warnf("UDS auth error: %v", err)
+			return false
+		}
+
+		for _, w := range authResult.warnings {
+			// Very likely a semantic error in server config, notice justified?
+			c.Noticef("UDS auth warning: %s", w)
+		}
+
+		if !authResult.authenticated {
+			return false
+		}
+
+		// Register with account and set permissions
+		if authResult.account != nil {
+			if err := c.registerWithAccount(authResult.account); err != nil {
+				c.reportErrRegisterAccount(authResult.account, err)
+				return false
+			}
+		}
+		c.mu.Lock()
+		c.setPermissions(authResult.permissions)
+		c.opts.Username = authResult.identity
+		c.mu.Unlock()
+
+		c.Debugf("Authenticated UDS peer: %s (rule: %q)", authResult.identity, authResult.authenticatingRule)
+		return true
+	}
+
 	return false
 }
 
@@ -1616,7 +1669,7 @@ func validateAllowedConnectionTypes(m map[string]struct{}) error {
 		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket,
 			jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeLeafnodeWS,
 			jwt.ConnectionTypeMqtt, jwt.ConnectionTypeMqttWS,
-			jwt.ConnectionTypeInProcess:
+			jwt.ConnectionTypeInProcess, ConnectionTypeUnix:
 		default:
 			return fmt.Errorf("unknown connection type %q", ct)
 		}

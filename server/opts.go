@@ -324,15 +324,16 @@ type AuthCallout struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type Options struct {
-	ConfigFile      string `json:"-"`
-	ServerName      string `json:"server_name"`
-	Host            string `json:"addr"`
-	Port            int    `json:"port"`
-	DontListen      bool   `json:"dont_listen"`
-	ClientAdvertise string `json:"-"`
-	Trace           bool   `json:"-"`
-	Debug           bool   `json:"-"`
-	TraceVerbose    bool   `json:"-"`
+	ConfigFile      string     `json:"-"`
+	ServerName      string     `json:"server_name"`
+	Host            string     `json:"addr"`
+	Port            int        `json:"port"`
+	DontListen      bool       `json:"dont_listen"`
+	UDS             UDSOptions `json:"-"`
+	ClientAdvertise string     `json:"-"`
+	Trace           bool       `json:"-"`
+	Debug           bool       `json:"-"`
+	TraceVerbose    bool       `json:"-"`
 
 	// TraceHeaders if true will only trace message headers, not the payload.
 	TraceHeaders               bool          `json:"-"`
@@ -1071,6 +1072,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.ServerName = sn
 	case "host", "net":
 		o.Host = v.(string)
+	case "uds":
+		if err := parseUDSConfig(tk, o, errors); err != nil {
+			*errors = append(*errors, err)
+			return
+		}
 	case "debug":
 		o.Debug = v.(bool)
 		trackExplicitVal(&o.inConfig, "Debug", o.Debug)
@@ -1895,6 +1901,33 @@ func parseListen(v any) (*hostPort, error) {
 		return nil, fmt.Errorf("expected port or host:port, got %T", vv)
 	}
 	return hp, nil
+}
+
+// parseUDSConfig parses the uds { ... } config block.
+func parseUDSConfig(v any, opts *Options, errors *[]error) error {
+	var lt token
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, v := unwrapValue(v, &lt)
+	m, ok := v.(map[string]any)
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected map for 'uds' config, got %T", v)}
+	}
+
+	for mk, mv := range m {
+		tk, mv = unwrapValue(mv, &lt)
+		switch strings.ToLower(mk) {
+		case "path":
+			opts.UDS.Path = mv.(string)
+		case "group":
+			opts.UDS.Group = mv.(string)
+		case "mode":
+			opts.UDS.Mode = mv.(string)
+		default:
+			return &configErr{tk, fmt.Sprintf("Unknown 'uds' config option: %q", mk)}
+		}
+	}
+	return nil
 }
 
 // parseCluster will parse the cluster config.
@@ -6028,6 +6061,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		dbgAndTrace            bool
 		trcAndVerboseTrc       bool
 		dbgAndTrcAndVerboseTrc bool
+		uds                    string
 		err                    error
 	)
 
@@ -6041,6 +6075,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Host, "addr", _EMPTY_, "Network host to listen on.")
 	fs.StringVar(&opts.Host, "a", _EMPTY_, "Network host to listen on.")
 	fs.StringVar(&opts.Host, "net", _EMPTY_, "Network host to listen on.")
+	fs.StringVar(&uds, "uds", _EMPTY_, "UNIX domain socket: \"/path;group=grp;mode=0660\" (Linux only).")
+	fs.BoolVar(&opts.DontListen, "dont_listen_tcp", false, "Do not listen on host/port via TCP.")
 	fs.StringVar(&opts.ClientAdvertise, "client_advertise", _EMPTY_, "Client URL to advertise to other servers.")
 	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
@@ -6254,6 +6290,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 				}
 				routeUrls := RoutesFromStr(opts.RoutesStr)
 				opts.Routes = routeUrls
+			case "uds":
+				opts.UDS, flagErr = ParseUDSOption(uds)
 			}
 		}
 	})
