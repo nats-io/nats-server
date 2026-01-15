@@ -21055,3 +21055,17 @@ func TestJetStreamFileStoreErrorOpeningBlockAfterTruncate(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, pubAck.Sequence, 1)
 }
+
+func TestJetStreamSourceConfigValidation(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Not testing with js.AddStream as passing it a nil source causes it to panic.
+	msg := nats.Msg{Subject: "$JS.API.STREAM.CREATE.crash", Data: []byte(`{"name":"crash","retention":"limits","max_consumers":-1,"max_msgs_per_subject":-1,"max_msgs":-1,"max_bytes":-1,"max_age":0,"max_msg_size":-1,"storage":"file","discard":"old","num_replicas":1,"duplicate_window":120000000000,"sources":[null],"sealed":false,"deny_delete":false,"deny_purge":false,"allow_rollup_hdrs":false,"allow_direct":true,"mirror_direct":false,"consumer_limits":{}}`)}
+	response, err := nc.Request(msg.Subject, msg.Data, time.Second)
+	require_NoError(t, err)
+
+	require_Equal(t, string(response.Data), `{"type":"io.nats.jetstream.api.v1.stream_create_response","error":{"code":400,"err_code":10141,"description":"sourced stream name is invalid"}}`)
+}
