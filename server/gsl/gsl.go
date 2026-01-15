@@ -503,20 +503,11 @@ func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T
 		}
 	}
 	// Normal node with subject literals, keep iterating.
-nodes:
 	for t, n := range r.nodes {
-		if r.pwc != nil && r.pwc.next != nil && n.next != nil {
-			// Look ahead down to the next level and make sure that we don't
-			// repeat matching or iterating for something that r.pwc already
-			// matches at the next level.
-			if r.pwc.next.pwc != nil || r.pwc.next.fwc != nil {
-				continue nodes
-			}
-			for tn := range r.pwc.next.nodes {
-				if n.next.nodes[tn] != nil {
-					continue nodes
-				}
-			}
+		if r.pwc != nil && r.pwc.next.numNodes() > 0 && n.next.numNodes() > 0 {
+			// A wildcard at the next level will already visit these descendents
+			// so skip so we don't callback the same subject more than once.
+			continue
 		}
 		nsubj := append(nsubj, t...)
 		if len(n.subs) > 0 {
