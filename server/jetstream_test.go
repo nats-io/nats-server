@@ -1,4 +1,4 @@
-// Copyright 2019-2025 The NATS Authors
+// Copyright 2019-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21005,4 +21005,53 @@ func TestJetStreamServerEncryptionRecoveryWithoutStreamStateFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJetStreamFileStoreErrorOpeningBlockAfterTruncate(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: %q}
+	`, storeDir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	// Shut down the server and manually truncate the message blocks to be entirely empty, simulating data loss.
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.store.(*fileStore)
+	blk := filepath.Join(fs.fcfg.StoreDir, msgDir, "1.blk")
+	index := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
+	nc.Close()
+	s.Shutdown()
+
+	// Truncate the block such that it isn't fully empty, but doesn't contain any messages.
+	require_NoError(t, os.Truncate(blk, 1))
+	require_NoError(t, os.Remove(index))
+
+	// Restart the server and reconnect.
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Publish another message. Due to the simulated data loss, the stream sequence should continue
+	// counting after truncating the corrupted data.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
 }

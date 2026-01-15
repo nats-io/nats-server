@@ -299,6 +299,7 @@ func (a *Account) shallowCopy(na *Account) {
 	na.Nkey = a.Nkey
 	na.Issuer = a.Issuer
 	na.traceDest, na.traceDestSampling = a.traceDest, a.traceDestSampling
+	na.nrgAccount = a.nrgAccount
 
 	if a.imports.streams != nil {
 		na.imports.streams = make([]*streamImport, 0, len(a.imports.streams))

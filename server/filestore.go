@@ -1,4 +1,4 @@
-// Copyright 2019-2025 The NATS Authors
+// Copyright 2019-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2182,7 +2182,7 @@ func (fs *fileStore) recoverMsgs() error {
 	if fs.ld != nil {
 		var emptyBlks []*msgBlock
 		for _, mb := range fs.blks {
-			if mb.msgs == 0 && mb.rbytes == 0 {
+			if mb.msgs == 0 && mb.rbytes == 0 && mb != fs.lmb {
 				emptyBlks = append(emptyBlks, mb)
 			}
 		}
@@ -9457,6 +9457,9 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 func (fs *fileStore) resetGlobalPerSubjectInfo() {
 	// Clear any global subject state.
 	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	if fs.noTrackSubjects() {
+		return
+	}
 	for _, mb := range fs.blks {
 		fs.populateGlobalPerSubjectInfo(mb)
 	}

@@ -1,4 +1,4 @@
-// Copyright 2019-2025 The NATS Authors
+// Copyright 2019-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -941,11 +941,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 	if cName != _EMPTY_ {
 		if eo, ok := mset.consumers[cName]; ok {
-			mset.mu.Unlock()
 			if action == ActionCreate {
 				ocfg := eo.config()
 				copyConsumerMetadata(config, &ocfg)
 				if !reflect.DeepEqual(config, &ocfg) {
+					mset.mu.Unlock()
 					return nil, NewJSConsumerAlreadyExistsError()
 				}
 			}
@@ -953,9 +953,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			if cfg.Retention == WorkQueuePolicy {
 				subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 				if !mset.partitionUnique(cName, subjects) {
+					mset.mu.Unlock()
 					return nil, NewJSConsumerWQConsumerNotUniqueError()
 				}
 			}
+			mset.mu.Unlock()
 			err := eo.updateConfig(config)
 			if err == nil {
 				return eo, nil
