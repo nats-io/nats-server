@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -4178,5 +4179,181 @@ func TestWebsocketPingIntervalConfig(t *testing.T) {
 	}
 	if opts.Websocket.PingInterval != 0 {
 		t.Fatalf("Expected websocket ping_interval to be 0 (unset), got %v", opts.Websocket.PingInterval)
+	}
+}
+
+// Test variables that reference other variables
+func TestVarReferencesVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		A: 7890
+		B: $A
+		C: $B
+		port: $C
+	`))
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+// A variables that reference an environment variable
+func TestVarReferencesEnvVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		A: $_TEST_ENV_NATS_PORT_
+		B: $A
+		C: $B
+		port: $C
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_NATS_PORT_")
+	os.Setenv("_TEST_ENV_NATS_PORT_", "7890")
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+// Test a variable that references itself
+func TestVarReferencesSelf(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`A: $A`))
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected var not found error")
+	}
+	require_Contains(t, err.Error(),
+		"variable reference for 'A' on line 1 can not be found")
+}
+
+// An environment variable can't reference a variable
+func TestEnvVarReferencesVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		P: 8080
+		port: $_TEST_ENV_NATS_PORT_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_NATS_PORT_")
+	os.Setenv("_TEST_ENV_NATS_PORT_", "$P")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected var not found error")
+	}
+	require_Contains(t, err.Error(),
+		"variable reference for 'P' on line 1 can not be found")
+}
+
+// Environment variables can reference other environment variables
+func TestEnvVarReferencesEnvVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		port: $_TEST_ENV_A_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_A_")
+	defer os.Unsetenv("_TEST_ENV_B_")
+	defer os.Unsetenv("_TEST_ENV_C_")
+
+	os.Setenv("_TEST_ENV_A_", "$_TEST_ENV_B_")
+	os.Setenv("_TEST_ENV_B_", "$_TEST_ENV_C_")
+	os.Setenv("_TEST_ENV_C_", "7890")
+
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+// Test an environment variable that references itself
+func TestEnvVarReferencesSelf(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		TEST: $_TEST_ENV_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_")
+
+	os.Setenv("_TEST_ENV_", "$_TEST_ENV_")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected an error")
+	}
+	require_Contains(t, err.Error(), "variable reference cycle")
+}
+
+// Test an environment variable that references itself through a cycle
+func TestEnvVarReferencesSelfCycle(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		TEST: $_TEST_ENV_A_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_A_")
+	defer os.Unsetenv("_TEST_ENV_B_")
+	defer os.Unsetenv("_TEST_ENV_C_")
+
+	os.Setenv("_TEST_ENV_A_", "$_TEST_ENV_B_")
+	os.Setenv("_TEST_ENV_B_", "$_TEST_ENV_C_")
+	os.Setenv("_TEST_ENV_C_", "$_TEST_ENV_A_")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected an error")
+	}
+	require_Contains(t, err.Error(), "variable reference cycle")
+}
+
+// Test can't include from environment variable
+func TestEnvVarInclude(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		TEST: $_TEST_ENV_A_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_A_")
+
+	os.Setenv("_TEST_ENV_A_", "include x")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatal("Expected an error")
+	}
+	require_Contains(t, err.Error(), "Expected a top-level value to end with a new line, comment or EOF")
+}
+
+func TestEnvVarFromIncludedFile(t *testing.T) {
+	includeFileName := createConfFile(t, []byte(`
+		TEST_PORT: $_TEST_ENV_PORT_A_
+	`))
+
+	confFileContent := fmt.Sprintf(`
+		include "./%s"
+		port: $TEST_PORT
+	`, filepath.Base(includeFileName))
+
+	dir := filepath.Dir(includeFileName)
+	conf, err := os.CreateTemp(dir, "conf-")
+	require_NoError(t, err)
+	if err := os.WriteFile(conf.Name(), []byte(confFileContent), 0666); err != nil {
+		t.Fatalf("Error writing conf file: %v", err)
+	}
+
+	defer os.Unsetenv("_TEST_ENV_PORT_A_")
+	defer os.Unsetenv("_TEST_ENV_PORT_B_")
+
+	os.Setenv("_TEST_ENV_PORT_A_", "$_TEST_ENV_PORT_B_")
+	os.Setenv("_TEST_ENV_PORT_B_", "7890")
+
+	opts, err := ProcessConfigFile(conf.Name())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
 	}
 }
