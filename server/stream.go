@@ -1583,6 +1583,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	if cfg.MaxAge != 0 && cfg.MaxAge < 100*time.Millisecond {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms"))
 	}
+
 	if cfg.Duplicates == 0 && cfg.Mirror == nil && len(cfg.Sources) == 0 {
 		maxWindow := StreamDefaultDuplicatesWindow
 		if lim.Duplicates > 0 && maxWindow > lim.Duplicates {
@@ -1815,7 +1816,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	// check for duplicates
 	var iNames = make(map[string]struct{})
 	for _, src := range cfg.Sources {
-		if !isValidName(src.Name) {
+		if src == nil || !isValidName(src.Name) {
 			return StreamConfig{}, NewJSSourceInvalidStreamNameError()
 		}
 		if _, ok := iNames[src.composeIName()]; !ok {
