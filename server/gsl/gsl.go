@@ -523,17 +523,17 @@ func intersectStreeDownwardOverlap[T comparable](r *level[T], subj []byte) bool 
 	var _tokens [64]string
 	tokens := _tokens[:0]
 	for token := range strings.SplitSeq(bytesToString(subj), tsep) {
-		if tokens = append(tokens, token); len(tokens) >= 64 {
-			// TODO(nat): remove this guard once the bitmask is bigger.
+		if tokens = append(tokens, token); len(tokens) >= 512 {
+			// Enforcing the limit to number of slots in _intersectStreeMask.
 			return true
 		}
 	}
 	filterMask := _intersectStreeWildcardMask(tokens)
-	found := _intersectStreeDownwardOverlap(r, tokens, 0, 0, filterMask)
-	return found
+	pathMask := _intersectStreeMask{}
+	return _intersectStreeDownwardOverlap(r, tokens, 0, pathMask, filterMask)
 }
 
-func _intersectStreeDownwardOverlap[T comparable](r *level[T], tokens []string, depth int, pathMask, filterMask uint64) bool {
+func _intersectStreeDownwardOverlap[T comparable](r *level[T], tokens []string, depth int, pathMask, filterMask _intersectStreeMask) bool {
 	if r == nil {
 		return false
 	}
@@ -543,17 +543,17 @@ func _intersectStreeDownwardOverlap[T comparable](r *level[T], tokens []string, 
 	last := depth == len(tokens)-1
 	token := tokens[depth]
 	if r.fwc != nil {
-		pathMask := _intersectStreeInsertWildcardIntoMask(pathMask, depth, len(tokens))
-		if last && len(r.fwc.subs) > 0 && _intersectStreeMaskIsLessSpecific(pathMask, filterMask) {
+		newPathMask := pathMask.includingWildcardAt(depth, len(tokens))
+		if last && len(r.fwc.subs) > 0 && _intersectStreeMaskIsLessSpecific(newPathMask, filterMask) {
 			return true
 		}
 	}
 	if r.pwc != nil {
-		pathMask := _intersectStreeInsertWildcardIntoMask(pathMask, depth, len(tokens))
-		if last && len(r.pwc.subs) > 0 && _intersectStreeMaskIsLessSpecific(pathMask, filterMask) {
+		newPathMask := pathMask.includingWildcardAt(depth, len(tokens))
+		if last && len(r.pwc.subs) > 0 && _intersectStreeMaskIsLessSpecific(newPathMask, filterMask) {
 			return true
 		}
-		if _intersectStreeDownwardOverlap(r.pwc.next, tokens, depth+1, pathMask, filterMask) {
+		if _intersectStreeDownwardOverlap(r.pwc.next, tokens, depth+1, newPathMask, filterMask) {
 			return true
 		}
 	}
@@ -580,26 +580,36 @@ func _intersectStreeDownwardOverlap[T comparable](r *level[T], tokens []string, 
 	return false
 }
 
-func _intersectStreeWildcardMask(tokens []string) uint64 {
-	mask := uint64(0)
+// TODO(nat): Is this a reasonable upper limit for tokens in a subject?
+type _intersectStreeMask [8]uint64 // 512 tokens
+
+func _intersectStreeWildcardMask(tokens []string) _intersectStreeMask {
+	var mask _intersectStreeMask
 	total := len(tokens)
 	for i, token := range tokens {
 		if token == pwcs || token == fwcs {
-			mask = _intersectStreeInsertWildcardIntoMask(mask, i, total)
+			mask = mask.includingWildcardAt(i, total)
 		}
 	}
 	return mask
 }
 
-func _intersectStreeInsertWildcardIntoMask(mask uint64, depth, total int) uint64 {
+func (m _intersectStreeMask) includingWildcardAt(depth, total int) _intersectStreeMask {
 	if total == 0 || depth >= total {
-		return mask
+		return m
 	}
-	return mask | (uint64(1) << (uint(total - 1 - depth)))
+	slot := depth / 64
+	m[slot] |= uint64(1) << (63 - (depth % 64))
+	return m
 }
 
-func _intersectStreeMaskIsLessSpecific(pathMask, filterMask uint64) bool {
-	return pathMask > filterMask
+func _intersectStreeMaskIsLessSpecific(pathMask, filterMask _intersectStreeMask) bool {
+	for i := range len(pathMask) {
+		if pathMask[i] != filterMask[i] {
+			return pathMask[i] > filterMask[i]
+		}
+	}
+	return false
 }
 
 // Determine if a subject has any wildcard tokens.
