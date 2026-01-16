@@ -2603,9 +2603,20 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// fully recovered from disk.
 	isRecovering := true
 
-	doSnapshot := func() {
-		if mset == nil || isRecovering || isRestore {
-			return
+	snapState := struct {
+		// Only one snapshot is in progress at any given time
+		inProgress bool
+		// Keep track store state, if snapshot is successful update lastState
+		curState SimpleState
+		// This is where we want to receive async snapshot results
+		ch chan InstalledSnapshot
+	}{
+		ch: make(chan InstalledSnapshot, 1),
+	}
+
+	wantSnapshot := func() bool {
+		if mset == nil || isRecovering || isRestore || snapState.inProgress {
+			return false
 		}
 
 		// Before we actually calculate the detailed state and encode it, let's check the
@@ -2618,17 +2629,55 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		// consumers on idle streams but better to be safe than sorry!
 		ne, nb := n.Size()
 		if curState == lastState && ne < compactNumMin && nb < compactSizeMin {
-			return
+			return false
 		}
 
-		// Make sure all pending data is flushed before allowing snapshots.
-		mset.flushAllPending()
-		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
-			lastState = curState
-		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
-			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
+		snapState.curState = curState
+		return true
+	}
+
+	handleSnapshotErr := func(err error) {
+		switch err {
+		case nil:
+			lastState = snapState.curState
+		case errNoSnapAvailable, errNodeClosed, errCatchupsRunning:
+			// ignore the error
+		default:
+			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v",
+				mset.acc.Name, mset.name(), n.Group(), err)
+		}
+
+	}
+
+	doSnapshot := func() {
+		if wantSnapshot() {
+			// Make sure all pending data is flushed before allowing snapshots.
+			mset.flushAllPending()
+			err := n.InstallSnapshot(mset.stateSnapshot())
+			handleSnapshotErr(err)
 		}
 	}
+
+	doSnapshotAsync := func() {
+		if wantSnapshot() {
+			// Make sure all pending data is flushed before allowing snapshots.
+			mset.flushAllPending()
+			n.InstallSnapshotAsync(mset.stateSnapshot(), snapState.ch)
+			snapState.inProgress = true
+		}
+	}
+
+	asyncSnapshotDone := func(snap InstalledSnapshot) {
+		handleSnapshotErr(snap.Err)
+		snapState.inProgress = false
+	}
+
+	defer func() {
+		if snapState.inProgress {
+			s := <-snapState.ch
+			asyncSnapshotDone(s)
+		}
+	}()
 
 	// We will establish a restoreDoneCh no matter what. Will never be triggered unless
 	// we replace with the restore chan.
@@ -2701,6 +2750,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	for {
 		select {
+		case s := <-snapState.ch:
+			// async snapshot is done, handle the result
+			asyncSnapshotDone(s)
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
 			doSnapshot()
@@ -2808,7 +2860,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
 			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
-				doSnapshot()
+				doSnapshotAsync()
 			}
 
 		case isLeader = <-lch:
@@ -2903,7 +2955,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			stopDirectMonitoring()
 
 		case <-t.C:
-			doSnapshot()
+			doSnapshotAsync()
 
 		case <-uch:
 			// keep stream assignment current

@@ -41,6 +41,7 @@ type RaftNode interface {
 	ProposeMulti(entries []*Entry) error
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
+	InstallSnapshotAsync(snap []byte, ch chan<- InstalledSnapshot)
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
@@ -233,6 +234,7 @@ type raft struct {
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	membChanging bool // There is a membership change proposal in progress
 	deleted      bool // If the node was deleted.
+	snapshotting bool // Snapshot is in progress
 }
 
 type proposedEntry struct {
@@ -311,6 +313,7 @@ var (
 	errNodeRemoved       = errors.New("raft: peer was removed")
 	errBadSnapName       = errors.New("raft: snapshot name could not be parsed")
 	errNoSnapAvailable   = errors.New("raft: no snapshot available")
+	errSnapInProgress    = errors.New("raft: snapshot is already in progress")
 	errCatchupsRunning   = errors.New("raft: snapshot can not be installed while catchups running")
 	errSnapshotCorrupt   = errors.New("raft: snapshot corrupt")
 	errTooManyPrefs      = errors.New("raft: stepdown requires at most one preferred new leader")
@@ -1261,49 +1264,110 @@ func (n *raft) SendSnapshot(data []byte) error {
 	return nil
 }
 
-// Used to install a snapshot for the given term and applied index. This will release
-// all of the log entries up to and including index. This should not be called with
-// entries that have been applied to the FSM but have not been applied to the raft state.
-func (n *raft) InstallSnapshot(data []byte) error {
-	if n.State() == Closed {
-		return errNodeClosed
-	}
+type InstalledSnapshot struct {
+	Term  uint64
+	Index uint64
+	Path  string
+	Err   error
+}
 
-	n.Lock()
-	defer n.Unlock()
+func (n *raft) installSnapshotAsyncLocked(data []byte, ch chan<- InstalledSnapshot) {
+	if n.snapshotting {
+		ch <- InstalledSnapshot{Err: errSnapInProgress}
+		return
+	}
 
 	// If a write error has occurred already then stop here.
-	if werr := n.werr; werr != nil {
-		return werr
+	if n.werr != nil {
+		ch <- InstalledSnapshot{Err: n.werr}
+		return
 	}
 
-	// Check that a catchup isn't already taking place. If it is then we won't
-	// allow installing snapshots until it is done.
+	// Check that a catchup isn't already taking place. If it is then we
+	// won't allow installing snapshots until it is done.
 	if len(n.progress) > 0 || n.paused {
-		return errCatchupsRunning
+		ch <- InstalledSnapshot{Err: errCatchupsRunning}
+		return
 	}
 
 	if n.applied == 0 {
 		n.debug("Not snapshotting as there are no applied entries")
-		return errNoSnapAvailable
+		ch <- InstalledSnapshot{Err: errNoSnapAvailable}
+		return
 	}
 
-	var term uint64
-	if ae, _ := n.loadEntry(n.applied); ae != nil {
-		term = ae.term
-	} else {
+	ae, _ := n.loadEntry(n.applied)
+	if ae == nil {
 		n.debug("Not snapshotting as entry %d is not available", n.applied)
-		return errNoSnapAvailable
+		ch <- InstalledSnapshot{Err: errNoSnapAvailable}
+		return
 	}
 
-	n.debug("Installing snapshot of %d bytes [%d:%d]", len(data), term, n.applied)
+	n.debug("Installing snapshot of %d bytes [%d:%d]", len(data), ae.term, n.applied)
 
-	return n.installSnapshot(&snapshot{
-		lastTerm:  term,
+	encoded := n.encodeSnapshot(&snapshot{
+		lastTerm:  ae.term,
 		lastIndex: n.applied,
 		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
 		data:      data,
 	})
+
+	snapDir := filepath.Join(n.sd, snapshotsDir)
+	snapFile := filepath.Join(snapDir, fmt.Sprintf(snapFileT, ae.term, n.applied))
+	snap := InstalledSnapshot{Term: ae.term, Index: n.applied, Path: snapFile}
+
+	n.snapshotting = true
+
+	go func() {
+		snap.Err = writeFileWithSync(snap.Path, encoded, defaultFilePerms)
+		n.Lock()
+		if n.State() == Closed {
+			snap.Err = errNodeClosed
+		}
+		if snap.Err == nil {
+			// Delete our previous snapshot file if it exists.
+			if n.snapfile != _EMPTY_ && n.snapfile != snap.Path {
+				os.Remove(n.snapfile)
+			}
+			// Remember our latest snapshot file.
+			n.snapfile = snap.Path
+			_, snap.Err = n.wal.Compact(snap.Index + 1)
+			if snap.Err != nil {
+				n.setWriteErrLocked(snap.Err)
+			} else {
+				var state StreamState
+				n.wal.FastState(&state)
+				n.papplied = snap.Index
+				n.bytes = state.Bytes
+			}
+		}
+		n.snapshotting = false
+		n.Unlock()
+		ch <- snap
+	}()
+}
+
+// InstallSnapshotAsync installs a snapshot asynchronously. It writes the
+// snapshot to disk and compacts the WAL in a separate goroutine. The caller
+// is notified of the result on the provided channel.
+func (n *raft) InstallSnapshotAsync(data []byte, ch chan<- InstalledSnapshot) {
+	if n.State() == Closed {
+		ch <- InstalledSnapshot{Err: errNodeClosed}
+		return
+	}
+	n.Lock()
+	defer n.Unlock()
+	n.installSnapshotAsyncLocked(data, ch)
+}
+
+// InstallSnapshot installs a snapshot for the current applied index. This is a
+// synchronous call that will block until the snapshot is installed, and will
+// release all of the log entries up to the applied index.
+func (n *raft) InstallSnapshot(data []byte) error {
+	ch := make(chan InstalledSnapshot, 1)
+	n.InstallSnapshotAsync(data, ch)
+	snap := <-ch
+	return snap.Err
 }
 
 // Install the snapshot.
