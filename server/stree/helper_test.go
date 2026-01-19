@@ -14,21 +14,10 @@
 package stree
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/nats-io/nats-server/v2/internal/antithesis"
-	"github.com/nats-io/nats-server/v2/server/gsl"
 )
-
-func require_Matches[T comparable](t *testing.T, s *gsl.GenericSublist[T], sub string, c int) {
-	t.Helper()
-	matches := 0
-	s.Match(sub, func(_ T) {
-		matches++
-	})
-	require_Equal(t, matches, c)
-}
 
 func require_True(t testing.TB, b bool) {
 	t.Helper()
@@ -54,34 +43,6 @@ func require_NoError(t testing.TB, err error) {
 		})
 		t.Fatalf("require no error, but got: %v", err)
 	}
-}
-
-func require_Error(t testing.TB, err error, expected ...error) {
-	t.Helper()
-	if err == nil {
-		antithesis.AssertUnreachable(t, "Failed require_Error check (nil error)", nil)
-		t.Fatalf("require error, but got none")
-	}
-	if len(expected) == 0 {
-		return
-	}
-	// Try to strip nats prefix from Go library if present.
-	const natsErrPre = "nats: "
-	eStr := err.Error()
-	if strings.HasPrefix(eStr, natsErrPre) {
-		eStr = strings.Replace(eStr, natsErrPre, "", 1)
-	}
-
-	for _, e := range expected {
-		if err == e || strings.Contains(eStr, e.Error()) || strings.Contains(e.Error(), eStr) {
-			return
-		}
-	}
-
-	antithesis.AssertUnreachable(t, "Failed require_Error check (unexpected error)", map[string]any{
-		"error": err.Error(),
-	})
-	t.Fatalf("Expected one of %v, got '%v'", expected, err)
 }
 
 func require_Equal[T comparable](t testing.TB, a, b T) {
