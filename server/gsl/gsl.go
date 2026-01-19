@@ -17,9 +17,6 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"unsafe"
-
-	"github.com/nats-io/nats-server/v2/server/stree"
 )
 
 // Sublist is a routing mechanism to handle subject distribution and
@@ -372,6 +369,33 @@ func (s *GenericSublist[T]) Remove(subject string, value T) error {
 	return s.remove(subject, value, true)
 }
 
+// HasInterestStartingIn is a helper for subject tree intersection.
+func (s *GenericSublist[T]) HasInterestStartingIn(subj string) bool {
+	var _tokens [64]string
+	tokens := tokenizeSubjectIntoSlice(_tokens[:0], subj)
+	return hasInterestStartingIn(s.root, tokens)
+}
+
+func hasInterestStartingIn[T comparable](l *level[T], tokens []string) bool {
+	if l == nil {
+		return false
+	}
+	if len(tokens) == 0 {
+		return true
+	}
+	token := tokens[0]
+	if l.fwc != nil {
+		return true
+	}
+	if pwc := l.pwc; pwc != nil {
+		return hasInterestStartingIn(pwc.next, tokens[1:])
+	}
+	if n := l.nodes[token]; n != nil {
+		return hasInterestStartingIn(n.next, tokens[1:])
+	}
+	return false
+}
+
 // pruneNode is used to prune an empty node from the tree.
 func (l *level[T]) pruneNode(n *node[T], t string) {
 	if n == nil {
@@ -465,86 +489,15 @@ func visitLevel[T comparable](l *level[T], depth int) int {
 	return maxDepth
 }
 
-// IntersectStree will match all items in the given subject tree that
-// have interest expressed in the given sublist. The callback will only be called
-// once for each subject, regardless of overlapping subscriptions in the sublist.
-func IntersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], sl *GenericSublist[T2], cb func(subj []byte, entry *T1)) {
-	var _subj [255]byte
-	intersectStree(st, sl.root, _subj[:0], cb)
-}
-
-func intersectStree[T1 any, T2 comparable](st *stree.SubjectTree[T1], r *level[T2], subj []byte, cb func(subj []byte, entry *T1)) {
-	nsubj := subj
-	if len(nsubj) > 0 {
-		nsubj = append(subj, '.')
-	}
-	if r.fwc != nil {
-		// We've reached a full wildcard, do a FWC match on the stree at this point
-		// and don't keep iterating downward.
-		nsubj := append(nsubj, '>')
-		st.Match(nsubj, cb)
-		return
-	}
-	if r.pwc != nil {
-		// We've found a partial wildcard. We'll keep iterating downwards, but first
-		// check whether there's interest at this level (without triggering dupes) and
-		// match if so.
-		var done bool
-		nsubj := append(nsubj, '*')
-		if len(r.pwc.subs) > 0 {
-			st.Match(nsubj, cb)
-			done = true
-		}
-		if r.pwc.next.numNodes() > 0 {
-			intersectStree(st, r.pwc.next, nsubj, cb)
-		}
-		if done {
-			return
+// use similar to append. meaning, the updated slice will be returned
+func tokenizeSubjectIntoSlice(tts []string, subject string) []string {
+	start := 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			tts = append(tts, subject[start:i])
+			start = i + 1
 		}
 	}
-	// Normal node with subject literals, keep iterating.
-	for t, n := range r.nodes {
-		if r.pwc != nil && r.pwc.next.numNodes() > 0 && n.next.numNodes() > 0 {
-			// A wildcard at the next level will already visit these descendents
-			// so skip so we don't callback the same subject more than once.
-			continue
-		}
-		nsubj := append(nsubj, t...)
-		if len(n.subs) > 0 {
-			if subjectHasWildcard(bytesToString(nsubj)) {
-				st.Match(nsubj, cb)
-			} else {
-				if e, ok := st.Find(nsubj); ok {
-					cb(nsubj, e)
-				}
-			}
-		}
-		if n.next.numNodes() > 0 {
-			intersectStree(st, n.next, nsubj, cb)
-		}
-	}
-}
-
-// Determine if a subject has any wildcard tokens.
-func subjectHasWildcard(subject string) bool {
-	// This one exits earlier then !subjectIsLiteral(subject)
-	for i, c := range subject {
-		if c == pwc || c == fwc {
-			if (i == 0 || subject[i-1] == btsep) &&
-				(i+1 == len(subject) || subject[i+1] == btsep) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// Note this will avoid a copy of the data used for the string, but it will also reference the existing slice's data pointer.
-// So this should be used sparingly when we know the encompassing byte slice's lifetime is the same.
-func bytesToString(b []byte) string {
-	if len(b) == 0 {
-		return _EMPTY_
-	}
-	p := unsafe.SliceData(b)
-	return unsafe.String(p, len(b))
+	tts = append(tts, subject[start:])
+	return tts
 }
