@@ -373,11 +373,3 @@ func require_Equal[T comparable](t testing.TB, a, b T) {
 		t.Fatalf("require %T equal, but got: %v != %v", a, a, b)
 	}
 }
-
-func require_Len(t testing.TB, a, b int) {
-	t.Helper()
-	if a != b {
-		antithesis.AssertUnreachable(t, "Failed require_Len check", nil)
-		t.Fatalf("require len, but got: %v != %v", a, b)
-	}
-}
