@@ -2491,7 +2491,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 	if uint64(mb.fss.Size()) < lseq-start {
 		// If there are no subject matches then this is effectively no-op.
 		hseq := uint64(math.MaxUint64)
-		gsl.IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
+		stree.IntersectGSL(mb.fss, sl, func(subj []byte, ss *SimpleState) {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				// mb is already loaded into the cache so should be fast-ish.
 				mb.recalculateForSubj(bytesToString(subj), ss)
@@ -2739,7 +2739,7 @@ func (mb *msgBlock) prevMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *S
 	if uint64(mb.fss.Size()) < start-lseq {
 		// If there are no subject matches then this is effectively no-op.
 		hseq := uint64(0)
-		gsl.IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
+		stree.IntersectGSL(mb.fss, sl, func(subj []byte, ss *SimpleState) {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				// mb is already loaded into the cache so should be fast-ish.
 				mb.recalculateForSubj(bytesToString(subj), ss)
@@ -3794,7 +3794,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		mb := fs.blks[seqStart]
 		bi := mb.index
 
-		gsl.IntersectStree(fs.psim, sl, func(subj []byte, psi *psi) {
+		stree.IntersectGSL(fs.psim, sl, func(subj []byte, psi *psi) {
 			// If the select blk start is greater than entry's last blk skip.
 			if bi > psi.lblk {
 				return
@@ -3885,7 +3885,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			var t uint64
 			var havePartial bool
 			var updateLLTS bool
-			gsl.IntersectStree[SimpleState](mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
+			stree.IntersectGSL[SimpleState](mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
 				subj := bytesToString(bsubj)
 				if havePartial {
 					// If we already found a partial then don't do anything else.
@@ -3943,7 +3943,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
 	start := uint32(math.MaxUint32)
-	gsl.IntersectStree(fs.psim, sl, func(subj []byte, psi *psi) {
+	stree.IntersectGSL(fs.psim, sl, func(subj []byte, psi *psi) {
 		total += psi.total
 		// Keep track of start index for this subject.
 		if psi.fblk < start {
@@ -3991,7 +3991,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 				}
 				// Mark fss activity.
 				mb.lsts = ats.AccessTime()
-				gsl.IntersectStree(mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
+				stree.IntersectGSL(mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
 					adjust += ss.Msgs
 				})
 			}
