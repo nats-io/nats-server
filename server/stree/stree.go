@@ -16,6 +16,9 @@ package stree
 import (
 	"bytes"
 	"slices"
+	"unsafe"
+
+	"github.com/nats-io/nats-server/v2/server/gsl"
 )
 
 // SubjectTree is an adaptive radix trie (ART) for storing subject information on literal subjects.
@@ -447,4 +450,61 @@ func LazyIntersect[TL, TR any](tl *SubjectTree[TL], tr *SubjectTree[TR], cb func
 			return true
 		})
 	}
+}
+
+// IntersectGSL will match all items in the given subject tree that
+// have interest expressed in the given sublist. The callback will only be called
+// once for each subject, regardless of overlapping subscriptions in the sublist.
+func IntersectGSL[T any, SL comparable](t *SubjectTree[T], sl *gsl.GenericSublist[SL], cb func(subject []byte, val *T)) {
+	if t == nil || t.root == nil || sl == nil {
+		return
+	}
+	var _pre [256]byte
+	_intersectGSL(t.root, _pre[:0], sl, cb)
+}
+
+func _intersectGSL[T any, SL comparable](n node, pre []byte, sl *gsl.GenericSublist[SL], cb func(subject []byte, val *T)) {
+	if n.isLeaf() {
+		ln := n.(*leaf[T])
+		subj := append(pre, ln.suffix...)
+		if sl.HasInterest(bytesToString(subj)) {
+			cb(subj, &ln.value)
+		}
+		return
+	}
+	bn := n.base()
+	pre = append(pre, bn.prefix...)
+	for _, cn := range n.children() {
+		if cn == nil {
+			continue
+		}
+		subj := append(pre, cn.path()...)
+		if !hasInterestForTokens(sl, subj, len(pre)) {
+			continue
+		}
+		_intersectGSL(cn, pre, sl, cb)
+	}
+}
+
+// The subject tree can return partial tokens so we need to check starting interest
+// only from whole tokens when we encounter a tsep.
+func hasInterestForTokens[SL comparable](sl *gsl.GenericSublist[SL], subj []byte, since int) bool {
+	for i := since; i < len(subj); i++ {
+		if subj[i] == tsep {
+			if !sl.HasInterestStartingIn(bytesToString(subj[:i])) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Note this will avoid a copy of the data used for the string, but it will also reference the existing slice's data pointer.
+// So this should be used sparingly when we know the encompassing byte slice's lifetime is the same.
+func bytesToString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	p := unsafe.SliceData(b)
+	return unsafe.String(p, len(b))
 }
