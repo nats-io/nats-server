@@ -4466,7 +4466,7 @@ func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 		return nil
 	})
 
-	// We should only have 'Normal' entries.
+	// We should only have 'Normal' and 'Noop' entries.
 	// If we'd get a 'Snapshot' entry, that would mean it had incomplete state and would be reverting committed state.
 	var state StreamState
 	rn.wal.FastState(&state)
@@ -4474,7 +4474,9 @@ func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 		ae, err = rn.loadEntry(seq)
 		require_NoError(t, err)
 		for _, entry := range ae.entries {
-			require_Equal(t, entry.Type, EntryNormal)
+			if entry.Type != EntryNormal && entry.Type != EntryNoop {
+				t.Fatalf("Unexpected entry type: %v", entry.Type)
+			}
 		}
 	}
 }
@@ -5218,7 +5220,7 @@ func TestJetStreamClusterConsistencyAfterLeaderChange(t *testing.T) {
 				// Or there are gaps, which would mean the JetStream layer would run into errLastSeqMismatch.
 				require_Equal(t, lseq, clseq)
 				clseq++
-			} else if e.Type != EntryPeerState {
+			} else if e.Type != EntryPeerState && e.Type != EntryNoop {
 				t.Fatalf("Received unhandled entry type: %s\n", e.Type)
 			}
 		}
@@ -6713,9 +6715,9 @@ func TestJetStreamClusterSDMMsgTTLReverseExpiry(t *testing.T) {
 			require_Equal(t, sm.Subject, "foo")
 			require_Equal(t, sm.Header.Get(JSMarkerReason), JSMarkerReasonMaxAge)
 
-			// Expect three entries, one leader change, the subject delete marker rollup, and one published message.
+			// Expect four entries, one leader change, one noop entry, the subject delete marker rollup, and one published message.
 			nindex, _, _ := rn.Progress()
-			require_Equal(t, nindex, pindex+3)
+			require_Equal(t, nindex, pindex+4)
 		})
 	}
 }

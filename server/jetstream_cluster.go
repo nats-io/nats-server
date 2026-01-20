@@ -563,7 +563,7 @@ func (cc *jetStreamCluster) isLeader() bool {
 		// Non-clustered mode
 		return true
 	}
-	return cc.meta != nil && cc.meta.Leader()
+	return cc.meta != nil && cc.meta.LeaderLease()
 }
 
 // isStreamCurrent will determine if the stream is up to date.
@@ -1140,7 +1140,7 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	ourID := cc.meta.ID()
 	for _, peer := range rg.Peers {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
+			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.LeaderLease()) {
 				return true
 			}
 		}
@@ -1174,7 +1174,7 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	ourID := cc.meta.ID()
 	for _, peer := range rg.Peers {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
+			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.LeaderLease()) {
 				return true
 			}
 		}
