@@ -242,6 +242,59 @@ func TestGenericSublistHasInterestOverlapping(t *testing.T) {
 	require_True(t, s.HasInterest("stream.A"))
 }
 
+// TestGenericSublistHasInterestStartingInRace tests that HasInterestStartingIn
+// is safe to call concurrently with modifications to the sublist.
+func TestGenericSublistHasInterestStartingInRace(t *testing.T) {
+	s := NewSublist[int]()
+
+	// Pre-populate with some patterns
+	for i := 0; i < 10; i++ {
+		s.Insert("foo.bar.baz", i)
+		s.Insert("foo.*.baz", i+10)
+		s.Insert("foo.>", i+20)
+	}
+
+	done := make(chan struct{})
+	const iterations = 1000
+
+	// Goroutine 1: repeatedly call HasInterestStartingIn
+	go func() {
+		for i := 0; i < iterations; i++ {
+			s.HasInterestStartingIn("foo")
+			s.HasInterestStartingIn("foo.bar")
+			s.HasInterestStartingIn("foo.bar.baz")
+			s.HasInterestStartingIn("other.subject")
+		}
+		done <- struct{}{}
+	}()
+
+	// Goroutine 2: repeatedly modify the sublist
+	go func() {
+		for i := 0; i < iterations; i++ {
+			val := 1000 + i
+			s.Insert("test.subject."+string(rune('a'+i%26)), val)
+			s.Insert("foo.*.test", val)
+			s.Remove("test.subject."+string(rune('a'+i%26)), val)
+			s.Remove("foo.*.test", val)
+		}
+		done <- struct{}{}
+	}()
+
+	// Goroutine 3: also call HasInterest (which does lock)
+	go func() {
+		for i := 0; i < iterations; i++ {
+			s.HasInterest("foo.bar.baz")
+			s.HasInterest("foo.something.baz")
+		}
+		done <- struct{}{}
+	}()
+
+	// Wait for all goroutines
+	<-done
+	<-done
+	<-done
+}
+
 func TestGenericSublistNumInterest(t *testing.T) {
 	s := NewSublist[int]()
 	require_NoError(t, s.Insert("foo", 11))
