@@ -1257,6 +1257,18 @@ func TestSubjectTreeGSLIntersection(t *testing.T) {
 		require_Len(t, len(got), 2)
 		require_NoDuplicates(t, got)
 	})
+
+	t.Run("LiteralMatchWithOverlappingPWCs", func(t *testing.T) {
+		got := map[string]int{}
+		sl := gsl.NewSublist[int]()
+		require_NoError(t, sl.Insert("one.*.four.five", 11))
+		require_NoError(t, sl.Insert("one.two.three.four", 22))
+		IntersectGSL(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 1)
+		require_NoDuplicates(t, got)
+	})
 }
 
 func TestSubjectTreeDeleteShortSubjectNoPanic(t *testing.T) {
