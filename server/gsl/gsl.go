@@ -389,13 +389,14 @@ func hasInterestStartingIn[T comparable](l *level[T], tokens []string) bool {
 	if l.fwc != nil {
 		return true
 	}
+	found := false
 	if pwc := l.pwc; pwc != nil {
-		return hasInterestStartingIn(pwc.next, tokens[1:])
+		found = found || hasInterestStartingIn(pwc.next, tokens[1:])
 	}
 	if n := l.nodes[token]; n != nil {
-		return hasInterestStartingIn(n.next, tokens[1:])
+		found = found || hasInterestStartingIn(n.next, tokens[1:])
 	}
-	return false
+	return found
 }
 
 // pruneNode is used to prune an empty node from the tree.
