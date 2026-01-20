@@ -1575,7 +1575,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	// check for duplicates
 	var iNames = make(map[string]struct{})
 	for _, src := range cfg.Sources {
-		if !isValidName(src.Name) {
+		if src == nil || !isValidName(src.Name) {
 			return StreamConfig{}, NewJSSourceInvalidStreamNameError()
 		}
 		if _, ok := iNames[src.composeIName()]; !ok {

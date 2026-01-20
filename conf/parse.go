@@ -60,6 +60,9 @@ type parser struct {
 
 	// pedantic reports error when configuration is not correct.
 	pedantic bool
+
+	// Tracks environment variable references, to avoid cycles
+	envVarReferences map[string]bool
 }
 
 // Parse will return a map of keys to any, although concrete types
@@ -180,16 +183,37 @@ func (t *token) Position() int {
 	return t.item.pos
 }
 
-func parse(data, fp string, pedantic bool) (p *parser, err error) {
-	p = &parser{
-		mapping:  make(map[string]any),
-		lx:       lex(data),
-		ctxs:     make([]any, 0, 4),
-		keys:     make([]string, 0, 4),
-		ikeys:    make([]item, 0, 4),
-		fp:       filepath.Dir(fp),
-		pedantic: pedantic,
+func newParser(data, fp string, pedantic bool) *parser {
+	return &parser{
+		mapping:          make(map[string]any),
+		lx:               lex(data),
+		ctxs:             make([]any, 0, 4),
+		keys:             make([]string, 0, 4),
+		ikeys:            make([]item, 0, 4),
+		fp:               filepath.Dir(fp),
+		pedantic:         pedantic,
+		envVarReferences: make(map[string]bool),
 	}
+}
+
+func parse(data, fp string, pedantic bool) (*parser, error) {
+	p := newParser(data, fp, pedantic)
+	if err := p.parse(fp); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func parseEnv(data string, parent *parser) (*parser, error) {
+	p := newParser(data, "", false)
+	p.envVarReferences = parent.envVarReferences
+	if err := p.parse(""); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (p *parser) parse(fp string) error {
 	p.pushContext(p.mapping)
 
 	var prevItem item
@@ -199,16 +223,16 @@ func parse(data, fp string, pedantic bool) (p *parser, err error) {
 			// Here we allow the final character to be a bracket '}'
 			// in order to support JSON like configurations.
 			if prevItem.typ == itemKey && prevItem.val != mapEndString {
-				return nil, fmt.Errorf("config is invalid (%s:%d:%d)", fp, it.line, it.pos)
+				return fmt.Errorf("config is invalid (%s:%d:%d)", fp, it.line, it.pos)
 			}
 			break
 		}
 		prevItem = it
 		if err := p.processItem(it, fp); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return p, nil
+	return nil
 }
 
 func (p *parser) next() item {
@@ -453,11 +477,18 @@ func (p *parser) lookupVariable(varReference string) (any, bool, error) {
 	}
 
 	// If we are here, we have exhausted our context maps and still not found anything.
-	// Parse from the environment.
+	// Detect reference cycles
+	if p.envVarReferences[varReference] {
+		return nil, false, fmt.Errorf("variable reference cycle for '%s'", varReference)
+	}
+	p.envVarReferences[varReference] = true
+	defer delete(p.envVarReferences, varReference)
+
+	// Parse from the environment
 	if vStr, ok := os.LookupEnv(varReference); ok {
 		// Everything we get here will be a string value, so we need to process as a parser would.
-		if vmap, err := Parse(fmt.Sprintf("%s=%s", pkey, vStr)); err == nil {
-			v, ok := vmap[pkey]
+		if subp, err := parseEnv(fmt.Sprintf("%s=%s", pkey, vStr), p); err == nil {
+			v, ok := subp.mapping[pkey]
 			return v, ok, nil
 		} else {
 			return nil, false, err
