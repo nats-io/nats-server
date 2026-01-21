@@ -12127,3 +12127,144 @@ func TestFileStoreDoesntRebuildSubjectStateWithNoTrack(t *testing.T) {
 		require_Equal(t, fs.psim.Size(), 0)
 	})
 }
+
+func TestFileStoreLoadNextMsgSkipAhead(t *testing.T) {
+	test := func(t *testing.T, headStart, singleSubjPerBlock bool) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+			fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			for i := range 10 {
+				subj := "a"
+				if !singleSubjPerBlock && i%2 == 0 {
+					subj = "c"
+				}
+				_, _, err = fs.StoreMsg(subj, nil, nil, 0)
+				require_NoError(t, err)
+				if (i+1)%2 == 0 {
+					_, err = fs.newMsgBlockForWrite()
+					require_NoError(t, err)
+				}
+			}
+			_, _, err = fs.StoreMsg("b", nil, nil, 0)
+			require_NoError(t, err)
+
+			fs.mu.Lock()
+			fs.lockAllMsgBlocks()
+			for _, mb := range fs.blks {
+				mb.lsts = 0
+			}
+			fs.unlockAllMsgBlocks()
+			fs.mu.Unlock()
+
+			var start uint64
+			if !headStart {
+				start = 3
+			}
+
+			// Check we properly skip over blocks that aren't relevant for our filter subject.
+			// If we're starting with start=0, we should skip to the correct block immediately.
+			// Otherwise, we should only need to access one block and then skip to the correct one.
+			sm, nseq, err := fs.LoadNextMsg("b", false, start, nil)
+			require_NoError(t, err)
+			require_Equal(t, sm.seq, 11)
+			require_Equal(t, nseq, 11)
+
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			fs.lockAllMsgBlocks()
+			defer fs.unlockAllMsgBlocks()
+			for _, mb := range fs.blks {
+				t.Logf("mb %d: lsts=%d", mb.index, mb.lsts)
+				if mb.index == 6 || (mb.index == 2 && !headStart) {
+					require_NotEqual(t, mb.lsts, 0)
+				} else {
+					require_Equal(t, mb.lsts, 0)
+				}
+			}
+		})
+	}
+
+	for _, singleSubjPerBlock := range []bool{true, false} {
+		title := "Single"
+		if !singleSubjPerBlock {
+			title = "Multi"
+		}
+		t.Run(fmt.Sprintf("%s/Head", title), func(t *testing.T) { test(t, true, singleSubjPerBlock) })
+		t.Run(fmt.Sprintf("%s/Interior", title), func(t *testing.T) { test(t, false, singleSubjPerBlock) })
+	}
+}
+
+func TestFileStoreLoadNextMsgMultiSkipAhead(t *testing.T) {
+	test := func(t *testing.T, headStart, singleSubjPerBlock bool) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+			fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			for i := range 10 {
+				subj := "a"
+				if !singleSubjPerBlock && i%2 == 0 {
+					subj = "c"
+				}
+				_, _, err = fs.StoreMsg(subj, nil, nil, 0)
+				require_NoError(t, err)
+				if (i+1)%2 == 0 {
+					_, err = fs.newMsgBlockForWrite()
+					require_NoError(t, err)
+				}
+			}
+			_, _, err = fs.StoreMsg("b", nil, nil, 0)
+			require_NoError(t, err)
+
+			fs.mu.Lock()
+			fs.lockAllMsgBlocks()
+			for _, mb := range fs.blks {
+				mb.lsts = 0
+			}
+			fs.unlockAllMsgBlocks()
+			fs.mu.Unlock()
+
+			var start uint64
+			if !headStart {
+				start = 3
+			}
+
+			// Check we properly skip over blocks that aren't relevant for our filter subjects.
+			// If we're starting with start=0, we should skip to the correct block immediately.
+			// Otherwise, we should only need to access one block and then skip to the correct one.
+			filters := gsl.NewSublist[struct{}]()
+			require_NoError(t, filters.Insert("b", struct{}{}))
+			require_NoError(t, filters.Insert("d", struct{}{}))
+			sm, nseq, err := fs.LoadNextMsgMulti(filters, start, nil)
+			require_NoError(t, err)
+			require_Equal(t, sm.seq, 11)
+			require_Equal(t, nseq, 11)
+
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			fs.lockAllMsgBlocks()
+			defer fs.unlockAllMsgBlocks()
+			for _, mb := range fs.blks {
+				t.Logf("mb %d: lsts=%d", mb.index, mb.lsts)
+				if mb.index == 6 || (mb.index == 2 && !headStart) {
+					require_NotEqual(t, mb.lsts, 0)
+				} else {
+					require_Equal(t, mb.lsts, 0)
+				}
+			}
+		})
+	}
+
+	for _, singleSubjPerBlock := range []bool{true, false} {
+		title := "Single"
+		if !singleSubjPerBlock {
+			title = "Multi"
+		}
+		t.Run(fmt.Sprintf("%s/Head", title), func(t *testing.T) { test(t, true, singleSubjPerBlock) })
+		t.Run(fmt.Sprintf("%s/Interior", title), func(t *testing.T) { test(t, false, singleSubjPerBlock) })
+	}
+}
