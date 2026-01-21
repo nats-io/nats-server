@@ -1,4 +1,4 @@
-// Copyright 2012-2025 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -34,8 +34,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"slices"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
@@ -2732,9 +2730,12 @@ func (c *client) updateS2AutoCompressionLevel(co *CompressionOpts, compression *
 }
 
 // Will return the parts from the raw wire msg.
+// We return the `hdr` as a slice that is capped to the length of the headers
+// so that if the caller later tries to append to the returned header slice it
+// does not affect the message content.
 func (c *client) msgParts(data []byte) (hdr []byte, msg []byte) {
 	if c != nil && c.pa.hdr > 0 {
-		return data[:c.pa.hdr], data[c.pa.hdr:]
+		return data[:c.pa.hdr:c.pa.hdr], data[c.pa.hdr:]
 	}
 	return nil, data
 }
@@ -4565,6 +4566,19 @@ func getHeaderKeyIndex(key string, hdr []byte) int {
 	}
 }
 
+// setHeader will replace the value of the first existing key `key`
+// with the given value `val`, or add this new key at the end of
+// the headers.
+//
+// Note: If the key does not exist, or if it exists but the new value
+// would make the resulting byte slice larger than the original one,
+// a new byte slice is returned and the original is left untouched.
+// This is to prevent situations where caller may have a `hdr` and
+// `msg` that are the parts of an underlying buffer. Extending the
+// `hdr` would otherwise overwrite the `msg` part.
+//
+// If the new value is smaller, then the original `hdr` byte slice
+// is modified.
 func setHeader(key, val string, hdr []byte) []byte {
 	start := getHeaderKeyIndex(key, hdr)
 	if start >= 0 {
@@ -4579,15 +4593,35 @@ func setHeader(key, val string, hdr []byte) []byte {
 			return hdr // malformed headers
 		}
 		valEnd += valStart
-		suffix := slices.Clone(hdr[valEnd:])
-		newHdr := append(hdr[:valStart], val...)
-		return append(newHdr, suffix...)
+		// Length of the existing value (before the `\r`)
+		oldValLen := valEnd - valStart
+		// Compute the new size of the header by removing the length
+		// of the old value and adding the new one.
+		newHdrSize := hdrLen - oldValLen + len(val)
+		// We will allocate if the new size is larger.
+		if newHdrSize > hdrLen {
+			newHdr := make([]byte, newHdrSize)
+			// Copy the parts from `hdr` and `val` into the new buffer.
+			n := copy(newHdr, hdr[:valStart])
+			n += copy(newHdr[n:], val)
+			copy(newHdr[n:], hdr[valEnd:])
+			return newHdr
+		}
+		// We can write in place since it fits in the existing `hdr` buffer.
+		n := copy(hdr[valStart:], val)
+		copy(hdr[valStart+n:], hdr[valEnd:])
+		hdr = hdr[:newHdrSize]
+		return hdr
 	}
 	if len(hdr) > 0 && bytes.HasSuffix(hdr, []byte("\r\n")) {
 		hdr = hdr[:len(hdr)-2]
 		val += "\r\n"
 	}
-	return fmt.Appendf(hdr, "%s: %s\r\n", key, val)
+	// Create the new buffer based on length of existing one and
+	// length of the new key:value and ending \r\n.
+	newHdr := make([]byte, 0, len(hdr)+len(key)+1+1+len(val)+2)
+	newHdr = append(newHdr, hdr...)
+	return fmt.Appendf(newHdr, "%s: %s\r\n", key, val)
 }
 
 // For bytes.HasPrefix below.
