@@ -1,4 +1,4 @@
-// Copyright 2012-2025 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3256,6 +3257,65 @@ func TestRemoveHeaderIfPresentOrderingSuffix(t *testing.T) {
 	hdr = removeHeaderIfPresent(hdr, "Nats-Msg-Id")
 	ehdr := genHeader(nil, "Previous-Nats-Msg-Id", "user")
 	require_True(t, bytes.Equal(hdr, ehdr))
+}
+
+func TestMsgPartsCapsHdrSlice(t *testing.T) {
+	c := &client{}
+	hdrContent := hdrLine + "Key1: Val1\r\nKey2: Val2\r\n\r\n"
+	msgBody := "hello\r\n"
+	buf := slices.Clone([]byte(hdrContent + msgBody))
+	c.pa.hdr = len(hdrContent)
+
+	hdr, msg := c.msgParts(buf)
+	// Make sure "hdr" and "msg" are as expected.
+	require_Equal(t, string(hdr), hdrContent)
+	require_Equal(t, string(msg), msgBody)
+	// Previously, cap(hdr) would have been the same than the one of "buf",
+	// but now this is not the case.
+	require_True(t, cap(hdr) < cap(buf))
+	// Just to make sure, try to add something (smaller than "hello\r\n")
+	// to "hdr" and make sure the "msg" content is not modified.
+	hdr = append(hdr, "test"...)
+	require_Equal(t, string(hdr), hdrContent+"test")
+	require_Equal(t, string(msg), "hello\r\n")
+}
+
+func TestSetHeaderDoesNotOverwriteUnderlyingBuffer(t *testing.T) {
+	initialHdrContent := "NATS/1.0\r\nKey1: Val1\r\nKey2: Val2\r\n\r\n"
+	msgBody := "this is the message body\r\n"
+	for _, test := range []struct {
+		name        string
+		key         string
+		val         string
+		expectedHdr string
+		newBuf      bool
+	}{
+		{"existing key new value larger", "Key1", "Val1Updated", "NATS/1.0\r\nKey1: Val1Updated\r\nKey2: Val2\r\n\r\n", true},
+		{"existing key new value smaller", "Key1", "v1", "NATS/1.0\r\nKey1: v1\r\nKey2: Val2\r\n\r\n", false},
+		{"new key", "Key3", "Val3", "NATS/1.0\r\nKey1: Val1\r\nKey2: Val2\r\nKey3: Val3\r\n\r\n", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			buf := make([]byte, 0, len(initialHdrContent)+len(msgBody))
+			buf = append(buf, initialHdrContent...)
+			msgStart := len(buf)
+			buf = append(buf, msgBody...)
+
+			// Simulate that we create slices out of the underlying buffer,
+			// separating the header and body parts.
+			hdr, msg := buf[:msgStart], buf[msgStart:]
+			hdr = setHeader(test.key, test.val, hdr)
+			require_Equal(t, string(hdr), test.expectedHdr)
+			require_Equal(t, string(msg), msgBody)
+			if test.newBuf {
+				// The "hdr" part of the underlying buffer should not have
+				// been changed.
+				require_Equal(t, string(buf[:len(initialHdrContent)]), initialHdrContent)
+			} else {
+				// The "hdr" part of the underlying buffer has been changed.
+				require_Equal(t, string(buf[:len(test.expectedHdr)]), test.expectedHdr)
+			}
+		})
+	}
 }
 
 func TestSetHeaderOrderingPrefix(t *testing.T) {
