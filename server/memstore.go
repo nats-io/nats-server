@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 
@@ -452,7 +451,6 @@ func (ms *memStore) RegisterProcessJetStreamMsg(cb ProcessJetStreamMsgHandler) {
 
 // GetSeqFromTime looks for the first sequence number that has the message
 // with >= timestamp.
-// FIXME(dlc) - inefficient.
 func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 	ts := t.UnixNano()
 	ms.mu.RLock()
@@ -476,18 +474,57 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 
 	last := lmsg.ts
 	if ts == last {
-		return ms.state.LastSeq
+		return lmsg.seq
 	}
 	if ts > last {
 		return ms.state.LastSeq + 1
 	}
-	index := sort.Search(len(ms.msgs), func(i int) bool {
-		if msg := ms.msgs[ms.state.FirstSeq+uint64(i)]; msg != nil {
-			return msg.ts >= ts
+
+	var (
+		cts  int64
+		cseq uint64
+		off  uint64
+	)
+
+	// Using a binary search, but need to be aware of interior deletes.
+	fseq := ms.state.FirstSeq
+	lseq := ms.state.LastSeq
+	seq := lseq + 1
+loop:
+	for fseq <= lseq {
+		mid := fseq + (lseq-fseq)/2
+		off = 0
+		// Potentially skip over gaps. We keep the original middle but keep track of a
+		// potential delete range with an offset.
+		for {
+			msg := ms.msgs[mid+off]
+			if msg == nil {
+				off++
+				if mid+off <= lseq {
+					continue
+				} else {
+					// Continue search to the left. Purposely ignore the skipped deletes here.
+					lseq = mid - 1
+					continue loop
+				}
+			}
+			cts = msg.ts
+			cseq = msg.seq
+			break
 		}
-		return false
-	})
-	return uint64(index) + ms.state.FirstSeq
+		if cts >= ts {
+			seq = cseq
+			if mid == fseq {
+				break
+			}
+			// Continue search to the left.
+			lseq = mid - 1
+		} else {
+			// Continue search to the right (potentially skipping over interior deletes).
+			fseq = mid + off + 1
+		}
+	}
+	return seq
 }
 
 // FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.

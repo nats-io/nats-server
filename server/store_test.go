@@ -841,3 +841,50 @@ func TestStoreDiscardNew(t *testing.T) {
 		}, ErrMaxMsgsPerSubject)
 	})
 }
+
+func TestStoreGetSeqFromTimeWithInteriorDeletesGap(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}},
+		func(t *testing.T, fs StreamStore) {
+			var start int64
+			for i := range 10 {
+				_, ts, err := fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				if i == 1 {
+					start = ts
+				}
+			}
+			// Create a delete gap to prove a simple binary search between sequences
+			// does not work, and deletes need to be accounted for. A simple binary search
+			// will hit the deleted sequences and then return the last sequence.
+			for seq := uint64(4); seq <= 7; seq++ {
+				_, err := fs.RemoveMsg(seq)
+				require_NoError(t, err)
+			}
+			ts := time.Unix(0, start).UTC()
+			require_Equal(t, fs.GetSeqFromTime(ts), 2)
+		},
+	)
+}
+
+func TestStoreGetSeqFromTimeWithTrailingDeletes(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}},
+		func(t *testing.T, fs StreamStore) {
+			var start int64
+			for i := range 3 {
+				_, ts, err := fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				if i == 1 {
+					start = ts
+				}
+			}
+			_, err := fs.RemoveMsg(3)
+			require_NoError(t, err)
+			ts := time.Unix(0, start).UTC()
+			require_Equal(t, fs.GetSeqFromTime(ts), 2)
+		},
+	)
+}

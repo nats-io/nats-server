@@ -2602,20 +2602,51 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	fseq := atomic.LoadUint64(&mb.first.seq)
 	lseq := atomic.LoadUint64(&mb.last.seq)
 
-	var smv StoreMsg
+	var (
+		smv  StoreMsg
+		cts  int64
+		cseq uint64
+		off  uint64
+	)
 	ts := t.UnixNano()
 
-	// Because sort.Search expects range [0,off), we have to manually
-	// calculate the offset from the first sequence.
-	off := int(lseq - fseq + 1)
-	i := sort.Search(off, func(i int) bool {
-		sm, _, _ := mb.fetchMsgNoCopy(fseq+uint64(i), &smv)
-		return sm != nil && sm.ts >= ts
-	})
-	if i < off {
-		return fseq + uint64(i)
+	// Using a binary search, but need to be aware of interior deletes in the block.
+	seq := lseq + 1
+loop:
+	for fseq <= lseq {
+		mid := fseq + (lseq-fseq)/2
+		off = 0
+		// Potentially skip over gaps. We keep the original middle but keep track of a
+		// potential delete range with an offset.
+		for {
+			sm, _, err := mb.fetchMsgNoCopy(mid+off, &smv)
+			if err != nil || sm == nil {
+				off++
+				if mid+off <= lseq {
+					continue
+				} else {
+					// Continue search to the left. Purposely ignore the skipped deletes here.
+					lseq = mid - 1
+					continue loop
+				}
+			}
+			cts = sm.ts
+			cseq = sm.seq
+			break
+		}
+		if cts >= ts {
+			seq = cseq
+			if mid == fseq {
+				break
+			}
+			// Continue search to the left.
+			lseq = mid - 1
+		} else {
+			// Continue search to the right (potentially skipping over interior deletes).
+			fseq = mid + off + 1
+		}
 	}
-	return 0
+	return seq
 }
 
 // Find the first matching message against a sublist.
