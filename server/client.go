@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -4595,11 +4596,16 @@ func setHeader(key, val string, hdr []byte) []byte {
 		valEnd += valStart
 		// Length of the existing value (before the `\r`)
 		oldValLen := valEnd - valStart
-		// Compute the new size of the header by removing the length
-		// of the old value and adding the new one.
-		newHdrSize := hdrLen - oldValLen + len(val)
-		// We will allocate if the new size is larger.
-		if newHdrSize > hdrLen {
+		// This is how many extra bytes we need for the new value.
+		// If <= 0, it means that we need less and so will reuse the `hdr` buffer.
+		if extra := len(val) - oldValLen; extra > 0 {
+			// Check that we don't overflow an "int".
+			if rem := math.MaxInt - hdrLen; rem < extra {
+				// We don't grow, and return the existing header.
+				return hdr
+			}
+			// The new size is the old size plus the extra bytes.
+			newHdrSize := hdrLen + extra
 			newHdr := make([]byte, newHdrSize)
 			// Copy the parts from `hdr` and `val` into the new buffer.
 			n := copy(newHdr, hdr[:valStart])
@@ -4609,8 +4615,8 @@ func setHeader(key, val string, hdr []byte) []byte {
 		}
 		// We can write in place since it fits in the existing `hdr` buffer.
 		n := copy(hdr[valStart:], val)
-		copy(hdr[valStart+n:], hdr[valEnd:])
-		hdr = hdr[:newHdrSize]
+		n += copy(hdr[valStart+n:], hdr[valEnd:])
+		hdr = hdr[:valStart+n]
 		return hdr
 	}
 	if len(hdr) > 0 && bytes.HasSuffix(hdr, []byte("\r\n")) {
@@ -4618,8 +4624,13 @@ func setHeader(key, val string, hdr []byte) []byte {
 		val += "\r\n"
 	}
 	// Create the new buffer based on length of existing one and
-	// length of the new key:value and ending \r\n.
-	newHdr := make([]byte, 0, len(hdr)+len(key)+1+1+len(val)+2)
+	// length of the new "<key>: <value>\r\n". Protect against "int" overflow.
+	newSize := uint64(len(hdr)) + uint64(len(key)) + 1 + 1 + uint64(len(val)) + 2
+	if newSize > uint64(math.MaxInt) {
+		// We don't grow, and return the existing header.
+		return hdr
+	}
+	newHdr := make([]byte, 0, int(newSize))
 	newHdr = append(newHdr, hdr...)
 	return fmt.Appendf(newHdr, "%s: %s\r\n", key, val)
 }
