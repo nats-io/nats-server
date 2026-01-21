@@ -11756,6 +11756,50 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	return nil
 }
 
+// ForceUpdate updates the consumer state without the backwards check.
+// This is used during recovery when we need to reset the consumer to an earlier sequence.
+func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
+	// Sanity checks.
+	if state.AckFloor.Consumer > state.Delivered.Consumer {
+		return fmt.Errorf("bad ack floor for consumer")
+	}
+	if state.AckFloor.Stream > state.Delivered.Stream {
+		return fmt.Errorf("bad ack floor for stream")
+	}
+
+	// Copy to our state.
+	var pending map[uint64]*Pending
+	var redelivered map[uint64]uint64
+	if len(state.Pending) > 0 {
+		pending = make(map[uint64]*Pending, len(state.Pending))
+		for seq, p := range state.Pending {
+			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
+				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
+			}
+		}
+	}
+	if len(state.Redelivered) > 0 {
+		redelivered = make(map[uint64]uint64, len(state.Redelivered))
+		for seq, dc := range state.Redelivered {
+			redelivered[seq] = dc
+		}
+	}
+
+	// Replace our state.
+	o.mu.Lock()
+	o.state.Delivered = state.Delivered
+	o.state.AckFloor = state.AckFloor
+	o.state.Pending = pending
+	o.state.Redelivered = redelivered
+	buf, err := o.encodeState()
+	o.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return o.writeState(buf)
+}
+
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
 // Lock should be held.
 func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
