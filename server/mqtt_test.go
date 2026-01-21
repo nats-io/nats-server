@@ -2785,7 +2785,7 @@ func TestMQTTPubSubMatrix(t *testing.T) {
 			s := testMQTTRunServer(t, o)
 			defer testMQTTShutdownServer(s)
 
-			nc := natsConnect(t, s.ClientURL(), nats.SkipSubjectValidation())
+			nc := natsConnect(t, s.ClientURL())
 			defer nc.Close()
 
 			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -2819,7 +2819,7 @@ func TestMQTTPubSubMatrix(t *testing.T) {
 
 			// Now publish
 			if test.natsPub {
-				natsPubReq(t, nc, "foo", "", []byte("msg"))
+				natsPub(t, nc, "foo", []byte("msg"))
 			} else {
 				testMQTTPublish(t, mc, r, test.mqttPubQoS, false, false, "foo", 1, []byte("msg"))
 			}
@@ -5433,8 +5433,7 @@ func TestMQTTRestoreRetainedMsgs(t *testing.T) {
 	l := &captureWarnLogger{warn: make(chan string, 10)}
 	s.SetLogger(l, false, false)
 	s.Start()
-	// s = testMQTTRunServer(t, o)
-	// defer testMQTTShutdownServer(s)
+	defer testMQTTShutdownServer(s)
 
 	time.Sleep(500 * time.Millisecond)
 	start := time.Now()
@@ -7562,7 +7561,7 @@ func TestMQTTSubjectWildcardStart(t *testing.T) {
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
-	nc := natsConnect(t, s.ClientURL(), nats.SkipSubjectValidation())
+	nc := natsConnect(t, s.ClientURL())
 	defer nc.Close()
 
 	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -7598,7 +7597,7 @@ func TestMQTTSubjectWildcardStart(t *testing.T) {
 
 	// NATS Publish
 	msg := []byte("HELLO WORLD")
-	natsPubReq(t, nc, "foo", _EMPTY_, msg)
+	natsPub(t, nc, "foo", msg)
 
 	// Check messages received
 	testMQTTCheckPubMsg(t, mc1, r1, "foo", 0, msg)
@@ -7610,7 +7609,7 @@ func TestMQTTSubjectWildcardStart(t *testing.T) {
 	testMQTTExpectNothing(t, r3)
 
 	// Anything that starts with $ is reserved against wildcard subjects like above.
-	natsPubReq(t, nc, "$JS.foo", _EMPTY_, msg)
+	natsPub(t, nc, "$JS.foo", msg)
 	testMQTTExpectNothing(t, r1)
 	testMQTTExpectNothing(t, r2)
 	testMQTTExpectNothing(t, r3)
