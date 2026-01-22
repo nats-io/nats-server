@@ -10587,3 +10587,51 @@ func TestJetStreamConsumerNoDeleteAfterConcurrentShutdownAndLeaderChange(t *test
 	o = mset.lookupConsumer("CONSUMER")
 	require_NotNil(t, o)
 }
+
+func TestJetStreamConsumerOnlyRecalculatePendingIfFilterSubjectUpdated(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{Durable: "DURABLE"}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	// Publishing a message will adjust the pending count for the consumer.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("DURABLE")
+	require_NotNil(t, o)
+	o.mu.RLock()
+	npc, npf := o.npc, o.npf
+	o.mu.RUnlock()
+	require_Equal(t, npc, 1)
+	require_Equal(t, npf, 0)
+
+	// Updating a consumer with the same config should NOT recalculate pending.
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	o.mu.RLock()
+	npc, npf = o.npc, o.npf
+	o.mu.RUnlock()
+	require_Equal(t, npc, 1)
+	require_Equal(t, npf, 0)
+
+	// Updating the filter subject should recalculate pending.
+	cfg.FilterSubject = "foo"
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	o.mu.RLock()
+	npc, npf = o.npc, o.npf
+	o.mu.RUnlock()
+	require_Equal(t, npc, 1)
+	require_Equal(t, npf, 1)
+}
