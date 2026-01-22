@@ -2435,19 +2435,28 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		}
 	}
 
+	// Check if any filters were updated.
+	oldFilters := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
+	newFilters := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
+	slices.Sort(oldFilters)
+	slices.Sort(newFilters)
+	updatedFilters := !slices.Equal(oldFilters, newFilters)
+
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
 
-	// Cleanup messages that lost interest.
-	if o.retention == InterestPolicy {
-		o.mu.Unlock()
-		o.cleanupNoInterestMessages(o.mset, false)
-		o.mu.Lock()
-	}
+	if updatedFilters {
+		// Cleanup messages that lost interest.
+		if o.retention == InterestPolicy {
+			o.mu.Unlock()
+			o.cleanupNoInterestMessages(o.mset, false)
+			o.mu.Lock()
+		}
 
-	// Re-calculate num pending on update.
-	o.streamNumPending()
+		// Re-calculate num pending on update.
+		o.streamNumPending()
+	}
 
 	return nil
 }
