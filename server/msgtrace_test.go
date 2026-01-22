@@ -1,4 +1,4 @@
-// Copyright 2024-2025 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -78,6 +78,7 @@ func TestMsgTraceConnName(t *testing.T) {
 }
 
 func TestMsgTraceGenHeaderMap(t *testing.T) {
+	traceparentDifferentCase := "TrAcEpArEnT"
 	for _, test := range []struct {
 		name     string
 		header   []byte
@@ -89,11 +90,13 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 		{"trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + MsgTraceDest + ": some value\r\n"), nil, false},
 		{"trace header with some suffix", []byte(hdrLine + MsgTraceDest + "-Some-Suffix: some value\r\n"), nil, false},
 		{"trace header with space before colon", []byte(hdrLine + MsgTraceDest + " : some value\r\n"), nil, false},
-		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceDest + " : bogus"), nil, false},
+		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceDest + ": bogus"), nil, false},
+		{"trace header with empty value", []byte(hdrLine + MsgTraceDest + ":      \r\n"), nil, false},
 		{"external trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
 		{"external trace header with some suffix", []byte(hdrLine + traceParentHdr + "-Some-Suffix: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
 		{"external header with space before colon", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
-		{"external header with missing cr_lf for value", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), nil, false},
+		{"external header with missing cr_lf for value", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), nil, false},
+		{"external header with empty value", []byte(hdrLine + traceParentHdr + ":      \r\n"), nil, false},
 		{"trace header first", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
 		{"trace header last", []byte(hdrLine + "Some-Header: some value\r\n" + MsgTraceDest + ": some.dest\r\n"),
@@ -103,6 +106,8 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 		{"trace header and some empty key", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n: bogus\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
 		{"trace header and some header missing cr_lf for value", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: bogus"),
+			map[string][]string{MsgTraceDest: {"some.dest"}}, false},
+		{"trace header and trims value", []byte(hdrLine + MsgTraceDest + ":    some.dest   \r\n"),
 			map[string][]string{MsgTraceDest: {"some.dest"}}, false},
 		{"trace header and external after", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
@@ -117,8 +122,10 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
 		{"external sampling with not just 01", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27"}}, true},
-		{"external with different case and sampling", []byte(hdrLine + "TrAcEpArEnT: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+		{"external trims value", []byte(hdrLine + traceParentHdr + ":     00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01   \r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
+		{"external with different case and sampling", []byte(hdrLine + traceparentDifferentCase + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, traceparentDifferentCase: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
 		{"external first and not sampling", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value\r\n"), nil, false},
 		{"external middle and not sampling", []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value2\r\n"), nil, false},
 		{"external last and not sampling", []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\n"), nil, false},
@@ -134,11 +141,16 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 			}
 			// If external, we should find traceParentHdr
 			if test.external {
-				if _, ok := m[traceParentHdr]; !ok {
-					t.Fatalf("Expected traceparent header to be present, it was not: %+v", m)
+				headerName := traceParentHdr
+				if _, ok := m[headerName]; !ok {
+					// There is a test where we use different case, so check for that one too.
+					headerName = traceparentDifferentCase
+					if _, ok := m[headerName]; !ok {
+						t.Fatalf("Expected traceparent header to be present, it was not: %+v", m)
+					}
 				}
-				// Header should have been rewritten, so we should find it in original header.
-				if !bytes.Contains(test.header, []byte(traceParentHdr)) {
+				// We no longer rewrite the header, so take that into consideration.
+				if !bytes.Contains(test.header, []byte(headerName)) {
 					t.Fatalf("Header should have been rewritten to have the traceparent in lower case: %s", test.header)
 				}
 			}
@@ -2089,6 +2101,9 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 						processSvc := func(sub *nats.Subscription) {
 							t.Helper()
 							appMsg := natsNexMsg(t, sub, time.Second)
+							if hv := appMsg.Header.Get(traceParentHdr); hv != traceParentHdrVal {
+								t.Fatalf("Expecting header with %q, but got %q", traceParentHdrVal, hv)
+							}
 							// This test causes a message to be routed to the
 							// service responders. When not allowing, we need
 							// to make sure that the trace header has been
@@ -2096,35 +2111,14 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 							// the remote is not enough to verify since the
 							// trace would not reach the origin server because
 							// the origin account header will not be present.
+							var expected string
 							if mainTest.allow {
-								if hv := appMsg.Header.Get(MsgTraceDest); hv != traceSub.Subject {
-									t.Fatalf("Expecting header with %q, but got %q", traceSub.Subject, hv)
-								}
-								if hv := appMsg.Header.Get(traceParentHdr); hv != traceParentHdrVal {
-									t.Fatalf("Expecting header with %q, but got %q", traceParentHdrVal, hv)
-								}
+								expected = traceSub.Subject
 							} else {
-								if hv := appMsg.Header.Get(MsgTraceDest); hv != _EMPTY_ {
-									t.Fatalf("Expecting no header, but header was present with value: %q", hv)
-								}
-								if hv := appMsg.Header.Get(traceParentHdr); hv != _EMPTY_ {
-									t.Fatalf("Expecting no header, but header was present with value: %q", hv)
-								}
-								// We don't really need to check that, but we
-								// should see the header with the first letter
-								// being an `X`.
-								hnb := []byte(MsgTraceDest)
-								hnb[0] = 'X'
-								hn := string(hnb)
-								if hv := appMsg.Header.Get(hn); hv != traceSub.Subject {
-									t.Fatalf("Expected header %q to be %q, got %q", hn, traceSub.Subject, hv)
-								}
-								hnb = []byte(traceParentHdr)
-								hnb[0] = 'X'
-								hn = string(hnb)
-								if hv := appMsg.Header.Get(hn); hv != traceParentHdrVal {
-									t.Fatalf("Expected header %q to be %q, got %q", hn, traceParentHdrVal, hv)
-								}
+								expected = MsgTraceDestDisabled
+							}
+							if hv := appMsg.Header.Get(MsgTraceDest); hv != expected {
+								t.Fatalf("Expecting header with %q, but got %q", expected, hv)
 							}
 							appMsg.Respond(appMsg.Data)
 						}
@@ -3596,6 +3590,57 @@ func TestMsgTraceJetStream(t *testing.T) {
 	require_Equal[string](t, ejs.Subject, "baz")
 	require_True(t, ejs.NoInterest)
 	require_Equal[string](t, ejs.Error, _EMPTY_)
+
+	// Create a new stream to just check that when consumer a JS message,
+	// the trace header has been disabled.
+	cfg = &nats.StreamConfig{
+		Name:      "TEST_TRACE_DISABLED",
+		Subjects:  []string{"disabled"},
+		Retention: nats.LimitsPolicy,
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("disabled", "dur")
+	require_NoError(t, err)
+
+	msg = nats.NewMsg("disabled")
+	msg.Header.Set(MsgTraceDest, traceSub.Subject)
+	msg.Data = []byte("hello")
+	err = nct.PublishMsg(msg)
+	require_NoError(t, err)
+
+	// Check trace msg is still OK
+	traceMsg = natsNexMsg(t, traceSub, time.Second)
+	e = MsgTraceEvent{}
+	json.Unmarshal(traceMsg.Data, &e)
+	require_Equal[string](t, e.Server.Name, s.Name())
+	ingress = e.Ingress()
+	require_True(t, ingress != nil)
+	require_True(t, ingress.Kind == CLIENT)
+	require_Equal[string](t, ingress.Name, "Tracer")
+	require_Equal[int](t, len(e.Egresses()), 0)
+	ejs = e.JetStream()
+	require_True(t, js != nil)
+	require_Equal[string](t, ejs.Stream, "TEST_TRACE_DISABLED")
+	require_Equal[string](t, ejs.Subject, "disabled")
+	require_False(t, ejs.NoInterest)
+	require_Equal[string](t, ejs.Error, _EMPTY_)
+
+	// Now consume the message.
+	jmsgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(jmsgs), 1)
+	jmsg := jmsgs[0]
+	require_True(t, len(jmsg.Header) > 0)
+	require_Equal(t, string(jmsg.Data), "hello")
+	// When consuming, the message tracing should have been disabled,
+	// so we should have the MsgTraceDest header set to MsgTraceDestDisabled
+	require_Equal(t, jmsg.Header.Get(MsgTraceDest), MsgTraceDestDisabled)
+
+	// Verify that no trace message was generated.
+	_, err = traceSub.NextMsg(100 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
 }
 
 func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
@@ -3638,6 +3683,8 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 		})
 	}
 
+	payload := make([]byte, 50)
+
 	for mainIter, mainTest := range []struct {
 		name   string
 		stream string
@@ -3660,7 +3707,6 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 			slSrv := c1.streamLeader(globalAccountName, mainTest.stream)
 
 			// Store some messages
-			payload := make([]byte, 50)
 			for i := 0; i < 5; i++ {
 				_, err = js.Publish(mainTest.stream, payload)
 				require_NoError(t, err)
@@ -3968,8 +4014,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 	s := c1.randomNonStreamLeader(globalAccountName, "TEST1")
 	// Try to get a message that will come from a route and make sure that
-	// this does not trigger a trace message, that is, that headers have
-	// been properly removed so that they don't trigger it.
+	// this does not trigger a trace message.
 	nct := natsConnect(t, s.ClientURL(), nats.Name("Tracer"))
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, traceDest)
@@ -3980,10 +4025,24 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 	sub, err := jct.SubscribeSync("TEST1")
 	require_NoError(t, err)
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		jmsg, err := sub.NextMsg(time.Second)
 		require_NoError(t, err)
-		require_Equal[string](t, jmsg.Header.Get(MsgTraceDest), _EMPTY_)
+		if i < 5 {
+			require_Len(t, len(jmsg.Header), 0)
+			require_True(t, bytes.Equal(jmsg.Data, payload))
+			continue
+		}
+		if i == 5 {
+			require_True(t, jmsg.Header != nil)
+			require_Equal(t, jmsg.Header.Get(JSMsgId), "MyId")
+			require_Equal(t, jmsg.Header.Get(traceParentHdr), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			require_Equal(t, jmsg.Header.Get(MsgTraceDest), MsgTraceDestDisabled)
+			require_True(t, bytes.Equal(jmsg.Data, payload))
+			continue
+		}
+		require_Len(t, len(jmsg.Header), 0)
+		require_Equal(t, string(jmsg.Data), "hello")
 	}
 
 	msg, err := traceSub.NextMsg(250 * time.Millisecond)
