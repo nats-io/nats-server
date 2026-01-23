@@ -10635,3 +10635,64 @@ func TestJetStreamConsumerOnlyRecalculatePendingIfFilterSubjectUpdated(t *testin
 	require_Equal(t, npc, 1)
 	require_Equal(t, npf, 1)
 }
+
+func TestJetStreamConsumerCheckNumPending(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{Durable: "DURABLE"}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	// Publish 5 messages.
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("DURABLE")
+	require_NotNil(t, o)
+
+	// Initial state should point to the first message, with all 5 pending.
+	o.mu.Lock()
+	sseq, np := o.sseq, o.numPending()
+	o.mu.Unlock()
+	require_Equal(t, sseq, 1)
+	require_Equal(t, np, 5)
+
+	// We've sent 2 messages, the next message is seq 3, should return 3 pending.
+	o.mu.Lock()
+	o.sseq = 3
+	np, _ = o.checkNumPending()
+	o.mu.Unlock()
+	require_Equal(t, np, 3)
+
+	// An excessively large sequence should not panic the num pending correction to 0.
+	o.mu.Lock()
+	o.sseq = 100
+	np, _ = o.checkNumPending()
+	o.mu.Unlock()
+	require_Equal(t, np, 0)
+
+	// Delete the tail of the stream.
+	for i := range 4 {
+		require_NoError(t, js.DeleteMsg("TEST", uint64(i+2)))
+	}
+	// We've sent a single message, but that is the only message in the stream.
+	// We don't fully recalculate the pending count, but should at least return something that's reasonable.
+	// There's only a single message in the stream, so our pending can't be larger than that.
+	o.mu.Lock()
+	o.sseq = 2
+	o.npc = 4
+	np, _ = o.checkNumPending()
+	o.mu.Unlock()
+	require_Equal(t, np, 1)
+}
