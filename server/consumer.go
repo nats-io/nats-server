@@ -3119,7 +3119,18 @@ func (o *consumer) infoWithSnap(snap bool) *ConsumerInfo {
 	return o.infoWithSnapAndReply(snap, _EMPTY_)
 }
 
+// infoWithStreamNumPending returns consumer info using checkNumPendingRecalc which
+// conditionally recalculates num pending via streamNumPending() when numbers look off.
+// This is more expensive but provides accurate results for monitoring (e.g., JSZ).
+func (o *consumer) infoWithStreamNumPending() *ConsumerInfo {
+	return o.infoInternal(false, _EMPTY_, true)
+}
+
 func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
+	return o.infoInternal(snap, reply, false)
+}
+
+func (o *consumer) infoInternal(snap bool, reply string, streamNumPending bool) *ConsumerInfo {
 	o.mu.Lock()
 	mset := o.mset
 	if o.closed || mset == nil || mset.srv == nil {
@@ -3148,7 +3159,13 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		})
 	}
 
-	np, err := o.checkNumPending()
+	var np uint64
+	var err error
+	if streamNumPending {
+		np, err = o.checkNumPendingRecalc()
+	} else {
+		np, err = o.checkNumPending()
+	}
 	if err != nil {
 		o.mu.Unlock()
 		return nil
@@ -5131,6 +5148,23 @@ func (o *consumer) checkNumPending() (uint64, error) {
 			o.npc = 0
 		} else if npc > 0 {
 			o.npc = int64(min(npc, state.Msgs, state.LastSeq-o.sseq+1))
+		}
+	}
+	return o.numPending(), nil
+}
+
+// checkNumPendingRecalc does sanity checks and will re-calculate num pending
+// via streamNumPending() if the numbers look off. This is more expensive than
+// checkNumPending() but provides accurate results for monitoring (e.g., JSZ).
+// Lock should be held.
+func (o *consumer) checkNumPendingRecalc() (uint64, error) {
+	if o.mset != nil && o.mset.store != nil {
+		var state StreamState
+		o.mset.store.FastState(&state)
+		npc := o.numPending()
+		if o.sseq > state.LastSeq && npc > 0 || npc > state.Msgs {
+			// Re-calculate.
+			return o.streamNumPending()
 		}
 	}
 	return o.numPending(), nil

@@ -3103,7 +3103,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 			}
 			if optConsumers {
 				for _, consumer := range stream.getPublicConsumers() {
-					cInfo := consumer.info()
+					cInfo := consumer.infoWithStreamNumPending()
 					if cInfo == nil {
 						continue
 					}
@@ -3122,7 +3122,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 				}
 				if optDirectConsumers {
 					for _, consumer := range stream.getDirectConsumers() {
-						cInfo := consumer.info()
+						cInfo := consumer.infoWithStreamNumPending()
 						if cInfo == nil {
 							continue
 						}
