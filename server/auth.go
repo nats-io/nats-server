@@ -275,7 +275,7 @@ func (s *Server) configureAuthorization() {
 		s.info.AuthRequired = true
 	} else if s.trustedKeys != nil {
 		s.info.AuthRequired = true
-	} else if opts.Nkeys != nil || opts.Users != nil {
+	} else if opts.Nkeys != nil || opts.Users != nil || opts.UDSRules != nil {
 		s.nkeys, s.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
 		s.info.AuthRequired = true
 	} else if opts.Username != _EMPTY_ || opts.Authorization != _EMPTY_ {
@@ -1137,6 +1137,60 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			return comparePasswords(password, c.opts.Password)
 		}
 	}
+
+	// Check if client uses UDS and peer creds have been initialized
+	if c.isUDSPeer() && s.hasUDSPeerCredentialSupport() &&
+		// Only authenticate via peer creds, if client did not try (and fail)
+		// to use different authentication pass.
+		c.opts.Username == _EMPTY_ && c.opts.Password == _EMPTY_ &&
+		c.opts.Token == _EMPTY_ && c.opts.Nkey == _EMPTY_ && c.opts.JWT == _EMPTY_ {
+
+		peerCreds, err := c.getUDSPeerCreds()
+		if err != nil {
+			// This should not fail for semantic reasons, a domain socket has peer creds
+			// If it still fails, it's likely some temporary condition and we can't
+			// do anything about it.
+			c.Debugf("UDS auth: Failed to get peer creds from connection: %v", err)
+			return false
+		}
+
+		// No s.mu.Lock/Rlock, because:
+		rules := s.getOpts().UDSRules          // getopts does its own locking
+		queries := s.uds.peerCredentialQueries // only mutated before server start
+
+		authResult, err := udsAuthenticatePeer(rules, queries, peerCreds)
+
+		if err != nil {
+			// Configuration error, justifies a warning?
+			c.Warnf("UDS auth error: %v", err)
+			return false
+		}
+
+		for _, w := range authResult.warnings {
+			// Very likely a semantic error in server config, notice justified?
+			c.Noticef("UDS auth warning: %s", w)
+		}
+
+		if !authResult.authenticated {
+			return false
+		}
+
+		// Register with account and set permissions
+		if authResult.account != nil {
+			if err := c.registerWithAccount(authResult.account); err != nil {
+				c.reportErrRegisterAccount(authResult.account, err)
+				return false
+			}
+		}
+		c.mu.Lock()
+		c.setPermissions(authResult.permissions)
+		c.opts.Username = authResult.identity // we might want to use authenticatingRule.Username, not the whole identity.
+		c.mu.Unlock()
+
+		c.Debugf("Authenticated UDS peer: %s (rule: %q)", authResult.identity, authResult.authenticatingRule)
+		return true
+	}
+
 	return false
 }
 

@@ -324,15 +324,16 @@ type AuthCallout struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type Options struct {
-	ConfigFile      string `json:"-"`
-	ServerName      string `json:"server_name"`
-	Host            string `json:"addr"`
-	Port            int    `json:"port"`
-	DontListen      bool   `json:"dont_listen"`
-	ClientAdvertise string `json:"-"`
-	Trace           bool   `json:"-"`
-	Debug           bool   `json:"-"`
-	TraceVerbose    bool   `json:"-"`
+	ConfigFile      string     `json:"-"`
+	ServerName      string     `json:"server_name"`
+	Host            string     `json:"addr"`
+	Port            int        `json:"port"`
+	DontListen      bool       `json:"dont_listen"`
+	UDS             UDSOptions `json:"-"`
+	ClientAdvertise string     `json:"-"`
+	Trace           bool       `json:"-"`
+	Debug           bool       `json:"-"`
+	TraceVerbose    bool       `json:"-"`
 
 	// TraceHeaders if true will only trace message headers, not the payload.
 	TraceHeaders               bool          `json:"-"`
@@ -348,6 +349,7 @@ type Options struct {
 	MaxSubTokens               uint8         `json:"-"`
 	Nkeys                      []*NkeyUser   `json:"-"`
 	Users                      []*User       `json:"-"`
+	UDSRules                   []*UDSRule    `json:"-"`
 	Accounts                   []*Account    `json:"-"`
 	NoAuthUser                 string        `json:"-"`
 	DefaultSentinel            string        `json:"-"`
@@ -778,6 +780,7 @@ type authorization struct {
 	// Multiple Nkeys/Users
 	nkeys              []*NkeyUser
 	users              []*User
+	udsRules           []*UDSRule
 	timeout            float64
 	defaultPermissions *Permissions
 	// Auth Callouts
@@ -1071,6 +1074,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.ServerName = sn
 	case "host", "net":
 		o.Host = v.(string)
+	case "uds":
+		if err := parseUDSConfig(tk, o, errors); err != nil {
+			*errors = append(*errors, err)
+			return
+		}
 	case "debug":
 		o.Debug = v.(bool)
 		trackExplicitVal(&o.inConfig, "Debug", o.Debug)
@@ -1176,6 +1184,19 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			// NKeys may have been added from Accounts parsing, so do an append here
 			o.Nkeys = append(o.Nkeys, auth.nkeys...)
 		}
+		// Check for UDS rules
+		if len(auth.udsRules) > 0 {
+			for _, u := range auth.udsRules {
+				if _, ok := unames[u.Username]; ok {
+					err := &configErr{tk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
+					*errors = append(*errors, err)
+					return
+				}
+				unames[u.Username] = struct{}{}
+			}
+			o.UDSRules = append(o.UDSRules, auth.udsRules...)
+		}
+
 	case "http":
 		hp, err := parseListen(v)
 		if err != nil {
@@ -1816,6 +1837,11 @@ func setupUsersAndNKeysDuplicateCheckMap(o *Options) map[string]struct{} {
 	}
 	for _, u := range o.Nkeys {
 		unames[u.Nkey] = struct{}{}
+	}
+	for _, u := range o.UDSRules {
+		if u.Username != _EMPTY_ {
+			unames[u.Username] = struct{}{}
+		}
 	}
 	return unames
 }
@@ -3550,9 +3576,10 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 				continue
 			}
 			var (
-				users   []*User
-				nkeyUsr []*NkeyUser
-				usersTk token
+				users    []*User
+				nkeyUsr  []*NkeyUser
+				udsRules []*UDSRule
+				usersTk  token
 			)
 			acc := NewAccount(aname)
 			opts.Accounts = append(opts.Accounts, acc)
@@ -3593,7 +3620,7 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 				case "users":
 					var err error
 					usersTk = tk
-					nkeyUsr, users, err = parseUsers(mv, errors)
+					nkeyUsr, users, udsRules, err = parseUsers(mv, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
@@ -3646,6 +3673,14 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 					}
 				}
 			}
+
+			// Report error if UDS rules are used in accounts
+			if len(udsRules) > 0 {
+				err := &configErr{usersTk, "Can not have UDS rules in accounts"}
+				*errors = append(*errors, err)
+				continue
+			}
+
 			// Report error if there is an authorization{} block
 			// with u/p or token and any user defined in accounts{}
 			if len(nkeyUsr) > 0 || len(users) > 0 {
@@ -4420,13 +4455,14 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 			}
 			auth.timeout = at
 		case "users":
-			nkeys, users, err := parseUsers(tk, errors)
+			nkeys, users, udsRules, err := parseUsers(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			auth.users = users
 			auth.nkeys = nkeys
+			auth.udsRules = udsRules
 		case "default_permission", "default_permissions", "permissions":
 			permissions, err := parseUserPermissions(tk, errors)
 			if err != nil {
@@ -4466,12 +4502,13 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 }
 
 // Helper function to parse multiple users array with optional permissions.
-func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
+func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, []*UDSRule, error) {
 	var (
-		tk    token
-		lt    token
-		keys  []*NkeyUser
-		users = []*User{}
+		tk       token
+		lt       token
+		keys     []*NkeyUser
+		users    = []*User{}
+		udsRules = []*UDSRule{}
 	)
 	defer convertPanicToErrorList(&lt, errors)
 	tk, mv = unwrapValue(mv, &lt)
@@ -4479,7 +4516,7 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 	// Make sure we have an array
 	uv, ok := mv.([]any)
 	if !ok {
-		return nil, nil, &configErr{tk, fmt.Sprintf("Expected users field to be an array, got %v", mv)}
+		return nil, nil, nil, &configErr{tk, fmt.Sprintf("Expected users field to be an array, got %v", mv)}
 	}
 	for _, u := range uv {
 		tk, u = unwrapValue(u, &lt)
@@ -4495,6 +4532,7 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 		var (
 			user  = &User{}
 			nkey  = &NkeyUser{}
+			rule  = &UDSRule{}
 			perms *Permissions
 			err   error
 		)
@@ -4507,6 +4545,7 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 				nkey.Nkey = v.(string)
 			case "user", "username":
 				user.Username = v.(string)
+				rule.Username = v.(string)
 			case "pass", "password":
 				user.Password = v.(string)
 			case "permission", "permissions", "authorization":
@@ -4522,6 +4561,12 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 			case "proxy_required":
 				nkey.ProxyRequired = v.(bool)
 				user.ProxyRequired = v.(bool)
+			case "uds":
+				rule.Rolename, rule.Match, err = parseUDSUserRuleParts(mv, errors)
+				if err != nil {
+					*errors = append(*errors, err)
+					continue
+				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -4540,29 +4585,47 @@ func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 			// nkey takes precedent.
 			if nkey.Nkey != _EMPTY_ {
 				nkey.Permissions = perms
+			} else if rule.Rolename != _EMPTY_ || rule.Match != nil {
+				rule.Permissions = perms
 			} else {
 				user.Permissions = perms
 			}
 		}
 
 		// Check to make sure we have at least an nkey or username <password> defined.
-		if nkey.Nkey == _EMPTY_ && user.Username == _EMPTY_ {
-			return nil, nil, &configErr{tk, "User entry requires a user"}
+		if nkey.Nkey == _EMPTY_ && user.Username == _EMPTY_ && rule.Rolename == _EMPTY_ {
+			return nil, nil, nil, &configErr{tk, "User entry requires a user"}
 		} else if nkey.Nkey != _EMPTY_ {
 			// Make sure the nkey a proper public nkey for a user..
 			if !nkeys.IsValidPublicUserKey(nkey.Nkey) {
-				return nil, nil, &configErr{tk, "Not a valid public nkey for a user"}
+				return nil, nil, nil, &configErr{tk, "Not a valid public nkey for a user"}
 			}
 			// If we have user or password defined here that is an error.
 			if user.Username != _EMPTY_ || user.Password != _EMPTY_ {
-				return nil, nil, &configErr{tk, "Nkey users do not take usernames or passwords"}
+				return nil, nil, nil, &configErr{tk, "Nkey users do not take usernames or passwords"}
+			}
+			// If we have uds.* defined here that is an error.
+			if rule.Rolename != _EMPTY_ || rule.Match != nil {
+				return nil, nil, nil, &configErr{tk, "Nkey users do not take UDS parameters"}
 			}
 			keys = append(keys, nkey)
+		} else if rule.Rolename != _EMPTY_ || rule.Match != nil {
+			if rule.Rolename == _EMPTY_ && rule.Username == _EMPTY_ {
+				return nil, nil, nil, &configErr{tk, "UDS rules require user and/or role"}
+			}
+			if rule.Match == nil {
+				return nil, nil, nil, &configErr{tk, "UDS rules require match clause"}
+			}
+			// If we have password defined here that is an error.
+			if user.Password != _EMPTY_ {
+				return nil, nil, nil, &configErr{tk, "UDS rules do not take passwords"}
+			}
+			udsRules = append(udsRules, rule)
 		} else {
 			users = append(users, user)
 		}
 	}
-	return keys, users, nil
+	return keys, users, udsRules, nil
 }
 
 func parseAllowedConnectionTypes(tk token, lt *token, mv any, errors *[]error) map[string]struct{} {
@@ -6028,6 +6091,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		dbgAndTrace            bool
 		trcAndVerboseTrc       bool
 		dbgAndTrcAndVerboseTrc bool
+		uds                    string
 		err                    error
 	)
 
@@ -6041,6 +6105,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Host, "addr", _EMPTY_, "Network host to listen on.")
 	fs.StringVar(&opts.Host, "a", _EMPTY_, "Network host to listen on.")
 	fs.StringVar(&opts.Host, "net", _EMPTY_, "Network host to listen on.")
+	fs.StringVar(&uds, "uds", _EMPTY_, "UNIX domain socket: \"/path;group=grp;mode=0660\" (Linux only).")
+	fs.BoolVar(&opts.DontListen, "dont_listen_tcp", false, "Do not listen on host/port via TCP.")
 	fs.StringVar(&opts.ClientAdvertise, "client_advertise", _EMPTY_, "Client URL to advertise to other servers.")
 	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
@@ -6254,6 +6320,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 				}
 				routeUrls := RoutesFromStr(opts.RoutesStr)
 				opts.Routes = routeUrls
+			case "uds":
+				opts.UDS, flagErr = ParseUDSOption(uds)
 			}
 		}
 	})
