@@ -5129,8 +5129,8 @@ func (o *consumer) checkNumPending() (uint64, error) {
 		// pending calculation that this replaces had the same problem though.
 		if o.sseq > state.LastSeq {
 			o.npc = 0
-		} else if npc > 0 || npc > state.Msgs {
-			o.npc = int64(min(npc, state.Msgs))
+		} else if npc > 0 {
+			o.npc = int64(min(npc, state.Msgs, state.LastSeq-o.sseq+1))
 		}
 	}
 	return o.numPending(), nil
