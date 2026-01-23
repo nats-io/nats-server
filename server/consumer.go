@@ -5123,9 +5123,14 @@ func (o *consumer) checkNumPending() (uint64, error) {
 		var state StreamState
 		o.mset.store.FastState(&state)
 		npc := o.numPending()
-		if o.sseq > state.LastSeq && npc > 0 || npc > state.Msgs {
-			// Re-calculate.
-			return o.streamNumPending()
+		// Make sure we can't report more messages than there are.
+		// TODO(nat): It's not great that this means consumer info has side effects,
+		// since we can't know whether anyone will call it or not. The previous num
+		// pending calculation that this replaces had the same problem though.
+		if o.sseq > state.LastSeq {
+			o.npc = 0
+		} else if npc > 0 || npc > state.Msgs {
+			o.npc = int64(min(npc, state.Msgs))
 		}
 	}
 	return o.numPending(), nil
