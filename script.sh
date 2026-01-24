@@ -17,7 +17,12 @@ survivedMutants=()
 index=0
 cd "$mutantFileRoot"
 # Run all the tests
-for file in $(find mutated -name '*.go'); do
+while IFS= read -r -d '' file; do
+    # Skip base.go if it exists (it's not a mutant)
+    if [[ "$(basename "$file")" == "base.go" ]]; then
+        continue
+    fi
+    
     echo Testing for $file ...
     srcPath="$mutantFileRoot/$file"
     testOutputPath="$resultsDir/testoutput/$index"
@@ -47,7 +52,7 @@ for file in $(find mutated -name '*.go'); do
     # Increment the index of our test, head back to the root
     index=$((index + 1))
     cd "$mutantFileRoot"
-done
+done < <(find mutated -name '*.go' -print0 | sort -z -V)
 
 echo ""
 echo "=================================================="

@@ -12,28 +12,30 @@ echo "Base file: $baseFile"
 echo "Output file: $outputFile"
 echo ""
 
-# Loop through all mutation files
-for i in {00..99}; do
-    mutantFile="$mutatedDir/${i}.go"
-    
-    if [ -f "$mutantFile" ]; then
-        echo "Processing mutation ${i}.go..."
-        
-        # Add header for this mutation
-        echo "====================================================" >> "$outputFile"
-        echo "MUTATION: ${i}.go" >> "$outputFile"
-        echo "====================================================" >> "$outputFile"
-        
-        # Generate diff and append to output file
-        diff -u "$baseFile" "$mutantFile" >> "$outputFile"
-        
-        # Add separator
-        echo "" >> "$outputFile"
-        echo "" >> "$outputFile"
-    else
-        echo "Warning: $mutantFile not found, skipping..."
+# Loop through all mutation files sorted numerically
+while IFS= read -r -d '' mutantFile; do
+    # Skip base.go if it exists
+    if [[ "$(basename "$mutantFile")" == "base.go" ]]; then
+        continue
     fi
-done
+    
+    # Extract just the filename without path and extension
+    mutantName=$(basename "$mutantFile")
+    
+    echo "Processing mutation ${mutantName}..."
+    
+    # Add header for this mutation
+    echo "====================================================" >> "$outputFile"
+    echo "MUTATION: ${mutantName}" >> "$outputFile"
+    echo "====================================================" >> "$outputFile"
+    
+    # Generate diff and append to output file
+    diff -u "$baseFile" "$mutantFile" >> "$outputFile"
+    
+    # Add separator
+    echo "" >> "$outputFile"
+    echo "" >> "$outputFile"
+done < <(find "$mutatedDir" -name "*.go" -print0 | sort -z -V)
 
 echo ""
 echo "All diffs generated and saved to: $outputFile"

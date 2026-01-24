@@ -1590,3 +1590,659 @@ MUTATION: 99.go
  	parts[j] = strconv.Itoa(int(v))
 
 
+====================================================
+MUTATION: 100.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/100.go"	2026-01-24 12:45:01.739324700 -0800
+@@ -190,7 +190,7 @@
+ 		case 1:
+ 			parts[j] = "00" + parts[j]
+ 		}
+-		v = v / 1000
++		v = v + 1000
+ 		j--
+ 	}
+ 	parts[j] = strconv.Itoa(int(v))
+
+
+====================================================
+MUTATION: 101.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/101.go"	2026-01-24 12:45:07.673697200 -0800
+@@ -190,7 +190,7 @@
+ 		case 1:
+ 			parts[j] = "00" + parts[j]
+ 		}
+-		v = v / 1000
++		v = v - 1000
+ 		j--
+ 	}
+ 	parts[j] = strconv.Itoa(int(v))
+
+
+====================================================
+MUTATION: 102.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/102.go"	2026-01-24 12:46:50.453906200 -0800
+@@ -194,7 +194,7 @@
+ 		j--
+ 	}
+ 	parts[j] = strconv.Itoa(int(v))
+-	return sign + strings.Join(parts[j:], ",")
++	return sign + strings.Join(parts[j:], ",,")
+ }
+ 
+ // Adds urlStr to the given map. If the string was already present, simply
+
+
+====================================================
+MUTATION: 103.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/103.go"	2026-01-24 12:51:57.927060900 -0800
+@@ -194,7 +194,7 @@
+ 		j--
+ 	}
+ 	parts[j] = strconv.Itoa(int(v))
+-	return sign + strings.Join(parts[j:], ",")
++	return sign + strings.Join(parts[j:], "")
+ }
+ 
+ // Adds urlStr to the given map. If the string was already present, simply
+
+
+====================================================
+MUTATION: 104.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/104.go"	2026-01-24 12:52:05.468111700 -0800
+@@ -201,7 +201,7 @@
+ // bumps the reference count.
+ // Returns true only if it was added for the first time.
+ func (m refCountedUrlSet) addUrl(urlStr string) bool {
+-	m[urlStr]++
++	m[urlStr]-
+ 	return m[urlStr] == 1
+ }
+ 
+
+
+====================================================
+MUTATION: 105.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/105.go"	2026-01-24 12:52:14.924818800 -0800
+@@ -202,7 +202,7 @@
+ // Returns true only if it was added for the first time.
+ func (m refCountedUrlSet) addUrl(urlStr string) bool {
+ 	m[urlStr]++
+-	return m[urlStr] == 1
++	return m[urlStr] != 1
+ }
+ 
+ // Removes urlStr from the given map. If the string is not present, nothing
+
+
+====================================================
+MUTATION: 106.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/106.go"	2026-01-24 12:52:24.225814700 -0800
+@@ -202,7 +202,7 @@
+ // Returns true only if it was added for the first time.
+ func (m refCountedUrlSet) addUrl(urlStr string) bool {
+ 	m[urlStr]++
+-	return m[urlStr] == 1
++	return m[urlStr] == 0
+ }
+ 
+ // Removes urlStr from the given map. If the string is not present, nothing
+
+
+====================================================
+MUTATION: 107.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/107.go"	2026-01-24 12:52:43.757104400 -0800
+@@ -210,7 +210,7 @@
+ // If the string was present, its reference count is decreased. Returns true
+ // if this was the last reference, false otherwise.
+ func (m refCountedUrlSet) removeUrl(urlStr string) bool {
+-	removed := false
++	removed := true
+ 	if ref, ok := m[urlStr]; ok {
+ 		if ref == 1 {
+ 			removed = true
+
+
+====================================================
+MUTATION: 108.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/108.go"	2026-01-24 12:52:54.461814900 -0800
+@@ -212,7 +212,7 @@
+ func (m refCountedUrlSet) removeUrl(urlStr string) bool {
+ 	removed := false
+ 	if ref, ok := m[urlStr]; ok {
+-		if ref == 1 {
++		if ref != 1 {
+ 			removed = true
+ 			delete(m, urlStr)
+ 		} else {
+
+
+====================================================
+MUTATION: 109.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/109.go"	2026-01-24 12:53:00.450693000 -0800
+@@ -212,7 +212,7 @@
+ func (m refCountedUrlSet) removeUrl(urlStr string) bool {
+ 	removed := false
+ 	if ref, ok := m[urlStr]; ok {
+-		if ref == 1 {
++		if ref == 0 {
+ 			removed = true
+ 			delete(m, urlStr)
+ 		} else {
+
+
+====================================================
+MUTATION: 110.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/110.go"	2026-01-24 12:53:07.516823400 -0800
+@@ -213,7 +213,7 @@
+ 	removed := false
+ 	if ref, ok := m[urlStr]; ok {
+ 		if ref == 1 {
+-			removed = true
++			removed = false
+ 			delete(m, urlStr)
+ 		} else {
+ 			m[urlStr]--
+
+
+====================================================
+MUTATION: 111.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/111.go"	2026-01-24 12:53:14.693238500 -0800
+@@ -216,7 +216,7 @@
+ 			removed = true
+ 			delete(m, urlStr)
+ 		} else {
+-			m[urlStr]--
++			m[urlStr]++
+ 		}
+ 	}
+ 	return removed
+
+
+====================================================
+MUTATION: 112.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/112.go"	2026-01-24 12:53:31.615795100 -0800
+@@ -224,7 +224,7 @@
+ 
+ // Returns the unique URLs in this map as a slice
+ func (m refCountedUrlSet) getAsStringSlice() []string {
+-	a := make([]string, 0, len(m))
++	a := make([]string, 1, len(m))
+ 	for u := range m {
+ 		a = append(a, u)
+ 	}
+
+
+====================================================
+MUTATION: 113.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/113.go"	2026-01-24 12:53:56.216053400 -0800
+@@ -224,7 +224,7 @@
+ 
+ // Returns the unique URLs in this map as a slice
+ func (m refCountedUrlSet) getAsStringSlice() []string {
+-	a := make([]string, 0, len(m))
++	a := make([]string, 0, len(m)+1)
+ 	for u := range m {
+ 		a = append(a, u)
+ 	}
+
+
+====================================================
+MUTATION: 114.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/114.go"	2026-01-24 12:54:06.483577100 -0800
+@@ -224,7 +224,7 @@
+ 
+ // Returns the unique URLs in this map as a slice
+ func (m refCountedUrlSet) getAsStringSlice() []string {
+-	a := make([]string, 0, len(m))
++	a := make([]string, 0, len(m)-1)
+ 	for u := range m {
+ 		a = append(a, u)
+ 	}
+
+
+====================================================
+MUTATION: 115.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/115.go"	2026-01-24 12:54:15.107884400 -0800
+@@ -244,7 +244,7 @@
+ // natsListenConfig.Listen(ctx,...) or use natsListen(); leave calls for HTTP
+ // monitoring, etc, on the default.
+ var natsListenConfig = &net.ListenConfig{
+-	KeepAlive: -1,
++	KeepAlive: 1,
+ }
+ 
+ // natsListen() is the same as net.Listen() except that TCP keepalives are
+
+
+====================================================
+MUTATION: 116.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/116.go"	2026-01-24 12:54:27.988812800 -0800
+@@ -258,7 +258,7 @@
+ func natsDialTimeout(network, address string, timeout time.Duration) (net.Conn, error) {
+ 	d := net.Dialer{
+ 		Timeout:   timeout,
+-		KeepAlive: -1,
++		KeepAlive: 1,
+ 	}
+ 	return d.Dial(network, address)
+ }
+
+
+====================================================
+MUTATION: 117.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/117.go"	2026-01-24 12:54:43.402458300 -0800
+@@ -273,7 +273,7 @@
+ 	// this function then GC should be easier.
+ 	needCopy := false
+ 	for i := range unredacted {
+-		if unredacted[i] == nil {
++		if unredacted[i] != nil {
+ 			r[i] = nil
+ 			continue
+ 		}
+
+
+====================================================
+MUTATION: 118.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/118.go"	2026-01-24 12:54:58.004565900 -0800
+@@ -277,7 +277,7 @@
+ 			r[i] = nil
+ 			continue
+ 		}
+-		if _, has := unredacted[i].User.Password(); !has {
++		if _, has := unredacted[i].User.Password(); has {
+ 			r[i] = unredacted[i]
+ 			continue
+ 		}
+
+
+====================================================
+MUTATION: 119.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/119.go"	2026-01-24 12:55:06.891118700 -0800
+@@ -281,7 +281,7 @@
+ 			r[i] = unredacted[i]
+ 			continue
+ 		}
+-		needCopy = true
++		needCopy = false
+ 		ru := *unredacted[i]
+ 		ru.User = url.UserPassword(ru.User.Username(), "xxxxx")
+ 		r[i] = &ru
+
+
+====================================================
+MUTATION: 120.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/120.go"	2026-01-24 12:55:17.474427700 -0800
+@@ -283,7 +283,7 @@
+ 		}
+ 		needCopy = true
+ 		ru := *unredacted[i]
+-		ru.User = url.UserPassword(ru.User.Username(), "xxxxx")
++		ru.User = url.UserPassword(ru.User.Username(), "xxxxxyyyyy")
+ 		r[i] = &ru
+ 	}
+ 	if needCopy {
+
+
+====================================================
+MUTATION: 121.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/121.go"	2026-01-24 12:55:41.755812900 -0800
+@@ -294,7 +294,7 @@
+ 
+ // redactURLString() attempts to redact a URL string.
+ func redactURLString(raw string) string {
+-	if !strings.ContainsRune(raw, '@') {
++	if !strings.ContainsRune(raw, '!') {
+ 		return raw
+ 	}
+ 	u, err := url.Parse(raw)
+
+
+====================================================
+MUTATION: 122.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/122.go"	2026-01-24 12:55:47.117775100 -0800
+@@ -294,7 +294,7 @@
+ 
+ // redactURLString() attempts to redact a URL string.
+ func redactURLString(raw string) string {
+-	if !strings.ContainsRune(raw, '@') {
++	if strings.ContainsRune(raw, '@') {
+ 		return raw
+ 	}
+ 	u, err := url.Parse(raw)
+
+
+====================================================
+MUTATION: 123.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/123.go"	2026-01-24 12:55:56.698948300 -0800
+@@ -298,7 +298,7 @@
+ 		return raw
+ 	}
+ 	u, err := url.Parse(raw)
+-	if err != nil {
++	if err = nil {
+ 		return raw
+ 	}
+ 	return u.Redacted()
+
+
+====================================================
+MUTATION: 124.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/124.go"	2026-01-24 12:56:08.645423900 -0800
+@@ -306,7 +306,7 @@
+ 
+ // getURLsAsString returns a slice of u.Host from the given slice of url.URL's
+ func getURLsAsString(urls []*url.URL) []string {
+-	a := make([]string, 0, len(urls))
++	a := make([]string, 1, len(urls))
+ 	for _, u := range urls {
+ 		a = append(a, u.Host)
+ 	}
+
+
+====================================================
+MUTATION: 125.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/125.go"	2026-01-24 12:56:16.139358500 -0800
+@@ -306,7 +306,7 @@
+ 
+ // getURLsAsString returns a slice of u.Host from the given slice of url.URL's
+ func getURLsAsString(urls []*url.URL) []string {
+-	a := make([]string, 0, len(urls))
++	a := make([]string, -1, len(urls))
+ 	for _, u := range urls {
+ 		a = append(a, u.Host)
+ 	}
+
+
+====================================================
+MUTATION: 126.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/126.go"	2026-01-24 12:56:26.915137400 -0800
+@@ -306,7 +306,7 @@
+ 
+ // getURLsAsString returns a slice of u.Host from the given slice of url.URL's
+ func getURLsAsString(urls []*url.URL) []string {
+-	a := make([]string, 0, len(urls))
++	a := make([]string, 0, -len(urls))
+ 	for _, u := range urls {
+ 		a = append(a, u.Host)
+ 	}
+
+
+====================================================
+MUTATION: 127.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/127.go"	2026-01-24 12:56:37.586701000 -0800
+@@ -316,7 +316,7 @@
+ // copyBytes make a new slice of the same size as `src` and copy its content.
+ // If `src` is nil or its length is 0, then this returns `nil`
+ func copyBytes(src []byte) []byte {
+-	if len(src) == 0 {
++	if len(src) > 0 {
+ 		return nil
+ 	}
+ 	dst := make([]byte, len(src))
+
+
+====================================================
+MUTATION: 128.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/128.go"	2026-01-24 12:56:46.602634800 -0800
+@@ -316,7 +316,7 @@
+ // copyBytes make a new slice of the same size as `src` and copy its content.
+ // If `src` is nil or its length is 0, then this returns `nil`
+ func copyBytes(src []byte) []byte {
+-	if len(src) == 0 {
++	if len(src) < 0 {
+ 		return nil
+ 	}
+ 	dst := make([]byte, len(src))
+
+
+====================================================
+MUTATION: 129.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/129.go"	2026-01-24 12:56:53.862056100 -0800
+@@ -316,7 +316,7 @@
+ // copyBytes make a new slice of the same size as `src` and copy its content.
+ // If `src` is nil or its length is 0, then this returns `nil`
+ func copyBytes(src []byte) []byte {
+-	if len(src) == 0 {
++	if len(src) != 0 {
+ 		return nil
+ 	}
+ 	dst := make([]byte, len(src))
+
+
+====================================================
+MUTATION: 130.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/130.go"	2026-01-24 12:57:03.669996800 -0800
+@@ -327,7 +327,7 @@
+ // copyStrings make a new slice of the same size than `src` and copy its content.
+ // If `src` is nil, then this returns `nil`
+ func copyStrings(src []string) []string {
+-	if src == nil {
++	if src > nil {
+ 		return nil
+ 	}
+ 	dst := make([]string, len(src))
+
+
+====================================================
+MUTATION: 131.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/131.go"	2026-01-24 12:57:10.869924300 -0800
+@@ -327,7 +327,7 @@
+ // copyStrings make a new slice of the same size than `src` and copy its content.
+ // If `src` is nil, then this returns `nil`
+ func copyStrings(src []string) []string {
+-	if src == nil {
++	if src < nil {
+ 		return nil
+ 	}
+ 	dst := make([]string, len(src))
+
+
+====================================================
+MUTATION: 132.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/132.go"	2026-01-24 12:57:18.770790700 -0800
+@@ -327,7 +327,7 @@
+ // copyStrings make a new slice of the same size than `src` and copy its content.
+ // If `src` is nil, then this returns `nil`
+ func copyStrings(src []string) []string {
+-	if src == nil {
++	if src != nil {
+ 		return nil
+ 	}
+ 	dst := make([]string, len(src))
+
+
+====================================================
+MUTATION: 133.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/133.go"	2026-01-24 12:57:30.386844700 -0800
+@@ -339,7 +339,7 @@
+ func generateInfoJSON(info *Info) []byte {
+ 	b, _ := json.Marshal(info)
+ 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
+-	return bytes.Join(pcs, []byte(" "))
++	return bytes.Join(pcs, []byte("!!"))
+ }
+ 
+ // parallelTaskQueue starts a number of goroutines and returns a channel
+
+
+====================================================
+MUTATION: 134.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/134.go"	2026-01-24 12:57:39.404733700 -0800
+@@ -338,7 +338,7 @@
+ // Returns a byte slice for the INFO protocol.
+ func generateInfoJSON(info *Info) []byte {
+ 	b, _ := json.Marshal(info)
+-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
++	pcs := [][]byte{[]byte("ERROR"), b, []byte(CR_LF)}
+ 	return bytes.Join(pcs, []byte(" "))
+ }
+ 
+
+
+====================================================
+MUTATION: 135.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/135.go"	2026-01-24 12:57:51.802308700 -0800
+@@ -348,7 +348,7 @@
+ // all queued tasks have completed. The passed in mp limits concurrency,
+ // or a value <= 0 will default to GOMAXPROCS.
+ func parallelTaskQueue(mp int) chan<- func() {
+-	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
++	if rmp := runtime.GOMAXPROCS(1); mp <= 0 {
+ 		mp = rmp
+ 	} else {
+ 		mp = max(rmp, mp)
+
+
+====================================================
+MUTATION: 136.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/136.go"	2026-01-24 12:57:58.681112600 -0800
+@@ -348,7 +348,7 @@
+ // all queued tasks have completed. The passed in mp limits concurrency,
+ // or a value <= 0 will default to GOMAXPROCS.
+ func parallelTaskQueue(mp int) chan<- func() {
+-	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
++	if rmp := runtime.GOMAXPROCS(-1); mp >= 0 {
+ 		mp = rmp
+ 	} else {
+ 		mp = max(rmp, mp)
+
+
+====================================================
+MUTATION: 137.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/137.go"	2026-01-24 12:58:03.817518300 -0800
+@@ -348,7 +348,7 @@
+ // all queued tasks have completed. The passed in mp limits concurrency,
+ // or a value <= 0 will default to GOMAXPROCS.
+ func parallelTaskQueue(mp int) chan<- func() {
+-	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
++	if rmp := runtime.GOMAXPROCS(-1); mp == 0 {
+ 		mp = rmp
+ 	} else {
+ 		mp = max(rmp, mp)
+
+
+====================================================
+MUTATION: 138.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/138.go"	2026-01-24 12:58:11.171800600 -0800
+@@ -348,7 +348,7 @@
+ // all queued tasks have completed. The passed in mp limits concurrency,
+ // or a value <= 0 will default to GOMAXPROCS.
+ func parallelTaskQueue(mp int) chan<- func() {
+-	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
++	if rmp := runtime.GOMAXPROCS(-1); mp <= 1 {
+ 		mp = rmp
+ 	} else {
+ 		mp = max(rmp, mp)
+
+
+====================================================
+MUTATION: 139.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/139.go"	2026-01-24 12:58:17.930915200 -0800
+@@ -351,7 +351,7 @@
+ 	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
+ 		mp = rmp
+ 	} else {
+-		mp = max(rmp, mp)
++		mp = min(rmp, mp)
+ 	}
+ 	tq := make(chan func(), mp)
+ 	for range mp {
+
+
+====================================================
+MUTATION: 140.go
+====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/140.go"	2026-01-24 12:58:48.386174700 -0800
+@@ -348,7 +348,7 @@
+ // all queued tasks have completed. The passed in mp limits concurrency,
+ // or a value <= 0 will default to GOMAXPROCS.
+ func parallelTaskQueue(mp int) chan<- func() {
+-	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
++	if rmp := runtime.GOMAXPROCS(-1); mp != 0 {
+ 		mp = rmp
+ 	} else {
+ 		mp = max(rmp, mp)
+
+
