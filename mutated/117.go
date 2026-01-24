@@ -273,7 +273,7 @@ func redactURLList(unredacted []*url.URL) []*url.URL {
 	// this function then GC should be easier.
 	needCopy := false
 	for i := range unredacted {
-		if unredacted[i] == nil {
+		if unredacted[i] != nil {
 			r[i] = nil
 			continue
 		}

@@ -348,7 +348,7 @@ func generateInfoJSON(info *Info) []byte {
 // all queued tasks have completed. The passed in mp limits concurrency,
 // or a value <= 0 will default to GOMAXPROCS.
 func parallelTaskQueue(mp int) chan<- func() {
-	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
+	if rmp := runtime.GOMAXPROCS(-1); mp >= 0 {
 		mp = rmp
 	} else {
 		mp = max(rmp, mp)

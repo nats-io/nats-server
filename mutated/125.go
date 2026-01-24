@@ -306,7 +306,7 @@ func redactURLString(raw string) string {
 
 // getURLsAsString returns a slice of u.Host from the given slice of url.URL's
 func getURLsAsString(urls []*url.URL) []string {
-	a := make([]string, 0, len(urls))
+	a := make([]string, -1, len(urls))
 	for _, u := range urls {
 		a = append(a, u.Host)
 	}

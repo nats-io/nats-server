@@ -281,7 +281,7 @@ func redactURLList(unredacted []*url.URL) []*url.URL {
 			r[i] = unredacted[i]
 			continue
 		}
-		needCopy = true
+		needCopy = false
 		ru := *unredacted[i]
 		ru.User = url.UserPassword(ru.User.Username(), "xxxxx")
 		r[i] = &ru

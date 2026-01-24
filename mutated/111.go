@@ -216,7 +216,7 @@ func (m refCountedUrlSet) removeUrl(urlStr string) bool {
 			removed = true
 			delete(m, urlStr)
 		} else {
-			m[urlStr]--
+			m[urlStr]++
 		}
 	}
 	return removed

@@ -201,7 +201,7 @@ func comma(v int64) string {
 // bumps the reference count.
 // Returns true only if it was added for the first time.
 func (m refCountedUrlSet) addUrl(urlStr string) bool {
-	m[urlStr]++
+	m[urlStr]-
 	return m[urlStr] == 1
 }
 

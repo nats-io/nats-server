@@ -277,7 +277,7 @@ func redactURLList(unredacted []*url.URL) []*url.URL {
 			r[i] = nil
 			continue
 		}
-		if _, has := unredacted[i].User.Password(); !has {
+		if _, has := unredacted[i].User.Password(); has {
 			r[i] = unredacted[i]
 			continue
 		}

@@ -327,7 +327,7 @@ func copyBytes(src []byte) []byte {
 // copyStrings make a new slice of the same size than `src` and copy its content.
 // If `src` is nil, then this returns `nil`
 func copyStrings(src []string) []string {
-	if src == nil {
+	if src != nil {
 		return nil
 	}
 	dst := make([]string, len(src))

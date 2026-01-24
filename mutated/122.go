@@ -294,7 +294,7 @@ func redactURLList(unredacted []*url.URL) []*url.URL {
 
 // redactURLString() attempts to redact a URL string.
 func redactURLString(raw string) string {
-	if !strings.ContainsRune(raw, '@') {
+	if strings.ContainsRune(raw, '@') {
 		return raw
 	}
 	u, err := url.Parse(raw)

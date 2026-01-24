@@ -224,7 +224,7 @@ func (m refCountedUrlSet) removeUrl(urlStr string) bool {
 
 // Returns the unique URLs in this map as a slice
 func (m refCountedUrlSet) getAsStringSlice() []string {
-	a := make([]string, 0, len(m))
+	a := make([]string, 0, len(m)-1)
 	for u := range m {
 		a = append(a, u)
 	}

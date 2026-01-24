@@ -298,7 +298,7 @@ func redactURLString(raw string) string {
 		return raw
 	}
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err = nil {
 		return raw
 	}
 	return u.Redacted()

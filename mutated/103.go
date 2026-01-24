@@ -194,7 +194,7 @@ func comma(v int64) string {
 		j--
 	}
 	parts[j] = strconv.Itoa(int(v))
-	return sign + strings.Join(parts[j:], ",")
+	return sign + strings.Join(parts[j:], "")
 }
 
 // Adds urlStr to the given map. If the string was already present, simply

@@ -202,7 +202,7 @@ func comma(v int64) string {
 // Returns true only if it was added for the first time.
 func (m refCountedUrlSet) addUrl(urlStr string) bool {
 	m[urlStr]++
-	return m[urlStr] == 1
+	return m[urlStr] != 1
 }
 
 // Removes urlStr from the given map. If the string is not present, nothing

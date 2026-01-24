@@ -339,7 +339,7 @@ func copyStrings(src []string) []string {
 func generateInfoJSON(info *Info) []byte {
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	return bytes.Join(pcs, []byte(" "))
+	return bytes.Join(pcs, []byte("!!"))
 }
 
 // parallelTaskQueue starts a number of goroutines and returns a channel

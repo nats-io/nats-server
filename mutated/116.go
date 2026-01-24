@@ -258,7 +258,7 @@ func natsListen(network, address string) (net.Listener, error) {
 func natsDialTimeout(network, address string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{
 		Timeout:   timeout,
-		KeepAlive: -1,
+		KeepAlive: 1,
 	}
 	return d.Dial(network, address)
 }

@@ -351,7 +351,7 @@ func parallelTaskQueue(mp int) chan<- func() {
 	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
 		mp = rmp
 	} else {
-		mp = max(rmp, mp)
+		mp = min(rmp, mp)
 	}
 	tq := make(chan func(), mp)
 	for range mp {

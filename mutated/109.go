@@ -212,7 +212,7 @@ func (m refCountedUrlSet) addUrl(urlStr string) bool {
 func (m refCountedUrlSet) removeUrl(urlStr string) bool {
 	removed := false
 	if ref, ok := m[urlStr]; ok {
-		if ref == 1 {
+		if ref == 0 {
 			removed = true
 			delete(m, urlStr)
 		} else {

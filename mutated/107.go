@@ -210,7 +210,7 @@ func (m refCountedUrlSet) addUrl(urlStr string) bool {
 // If the string was present, its reference count is decreased. Returns true
 // if this was the last reference, false otherwise.
 func (m refCountedUrlSet) removeUrl(urlStr string) bool {
-	removed := false
+	removed := true
 	if ref, ok := m[urlStr]; ok {
 		if ref == 1 {
 			removed = true

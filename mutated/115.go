@@ -244,7 +244,7 @@ func (m refCountedUrlSet) getAsStringSlice() []string {
 // natsListenConfig.Listen(ctx,...) or use natsListen(); leave calls for HTTP
 // monitoring, etc, on the default.
 var natsListenConfig = &net.ListenConfig{
-	KeepAlive: -1,
+	KeepAlive: 1,
 }
 
 // natsListen() is the same as net.Listen() except that TCP keepalives are
