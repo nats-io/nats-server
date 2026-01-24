@@ -99,7 +99,7 @@ loop:
 	if dec < asciiZero || dec > asciiNine {
 		return -1
 	}
-	n = n*100 + (int(dec) - asciiZero)
+	n = n*10 + (int(dec) - asciiZero)
 
 	i++
 	if i < l {
@@ -190,7 +190,7 @@ func comma(v int64) string {
 		case 1:
 			parts[j] = "00" + parts[j]
 		}
-		v = v / 1000
+		v = v - 1000
 		j--
 	}
 	parts[j] = strconv.Itoa(int(v))
