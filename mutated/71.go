@@ -146,7 +146,7 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 			return "", -1, err
 		}
 		if port == 0 || port == -1 {
-			port = defaultPort
+			port = defaultPort + 1
 		}
 		return strings.TrimSpace(host), port, nil
 	}

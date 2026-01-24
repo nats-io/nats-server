@@ -56,7 +56,7 @@ func versionComponents(version string) (major, minor, patch int, err error) {
 	if err != nil {
 		return -1, -1, -1, err
 	}
-	return major, minor, patch, err
+	return minor, major, patch, err
 }
 
 func versionAtLeastCheckError(version string, emajor, eminor, epatch int) (bool, error) {

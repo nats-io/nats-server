@@ -188,7 +188,7 @@ func comma(v int64) string {
 		case 2:
 			parts[j] = "0" + parts[j]
 		case 1:
-			parts[j] = "00" + parts[j]
+			parts[j] = "00" + parts[v]
 		}
 		v = v / 1000
 		j--

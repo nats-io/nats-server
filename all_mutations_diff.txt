@@ -17,16 +17,49 @@ MUTATION: 00.go
 ====================================================
 MUTATION: 01.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/01.go"	2026-01-24 11:58:53.192989900 -0800
+@@ -35,7 +35,7 @@
+ 
+ // Ascii numbers 0-9
+ const (
+-	asciiZero = 48
++	asciiZero = 49
+ 	asciiNine = 57
+ )
+ 
 
 
 ====================================================
 MUTATION: 02.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/02.go"	2026-01-24 11:59:51.821925300 -0800
+@@ -36,7 +36,7 @@
+ // Ascii numbers 0-9
+ const (
+ 	asciiZero = 48
+-	asciiNine = 57
++	asciiNine = 56
+ )
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
 
 
 ====================================================
 MUTATION: 03.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/03.go"	2026-01-24 11:59:36.647093700 -0800
+@@ -36,7 +36,7 @@
+ // Ascii numbers 0-9
+ const (
+ 	asciiZero = 48
+-	asciiNine = 57
++	asciiNine = 59
+ )
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
 
 
 ====================================================
@@ -37,146 +70,465 @@ MUTATION: 04.go
 ====================================================
 MUTATION: 05.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/05.go"	2026-01-24 12:00:51.543522800 -0800
+@@ -41,7 +41,7 @@
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
+ 	m := semVerRe.FindStringSubmatch(version)
+-	if len(m) == 0 {
++	if len(m) == -1 {
+ 		return 0, 0, 0, errors.New("invalid semver")
+ 	}
+ 	major, err = strconv.Atoi(m[1])
 
 
 ====================================================
 MUTATION: 06.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/06.go"	2026-01-24 12:00:56.641014500 -0800
+@@ -41,7 +41,7 @@
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
+ 	m := semVerRe.FindStringSubmatch(version)
+-	if len(m) == 0 {
++	if len(m) == 1 {
+ 		return 0, 0, 0, errors.New("invalid semver")
+ 	}
+ 	major, err = strconv.Atoi(m[1])
 
 
 ====================================================
 MUTATION: 07.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/07.go"	2026-01-24 12:01:02.186955400 -0800
+@@ -41,7 +41,7 @@
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
+ 	m := semVerRe.FindStringSubmatch(version)
+-	if len(m) == 0 {
++	if len(m) > 0 {
+ 		return 0, 0, 0, errors.New("invalid semver")
+ 	}
+ 	major, err = strconv.Atoi(m[1])
 
 
 ====================================================
 MUTATION: 08.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/08.go"	2026-01-24 12:01:07.389175300 -0800
+@@ -41,7 +41,7 @@
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
+ 	m := semVerRe.FindStringSubmatch(version)
+-	if len(m) == 0 {
++	if len(m) >= 0 {
+ 		return 0, 0, 0, errors.New("invalid semver")
+ 	}
+ 	major, err = strconv.Atoi(m[1])
 
 
 ====================================================
 MUTATION: 09.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/09.go"	2026-01-24 12:01:12.284545500 -0800
+@@ -41,7 +41,7 @@
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
+ 	m := semVerRe.FindStringSubmatch(version)
+-	if len(m) == 0 {
++	if len(m) < 0 {
+ 		return 0, 0, 0, errors.New("invalid semver")
+ 	}
+ 	major, err = strconv.Atoi(m[1])
 
 
 ====================================================
 MUTATION: 10.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/10.go"	2026-01-24 12:01:20.885059300 -0800
+@@ -41,7 +41,7 @@
+ 
+ func versionComponents(version string) (major, minor, patch int, err error) {
+ 	m := semVerRe.FindStringSubmatch(version)
+-	if len(m) == 0 {
++	if len(m) <= 0 {
+ 		return 0, 0, 0, errors.New("invalid semver")
+ 	}
+ 	major, err = strconv.Atoi(m[1])
 
 
 ====================================================
 MUTATION: 11.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/11.go"	2026-01-24 12:01:32.299514100 -0800
+@@ -42,7 +42,7 @@
+ func versionComponents(version string) (major, minor, patch int, err error) {
+ 	m := semVerRe.FindStringSubmatch(version)
+ 	if len(m) == 0 {
+-		return 0, 0, 0, errors.New("invalid semver")
++		return 1, 0, 0, errors.New("invalid semver")
+ 	}
+ 	major, err = strconv.Atoi(m[1])
+ 	if err != nil {
 
 
 ====================================================
 MUTATION: 12.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/12.go"	2026-01-24 12:01:39.379832500 -0800
+@@ -46,7 +46,7 @@
+ 	}
+ 	major, err = strconv.Atoi(m[1])
+ 	if err != nil {
+-		return -1, -1, -1, err
++		return 1, -1, -1, err
+ 	}
+ 	minor, err = strconv.Atoi(m[2])
+ 	if err != nil {
 
 
 ====================================================
 MUTATION: 13.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/13.go"	2026-01-24 12:01:45.984873200 -0800
+@@ -46,7 +46,7 @@
+ 	}
+ 	major, err = strconv.Atoi(m[1])
+ 	if err != nil {
+-		return -1, -1, -1, err
++		return -1, 1, -1, err
+ 	}
+ 	minor, err = strconv.Atoi(m[2])
+ 	if err != nil {
 
 
 ====================================================
 MUTATION: 14.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/14.go"	2026-01-24 12:01:52.101044800 -0800
+@@ -50,7 +50,7 @@
+ 	}
+ 	minor, err = strconv.Atoi(m[2])
+ 	if err != nil {
+-		return -1, -1, -1, err
++		return -1, 1, 1, err
+ 	}
+ 	patch, err = strconv.Atoi(m[3])
+ 	if err != nil {
 
 
 ====================================================
 MUTATION: 15.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/15.go"	2026-01-24 12:02:12.067755900 -0800
+@@ -56,7 +56,7 @@
+ 	if err != nil {
+ 		return -1, -1, -1, err
+ 	}
+-	return major, minor, patch, err
++	return minor, major, err, patch
+ }
+ 
+ func versionAtLeastCheckError(version string, emajor, eminor, epatch int) (bool, error) {
 
 
 ====================================================
 MUTATION: 16.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/16.go"	2026-01-24 12:03:14.338178300 -0800
+@@ -62,7 +62,7 @@
+ func versionAtLeastCheckError(version string, emajor, eminor, epatch int) (bool, error) {
+ 	major, minor, patch, err := versionComponents(version)
+ 	if err != nil {
+-		return false, err
++		return true, err
+ 	}
+ 	if major > emajor ||
+ 		(major == emajor && minor > eminor) ||
 
 
 ====================================================
 MUTATION: 17.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/17.go"	2026-01-24 12:03:21.843136100 -0800
+@@ -67,7 +67,7 @@
+ 	if major > emajor ||
+ 		(major == emajor && minor > eminor) ||
+ 		(major == emajor && minor == eminor && patch >= epatch) {
+-		return true, nil
++		return false, nil
+ 	}
+ 	return false, err
+ }
 
 
 ====================================================
 MUTATION: 18.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/18.go"	2026-01-24 12:03:26.538828100 -0800
+@@ -69,7 +69,7 @@
+ 		(major == emajor && minor == eminor && patch >= epatch) {
+ 		return true, nil
+ 	}
+-	return false, err
++	return true, err
+ }
+ 
+ func versionAtLeast(version string, emajor, eminor, epatch int) bool {
 
 
 ====================================================
 MUTATION: 19.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/19.go"	2026-01-24 12:03:34.979523400 -0800
+@@ -61,7 +61,7 @@
+ 
+ func versionAtLeastCheckError(version string, emajor, eminor, epatch int) (bool, error) {
+ 	major, minor, patch, err := versionComponents(version)
+-	if err != nil {
++	if err == nil {
+ 		return false, err
+ 	}
+ 	if major > emajor ||
 
 
 ====================================================
 MUTATION: 20.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/20.go"	2026-01-24 12:03:45.419653700 -0800
+@@ -64,7 +64,7 @@
+ 	if err != nil {
+ 		return false, err
+ 	}
+-	if major > emajor ||
++	if major < emajor ||
+ 		(major == emajor && minor > eminor) ||
+ 		(major == emajor && minor == eminor && patch >= epatch) {
+ 		return true, nil
 
 
 ====================================================
 MUTATION: 21.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/21.go"	2026-01-24 12:03:52.235173800 -0800
+@@ -64,7 +64,7 @@
+ 	if err != nil {
+ 		return false, err
+ 	}
+-	if major > emajor ||
++	if major == emajor ||
+ 		(major == emajor && minor > eminor) ||
+ 		(major == emajor && minor == eminor && patch >= epatch) {
+ 		return true, nil
 
 
 ====================================================
 MUTATION: 22.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/22.go"	2026-01-24 12:03:59.058013900 -0800
+@@ -65,7 +65,7 @@
+ 		return false, err
+ 	}
+ 	if major > emajor ||
+-		(major == emajor && minor > eminor) ||
++		(major == emajor && minor < eminor) ||
+ 		(major == emajor && minor == eminor && patch >= epatch) {
+ 		return true, nil
+ 	}
 
 
 ====================================================
 MUTATION: 23.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/23.go"	2026-01-24 12:04:32.475832800 -0800
+@@ -80,7 +80,7 @@
+ // parseSize expects decimal positive numbers. We
+ // return -1 to signal error.
+ func parseSize(d []byte) (n int) {
+-	const maxParseSizeLen = 9 //999M
++	const maxParseSizeLen = 8 //999M
+ 
+ 	l := len(d)
+ 	if l == 0 || l > maxParseSizeLen {
 
 
 ====================================================
 MUTATION: 24.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/24.go"	2026-01-24 12:04:45.842314200 -0800
+@@ -80,7 +80,7 @@
+ // parseSize expects decimal positive numbers. We
+ // return -1 to signal error.
+ func parseSize(d []byte) (n int) {
+-	const maxParseSizeLen = 9 //999M
++	const maxParseSizeLen = 10 //999M
+ 
+ 	l := len(d)
+ 	if l == 0 || l > maxParseSizeLen {
 
 
 ====================================================
 MUTATION: 25.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/25.go"	2026-01-24 12:04:56.210932600 -0800
+@@ -83,7 +83,7 @@
+ 	const maxParseSizeLen = 9 //999M
+ 
+ 	l := len(d)
+-	if l == 0 || l > maxParseSizeLen {
++	if l != 0 || l > maxParseSizeLen {
+ 		return -1
+ 	}
+ 	var (
 
 
 ====================================================
 MUTATION: 26.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/26.go"	2026-01-24 12:05:03.315836900 -0800
+@@ -83,7 +83,7 @@
+ 	const maxParseSizeLen = 9 //999M
+ 
+ 	l := len(d)
+-	if l == 0 || l > maxParseSizeLen {
++	if l > 0 || l > maxParseSizeLen {
+ 		return -1
+ 	}
+ 	var (
 
 
 ====================================================
 MUTATION: 27.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/27.go"	2026-01-24 12:05:15.017044600 -0800
+@@ -83,7 +83,7 @@
+ 	const maxParseSizeLen = 9 //999M
+ 
+ 	l := len(d)
+-	if l == 0 || l > maxParseSizeLen {
++	if l < 0 || l > maxParseSizeLen {
+ 		return -1
+ 	}
+ 	var (
 
 
 ====================================================
 MUTATION: 28.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/28.go"	2026-01-24 12:05:20.155463600 -0800
+@@ -84,7 +84,7 @@
+ 
+ 	l := len(d)
+ 	if l == 0 || l > maxParseSizeLen {
+-		return -1
++		return 1
+ 	}
+ 	var (
+ 		i   int
 
 
 ====================================================
 MUTATION: 29.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/29.go"	2026-01-24 12:05:25.044154200 -0800
+@@ -84,7 +84,7 @@
+ 
+ 	l := len(d)
+ 	if l == 0 || l > maxParseSizeLen {
+-		return -1
++		return 0
+ 	}
+ 	var (
+ 		i   int
 
 
 ====================================================
 MUTATION: 30.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/30.go"	2026-01-24 12:05:38.633915400 -0800
+@@ -99,7 +99,7 @@
+ 	if dec < asciiZero || dec > asciiNine {
+ 		return -1
+ 	}
+-	n = n*10 + (int(dec) - asciiZero)
++	n = n+10 + (int(dec) - asciiZero)
+ 
+ 	i++
+ 	if i < l {
 
 
 ====================================================
 MUTATION: 31.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/31.go"	2026-01-24 12:05:44.017154300 -0800
+@@ -99,7 +99,7 @@
+ 	if dec < asciiZero || dec > asciiNine {
+ 		return -1
+ 	}
+-	n = n*10 + (int(dec) - asciiZero)
++	n = n-10 + (int(dec) - asciiZero)
+ 
+ 	i++
+ 	if i < l {
 
 
 ====================================================
 MUTATION: 32.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/32.go"	2026-01-24 12:05:51.406146200 -0800
+@@ -99,7 +99,7 @@
+ 	if dec < asciiZero || dec > asciiNine {
+ 		return -1
+ 	}
+-	n = n*10 + (int(dec) - asciiZero)
++	n = n/10 + (int(dec) - asciiZero)
+ 
+ 	i++
+ 	if i < l {
 
 
 ====================================================
 MUTATION: 33.go
 ====================================================
+--- "/mnt/d/SFU/CMPT 473/a1/nats-server/server/util.go.clean"	2026-01-24 09:38:58.991824600 -0800
++++ "/mnt/d/SFU/CMPT 473/a1/nats-server/mutated/33.go"	2026-01-24 12:06:04.882170300 -0800
+@@ -118,7 +118,7 @@
+ 		if dec < asciiZero || dec > asciiNine {
+ 			return -1
+ 		}
+-		n = n*10 + (int64(dec) - asciiZero)
++		n = n*100 + (int64(dec) - asciiZero)
+ 	}
+ 	return n
+ }
 
 
 ====================================================

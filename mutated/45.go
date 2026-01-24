@@ -112,7 +112,7 @@ loop:
 // return -1 to signal error
 func parseInt64(d []byte) (n int64) {
 	if len(d) == 0 {
-		return -1
+		return 1
 	}
 	for _, dec := range d {
 		if dec < asciiZero || dec > asciiNine {

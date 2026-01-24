@@ -46,7 +46,7 @@ func versionComponents(version string) (major, minor, patch int, err error) {
 	}
 	major, err = strconv.Atoi(m[1])
 	if err != nil {
-		return -1, -1, -1, err
+		return 1, -1, -1, err
 	}
 	minor, err = strconv.Atoi(m[2])
 	if err != nil {

@@ -111,7 +111,7 @@ loop:
 // parseInt64 expects decimal positive numbers. We
 // return -1 to signal error
 func parseInt64(d []byte) (n int64) {
-	if len(d) == 0 {
+	if len(d) == 1 {
 		return -1
 	}
 	for _, dec := range d {

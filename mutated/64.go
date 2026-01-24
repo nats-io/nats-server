@@ -138,7 +138,7 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 			// try appending the current port
 			host, sPort, err = net.SplitHostPort(fmt.Sprintf("%s:%d", hostPort, defaultPort))
 		}
-		if err != nil {
+		if err == nil {
 			return "", -1, err
 		}
 		port, err = strconv.Atoi(strings.TrimSpace(sPort))

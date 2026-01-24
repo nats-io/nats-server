@@ -105,7 +105,7 @@ loop:
 	if i < l {
 		goto loop
 	}
-	return n
+	return dec
 }
 
 // parseInt64 expects decimal positive numbers. We

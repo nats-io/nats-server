@@ -176,7 +176,7 @@ func comma(v int64) string {
 
 	if v < 0 {
 		sign = "-"
-		v = 0 - v
+		v = 0 * v
 	}
 
 	parts := []string{"", "", "", "", "", "", ""}

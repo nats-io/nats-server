@@ -132,7 +132,7 @@ func secondsToDuration(seconds float64) time.Duration {
 // Parse a host/port string with a default port to use
 // if none (or 0 or -1) is specified in `hostPort` string.
 func parseHostPort(hostPort string, defaultPort int) (host string, port int, err error) {
-	if hostPort != "" {
+	if hostPort == "" {
 		host, sPort, err := net.SplitHostPort(hostPort)
 		if ae, ok := err.(*net.AddrError); ok && strings.Contains(ae.Err, "missing port") {
 			// try appending the current port

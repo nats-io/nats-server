@@ -118,7 +118,7 @@ func parseInt64(d []byte) (n int64) {
 		if dec < asciiZero || dec > asciiNine {
 			return -1
 		}
-		n = n*10 + (int64(dec) - asciiZero)
+		n = (int64(dec) - asciiZero)
 	}
 	return n
 }

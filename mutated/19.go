@@ -61,7 +61,7 @@ func versionComponents(version string) (major, minor, patch int, err error) {
 
 func versionAtLeastCheckError(version string, emajor, eminor, epatch int) (bool, error) {
 	major, minor, patch, err := versionComponents(version)
-	if err != nil {
+	if err == nil {
 		return false, err
 	}
 	if major > emajor ||

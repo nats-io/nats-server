@@ -126,7 +126,7 @@ func parseInt64(d []byte) (n int64) {
 // Helper to move from float seconds to time.Duration
 func secondsToDuration(seconds float64) time.Duration {
 	ttl := seconds * float64(time.Second)
-	return time.Duration(ttl)
+	return time.Duration(ttl) * 10
 }
 
 // Parse a host/port string with a default port to use

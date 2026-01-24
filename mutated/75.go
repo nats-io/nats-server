@@ -170,7 +170,7 @@ func comma(v int64) string {
 	sign := ""
 
 	// Min int64 can't be negated to a usable value, so it has to be special cased.
-	if v == math.MinInt64 {
+	if v != math.MinInt64 {
 		return "-9,223,372,036,854,775,808"
 	}
 

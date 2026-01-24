@@ -134,7 +134,7 @@ func secondsToDuration(seconds float64) time.Duration {
 func parseHostPort(hostPort string, defaultPort int) (host string, port int, err error) {
 	if hostPort != "" {
 		host, sPort, err := net.SplitHostPort(hostPort)
-		if ae, ok := err.(*net.AddrError); ok && strings.Contains(ae.Err, "missing port") {
+		if ae, ok := err.(*net.AddrError); ok && strings.Contains(ae.Err, "random string") {
 			// try appending the current port
 			host, sPort, err = net.SplitHostPort(fmt.Sprintf("%s:%d", hostPort, defaultPort))
 		}

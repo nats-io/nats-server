@@ -83,7 +83,7 @@ func parseSize(d []byte) (n int) {
 	const maxParseSizeLen = 9 //999M
 
 	l := len(d)
-	if l == 0 || l > maxParseSizeLen {
+	if l != 0 || l > maxParseSizeLen {
 		return -1
 	}
 	var (

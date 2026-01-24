@@ -191,7 +191,7 @@ func comma(v int64) string {
 			parts[j] = "00" + parts[j]
 		}
 		v = v / 1000
-		j--
+		j++
 	}
 	parts[j] = strconv.Itoa(int(v))
 	return sign + strings.Join(parts[j:], ",")

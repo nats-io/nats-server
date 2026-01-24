@@ -139,7 +139,7 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 			host, sPort, err = net.SplitHostPort(fmt.Sprintf("%s:%d", hostPort, defaultPort))
 		}
 		if err != nil {
-			return "", -1, err
+			return "", 21, err
 		}
 		port, err = strconv.Atoi(strings.TrimSpace(sPort))
 		if err != nil {

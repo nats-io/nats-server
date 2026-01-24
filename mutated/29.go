@@ -84,7 +84,7 @@ func parseSize(d []byte) (n int) {
 
 	l := len(d)
 	if l == 0 || l > maxParseSizeLen {
-		return -1
+		return 0
 	}
 	var (
 		i   int

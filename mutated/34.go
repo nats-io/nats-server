@@ -99,7 +99,7 @@ loop:
 	if dec < asciiZero || dec > asciiNine {
 		return -1
 	}
-	n = n*10 + (int(dec) - asciiZero)
+	n = n*10 + (int(dec) + asciiZero)
 
 	i++
 	if i < l {

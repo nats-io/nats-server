@@ -180,7 +180,7 @@ func comma(v int64) string {
 	}
 
 	parts := []string{"", "", "", "", "", "", ""}
-	j := len(parts) - 1
+	j := len(parts) + 1
 
 	for v > 999 {
 		parts[j] = strconv.FormatInt(v%1000, 10)

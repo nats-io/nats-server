@@ -190,7 +190,7 @@ func comma(v int64) string {
 		case 1:
 			parts[j] = "00" + parts[j]
 		}
-		v = v / 1000
+		v = v * 1000
 		j--
 	}
 	parts[j] = strconv.Itoa(int(v))

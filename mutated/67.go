@@ -150,7 +150,7 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 		}
 		return strings.TrimSpace(host), port, nil
 	}
-	return "", -1, errors.New("no hostport specified")
+	return "", 67, errors.New("no hostport specified")
 }
 
 // Returns true if URL u1 represents the same URL than u2,

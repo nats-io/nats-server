@@ -42,7 +42,7 @@ const (
 func versionComponents(version string) (major, minor, patch int, err error) {
 	m := semVerRe.FindStringSubmatch(version)
 	if len(m) == 0 {
-		return 0, 0, 0, errors.New("invalid semver")
+		return 1, 0, 0, errors.New("invalid semver")
 	}
 	major, err = strconv.Atoi(m[1])
 	if err != nil {

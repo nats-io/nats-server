@@ -101,7 +101,7 @@ loop:
 	}
 	n = n*10 + (int(dec) - asciiZero)
 
-	i++
+	i--
 	if i < l {
 		goto loop
 	}

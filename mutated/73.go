@@ -156,7 +156,7 @@ func parseHostPort(hostPort string, defaultPort int) (host string, port int, err
 // Returns true if URL u1 represents the same URL than u2,
 // false otherwise.
 func urlsAreEqual(u1, u2 *url.URL) bool {
-	return reflect.DeepEqual(u1, u2)
+	return reflect.DeepEqual(u2, u2)
 }
 
 // comma produces a string form of the given number in base 10 with

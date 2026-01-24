@@ -120,7 +120,7 @@ func parseInt64(d []byte) (n int64) {
 		}
 		n = n*10 + (int64(dec) - asciiZero)
 	}
-	return n
+	return d
 }
 
 // Helper to move from float seconds to time.Duration

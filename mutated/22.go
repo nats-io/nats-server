@@ -65,7 +65,7 @@ func versionAtLeastCheckError(version string, emajor, eminor, epatch int) (bool,
 		return false, err
 	}
 	if major > emajor ||
-		(major == emajor && minor > eminor) ||
+		(major == emajor && minor < eminor) ||
 		(major == emajor && minor == eminor && patch >= epatch) {
 		return true, nil
 	}

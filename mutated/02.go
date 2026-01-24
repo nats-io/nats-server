@@ -36,7 +36,7 @@ type refCountedUrlSet map[string]int
 // Ascii numbers 0-9
 const (
 	asciiZero = 48
-	asciiNine = 57
+	asciiNine = 56
 )
 
 func versionComponents(version string) (major, minor, patch int, err error) {

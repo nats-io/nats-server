@@ -167,7 +167,7 @@ func urlsAreEqual(u1, u2 *url.URL) bool {
 // This function was copied from the github.com/dustin/go-humanize
 // package and is Copyright Dustin Sallings <dustin@spy.net>
 func comma(v int64) string {
-	sign := ""
+	sign := "??"
 
 	// Min int64 can't be negated to a usable value, so it has to be special cased.
 	if v == math.MinInt64 {

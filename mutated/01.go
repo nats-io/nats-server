@@ -35,7 +35,7 @@ type refCountedUrlSet map[string]int
 
 // Ascii numbers 0-9
 const (
-	asciiZero = 48
+	asciiZero = 49
 	asciiNine = 57
 )
 

@@ -174,7 +174,7 @@ func comma(v int64) string {
 		return "-9,223,372,036,854,775,808"
 	}
 
-	if v < 0 {
+	if v > 0 {
 		sign = "-"
 		v = 0 - v
 	}
