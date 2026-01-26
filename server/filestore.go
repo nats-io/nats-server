@@ -192,9 +192,7 @@ type fileStore struct {
 	bim         map[uint32]*msgBlock
 	psim        *stree.SubjectTree[psi]
 	tsl         int
-	wfsmu       sync.Mutex   // Only one writeFullState at a time to protect from overwrites.
-	wfsrun      atomic.Int64 // Is writeFullState already running? For timer check only
-	wfsadml     int          // writeFullState average dmap length, protected by wfsmu.
+	adml        int
 	hh          *highwayhash.Digest64
 	qch         chan struct{}
 	fsld        chan struct{}
@@ -10380,29 +10378,14 @@ func (fs *fileStore) _writeFullState(force, needLock bool) error {
 		return nil
 	}
 
-	// If we aren't forcing an update then only queue this up if we aren't already
-	// running. This means we can keep waiting on shutdown if needed but not build up
-	// lots of waiting goroutines in a bad timer case.
-	if fs.wfsrun.Add(1) > 1 && !force {
-		fs.wfsrun.Add(-1)
-		return nil
-	}
-	defer fs.wfsrun.Add(-1)
-
-	// Only allow one _writeFullState to take place at a time, otherwise we can
-	// have multiple goroutines trying to write the same file after we've released
-	// the store lock.
-	fs.wfsmu.Lock()
-	defer fs.wfsmu.Unlock()
-
 	fsLock := func() {
 		if needLock {
-			fs.mu.RLock()
+			fs.mu.Lock()
 		}
 	}
 	fsUnlock := func() {
 		if needLock {
-			fs.mu.RUnlock()
+			fs.mu.Unlock()
 		}
 	}
 
@@ -10434,7 +10417,7 @@ func (fs *fileStore) _writeFullState(force, needLock bool) error {
 	}
 
 	// We track this through subsequent runs to get an avg per blk used for subsequent runs.
-	avgDmapLen := fs.wfsadml
+	avgDmapLen := fs.adml
 	// If first time through could be 0
 	if avgDmapLen == 0 && ((fs.state.LastSeq-fs.state.FirstSeq+1)-fs.state.Msgs) > 0 {
 		avgDmapLen = 1024
@@ -10526,7 +10509,7 @@ func (fs *fileStore) _writeFullState(force, needLock bool) error {
 		mb.mu.RUnlock()
 	}
 	if dmapTotalLen > 0 {
-		fs.wfsadml = dmapTotalLen / len(fs.blks)
+		fs.adml = dmapTotalLen / len(fs.blks)
 	}
 
 	// Place block index and hash onto the end.
@@ -10552,12 +10535,9 @@ func (fs *fileStore) _writeFullState(force, needLock bool) error {
 
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 
-	// Need to have our own hasher here, as under a read lock we can't mutate the
-	// fs.hh safely.
-	key := sha256.Sum256([]byte(fs.cfg.Name))
-	hh, _ := highwayhash.NewDigest64(key[:])
-	hh.Write(buf)
-	buf = hh.Sum(buf)
+	fs.hh.Reset()
+	fs.hh.Write(buf)
+	buf = fs.hh.Sum(buf)
 
 	// Snapshot prior dirty count.
 	priorDirty := fs.dirty
@@ -10599,13 +10579,9 @@ func (fs *fileStore) _writeFullState(force, needLock bool) error {
 
 	// Update dirty if successful.
 	if err == nil {
-		if needLock {
-			fs.mu.Lock()
-		}
+		fsLock()
 		fs.dirty -= priorDirty
-		if needLock {
-			fs.mu.Unlock()
-		}
+		fsUnlock()
 	}
 
 	// Attempt to write both files, an error in one should not prevent the other from being written.
