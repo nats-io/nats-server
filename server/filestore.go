@@ -11153,33 +11153,41 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 	return b, nil
 }
 
-// We used to be more sophisticated to save memory, but speed is more important.
+// deleteBlocks returns DeleteBlocks representing interior deletes
+// and gaps between blocks.
 // All blocks should be at least read locked.
 func (fs *fileStore) deleteBlocks() DeleteBlocks {
 	var dbs DeleteBlocks
 	var prevLast uint64
+	var prevRange *DeleteRange
+	var msgsSinceGap bool
 
 	for _, mb := range fs.blks {
 		// Detect if we have a gap between these blocks.
 		fseq := atomic.LoadUint64(&mb.first.seq)
 		if prevLast > 0 && prevLast+1 != fseq {
-			var reuseGap bool
-			if len(dbs) > 0 {
-				// Detect multiple blocks that only contain large gaps. We can simply make
-				// the previous gap larger to account for these, instead of adding a new range.
-				if dr, ok := dbs[len(dbs)-1].(*DeleteRange); ok {
-					dr.Num += fseq - prevLast - 1
-					reuseGap = true
+			gapSize := fseq - prevLast - 1
+			// The previous DeleteRange can be extended
+			// to include this gap, if there are no
+			// blocks containing messages between the
+			// two gaps.
+			if prevRange != nil && !msgsSinceGap {
+				prevRange.Num += gapSize
+			} else {
+				prevRange = &DeleteRange{
+					First: prevLast + 1,
+					Num:   gapSize,
 				}
-			}
-			if !reuseGap {
-				dbs = append(dbs, &DeleteRange{First: prevLast + 1, Num: fseq - prevLast - 1})
+				msgsSinceGap = false
+				dbs = append(dbs, prevRange)
 			}
 		}
 		if mb.dmap.Size() > 0 {
 			dbs = append(dbs, &mb.dmap)
+			prevRange = nil
 		}
 		prevLast = atomic.LoadUint64(&mb.last.seq)
+		msgsSinceGap = msgsSinceGap || mb.msgs > 0
 	}
 	return dbs
 }
