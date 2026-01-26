@@ -4011,6 +4011,11 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	return health
 }
 
+// Healthz returns the health status of the server.
+func (s *Server) Healthz(opts *HealthzOptions) *HealthStatus {
+	return s.healthz(opts)
+}
+
 type ExpvarzStatus struct {
 	Memstats json.RawMessage `json:"memstats"`
 	Cmdline  json.RawMessage `json:"cmdline"`
