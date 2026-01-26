@@ -49,6 +49,7 @@ type RaftNode interface {
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
 	Leader() bool
+	LeaderLease() bool
 	LeaderSince() *time.Time
 	Quorum() bool
 	Current() bool
@@ -168,6 +169,7 @@ type raft struct {
 	elect  *time.Timer // Election timer, normally accessed via electTimer
 	etlr   time.Time   // Election timer last reset time, for unit tests only
 	active time.Time   // Last activity time, i.e. for heartbeats
+	lease  time.Time   // Last time the lease was renewed.
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
 
@@ -1500,6 +1502,16 @@ func (n *raft) Leader() bool {
 	return n.leaderState.Load()
 }
 
+// LeaderLease returns true if we are the leader, and we have a lease.
+func (n *raft) LeaderLease() bool {
+	if !n.Leader() {
+		return false
+	}
+	n.RLock()
+	defer n.RUnlock()
+	return time.Since(n.lease) <= leaseTimeout()
+}
+
 // LeaderSince returns how long we have been leader for,
 // if applicable.
 func (n *raft) LeaderSince() *time.Time {
@@ -2342,6 +2354,7 @@ type appendEntry struct {
 	pindex  uint64   // The previous commit index, for checking consistency.
 	entries []*Entry // Entries to process.
 	// Below fields are for internal use only:
+	time  time.Time     // When this append entry was created, used to extend the leader lease when this entry commits.
 	lterm uint64        // The highest term for catchups only, as the leader understands it. (If lterm=0, use term instead)
 	reply string        // Reply subject to respond to once committed.
 	sub   *subscription // The subscription that the append entry came in on.
@@ -2396,6 +2409,8 @@ const (
 	// After the catchup completes (or is canceled), a nil entry will be sent to signal this.
 	// This type of entry is purely internal and not transmitted between peers or stored in the log.
 	EntryCatchup
+	// EntryNoop is an entry used to extend the leader lease if there are no other entries actively being proposed.
+	EntryNoop
 )
 
 func (t EntryType) String() string {
@@ -2842,7 +2857,9 @@ func (n *raft) runAsLeader() {
 			n.prop.recycle(&es)
 
 		case <-hb.C:
-			if n.notActive() {
+			if n.notActiveLease() {
+				n.sendNoop()
+			} else if n.notActive() {
 				n.sendHeartbeat()
 			}
 		case <-lq.C:
@@ -2918,6 +2935,25 @@ func (n *raft) notActive() bool {
 	n.RLock()
 	defer n.RUnlock()
 	return time.Since(n.active) > hbInterval
+}
+
+// notActiveLease returns whether we should renew our lease through sending a noop entry.
+func (n *raft) notActiveLease() bool {
+	n.RLock()
+	defer n.RUnlock()
+	// Need to renew our lease a bit earlier than it would expire.
+	timeout := leaseTimeout() - hbInterval*2
+	if timeout < hbInterval {
+		timeout = hbInterval
+	}
+	return time.Since(n.active) > timeout
+}
+
+// leaseTimeout returns the lease timeout.
+func leaseTimeout() time.Duration {
+	// The lease timeout equals the minimum election timeout to not make the use of leader leases
+	// slow down elections. Followers wait for this to expire before trying to become a candidate.
+	return minElectionTimeout
 }
 
 // Return our current term.
@@ -3186,6 +3222,12 @@ func (n *raft) applyCommit(index uint64) error {
 		}
 	} else {
 		defer delete(n.pae, index)
+	}
+
+	// Since we've committed this entry, extend our leader lease
+	// to when we created this entry (if we're the leader).
+	if ae.time.After(n.lease) {
+		n.lease = ae.time
 	}
 
 	n.commit = index
@@ -4199,7 +4241,14 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 		if err := n.storeToWAL(ae); err != nil {
 			return err
 		}
-		n.active = time.Now()
+		now := time.Now()
+		// Set the time of when we've sent this entry, our leader lease will
+		// extend to this time if this entry commits.
+		ae.time = now
+		// If not a heartbeat, we refresh the active time.
+		if len(entries) > 0 {
+			n.active = now
+		}
 		n.cachePendingEntry(ae)
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
@@ -4312,6 +4361,11 @@ func (n *raft) sendPeerState() {
 // Send a heartbeat.
 func (n *raft) sendHeartbeat() {
 	n.sendAppendEntry(nil)
+}
+
+// Send a noop entry.
+func (n *raft) sendNoop() {
+	n.sendAppendEntry([]*Entry{{EntryNoop, nil}})
 }
 
 type voteRequest struct {

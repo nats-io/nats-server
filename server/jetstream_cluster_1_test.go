@@ -11223,11 +11223,11 @@ func TestJetStreamClusterMetaPeerRemoveResponseAfterQuorum(t *testing.T) {
 	jsreq, err := json.Marshal(req)
 	require_NoError(t, err)
 	require_NoError(t, nc.PublishRequest(JSApiRemoveServer, reply, jsreq))
-	_, err = sub.NextMsg(time.Second)
+	_, err = sub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err, nats.ErrTimeout)
 
 	// Retrying the request should fail, as the leader has already removed it as its peer.
-	rmsg, err := nc.Request(JSApiRemoveServer, jsreq, time.Second)
+	rmsg, err := nc.Request(JSApiRemoveServer, jsreq, 200*time.Millisecond)
 	require_NoError(t, err)
 	var resp JSApiMetaServerRemoveResponse
 	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
@@ -11237,7 +11237,7 @@ func TestJetStreamClusterMetaPeerRemoveResponseAfterQuorum(t *testing.T) {
 	require_Error(t, resp.Error, NewJSClusterServerMemberChangeInflightError())
 
 	// Audit should reflect the same.
-	rmsg, err = auditSub.NextMsg(time.Second)
+	rmsg, err = auditSub.NextMsg(200 * time.Millisecond)
 	require_NoError(t, err)
 	var auditResp JSAPIAudit
 	require_NoError(t, json.Unmarshal(rmsg.Data, &auditResp))

@@ -6810,3 +6810,68 @@ func TestJetStreamClusterLeakedSubsWithStreamImportOverlappingJetStreamSubs(t *t
 		require_Equal(t, baseline, afterStreamDelete)
 	}
 }
+
+func TestJetStreamClusterLinearizableStreamMsgGet(t *testing.T) {
+	origMinTimeout, origMaxTimeout, origHBInterval := minElectionTimeout, maxElectionTimeout, hbInterval
+	minElectionTimeout, maxElectionTimeout, hbInterval = 2*time.Second, 3*time.Second, time.Second
+	defer func() {
+		minElectionTimeout, maxElectionTimeout, hbInterval = origMinTimeout, origMaxTimeout, origHBInterval
+	}()
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Should succeed in getting the message.
+	msg, err := js.GetMsg("TEST", 1, nats.MaxWait(200*time.Millisecond))
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+	require_Equal(t, msg.Sequence, 1)
+
+	// Since we're using leases, simulate the lease not being renewed.
+	n := mset.raftNode().(*raft)
+	n.Lock()
+	n.lease = time.Time{}
+	n.active = time.Now()
+	n.Unlock()
+
+	// A message get should now fail, since we're not holding a valid lease.
+	msg, err = js.GetMsg("TEST", 1, nats.MaxWait(200*time.Millisecond))
+	require_Error(t, err, context.DeadlineExceeded)
+	require_True(t, msg == nil)
+
+	// Eventually we should renew the lease and succeed. Checks the Raft logic is using
+	// a noop-entry in the log, since heartbeats can't be used to extend the lease.
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		msg, err = js.GetMsg("TEST", 1, nats.MaxWait(200*time.Millisecond))
+		if err != nil {
+			return err
+		} else if msg == nil {
+			return errors.New("expected msg")
+		} else if msg.Sequence != 1 {
+			return fmt.Errorf("expected msg seq 1, got %d", msg.Sequence)
+		}
+		return nil
+	})
+}
