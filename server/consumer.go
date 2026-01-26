@@ -2435,19 +2435,28 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		}
 	}
 
+	// Check if any filters were updated.
+	oldFilters := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
+	newFilters := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
+	slices.Sort(oldFilters)
+	slices.Sort(newFilters)
+	updatedFilters := !slices.Equal(oldFilters, newFilters)
+
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
 
-	// Cleanup messages that lost interest.
-	if o.retention == InterestPolicy {
-		o.mu.Unlock()
-		o.cleanupNoInterestMessages(o.mset, false)
-		o.mu.Lock()
-	}
+	if updatedFilters {
+		// Cleanup messages that lost interest.
+		if o.retention == InterestPolicy {
+			o.mu.Unlock()
+			o.cleanupNoInterestMessages(o.mset, false)
+			o.mu.Lock()
+		}
 
-	// Re-calculate num pending on update.
-	o.streamNumPending()
+		// Re-calculate num pending on update.
+		o.streamNumPending()
+	}
 
 	return nil
 }
@@ -5114,9 +5123,14 @@ func (o *consumer) checkNumPending() (uint64, error) {
 		var state StreamState
 		o.mset.store.FastState(&state)
 		npc := o.numPending()
-		if o.sseq > state.LastSeq && npc > 0 || npc > state.Msgs {
-			// Re-calculate.
-			return o.streamNumPending()
+		// Make sure we can't report more messages than there are.
+		// TODO(nat): It's not great that this means consumer info has side effects,
+		// since we can't know whether anyone will call it or not. The previous num
+		// pending calculation that this replaces had the same problem though.
+		if o.sseq > state.LastSeq {
+			o.npc = 0
+		} else if npc > 0 {
+			o.npc = int64(min(npc, state.Msgs, state.LastSeq-o.sseq+1))
 		}
 	}
 	return o.numPending(), nil

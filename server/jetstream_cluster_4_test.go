@@ -7126,16 +7126,30 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 	acc, err := s.lookupAccount("js")
 	require_NoError(t, err)
 
-	acc.mu.RLock()
-	clients := acc.getClientsLocked()
-	numConnections := acc.NumConnections()
-	jsClients := acc.sysclients
-	totalClients := len(clients)
-	acc.mu.RUnlock()
+	checkCounts := func(expectedNumConnections, expectedJSClients, expectedTotalClients int) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			acc.mu.RLock()
+			clients := acc.getClientsLocked()
+			numConnections := acc.NumConnections()
+			jsClients := int(acc.sysclients)
+			totalClients := len(clients)
+			acc.mu.RUnlock()
 
-	require_Equal(t, numConnections, 5)
-	require_Equal(t, jsClients, 0)
-	require_Equal(t, totalClients, 5)
+			if numConnections != expectedNumConnections {
+				return fmt.Errorf("Expected %d connections got %d", expectedNumConnections, numConnections)
+			}
+			if jsClients != expectedJSClients {
+				return fmt.Errorf("Expected %d js clients got %d", expectedJSClients, jsClients)
+			}
+			if totalClients != expectedTotalClients {
+				return fmt.Errorf("Expected %d total clients got %d", expectedTotalClients, totalClients)
+			}
+			return nil
+		})
+	}
+
+	checkCounts(5, 0, 5)
 
 	nc := conns[0]
 	js, _ := nc.JetStream()
@@ -7150,16 +7164,7 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 		require_NoError(t, err)
 	}
 
-	acc.mu.RLock()
-	clients = acc.getClientsLocked()
-	numConnections = acc.NumConnections()
-	jsClients = acc.sysclients
-	totalClients = len(clients)
-	acc.mu.RUnlock()
-
-	require_Equal(t, numConnections, 5)
-	require_Equal(t, jsClients, 20)
-	require_Equal(t, totalClients, 25)
+	checkCounts(5, 20, 25)
 
 	checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
 		for i := 0; i < 10; i++ {
@@ -7189,17 +7194,8 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 	acc, err = s.lookupAccount("js")
 	require_NoError(t, err)
 
-	acc.mu.RLock()
-	clients = acc.getClientsLocked()
-	numConnections = acc.NumConnections()
-	jsClients = acc.sysclients
-	totalClients = len(clients)
-	acc.mu.RUnlock()
-
 	// JETSTREAM internal clients should still linger after reducing connections.
-	require_Equal(t, numConnections, 5)
-	require_Equal(t, jsClients, 20)
-	require_Equal(t, totalClients, 20)
+	checkCounts(5, 20, 20)
 
 	// Wait for disconnections from the most recent client.
 	disconnectCh := disconnects[2]
