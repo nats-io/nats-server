@@ -5495,6 +5495,46 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	return true, nil
 }
 
+// Remove all messages in the range [first, last]
+// Lock should be held.
+func (fs *fileStore) removeMsgsInRange(first, last uint64) {
+	firstBlock := sort.Search(len(fs.blks), func(i int) bool {
+		return atomic.LoadUint64(&fs.blks[i].last.seq) >= first
+	})
+
+	if firstBlock > len(fs.blks) {
+		return
+	}
+
+	var blocksToTrim []*msgBlock
+	var blocksToPurge []*msgBlock
+
+	for _, mb := range fs.blks[firstBlock:] {
+		mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
+		mbLastSeq := atomic.LoadUint64(&mb.last.seq)
+		if mbFirstSeq > last {
+			break
+		}
+		if mbFirstSeq >= first && mbLastSeq <= last {
+			blocksToPurge = append(blocksToPurge, mb)
+		} else {
+			blocksToTrim = append(blocksToTrim, mb)
+		}
+	}
+
+	for _, mb := range blocksToPurge {
+		fs.purgeMsgBlock(mb)
+	}
+
+	for _, mb := range blocksToTrim {
+		from := max(first, atomic.LoadUint64(&mb.first.seq))
+		to := min(last, atomic.LoadUint64(&mb.last.seq))
+		for seq := from; seq <= to; seq++ {
+			fs.removeMsgViaLimits(seq)
+		}
+	}
+}
+
 // Tests whether we should try to compact this block while inline removing msgs.
 // We will want rbytes to be over the minimum and have a 2x potential savings.
 // If we compacted before but rbytes didn't improve much, guard against constantly compacting.
@@ -11246,10 +11286,15 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 	fs.readUnlockAllMsgBlocks()
 
 	for _, db := range needsCheck {
-		db.Range(func(dseq uint64) bool {
-			fs.removeMsg(dseq, false, true, false)
-			return true
-		})
+		if dr, ok := db.(*DeleteRange); ok {
+			first, last, _ := dr.State()
+			fs.removeMsgsInRange(first, last)
+		} else {
+			db.Range(func(dseq uint64) bool {
+				fs.removeMsg(dseq, false, true, false)
+				return true
+			})
+		}
 	}
 }
 
