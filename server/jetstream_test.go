@@ -22392,3 +22392,51 @@ func TestJetStreamSourceConfigValidation(t *testing.T) {
 
 	require_Equal(t, string(response.Data), `{"type":"io.nats.jetstream.api.v1.stream_create_response","error":{"code":400,"err_code":10141,"description":"sourced stream name is invalid"}}`)
 }
+
+// https://github.com/nats-io/nats-server/issues/6747
+func TestJetStreamCleanupNoInterestAboveThreshold(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"a", "b"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "A", FilterSubject: "a"})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "B", FilterSubject: "b"})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	for _, subj := range []string{"a", "b"} {
+		for range 100_000 {
+			_, _, err = mset.store.StoreMsg(subj, nil, nil, 0)
+			require_NoError(t, err)
+		}
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 200_000)
+
+	// Deleting the consumer will trigger deletion of the messages that now have no interest.
+	// Since the total number of messages in the stream is above the threshold, this might take some time.
+	require_NoError(t, js.DeleteConsumer("TEST", "A"))
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err = js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 100_000 {
+			return fmt.Errorf("expected 100k messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+}
