@@ -424,6 +424,7 @@ type stream struct {
 	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
 	// and/or mirror/sources consumers are scheduled to be established or already started.
 	closed atomic.Bool // Set to true when stop() is called on the stream.
+	cisrun atomic.Bool // Indicates one checkInterestState is already running.
 
 	// Mirror
 	mirror *sourceInfo
@@ -7307,6 +7308,12 @@ func (mset *stream) checkInterestState() {
 		// If we are limits based nothing to do.
 		return
 	}
+
+	// Ensure only one of these runs at the same time.
+	if !mset.cisrun.CompareAndSwap(false, true) {
+		return
+	}
+	defer mset.cisrun.Store(false)
 
 	var ss StreamState
 	mset.store.FastState(&ss)
