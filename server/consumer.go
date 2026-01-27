@@ -2304,7 +2304,8 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 
 	// Check for Subject Filters update.
 	newSubjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
-	if !subjectSliceEqual(newSubjects, o.subjf.subjects()) {
+	updatedFilters := !subjectSliceEqual(newSubjects, o.subjf.subjects())
+	if updatedFilters {
 		newSubjf := make(subjectFilters, 0, len(newSubjects))
 		for _, newFilter := range newSubjects {
 			fs := &subjectFilter{
@@ -2338,13 +2339,6 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 			}
 		}
 	}
-
-	// Check if any filters were updated.
-	oldFilters := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
-	newFilters := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
-	slices.Sort(oldFilters)
-	slices.Sort(newFilters)
-	updatedFilters := !slices.Equal(oldFilters, newFilters)
 
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
@@ -6284,6 +6278,10 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 					retryAsflr = seq
 				}
 			} else if seq <= dflr {
+				// Store the first entry above our ack floor, so we don't need to look it up again on retryAsflr=0.
+				if retryAsflr == 0 {
+					retryAsflr = seq
+				}
 				// If we have pending, we will need to walk through to delivered in case we missed any of those acks as well.
 				if _, ok := state.Pending[seq]; !ok {
 					// The filters are already taken into account,
@@ -6295,8 +6293,18 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 		}
 	}
 	// If retry floor was not overwritten, set to ack floor+1, we don't need to account for any retries below it.
+	// However, our ack floor may be lower than the next message we can receive, so we correct it upward if needed.
 	if retryAsflr == 0 {
-		retryAsflr = asflr + 1
+		if filters != nil {
+			_, nseq, err = store.LoadNextMsgMulti(filters, asflr+1, &smv)
+		} else {
+			_, nseq, err = store.LoadNextMsg(filter, wc, asflr+1, &smv)
+		}
+		if err == nil {
+			retryAsflr = max(asflr+1, nseq)
+		} else if err == ErrStoreEOF {
+			retryAsflr = ss.LastSeq + 1
+		}
 	}
 
 	o.mu.Lock()
