@@ -2400,7 +2400,8 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 
 	// Check for Subject Filters update.
 	newSubjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
-	if !subjectSliceEqual(newSubjects, o.subjf.subjects()) {
+	updatedFilters := !subjectSliceEqual(newSubjects, o.subjf.subjects())
+	if updatedFilters {
 		newSubjf := make(subjectFilters, 0, len(newSubjects))
 		for _, newFilter := range newSubjects {
 			fs := &subjectFilter{
@@ -2434,13 +2435,6 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 			}
 		}
 	}
-
-	// Check if any filters were updated.
-	oldFilters := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
-	newFilters := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
-	slices.Sort(oldFilters)
-	slices.Sort(newFilters)
-	updatedFilters := !slices.Equal(oldFilters, newFilters)
 
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
