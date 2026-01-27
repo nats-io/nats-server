@@ -2145,14 +2145,20 @@ func getStreamDetails(t *testing.T, c *cluster, accountName, streamName string) 
 
 func checkState(t *testing.T, c *cluster, accountName, streamName string) error {
 	t.Helper()
+	_, err := checkStateAndErr(t, c, accountName, streamName)
+	return err
+}
+
+func checkStateAndErr(t *testing.T, c *cluster, accountName, streamName string) (StreamState, error) {
+	t.Helper()
 
 	leaderSrv := c.streamLeader(accountName, streamName)
 	if leaderSrv == nil {
-		return fmt.Errorf("no leader server found for stream %q", streamName)
+		return StreamState{}, fmt.Errorf("no leader server found for stream %q", streamName)
 	}
 	streamLeader := getStreamDetails(t, c, accountName, streamName)
 	if streamLeader == nil {
-		return fmt.Errorf("no leader found for stream %q", streamName)
+		return StreamState{}, fmt.Errorf("no leader found for stream %q", streamName)
 	}
 
 	acc, err := leaderSrv.LookupAccount(accountName)
@@ -2224,7 +2230,7 @@ func checkState(t *testing.T, c *cluster, accountName, streamName string) error 
 		errs = append(errs, err)
 	}
 	if len(errs) > 0 {
-		return errors.Join(errs...)
+		return StreamState{}, errors.Join(errs...)
 	}
-	return nil
+	return streamLeader.State, nil
 }
