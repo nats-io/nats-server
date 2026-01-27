@@ -424,6 +424,7 @@ type stream struct {
 	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
 	// and/or mirror/sources consumers are scheduled to be established or already started.
 	closed atomic.Bool // Set to true when stop() is called on the stream.
+	cisrun atomic.Bool // Indicates one checkInterestState is already running.
 
 	// Mirror
 	mirror *sourceInfo
@@ -7308,11 +7309,30 @@ func (mset *stream) checkInterestState() {
 		return
 	}
 
+	// Ensure only one of these runs at the same time.
+	if !mset.cisrun.CompareAndSwap(false, true) {
+		return
+	}
+	defer mset.cisrun.Store(false)
+
 	var ss StreamState
 	mset.store.FastState(&ss)
 
+	asflr := uint64(math.MaxUint64)
 	for _, o := range mset.getConsumers() {
 		o.checkStateForInterestStream(&ss)
+		o.mu.RLock()
+		chkflr := o.chkflr
+		o.mu.RUnlock()
+		asflr = min(asflr, chkflr)
+	}
+
+	mset.cfgMu.RLock()
+	rp := mset.cfg.Retention
+	mset.cfgMu.RUnlock()
+	// Remove as many messages from the "head" of the stream if there's no interest anymore.
+	if rp == InterestPolicy && asflr != math.MaxUint64 {
+		mset.store.Compact(asflr)
 	}
 }
 
@@ -7399,20 +7419,18 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 		o.sigSubs = nil
 	}
 
-	if o.isLeader() {
-		if mset.csl == nil {
-			mset.csl = gsl.NewSublist[*consumer]()
-		}
-		// If no filters are preset, add fwcs to sublist for that consumer.
-		if newFilters == nil {
-			mset.csl.Insert(fwcs, o)
-			o.sigSubs = append(o.sigSubs, fwcs)
-			// If there are filters, add their subjects to sublist.
-		} else {
-			for _, filter := range newFilters {
-				mset.csl.Insert(filter, o)
-				o.sigSubs = append(o.sigSubs, filter)
-			}
+	if mset.csl == nil {
+		mset.csl = gsl.NewSublist[*consumer]()
+	}
+	// If no filters are present, add fwcs to sublist for that consumer.
+	if newFilters == nil {
+		mset.csl.Insert(fwcs, o)
+		o.sigSubs = append(o.sigSubs, fwcs)
+	} else {
+		// If there are filters, add their subjects to sublist.
+		for _, filter := range newFilters {
+			mset.csl.Insert(filter, o)
+			o.sigSubs = append(o.sigSubs, filter)
 		}
 	}
 	o.mu.Unlock()

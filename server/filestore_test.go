@@ -46,6 +46,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/ats"
+	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
@@ -12267,4 +12268,392 @@ func TestFileStoreLoadNextMsgMultiSkipAhead(t *testing.T) {
 		t.Run(fmt.Sprintf("%s/Head", title), func(t *testing.T) { test(t, true, singleSubjPerBlock) })
 		t.Run(fmt.Sprintf("%s/Interior", title), func(t *testing.T) { test(t, false, singleSubjPerBlock) })
 	}
+}
+
+func TestFileStoreDeleteRangeTwoGaps(t *testing.T) {
+	fcfg := FileStoreConfig{
+		Cipher:      NoCipher,
+		Compression: NoCompression,
+		StoreDir:    t.TempDir(),
+		BlockSize:   256,
+	}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkDeleteBlocks := func(exp DeleteBlocks) {
+		t.Helper()
+		dBlocks := fs.deleteBlocks()
+		require_Equal(t, len(exp), len(dBlocks))
+
+		for i, found := range dBlocks {
+			ef, el, en := exp[i].State()
+			ff, fl, fn := found.State()
+
+			require_Equal(t, reflect.TypeOf(exp[i]), reflect.TypeOf(found))
+			require_Equal(t, ef, ff)
+			require_Equal(t, el, fl)
+			require_Equal(t, en, fn)
+		}
+	}
+
+	msg := make([]byte, 256)
+	for range 20 {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// Initially, we have sequences [1,20].
+	// Each message fills one entire block
+	require_Equal(t, len(fs.blks), 20)
+
+	// Make two gaps by removing sequences 10 and 15
+	// [1,9] [11,14] [16,20]
+	fs.RemoveMsg(10)
+	fs.RemoveMsg(15)
+
+	// If bug is present: deleteBlocks extends the first gap
+	// to the second, even though non-deleted blocks are in
+	// between the two gaps. Expect two distinct gaps.
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 10, Num: 1},
+		&DeleteRange{First: 15, Num: 1},
+	})
+}
+
+func TestFileStoreDeleteBlocksWithSingleMessageBlocks(t *testing.T) {
+	fcfg := FileStoreConfig{
+		Cipher:      NoCipher,
+		Compression: NoCompression,
+		StoreDir:    t.TempDir(),
+		BlockSize:   256,
+	}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkDeleteBlocks := func(exp DeleteBlocks) {
+		dBlocks := fs.deleteBlocks()
+		require_Equal(t, len(exp), len(dBlocks))
+
+		for i, found := range dBlocks {
+			ef, el, en := exp[i].State()
+			ff, fl, fn := found.State()
+
+			require_Equal(t, reflect.TypeOf(exp[i]), reflect.TypeOf(found))
+			require_Equal(t, ef, ff)
+			require_Equal(t, el, fl)
+			require_Equal(t, en, fn)
+		}
+	}
+
+	msg := make([]byte, 256)
+	for range 20 {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// Initially, we have sequences [1,20].
+	// Each message fills one entire block
+	require_Equal(t, len(fs.blks), 20)
+
+	// Removing sequence 10 leaves a gap
+	// [1,9] [11,20]
+	fs.RemoveMsg(10)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 10, Num: 1},
+	})
+
+	// Extend the gap by removing 11
+	// [1,9] [12,20]
+	fs.RemoveMsg(11)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 10, Num: 2},
+	})
+
+	// Make another gap by removing 5
+	// [1,4] [6,9] [12,20]
+	fs.RemoveMsg(5)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 5, Num: 1},
+		&DeleteRange{First: 10, Num: 2},
+	})
+
+	// Remove blocks in the middle
+	// [1,4] [12,20]
+	fs.RemoveMsg(6)
+	fs.RemoveMsg(7)
+	fs.RemoveMsg(8)
+	fs.RemoveMsg(9)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 5, Num: 7},
+	})
+
+	// Make a couple more gaps by removing 3 and 16,17,18
+	// [1,2] [4,4] [12,15] [19,20]
+	fs.RemoveMsg(3)
+	fs.RemoveMsg(16)
+	fs.RemoveMsg(17)
+	fs.RemoveMsg(18)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 3, Num: 1},
+		&DeleteRange{First: 5, Num: 7},
+		&DeleteRange{First: 16, Num: 3},
+	})
+
+	// Removing the first sequence make no difference in gaps
+	// [2,2] [4,4] [12,15] [19,20]
+	fs.RemoveMsg(1)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 3, Num: 1},
+		&DeleteRange{First: 5, Num: 7},
+		&DeleteRange{First: 16, Num: 3},
+	})
+
+	// Removing the last sequence creates a gap
+	// [2,2] [4,4] [12,15] [19,19] (empty block starting at 21)
+	fs.RemoveMsg(20)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 3, Num: 1},
+		&DeleteRange{First: 5, Num: 7},
+		&DeleteRange{First: 16, Num: 3},
+		&DeleteRange{First: 20, Num: 1},
+	})
+
+	// Extend the last gap by removing 19
+	// [2,2] [4,4] [12,15] (empty block starting at 21)
+	fs.RemoveMsg(19)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 3, Num: 1},
+		&DeleteRange{First: 5, Num: 7},
+		&DeleteRange{First: 16, Num: 5},
+	})
+}
+
+func makeSequenceSet(seqs []uint64) *avl.SequenceSet {
+	var set avl.SequenceSet
+	for _, seq := range seqs {
+		set.Insert(seq)
+	}
+	return &set
+}
+
+func TestFileStoreDeleteBlocks(t *testing.T) {
+	fcfg := FileStoreConfig{
+		Cipher:      NoCipher,
+		Compression: NoCompression,
+		StoreDir:    t.TempDir(),
+		BlockSize:   256,
+	}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkDeleteBlocks := func(exp DeleteBlocks) {
+		dBlocks := fs.deleteBlocks()
+		require_Equal(t, len(exp), len(dBlocks))
+
+		for i, found := range dBlocks {
+			ef, el, en := exp[i].State()
+			ff, fl, fn := found.State()
+
+			require_Equal(t, reflect.TypeOf(exp[i]), reflect.TypeOf(found))
+			require_Equal(t, ef, ff)
+			require_Equal(t, el, fl)
+			require_Equal(t, en, fn)
+		}
+	}
+
+	msg := make([]byte, 20)
+	for range 20 {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// We have 5 blocks, with 4 messages each.
+	// block 1: [1,4]
+	// block 2: [5,8]
+	// block 3: [9,12]
+	// block 4: [13,16]
+	// block 5: [17,20]
+	require_Equal(t, len(fs.blks), 5)
+
+	// Removing sequence 9, creates a gap between blocks 2 and 3
+	// block 1: [1,4]
+	// block 2: [5,8]
+	// block 3: [10,12]
+	// block 4: [13,16]
+	// block 5: [17,20]
+	fs.RemoveMsg(9)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 9, Num: 1},
+	})
+
+	// Extend the gap by removing 10
+	// block 1: [1,4]
+	// block 2: [5,8]
+	// block 3: [11,12]
+	// block 4: [13,16]
+	// block 5: [17,20]
+	fs.RemoveMsg(10)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 9, Num: 2},
+	})
+
+	// Extend the gap by removing 8, creates an interior delete
+	// block 1: [1,4]
+	// block 2: [5,7]
+	// block 3: [11,12]
+	// block 4: [13,16]
+	// block 5: [17,20]
+	fs.RemoveMsg(8)
+	checkDeleteBlocks(DeleteBlocks{
+		makeSequenceSet([]uint64{8}),
+		&DeleteRange{First: 9, Num: 2},
+	})
+
+	// Make another gap by removing 17 and 18
+	// block 1: [1,4]
+	// block 2: [5,7]
+	// block 3: [11,12]
+	// block 4: [13,16]
+	// block 5: [19,20]
+	fs.RemoveMsg(18)
+	fs.RemoveMsg(17)
+	checkDeleteBlocks(DeleteBlocks{
+		makeSequenceSet([]uint64{8}),
+		&DeleteRange{First: 9, Num: 2},
+		&DeleteRange{First: 17, Num: 2},
+	})
+
+	// Remove messages 5, 6, and 7 to create a fully deleted block
+	// block 1: [1,4]
+	// block 2: [11,12]
+	// block 3: [13,16]
+	// block 4: [19,20]
+	fs.RemoveMsg(6)
+	fs.RemoveMsg(5)
+	fs.RemoveMsg(7)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 5, Num: 6},
+		&DeleteRange{First: 17, Num: 2},
+	})
+
+	// Remove the last message
+	// block 1: [1,4]
+	// block 2: [11,12]
+	// block 3: [13,16]
+	// block 4: [19,19]
+	fs.RemoveMsg(20)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 5, Num: 6},
+		&DeleteRange{First: 17, Num: 2},
+		makeSequenceSet([]uint64{20}),
+	})
+
+	// Remove the last message
+	// block 1: [1,4]
+	// block 2: [11,12]
+	// block 3: [13,16]
+	fs.RemoveMsg(19)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 5, Num: 6},
+		&DeleteRange{First: 17, Num: 4},
+	})
+
+	// Remove block in the middle
+	// block 1: [1,4]
+	// block 2: [13,16]
+	fs.RemoveMsg(11)
+	fs.RemoveMsg(12)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 5, Num: 8},
+		&DeleteRange{First: 17, Num: 4},
+	})
+
+	// Remove the first block
+	// block 1: [13,16]
+	fs.RemoveMsg(1)
+	fs.RemoveMsg(2)
+	fs.RemoveMsg(3)
+	fs.RemoveMsg(4)
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 17, Num: 4},
+	})
+}
+
+func TestFileStoreDeleteBlocksWithManyEmptyBlocks(t *testing.T) {
+	fcfg := FileStoreConfig{
+		Cipher:      NoCipher,
+		Compression: NoCompression,
+		StoreDir:    t.TempDir(),
+		BlockSize:   33 * 6,
+	}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkDeleteBlocks := func(exp DeleteBlocks) {
+		t.Helper()
+		dBlocks := fs.deleteBlocks()
+		require_Equal(t, len(exp), len(dBlocks))
+
+		for i, found := range dBlocks {
+			ef, el, en := exp[i].State()
+			ff, fl, fn := found.State()
+
+			require_Equal(t, reflect.TypeOf(exp[i]), reflect.TypeOf(found))
+			require_Equal(t, ef, ff)
+			require_Equal(t, el, fl)
+			require_Equal(t, en, fn)
+		}
+	}
+
+	// 1.blk, 6 msgs
+	for range 6 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+	// *.blk, tombstone for 1.blk + 2 msgs
+	// every next block adds 2 tombstones for the previous block
+	for i := range 5 {
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+
+		// Every iteration will remove one message from 1.blk
+		_, err = fs.RemoveMsg(uint64(i + 2))
+		require_NoError(t, err)
+
+		// Every block after the first removes two messages from the previous block.
+		if i > 0 {
+			for j := range 2 {
+				_, err = fs.RemoveMsg(uint64(7 + (i-1)*2 + j))
+				require_NoError(t, err)
+			}
+		}
+		// Every block except for the last stores two new messages for the next block to delete.
+		if i < 4 {
+			for range 2 {
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+		}
+	}
+
+	checkDeleteBlocks(DeleteBlocks{
+		makeSequenceSet([]uint64{2, 3, 4, 5, 6}),
+		&DeleteRange{First: 7, Num: 8},
+	})
+
+	fs.mu.Lock()
+	fs.lockAllMsgBlocks()
+	for _, mb := range fs.blks {
+		mb.compact()
+	}
+	fs.unlockAllMsgBlocks()
+	fs.mu.Unlock()
+
+	checkDeleteBlocks(DeleteBlocks{
+		&DeleteRange{First: 2, Num: 13},
+	})
 }
