@@ -1507,6 +1507,12 @@ func (ms *memStore) compact(seq uint64) (uint64, error) {
 	var purged, bytes uint64
 
 	ms.mu.Lock()
+	// Short-circuit if the store was already compacted past this point.
+	if ms.state.FirstSeq > seq {
+		ms.mu.Unlock()
+		return purged, nil
+	}
+
 	cb := ms.scb
 	if seq <= ms.state.LastSeq {
 		fseq := ms.state.FirstSeq

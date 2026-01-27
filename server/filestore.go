@@ -9251,6 +9251,11 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		fs.mu.Unlock()
 		return fs.purge(seq)
 	}
+	// Short-circuit if the store was already compacted past this point.
+	if fs.state.FirstSeq > seq {
+		fs.mu.Unlock()
+		return purged, nil
+	}
 	// We have to delete interior messages.
 	smb := fs.selectMsgBlock(seq)
 	if smb == nil {

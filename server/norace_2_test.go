@@ -2733,14 +2733,20 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceWQ(t *testing.T) {
 	// Was > 30 ms before fix for comparison, M2 macbook air.
 	require_LessThan(t, elapsed, 5*time.Millisecond)
 
-	// Make sure we set the chkflr correctly. The chkflr should be equal to asflr+1.
+	// Make sure we set the chkflr correctly.
+	// The chkflr should be equal to asflr+1 (unless the next message matching the filter is further ahead).
 	// Otherwise, if chkflr would be set higher a subsequent call to checkInterestState will be ineffective.
 	requireFloorsEqual := func(o *consumer) {
 		t.Helper()
 		require_True(t, o != nil)
 		o.mu.RLock()
 		defer o.mu.RUnlock()
-		require_Equal(t, o.chkflr, o.asflr+1)
+		_, seq, err := mset.store.LoadNextMsg(o.cfg.FilterSubject, false, o.asflr+1, nil)
+		if err == ErrStoreEOF {
+			seq++
+		}
+		require_True(t, o.asflr+1 <= seq)
+		require_Equal(t, o.chkflr, seq)
 	}
 
 	requireFloorsEqual(mset.lookupConsumer("A"))
@@ -3412,7 +3418,7 @@ func TestNoRaceJetStreamClusterConsumerDeleteInterestPolicyUniqueFiltersPerf(t *
 		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
 	}
 
-	expectedStreamMsgs(499_900)
+	expectedStreamMsgs(499_800)
 
 	start = time.Now()
 	err = js.DeleteConsumer("TEST", "C0")
