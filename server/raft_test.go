@@ -4652,3 +4652,47 @@ func TestNRGMustNotResetVoteOnStepDownOrLeaderTransfer(t *testing.T) {
 	require_Equal(t, n.term, 1)
 	require_Equal(t, n.vote, nats0)
 }
+
+func TestNRGUpperLayerHealthcheck(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+	rn := leader.node()
+
+	start := time.Now()
+	rn.SetUpperLayerHealthcheck(func() error {
+		// Let's have normal operations for a bit before we signal
+		// an error.
+		if time.Since(start) > time.Second {
+			return fmt.Errorf("time has passed")
+		}
+		return nil
+	})
+
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		rn := leader.node()
+		if rn.Leader() {
+			return fmt.Errorf("shouldn't still be leader")
+		}
+		if !rn.IsObserver() {
+			return fmt.Errorf("should be observer")
+		}
+		return nil
+	})
+
+	rn.SetUpperLayerHealthcheck(func() error {
+		// Now we'll set a healthcheck that always succeeds, so
+		// we should recover.
+		return nil
+	})
+
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		rn := leader.node()
+		if rn.IsObserver() {
+			return fmt.Errorf("should not be observer")
+		}
+		return nil
+	})
+}
