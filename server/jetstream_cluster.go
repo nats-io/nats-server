@@ -1720,7 +1720,7 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	return snap, nil
 }
 
-func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering, startupRecovery bool) error {
+func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
 	var wsas []writeableStreamAssignment
 	if len(buf) > 0 {
 		jse, err := s2.Decode(nil, buf)
@@ -2101,7 +2101,6 @@ func (ca *consumerAssignment) recoveryKey() string {
 func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bool, bool, error) {
 	var didSnap bool
 	isRecovering := ru != nil
-	startupRecovery := js.isMetaRecovering()
 
 	for _, e := range entries {
 		// If we received a lower-level catchup entry, mark that we're recovering.
@@ -2115,7 +2114,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 		}
 
 		if e.Type == EntrySnapshot {
-			js.applyMetaSnapshot(e.Data, ru, isRecovering, startupRecovery)
+			js.applyMetaSnapshot(e.Data, ru, isRecovering)
 			didSnap = true
 		} else if e.Type == EntryRemovePeer {
 			if !js.isMetaRecovering() {
@@ -7409,6 +7408,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				}
 			}
 			rg.Peers = selected
+			// Single nodes are not recorded by the NRG layer so we can rename.
+			// MUST do this, otherwise a scaleup afterward could potentially lead to inconsistencies.
+			if len(rg.Peers) == 1 {
+				rg.Name = groupNameForStream(rg.Peers, rg.Storage)
+			}
 		}
 
 		// Need to remap any consumers.
@@ -8574,6 +8578,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			// scale down by removing peers from the end
 			newPeerSet = newPeerSet[len(newPeerSet)-rAfter:]
 			nca.Group.Peers = newPeerSet
+			// Single nodes are not recorded by the NRG layer so we can rename.
+			// MUST do this, otherwise a scaleup afterward could potentially lead to inconsistencies.
+			if len(nca.Group.Peers) == 1 {
+				nca.Group.Name = groupNameForConsumer(nca.Group.Peers, nca.Group.Storage)
+			}
 		}
 
 		// Update config and client info on copy of existing.
