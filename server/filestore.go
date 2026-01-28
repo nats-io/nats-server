@@ -9137,6 +9137,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		fs.writeTombstone(lseq, lmb.last.ts)
 	}
 	// Close FDs since we'll move the file. We re-enable the FD after the purge is complete.
+	lmb.flushPendingMsgs()
 	lmb.closeFDs()
 
 	fs.blks = nil
