@@ -4652,3 +4652,41 @@ func TestNRGMustNotResetVoteOnStepDownOrLeaderTransfer(t *testing.T) {
 	require_Equal(t, n.term, 1)
 	require_Equal(t, n.vote, nats0)
 }
+
+func TestNRGAsyncSnapshotInProgress(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	n.Applied(1)
+
+	ch1 := make(chan InstalledSnapshot, 1)
+	ch2 := make(chan InstalledSnapshot, 1)
+
+	n.Lock()
+	n.installSnapshotAsyncLocked(nil, ch1)
+	n.installSnapshotAsyncLocked(nil, ch2)
+
+	select {
+	case s := <-ch2:
+		require_Error(t, s.Err, errSnapInProgress)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Unexpected time out while waiting for snapshot result")
+	}
+	n.Unlock()
+
+	select {
+	case s := <-ch1:
+		require_NoError(t, s.Err)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Unexpected time out while waiting for snapshot result")
+	}
+}
