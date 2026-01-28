@@ -112,6 +112,12 @@ elif [ "$1" = "msgtrace_tests" ]; then
 
     go test $RACE -v -p=1 -run=TestMsgTrace ./server -count=1 -vet=off -timeout=30m -failfast
 
+elif [ "$1" = "uds_tests" ]; then
+
+    # Run UDS (Unix Domain Socket) tests. By convention, all UDS tests start with `TestUDS`.
+
+    go test $RACE -v -p=1 -run=TestUDS ./server -count=1 -vet=off -timeout=30m -failfast
+
 elif [ "$1" = "srv_pkg_non_js_tests" ]; then
 
     # Run all non JetStream tests in the server package. We exclude the

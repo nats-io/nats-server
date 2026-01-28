@@ -107,36 +107,37 @@ func setServerProtoForTest(wantedProto int) int {
 // Info is the information sent to clients, routes, gateways, and leaf nodes,
 // to help them understand information about this server.
 type Info struct {
-	ID                string   `json:"server_id"`
-	Name              string   `json:"server_name"`
-	Version           string   `json:"version"`
-	Proto             int      `json:"proto"`
-	GitCommit         string   `json:"git_commit,omitempty"`
-	GoVersion         string   `json:"go"`
-	Host              string   `json:"host"`
-	Port              int      `json:"port"`
-	Headers           bool     `json:"headers"`
-	AuthRequired      bool     `json:"auth_required,omitempty"`
-	TLSRequired       bool     `json:"tls_required,omitempty"`
-	TLSVerify         bool     `json:"tls_verify,omitempty"`
-	TLSAvailable      bool     `json:"tls_available,omitempty"`
-	MaxPayload        int32    `json:"max_payload"`
-	JetStream         bool     `json:"jetstream,omitempty"`
-	IP                string   `json:"ip,omitempty"`
-	CID               uint64   `json:"client_id,omitempty"`
-	ClientIP          string   `json:"client_ip,omitempty"`
-	Nonce             string   `json:"nonce,omitempty"`
-	Cluster           string   `json:"cluster,omitempty"`
-	Dynamic           bool     `json:"cluster_dynamic,omitempty"`
-	Domain            string   `json:"domain,omitempty"`
-	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
-	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
-	LameDuckMode      bool     `json:"ldm,omitempty"`
-	Compression       string   `json:"compression,omitempty"`
-	ConnectInfo       bool     `json:"connect_info,omitempty"`   // When true this is the server INFO response to CONNECT
-	RemoteAccount     string   `json:"remote_account,omitempty"` // Lets the client or leafnode side know the remote account that they bind to.
-	IsSystemAccount   bool     `json:"acc_is_sys,omitempty"`     // Indicates if the account is a system account.
-	JSApiLevel        int      `json:"api_lvl,omitempty"`
+	ID                string    `json:"server_id"`
+	Name              string    `json:"server_name"`
+	Version           string    `json:"version"`
+	Proto             int       `json:"proto"`
+	GitCommit         string    `json:"git_commit,omitempty"`
+	GoVersion         string    `json:"go"`
+	Host              string    `json:"host"`
+	Port              int       `json:"port"`
+	Headers           bool      `json:"headers"`
+	AuthRequired      bool      `json:"auth_required,omitempty"`
+	TLSRequired       bool      `json:"tls_required,omitempty"`
+	TLSVerify         bool      `json:"tls_verify,omitempty"`
+	TLSAvailable      bool      `json:"tls_available,omitempty"`
+	MaxPayload        int32     `json:"max_payload"`
+	JetStream         bool      `json:"jetstream,omitempty"`
+	IP                string    `json:"ip,omitempty"`
+	CID               uint64    `json:"client_id,omitempty"`
+	ClientIP          string    `json:"client_ip,omitempty"`
+	Nonce             string    `json:"nonce,omitempty"`
+	Cluster           string    `json:"cluster,omitempty"`
+	Dynamic           bool      `json:"cluster_dynamic,omitempty"`
+	Domain            string    `json:"domain,omitempty"`
+	ClientConnectURLs []string  `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
+	WSConnectURLs     []string  `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
+	UDS               []UDSInfo `json:"uds,omitempty"`             // Contains UDS endpoints of the local server.
+	LameDuckMode      bool      `json:"ldm,omitempty"`
+	Compression       string    `json:"compression,omitempty"`
+	ConnectInfo       bool      `json:"connect_info,omitempty"`   // When true this is the server INFO response to CONNECT
+	RemoteAccount     string    `json:"remote_account,omitempty"` // Lets the client or leafnode side know the remote account that they bind to.
+	IsSystemAccount   bool      `json:"acc_is_sys,omitempty"`     // Indicates if the account is a system account.
+	JSApiLevel        int       `json:"api_lvl,omitempty"`
 
 	// Route Specific
 	Import        *SubjectPermission `json:"import,omitempty"`
@@ -187,6 +188,7 @@ type Server struct {
 	shutdown            atomic.Bool
 	listener            net.Listener
 	listenerErr         error
+	uds                 *udsServerState
 	gacc                *Account
 	sys                 *internal
 	sysAcc              atomic.Pointer[Account]
@@ -810,6 +812,12 @@ func NewServer(opts *Options) (*Server, error) {
 
 	if opts.TLSRateLimit > 0 {
 		s.connRateCounter = newRateCounter(opts.tlsConfigOpts.RateLimit)
+	}
+
+	// Initialize UDS state if configured.
+	var err error
+	if s.uds, err = newUDSServerState(opts); err != nil {
+		return nil, err
 	}
 
 	// Trusted root operator keys.
@@ -2568,6 +2576,9 @@ func (s *Server) Start() {
 	// Wait for clients.
 	if !opts.DontListen {
 		s.AcceptLoop(clientListenReady)
+		s.UDSAcceptLoop(nil)
+	} else {
+		s.UDSAcceptLoop(clientListenReady)
 	}
 
 	// Bring OSCP Response cache online after accept loop started in anticipation of NATS-enabled cache types
@@ -2662,6 +2673,13 @@ func (s *Server) Shutdown() {
 		doneExpected++
 		s.listener.Close()
 		s.listener = nil
+	}
+
+	// Kick UDS client AcceptLoop()
+	if s.uds != nil && s.uds.listener != nil {
+		doneExpected++
+		s.uds.listener.Close()
+		s.uds.listener = nil
 	}
 
 	// Kick websocket server
@@ -3972,6 +3990,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 		chk["leafnode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
 		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.listener != nil), err: s.websocket.listenerErr}
 		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
+		chk["uds"] = info{ok: (s.uds == nil || s.uds.listener != nil), err: s.udsListenerErr()}
 		s.mu.RUnlock()
 
 		var numOK int
