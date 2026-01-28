@@ -358,6 +358,7 @@ func (dbs DeleteBlocks) NumDeleted() (total uint64) {
 type ConsumerStore interface {
 	SetStarting(sseq uint64) error
 	UpdateStarting(sseq uint64)
+	Reset(sseq uint64) error
 	HasState() bool
 	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
 	UpdateAcks(dseq, sseq uint64) error
