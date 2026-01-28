@@ -1,4 +1,4 @@
-// Copyright 2024-2025 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,6 +26,7 @@ import (
 
 const (
 	MsgTraceDest          = "Nats-Trace-Dest"
+	MsgTraceDestDisabled  = "trace disabled" // This must be an invalid NATS subject
 	MsgTraceHop           = "Nats-Trace-Hop"
 	MsgTraceOriginAccount = "Nats-Trace-Origin-Account"
 	MsgTraceOnly          = "Nats-Trace-Only"
@@ -33,8 +34,17 @@ const (
 	// External trace header. Note that this header is normally in lower
 	// case (https://www.w3.org/TR/trace-context/#header-name). Vendors
 	// MUST expect the header in any case (upper, lower, mixed), and
-	// SHOULD send the header name in lowercase.
+	// SHOULD send the header name in lowercase. We used to change it
+	// to lower case, but no longer do that in 2.14.
 	traceParentHdr = "traceparent"
+)
+
+var (
+	traceDestHdrAsBytes      = stringToBytes(MsgTraceDest)
+	traceDestDisabledAsBytes = stringToBytes(MsgTraceDestDisabled)
+	traceParentHdrAsBytes    = stringToBytes(traceParentHdr)
+	crLFAsBytes              = stringToBytes(CR_LF)
+	dashAsBytes              = stringToBytes("-")
 )
 
 type MsgTraceType string
@@ -352,7 +362,6 @@ func (c *client) initMsgTrace() *msgTrace {
 		}
 		return vv[0]
 	}
-	ct := getCompressionType(getHdrVal(acceptEncodingHeader))
 	var (
 		dest      string
 		traceOnly bool
@@ -447,9 +456,9 @@ func (c *client) initMsgTrace() *msgTrace {
 		}
 		// Check sampling, but only from origin server.
 		if c.kind == CLIENT && !sample(sampling) {
-			// Need to desactivate the traceParentHdr so that if the message
-			// is routed, it does possibly trigger a trace there.
-			disableTraceHeaders(c, hdr)
+			// Need to disable tracing so that if the message is routed, it won't
+			// trigger a trace there.
+			c.msgBuf = c.setHeader(MsgTraceDest, MsgTraceDestDisabled, c.msgBuf)
 			return nil
 		}
 	}
@@ -458,7 +467,7 @@ func (c *client) initMsgTrace() *msgTrace {
 		acc:  acc,
 		oan:  oan,
 		dest: dest,
-		ct:   ct,
+		ct:   getCompressionType(getHdrVal(acceptEncodingHeader)),
 		hop:  hop,
 		event: &MsgTraceEvent{
 			Request: MsgTraceRequest{
@@ -496,9 +505,7 @@ func sample(sampling int) bool {
 // the headers have been lifted due to the presence of the external trace header
 // only.
 // Note that because of the traceParentHdr, the search is done in a case
-// insensitive way, but if the header is found, it is rewritten in lower case
-// as suggested by the spec, but also to make it easier to disable the header
-// when needed.
+// insensitive way. We used to rewrite it in lower case but no longer do since v2.14.
 func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 
 	var (
@@ -513,11 +520,6 @@ func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 		return nil, false
 	}
 
-	traceDestHdrAsBytes := stringToBytes(MsgTraceDest)
-	traceParentHdrAsBytes := stringToBytes(traceParentHdr)
-	crLFAsBytes := stringToBytes(CR_LF)
-	dashAsBytes := stringToBytes("-")
-
 	keys := _keys[:0]
 	vals := _vals[:0]
 
@@ -530,46 +532,50 @@ func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 		keyStart := i
 		key := hdr[keyStart : keyStart+del]
 		i += del + 1
+		for i < len(hdr) && (hdr[i] == ' ' || hdr[i] == '\t') {
+			i++
+		}
 		valStart := i
 		nl := bytes.Index(hdr[valStart:], crLFAsBytes)
 		if nl < 0 {
 			break
 		}
-		if len(key) > 0 {
-			val := bytes.Trim(hdr[valStart:valStart+nl], " \t")
+		valEnd := valStart + nl
+		for valEnd > valStart && (hdr[valEnd-1] == ' ' || hdr[valEnd-1] == '\t') {
+			valEnd--
+		}
+		val := hdr[valStart:valEnd]
+		if len(key) > 0 && len(val) > 0 {
 			vals = append(vals, val)
 
+			// We search for our special keys only if not already found.
+
 			// Check for the external trace header.
-			if bytes.EqualFold(key, traceParentHdrAsBytes) {
-				// Rewrite the header using lower case if needed.
-				if !bytes.Equal(key, traceParentHdrAsBytes) {
-					copy(hdr[keyStart:], traceParentHdrAsBytes)
-				}
+			// Search needs to be case insensitive.
+			if !traceParentHdrFound && bytes.EqualFold(key, traceParentHdrAsBytes) {
 				// We will now check if the value has sampling or not.
 				// TODO(ik): Not sure if this header can have multiple values
 				// or not, and if so, what would be the rule to check for
 				// sampling. What is done here is to check them all until we
 				// found one with sampling.
-				if !traceParentHdrFound {
-					tk := bytes.Split(val, dashAsBytes)
-					if len(tk) == 4 && len([]byte(tk[3])) == 2 {
-						if hexVal, err := strconv.ParseInt(bytesToString(tk[3]), 16, 8); err == nil {
-							if hexVal&0x1 == 0x1 {
-								traceParentHdrFound = true
-							}
+				tk := bytes.Split(val, dashAsBytes)
+				if len(tk) == 4 && len([]byte(tk[3])) == 2 {
+					if hexVal, err := strconv.ParseInt(bytesToString(tk[3]), 16, 8); err == nil {
+						if hexVal&0x1 == 0x1 {
+							traceParentHdrFound = true
 						}
 					}
 				}
-				// Add to the keys with the external trace header in lower case.
-				keys = append(keys, traceParentHdrAsBytes)
-			} else {
-				// Is the key the Nats-Trace-Dest header?
-				if bytes.EqualFold(key, traceDestHdrAsBytes) {
-					traceDestHdrFound = true
+			} else if !traceDestHdrFound && bytes.Equal(key, traceDestHdrAsBytes) {
+				// This is the Nats-Trace-Dest header, check the value to see
+				// if it indicates that the trace was disabled.
+				if bytes.Equal(val, traceDestDisabledAsBytes) {
+					return nil, false
 				}
-				// Add to the keys and preserve the key's case
-				keys = append(keys, key)
+				traceDestHdrFound = true
 			}
+			// Add to the keys and preserve the key's case
+			keys = append(keys, key)
 		}
 		i += nl + 2
 	}
@@ -646,59 +652,6 @@ func (t *msgTrace) setHopHeader(c *client, msg []byte) []byte {
 		t.nhop = fmt.Sprintf("%d", e.Hops)
 	}
 	return c.setHeader(MsgTraceHop, t.nhop, msg)
-}
-
-// Will look for the MsgTraceSendTo and traceParentHdr headers and change the first
-// character to an 'X' so that if this message is sent to a remote, the remote
-// will not initialize tracing since it won't find the actual trace headers.
-// The function returns the position of the headers so it can efficiently be
-// re-enabled by calling enableTraceHeaders.
-// Note that if `msg` can be either the header alone or the full message
-// (header and payload). This function will use c.pa.hdr to limit the
-// search to the header section alone.
-func disableTraceHeaders(c *client, msg []byte) []int {
-	// Code largely copied from getHeader(), except that we don't need the value
-	if c.pa.hdr <= 0 {
-		return []int{-1, -1}
-	}
-	hdr := msg[:c.pa.hdr]
-	headers := [2]string{MsgTraceDest, traceParentHdr}
-	positions := [2]int{-1, -1}
-	for i := 0; i < 2; i++ {
-		key := stringToBytes(headers[i])
-		pos := bytes.Index(hdr, key)
-		if pos < 0 {
-			continue
-		}
-		// Make sure this key does not have additional prefix.
-		if pos < 2 || hdr[pos-1] != '\n' || hdr[pos-2] != '\r' {
-			continue
-		}
-		index := pos + len(key)
-		if index >= len(hdr) {
-			continue
-		}
-		if hdr[index] != ':' {
-			continue
-		}
-		// Disable the trace by altering the first character of the header
-		hdr[pos] = 'X'
-		positions[i] = pos
-	}
-	// Return the positions of those characters so we can re-enable the headers.
-	return positions[:2]
-}
-
-// Changes back the character at the given position `pos` in the `msg`
-// byte slice to the first character of the MsgTraceSendTo header.
-func enableTraceHeaders(msg []byte, positions []int) {
-	firstChar := [2]byte{MsgTraceDest[0], traceParentHdr[0]}
-	for i, pos := range positions {
-		if pos == -1 {
-			continue
-		}
-		msg[pos] = firstChar[i]
-	}
 }
 
 func (t *msgTrace) setIngressError(err string) {
