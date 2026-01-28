@@ -17,7 +17,7 @@ import "strconv"
 
 const (
 	// JSApiLevel is the maximum supported JetStream API level for this server.
-	JSApiLevel int = 2
+	JSApiLevel int = 3
 
 	JSRequiredLevelMetadataKey = "_nats.req.level"
 	JSServerVersionMetadataKey = "_nats.ver"
@@ -156,6 +156,11 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig) {
 
 	if cfg.PriorityPolicy != PriorityNone || cfg.PinnedTTL != 0 || len(cfg.PriorityGroups) > 0 {
 		requires(1)
+	}
+
+	// Added in 2.14
+	if cfg.AckPolicy == AckFlowControl {
+		requires(3)
 	}
 
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)

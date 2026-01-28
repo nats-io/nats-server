@@ -2478,7 +2478,7 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 	}
 
 	// Check for AckAll here.
-	if o.cfg.AckPolicy == AckAll {
+	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq

@@ -3703,7 +3703,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			if needLock {
 				mset.mu.RLock()
 			}
-			mset.sendFlowControlReply(reply)
+			mset.sendFlowControlReply(reply, hdr)
 			if needLock {
 				mset.mu.RUnlock()
 			}
@@ -5980,7 +5980,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	o.lat = time.Now()
 
 	var sagap uint64
-	if o.cfg.AckPolicy == AckAll {
+	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
 		// Always use the store state, as o.asflr is skipped ahead already.
 		// Capture before updating store.
 		state, err := o.store.BorrowState()
@@ -8491,7 +8491,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		// Check if we are work queue policy.
 		// We will do pre-checks here to avoid thrashing meta layer.
 		if sa.Config.Retention == WorkQueuePolicy && !cfg.Direct {
-			if cfg.AckPolicy != AckExplicit {
+			if cfg.AckPolicy != AckExplicit && cfg.AckPolicy != AckFlowControl {
 				resp.Error = NewJSConsumerWQRequiresExplicitAckError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return

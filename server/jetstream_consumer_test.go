@@ -11051,3 +11051,90 @@ func TestJetStreamConsumerResetToSequenceConstraintOnStartTime(t *testing.T) {
 	require_Equal(t, string(msgs[0].Data), "msg3")
 	require_NoError(t, msgs[0].AckSync())
 }
+
+func TestJetStreamConsumerAckFlowControlBasics(t *testing.T) {
+	test := func(replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "TEST",
+			Subjects:  []string{"foo"},
+			Replicas:  replicas,
+			Storage:   FileStorage,
+			Retention: LimitsPolicy,
+		})
+		require_NoError(t, err)
+
+		checkConfig := func(ccfg *ConsumerConfig) {
+			require_Equal(t, ccfg.AckPolicy, AckFlowControl)
+			require_True(t, ccfg.FlowControl)
+			require_Equal(t, ccfg.Heartbeat, time.Second)
+			require_Equal(t, ccfg.AckWait, 0)
+			require_Equal(t, ccfg.MaxAckPending, JsDefaultMaxAckPending)
+			require_Equal(t, ccfg.MaxDeliver, -1)
+		}
+
+		// Only the deliver subject and policy are required; others are automatically defaulted.
+		cfg := ConsumerConfig{
+			Durable:        "DEFAULT",
+			DeliverSubject: "deliver-subject",
+			AckPolicy:      AckFlowControl,
+		}
+		ccfg, err := jsConsumerCreate(t, nc, "TEST", cfg, false)
+		require_NoError(t, err)
+		checkConfig(ccfg)
+
+		cfg = ConsumerConfig{
+			Durable:        "CONSUMER",
+			AckPolicy:      AckFlowControl,
+			DeliverSubject: _EMPTY_,
+			FlowControl:    false,
+			MaxAckPending:  -1,
+			AckWait:        30 * time.Second,
+			MaxDeliver:     1,
+		}
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, NewJSConsumerAckFCRequiresPushError())
+
+		cfg.DeliverSubject = "deliver-subject"
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, NewJSConsumerAckFCRequiresFCError())
+
+		cfg.FlowControl = true
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("flow control ack policy heartbeat needs to be 1s")))
+
+		cfg.Heartbeat = time.Second
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, NewJSConsumerAckFCRequiresMaxAckPendingError())
+
+		cfg.MaxAckPending = JsDefaultMaxAckPending
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, NewJSConsumerAckFCRequiresNoAckWaitError())
+
+		cfg.AckWait = time.Second
+		cfg.BackOff = []time.Duration{time.Second, 2 * time.Second}
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, NewJSConsumerAckFCRequiresNoAckWaitError())
+
+		cfg.AckWait = 0
+		cfg.BackOff = nil
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, NewJSConsumerAckFCRequiresNoMaxDeliverError())
+
+		cfg.MaxDeliver = 0
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_NoError(t, err)
+		checkConfig(ccfg)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			test(replicas)
+		})
+	}
+}

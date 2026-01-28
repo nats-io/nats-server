@@ -6915,3 +6915,301 @@ func TestJetStreamClusterInterestStreamWithConsumerFilterUpdate(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterDurableStreamMirror(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+			Durable:        "C",
+			DeliverSubject: "deliver-subject",
+			Replicas:       replicas,
+			AckPolicy:      AckFlowControl,
+			Heartbeat:      time.Second,
+		}, false)
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name: "M",
+			Mirror: &StreamSource{
+				Name: "O",
+				Consumer: &StreamConsumerSource{
+					Name:           "C",
+					DeliverSubject: "deliver-subject",
+				},
+			},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror == nil {
+				return errors.New("no mirror")
+			}
+			if si.Mirror.Error != nil {
+				return si.Mirror.Error
+			}
+			_, err = js.GetMsg("M", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterDurableStreamMirrorServerManaged(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		cfg := &StreamConfig{
+			Name: "M",
+			Mirror: &StreamSource{
+				Name: "O",
+				Consumer: &StreamConsumerSource{
+					Name:           "C",
+					ServerManaged:  true,
+					DeliverSubject: "deliver-subject",
+				},
+			},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		}
+		_, err = jsStreamCreate(t, nc, cfg)
+		require_Error(t, err, NewJSMirrorDurableConsumerCfgInvalidError())
+
+		cfg.Mirror.Consumer.DeliverSubject = _EMPTY_
+		_, err = jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror == nil {
+				return errors.New("no mirror")
+			}
+			if si.Mirror.Error != nil {
+				return si.Mirror.Error
+			}
+			_, err = js.GetMsg("M", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterDurableStreamSource(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+			Durable:        "C",
+			DeliverSubject: "deliver-subject",
+			Replicas:       replicas,
+			AckPolicy:      AckFlowControl,
+			Heartbeat:      time.Second,
+		}, false)
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name: "S",
+			Sources: []*StreamSource{{
+				Name: "O",
+				Consumer: &StreamConsumerSource{
+					Name:           "C",
+					DeliverSubject: "deliver-subject",
+				},
+			}},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("S")
+			if err != nil {
+				return err
+			}
+			if len(si.Sources) != 1 {
+				return errors.New("no source")
+			}
+			if si.Sources[0].Error != nil {
+				return si.Sources[0].Error
+			}
+			_, err = js.GetMsg("S", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterDurableStreamSourceServerManaged(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		cfg := &StreamConfig{
+			Name: "S",
+			Sources: []*StreamSource{{
+				Name: "O",
+				Consumer: &StreamConsumerSource{
+					Name:           "C",
+					ServerManaged:  true,
+					DeliverSubject: "deliver-subject",
+				},
+			}},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		}
+		_, err = jsStreamCreate(t, nc, cfg)
+		require_Error(t, err, NewJSSourceDurableConsumerCfgInvalidError())
+
+		cfg.Sources[0].Consumer.DeliverSubject = _EMPTY_
+		_, err = jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("S")
+			if err != nil {
+				return err
+			}
+			if len(si.Sources) != 1 {
+				return errors.New("no source")
+			}
+			if si.Sources[0].Error != nil {
+				return si.Sources[0].Error
+			}
+			_, err = js.GetMsg("S", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}

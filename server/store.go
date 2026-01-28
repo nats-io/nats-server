@@ -594,15 +594,17 @@ func (st *StorageType) UnmarshalJSON(data []byte) error {
 }
 
 const (
-	ackNonePolicyJSONString     = `"none"`
-	ackAllPolicyJSONString      = `"all"`
-	ackExplicitPolicyJSONString = `"explicit"`
+	ackNonePolicyJSONString        = `"none"`
+	ackAllPolicyJSONString         = `"all"`
+	ackExplicitPolicyJSONString    = `"explicit"`
+	ackFlowControlPolicyJSONString = `"flow_control"`
 )
 
 var (
-	ackNonePolicyJSONBytes     = []byte(ackNonePolicyJSONString)
-	ackAllPolicyJSONBytes      = []byte(ackAllPolicyJSONString)
-	ackExplicitPolicyJSONBytes = []byte(ackExplicitPolicyJSONString)
+	ackNonePolicyJSONBytes        = []byte(ackNonePolicyJSONString)
+	ackAllPolicyJSONBytes         = []byte(ackAllPolicyJSONString)
+	ackExplicitPolicyJSONBytes    = []byte(ackExplicitPolicyJSONString)
+	ackFlowControlPolicyJSONBytes = []byte(ackFlowControlPolicyJSONString)
 )
 
 func (ap AckPolicy) MarshalJSON() ([]byte, error) {
@@ -613,6 +615,8 @@ func (ap AckPolicy) MarshalJSON() ([]byte, error) {
 		return ackAllPolicyJSONBytes, nil
 	case AckExplicit:
 		return ackExplicitPolicyJSONBytes, nil
+	case AckFlowControl:
+		return ackFlowControlPolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", ap)
 	}
@@ -626,6 +630,8 @@ func (ap *AckPolicy) UnmarshalJSON(data []byte) error {
 		*ap = AckAll
 	case ackExplicitPolicyJSONString:
 		*ap = AckExplicit
+	case ackFlowControlPolicyJSONString:
+		*ap = AckFlowControl
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
 	}

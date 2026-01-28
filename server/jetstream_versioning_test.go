@@ -249,6 +249,11 @@ func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 			cfg:              &ConsumerConfig{PriorityPolicy: PriorityPinnedClient, PriorityGroups: []string{"a"}},
 			expectedMetadata: metadataAtLevel("1"),
 		},
+		{
+			desc:             "AckFlowControl",
+			cfg:              &ConsumerConfig{AckPolicy: AckFlowControl},
+			expectedMetadata: metadataAtLevel("3"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticConsumerMetadata(test.cfg)

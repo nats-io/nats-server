@@ -11540,11 +11540,8 @@ func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
 	o.state.Delivered.Stream = sseq
 	o.state.AckFloor.Stream = sseq
-	buf, err := o.encodeState()
+	buf := encodeConsumerState(&o.state)
 	o.mu.Unlock()
-	if err != nil {
-		return err
-	}
 	return o.writeState(buf)
 }
 
@@ -11674,7 +11671,7 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	}
 
 	// Check for AckAll here.
-	if o.cfg.AckPolicy == AckAll {
+	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
