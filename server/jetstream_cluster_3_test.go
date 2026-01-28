@@ -6915,3 +6915,134 @@ func TestJetStreamClusterInterestStreamWithConsumerFilterUpdate(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterStreamUpdateMaxConsumersLimit(t *testing.T) {
+	test := func(t *testing.T, replicas int, remove bool) {
+		var (
+			getStreamLeader func() *Server
+			restart         func()
+			s               *Server
+		)
+		require_NotEqual(t, replicas, 0)
+		if replicas == 1 {
+			tmpl := `
+				listen: 127.0.0.1:-1
+				jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+			`
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, t.TempDir())))
+			s, _ = RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			getStreamLeader = func() *Server { return s }
+			restart = func() {
+				s.Shutdown()
+				s.WaitForShutdown()
+				s, _ = RunServerWithConfig(conf)
+				// No need to defer shutdown here, that's already handled by the defer above.
+				getStreamLeader = func() *Server { return s }
+			}
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+
+			getStreamLeader = func() *Server { return c.streamLeader(globalAccountName, "TEST") }
+			restart = func() {
+				c.stopAll()
+				c.restartAll()
+				c.waitOnLeader()
+				c.waitOnStreamLeader(globalAccountName, "TEST")
+			}
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		cfg := &nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		}
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		// Pre-create consumer configs to be reused.
+		cc1 := &nats.ConsumerConfig{Durable: "CONSUMER_1", Replicas: replicas}
+		cc2 := &nats.ConsumerConfig{Durable: "CONSUMER_2", Replicas: replicas}
+		cc3 := &nats.ConsumerConfig{Durable: "CONSUMER_3", Replicas: replicas}
+
+		// Create two consumers.
+		for _, cc := range []*nats.ConsumerConfig{cc1, cc2} {
+			_, err = js.AddConsumer("TEST", cc)
+			require_NoError(t, err)
+		}
+
+		// Check we have two consumers.
+		sl := getStreamLeader()
+		require_NotNil(t, sl)
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_Len(t, len(mset.getPublicConsumers()), 2)
+
+		// Updating the max consumers limit should preserve the current consumers, even if they're over the limit.
+		cfg.MaxConsumers = 1
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		require_Len(t, len(mset.getPublicConsumers()), 2)
+
+		// Adding a consumer shouldn't be allowed as we're already over the limit (2 > 1).
+		_, err = js.AddConsumer("TEST", cc3)
+		require_Error(t, err, NewJSMaximumConsumersLimitError())
+
+		// We should still be allowed to update a pre-existing consumer.
+		for _, cc := range []*nats.ConsumerConfig{cc1, cc2} {
+			_, err = js.UpdateConsumer("TEST", cc)
+			require_NoError(t, err)
+		}
+
+		// If we're testing removes, if we delete a consumer we're still at limit, so can't add another.
+		if remove {
+			require_NoError(t, js.DeleteConsumer("TEST", "CONSUMER_2"))
+			_, err = js.AddConsumer("TEST", cc3)
+			require_Error(t, err, NewJSMaximumConsumersLimitError())
+		}
+
+		// Restart, and if we didn't remove a consumer above, we should still come up with
+		// all consumers even if it's over the limit.
+		restart()
+		sl = getStreamLeader()
+		require_NotNil(t, sl)
+		mset, err = sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if remove {
+			require_Len(t, len(mset.getPublicConsumers()), 1)
+		} else {
+			require_Len(t, len(mset.getPublicConsumers()), 2)
+		}
+
+		// Reconnect.
+		nc.Close()
+		nc, js = jsClientConnect(t, sl)
+		defer nc.Close()
+
+		// Allow 'infinite' consumers again, and confirm all consumers can be created.
+		cfg.MaxConsumers = -1
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		for _, cc := range []*nats.ConsumerConfig{cc1, cc2, cc3} {
+			_, err = js.AddConsumer("TEST", cc)
+			require_NoError(t, err)
+		}
+		require_Len(t, len(mset.getPublicConsumers()), 3)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, remove := range []bool{false, true} {
+			desc := "Add"
+			if remove {
+				desc = "Remove"
+			}
+			t.Run(fmt.Sprintf("R%d/%s", replicas, desc), func(t *testing.T) { test(t, replicas, remove) })
+		}
+	}
+}

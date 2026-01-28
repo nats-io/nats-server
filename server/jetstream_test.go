@@ -6447,12 +6447,6 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "name must match") {
 				t.Fatalf("Expected error trying to update name")
 			}
-			// Can't change max consumers for now.
-			cfg = *c.mconfig
-			cfg.MaxConsumers = 10
-			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "can not change") {
-				t.Fatalf("Expected error trying to change MaxConsumers")
-			}
 			// Can't change storage types.
 			cfg = *c.mconfig
 			if cfg.Storage == FileStorage {
