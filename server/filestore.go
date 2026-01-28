@@ -5270,9 +5270,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	fsLock()
+	defer fsUnlock()
 
 	if fs.isClosed() {
-		fsUnlock()
 		return false, ErrStoreClosed
 	}
 	// If in encrypted mode negate secure rewrite here.
@@ -5286,16 +5286,20 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if seq <= fs.state.LastSeq {
 			err = ErrStoreMsgNotFound
 		}
-		fsUnlock()
 		return false, err
 	}
 
+	return fs.removeMsgFromBlock(mb, seq, secure, viaLimits)
+}
+
+// Remove a message from the given block, optionally rewriting the mb file.
+// fs lock should be held.
+func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLimits bool) (bool, error) {
 	mb.mu.Lock()
 
 	// See if we are closed or the sequence number is still relevant or if we know its deleted.
 	if mb.closed || seq < atomic.LoadUint64(&mb.first.seq) || mb.dmap.Exists(seq) {
 		mb.mu.Unlock()
-		fsUnlock()
 		return false, nil
 	}
 
@@ -5310,7 +5314,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 		didLoad = true
@@ -5336,7 +5339,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
-		fsUnlock()
 		// Mimic err behavior from above check to dmap. No error returned if already removed.
 		if err == errDeletedMsg {
 			err = nil
@@ -5353,12 +5355,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
 			finishedWithCache()
-			fsUnlock()
 			return false, err
 		}
 		if err := lmb.writeTombstone(sm.seq, sm.ts); err != nil {
 			finishedWithCache()
-			fsUnlock()
 			return false, err
 		}
 		mb.mu.Lock() // We'll need the lock back to carry on safely.
@@ -5377,13 +5377,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 	}
@@ -5484,12 +5482,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		delta := int64(msz)
 		cb(-1, -delta, seq, sm.subj)
 
-		if !needFSLock {
-			fs.mu.Lock()
-		}
-	} else if needFSLock {
-		// We acquired it so release it.
-		fs.mu.Unlock()
+		fs.mu.Lock()
 	}
 
 	return true, nil
@@ -5530,7 +5523,7 @@ func (fs *fileStore) removeMsgsInRange(first, last uint64) {
 		from := max(first, atomic.LoadUint64(&mb.first.seq))
 		to := min(last, atomic.LoadUint64(&mb.last.seq))
 		for seq := from; seq <= to; seq++ {
-			fs.removeMsgViaLimits(seq)
+			fs.removeMsgFromBlock(mb, seq, false, true)
 		}
 	}
 }

@@ -8492,6 +8492,53 @@ func Benchmark_FileStoreSyncDeletedFullBlocks(b *testing.B) {
 	}
 }
 
+func benchmarkFileStoreSyncDeletedPartialBlocks(b *testing.B, msgSize int) {
+	fs, _ := newFileStore(
+		FileStoreConfig{
+			StoreDir:  b.TempDir(),
+			BlockSize: defaultLargeBlockSize,
+		},
+		StreamConfig{
+			Name:    "zzz",
+			Storage: FileStorage,
+		},
+	)
+	defer fs.Stop()
+
+	const numBlocks = 100
+	subj, msg := "foo", make([]byte, msgSize)
+
+	b.ResetTimer()
+	for b.Loop() {
+		b.StopTimer()
+		if len(fs.blks) > 1 {
+			fs.removeMsgsInRange(fs.state.FirstSeq, fs.blks[1].last.seq)
+		}
+		for len(fs.blks) <= numBlocks {
+			fs.StoreMsg(subj, nil, msg, 0)
+		}
+
+		first := fs.state.FirstSeq + 1
+		last := fs.blks[1].last.seq
+		dbs := DeleteBlocks{&DeleteRange{
+			First: first,
+			Num:   last - first}}
+
+		b.StartTimer()
+		fs.SyncDeleted(dbs)
+	}
+}
+
+func Benchmark_FileStoreSyncDeletedPartialBlocks(b *testing.B) {
+	sizes := []int{16, 512}
+	for _, msgSize := range sizes {
+		b.Run(fmt.Sprintf("MsgSize-%d", msgSize),
+			func(b *testing.B) {
+				benchmarkFileStoreSyncDeletedPartialBlocks(b, msgSize)
+			})
+	}
+}
+
 func TestFileStoreWriteFullStateDetectCorruptState(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
