@@ -5260,9 +5260,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	fsLock()
+	defer fsUnlock()
 
 	if fs.isClosed() {
-		fsUnlock()
 		return false, ErrStoreClosed
 	}
 	// If in encrypted mode negate secure rewrite here.
@@ -5276,16 +5276,20 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if seq <= fs.state.LastSeq {
 			err = ErrStoreMsgNotFound
 		}
-		fsUnlock()
 		return false, err
 	}
 
+	return fs.removeMsgFromBlock(mb, seq, secure, viaLimits)
+}
+
+// Remove a message from the given block, optionally rewriting the mb file.
+// fs lock should be held.
+func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLimits bool) (bool, error) {
 	mb.mu.Lock()
 
 	// See if we are closed or the sequence number is still relevant or if we know its deleted.
 	if mb.closed || seq < atomic.LoadUint64(&mb.first.seq) || mb.dmap.Exists(seq) {
 		mb.mu.Unlock()
-		fsUnlock()
 		return false, nil
 	}
 
@@ -5300,7 +5304,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 		didLoad = true
@@ -5326,7 +5329,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
-		fsUnlock()
 		// Mimic err behavior from above check to dmap. No error returned if already removed.
 		if err == errDeletedMsg {
 			err = nil
@@ -5343,12 +5345,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
 			finishedWithCache()
-			fsUnlock()
 			return false, err
 		}
 		if err := lmb.writeTombstone(sm.seq, sm.ts); err != nil {
 			finishedWithCache()
-			fsUnlock()
 			return false, err
 		}
 		mb.mu.Lock() // We'll need the lock back to carry on safely.
@@ -5367,13 +5367,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 	}
@@ -5474,15 +5472,50 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		delta := int64(msz)
 		cb(-1, -delta, seq, sm.subj)
 
-		if !needFSLock {
-			fs.mu.Lock()
-		}
-	} else if needFSLock {
-		// We acquired it so release it.
-		fs.mu.Unlock()
+		fs.mu.Lock()
 	}
 
 	return true, nil
+}
+
+// Remove all messages in the range [first, last]
+// Lock should be held.
+func (fs *fileStore) removeMsgsInRange(first, last uint64) {
+	firstBlock := sort.Search(len(fs.blks), func(i int) bool {
+		return atomic.LoadUint64(&fs.blks[i].last.seq) >= first
+	})
+
+	if firstBlock > len(fs.blks) {
+		return
+	}
+
+	var blocksToTrim []*msgBlock
+	var blocksToPurge []*msgBlock
+
+	for _, mb := range fs.blks[firstBlock:] {
+		mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
+		mbLastSeq := atomic.LoadUint64(&mb.last.seq)
+		if mbFirstSeq > last {
+			break
+		}
+		if mbFirstSeq >= first && mbLastSeq <= last {
+			blocksToPurge = append(blocksToPurge, mb)
+		} else {
+			blocksToTrim = append(blocksToTrim, mb)
+		}
+	}
+
+	for _, mb := range blocksToPurge {
+		fs.purgeMsgBlock(mb)
+	}
+
+	for _, mb := range blocksToTrim {
+		from := max(first, atomic.LoadUint64(&mb.first.seq))
+		to := min(last, atomic.LoadUint64(&mb.last.seq))
+		for seq := from; seq <= to; seq++ {
+			fs.removeMsgFromBlock(mb, seq, false, true)
+		}
+	}
 }
 
 // Tests whether we should try to compact this block while inline removing msgs.
@@ -11236,10 +11269,15 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 	fs.readUnlockAllMsgBlocks()
 
 	for _, db := range needsCheck {
-		db.Range(func(dseq uint64) bool {
-			fs.removeMsg(dseq, false, true, false)
-			return true
-		})
+		if dr, ok := db.(*DeleteRange); ok {
+			first, last, _ := dr.State()
+			fs.removeMsgsInRange(first, last)
+		} else {
+			db.Range(func(dseq uint64) bool {
+				fs.removeMsg(dseq, false, true, false)
+				return true
+			})
+		}
 	}
 }
 
