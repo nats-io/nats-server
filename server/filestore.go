@@ -555,6 +555,14 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// Lock while we do enforcements and removals.
 	fs.mu.Lock()
+	// Use defer to ensure the lock is released if any of the enforcement operations
+	// run into issues to avoid potential deadlocks on exit.
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			fs.mu.Unlock()
+		}
+	}()
 
 	// Check if we have any left over tombstones to process.
 	if len(fs.tombs) > 0 {
@@ -587,6 +595,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Grab first sequence for check below while we have lock.
 	firstSeq := fs.state.FirstSeq
 	fs.mu.Unlock()
+	unlocked = true
 
 	// If the stream has an initial sequence number then make sure we
 	// have purged up until that point. We will do this only if the
