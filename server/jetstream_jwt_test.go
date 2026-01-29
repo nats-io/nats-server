@@ -1810,7 +1810,7 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 			// in-account or not.
 			for _, rg := range raftNodes {
 				rg.Lock()
-				rgAcc := rg.acc
+				rgAcc := rg.t.Account()
 				rg.Unlock()
 				switch state {
 				case "system":
@@ -1911,7 +1911,7 @@ func TestJetStreamJWTClusterAccountNRGPersistsAfterRestart(t *testing.T) {
 
 		for _, rg := range raftNodes {
 			rg.Lock()
-			rgAcc := rg.acc
+			rgAcc := rg.t.Account()
 			rg.Unlock()
 			require_Equal(t, rgAcc.Name, aExpPub)
 			require_Equal(t, rza[rg.group].SystemAcc, false)
