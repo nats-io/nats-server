@@ -328,6 +328,7 @@ type ClientInfo struct {
 	ClientType string        `json:"client_type,omitempty"`
 	MQTTClient string        `json:"client_id,omitempty"` // This is the MQTT client ID
 	Nonce      string        `json:"nonce,omitempty"`
+	Reply      string        `json:"reply,omitempty"` // Original reply subject after a service import (only when needed).
 }
 
 // forAssignmentSnap returns the minimum amount of ClientInfo we need for assignment snapshots.
