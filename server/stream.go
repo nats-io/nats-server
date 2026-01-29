@@ -2105,10 +2105,6 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 	if cfg.Name != old.Name {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration name must match original"))
 	}
-	// Can't change MaxConsumers for now.
-	if cfg.MaxConsumers != old.MaxConsumers {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change MaxConsumers"))
-	}
 	// Can't change storage types.
 	if cfg.Storage != old.Storage {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change storage type"))
