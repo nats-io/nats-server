@@ -155,7 +155,7 @@ func (ms *MsgScheduling) resetTimer() {
 	}
 }
 
-func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *StoreMsg) *StoreMsg) []*inMsg {
+func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *StoreMsg) *StoreMsg, loadLast func(subj string, smv *StoreMsg) *StoreMsg) []*inMsg {
 	var (
 		smv  StoreMsg
 		sm   *StoreMsg
@@ -168,7 +168,8 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 		if sm != nil {
 			// If already inflight, don't duplicate a scheduled message. The stream could
 			// be replicated and the scheduled message could take some time to propagate.
-			if ms.isInflight(sm.subj) {
+			subj := sm.subj
+			if ms.isInflight(subj) {
 				return false
 			}
 			// Validate the contents are correct if not, we just remove it from THW.
@@ -192,6 +193,13 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 				ms.remove(seq)
 				return true
 			}
+			source := getMessageScheduleSource(sm.hdr)
+			if source != _EMPTY_ {
+				if sm = loadLast(source, &smv); sm == nil {
+					ms.remove(seq)
+					return true
+				}
+			}
 
 			// Copy, as this is retrieved directly from storage, and we'll need to keep hold of this for some time.
 			// And in the case of headers, we'll copy all of them, but make changes.
@@ -206,7 +214,7 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 			hdr = removeHeaderIfPresent(hdr, JSMsgRollup)
 
 			// Add headers for the scheduled message.
-			hdr = genHeader(hdr, JSScheduler, sm.subj)
+			hdr = genHeader(hdr, JSScheduler, subj)
 			if !repeat {
 				hdr = genHeader(hdr, JSScheduleNext, JSScheduleNextPurge) // Purge the schedule message itself.
 			} else {
@@ -216,7 +224,7 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 				hdr = genHeader(hdr, JSMessageTTL, ttl)
 			}
 			msgs = append(msgs, &inMsg{seq: seq, subj: target, hdr: hdr, msg: msg})
-			ms.markInflight(sm.subj)
+			ms.markInflight(subj)
 			return false
 		}
 		ms.remove(seq)
