@@ -321,6 +321,7 @@ func createJetStreamTaggedSuperCluster(t *testing.T) *supercluster {
 }
 
 func createJetStreamTaggedSuperClusterWithGWProxy(t *testing.T, gwm gwProxyMap) *supercluster {
+
 	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 3, 3, nil, gwm)
 	sc.waitOnPeerCount(9)
 
@@ -423,8 +424,8 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 		t.Fatalf("Number of clusters must be > 1")
 	}
 
-	startClusterPorts := []int{20_022, 22_022, 24_022}
-	startGatewayPorts := []int{20_122, 22_122, 24_122}
+	startClusterPorts := []int{20_022}
+	startGatewayPorts := []int{20_122}
 	startClusterPort := startClusterPorts[rand.Intn(len(startClusterPorts))]
 	startGWPort := startGatewayPorts[rand.Intn(len(startGatewayPorts))]
 
@@ -458,6 +459,7 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 		gws = append(gws, fmt.Sprintf(jsGWTempl, "\n\t\t\t", cn, strings.Join(urls, ",")))
 	}
 	gwconf := strings.Join(gws, _EMPTY_)
+	//	fmt.Println(gwconf)
 
 	for i := 1; i <= numClusters; i++ {
 		cn := fmt.Sprintf("C%d", i)
@@ -474,6 +476,7 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 		for si := 0; si < numServersPer; si++ {
 			storeDir := t.TempDir()
 			sn := fmt.Sprintf("%s-S%d", cn, si+1)
+			//			fmt.Println(cp, si)
 			bconf := fmt.Sprintf(tmpl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
 			gp++
