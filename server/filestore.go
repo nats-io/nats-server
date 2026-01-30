@@ -512,19 +512,15 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		// Check if our prior state remembers a last sequence past where we can see.
 		// Unless we're async flushing, in which case this can happen if some blocks weren't flushed.
 		if prior.LastSeq > fs.state.LastSeq && !fs.fcfg.AsyncFlush {
+			if mb, err := fs.newMsgBlockForWrite(); err != nil {
+				return nil, err
+			} else if err = mb.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
+				return nil, err
+			}
 			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
 			if fs.state.Msgs == 0 {
 				fs.state.FirstSeq = fs.state.LastSeq + 1
 				fs.state.FirstTime = time.Time{}
-			}
-			if fs.ld != nil {
-				if _, err := fs.newMsgBlockForWrite(); err == nil {
-					if err = fs.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
-						return nil, err
-					}
-				} else {
-					return nil, err
-				}
 			}
 		}
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.

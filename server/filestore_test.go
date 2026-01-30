@@ -12657,3 +12657,65 @@ func TestFileStoreDeleteBlocksWithManyEmptyBlocks(t *testing.T) {
 		&DeleteRange{First: 2, Num: 13},
 	})
 }
+
+func TestFileStoreTrailingSkipMsgsFromStreamStateFile(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 10 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		mfn := lmb.mfn
+		lmb.mu.RUnlock()
+		require_NotEqual(t, mfn, _EMPTY_)
+
+		// Stop the store and truncate the block file.
+		// Stopping should write out our stream state file, letting us "remember" the highest last sequence.
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Truncate(mfn, 33*5))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// We should recover with the right state, the last sequence coming from the stream state file,
+		// and the messages from the recovered blocks.
+		state := fs.State()
+		require_Equal(t, state.Msgs, 5)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 10)
+
+		// Go through all messages, they should properly report deletes.
+		for seq := uint64(1); seq <= 10; seq++ {
+			_, err = fs.LoadMsg(seq, nil)
+			if seq <= 5 {
+				require_NoError(t, err)
+			} else {
+				require_Error(t, err, ErrStoreMsgNotFound)
+			}
+		}
+
+		// Also check a new block was created to represent this.
+		fs.mu.RLock()
+		lmb = fs.lmb
+		lblks := len(fs.blks)
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		ldmap := lmb.dmap.Size()
+		lmb.mu.RUnlock()
+		require_Len(t, lblks, 2)
+		require_Len(t, ldmap, 0)
+		require_Equal(t, atomic.LoadUint64(&lmb.first.seq), 11)
+		require_Equal(t, atomic.LoadUint64(&lmb.last.seq), 10)
+	})
+}
