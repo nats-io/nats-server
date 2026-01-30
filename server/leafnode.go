@@ -691,9 +691,8 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			} else {
 				s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
 
-				// Check if proxy is configured first, then check if URL supports it
-				if proxyURL != _EMPTY_ && isWSURL(rURL) {
-					// Use proxy for WebSocket connections - use original hostname, resolved IP for connection
+				// Check if proxy is configured
+				if proxyURL != _EMPTY_ {
 					targetHost := rURL.Host
 					// If URL doesn't include port, add the default port for the scheme
 					if rURL.Port() == _EMPTY_ {
