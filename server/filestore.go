@@ -512,19 +512,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		// Check if our prior state remembers a last sequence past where we can see.
 		// Unless we're async flushing, in which case this can happen if some blocks weren't flushed.
 		if prior.LastSeq > fs.state.LastSeq && !fs.fcfg.AsyncFlush {
-			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
-			if fs.state.Msgs == 0 {
-				fs.state.FirstSeq = fs.state.LastSeq + 1
-				fs.state.FirstTime = time.Time{}
-			}
-			if fs.ld != nil {
-				if _, err := fs.newMsgBlockForWrite(); err == nil {
-					if err = fs.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
-						return nil, err
-					}
-				} else {
-					return nil, err
-				}
+			if err = fs.skipMsgsLocked(fs.state.LastSeq+1, prior.LastSeq-fs.state.LastSeq, prior.LastTime.UnixNano()); err != nil {
+				return nil, err
 			}
 		}
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.
@@ -4852,7 +4841,11 @@ func (fs *fileStore) SkipMsg(seq uint64) (uint64, error) {
 func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	now := ats.AccessTime()
+	return fs.skipMsgsLocked(seq, num, now)
+}
 
+func (fs *fileStore) skipMsgsLocked(seq uint64, num uint64, ts int64) error {
 	// Check sequence matches our last sequence.
 	if seq != fs.state.LastSeq+1 {
 		if seq > 0 {
@@ -4877,14 +4870,13 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	}
 
 	// Insert into dmap all entries and place last as marker.
-	now := ats.AccessTime()
 	lseq := seq + num - 1
 
 	mb.mu.Lock()
 	// If we are empty update meta directly.
 	if mb.msgs == 0 {
 		atomic.StoreUint64(&mb.last.seq, lseq)
-		mb.last.ts = now
+		mb.last.ts = ts
 		atomic.StoreUint64(&mb.first.seq, lseq+1)
 		mb.first.ts = 0
 	} else {
@@ -4893,12 +4885,12 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 		}
 	}
 	// Write out our placeholder.
-	mb.writeMsgRecordLocked(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, now, true, true)
+	mb.writeMsgRecordLocked(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, ts, true, true)
 	mb.mu.Unlock()
 
 	// Now update FS accounting.
 	// Update fs state.
-	fs.state.LastSeq, fs.state.LastTime = lseq, time.Unix(0, now).UTC()
+	fs.state.LastSeq, fs.state.LastTime = lseq, time.Unix(0, ts).UTC()
 	if fs.state.Msgs == 0 {
 		fs.state.FirstSeq, fs.state.FirstTime = lseq+1, time.Time{}
 	}
