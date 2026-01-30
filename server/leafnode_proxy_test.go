@@ -388,6 +388,50 @@ func TestLeafNodeHttpProxyConnection(t *testing.T) {
 	checkLeafNodeConnected(t, hub)
 }
 
+func TestLeafNodeHttpProxyConnectionToTCP(t *testing.T) {
+	// Create a hub server using config file
+	hubConfig := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+
+	hub, hubOpts := RunServerWithConfig(hubConfig)
+	defer hub.Shutdown()
+
+	// Create HTTP proxy
+	proxy := createTestHTTPProxy(_EMPTY_, _EMPTY_)
+	proxy.start()
+	defer proxy.stop()
+
+	// Create spoke server with proxy configuration via config file
+	configContent := fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			reconnect_interval: "50ms"
+			remotes = [
+				{
+					url: "nats://127.0.0.1:%d"
+					proxy {
+						url: "%s"
+						timeout: 5s
+					}
+				}
+			]
+		}
+	`, hubOpts.LeafNode.Port, proxy.url())
+
+	configFile := createConfFile(t, []byte(configContent))
+
+	spoke, _ := RunServerWithConfig(configFile)
+	defer spoke.Shutdown()
+
+	// Verify leafnode connections are established
+	checkLeafNodeConnected(t, spoke)
+	checkLeafNodeConnected(t, hub)
+}
+
 func TestLeafNodeHttpProxyWithAuthentication(t *testing.T) {
 	// Create a hub server with WebSocket support using config file
 	hubConfig := createConfFile(t, []byte(`
