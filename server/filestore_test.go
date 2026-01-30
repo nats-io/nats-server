@@ -3580,6 +3580,70 @@ func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 	})
 }
 
+// Verify that the pool buffer allocated during head space reclaim in
+// Compact is properly recycled back into the sync.Pool. Before the fix,
+// the buffer obtained from getMsgBlockBuf was never returned via
+// recycleMsgBlockBuf, leaking up to 8MB per compaction cycle.
+func TestFileStoreCompactReclaimRecyclesPoolBuffer(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 4 * 1024 * 1024
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		msg := make([]byte, 64*1024)
+		crand.Read(msg)
+
+		// ~63 msgs in first block, ~37 in second at 4MB block size.
+		for i := 0; i < 100; i++ {
+			_, _, err := fs.StoreMsg("z", nil, msg, 0)
+			require_NoError(t, err)
+		}
+
+		// Force expire all caches so pool counters settle before we measure.
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			mb.tryForceExpireCacheLocked()
+			mb.mu.Unlock()
+		}
+		fs.mu.RUnlock()
+
+		// Snapshot pool counters before compact.
+		getsBefore := blkPoolGets.Load()
+		putsBefore := blkPoolPuts.Load()
+
+		// Compact(33) removes 32 messages from the first block, triggering
+		// head space reclaim since more than half the block's raw bytes are
+		// now dead.
+		_, err = fs.Compact(33)
+		require_NoError(t, err)
+
+		// Force expire caches so any cache buffers are returned to the pool.
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			mb.tryForceExpireCacheLocked()
+			mb.mu.Unlock()
+		}
+		fs.mu.RUnlock()
+
+		getsAfter := blkPoolGets.Load()
+		putsAfter := blkPoolPuts.Load()
+
+		// The number of pool Gets and Puts during Compact must balance.
+		// A positive outstanding count means buffers were leaked.
+		outstanding := (getsAfter - putsAfter) - (getsBefore - putsBefore)
+		if outstanding != 0 {
+			t.Fatalf("Pool buffer leak during compact with head reclaim: "+
+				"%d buffer(s) not recycled (gets delta=%d, puts delta=%d)",
+				outstanding, getsAfter-getsBefore, putsAfter-putsBefore)
+		}
+	})
+}
+
 func TestFileStoreRememberLastMsgTime(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		var fs *fileStore
