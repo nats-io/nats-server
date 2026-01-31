@@ -2229,12 +2229,15 @@ func (mb *msgBlock) lastChecksum() []byte {
 		return nil
 	}
 	if mb.bek != nil {
-		if buf, _ := mb.loadBlock(nil); len(buf) >= checksumSize {
+		buf, _ := mb.loadBlock(nil)
+		if len(buf) >= checksumSize {
 			if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
+				recycleMsgBlockBuf(buf)
 				return nil
 			}
 			copy(lchk[0:], buf[len(buf)-checksumSize:])
 		}
+		recycleMsgBlockBuf(buf)
 	} else {
 		f.ReadAt(lchk[:], int64(mb.rbytes)-checksumSize)
 	}
@@ -7775,9 +7778,14 @@ checkCache:
 	if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
 		return err
 	}
-	// Check for compression.
+	// Check for compression, capture original buffer before decompressing.
+	loadBuf := buf
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
 		return err
+	}
+	// If decompression produced a different buffer, recycle the pool buffer.
+	if len(loadBuf) > 0 && len(buf) > 0 && &buf[0] != &loadBuf[0] {
+		recycleMsgBlockBuf(loadBuf)
 	}
 
 	if err := mb.indexCacheBuf(buf); err != nil {
@@ -9299,6 +9307,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	var smv StoreMsg
 	var err error
 	var tombs []msgId
+	var compactBuf []byte
 
 	smb.mu.Lock()
 	if atomic.LoadUint64(&smb.first.seq) == seq {
@@ -9384,6 +9393,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			buf := smb.cache.buf[moff:]
 			// Don't reuse, copy to new recycled buf.
 			nbuf := getMsgBlockBuf(len(buf))
+			compactBuf = nbuf // Track pool buffer for recycling at SKIP.
 			nbuf = append(nbuf, buf...)
 			smb.closeFDsLockedNoCheck()
 			// Check for encryption.
@@ -9427,6 +9437,7 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	}
 
 SKIP:
+	recycleMsgBlockBuf(compactBuf)
 	smb.mu.Unlock()
 
 	// Write any tombstones as needed.
