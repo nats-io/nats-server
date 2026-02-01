@@ -509,12 +509,15 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 			return nil, err
 		}
 
+		fs.mu.Lock()
 		// Check if our prior state remembers a last sequence past where we can see.
 		// Unless we're async flushing, in which case this can happen if some blocks weren't flushed.
 		if prior.LastSeq > fs.state.LastSeq && !fs.fcfg.AsyncFlush {
 			if mb, err := fs.newMsgBlockForWrite(); err != nil {
+				fs.mu.Unlock()
 				return nil, err
 			} else if err = mb.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
+				fs.mu.Unlock()
 				return nil, err
 			}
 			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
@@ -525,7 +528,19 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.
 		fs.dirty++
+		fs.mu.Unlock()
 	}
+
+	// Lock during the remainder of the recovery.
+	fs.mu.Lock()
+	// Use defer to ensure the lock is released if any of the enforcement operations
+	// run into issues to avoid potential deadlocks on exit.
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			fs.mu.Unlock()
+		}
+	}()
 
 	// See if we can bring back our TTL timed hash wheel state from disk.
 	if cfg.AllowMsgTTL {
@@ -546,17 +561,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	defer func() {
 		if fs != nil {
 			go fs.cleanupOldMeta()
-		}
-	}()
-
-	// Lock while we do enforcements and removals.
-	fs.mu.Lock()
-	// Use defer to ensure the lock is released if any of the enforcement operations
-	// run into issues to avoid potential deadlocks on exit.
-	unlocked := false
-	defer func() {
-		if !unlocked {
-			fs.mu.Unlock()
 		}
 	}()
 
