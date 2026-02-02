@@ -119,7 +119,7 @@ type StreamStore interface {
 	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64, err error)
 	State() StreamState
 	FastState(*StreamState)
-	EncodedStreamState(failed uint64, consumers []*consumerAssignment) (enc []byte, err error)
+	EncodedStreamState(failed uint64, consumers []*writeableConsumerAssignment) (enc []byte, err error)
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
@@ -233,7 +233,7 @@ type StreamReplicatedState struct {
 	LastSeq   uint64
 	Failed    uint64
 	Deleted   DeleteBlocks
-	Consumers []*consumerAssignment
+	Consumers []*writeableConsumerAssignment
 }
 
 // Determine if this is an encoded stream state.

@@ -2251,7 +2251,7 @@ func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (ms *memStore) EncodedStreamState(failed uint64, consumers []*consumerAssignment) ([]byte, error) {
+func (ms *memStore) EncodedStreamState(failed uint64, consumers []*writeableConsumerAssignment) ([]byte, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 

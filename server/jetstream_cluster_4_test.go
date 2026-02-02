@@ -7475,7 +7475,16 @@ func TestJetStreamClusterManagedConsumersEncodedStreamState(t *testing.T) {
 			require_NoError(t, err)
 
 			// Encode and decode state.
-			snap, err := mset.store.EncodedStreamState(0, []*consumerAssignment{ca})
+			wca := &writeableConsumerAssignment{
+				Client:     ca.Client.forAssignmentSnap(),
+				Created:    ca.Created,
+				Name:       ca.Name,
+				Stream:     ca.Stream,
+				ConfigJSON: ca.ConfigJSON,
+				Group:      ca.Group,
+				State:      ca.State,
+			}
+			snap, err := mset.store.EncodedStreamState(0, []*writeableConsumerAssignment{wca})
 			require_NoError(t, err)
 			state, err := DecodeStreamState(snap)
 			require_NoError(t, err)
@@ -7580,11 +7589,15 @@ func TestJetStreamClusterManagedConsumerStreamScaleDown(t *testing.T) {
 		Replicas:         1,
 		ManagesConsumers: true,
 	})
-	require_Error(t, err) // 10052
-	jserr, ok := err.(*ApiError)
-	require_True(t, ok)
-	require_Equal(t, jserr.Code, 500)
-	require_Equal(t, jserr.ErrCode, 10052)
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	ci, err = js.ConsumerInfo("TEST", "TestConsumer")
+	require_NoError(t, err)
+	require_NotNil(t, si.Cluster)
+	require_NotNil(t, ci.Cluster)
+	require_Equal(t, si.Cluster.Leader, ci.Cluster.Leader)
 }
 
 func TestJetStreamClusterManagedConsumerStreamScaleUp(t *testing.T) {

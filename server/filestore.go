@@ -11096,7 +11096,7 @@ func (fs *fileStore) readUnlockAllMsgBlocks() {
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (fs *fileStore) EncodedStreamState(failed uint64, consumers []*consumerAssignment) ([]byte, error) {
+func (fs *fileStore) EncodedStreamState(failed uint64, consumers []*writeableConsumerAssignment) ([]byte, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
