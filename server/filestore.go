@@ -5554,7 +5554,7 @@ func (fs *fileStore) removePerSubject(subj string) uint64 {
 }
 
 // Remove a message, optionally rewriting the mb file.
-func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (bool, error) {
+func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (removed bool, rerr error) {
 	if seq == 0 {
 		return false, ErrStoreMsgNotFound
 	}
@@ -5604,6 +5604,15 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		return false, nil
 	}
 
+	// Persist any write errors.
+	defer func() {
+		if rerr != nil {
+			fsLock()
+			fs.setWriteErr(rerr)
+			fsUnlock()
+		}
+	}()
+
 	fifo := seq == atomic.LoadUint64(&mb.first.seq)
 	isLastBlock := mb == fs.lmb
 	isEmpty := mb.msgs == 1 // ... about to be zero though.
@@ -5615,7 +5624,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
-			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5661,7 +5669,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			mb.mu.Lock()
 			finishedWithCache()
 			mb.mu.Unlock()
-			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5669,7 +5676,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			mb.mu.Lock()
 			finishedWithCache()
 			mb.mu.Unlock()
-			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5695,7 +5701,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5731,7 +5736,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if err = mb.ensurePerSubjectInfoLoaded(); err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
-		fs.setWriteErr(err)
 		fsUnlock()
 		return false, err
 	}
@@ -5740,7 +5744,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if _, err = mb.removeSeqPerSubject(sm.subj, seq); err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
-		fs.setWriteErr(err)
 		fsUnlock()
 		return false, err
 	}
@@ -5776,7 +5779,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			if err = mb.compact(); err != nil {
 				finishedWithCache()
 				mb.mu.Unlock()
-				fs.setWriteErr(err)
 				fsUnlock()
 				return false, err
 			}
@@ -5798,7 +5800,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if err = fs.removeMsgBlock(mb); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -5812,7 +5813,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// we don't lose track of the first sequence.
 	if firstSeqNeedsUpdate {
 		if err = fs.selectNextFirst(); err != nil {
-			fs.setWriteErr(err)
 			fsUnlock()
 			return false, err
 		}
@@ -9399,6 +9399,15 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		}
 	}
 
+	// Persist any write errors.
+	defer func() {
+		if err != nil {
+			fs.mu.Lock()
+			fs.setWriteErr(err)
+			fs.mu.Unlock()
+		}
+	}()
+
 	// Make sure to not leave subject if empty and we reach this spot.
 	if subject == _EMPTY_ {
 		subject = fwcs
@@ -9413,11 +9422,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	if keep > 0 {
 		ss, err := fs.FilteredState(1, subject)
 		if err != nil || keep >= ss.Msgs {
-			if err != nil {
-				fs.mu.Lock()
-				fs.setWriteErr(err)
-				fs.mu.Unlock()
-			}
 			return 0, err
 		}
 		maxp = ss.Msgs - keep
@@ -9448,7 +9452,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		t, f, l, err := mb.filteredPendingLocked(subject, wc, atomic.LoadUint64(&mb.first.seq))
 		if err != nil {
 			mb.mu.Unlock()
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9469,7 +9472,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		if mb.cacheNotLoaded() {
 			if err := mb.loadMsgsWithLock(); err != nil {
 				mb.mu.Unlock()
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return 0, err
 			}
@@ -9504,7 +9506,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				nr, err := mb.removeSeqPerSubject(sm.subj, seq)
 				if err != nil {
 					mb.mu.Unlock()
-					fs.setWriteErr(err)
 					fs.mu.Unlock()
 					return purged, err
 				}
@@ -9524,7 +9525,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 						tombs = tombs[:te]
 						if err = fs.removeMsgBlock(mb); err != nil {
 							mb.mu.Unlock()
-							fs.setWriteErr(err)
 							fs.mu.Unlock()
 							return 0, err
 						}
@@ -9575,7 +9575,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	}
 	if firstSeqNeedsUpdate {
 		if err = fs.selectNextFirst(); err != nil {
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9589,7 +9588,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err = fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9597,7 +9595,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
 		if lmb := fs.lmb; lmb != nil {
 			if err = lmb.flushPendingMsgs(); err != nil {
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9626,7 +9623,7 @@ func (fs *fileStore) Purge() (uint64, error) {
 	return fs.purge(0)
 }
 
-func (fs *fileStore) purge(fseq uint64) (uint64, error) {
+func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 	if fs.isClosed() {
 		return 0, ErrStoreClosed
 	}
@@ -9636,9 +9633,18 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		return 0, err
 	}
 
+	// Persist any write errors.
+	defer func() {
+		if rerr != nil {
+			fs.mu.Lock()
+			fs.setWriteErr(rerr)
+			fs.mu.Unlock()
+		}
+	}()
+
 	fs.mu.Lock()
 
-	purged := fs.state.Msgs
+	purged = fs.state.Msgs
 	rbytes := int64(fs.state.Bytes)
 
 	fs.state.FirstSeq = fs.state.LastSeq + 1
@@ -9659,7 +9665,6 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 
 	// Make sure we have a lmb to write to.
 	if _, err := fs.newMsgBlockForWrite(); err != nil {
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9673,19 +9678,16 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		// Leave a tombstone so we can remember our starting sequence in case
 		// full state becomes corrupted.
 		if err := fs.writeTombstone(lseq, lmb.last.ts); err != nil {
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
 	}
 	// Close FDs since we'll move the file. We re-enable the FD after the purge is complete.
 	if err := lmb.flushPendingMsgs(); err != nil {
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
 	if err := lmb.closeFDs(); err != nil {
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9711,26 +9713,22 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	if _, err := os.Stat(ndir); err == nil {
 		if err = os.RemoveAll(ndir); err != nil {
 			dios <- struct{}{}
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
 	} else if !os.IsNotExist(err) {
 		dios <- struct{}{}
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
 	if _, err := os.Stat(pdir); err == nil {
 		if err = os.RemoveAll(pdir); err != nil {
 			dios <- struct{}{}
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
 	} else if !os.IsNotExist(err) {
 		dios <- struct{}{}
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9738,7 +9736,6 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	// Create directory to move the new tombstone to.
 	if err := os.MkdirAll(ndir, defaultDirPerms); err != nil {
 		dios <- struct{}{}
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9750,7 +9747,6 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 		a := filepath.Join(ndir, mbf)
 		if err := os.Rename(b, a); err != nil && !os.IsNotExist(err) {
 			dios <- struct{}{}
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9758,14 +9754,12 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	// Purge all remaining messages.
 	if err := os.Rename(mdir, pdir); err != nil {
 		dios <- struct{}{}
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
 	// Rename the directory back to be left only with the tombstone.
 	if err := os.Rename(ndir, mdir); err != nil {
 		dios <- struct{}{}
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9783,7 +9777,6 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	err := lmb.enableForWriting(fs.fip)
 	lmb.mu.Unlock()
 	if err != nil {
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return purged, err
 	}
@@ -9841,15 +9834,13 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	return fs.compact(seq)
 }
 
-func (fs *fileStore) compact(seq uint64) (uint64, error) {
+func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 	if fs.isClosed() {
 		return 0, ErrStoreClosed
 	}
 	if seq == 0 {
 		return fs.purge(seq)
 	}
-
-	var purged, bytes uint64
 
 	fs.mu.Lock()
 	// Always return previous write errors.
@@ -9874,6 +9865,17 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		return 0, nil
 	}
 
+	// Persist any write errors.
+	defer func() {
+		if rerr != nil {
+			fs.mu.Lock()
+			fs.setWriteErr(rerr)
+			fs.mu.Unlock()
+		}
+	}()
+
+	var bytes uint64
+
 	// All msgblocks up to this one can be thrown away.
 	var deleted int
 	for _, mb := range fs.blks {
@@ -9886,7 +9888,6 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		// Make sure we do subject cleanup as well.
 		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
 			mb.mu.Unlock()
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return 0, err
 		}
@@ -9901,7 +9902,6 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		err := mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
 		if err != nil {
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9923,7 +9923,6 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	if smb.cacheNotLoaded() {
 		if err = smb.loadMsgsWithLock(); err != nil {
 			smb.mu.Unlock()
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return purged, err
 		}
@@ -9955,7 +9954,6 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			// Update fss
 			if _, err := smb.removeSeqPerSubject(sm.subj, mseq); err != nil {
 				smb.mu.Unlock()
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -9970,7 +9968,6 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 		if smb != fs.lmb {
 			if err = smb.dirtyCloseWithRemove(true); err != nil {
 				smb.mu.Unlock()
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -10044,14 +10041,12 @@ func (fs *fileStore) compact(seq uint64) (uint64, error) {
 			if err != nil {
 				_ = os.Remove(mfn)
 				smb.mu.Unlock()
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
 			if err = os.Rename(mfn, smb.mfn); err != nil {
 				_ = os.Remove(mfn)
 				smb.mu.Unlock()
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -10073,7 +10068,6 @@ SKIP:
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err = fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -10081,7 +10075,6 @@ SKIP:
 		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
 		if lmb := fs.lmb; lmb != nil {
 			if err = lmb.flushPendingMsgs(); err != nil {
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return purged, err
 			}
@@ -10283,7 +10276,7 @@ func (mb *msgBlock) numPriorTombsLocked() int {
 }
 
 // Truncate will truncate a stream store up to seq. Sequence needs to be valid.
-func (fs *fileStore) Truncate(seq uint64) error {
+func (fs *fileStore) Truncate(seq uint64) (rerr error) {
 	if fs.isClosed() {
 		return ErrStoreClosed
 	}
@@ -10299,6 +10292,15 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		fs.mu.Unlock()
 		return err
 	}
+
+	// Persist any write errors.
+	defer func() {
+		if rerr != nil {
+			fs.mu.Lock()
+			fs.setWriteErr(rerr)
+			fs.mu.Unlock()
+		}
+	}()
 
 	// Any existing state file will no longer be applicable. We will force write a new one
 	// at the end, after we release the lock.
@@ -10332,7 +10334,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// If we end up not needing to write tombstones, this block will be cleaned up at the end.
 	tmb, err := fs.newMsgBlockForWrite()
 	if err != nil {
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return err
 	}
@@ -10347,7 +10348,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// at the truncated sequence so we don't roll backward on our last sequence and timestamp.
 	if lsm == nil || removeSmb {
 		if err = fs.writeTombstone(seq, lastTime); err != nil {
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10379,7 +10379,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			for _, tomb := range tombs {
 				if tomb.seq < seq {
 					if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
-						fs.setWriteErr(err)
 						fs.mu.Unlock()
 						return err
 					}
@@ -10390,7 +10389,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		err = fs.forceRemoveMsgBlock(mb)
 		mb.mu.Unlock()
 		if err != nil {
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10410,7 +10408,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 				for _, tomb := range tombs {
 					if tomb.seq < seq {
 						if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
-							fs.setWriteErr(err)
 							fs.mu.Unlock()
 							return err
 						}
@@ -10421,7 +10418,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			err = fs.forceRemoveMsgBlock(smb)
 			smb.mu.Unlock()
 			if err != nil {
-				fs.setWriteErr(err)
 				fs.mu.Unlock()
 				return err
 			}
@@ -10431,7 +10427,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		// Make sure writeable.
 		if err := smb.enableForWriting(fs.fip); err != nil {
 			smb.mu.Unlock()
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10440,7 +10435,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		nmsgs, nbytes, err := smb.truncate(seq, lastTime)
 		if err != nil {
 			smb.mu.Unlock()
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return fmt.Errorf("smb.truncate: %w", err)
 		}
@@ -10470,7 +10464,6 @@ SKIP:
 		err = fs.forceRemoveMsgBlock(tmb)
 		tmb.mu.Unlock()
 		if err != nil {
-			fs.setWriteErr(err)
 			fs.mu.Unlock()
 			return err
 		}
@@ -10491,7 +10484,6 @@ SKIP:
 
 	// Reset our subject lookup info.
 	if err = fs.resetGlobalPerSubjectInfo(); err != nil {
-		fs.setWriteErr(err)
 		fs.mu.Unlock()
 		return err
 	}
