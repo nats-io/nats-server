@@ -966,6 +966,12 @@ func (fs *fileStore) writeStreamMeta() error {
 	return nil
 }
 
+// Counters to track outstanding pool buffer usage for testing purposes.
+var (
+	blkPoolGets atomic.Int64
+	blkPoolPuts atomic.Int64
+)
+
 // Pools to recycle the blocks to help with memory pressure.
 var blkPoolTiny = &sync.Pool{
 	New: func() any {
@@ -996,12 +1002,16 @@ var blkPoolBig = &sync.Pool{
 func getMsgBlockBuf(sz int) (buf []byte) {
 	switch {
 	case sz <= defaultTinyBlockSize:
+		blkPoolGets.Add(1)
 		return blkPoolTiny.Get().(*[defaultTinyBlockSize]byte)[:0]
 	case sz <= defaultSmallBlockSize:
+		blkPoolGets.Add(1)
 		return blkPoolSmall.Get().(*[defaultSmallBlockSize]byte)[:0]
 	case sz <= defaultMediumBlockSize:
+		blkPoolGets.Add(1)
 		return blkPoolMedium.Get().(*[defaultMediumBlockSize]byte)[:0]
 	case sz <= defaultLargeBlockSize:
+		blkPoolGets.Add(1)
 		return blkPoolBig.Get().(*[defaultLargeBlockSize]byte)[:0]
 	default:
 		// Ideally this should not happen, once we return a buffer that's
@@ -1015,15 +1025,19 @@ func getMsgBlockBuf(sz int) (buf []byte) {
 func recycleMsgBlockBuf(buf []byte) {
 	switch cap(buf) {
 	case defaultTinyBlockSize:
+		blkPoolPuts.Add(1)
 		b := (*[defaultTinyBlockSize]byte)(buf[0:defaultTinyBlockSize])
 		blkPoolTiny.Put(b)
 	case defaultSmallBlockSize:
+		blkPoolPuts.Add(1)
 		b := (*[defaultSmallBlockSize]byte)(buf[0:defaultSmallBlockSize])
 		blkPoolSmall.Put(b)
 	case defaultMediumBlockSize:
+		blkPoolPuts.Add(1)
 		b := (*[defaultMediumBlockSize]byte)(buf[0:defaultMediumBlockSize])
 		blkPoolMedium.Put(b)
 	case defaultLargeBlockSize:
+		blkPoolPuts.Add(1)
 		b := (*[defaultLargeBlockSize]byte)(buf[0:defaultLargeBlockSize])
 		blkPoolBig.Put(b)
 	default:
@@ -1168,10 +1182,12 @@ func (fs *fileStore) recoverMsgBlock(index uint32) (*msgBlock, error) {
 	var lchk [8]byte
 	if mb.rbytes >= checksumSize {
 		if mb.bek != nil {
-			if buf, _ := mb.loadBlock(nil); len(buf) >= checksumSize {
+			buf, _ := mb.loadBlock(nil)
+			if len(buf) >= checksumSize {
 				mb.bek.XORKeyStream(buf, buf)
 				copy(lchk[0:], buf[len(buf)-checksumSize:])
 			}
+			recycleMsgBlockBuf(buf)
 		} else {
 			file.ReadAt(lchk[:], int64(mb.rbytes)-checksumSize)
 		}
@@ -1370,10 +1386,13 @@ func (mb *msgBlock) convertCipher() error {
 		bek.XORKeyStream(buf, buf)
 		// Check for compression, and make sure we can parse with old cipher and key file.
 		if nbuf, err := mb.decompressIfNeeded(buf); err != nil {
+			recycleMsgBlockBuf(buf)
 			return err
 		} else if _, _, err = mb.rebuildStateFromBufLocked(nbuf, false); err != nil {
+			recycleMsgBlockBuf(buf)
 			return err
 		} else if err = mb.indexCacheBuf(nbuf); err != nil {
+			recycleMsgBlockBuf(buf)
 			return err
 		}
 
@@ -1385,12 +1404,14 @@ func (mb *msgBlock) convertCipher() error {
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
 			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
 			fs.writeFileWithOptionalSync(keyFile, ekey, defaultFilePerms)
+			recycleMsgBlockBuf(buf)
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
 		<-dios
 		err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
 		dios <- struct{}{}
+		recycleMsgBlockBuf(buf)
 		if err != nil {
 			return err
 		}
@@ -5936,15 +5957,22 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 	// and decompress it, truncate it and then write it back out.
 	// Otherwise, truncate the file itself and close the descriptor.
 	if mb.cmp != NoCompression {
-		buf, err := mb.loadBlock(nil)
+		loadBuf, err := mb.loadBlock(nil)
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to load block from disk: %w", err)
 		}
-		if err = mb.encryptOrDecryptIfNeeded(buf); err != nil {
+		if err = mb.encryptOrDecryptIfNeeded(loadBuf); err != nil {
+			recycleMsgBlockBuf(loadBuf)
 			return 0, 0, err
 		}
-		if buf, err = mb.decompressIfNeeded(buf); err != nil {
+		buf, err := mb.decompressIfNeeded(loadBuf)
+		if err != nil {
+			recycleMsgBlockBuf(loadBuf)
 			return 0, 0, fmt.Errorf("failed to decompress block: %w", err)
+		}
+		// If decompression produced a new buffer, recycle the original pool buffer.
+		if len(loadBuf) > 0 && len(buf) > 0 && &buf[0] != &loadBuf[0] {
+			recycleMsgBlockBuf(loadBuf)
 		}
 		buf = buf[:eof]
 		copy(mb.lchk[0:], buf[:len(buf)-checksumSize])
@@ -9695,8 +9723,10 @@ func (fs *fileStore) Truncate(seq uint64) error {
 
 	// If the selected block is not found or the message was deleted, we'll need to write a tombstone
 	// at the truncated sequence so we don't roll backward on our last sequence and timestamp.
+	var hasWrittenTombstones bool
 	if lsm == nil || removeSmb {
 		fs.writeTombstone(seq, lastTime)
+		hasWrittenTombstones = true
 	}
 
 	var purged, bytes uint64
@@ -9725,6 +9755,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 			for _, tomb := range tombs {
 				if tomb.seq < seq {
 					fs.writeTombstone(tomb.seq, tomb.ts)
+					hasWrittenTombstones = true
 				}
 			}
 			mb.mu.Lock()
@@ -9733,7 +9764,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		mb.mu.Unlock()
 	}
 
-	hasWrittenTombstones := len(tmb.tombs()) > 0
 	if smb != nil {
 		smb.mu.Lock()
 		if removeSmb {
@@ -9747,6 +9777,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 				for _, tomb := range tombs {
 					if tomb.seq < seq {
 						fs.writeTombstone(tomb.seq, tomb.ts)
+						hasWrittenTombstones = true
 					}
 				}
 				smb.mu.Lock()
@@ -10917,7 +10948,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 
 	// Can't use join path here, tar only recognizes relative paths with forward slashes.
 	msgPre := msgDir + "/"
-	var bbuf []byte
+	var bbuf []byte    // Buffer reused across iterations.
+	var poolBuf []byte // Tracks the pool buffer from loadBlock for recycling.
 
 	// Now do messages themselves.
 	for _, mb := range blks {
@@ -10931,14 +10963,23 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		if err != nil {
 			mb.mu.Unlock()
 			writeErr(fmt.Sprintf("Could not read message block [%d]: %v", mb.index, err))
+			recycleMsgBlockBuf(poolBuf)
 			return
 		}
+
+		// If loadBlock gets from a different pool, recycle the old one.
+		if poolBuf != nil && (len(bbuf) == 0 || &bbuf[0] != &poolBuf[0]) {
+			recycleMsgBlockBuf(poolBuf)
+		}
+		poolBuf = bbuf
+
 		// Check for encryption.
 		if mb.bek != nil && len(bbuf) > 0 {
 			rbek, err := genBlockEncryptionKey(fs.fcfg.Cipher, mb.seed, mb.nonce)
 			if err != nil {
 				mb.mu.Unlock()
 				writeErr(fmt.Sprintf("Could not create encryption key for message block [%d]: %v", mb.index, err))
+				recycleMsgBlockBuf(poolBuf)
 				return
 			}
 			rbek.XORKeyStream(bbuf, bbuf)
@@ -10947,14 +10988,22 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		if bbuf, err = mb.decompressIfNeeded(bbuf); err != nil {
 			mb.mu.Unlock()
 			writeErr(fmt.Sprintf("Could not decompress message block [%d]: %v", mb.index, err))
+			recycleMsgBlockBuf(poolBuf)
 			return
+		}
+		// If decompression produced a different buffer, recycle the pool buffer.
+		if len(poolBuf) > 0 && len(bbuf) > 0 && &bbuf[0] != &poolBuf[0] {
+			recycleMsgBlockBuf(poolBuf)
+			poolBuf = nil
 		}
 		mb.mu.Unlock()
 
 		// Do this one unlocked.
 		if writeFile(msgPre+fmt.Sprintf(blkScan, mb.index), bbuf) != nil {
+			recycleMsgBlockBuf(poolBuf)
 			return
 		}
+		recycleMsgBlockBuf(poolBuf)
 	}
 
 	// Do index.db last. We will force a write as well.
