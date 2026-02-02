@@ -2077,12 +2077,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("preferred server not permitted in placement"))
 	}
 
-	// Only allow stream-managed consumers on replicated streams, otherwise we
-	// don't have anywhere to snapshot the consumer assignments to.
-	if cfg.ManagesConsumers && cfg.Replicas <= 1 {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("replicated stream required for stream-managed consumers"))
-	}
-
 	return cfg, nil
 }
 

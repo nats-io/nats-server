@@ -4247,6 +4247,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, _ *Accoun
 	streamName := streamNameFromSubject(subject)
 
 	// Determine if we should proceed here when we are in clustered mode.
+	var managesConsumers bool
 	if isClustered {
 		var cc *jetStreamCluster
 		js, cc = s.getJetStreamCluster()
@@ -4255,7 +4256,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, _ *Accoun
 		}
 		js.mu.RLock()
 		sa := js.streamAssignment(acc.Name, streamName)
-		managesConsumers := sa != nil && sa.Config != nil && sa.Config.ManagesConsumers
+		managesConsumers = sa != nil && sa.Config != nil && sa.Config.ManagesConsumers
 		js.mu.RUnlock()
 		if req.Config.Direct || managesConsumers {
 			if !acc.JetStreamIsStreamLeader(streamName) {
@@ -4388,7 +4389,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, _ *Accoun
 	}
 
 	if isClustered && !req.Config.Direct {
-		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config, req.Action, req.Pedantic)
+		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config, req.Action, req.Pedantic, managesConsumers)
 		return
 	}
 
@@ -4492,6 +4493,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 
 	streamName := streamNameFromSubject(subject)
 	var numConsumers int
+	var local bool
 
 	if s.JetStreamIsClustered() {
 		// Determine if we should proceed here when we are in clustered mode.
@@ -4506,6 +4508,16 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		if managesConsumers {
 			if !acc.JetStreamIsStreamLeader(streamName) {
 				return
+			}
+			mset, err := acc.lookupStream(streamName)
+			if err != nil {
+				resp.Error = NewJSStreamNotFoundError(Unless(err))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			if mset.config().Replicas <= 1 {
+				local = true
+				goto SKIP
 			}
 		} else {
 			if js.isLeaderless() {
@@ -4526,7 +4538,11 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		for consumer := range sa.consumers {
+		consumers := sa.consumers
+		if managesConsumers {
+			consumers = sa.managedConsumers
+		}
+		for consumer := range consumers {
 			resp.Consumers = append(resp.Consumers, consumer)
 		}
 		if len(resp.Consumers) > 1 {
@@ -4541,8 +4557,12 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			resp.Consumers = resp.Consumers[:JSApiNamesLimit]
 		}
 		js.mu.RUnlock()
-
 	} else {
+		local = true
+	}
+
+SKIP:
+	if local {
 		mset, err := acc.lookupStream(streamName)
 		if err != nil {
 			resp.Error = NewJSStreamNotFoundError(Unless(err))
@@ -4630,6 +4650,15 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 			if !acc.JetStreamIsStreamLeader(streamName) {
 				return
 			}
+			mset, err := acc.lookupStream(streamName)
+			if err != nil {
+				resp.Error = NewJSStreamNotFoundError(Unless(err))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			if mset.config().Replicas <= 1 {
+				goto LOCAL
+			}
 		} else {
 			if js.isLeaderless() {
 				resp.Error = NewJSClusterNotAvailError()
@@ -4645,11 +4674,12 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		// Need to copy these off before sending.. don't move this inside startGoRoutine!!!
 		msg = copyBytes(msg)
 		s.startGoRoutine(func() {
-			s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, msg)
+			s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, msg, managesConsumers)
 		})
 		return
 	}
 
+LOCAL:
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = NewJSStreamNotFoundError(Unless(err))

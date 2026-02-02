@@ -4263,7 +4263,7 @@ func TestJetStreamClusterMetaSnapshotReCreateConsistency(t *testing.T) {
 	}
 	for _, cas := range ru.updateConsumers {
 		for _, ca = range cas {
-			mjs.processConsumerAssignment(ca)
+			mjs.processConsumerAssignment(ca, false)
 		}
 	}
 
@@ -4335,7 +4335,7 @@ func TestJetStreamClusterMetaSnapshotConsumerDeleteConsistency(t *testing.T) {
 	}
 	for _, cas := range ru.removeConsumers {
 		for _, ca = range cas {
-			mjs.processConsumerRemoval(ca)
+			mjs.processConsumerRemoval(ca, false)
 		}
 	}
 	for _, sa := range ru.addStreams {
@@ -7486,6 +7486,64 @@ func TestJetStreamClusterManagedConsumersEncodedStreamState(t *testing.T) {
 			require_Len(t, len(state.Consumers), 1)
 		})
 	}
+}
+
+func TestJetStreamClusterManagedConsumerR1(t *testing.T) {
+	test := func(t *testing.T, memoryStorage bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:             "TEST",
+			Subjects:         []string{"foo"},
+			Storage:          FileStorage,
+			Replicas:         1,
+			ManagesConsumers: true,
+		})
+		require_NoError(t, err)
+
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Name:          "TestConsumer",
+			AckPolicy:     nats.AckExplicitPolicy,
+			MemoryStorage: memoryStorage,
+		})
+		require_NoError(t, err)
+
+		_, err = js.ConsumerInfo("TEST", "TestConsumer")
+		require_NoError(t, err)
+
+		sl := c.streamLeader(globalAccountName, "TEST")
+		sl.Shutdown()
+		sl.WaitForShutdown()
+		sl = c.restartServer(sl)
+		c.waitOnServerCurrent(sl)
+
+		// Reconnect.
+		nc.Close()
+		nc, js = jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+			_, err = js.ConsumerInfo("TEST", "TestConsumer")
+			if memoryStorage {
+				// It's expected that a memory-based consumer on a R1 stream that manages
+				// its own consumers does not remember the consumer after a restart.
+				if err == nil {
+					return errors.New("expected error")
+				} else if errors.Is(nats.ErrConsumerNotFound, err) {
+					return nil
+				}
+			}
+			return err
+		})
+	}
+	t.Run("Memory", func(t *testing.T) { test(t, true) })
+	t.Run("File", func(t *testing.T) { test(t, false) })
 }
 
 func TestJetStreamClusterManagedConsumerStreamScaleDown(t *testing.T) {
