@@ -4005,6 +4005,22 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 					})
 				}
 			}
+			for consumer, ca := range sa.managedConsumers {
+				if err := js.isConsumerHealthy(mset, consumer, ca); err != nil {
+					if !details {
+						health.Status = na
+						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err)
+						return health
+					}
+					health.Errors = append(health.Errors, HealthzError{
+						Type:     HealthzErrorConsumer,
+						Account:  accName,
+						Stream:   stream,
+						Consumer: consumer,
+						Error:    fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err),
+					})
+				}
+			}
 		}
 	}
 	// Success.
