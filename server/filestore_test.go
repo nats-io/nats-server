@@ -12719,3 +12719,68 @@ func TestFileStoreTrailingSkipMsgsFromStreamStateFile(t *testing.T) {
 		require_Equal(t, atomic.LoadUint64(&lmb.last.seq), 10)
 	})
 }
+
+func TestFileStoreSelectMsgBlockBinarySearch(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		created := time.Now()
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 33 {
+			if i > 0 {
+				_, err = fs.newMsgBlockForWrite()
+				require_NoError(t, err)
+			}
+			for range 2 {
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+			if i == 15 {
+				for _, seq := range []uint64{2, 5} {
+					_, err = fs.newMsgBlockForWrite()
+					require_NoError(t, err)
+					_, err = fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+			}
+		}
+
+		test := func() {
+			// Select a block containing a message we deleted.
+			i, mb := fs.selectMsgBlockWithIndex(2)
+			require_Equal(t, i, 0)
+			require_Equal(t, mb.index, 1)
+
+			// Once more for the other deleted message.
+			i, mb = fs.selectMsgBlockWithIndex(5)
+			require_Equal(t, i, 2)
+			require_Equal(t, mb.index, 3)
+
+			// Select the first block/message.
+			i, mb = fs.selectMsgBlockWithIndex(1)
+			require_Equal(t, i, 0)
+			require_Equal(t, mb.index, 1)
+
+			// Select a block before the delete block, but after the deleted sequences.
+			i, mb = fs.selectMsgBlockWithIndex(10)
+			require_Equal(t, i, 4)
+			require_Equal(t, mb.index, 5)
+
+			// Select a block after the delete block AND after the deleted sequences.
+			i, mb = fs.selectMsgBlockWithIndex(64)
+			require_Equal(t, i, 33)
+			require_Equal(t, mb.index, 34)
+		}
+		test()
+
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+		test()
+	})
+}
