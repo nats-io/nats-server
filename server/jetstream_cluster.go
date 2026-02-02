@@ -4534,6 +4534,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 					if cca.Config.Replicas != 0 {
 						cca.Config.Replicas = len(rg.Peers)
 					}
+					// Single nodes are not recorded by the NRG layer so we can rename.
+					// MUST do this, otherwise a scaleup afterward could potentially lead to inconsistencies.
+					if len(cca.Group.Peers) == 1 {
+						cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
+					}
 					// We can not propose here before the stream itself so we collect them.
 					consumers = append(consumers, cca)
 				} else if !isScaleUp {
@@ -4584,6 +4589,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 							}
 							// Re-acquire here.
 							js.mu.Lock()
+						}
+						// Single nodes are not recorded by the NRG layer so we can rename.
+						// MUST do this, otherwise a scaleup afterward could potentially lead to inconsistencies.
+						if len(cca.Group.Peers) == 1 {
+							cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
 						}
 						// We can not propose here before the stream itself so we collect them.
 						consumers = append(consumers, cca)
@@ -7693,6 +7703,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				if cca.Config.Replicas != 0 {
 					cca.Config.Replicas = len(rg.Peers)
 				}
+				// Single nodes are not recorded by the NRG layer so we can rename.
+				// MUST do this, otherwise a scaleup afterward could potentially lead to inconsistencies.
+				if len(cca.Group.Peers) == 1 {
+					cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
+				}
 				// We can not propose here before the stream itself so we collect them.
 				consumers = append(consumers, cca)
 
@@ -7744,6 +7759,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 						}
 						// Re-acquire here.
 						js.mu.Lock()
+					}
+					// Single nodes are not recorded by the NRG layer so we can rename.
+					// MUST do this, otherwise a scaleup afterward could potentially lead to inconsistencies.
+					if len(cca.Group.Peers) == 1 {
+						cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
 					}
 					// We can not propose here before the stream itself so we collect them.
 					consumers = append(consumers, cca)
