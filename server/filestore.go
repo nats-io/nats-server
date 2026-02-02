@@ -2309,9 +2309,11 @@ func (fs *fileStore) recoverMsgs() error {
 		if mb, err := fs.recoverMsgBlock(uint32(index)); err == nil && mb != nil {
 			// This is a truncate block with possibly no index. If the OS got shutdown
 			// out from underneath of us this is possible.
+			mb.mu.Lock()
 			if mb.first.seq == 0 {
 				mb.dirtyCloseWithRemove(true)
 				fs.removeMsgBlockFromList(mb)
+				mb.mu.Unlock()
 				continue
 			}
 			// If the stream is empty, reset the first/last sequences so these can
@@ -2341,6 +2343,14 @@ func (fs *fileStore) recoverMsgs() error {
 			}
 			fs.state.Msgs += mb.msgs
 			fs.state.Bytes += mb.bytes
+			// If the block is empty, correct the sequences to be aligned with the current filestore state.
+			if mb.msgs == 0 {
+				atomic.StoreUint64(&mb.first.seq, fs.state.LastSeq+1)
+				mb.first.ts = 0
+				atomic.StoreUint64(&mb.last.seq, fs.state.LastSeq)
+				mb.last.ts = fs.state.LastTime.UnixNano()
+			}
+			mb.mu.Unlock()
 		} else {
 			return err
 		}
