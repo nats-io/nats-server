@@ -509,27 +509,38 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 			return nil, err
 		}
 
+		fs.mu.Lock()
 		// Check if our prior state remembers a last sequence past where we can see.
 		// Unless we're async flushing, in which case this can happen if some blocks weren't flushed.
 		if prior.LastSeq > fs.state.LastSeq && !fs.fcfg.AsyncFlush {
+			if mb, err := fs.newMsgBlockForWrite(); err != nil {
+				fs.mu.Unlock()
+				return nil, err
+			} else if err = mb.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
+				fs.mu.Unlock()
+				return nil, err
+			}
 			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
 			if fs.state.Msgs == 0 {
 				fs.state.FirstSeq = fs.state.LastSeq + 1
 				fs.state.FirstTime = time.Time{}
 			}
-			if fs.ld != nil {
-				if _, err := fs.newMsgBlockForWrite(); err == nil {
-					if err = fs.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
-						return nil, err
-					}
-				} else {
-					return nil, err
-				}
-			}
 		}
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.
 		fs.dirty++
+		fs.mu.Unlock()
 	}
+
+	// Lock during the remainder of the recovery.
+	fs.mu.Lock()
+	// Use defer to ensure the lock is released if any of the enforcement operations
+	// run into issues to avoid potential deadlocks on exit.
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			fs.mu.Unlock()
+		}
+	}()
 
 	// See if we can bring back our TTL timed hash wheel state from disk.
 	if cfg.AllowMsgTTL {
@@ -550,17 +561,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	defer func() {
 		if fs != nil {
 			go fs.cleanupOldMeta()
-		}
-	}()
-
-	// Lock while we do enforcements and removals.
-	fs.mu.Lock()
-	// Use defer to ensure the lock is released if any of the enforcement operations
-	// run into issues to avoid potential deadlocks on exit.
-	unlocked := false
-	defer func() {
-		if !unlocked {
-			fs.mu.Unlock()
 		}
 	}()
 
@@ -2309,9 +2309,11 @@ func (fs *fileStore) recoverMsgs() error {
 		if mb, err := fs.recoverMsgBlock(uint32(index)); err == nil && mb != nil {
 			// This is a truncate block with possibly no index. If the OS got shutdown
 			// out from underneath of us this is possible.
+			mb.mu.Lock()
 			if mb.first.seq == 0 {
 				mb.dirtyCloseWithRemove(true)
 				fs.removeMsgBlockFromList(mb)
+				mb.mu.Unlock()
 				continue
 			}
 			// If the stream is empty, reset the first/last sequences so these can
@@ -2341,6 +2343,14 @@ func (fs *fileStore) recoverMsgs() error {
 			}
 			fs.state.Msgs += mb.msgs
 			fs.state.Bytes += mb.bytes
+			// If the block is empty, correct the sequences to be aligned with the current filestore state.
+			if mb.msgs == 0 {
+				atomic.StoreUint64(&mb.first.seq, fs.state.LastSeq+1)
+				mb.first.ts = 0
+				atomic.StoreUint64(&mb.last.seq, fs.state.LastSeq)
+				mb.last.ts = fs.state.LastTime.UnixNano()
+			}
+			mb.mu.Unlock()
 		} else {
 			return err
 		}
