@@ -5490,7 +5490,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 
 // Remove all messages in the range [first, last]
 // Lock should be held.
-func (fs *fileStore) removeMsgsInRange(first, last uint64) {
+func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool) {
 	firstBlock := sort.Search(len(fs.blks), func(i int) bool {
 		return atomic.LoadUint64(&fs.blks[i].last.seq) >= first
 	})
@@ -5499,31 +5499,28 @@ func (fs *fileStore) removeMsgsInRange(first, last uint64) {
 		return
 	}
 
-	var blocksToTrim []*msgBlock
-	var blocksToPurge []*msgBlock
-
-	for _, mb := range fs.blks[firstBlock:] {
+	for i := firstBlock; i < len(fs.blks); {
+		mb := fs.blks[i]
 		mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
 		mbLastSeq := atomic.LoadUint64(&mb.last.seq)
 		if mbFirstSeq > last {
 			break
 		}
-		if mbFirstSeq >= first && mbLastSeq <= last {
-			blocksToPurge = append(blocksToPurge, mb)
+		if mbFirstSeq >= first && mbLastSeq <= last && mb.numPriorTombs() == 0 {
+			// If this block stores no tombstones for previous blocks,
+			// and its sequences are within the range to be removed,
+			// we can get rid of the block entirely. To do that we use
+			// purgeMgsBlock, which also removes the block from fs.blks.
+			// After purgeMsgBlock, i will be the index of the following
+			// msgBlock, if any. Therefore, continue without incrementing i.
+			fs.purgeMsgBlock(mb)
 		} else {
-			blocksToTrim = append(blocksToTrim, mb)
-		}
-	}
-
-	for _, mb := range blocksToPurge {
-		fs.purgeMsgBlock(mb)
-	}
-
-	for _, mb := range blocksToTrim {
-		from := max(first, atomic.LoadUint64(&mb.first.seq))
-		to := min(last, atomic.LoadUint64(&mb.last.seq))
-		for seq := from; seq <= to; seq++ {
-			fs.removeMsgFromBlock(mb, seq, false, true)
+			from := max(first, mbFirstSeq)
+			to := min(last, mbLastSeq)
+			for seq := from; seq <= to; seq++ {
+				fs.removeMsgFromBlock(mb, seq, false, viaLimits)
+			}
+			i++
 		}
 	}
 }
@@ -9627,6 +9624,13 @@ func (mb *msgBlock) tombsLocked() []msgId {
 	return tombs
 }
 
+// fs lock should be held.
+func (mb *msgBlock) numPriorTombs() int {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	return mb.numPriorTombsLocked()
+}
+
 // Return number of tombstones for messages prior to this msgBlock.
 // Both locks should be held.
 // Write lock should be held for block.
@@ -11281,7 +11285,7 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 	for _, db := range needsCheck {
 		if dr, ok := db.(*DeleteRange); ok {
 			first, last, _ := dr.State()
-			fs.removeMsgsInRange(first, last)
+			fs.removeMsgsInRange(first, last, true)
 		} else {
 			db.Range(func(dseq uint64) bool {
 				fs.removeMsg(dseq, false, true, false)

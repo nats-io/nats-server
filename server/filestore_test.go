@@ -8512,7 +8512,7 @@ func benchmarkFileStoreSyncDeletedPartialBlocks(b *testing.B, msgSize int) {
 	for b.Loop() {
 		b.StopTimer()
 		if len(fs.blks) > 1 {
-			fs.removeMsgsInRange(fs.state.FirstSeq, fs.blks[1].last.seq)
+			fs.removeMsgsInRange(fs.state.FirstSeq, fs.blks[1].last.seq, true)
 		}
 		for len(fs.blks) <= numBlocks {
 			fs.StoreMsg(subj, nil, msg, 0)
@@ -12905,31 +12905,31 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 	require_Equal(t, len(fs.blks), 20)
 
 	// Remove range [1,1]
-	fs.removeMsgsInRange(1, 1)
+	fs.removeMsgsInRange(1, 1, true)
 	require_Equal(t, len(fs.blks), 19)
 	require_Equal(t, atomic.LoadUint64(&fs.blks[0].first.seq), 2)
 
 	// Removing range [1,1] again is a noop
 	// We are left with blocks [2,20]
-	fs.removeMsgsInRange(1, 1)
+	fs.removeMsgsInRange(1, 1, true)
 	require_Equal(t, len(fs.blks), 19)
 	require_Equal(t, atomic.LoadUint64(&fs.blks[0].first.seq), 2)
 
 	// Remove the range [1,2] should remove block with sequence 2
 	// We are left with blocks [3,20]
-	fs.removeMsgsInRange(1, 2)
+	fs.removeMsgsInRange(1, 2, true)
 	require_Equal(t, len(fs.blks), 18)
 	require_Equal(t, atomic.LoadUint64(&fs.blks[0].first.seq), 3)
 
 	// Remove the first two blocks [3,4]
 	// We are left with blocks [5,20]
-	fs.removeMsgsInRange(3, 4)
+	fs.removeMsgsInRange(3, 4, true)
 	require_Equal(t, len(fs.blks), 16)
 	require_Equal(t, atomic.LoadUint64(&fs.blks[0].first.seq), 5)
 
 	// Remove range [9, 13]
 	// We are left with [5,8] [14,20]
-	fs.removeMsgsInRange(9, 13)
+	fs.removeMsgsInRange(9, 13, true)
 	require_Equal(t, len(fs.blks), 11)
 	checkDeleteBlocks(DeleteBlocks{
 		&DeleteRange{First: 9, Num: 5},
@@ -12937,7 +12937,7 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 
 	// Make the gap larger by removing range [8 8]
 	// We are left with [5,7] [14, 20]
-	fs.removeMsgsInRange(8, 8)
+	fs.removeMsgsInRange(8, 8, true)
 	require_Equal(t, len(fs.blks), 10)
 	checkDeleteBlocks(DeleteBlocks{
 		&DeleteRange{First: 8, Num: 6},
@@ -12945,7 +12945,7 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 
 	// Make another gap by removing range [17, 17]
 	// We are left with [5,7] [14,16] [18,20]
-	fs.removeMsgsInRange(17, 17)
+	fs.removeMsgsInRange(17, 17, true)
 	require_Equal(t, len(fs.blks), 9)
 	checkDeleteBlocks(DeleteBlocks{
 		&DeleteRange{First: 8, Num: 6},
@@ -12954,7 +12954,7 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 
 	// Remove the last block
 	// We are left with [5,7] [14,16] [18,19] (empty block 21-20)
-	fs.removeMsgsInRange(20, 20)
+	fs.removeMsgsInRange(20, 20, true)
 	checkDeleteBlocks(DeleteBlocks{
 		&DeleteRange{First: 8, Num: 6},
 		&DeleteRange{First: 17, Num: 1},
@@ -12963,7 +12963,7 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 
 	// Make a big gap removing range [7, 18]
 	// We are left with [5,6] [19]
-	fs.removeMsgsInRange(7, 18)
+	fs.removeMsgsInRange(7, 18, true)
 	require_Equal(t, len(fs.blks), 4)
 	checkDeleteBlocks(DeleteBlocks{
 		&DeleteRange{First: 7, Num: 12},
@@ -12972,7 +12972,7 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 
 	// Remove everything
 	// We are left with an empty block
-	fs.removeMsgsInRange(1, 20)
+	fs.removeMsgsInRange(1, 20, true)
 	require_Equal(t, len(fs.blks), 1)
 	require_Equal(t, fs.blks[0].msgs, 0)
 }
@@ -13009,7 +13009,7 @@ func TestFileStoreRemoveMsgsInRangePartialBlocks(t *testing.T) {
 	// block 1 [ 9,10]
 	// block 2 [11,15]
 	// block 3 [16,20]
-	fs.removeMsgsInRange(5, 6)
+	fs.removeMsgsInRange(5, 6, true)
 	fs.blks[0].compact()
 
 	require_Equal(t, len(fs.blks), 4)
@@ -13022,7 +13022,8 @@ func TestFileStoreRemoveMsgsInRangePartialBlocks(t *testing.T) {
 	// block 0 [ 1, 3]
 	// block 1 [12,15]
 	// block 2 [16,20]
-	fs.removeMsgsInRange(4, 11)
+	// empty block 21 20
+	fs.removeMsgsInRange(4, 11, true)
 	fs.blks[0].compact()
 
 	require_Equal(t, len(fs.blks), 3)
@@ -13035,7 +13036,7 @@ func TestFileStoreRemoveMsgsInRangePartialBlocks(t *testing.T) {
 	// block 0 [ 1, 3]
 	// block 1 12 and 15
 	// block 2 [16,20]
-	fs.removeMsgsInRange(13, 14)
+	fs.removeMsgsInRange(13, 14, true)
 	fs.blks[1].compact()
 
 	require_Equal(t, len(fs.blks), 3)
@@ -13049,7 +13050,7 @@ func TestFileStoreRemoveMsgsInRangePartialBlocks(t *testing.T) {
 	// block 0 [ 1, 3]
 	// block 1 12
 	// empty block 21 20
-	fs.removeMsgsInRange(13, 20)
+	fs.removeMsgsInRange(13, 20, true)
 	fs.blks[1].compact()
 
 	require_Equal(t, len(fs.blks), 3)
@@ -13062,14 +13063,107 @@ func TestFileStoreRemoveMsgsInRangePartialBlocks(t *testing.T) {
 	// Remove [10,20] leaves:
 	// block 0 [ 1, 3]
 	// empty block 21 20
-	fs.removeMsgsInRange(10, 20)
+	fs.removeMsgsInRange(10, 20, true)
 	require_Equal(t, len(fs.blks), 2)
 
 	// Remove everything
 	// empty block 21 20
-	fs.removeMsgsInRange(1, 20)
+	fs.removeMsgsInRange(1, 20, true)
 
 	require_Equal(t, len(fs.blks), 1)
 	require_Equal(t, atomic.LoadUint64(&fs.blks[0].first.seq), 21)
 	require_Equal(t, atomic.LoadUint64(&fs.blks[0].last.seq), 20)
+}
+
+func TestFileStoreRemoveMsgsInRangeWithTombstones(t *testing.T) {
+	fcfg := FileStoreConfig{
+		Cipher:      NoCipher,
+		Compression: NoCompression,
+		StoreDir:    t.TempDir(),
+		BlockSize:   256,
+	}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Block 1: [1,4]
+	for range 4 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// Block 2: [5,8]
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	for range 4 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// Block 3 [9,12] - tombs {4,3,2,10}
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	for range 4 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	fs.RemoveMsg(4)
+	fs.RemoveMsg(3)
+	fs.RemoveMsg(2)
+	fs.RemoveMsg(10)
+
+	// Block 4 [13, 16] - tombs {14,15}
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	for range 4 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+	fs.RemoveMsg(14)
+	fs.RemoveMsg(15)
+
+	// Block 5 [17,17]
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	for range 4 {
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	checkBlock := func(mb *msgBlock, fseq, lseq uint64, tombs []uint64) {
+		t.Helper()
+		require_Equal(t, mb.first.seq, fseq)
+		require_Equal(t, mb.last.seq, lseq)
+		mbTombs := make([]uint64, len(mb.tombs()))
+		for i, id := range mb.tombs() {
+			mbTombs[i] = id.seq
+		}
+		require_True(t, slices.Equal(tombs, mbTombs))
+	}
+
+	require_Equal(t, len(fs.blks), 5)
+	checkBlock(fs.blks[0], 1, 4, nil)
+	checkBlock(fs.blks[1], 5, 8, nil)
+	checkBlock(fs.blks[2], 9, 12, []uint64{4, 3, 2, 10})
+	checkBlock(fs.blks[3], 13, 16, []uint64{14, 15})
+	checkBlock(fs.blks[4], 17, 20, nil)
+
+	// for i, mb := range fs.blks {
+	// 	mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
+	// 	mbLastSeq := atomic.LoadUint64(&mb.last.seq)
+	// 	t.Log(i, mb.msgs, mbFirstSeq, mbLastSeq, mb.tombs())
+	// }
+
+	// Remove sequences 4-17
+	// Block 1: removing the tail, noop because already deleted
+	// Block 2: has no prior tombs, should be purged entirely
+	// Block 3: has prior tombs, should be preserved
+	// Block 4: has "internal" tombs, can be purged entirely
+	// Block 5: updates mb first
+	fs.removeMsgsInRange(4, 17, false)
+
+	checkBlock(fs.blks[0], 1, 4, nil)
+	checkBlock(fs.blks[1], 13, 12, []uint64{4, 3, 2, 10})
+	checkBlock(fs.blks[2], 18, 20, []uint64{9, 11, 17})
 }
