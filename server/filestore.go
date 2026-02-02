@@ -572,7 +572,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		for _, seq := range fs.tombs {
 			_, err = fs.removeMsg(seq, false, true, false)
 			if err != nil && err != ErrStoreEOF && err != ErrStoreMsgNotFound {
-				fs.mu.Unlock()
 				return nil, err
 			}
 			fs.removeFromLostData(seq)
@@ -583,18 +582,15 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// Limits checks and enforcement.
 	if err = fs.enforceMsgLimit(); err != nil {
-		fs.mu.Unlock()
 		return nil, err
 	}
 	if err = fs.enforceBytesLimit(); err != nil {
-		fs.mu.Unlock()
 		return nil, err
 	}
 
 	// Do age checks too, make sure to call in place.
 	if fs.cfg.MaxAge != 0 {
 		if err = fs.expireMsgsOnRecover(); err != nil {
-			fs.mu.Unlock()
 			return nil, err
 		}
 		fs.startAgeChk()
@@ -603,7 +599,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// If we have max msgs per subject make sure the is also enforced.
 	if fs.cfg.MaxMsgsPer > 0 {
 		if err = fs.enforceMsgPerSubjectLimit(false); err != nil {
-			fs.mu.Unlock()
 			return nil, err
 		}
 	}
