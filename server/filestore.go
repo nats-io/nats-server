@@ -13220,7 +13220,7 @@ func writeAtomically(name string, data []byte, perm fs.FileMode, sync bool) erro
 			return err
 		}
 		if err = d.Sync(); err != nil {
-			// Close fd, but ignore its error since write takes precedence.
+			// Close fd, but ignore its error since sync takes precedence.
 			_ = d.Close()
 			return err
 		}
