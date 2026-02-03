@@ -2042,6 +2042,7 @@ func (o *consumer) deleteNotActive() {
 	s, js := o.mset.srv, o.srv.js.Load()
 	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
 	var qch, cqch chan struct{}
+	oqch := o.qch
 	if o.srv != nil {
 		qch = o.srv.quitCh
 	}
@@ -2057,63 +2058,79 @@ func (o *consumer) deleteNotActive() {
 		"consumer": name,
 	})
 
-	// We will delete locally regardless.
-	defer o.delete()
+	// If we're not clustered or it's a direct consumer then we don't need to send
+	// this via the metalayer, we can just delete directly.
+	if isDirect || !s.JetStreamIsClustered() {
+		o.delete()
+		return
+	}
 
 	// If we are clustered, check if we still have this consumer assigned.
 	// If we do forward a proposal to delete ourselves to the metacontroller leader.
-	if !isDirect && s.JetStreamIsClustered() {
-		js.mu.RLock()
-		var (
-			cca         consumerAssignment
-			meta        RaftNode
-			removeEntry []byte
-		)
-		ca, cc := js.consumerAssignment(acc, stream, name), js.cluster
-		if ca != nil && cc != nil {
-			meta = cc.meta
-			cca = *ca
-			cca.Reply = _EMPTY_
-			removeEntry = encodeDeleteConsumerAssignment(&cca)
-			meta.ForwardProposal(removeEntry)
-		}
+	js.mu.RLock()
+	ca, cc := js.consumerAssignment(acc, stream, name), js.cluster
+	if cc == nil {
+		// No clustering present, we can't safely continue.
 		js.mu.RUnlock()
+		return
+	}
+	meta := cc.meta
+	if meta == nil {
+		// No metalayer present, we can't safely continue.
+		js.mu.RUnlock()
+		return
+	}
+	if ca == nil {
+		// No assignment present for this stream, had might as well clean
+		// it up locally since nothing suggests we should keep it.
+		js.mu.RUnlock()
+		o.delete()
+		return
+	}
+	cca := *ca
+	cca.Reply = _EMPTY_
+	removeEntry := encodeDeleteConsumerAssignment(&cca)
+	js.mu.RUnlock()
 
-		if ca != nil && cc != nil {
-			// Check to make sure we went away.
-			// Don't think this needs to be a monitored go routine.
-			jitter := time.Duration(rand.Int63n(int64(cnaStart)))
-			interval := cnaStart + jitter
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-				case <-qch:
-					return
-				case <-cqch:
-					return
-				}
-				js.mu.RLock()
-				if js.shuttingDown {
-					js.mu.RUnlock()
-					return
-				}
-				nca := js.consumerAssignment(acc, stream, name)
+	duration := cnaStart + time.Duration(rand.Int63n(int64(cnaStart)))
+
+	// Then we'll try and clean up the assignment via the metaleader.
+	for {
+		// Request deletion.
+		meta.ForwardProposal(removeEntry)
+
+		// Ideally at this point the consumer will quit because the metalayer
+		// instructed it to, if not then we'll wait and retry.
+		select {
+		case <-qch:
+			// Server is shutting down.
+			return
+		case <-cqch:
+			// Cluster is shutting down.
+			return
+		case <-oqch:
+			// Consumer stopped.
+			return
+		case <-time.After(duration):
+			// Nothing suggested that the consumer stopped so let's see if the
+			// assignment is still present. If it is then that suggests the
+			// metaleader has not yet processed the proposal.
+			js.mu.RLock()
+			if js.shuttingDown {
 				js.mu.RUnlock()
-				// Make sure this is the same consumer assignment, and not a new consumer with the same name.
-				if nca != nil && reflect.DeepEqual(nca, ca) {
-					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
-					meta.ForwardProposal(removeEntry)
-					if interval < cnaMax {
-						interval *= 2
-						ticker.Reset(interval)
-					}
-					continue
-				}
-				// We saw that consumer has been removed, all done.
 				return
 			}
+			nca := js.consumerAssignment(acc, stream, name)
+			js.mu.RUnlock()
+			if nca == nil || (nca != o.consumerAssignment() && !o.isClosed()) {
+				// Ideally we wouldn't hit this path, as if the assignment is gone or has been
+				// replaced, we should have hit oqch above and/or closed by now.
+				s.Warnf("Consumer '%s > %s > %s' forcibly cleaned up due to assignment change", acc, stream, name)
+				o.delete()
+				return
+			}
+			s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
+			duration = min(duration*2, cnaMax)
 		}
 	}
 }
