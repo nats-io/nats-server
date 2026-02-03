@@ -5795,7 +5795,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				mset.ddMu.Unlock()
 				if seq > 0 {
 					if canRespond {
-						response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
+						response := append(pubAck, strconv.FormatUint(seq, 10)...)
 						response = append(response, ",\"duplicate\": true}"...)
 						outq.sendMsg(reply, response)
 					}
