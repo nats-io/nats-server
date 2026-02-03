@@ -11149,10 +11149,15 @@ func (fs *fileStore) EncodedStreamState(failed uint64, consumers []*writeableCon
 		}
 	}
 
-	if fs.cfg.ManagesConsumers {
+	if len(consumers) > 0 {
 		bw := bytes.NewBuffer(b)
 		bw.Truncate(len(b)) // Reset the write pointer but preserve data
-		if err := json.NewEncoder(bw).Encode(consumers); err != nil {
+		sw := s2.NewWriter(bw)
+		if err := json.NewEncoder(sw).Encode(consumers); err != nil {
+			return nil, err
+		}
+		// We need to flush here since we are using a buffer.
+		if err := sw.Close(); err != nil {
 			return nil, err
 		}
 		b = bw.Bytes()

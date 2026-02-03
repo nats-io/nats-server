@@ -162,8 +162,8 @@ type streamAssignment struct {
 	Reply      string          `json:"reply,omitempty"`
 	Restore    *StreamState    `json:"restore_state,omitempty"`
 	// Internal
-	consumers        map[string]*consumerAssignment // Consumers managed by the meta layer.
-	managedConsumers map[string]*consumerAssignment // Consumers managed by the stream layer.
+	consumers        map[string]*consumerAssignment // Consumers managed by the meta layer, requires the JS lock to be held.
+	managedConsumers map[string]*consumerAssignment // Consumers managed by the stream layer, requires the stream lock to be held.
 	responded        bool
 	recovering       bool
 	reassigning      bool // i.e. due to placement issues, lack of resources, etc.
@@ -517,16 +517,13 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 		return err
 	}
 
-	// Hold lock when installing snapshot.
-	mset.mu.Lock()
-	if mset.node == nil {
-		mset.mu.Unlock()
+	mset.mu.RLock()
+	node := mset.node
+	mset.mu.RUnlock()
+	if node == nil {
 		return nil
 	}
-	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked())
-	mset.mu.Unlock()
-
-	return err
+	return node.InstallSnapshot(mset.stateSnapshot())
 }
 
 func (s *Server) JetStreamClusterPeers() []string {
@@ -2507,7 +2504,7 @@ func (mset *stream) waitOnConsumerAssignments() {
 	}
 
 	js.mu.RLock()
-	numExpectedConsumers := len(sa.consumers)
+	numExpectedConsumers := len(sa.consumers) + len(sa.managedConsumers)
 	js.mu.RUnlock()
 
 	// Max to wait.
@@ -4828,14 +4825,17 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		return
 	}
 
-	js.mu.Lock()
+	js.mu.RLock()
+	// Re-capture node.
+	node := rg.node
+	cc := js.cluster
+	singleReplica := len(rg.Peers) <= 1
+	js.mu.RUnlock()
+
 	// Reconstruct the consumer assignments if we're R1 and the stream is managing the consumers.
 	if mset != nil {
 		cfg := mset.config()
-		if js.cluster != nil && cfg.ManagesConsumers && cfg.Replicas <= 1 && len(rg.Peers) <= 1 {
-			if sa.managedConsumers == nil {
-				sa.managedConsumers = make(map[string]*consumerAssignment)
-			}
+		if cc != nil && cfg.ManagesConsumers && cfg.Replicas <= 1 && singleReplica {
 			for _, o := range mset.consumers {
 				o.mu.RLock()
 				oname, ocreated, ocfg := o.name, o.created, o.cfg
@@ -4849,15 +4849,10 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 					Client:  sa.Client.forAssignmentSnap(),
 					Created: ocreated,
 				}
-				sa.managedConsumers[oname] = ca
-				o.setConsumerAssignment(ca)
+				js.processConsumerAssignment(ca, true)
 			}
 		}
 	}
-
-	// Re-capture node.
-	node := rg.node
-	js.mu.Unlock()
 
 	// Start our monitoring routine.
 	if node != nil {
@@ -8094,7 +8089,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 		} else {
 			isubj := fmt.Sprintf(clusterStreamInfoT, sa.Client.serviceAccount(), sa.Config.Name)
 			s.sendInternalMsgLocked(isubj, inbox, nil, nil)
-			sent[sa.Config.Name] = len(sa.consumers)
+			sent[sa.Config.Name] = len(sa.consumers) + len(sa.managedConsumers)
 		}
 	}
 	// Don't hold lock.
@@ -9234,35 +9229,45 @@ type streamSnapshot struct {
 
 // Grab a snapshot of a stream for clustered mode.
 func (mset *stream) stateSnapshot() []byte {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-	return mset.stateSnapshotLocked()
-}
+	start := time.Now()
+	defer func() {
+		took := time.Since(start)
+		if took > time.Second {
+			mset.srv.Warnf("JetStream stream '%s > %s' snapshot took %v", mset.acc.Name, mset.cfg.Name, took.Seconds())
+		}
+	}()
 
-// Grab a snapshot of a stream for clustered mode.
-// Lock should be held.
-func (mset *stream) stateSnapshotLocked() []byte {
 	var consumers []*writeableConsumerAssignment
-	if mset.cfg.ManagesConsumers {
-		consumers = make([]*writeableConsumerAssignment, 0, len(mset.consumers))
-		for _, o := range mset.consumers {
+	js := mset.js
+	js.mu.RLock()
+	if mset.sa == nil || len(mset.sa.managedConsumers) == 0 {
+		// If there are no managed consumers, we can simply continue without holding the lock.
+		js.mu.RUnlock()
+	} else {
+		// If there are managed consumers, we need to keep on holding it throughout.
+		defer js.mu.RUnlock()
+		consumers = make([]*writeableConsumerAssignment, 0, len(mset.sa.managedConsumers))
+		for _, ca := range mset.sa.managedConsumers {
 			// Skip if the consumer is pending, we can't include it in our snapshot.
 			// If the proposal fails after we marked it pending, it would result in a ghost consumer.
-			if o.ca == nil || o.ca.pending {
+			if ca.pending {
 				continue
 			}
 			wca := writeableConsumerAssignment{
-				Client:     o.ca.Client.forAssignmentSnap(),
-				Created:    o.ca.Created,
-				Name:       o.ca.Name,
-				Stream:     o.ca.Stream,
-				ConfigJSON: o.ca.ConfigJSON,
-				Group:      o.ca.Group,
-				State:      o.ca.State,
+				Client:     ca.Client.forAssignmentSnap(),
+				Created:    ca.Created,
+				Name:       ca.Name,
+				Stream:     ca.Stream,
+				ConfigJSON: ca.ConfigJSON,
+				Group:      ca.Group,
+				State:      ca.State,
 			}
 			consumers = append(consumers, &wca)
 		}
 	}
+
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 
 	// Decide if we can support the new style of stream snapshots.
 	if mset.supportsBinarySnapshotLocked() {

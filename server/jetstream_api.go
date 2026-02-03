@@ -1818,7 +1818,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, streamName)
 		var offline bool
 		if sa != nil {
-			clusterWideConsCount = len(sa.consumers)
+			clusterWideConsCount = len(sa.consumers) + len(sa.managedConsumers)
 			offline = s.allPeersOffline(sa.Group)
 			if sa.unsupported != nil && sa.Group != nil && cc.meta != nil && sa.Group.isMember(cc.meta.ID()) {
 				// If we're a member for this stream, and it's not supported, report it as offline.
@@ -4493,7 +4493,6 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 
 	streamName := streamNameFromSubject(subject)
 	var numConsumers int
-	var local bool
 
 	if s.JetStreamIsClustered() {
 		// Determine if we should proceed here when we are in clustered mode.
@@ -4508,16 +4507,6 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		if managesConsumers {
 			if !acc.JetStreamIsStreamLeader(streamName) {
 				return
-			}
-			mset, err := acc.lookupStream(streamName)
-			if err != nil {
-				resp.Error = NewJSStreamNotFoundError(Unless(err))
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-			if mset.config().Replicas <= 1 {
-				local = true
-				goto SKIP
 			}
 		} else {
 			if js.isLeaderless() {
@@ -4558,11 +4547,6 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		}
 		js.mu.RUnlock()
 	} else {
-		local = true
-	}
-
-SKIP:
-	if local {
 		mset, err := acc.lookupStream(streamName)
 		if err != nil {
 			resp.Error = NewJSStreamNotFoundError(Unless(err))
@@ -4585,6 +4569,7 @@ SKIP:
 			}
 		}
 	}
+
 	resp.Total = numConsumers
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
@@ -4650,15 +4635,6 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 			if !acc.JetStreamIsStreamLeader(streamName) {
 				return
 			}
-			mset, err := acc.lookupStream(streamName)
-			if err != nil {
-				resp.Error = NewJSStreamNotFoundError(Unless(err))
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-			if mset.config().Replicas <= 1 {
-				goto LOCAL
-			}
 		} else {
 			if js.isLeaderless() {
 				resp.Error = NewJSClusterNotAvailError()
@@ -4679,7 +4655,6 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-LOCAL:
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = NewJSStreamNotFoundError(Unless(err))

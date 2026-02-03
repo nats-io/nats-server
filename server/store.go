@@ -25,6 +25,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 )
@@ -322,7 +323,7 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 
 	if len(buf)-bi > 0 {
 		br := bytes.NewReader(buf[bi:])
-		if err := json.NewDecoder(br).Decode(&ss.Consumers); err != nil {
+		if err := json.NewDecoder(s2.NewReader(br)).Decode(&ss.Consumers); err != nil {
 			return nil, ErrCorruptStreamState
 		}
 	}

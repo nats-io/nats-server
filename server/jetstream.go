@@ -1908,7 +1908,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 			}
 			for _, sa := range sas {
 				if defaultTier {
-					stats.Consumers += len(sa.consumers)
+					stats.Consumers += len(sa.consumers) + len(sa.managedConsumers)
 				} else {
 					stats.Streams++
 					streamTier := tierName(sa.Config.Replicas)
