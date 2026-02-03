@@ -4084,31 +4084,32 @@ func (s *Server) profilez(opts *ProfilezOptions) *ProfilezStatus {
 }
 
 type RaftzGroup struct {
-	ID            string                    `json:"id"`
-	State         string                    `json:"state"`
-	Size          int                       `json:"size"`
-	QuorumNeeded  int                       `json:"quorum_needed"`
-	Observer      bool                      `json:"observer,omitempty"`
-	Paused        bool                      `json:"paused,omitempty"`
-	Committed     uint64                    `json:"committed"`
-	Applied       uint64                    `json:"applied"`
-	CatchingUp    bool                      `json:"catching_up,omitempty"`
-	Leader        string                    `json:"leader,omitempty"`
-	LeaderSince   *time.Time                `json:"leader_since,omitempty"`
-	EverHadLeader bool                      `json:"ever_had_leader"`
-	Term          uint64                    `json:"term"`
-	Vote          string                    `json:"voted_for,omitempty"`
-	PTerm         uint64                    `json:"pterm"`
-	PIndex        uint64                    `json:"pindex"`
-	SystemAcc     bool                      `json:"system_account"`
-	TrafficAcc    string                    `json:"traffic_account"`
-	IPQPropLen    int                       `json:"ipq_proposal_len"`
-	IPQEntryLen   int                       `json:"ipq_entry_len"`
-	IPQRespLen    int                       `json:"ipq_resp_len"`
-	IPQApplyLen   int                       `json:"ipq_apply_len"`
-	WAL           StreamState               `json:"wal"`
-	WALError      error                     `json:"wal_error,omitempty"`
-	Peers         map[string]RaftzGroupPeer `json:"peers"`
+	ID              string                    `json:"id"`
+	State           string                    `json:"state"`
+	Size            int                       `json:"size"`
+	QuorumNeeded    int                       `json:"quorum_needed"`
+	Observer        bool                      `json:"observer,omitempty"`
+	Paused          bool                      `json:"paused,omitempty"`
+	Committed       uint64                    `json:"committed"`
+	Applied         uint64                    `json:"applied"`
+	CatchingUp      bool                      `json:"catching_up,omitempty"`
+	Leader          string                    `json:"leader,omitempty"`
+	LeaderSince     *time.Time                `json:"leader_since,omitempty"`
+	EverHadLeader   bool                      `json:"ever_had_leader"`
+	Term            uint64                    `json:"term"`
+	Vote            string                    `json:"voted_for,omitempty"`
+	PTerm           uint64                    `json:"pterm"`
+	PIndex          uint64                    `json:"pindex"`
+	SystemAcc       bool                      `json:"system_account"`
+	TrafficAcc      string                    `json:"traffic_account"`
+	IPQPropLen      int                       `json:"ipq_proposal_len"`
+	IPQEntryLen     int                       `json:"ipq_entry_len"`
+	IPQRespLen      int                       `json:"ipq_resp_len"`
+	IPQApplyLen     int                       `json:"ipq_apply_len"`
+	WAL             StreamState               `json:"wal"`
+	WALPendingBytes uint64                    `json:"wal_pending_bytes"`
+	WALError        error                     `json:"wal_error,omitempty"`
+	Peers           map[string]RaftzGroupPeer `json:"peers"`
 }
 
 type RaftzGroupPeer struct {
@@ -4192,30 +4193,31 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 		// cause us to take and release the locks over and over again.
 		n.RLock()
 		info := RaftzGroup{
-			ID:            n.id,
-			State:         RaftState(n.state.Load()).String(),
-			Size:          n.csz,
-			QuorumNeeded:  n.qn,
-			Observer:      n.observer,
-			Paused:        n.paused,
-			Committed:     n.commit,
-			Applied:       n.applied,
-			CatchingUp:    n.catchup != nil,
-			Leader:        n.leader,
-			LeaderSince:   n.leaderSince.Load(),
-			EverHadLeader: n.pleader.Load(),
-			Term:          n.term,
-			Vote:          n.vote,
-			PTerm:         n.pterm,
-			PIndex:        n.pindex,
-			SystemAcc:     n.IsSystemAccount(),
-			TrafficAcc:    n.acc.GetName(),
-			IPQPropLen:    n.prop.len(),
-			IPQEntryLen:   n.entry.len(),
-			IPQRespLen:    n.resp.len(),
-			IPQApplyLen:   n.apply.len(),
-			WALError:      n.werr,
-			Peers:         map[string]RaftzGroupPeer{},
+			ID:              n.id,
+			State:           RaftState(n.state.Load()).String(),
+			Size:            n.csz,
+			QuorumNeeded:    n.qn,
+			Observer:        n.observer,
+			Paused:          n.paused,
+			Committed:       n.commit,
+			Applied:         n.applied,
+			CatchingUp:      n.catchup != nil,
+			Leader:          n.leader,
+			LeaderSince:     n.leaderSince.Load(),
+			EverHadLeader:   n.pleader.Load(),
+			Term:            n.term,
+			Vote:            n.vote,
+			PTerm:           n.pterm,
+			PIndex:          n.pindex,
+			SystemAcc:       n.IsSystemAccount(),
+			TrafficAcc:      n.acc.GetName(),
+			IPQPropLen:      n.prop.len(),
+			IPQEntryLen:     n.entry.len(),
+			IPQRespLen:      n.resp.len(),
+			IPQApplyLen:     n.apply.len(),
+			WALPendingBytes: n.bytes,
+			WALError:        n.werr,
+			Peers:           map[string]RaftzGroupPeer{},
 		}
 		n.wal.FastState(&info.WAL)
 		for id, p := range n.peers {

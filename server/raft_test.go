@@ -3632,6 +3632,22 @@ func TestNRGDrainAndReplaySnapshot(t *testing.T) {
 	require_Equal(t, n.hcommit, 0)
 }
 
+func TestNRGRaftzWALPendingBytes(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.leader()
+	status := s.Raftz(&RaftzOptions{})
+	require_NotNil(t, status)
+
+	groups, ok := (*status)[DEFAULT_SYSTEM_ACCOUNT]
+	require_True(t, ok)
+
+	mg, ok := groups[defaultMetaGroupName]
+	require_True(t, ok)
+	require_True(t, mg.WALPendingBytes > 0)
+}
+
 func TestNRGTrackPeerActive(t *testing.T) {
 	// The leader should track timestamps for all peers.
 	// Each follower should only track the leader, otherwise we would get outdated timestamps.
