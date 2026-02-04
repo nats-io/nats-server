@@ -7616,20 +7616,17 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down.
 	checkNodeIsClosed(ca)
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("monitor goroutine not running"))
 	checkNodeIsClosed(ca)
 
-	// We create a new RAFT group, the health check should detect this skew and restart.
+	// We create a new RAFT group, the health check should detect this skew.
 	_, err = sjs.createRaftGroup(globalAccountName, ca.Group, false, MemoryStorage, pprofLabels{})
 	require_NoError(t, err)
 	sjs.mu.Lock()
 	// We set creating to now, since previously it would delete all data but NOT restart if created within <10s.
 	ca.Created = time.Now()
-	// Setting ca.pending, since a side effect of js.processConsumerAssignment is that it resets it.
-	ca.pending = true
 	sjs.mu.Unlock()
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
-	require_True(t, ca.pending)
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("cluster node skew detected"))
 
 	err = js.DeleteConsumer("TEST", "CONSUMER")
 	require_NoError(t, err)
@@ -7645,12 +7642,11 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	sjs.cluster.streams[globalAccountName]["TEST"] = sa
 	ca.Created = time.Time{}
 	ca.Group.node = n
-	ca.deleted = false
 	sjs.mu.Unlock()
 
 	// The underlying consumer has been deleted. Checking health must not recreate the consumer.
 	checkNodeIsClosed(ca)
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
 	checkNodeIsClosed(ca)
 }
 
@@ -7851,16 +7847,11 @@ func TestJetStreamClusterConsumerHealthCheckDeleted(t *testing.T) {
 	// The health check gathers all assignments and does checking after.
 	// If the consumer was deleted in the meantime, it should not report an error.
 	require_NoError(t, js.DeleteConsumer("TEST", "CONSUMER"))
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
 
 	// The health check could run earlier than we're able to create the consumer.
 	// In that case, wait before erroring.
 	sjs.mu.Lock()
-	if !ca.deleted {
-		sjs.mu.Unlock()
-		t.Fatal("ca.deleted not set")
-	}
-	ca.deleted = false
 	ca.Created = time.Now()
 	sjs.mu.Unlock()
 	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
