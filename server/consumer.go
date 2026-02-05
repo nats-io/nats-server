@@ -2045,6 +2045,7 @@ func (o *consumer) deleteNotActive() {
 	if o.srv != nil {
 		qch = o.srv.quitCh
 	}
+	oqch := o.qch
 	o.mu.Unlock()
 	if js != nil {
 		cqch = js.clusterQuitC()
@@ -2092,6 +2093,9 @@ func (o *consumer) deleteNotActive() {
 				case <-qch:
 					return
 				case <-cqch:
+					return
+				case <-oqch:
+					// The consumer has stopped already, likely by an earlier delete proposal being applied.
 					return
 				}
 				js.mu.RLock()
