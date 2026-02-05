@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"math"
 	"math/rand"
 	"os"
@@ -47,10 +48,11 @@ type jetStreamCluster struct {
 	streams map[string]map[string]*streamAssignment
 	// These are inflight proposals and used to apply limits when there are
 	// concurrent requests that would otherwise be accepted.
-	// We also record the group for the stream. This is needed since if we have
-	// concurrent requests for same account and stream we need to let it process to get
+	// We also record the assignment for the stream/consumer. This is needed since if we have
+	// concurrent requests for same account and stream/consumer we need to let it process to get
 	// a response but they need to be same group, peers etc. and sync subjects.
-	inflight map[string]map[string]*inflightInfo
+	inflightStreams   map[string]map[string]*inflightStreamInfo
+	inflightConsumers map[string]map[string]map[string]*inflightConsumerInfo
 	// Holds a map of a peer ID to the reply subject, to only respond after gaining
 	// quorum on the peer-remove action.
 	peerRemoveReply map[string]peerRemoveInfo
@@ -80,11 +82,18 @@ type jetStreamCluster struct {
 	lastMetaSnapDuration int64 // Duration in nanoseconds
 }
 
-// Used to track inflight stream add requests to properly re-use same group and sync subject.
-type inflightInfo struct {
-	rg   *raftGroup
-	sync string
-	cfg  *StreamConfig
+// Used to track inflight stream create/update/delete requests that have been proposed but not yet applied.
+type inflightStreamInfo struct {
+	ops     uint64 // Inflight operations, i.e. inflight stream creates/updates/deletes.
+	deleted bool   // Whether the stream has been deleted.
+	*streamAssignment
+}
+
+// Used to track inflight consumer create/update/delete requests that have been proposed but not yet applied.
+type inflightConsumerInfo struct {
+	ops     uint64 // Inflight operations, i.e. inflight consumer creates/updates/deletes.
+	deleted bool   // Whether the consumer has been deleted.
+	*consumerAssignment
 }
 
 // Used to track inflight peer-remove info to respond 'success' after quorum.
@@ -249,8 +258,6 @@ type consumerAssignment struct {
 	// Internal
 	responded   bool
 	recovering  bool
-	pending     bool
-	deleted     bool
 	err         error
 	unsupported *unsupportedConsumerAssignment
 }
@@ -689,10 +696,6 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		js.mu.RUnlock()
 		return errors.New("consumer assignment or group missing")
 	}
-	if ca.deleted {
-		js.mu.RUnlock()
-		return nil // No further checks, consumer was deleted in the meantime.
-	}
 	created := ca.Created
 	node := ca.Group.node
 	js.mu.RUnlock()
@@ -742,11 +745,10 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 // subjectsOverlap checks all existing stream assignments for the account cross-cluster for subject overlap
 // Use only for clustered JetStream
 // Read lock should be held.
-func (jsc *jetStreamCluster) subjectsOverlap(acc string, subjects []string, osa *streamAssignment) bool {
-	asa := jsc.streams[acc]
-	for _, sa := range asa {
+func (js *jetStream) subjectsOverlap(acc string, subjects []string, osa *streamAssignment) bool {
+	for sa := range js.streamAssignmentsOrInflightSeq(acc) {
 		// can't overlap yourself, assume osa pre-checked for deep equal if passed
-		if osa != nil && sa == osa {
+		if osa != nil && sa.Config.Name == osa.Config.Name {
 			continue
 		}
 		for _, subj := range sa.Config.Subjects {
@@ -1182,18 +1184,95 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	return false
 }
 
-// Remove the stream `streamName` for the account `accName` from the inflight
-// proposals map. This is done on success (processStreamAssignment) or on
-// failure (processStreamAssignmentResults).
+// Track the stream for the account `accName` in the inflight proposals map.
+// This is done after proposing a stream change.
 // (Write) Lock held on entry.
-func (cc *jetStreamCluster) removeInflightProposal(accName, streamName string) {
-	streams, ok := cc.inflight[accName]
-	if !ok {
-		return
+func (cc *jetStreamCluster) trackInflightStreamProposal(accName string, sa *streamAssignment, deleted bool) {
+	if cc.inflightStreams == nil {
+		cc.inflightStreams = make(map[string]map[string]*inflightStreamInfo)
 	}
-	delete(streams, streamName)
-	if len(streams) == 0 {
-		delete(cc.inflight, accName)
+	streams, ok := cc.inflightStreams[accName]
+	if !ok {
+		streams = make(map[string]*inflightStreamInfo)
+		cc.inflightStreams[accName] = streams
+	}
+	if inflight, ok := streams[sa.Config.Name]; ok {
+		inflight.ops++
+		inflight.deleted = deleted
+		inflight.streamAssignment = sa
+	} else {
+		streams[sa.Config.Name] = &inflightStreamInfo{1, deleted, sa}
+	}
+}
+
+// Remove the stream `streamName` for the account `accName` from the inflight proposals map.
+// This is done after successful create/update/delete.
+// (Write) Lock held on entry.
+func (cc *jetStreamCluster) removeInflightStreamProposal(accName, streamName string) {
+	if streams, ok := cc.inflightStreams[accName]; !ok {
+		return // No accounts.
+	} else if inflight, ok := streams[streamName]; !ok {
+		return // No changes for this stream.
+	} else if inflight.ops > 1 {
+		// Decrement one pending operation.
+		inflight.ops--
+	} else {
+		// No pending operations left, clean up.
+		delete(streams, streamName)
+		if len(streams) == 0 {
+			delete(cc.inflightStreams, accName)
+		}
+	}
+}
+
+// Track the consumer for the `streamName` and account `accName` in the inflight proposals map.
+// This is done after proposing a consumer change.
+// (Write) Lock held on entry.
+func (cc *jetStreamCluster) trackInflightConsumerProposal(accName, streamName string, ca *consumerAssignment, deleted bool) {
+	if cc.inflightConsumers == nil {
+		cc.inflightConsumers = make(map[string]map[string]map[string]*inflightConsumerInfo)
+	}
+	streams, ok := cc.inflightConsumers[accName]
+	if !ok {
+		streams = make(map[string]map[string]*inflightConsumerInfo)
+		cc.inflightConsumers[accName] = streams
+	}
+	consumers, ok := streams[streamName]
+	if !ok {
+		consumers = make(map[string]*inflightConsumerInfo)
+		streams[streamName] = consumers
+	}
+	if inflight, ok := consumers[ca.Name]; ok {
+		inflight.ops++
+		inflight.deleted = deleted
+		inflight.consumerAssignment = ca
+	} else {
+		consumers[ca.Name] = &inflightConsumerInfo{1, deleted, ca}
+	}
+}
+
+// Remove the consumer `consumerName` for the `streamName` and account `accName` from the inflight proposals map.
+// This is done after successful create/update/delete.
+// (Write) Lock held on entry.
+func (cc *jetStreamCluster) removeInflightConsumerProposal(accName, streamName, consumerName string) {
+	if streams, ok := cc.inflightConsumers[accName]; !ok {
+		return // No accounts.
+	} else if consumers, ok := streams[streamName]; !ok {
+		return // No streams.
+	} else if inflight, ok := consumers[consumerName]; !ok {
+		return // No changes for this consumer.
+	} else if inflight.ops > 1 {
+		// Decrement one pending operation.
+		inflight.ops--
+	} else {
+		// No pending operations left, clean up.
+		delete(consumers, consumerName)
+		if len(consumers) == 0 {
+			delete(streams, streamName)
+		}
+		if len(streams) == 0 {
+			delete(cc.inflightConsumers, accName)
+		}
 	}
 }
 
@@ -1661,11 +1740,6 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 				Consumers:  make([]*writeableConsumerAssignment, 0, len(sa.consumers)),
 			}
 			for _, ca := range sa.consumers {
-				// Skip if the consumer is pending, we can't include it in our snapshot.
-				// If the proposal fails after we marked it pending, it would result in a ghost consumer.
-				if ca.pending {
-					continue
-				}
 				wca := writeableConsumerAssignment{
 					Client:     ca.Client.forAssignmentSnap(),
 					Created:    ca.Created,
@@ -1937,31 +2011,31 @@ func (js *jetStream) processAddPeer(peer string) {
 	}
 	si := sir.(nodeInfo)
 
-	for _, asa := range cc.streams {
-		for _, sa := range asa {
-			if sa.unsupported != nil {
+	for accName, sa := range js.streamAssignmentsOrInflightSeqAllAccounts() {
+		if sa.unsupported != nil {
+			continue
+		}
+		if sa.missingPeers() {
+			// Make sure the right cluster etc.
+			if si.cluster != sa.Client.Cluster {
 				continue
 			}
-			if sa.missingPeers() {
-				// Make sure the right cluster etc.
-				if si.cluster != sa.Client.Cluster {
+			// If we are here we can add in this peer.
+			csa := sa.copyGroup()
+			csa.Group.Peers = append(csa.Group.Peers, peer)
+			// Send our proposal for this csa. Also use same group definition for all the consumers as well.
+			cc.meta.Propose(encodeAddStreamAssignment(csa))
+			cc.trackInflightStreamProposal(accName, csa, false)
+			for ca := range js.consumerAssignmentsOrInflightSeq(accName, csa.Config.Name) {
+				if ca.unsupported != nil {
 					continue
 				}
-				// If we are here we can add in this peer.
-				csa := sa.copyGroup()
-				csa.Group.Peers = append(csa.Group.Peers, peer)
-				// Send our proposal for this csa. Also use same group definition for all the consumers as well.
-				cc.meta.Propose(encodeAddStreamAssignment(csa))
-				for _, ca := range sa.consumers {
-					if ca.unsupported != nil {
-						continue
-					}
-					// Ephemerals are R=1, so only auto-remap durables, or R>1.
-					if ca.Config.Durable != _EMPTY_ || len(ca.Group.Peers) > 1 {
-						cca := ca.copyGroup()
-						cca.Group.Peers = csa.Group.Peers
-						cc.meta.Propose(encodeAddConsumerAssignment(cca))
-					}
+				// Ephemerals are R=1, so only auto-remap durables, or R>1.
+				if ca.Config.Durable != _EMPTY_ || len(ca.Group.Peers) > 1 {
+					cca := ca.copyGroup()
+					cca.Group.Peers = csa.Group.Peers
+					cc.meta.Propose(encodeAddConsumerAssignment(cca))
+					cc.trackInflightConsumerProposal(accName, csa.Config.Name, cca, false)
 				}
 			}
 		}
@@ -2011,14 +2085,12 @@ func (js *jetStream) processRemovePeer(peer string) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
-	for _, asa := range cc.streams {
-		for _, sa := range asa {
-			if sa.unsupported != nil {
-				continue
-			}
-			if rg := sa.Group; rg.isMember(peer) {
-				js.removePeerFromStreamLocked(sa, peer)
-			}
+	for _, sa := range js.streamAssignmentsOrInflightSeqAllAccounts() {
+		if sa.unsupported != nil {
+			continue
+		}
+		if rg := sa.Group; rg.isMember(peer) {
+			js.removePeerFromStreamLocked(sa, peer)
 		}
 	}
 }
@@ -2041,14 +2113,16 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 		return false
 	}
 	replaced := cc.remapStreamAssignment(csa, peer)
+	accName := sa.Client.serviceAccount()
 	if !replaced {
-		s.Warnf("JetStream cluster could not replace peer for stream '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+		s.Warnf("JetStream cluster could not replace peer for stream '%s > %s'", accName, sa.Config.Name)
 	}
 
 	// Send our proposal for this csa. Also use same group definition for all the consumers as well.
 	cc.meta.Propose(encodeAddStreamAssignment(csa))
+	cc.trackInflightStreamProposal(accName, csa, false)
 	rg := csa.Group
-	for _, ca := range sa.consumers {
+	for ca := range js.consumerAssignmentsOrInflightSeq(accName, sa.Config.Name) {
 		if ca.unsupported != nil {
 			continue
 		}
@@ -2057,9 +2131,11 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 			cca := ca.copyGroup()
 			cca.Group.Peers, cca.Group.Preferred = rg.Peers, _EMPTY_
 			cc.meta.Propose(encodeAddConsumerAssignment(cca))
+			cc.trackInflightConsumerProposal(accName, csa.Config.Name, cca, false)
 		} else if ca.Group.isMember(peer) {
 			// These are ephemerals. Check to see if we deleted this peer.
 			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+			cc.trackInflightConsumerProposal(accName, csa.Config.Name, ca, true)
 		}
 	}
 	return replaced
@@ -4047,7 +4123,7 @@ func (s *Server) sendStreamLeaderElectAdvisory(mset *stream) {
 	s.publishAdvisory(nil, subj, adv)
 }
 
-// Will lookup a stream assignment.
+// Will look up a stream assignment.
 // Lock should be held.
 func (js *jetStream) streamAssignment(account, stream string) (sa *streamAssignment) {
 	cc := js.cluster
@@ -4059,6 +4135,86 @@ func (js *jetStream) streamAssignment(account, stream string) (sa *streamAssignm
 		sa = as[stream]
 	}
 	return sa
+}
+
+// Will look up a stream assignment, either an applied or inflight assignment.
+// Lock should be held.
+func (js *jetStream) streamAssignmentOrInflight(account, stream string) *streamAssignment {
+	cc := js.cluster
+	if cc == nil {
+		return nil
+	}
+	if streams, ok := cc.inflightStreams[account]; ok {
+		if inflight, ok := streams[stream]; ok {
+			if !inflight.deleted {
+				return inflight.streamAssignment
+			} else {
+				return nil
+			}
+		}
+	}
+
+	if as := cc.streams[account]; as != nil {
+		return as[stream]
+	}
+	return nil
+}
+
+// Will gather all stream assignments for a specific account, both applied and inflight assignments.
+// Lock should be held.
+func (js *jetStream) streamAssignmentsOrInflightSeq(account string) iter.Seq[*streamAssignment] {
+	return func(yield func(*streamAssignment) bool) {
+		cc := js.cluster
+		if cc == nil {
+			return
+		}
+		inflight := cc.inflightStreams[account]
+		for _, i := range inflight {
+			if !i.deleted && !yield(i.streamAssignment) {
+				return
+			}
+		}
+		for _, sa := range cc.streams[account] {
+			// Skip if we already iterated over it as inflight.
+			if _, ok := inflight[sa.Config.Name]; ok {
+				continue
+			}
+			if !yield(sa) {
+				return
+			}
+		}
+	}
+}
+
+// Will gather all stream assignments for all accounts, both applied and inflight assignments.
+// Lock should be held.
+func (js *jetStream) streamAssignmentsOrInflightSeqAllAccounts() iter.Seq2[string, *streamAssignment] {
+	return func(yield func(string, *streamAssignment) bool) {
+		cc := js.cluster
+		if cc == nil {
+			return
+		}
+		for accName, inflight := range cc.inflightStreams {
+			for _, i := range inflight {
+				if !i.deleted && !yield(accName, i.streamAssignment) {
+					return
+				}
+			}
+		}
+		for accName, asa := range cc.streams {
+			for _, sa := range asa {
+				// Skip if we already iterated over it as inflight.
+				if inflight, ok := cc.inflightStreams[accName]; ok {
+					if _, ok := inflight[sa.Config.Name]; ok {
+						continue
+					}
+				}
+				if !yield(accName, sa) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // processStreamAssignment is called when followers have replicated an assignment.
@@ -4076,13 +4232,13 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 		isMember = sa.Group.isMember(ourID)
 	}
 
-	// Remove this stream from the inflight proposals
-	cc.removeInflightProposal(accName, sa.Config.Name)
-
 	if s == nil || noMeta {
 		js.mu.Unlock()
 		return
 	}
+
+	// Remove this stream from the inflight proposals
+	cc.removeInflightStreamProposal(accName, sa.Config.Name)
 
 	accStreams := cc.streams[accName]
 	if accStreams == nil {
@@ -4188,6 +4344,10 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		js.mu.Unlock()
 		return
 	}
+
+	// Remove this stream from the inflight proposals
+	cc.removeInflightStreamProposal(accName, sa.Config.Name)
+
 	ourID := cc.meta.ID()
 
 	var isMember bool
@@ -4760,6 +4920,7 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 			delete(cc.streams, accName)
 		}
 	}
+	cc.removeInflightStreamProposal(accName, sa.Config.Name)
 	js.mu.Unlock()
 
 	// During initial/startup recovery we'll not have registered the stream assignment,
@@ -4939,7 +5100,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Place into our internal map under the stream assignment.
 	// Ok to replace an existing one, we check on process call below.
 	sa.consumers[ca.Name] = ca
-	ca.pending = false
+	cc.removeInflightConsumerProposal(accName, stream, consumerName)
 
 	// If unsupported, we can't register any further.
 	if ca.unsupported != nil {
@@ -5075,7 +5236,6 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 			// Make sure this removal is for what we have, otherwise ignore.
 			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
 				needDelete = true
-				oca.deleted = true
 				delete(sa.consumers, ca.Name)
 				// Remember we used to be unsupported, just so we can send a successful delete response.
 				if ca.unsupported == nil {
@@ -5084,6 +5244,7 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 			}
 		}
 	}
+	cc.removeInflightConsumerProposal(accName, stream, name)
 	js.mu.Unlock()
 
 	// During initial/startup recovery we'll not have registered the consumer assignment,
@@ -5443,6 +5604,61 @@ func (js *jetStream) consumerAssignment(account, stream, consumer string) *consu
 		return sa.consumers[consumer]
 	}
 	return nil
+}
+
+// Will look up a consumer assignment, either an applied or inflight assignment.
+// Lock should be held.
+func (js *jetStream) consumerAssignmentOrInflight(account, stream, consumer string) *consumerAssignment {
+	cc := js.cluster
+	if cc == nil {
+		return nil
+	}
+	if streams, ok := cc.inflightConsumers[account]; ok {
+		if consumers, ok := streams[stream]; ok {
+			if inflight, ok := consumers[consumer]; ok {
+				if !inflight.deleted {
+					return inflight.consumerAssignment
+				} else {
+					return nil
+				}
+			}
+		}
+	}
+	if sa := js.streamAssignment(account, stream); sa != nil {
+		return sa.consumers[consumer]
+	}
+	return nil
+}
+
+// Will gather all consumer assignments for the specified account and stream, both applied and inflight assignments.
+// Lock should be held.
+func (js *jetStream) consumerAssignmentsOrInflightSeq(account, stream string) iter.Seq[*consumerAssignment] {
+	return func(yield func(*consumerAssignment) bool) {
+		cc := js.cluster
+		if cc == nil {
+			return
+		}
+
+		var inflight map[string]*inflightConsumerInfo
+		if streams, ok := cc.inflightConsumers[account]; ok {
+			inflight = streams[stream]
+		}
+		for _, i := range inflight {
+			if !i.deleted && !yield(i.consumerAssignment) {
+				return
+			}
+		}
+		sa := js.streamAssignment(account, stream)
+		for _, ca := range sa.consumers {
+			// Skip if we already iterated over it as inflight.
+			if _, ok := inflight[ca.Name]; ok {
+				continue
+			}
+			if !yield(ca) {
+				return
+			}
+		}
+	}
 }
 
 // consumerAssigned informs us if this server has this consumer assigned.
@@ -6217,12 +6433,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		return
 	}
 
-	// This should have been done already in processStreamAssignment, but in
-	// case we have a code path that gets here with no processStreamAssignment,
-	// then we will do the proper thing. Otherwise will be a no-op.
-	cc.removeInflightProposal(result.Account, result.Stream)
-
-	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil && !sa.reassigning {
+	if sa := js.streamAssignmentOrInflight(result.Account, result.Stream); sa != nil && !sa.reassigning {
 		canDelete := !result.Update && time.Since(sa.Created) < 5*time.Second
 
 		// See if we should retry in case this cluster is full but there are others.
@@ -6245,9 +6456,11 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 						rg.setPreferred(s)
 						// Get rid of previous attempt.
 						cc.meta.Propose(encodeDeleteStreamAssignment(sa))
+						cc.trackInflightStreamProposal(result.Account, sa, true)
 						// Propose new.
 						sa.Group, sa.err = rg, nil
 						cc.meta.Propose(encodeAddStreamAssignment(sa))
+						cc.trackInflightStreamProposal(result.Account, sa, false)
 						// When the new stream assignment is processed, sa.reassigning will be
 						// automatically set back to false. Until then, don't process any more
 						// assignment results.
@@ -6273,6 +6486,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		if canDelete {
 			sa.err = NewJSClusterNotAssignedError()
 			cc.meta.Propose(encodeDeleteStreamAssignment(sa))
+			cc.trackInflightStreamProposal(result.Account, sa, true)
 		}
 	}
 }
@@ -6442,6 +6656,10 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 	// Clear replies for peer-removes.
 	js.cluster.peerRemoveReply = nil
 
+	// Clear inflight proposal tracking.
+	js.cluster.inflightStreams = nil
+	js.cluster.inflightConsumers = nil
+
 	if isLeader {
 		if meta := js.cluster.meta; meta != nil && meta.IsObserver() {
 			meta.StepDown()
@@ -6460,17 +6678,16 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 	// assignments with no sync subject after an update and no way to sync/catchup outside of the RAFT layer.
 	if isLeader && js.cluster.streamsCheck {
 		cc := js.cluster
-		for acc, asa := range cc.streams {
-			for _, sa := range asa {
-				if sa.unsupported != nil {
-					continue
-				}
-				if sa.Sync == _EMPTY_ {
-					s.Warnf("Stream assignment corrupt for stream '%s > %s'", acc, sa.Config.Name)
-					nsa := &streamAssignment{Group: sa.Group, Config: sa.Config, Subject: sa.Subject, Reply: sa.Reply, Client: sa.Client, Created: sa.Created}
-					nsa.Sync = syncSubjForStream()
-					cc.meta.Propose(encodeUpdateStreamAssignment(nsa))
-				}
+		for acc, sa := range js.streamAssignmentsOrInflightSeqAllAccounts() {
+			if sa.unsupported != nil {
+				continue
+			}
+			if sa.Sync == _EMPTY_ {
+				s.Warnf("Stream assignment corrupt for stream '%s > %s'", acc, sa.Config.Name)
+				nsa := &streamAssignment{Group: sa.Group, Config: sa.Config, Subject: sa.Subject, Reply: sa.Reply, Client: sa.Client, Created: sa.Created}
+				nsa.Sync = syncSubjForStream()
+				cc.meta.Propose(encodeUpdateStreamAssignment(nsa))
+				cc.trackInflightStreamProposal(acc, nsa, false)
 			}
 		}
 		// Clear check.
@@ -6926,10 +7143,10 @@ func groupName(prefix string, peers []string, storage StorageType) string {
 
 // returns stream count for this tier as well as applicable reservation size (not including cfg)
 // jetStream read lock should be held
-func tieredStreamAndReservationCount(asa map[string]*streamAssignment, tier string, cfg *StreamConfig) (int, int64) {
+func (js *jetStream) tieredStreamAndReservationCount(accName, tier string, cfg *StreamConfig) (int, int64) {
 	var numStreams int
 	var reservation int64
-	for _, sa := range asa {
+	for sa := range js.streamAssignmentsOrInflightSeq(accName) {
 		// Don't count the stream toward the limit if it already exists.
 		if (tier == _EMPTY_ || isSameTier(sa.Config, cfg)) && sa.Config.Name != cfg.Name {
 			numStreams++
@@ -7011,19 +7228,7 @@ func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfi
 		return apiErr
 	}
 
-	asa := js.cluster.streams[acc.Name]
-	numStreams, reservations := tieredStreamAndReservationCount(asa, tier, cfg)
-	// Check for inflight proposals...
-	if cc := js.cluster; cc != nil && cc.inflight != nil {
-		streams := cc.inflight[acc.Name]
-		numStreams += len(streams)
-		// If inflight contains the same stream, don't count toward exceeding maximum.
-		if cfg != nil {
-			if _, ok := streams[cfg.Name]; ok {
-				numStreams--
-			}
-		}
-	}
+	numStreams, reservations := js.tieredStreamAndReservationCount(acc.Name, tier, cfg)
 	if selectedLimits.MaxStreams > 0 && numStreams >= selectedLimits.MaxStreams {
 		return NewJSMaximumStreamsLimitError()
 	}
@@ -7058,8 +7263,8 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	var rg *raftGroup
 	var syncSubject string
 
-	// Capture if we have existing assignment first.
-	if osa := js.streamAssignment(acc.Name, cfg.Name); osa != nil {
+	// Capture if we have existing/inflight assignment first.
+	if osa := js.streamAssignmentOrInflight(acc.Name, cfg.Name); osa != nil {
 		copyStreamMetadata(cfg, osa.Config)
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
@@ -7077,7 +7282,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 
 	// Check for subject collisions here.
-	if cc.subjectsOverlap(acc.Name, cfg.Subjects, self) {
+	if js.subjectsOverlap(acc.Name, cfg.Subjects, self) {
 		resp.Error = NewJSStreamSubjectOverlapError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -7091,29 +7296,6 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		return
 	}
 
-	// Make sure inflight is setup properly.
-	if cc.inflight == nil {
-		cc.inflight = make(map[string]map[string]*inflightInfo)
-	}
-	streams, ok := cc.inflight[acc.Name]
-	if !ok {
-		streams = make(map[string]*inflightInfo)
-		cc.inflight[acc.Name] = streams
-	}
-
-	// Raft group selection and placement.
-	if rg == nil {
-		// Check inflight before proposing in case we have an existing inflight proposal.
-		if existing, ok := streams[cfg.Name]; ok {
-			if !reflect.DeepEqual(existing.cfg, cfg) {
-				resp.Error = NewJSStreamNameExistError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-				return
-			}
-			// We have existing for same stream. Re-use same group and syncSubject.
-			rg, syncSubject = existing.rg, existing.sync
-		}
-	}
 	// Create a new one here if needed.
 	if rg == nil {
 		nrg, err := js.createGroupForStream(ci, cfg)
@@ -7136,9 +7318,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		// On success, add this as an inflight proposal so we can apply limits
 		// on concurrent create requests while this stream assignment has
 		// possibly not been processed yet.
-		if streams, ok := cc.inflight[acc.Name]; ok && self == nil {
-			streams[cfg.Name] = &inflightInfo{rg, syncSubject, cfg}
-		}
+		cc.trackInflightStreamProposal(acc.Name, sa, false)
 	}
 }
 
@@ -7212,7 +7392,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
-	osa := js.streamAssignment(acc.Name, cfg.Name)
+	osa := js.streamAssignmentOrInflight(acc.Name, cfg.Name)
 	if osa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -7255,7 +7435,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	// Check for subject collisions here.
-	if cc.subjectsOverlap(acc.Name, cfg.Subjects, osa) {
+	if js.subjectsOverlap(acc.Name, cfg.Subjects, osa) {
 		resp.Error = NewJSStreamSubjectOverlapError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -7416,7 +7596,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		}
 
 		// Need to remap any consumers.
-		for _, ca := range osa.consumers {
+		for ca := range js.consumerAssignmentsOrInflightSeq(acc.Name, osa.Config.Name) {
 			// Legacy ephemerals are R=1 but present as R=0, so only auto-remap named consumers, or if we are downsizing the consumer peers.
 			// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
 			numPeers := len(ca.Group.Peers)
@@ -7514,7 +7694,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		}
 		rg.Peers = peerSet
 
-		for _, ca := range osa.consumers {
+		for ca := range js.consumerAssignmentsOrInflightSeq(acc.Name, osa.Config.Name) {
 			cca := ca.copyGroup()
 			r := cca.Config.replicas(osa.Config)
 			// shuffle part of cluster peer set we will be keeping
@@ -7558,11 +7738,15 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	sa := &streamAssignment{Group: rg, Sync: osa.Sync, Created: osa.Created, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
-	meta.Propose(encodeUpdateStreamAssignment(sa))
+	if err := meta.Propose(encodeUpdateStreamAssignment(sa)); err != nil {
+		return
+	}
+	cc.trackInflightStreamProposal(acc.Name, sa, false)
 
 	// Process any staged consumers.
 	for _, ca := range consumers {
 		meta.Propose(encodeAddConsumerAssignment(ca))
+		cc.trackInflightConsumerProposal(acc.Name, sa.Config.Name, ca, false)
 	}
 }
 
@@ -7579,7 +7763,7 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, st
 		return
 	}
 
-	osa := js.streamAssignment(acc.Name, stream)
+	osa := js.streamAssignmentOrInflight(acc.Name, stream)
 	if osa == nil {
 		var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
 		resp.Error = NewJSStreamNotFoundError()
@@ -7588,7 +7772,9 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, st
 	}
 
 	sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Reply: reply, Client: ci, Created: osa.Created}
-	cc.meta.Propose(encodeDeleteStreamAssignment(sa))
+	if err := cc.meta.Propose(encodeDeleteStreamAssignment(sa)); err == nil {
+		cc.trackInflightStreamProposal(acc.Name, sa, true)
+	}
 }
 
 // Process a clustered purge request.
@@ -7665,7 +7851,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 		return
 	}
 
-	if sa := js.streamAssignment(ci.serviceAccount(), cfg.Name); sa != nil {
+	if sa := js.streamAssignmentOrInflight(ci.serviceAccount(), cfg.Name); sa != nil {
 		resp.Error = NewJSStreamNameExistRestoreFailedError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -7683,7 +7869,9 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
-	cc.meta.Propose(encodeAddStreamAssignment(sa))
+	if err := cc.meta.Propose(encodeAddStreamAssignment(sa)); err == nil {
+		cc.trackInflightStreamProposal(ci.serviceAccount(), sa, false)
+	}
 }
 
 // Determine if all peers for this group are offline.
@@ -8061,9 +8249,10 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, acc *Account, 
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
-	oca.deleted = true
 	ca := &consumerAssignment{Group: oca.Group, Stream: stream, Name: consumer, Config: oca.Config, Subject: subject, Reply: reply, Client: ci, Created: oca.Created}
-	cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+	if err := cc.meta.Propose(encodeDeleteConsumerAssignment(ca)); err == nil {
+		cc.trackInflightConsumerProposal(acc.Name, stream, ca, true)
+	}
 }
 
 func encodeMsgDelete(md *streamMsgDelete) []byte {
@@ -8287,7 +8476,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 
 	// Lookup the stream assignment.
-	sa := js.streamAssignment(acc.Name, stream)
+	sa := js.streamAssignmentOrInflight(acc.Name, stream)
 	if sa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -8315,14 +8504,14 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		if maxc > 0 {
 			// Don't count DIRECTS.
 			total := 0
-			for cn, ca := range sa.consumers {
+			for ca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
 				if ca.unsupported != nil {
 					continue
 				}
 				// If the consumer name is specified and we think it already exists, then
 				// we're likely updating an existing consumer, so don't count it. Otherwise
 				// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
-				if oname != _EMPTY_ && cn == oname && sa.consumers[oname] != nil {
+				if oname != _EMPTY_ && ca.Name == oname {
 					continue
 				}
 				if ca.Config != nil && !ca.Config.Direct {
@@ -8364,11 +8553,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 
 	var ca *consumerAssignment
-
 	// See if we have an existing one already under same durable name or
 	// if name was set by the user.
 	if oname != _EMPTY_ {
-		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
+		if ca = js.consumerAssignmentOrInflight(acc.Name, stream, oname); ca != nil {
 			// Provided config might miss metadata, copy from existing config.
 			copyConsumerMetadata(cfg, ca.Config)
 
@@ -8430,10 +8618,8 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				// Make sure name is unique.
 				for {
 					oname = createConsumerName()
-					if sa.consumers != nil {
-						if sa.consumers[oname] != nil {
-							continue
-						}
+					if js.consumerAssignmentOrInflight(acc.Name, stream, oname) != nil {
+						continue
 					}
 					break
 				}
@@ -8471,19 +8657,16 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
-			// Check here to make sure we have not collided with another.
-			if len(sa.consumers) > 0 {
-				for _, oca := range sa.consumers {
-					if oca.Name == oname {
-						continue
-					}
-					for _, psubj := range gatherSubjectFilters(oca.Config.FilterSubject, oca.Config.FilterSubjects) {
-						for _, subj := range subjects {
-							if SubjectsCollide(subj, psubj) {
-								resp.Error = NewJSConsumerWQConsumerNotUniqueError()
-								s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-								return
-							}
+			for oca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
+				if oca.Name == oname {
+					continue
+				}
+				for _, psubj := range gatherSubjectFilters(oca.Config.FilterSubject, oca.Config.FilterSubjects) {
+					for _, subj := range subjects {
+						if SubjectsCollide(subj, psubj) {
+							resp.Error = NewJSConsumerWQConsumerNotUniqueError()
+							s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+							return
 						}
 					}
 				}
@@ -8595,12 +8778,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// Do formal proposal.
 	if err := cc.meta.Propose(encodeAddConsumerAssignment(ca)); err == nil {
-		// Mark this as pending.
-		if sa.consumers == nil {
-			sa.consumers = make(map[string]*consumerAssignment)
-		}
-		ca.pending = true
-		sa.consumers[ca.Name] = ca
+		cc.trackInflightConsumerProposal(acc.Name, stream, ca, false)
 	}
 }
 

@@ -7402,3 +7402,222 @@ func TestJetStreamClusterConsumerRescaleCatchup(t *testing.T) {
 	t.Run("Catchup", func(t *testing.T) { test(t, false) })
 	t.Run("Snapshot", func(t *testing.T) { test(t, true) })
 }
+
+func TestJetStreamClusterConcurrentStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		s.Shutdown()
+	}
+
+	// The stream update to seal the stream will be received and proposed by the meta leader,
+	// but it will not be able to achieve quorum immediately.
+	cfg.Sealed = true
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), req))
+
+	// We need to wait a bit to ensure the above request is handled first.
+	time.Sleep(100 * time.Millisecond)
+
+	// A concurrent stream update should error immediately if the config update check fails.
+	cfg.Sealed = false
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not unseal a sealed stream")))
+
+	// Confirm the meta leader actually tracked the inflight stream update that was sent first.
+	sjs, cc := ml.getJetStreamCluster()
+	sjs.mu.RLock()
+	i := len(cc.inflightStreams)
+	sjs.mu.RUnlock()
+	require_Equal(t, i, 1)
+
+	// Restart the servers, eventually the stream should be reporting as sealed.
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		c.restartServer(s)
+	}
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		m, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, cfg.Name), nil, 200*time.Millisecond)
+		if err != nil {
+			return err
+		}
+		var resp JSApiStreamInfoResponse
+		if err = json.Unmarshal(m.Data, &resp); err != nil {
+			return err
+		}
+		if !resp.Config.Sealed {
+			return errors.New("stream isn't sealed yet")
+		}
+		return nil
+	})
+
+	// The inflight state should be cleared.
+	for _, s := range c.servers {
+		sjs, cc = s.getJetStreamCluster()
+		sjs.mu.RLock()
+		i = len(cc.inflightStreams)
+		sjs.mu.RUnlock()
+		require_Equal(t, i, 0)
+	}
+}
+
+func TestJetStreamClusterConcurrentConsumerCreateWithMaxConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:         "TEST",
+		Subjects:     []string{"foo"},
+		Replicas:     3,
+		MaxConsumers: 1,
+	})
+	require_NoError(t, err)
+
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		s.Shutdown()
+	}
+
+	// The consumer create will be received and proposed by the meta leader,
+	// but it will not be able to achieve quorum.
+	ccr := CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{Durable: "C1", Replicas: 1}}
+	req, err := json.Marshal(ccr)
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(fmt.Sprintf(JSApiDurableCreateT, "TEST", "C1"), req))
+
+	// We need to wait a bit to ensure the above request is handled first.
+	time.Sleep(100 * time.Millisecond)
+
+	// Another consumer create should error immediately since with the inflight consumer we're at limits.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C2", Replicas: 1})
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
+
+	// Confirm the meta leader actually tracked the inflight consumer create that was sent first.
+	sjs, cc := ml.getJetStreamCluster()
+	sjs.mu.RLock()
+	iu := len(cc.inflightConsumers)
+	sjs.mu.RUnlock()
+	require_Equal(t, iu, 1)
+
+	// Restart the servers, eventually the consumer should exist.
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		c.restartServer(s)
+	}
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		var found bool
+		for _, s := range c.servers {
+			sjs = s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "C1")
+			sjs.mu.RUnlock()
+			if ca != nil {
+				found = true
+			}
+		}
+		if !found {
+			return errors.New("consumer not found")
+		}
+
+		sjs, cc = ml.getJetStreamCluster()
+		sjs.mu.RLock()
+		iu = len(cc.inflightConsumers)
+		sjs.mu.RUnlock()
+		if iu != 0 {
+			return fmt.Errorf("expected no inflight consumer updates, got %d", iu)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterLostConsumerAfterInflightConsumerUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		s.Shutdown()
+	}
+
+	// The consumer update will be received and proposed by the meta leader,
+	// but it will not be able to achieve quorum.
+	ccr := CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{Durable: "CONSUMER"}}
+	req, err := json.Marshal(ccr)
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(fmt.Sprintf(JSApiDurableCreateT, "TEST", "CONSUMER"), req))
+
+	// We need to wait a bit to ensure the above request is handled.
+	time.Sleep(100 * time.Millisecond)
+
+	// Confirm the meta leader actually tracked the inflight consumer update that was sent.
+	sjs, cc := ml.getJetStreamCluster()
+	sjs.mu.RLock()
+	iu := len(cc.inflightConsumers)
+	sjs.mu.RUnlock()
+	require_Equal(t, iu, 1)
+
+	// Snapshot meta, if it didn't separately track the inflight consumer update, it could lose the entire consumer.
+	require_NoError(t, ml.JetStreamSnapshotMeta())
+	ml.Shutdown()
+
+	// Restart all servers.
+	for _, s := range c.servers {
+		c.restartServer(s)
+	}
+	// Check the consumer still exists on all servers.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs = s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+			sjs.mu.RUnlock()
+			if ca == nil {
+				return errors.New("consumer not found")
+			}
+		}
+		return nil
+	})
+}
