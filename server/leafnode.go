@@ -309,6 +309,29 @@ func validateLeafNode(o *Options) error {
 				return err
 			}
 		}
+		// Validate credential settings - mutual exclusivity
+		authMethods := 0
+		if rcfg.Credentials != _EMPTY_ {
+			authMethods++
+		}
+		if rcfg.Nkey != _EMPTY_ {
+			authMethods++
+		}
+		if rcfg.CredentialsFile != _EMPTY_ {
+			authMethods++
+		}
+		if rcfg.Username != _EMPTY_ || rcfg.Password != _EMPTY_ || rcfg.Token != _EMPTY_ {
+			authMethods++
+		}
+		if authMethods > 1 {
+			return fmt.Errorf("remote leafnode can not have multiple auth methods (credentials, nkey, credentials_file, or username/password/token)")
+		}
+		// Validate credentials_file exists (content validated at connection time to allow rotation)
+		if rcfg.CredentialsFile != _EMPTY_ {
+			if _, err := os.Stat(rcfg.CredentialsFile); err != nil {
+				return fmt.Errorf("remote leafnode credentials_file %q: %v", rcfg.CredentialsFile, err)
+			}
+		}
 	}
 
 	if o.LeafNode.Port == 0 {
@@ -964,6 +987,32 @@ func (s *Server) startLeafNodeAcceptLoop() {
 // RegEx to match a creds file with user JWT and Seed.
 var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}.*[-]{3,}\r?\n)([\w\-.=]+)(?:\r?\n[-]{3,}.*[-]{3,}(\r?\n|\z)))`)
 
+// readBasicAuthCredsFile reads username/password or token from a simple credentials file.
+// File format: if single line, it's treated as a token. If two lines, first is username,
+// second is password. The file is re-read on each connection attempt to support credential
+// rotation without config reload.
+// Note: returned strings are copies; caller should be aware credentials persist in memory
+// until garbage collected.
+func readBasicAuthCredsFile(path string) (user, pass, token string, numLines int, err error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return _EMPTY_, _EMPTY_, _EMPTY_, 0, err
+	}
+	defer wipeSlice(contents)
+
+	lines := bytes.Split(bytes.TrimSpace(contents), []byte("\n"))
+	switch len(lines) {
+	case 0:
+		return _EMPTY_, _EMPTY_, _EMPTY_, 0, fmt.Errorf("credentials file is empty")
+	case 1:
+		// Single line = token
+		return _EMPTY_, _EMPTY_, string(bytes.TrimSpace(lines[0])), 1, nil
+	default:
+		// Two or more lines = username/password
+		return string(bytes.TrimSpace(lines[0])), string(bytes.TrimSpace(lines[1])), _EMPTY_, len(lines), nil
+	}
+}
+
 // clusterName is provided as argument to avoid lock ordering issues with the locked client c
 // Lock should be held entering here.
 func (c *client) sendLeafConnect(clusterName string, headers bool) error {
@@ -1046,9 +1095,57 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		cinfo.Nkey = pkey
 		cinfo.Sig = sig
 	}
-	// In addition, and this is to allow auth callout, set user/password or
-	// token if applicable.
-	if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
+
+	// Basic auth credential precedence (highest to lowest):
+	// 1. CredentialsFile - re-read on each connection for rotation support
+	// 2. Token (inline config)
+	// 3. Username/Password (inline config)
+	// 4. URL-embedded credentials (legacy)
+	// Note: credentials persist in memory as strings until GC; file I/O occurs on every
+	// connection attempt when using CredentialsFile.
+	//
+	// Read all credential fields atomically to avoid partial reads during config reload.
+	c.leaf.remote.RLock()
+	credFile := c.leaf.remote.CredentialsFile
+	cfgToken := c.leaf.remote.Token
+	cfgUser := c.leaf.remote.Username
+	cfgPass := c.leaf.remote.Password
+	c.leaf.remote.RUnlock()
+
+	if credFile != _EMPTY_ {
+		user, pass, token, numLines, err := readBasicAuthCredsFile(credFile)
+		if err != nil {
+			c.Errorf("Error reading credentials file %q: %v", credFile, err)
+			return err
+		}
+		c.Debugf("Authenticating with credentials file %q", credFile)
+		if numLines > 2 {
+			c.Warnf("Credentials file %q has %d lines, expected 1 (token) or 2 (user/pass)", credFile, numLines)
+		}
+		if token != _EMPTY_ {
+			cinfo.Token = token
+			cinfo.User = token // backward compatibility
+		} else {
+			cinfo.User = user
+			cinfo.Pass = pass
+		}
+	} else if cfgToken != _EMPTY_ {
+		cinfo.Token = cfgToken
+		cinfo.User = cfgToken // backward compatibility
+	} else if cfgUser != _EMPTY_ || cfgPass != _EMPTY_ {
+		// If only one of username/password provided, treat as token
+		if cfgUser == _EMPTY_ {
+			cinfo.Token = cfgPass
+			cinfo.User = cfgPass
+		} else if cfgPass == _EMPTY_ {
+			cinfo.Token = cfgUser
+			cinfo.User = cfgUser
+		} else {
+			cinfo.User = cfgUser
+			cinfo.Pass = cfgPass
+		}
+	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
+		// URL-embedded credentials (legacy fallback)
 		cinfo.User = userInfo.Username()
 		var ok bool
 		cinfo.Pass, ok = userInfo.Password()
@@ -1058,6 +1155,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 			cinfo.Token = cinfo.User
 		}
 	} else if c.leaf.remote.username != _EMPTY_ {
+		// Saved credentials from first URL (legacy fallback)
 		cinfo.User = c.leaf.remote.username
 		cinfo.Pass = c.leaf.remote.password
 		// For backward compatibility, if only username is provided, set both
