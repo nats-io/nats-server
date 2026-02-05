@@ -497,12 +497,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	if state.Msgs > 0 {
 		n.debug("Replaying state of %d entries", state.Msgs)
-		if first, err := n.loadFirstEntry(); err == nil {
-			n.pterm, n.pindex = first.pterm, first.pindex
-			if first.commit > 0 && first.commit > n.commit {
-				n.commit = first.commit
-			}
-		}
 
 		// This process will queue up entries on our applied queue but prior to the upper
 		// state machine running. So we will monitor how much we have queued and if we
@@ -513,6 +507,25 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		// yet. Replay them.
 		for index, qsz := state.FirstSeq, 0; index <= state.LastSeq; index++ {
 			ae, err := n.loadEntry(index)
+			// The first entry in our WAL initializes state but must align with our snapshot if we had one.
+			// Importantly, check this first, as we might need to truncate the WAL further than the index.
+			if index == state.FirstSeq {
+				// If the entry is missing, corrupt, or doesn't align with the snapshot, truncate the WAL.
+				if err != nil || ae == nil || ae.pindex != index-1 || n.pindex != ae.pindex {
+					if err != nil {
+						n.warn("Could not load %d from WAL [%+v]: %v", index, state, err)
+					} else {
+						n.warn("Misaligned WAL, will truncate")
+					}
+					// Truncate to the snapshot or beginning if there is none.
+					truncateAndErr(n.pindex)
+					break
+				}
+				n.pterm, n.pindex = ae.pterm, ae.pindex
+				if ae.commit > 0 && ae.commit > n.commit {
+					n.commit = ae.commit
+				}
+			}
 			if err != nil {
 				n.warn("Could not load %d from WAL [%+v]: %v", index, state, err)
 				// Truncate to the previous correct entry.
