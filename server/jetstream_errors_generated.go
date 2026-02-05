@@ -35,6 +35,18 @@ const (
 	// JSBadRequestErr bad request
 	JSBadRequestErr ErrorIdentifier = 10003
 
+	// JSBatchPublishDisabledErr batch publish is disabled
+	JSBatchPublishDisabledErr ErrorIdentifier = 10203
+
+	// JSBatchPublishInvalidBatchIDErr batch publish ID is invalid
+	JSBatchPublishInvalidBatchIDErr ErrorIdentifier = 10205
+
+	// JSBatchPublishInvalidPatternErr batch publish pattern is invalid
+	JSBatchPublishInvalidPatternErr ErrorIdentifier = 10204
+
+	// JSBatchPublishUnknownBatchIDErr batch publish ID unknown
+	JSBatchPublishUnknownBatchIDErr ErrorIdentifier = 10206
+
 	// JSClusterIncompleteErr incomplete results
 	JSClusterIncompleteErr ErrorIdentifier = 10004
 
@@ -353,6 +365,9 @@ const (
 	// JSMirrorWithAtomicPublishErr stream mirrors can not also use atomic publishing
 	JSMirrorWithAtomicPublishErr ErrorIdentifier = 10198
 
+	// JSMirrorWithBatchPublishErr stream mirrors can not also use batch publishing
+	JSMirrorWithBatchPublishErr ErrorIdentifier = 10207
+
 	// JSMirrorWithCountersErr stream mirrors can not also calculate counters
 	JSMirrorWithCountersErr ErrorIdentifier = 10173
 
@@ -621,6 +636,10 @@ var (
 		JSAtomicPublishTooLargeBatchErrF:             {Code: 400, ErrCode: 10199, Description: "atomic publish batch is too large: {size}"},
 		JSAtomicPublishUnsupportedHeaderBatchErr:     {Code: 400, ErrCode: 10177, Description: "atomic publish unsupported header used: {header}"},
 		JSBadRequestErr:                              {Code: 400, ErrCode: 10003, Description: "bad request"},
+		JSBatchPublishDisabledErr:                    {Code: 400, ErrCode: 10203, Description: "batch publish is disabled"},
+		JSBatchPublishInvalidBatchIDErr:              {Code: 400, ErrCode: 10205, Description: "batch publish ID is invalid"},
+		JSBatchPublishInvalidPatternErr:              {Code: 400, ErrCode: 10204, Description: "batch publish pattern is invalid"},
+		JSBatchPublishUnknownBatchIDErr:              {Code: 400, ErrCode: 10206, Description: "batch publish ID unknown"},
 		JSClusterIncompleteErr:                       {Code: 503, ErrCode: 10004, Description: "incomplete results"},
 		JSClusterNoPeersErrF:                         {Code: 400, ErrCode: 10005, Description: "{err}"},
 		JSClusterNotActiveErr:                        {Code: 500, ErrCode: 10006, Description: "JetStream not in clustered mode"},
@@ -727,6 +746,7 @@ var (
 		JSMirrorMultipleFiltersNotAllowed:            {Code: 400, ErrCode: 10150, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
 		JSMirrorOverlappingSubjectFilters:            {Code: 400, ErrCode: 10152, Description: "mirror subject filters can not overlap"},
 		JSMirrorWithAtomicPublishErr:                 {Code: 400, ErrCode: 10198, Description: "stream mirrors can not also use atomic publishing"},
+		JSMirrorWithBatchPublishErr:                  {Code: 400, ErrCode: 10207, Description: "stream mirrors can not also use batch publishing"},
 		JSMirrorWithCountersErr:                      {Code: 400, ErrCode: 10173, Description: "stream mirrors can not also calculate counters"},
 		JSMirrorWithFirstSeqErr:                      {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
 		JSMirrorWithMsgSchedulesErr:                  {Code: 400, ErrCode: 10186, Description: "stream mirrors can not also schedule messages"},
@@ -947,6 +967,46 @@ func NewJSBadRequestError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSBadRequestErr]
+}
+
+// NewJSBatchPublishDisabledError creates a new JSBatchPublishDisabledErr error: "batch publish is disabled"
+func NewJSBatchPublishDisabledError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishDisabledErr]
+}
+
+// NewJSBatchPublishInvalidBatchIDError creates a new JSBatchPublishInvalidBatchIDErr error: "batch publish ID is invalid"
+func NewJSBatchPublishInvalidBatchIDError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishInvalidBatchIDErr]
+}
+
+// NewJSBatchPublishInvalidPatternError creates a new JSBatchPublishInvalidPatternErr error: "batch publish pattern is invalid"
+func NewJSBatchPublishInvalidPatternError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishInvalidPatternErr]
+}
+
+// NewJSBatchPublishUnknownBatchIDError creates a new JSBatchPublishUnknownBatchIDErr error: "batch publish ID unknown"
+func NewJSBatchPublishUnknownBatchIDError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishUnknownBatchIDErr]
 }
 
 // NewJSClusterIncompleteError creates a new JSClusterIncompleteErr error: "incomplete results"
@@ -2103,6 +2163,16 @@ func NewJSMirrorWithAtomicPublishError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorWithAtomicPublishErr]
+}
+
+// NewJSMirrorWithBatchPublishError creates a new JSMirrorWithBatchPublishErr error: "stream mirrors can not also use batch publishing"
+func NewJSMirrorWithBatchPublishError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorWithBatchPublishErr]
 }
 
 // NewJSMirrorWithCountersError creates a new JSMirrorWithCountersErr error: "stream mirrors can not also calculate counters"

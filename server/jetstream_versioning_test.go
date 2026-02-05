@@ -107,6 +107,11 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			cfg:              &StreamConfig{PersistMode: AsyncPersistMode},
 			expectedMetadata: metadataAtLevel("2"),
 		},
+		{
+			desc:             "AllowBatchPublish",
+			cfg:              &StreamConfig{AllowBatchPublish: true},
+			expectedMetadata: metadataAtLevel("3"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg)
