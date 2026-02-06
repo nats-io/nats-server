@@ -7055,7 +7055,6 @@ func TestJetStreamClusterStreamScaleDownChangesRaftGroup(t *testing.T) {
 	for _, s := range c.servers {
 		mset, err = s.globalAccount().lookupStream("TEST")
 		require_NoError(t, err)
-		fmt.Printf("== %s ==\n", s.Name())
 		for seq := uint64(1); seq <= 6; seq++ {
 			sm, err := mset.store.LoadMsg(seq, nil)
 			if err != nil {
@@ -7620,4 +7619,120 @@ func TestJetStreamClusterLostConsumerAfterInflightConsumerUpdate(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterStreamRaftGroupChangesWhenMovingToOrOffR1(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	requireGroupPrefix := func(prefix string) {
+		t.Helper()
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		sl := c.streamLeader(globalAccountName, "TEST")
+		require_NotNil(t, sl)
+		sjs := sl.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa.Group == nil {
+			t.Fatal("no group")
+		} else if !strings.HasPrefix(sa.Group.Name, prefix) {
+			t.Fatalf("expected group prefix %q, got %q", prefix, sa.Group.Name)
+		}
+	}
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("S-R1F-")
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("S-R3F-")
+
+	cfg.Replicas = 1
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("S-R1F-")
+
+	cfg.Replicas = 5
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("S-R5F-")
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	// The group MUST remain the same as what it was for R5.
+	// Changing it would violate replication safety.
+	requireGroupPrefix("S-R5F-")
+}
+
+func TestJetStreamClusterConsumerRaftGroupChangesWhenMovingToOrOffR1(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	requireGroupPrefix := func(prefix string) {
+		t.Helper()
+		c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+		cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+		require_NotNil(t, cl)
+		sjs := cl.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+		if ca.Group == nil {
+			t.Fatal("no group")
+		} else if !strings.HasPrefix(ca.Group.Name, prefix) {
+			t.Fatalf("expected group prefix %q, got %q", prefix, ca.Group.Name)
+		}
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{
+		Durable:  "CONSUMER",
+		Replicas: 1,
+	}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("C-R1F-")
+
+	cfg.Replicas = 3
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("C-R3F-")
+
+	cfg.Replicas = 1
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("C-R1F-")
+
+	cfg.Replicas = 5
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	requireGroupPrefix("C-R5F-")
+
+	cfg.Replicas = 3
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	// The group MUST remain the same as what it was for R5.
+	// Changing it would violate replication safety.
+	requireGroupPrefix("C-R5F-")
 }
