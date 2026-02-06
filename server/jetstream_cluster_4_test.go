@@ -7328,6 +7328,7 @@ func TestJetStreamClusterR2Degraded(t *testing.T) {
 	activateSubj := fmt.Sprintf(JSApiServerDegradedActivate, leader.Name())
 
 	active := func(active bool) bool {
+		t.Helper()
 		var resp JSApiDegradedStatusResponse
 		req := JSApiDegradedActivateRequest{
 			Active: active,
@@ -7341,6 +7342,7 @@ func TestJetStreamClusterR2Degraded(t *testing.T) {
 	}
 
 	status := func() bool {
+		t.Helper()
 		var resp JSApiDegradedStatusResponse
 		msg, err := snc.Request(statusSubj, nil, time.Second)
 		require_NoError(t, err)
@@ -7416,6 +7418,95 @@ func TestJetStreamClusterR2Degraded(t *testing.T) {
 	require_False(t, status()) // API should now tell us the state is disabled.
 
 	// Publishes should continue working as normal.
+	for range 10 {
+		_, err = js.Publish("stream.foo", nil)
+		require_NoError(t, err)
+	}
+}
+
+func TestJetStreamClusterR2DegradedColdStart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R2C", 2)
+	defer c.shutdown()
+
+	c.waitOnLeader()
+	leader, _ := c.leader(), c.randomNonLeader()
+
+	nc, js := jsClientConnect(t, leader)
+	defer nc.Close()
+
+	snc, _ := jsClientConnect(t, leader, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	require_True(t, leader.JetStreamIsLeader())
+	statusSubj := fmt.Sprintf(JSApiServerDegradedStatus, leader.Name())
+	activateSubj := fmt.Sprintf(JSApiServerDegradedActivate, leader.Name())
+
+	active := func(active bool) bool {
+		t.Helper()
+		var resp JSApiDegradedStatusResponse
+		req := JSApiDegradedActivateRequest{
+			Active: active,
+		}
+		j, err := json.Marshal(req)
+		require_NoError(t, err)
+		msg, err := snc.Request(activateSubj, j, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		return resp.Active
+	}
+
+	status := func() bool {
+		t.Helper()
+		var resp JSApiDegradedStatusResponse
+		msg, err := snc.Request(statusSubj, nil, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		return resp.Active
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "stream",
+		Subjects: []string{"stream.>"},
+		Storage:  nats.FileStorage,
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "stream")
+
+	// Normal operations at this point: publishes should work.
+	for range 10 {
+		_, err = js.Publish("stream.foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Restart the entire cluster, then restart only the former leader.
+	nc.Close()
+	snc.Close()
+	c.stopAll()
+	leader = c.restartServer(leader)
+
+	nc, js = jsClientConnect(t, leader)
+	defer nc.Close()
+
+	snc, _ = jsClientConnect(t, leader, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	require_False(t, status()) // API should start by telling us the state is disabled.
+	active(true)               // Enable the degraded status on the only server that's up.
+	require_True(t, status())  // API should now tell us the state is enabled.
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		if !leader.JetStreamIsLeader() {
+			return fmt.Errorf("not metaleader yet")
+		}
+		if !leader.JetStreamIsStreamLeader(globalAccountName, "stream") {
+			return fmt.Errorf("not stream leader yet")
+		}
+		return nil
+	})
+
+	// Now that the remaining server is up again, the stream should
+	// accept publishes.
 	for range 10 {
 		_, err = js.Publish("stream.foo", nil)
 		require_NoError(t, err)
