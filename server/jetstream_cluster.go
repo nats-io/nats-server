@@ -7541,10 +7541,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				return
 			}
 			// Single nodes are not recorded by the NRG layer so we can rename.
-			if len(peers) == 1 {
+			if len(peers) == 1 || osa.Config.Replicas == 1 {
 				rg.Name = groupNameForStream(peers, rg.Storage)
-			} else if len(rg.Peers) == 1 {
-				// This is scale up from being a singelton, set preferred to that singelton.
+			}
+			if len(rg.Peers) == 1 {
+				// This is scale up from being a singleton, set preferred to that singleton.
 				rg.Preferred = rg.Peers[0]
 			}
 			rg.ScaleUp = true
@@ -7611,6 +7612,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				}
 				// Assign new peers.
 				cca.Group.Peers = rg.Peers
+				// Single nodes are not recorded by the NRG layer so we can rename.
+				if len(cca.Group.Peers) == 1 || numPeers == 1 {
+					cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
+				}
 				// If the replicas was not 0 make sure it matches here.
 				if cca.Config.Replicas != 0 {
 					cca.Config.Replicas = len(rg.Peers)
@@ -7639,6 +7644,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 					cca := ca.copyGroup()
 					// Assign new peers.
 					cca.Group.Peers = newPeers
+					// Single nodes are not recorded by the NRG layer so we can rename.
+					if len(cca.Group.Peers) == 1 || numPeers == 1 {
+						cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
+					}
 					// If the replicas was not 0 make sure it matches here.
 					if cca.Config.Replicas != 0 {
 						cca.Config.Replicas = len(newPeers)
@@ -8742,6 +8751,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 						break
 					}
 				}
+			}
+			// Single nodes are not recorded by the NRG layer so we can rename.
+			if rBefore == 1 {
+				nca.Group.Name = groupNameForConsumer(newPeerSet, nca.Group.Storage)
 			}
 			nca.Group.Peers = newPeerSet
 			nca.Group.Preferred = curLeader
