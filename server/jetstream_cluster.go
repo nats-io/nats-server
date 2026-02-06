@@ -7545,7 +7545,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				rg.Name = groupNameForStream(peers, rg.Storage)
 			}
 			if len(rg.Peers) == 1 {
-				// This is scale up from being a singelton, set preferred to that singelton.
+				// This is scale up from being a singleton, set preferred to that singleton.
 				rg.Preferred = rg.Peers[0]
 			}
 			rg.ScaleUp = true
