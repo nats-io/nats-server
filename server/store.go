@@ -93,7 +93,7 @@ type StreamStore interface {
 	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64, discardNewCheck bool) error
 	SkipMsg(seq uint64) (uint64, error)
 	SkipMsgs(seq uint64, num uint64) error
-	FlushAllPending()
+	FlushAllPending() error
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
 	LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
@@ -107,7 +107,7 @@ type StreamStore interface {
 	Compact(seq uint64) (uint64, error)
 	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64
-	FilteredState(seq uint64, subject string) SimpleState
+	FilteredState(seq uint64, subject string) (SimpleState, error)
 	SubjectsState(filterSubject string) map[string]SimpleState
 	SubjectsTotals(filterSubject string) map[string]uint64
 	AllLastSeqs() ([]uint64, error)
@@ -118,7 +118,7 @@ type StreamStore interface {
 	State() StreamState
 	FastState(*StreamState)
 	EncodedStreamState(failed uint64) (enc []byte, err error)
-	SyncDeleted(dbs DeleteBlocks)
+	SyncDeleted(dbs DeleteBlocks) error
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)

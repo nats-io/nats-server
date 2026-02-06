@@ -3695,6 +3695,20 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 					})
 					continue
 				}
+				if streamWerr := s.getWriteErr(); streamWerr != nil {
+					if !details {
+						health.Status = na
+						health.Error = fmt.Sprintf("JetStream stream '%s > %s' write error: %v", acc, stream, streamWerr)
+						return health
+					}
+					health.Errors = append(health.Errors, HealthzError{
+						Type:    HealthzErrorStream,
+						Account: acc.Name,
+						Stream:  stream,
+						Error:   fmt.Sprintf("JetStream stream '%s > %s' write error: %v", acc, stream, streamWerr),
+					})
+					continue
+				}
 				if streamFound {
 					// if consumer option is passed, verify that the consumer exists on stream
 					if opts.Consumer != _EMPTY_ {
@@ -3771,49 +3785,37 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	meta = cc.meta
 	js.mu.RUnlock()
 
-	// If no meta leader.
-	if meta == nil || meta.GroupLeader() == _EMPTY_ {
-		if !details {
-			health.Status = na
-			health.Error = "JetStream has not established contact with a meta leader"
-		} else {
-			health.Errors = []HealthzError{
-				{
-					Type:  HealthzErrorJetStream,
-					Error: "JetStream has not established contact with a meta leader",
-				},
-			}
-		}
-		return health
+	// Check meta layer health.
+	var metaNoLeader, metaClosed, metaUnhealthy bool
+	var metaWerr error
+	if meta != nil {
+		metaNoLeader = meta.GroupLeader() == _EMPTY_
+		metaClosed = meta.State() == Closed
+		metaUnhealthy = !meta.Healthy()
+		metaWerr = meta.GetWriteErr()
 	}
-
-	// If we are not current with the meta leader.
-	if !meta.Healthy() {
-		if !details {
-			health.Status = na
-			health.Error = "JetStream is not current with the meta leader"
+	metaRecovering := js.isMetaRecovering()
+	if meta == nil || metaNoLeader || metaClosed || metaUnhealthy || metaWerr != nil || metaRecovering {
+		var desc string
+		if metaWerr != nil {
+			desc = fmt.Sprintf("JetStream meta layer write error: %v", metaWerr)
+		} else if metaClosed {
+			desc = "JetStream meta layer is not running"
+		} else if meta != nil && metaRecovering {
+			desc = "JetStream is still recovering meta layer"
+		} else if meta == nil || metaNoLeader {
+			desc = "JetStream has not established contact with a meta leader"
 		} else {
-			health.Errors = []HealthzError{
-				{
-					Type:  HealthzErrorJetStream,
-					Error: "JetStream is not current with the meta leader",
-				},
-			}
+			desc = "JetStream is not current with the meta leader"
 		}
-		return health
-	}
-
-	// Are we still recovering meta layer?
-	if js.isMetaRecovering() {
 		if !details {
 			health.Status = na
-			health.Error = "JetStream is still recovering meta layer"
-
+			health.Error = desc
 		} else {
 			health.Errors = []HealthzError{
 				{
 					Type:  HealthzErrorJetStream,
-					Error: "JetStream is still recovering meta layer",
+					Error: desc,
 				},
 			}
 		}

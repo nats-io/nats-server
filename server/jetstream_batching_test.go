@@ -1622,9 +1622,9 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 		batches.mu.Unlock()
 		require_NoError(t, err)
 	}
-	commitReady := b.readyForCommit()
+	abandonReason := b.readyForCommit()
 	batches.mu.Unlock()
-	require_True(t, commitReady)
+	require_True(t, abandonReason == nil)
 
 	// Simulate the first message of the batch is committed.
 	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false, true)
@@ -1712,9 +1712,9 @@ func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) 
 		batches.mu.Unlock()
 		require_NoError(t, err)
 	}
-	commitReady := b.readyForCommit()
+	abandonReason := b.readyForCommit()
 	batches.mu.Unlock()
-	require_True(t, commitReady)
+	require_True(t, abandonReason == nil)
 
 	// Simulate the first message of the batch is committed.
 	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr1, nil, 0, 0, nil, false, true)
