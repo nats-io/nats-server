@@ -115,7 +115,7 @@ func TestJetStreamClusterAccountInfo(t *testing.T) {
 		t.Fatalf("Did not receive correct response: %+v", info.Error)
 	}
 	// Make sure we only got 1 response.
-	// Technically this will always work since its a singelton service export.
+	// Technically this will always work since its a singleton service export.
 	if nmsgs, _, _ := sub.Pending(); nmsgs > 0 {
 		t.Fatalf("Expected only a single response, got %d more", nmsgs)
 	}
@@ -7616,20 +7616,17 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down.
 	checkNodeIsClosed(ca)
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("monitor goroutine not running"))
 	checkNodeIsClosed(ca)
 
-	// We create a new RAFT group, the health check should detect this skew and restart.
+	// We create a new RAFT group, the health check should detect this skew.
 	_, err = sjs.createRaftGroup(globalAccountName, ca.Group, false, MemoryStorage, pprofLabels{})
 	require_NoError(t, err)
 	sjs.mu.Lock()
 	// We set creating to now, since previously it would delete all data but NOT restart if created within <10s.
 	ca.Created = time.Now()
-	// Setting ca.pending, since a side effect of js.processConsumerAssignment is that it resets it.
-	ca.pending = true
 	sjs.mu.Unlock()
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
-	require_True(t, ca.pending)
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("cluster node skew detected"))
 
 	err = js.DeleteConsumer("TEST", "CONSUMER")
 	require_NoError(t, err)
@@ -7645,12 +7642,11 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	sjs.cluster.streams[globalAccountName]["TEST"] = sa
 	ca.Created = time.Time{}
 	ca.Group.node = n
-	ca.deleted = false
 	sjs.mu.Unlock()
 
 	// The underlying consumer has been deleted. Checking health must not recreate the consumer.
 	checkNodeIsClosed(ca)
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
 	checkNodeIsClosed(ca)
 }
 
@@ -7851,16 +7847,11 @@ func TestJetStreamClusterConsumerHealthCheckDeleted(t *testing.T) {
 	// The health check gathers all assignments and does checking after.
 	// If the consumer was deleted in the meantime, it should not report an error.
 	require_NoError(t, js.DeleteConsumer("TEST", "CONSUMER"))
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
 
 	// The health check could run earlier than we're able to create the consumer.
 	// In that case, wait before erroring.
 	sjs.mu.Lock()
-	if !ca.deleted {
-		sjs.mu.Unlock()
-		t.Fatal("ca.deleted not set")
-	}
-	ca.deleted = false
 	ca.Created = time.Now()
 	sjs.mu.Unlock()
 	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
@@ -9472,6 +9463,93 @@ func TestJetStreamClusterScheduledDelayedMessage(t *testing.T) {
 				cfg.AllowMsgSchedules = false
 				_, err = jsStreamUpdate(t, nc, cfg)
 				require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("message schedules can not be disabled")))
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterScheduledMessageSubjectSourcing(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				cfg := &StreamConfig{
+					Name:              "SchedulesEnabled",
+					Subjects:          []string{"foo.*"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+					AllowMsgTTL:       true,
+				}
+				_, err := jsStreamCreate(t, nc, cfg)
+				require_NoError(t, err)
+
+				m := nats.NewMsg("foo.data")
+				m.Header.Set("Header", "Value")
+				m.Data = []byte("data")
+
+				pubAck, err := js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, 1)
+
+				m = nats.NewMsg("foo.schedule")
+				m.Header.Set("Nats-Schedule", "@at 1970-01-01T00:00:00Z")
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+
+				// Invalid sources include if the subject:
+				// - matches the schedule/target subject
+				// - contains wildcard/is not literal
+				for _, src := range []string{"foo.schedule", "foo.publish", "foo.*", "foo.>"} {
+					m.Header.Set("Nats-Schedule-Source", src)
+					_, err = js.PublishMsg(m)
+					require_Error(t, err, NewJSMessageSchedulesSourceInvalidError())
+				}
+
+				// Now publish using a correct source subject.
+				m.Header.Set("Nats-Schedule-Source", "foo.data")
+				pubAck, err = js.PublishMsg(m)
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, 2)
+
+				sl := c.streamLeader(globalAccountName, "SchedulesEnabled")
+				mset, err := sl.globalAccount().lookupStream("SchedulesEnabled")
+				require_NoError(t, err)
+
+				state := mset.state()
+				require_Equal(t, state.LastSeq, 2)
+				require_Equal(t, state.Msgs, 2)
+
+				// Waiting for the delayed message to be published.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					state = mset.state()
+					if state.LastSeq != 3 {
+						return fmt.Errorf("expected last seq 3, got %d", state.LastSeq)
+					} else if state.Msgs != 2 {
+						// One is the scheduled message, one is the sourced message.
+						return fmt.Errorf("expected 2 msgs, got %d", state.Msgs)
+					}
+					return nil
+				})
+
+				// Confirm the scheduled message has the correct data.
+				rsm, err := js.GetLastMsg("SchedulesEnabled", "foo.publish")
+				require_NoError(t, err)
+				require_Equal(t, rsm.Sequence, 3)
+				require_True(t, bytes.Equal(rsm.Data, []byte("data")))
+				require_Len(t, len(rsm.Header), 3)
+				require_Equal(t, rsm.Header.Get("Nats-Scheduler"), "foo.schedule")
+				require_Equal(t, rsm.Header.Get("Nats-Schedule-Next"), "purge")
+				require_Equal(t, rsm.Header.Get("Header"), "Value")
+
+				// Servers should be synced.
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					return checkState(t, c, globalAccountName, "SchedulesEnabled")
+				})
 			})
 		}
 	}

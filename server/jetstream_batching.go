@@ -534,6 +534,10 @@ func checkMsgHeadersPreClusteredProposal(
 				!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
 				apiErr := NewJSMessageSchedulesTargetInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
+			} else if scheduleSource := getMessageScheduleSource(hdr); scheduleSource != _EMPTY_ &&
+				(scheduleSource == scheduleTarget || scheduleSource == subject || !IsValidPublishSubject(scheduleSource)) {
+				apiErr := NewJSMessageSchedulesSourceInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
 			} else {
 				mset.cfgMu.RLock()
 				match := slices.ContainsFunc(mset.cfg.Subjects, func(subj string) bool {

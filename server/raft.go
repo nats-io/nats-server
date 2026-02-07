@@ -497,12 +497,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	if state.Msgs > 0 {
 		n.debug("Replaying state of %d entries", state.Msgs)
-		if first, err := n.loadFirstEntry(); err == nil {
-			n.pterm, n.pindex = first.pterm, first.pindex
-			if first.commit > 0 && first.commit > n.commit {
-				n.commit = first.commit
-			}
-		}
 
 		// This process will queue up entries on our applied queue but prior to the upper
 		// state machine running. So we will monitor how much we have queued and if we
@@ -513,6 +507,25 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		// yet. Replay them.
 		for index, qsz := state.FirstSeq, 0; index <= state.LastSeq; index++ {
 			ae, err := n.loadEntry(index)
+			// The first entry in our WAL initializes state but must align with our snapshot if we had one.
+			// Importantly, check this first, as we might need to truncate the WAL further than the index.
+			if index == state.FirstSeq {
+				// If the entry is missing, corrupt, or doesn't align with the snapshot, truncate the WAL.
+				if err != nil || ae == nil || ae.pindex != index-1 || n.pindex != ae.pindex {
+					if err != nil {
+						n.warn("Could not load %d from WAL [%+v]: %v", index, state, err)
+					} else {
+						n.warn("Misaligned WAL, will truncate")
+					}
+					// Truncate to the snapshot or beginning if there is none.
+					truncateAndErr(n.pindex)
+					break
+				}
+				n.pterm, n.pindex = ae.pterm, ae.pindex
+				if ae.commit > 0 && ae.commit > n.commit {
+					n.commit = ae.commit
+				}
+			}
 			if err != nil {
 				n.warn("Could not load %d from WAL [%+v]: %v", index, state, err)
 				// Truncate to the previous correct entry.
@@ -1603,6 +1616,10 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 			n.Unlock()
 			time.Sleep(time.Millisecond)
 			n.Lock()
+			if n.State() == Closed {
+				n.debug("Node closed during health check, returning not current")
+				return false
+			}
 			if n.commit-n.applied < startDelta {
 				// The gap is getting smaller, so we're making forward progress.
 				clearBehindState()
@@ -2189,7 +2206,7 @@ func (n *raft) setObserverLocked(isObserver bool, extSt extensionState) {
 	// If we're leaving observer state then reset the election timer or
 	// we might end up waiting for up to the observerModeInterval.
 	if wasObserver && !isObserver {
-		n.resetElect(randCampaignTimeout())
+		n.resetElect(randElectionTimeout())
 	}
 }
 
@@ -3133,9 +3150,8 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	indexUpdates := newIPQueue[uint64](n.s, fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group))
 	indexUpdates.push(ae.pindex)
 	n.progress[ar.peer] = indexUpdates
-	n.Unlock()
-
 	n.wg.Add(1)
+	n.Unlock()
 	n.s.startGoRoutine(func() {
 		defer n.wg.Done()
 		n.runCatchup(ar, indexUpdates)

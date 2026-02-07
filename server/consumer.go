@@ -2045,6 +2045,7 @@ func (o *consumer) deleteNotActive() {
 	if o.srv != nil {
 		qch = o.srv.quitCh
 	}
+	oqch := o.qch
 	o.mu.Unlock()
 	if js != nil {
 		cqch = js.clusterQuitC()
@@ -2092,6 +2093,9 @@ func (o *consumer) deleteNotActive() {
 				case <-qch:
 					return
 				case <-cqch:
+					return
+				case <-oqch:
+					// The consumer has stopped already, likely by an earlier delete proposal being applied.
 					return
 				}
 				js.mu.RLock()
@@ -2840,14 +2844,10 @@ func (o *consumer) releaseAnyPendingRequests(isAssigned bool) {
 	if o.mset == nil || o.outq == nil || o.waiting.len() == 0 {
 		return
 	}
-	var hdr []byte
-	if !isAssigned {
-		hdr = []byte("NATS/1.0 409 Consumer Deleted\r\n\r\n")
-	}
-
 	wq := o.waiting
 	for wr := wq.head; wr != nil; {
-		if hdr != nil {
+		if !isAssigned {
+			hdr := []byte("NATS/1.0 409 Consumer Deleted\r\n\r\n")
 			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		}
 		next := wr.next
@@ -4441,6 +4441,8 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				// scheduled for redelivery, but it has been removed from the stream.
 				// o.processTerm is called in a goroutine so could run after we get here.
 				// That will correct the pending state and delivery/ack floors, so just skip here.
+				pmsg.returnToPool()
+				pmsg = nil
 				continue
 			}
 			return pmsg, dc, err
@@ -4468,6 +4470,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		sm, err := o.mset.store.LoadMsg(seq, &pmsg.StoreMsg)
 		if sm == nil || err != nil {
 			pmsg.returnToPool()
+			pmsg = nil
 		}
 		o.sseq++
 		return pmsg, 1, err
@@ -4979,6 +4982,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 				o.addToRedeliverQueue(pmsg.seq)
 			}
 			pmsg.returnToPool()
+			pmsg = nil
 			goto waitForMsgs
 		}
 
@@ -4989,6 +4993,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 				select {
 				case <-qch:
 					pmsg.returnToPool()
+					pmsg = nil
 					return
 				case <-time.After(delay):
 				}
@@ -5009,6 +5014,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 				select {
 				case <-qch:
 					pmsg.returnToPool()
+					pmsg = nil
 					return
 				case <-time.After(delay):
 				}

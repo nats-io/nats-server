@@ -2283,7 +2283,7 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, _ *Acco
 	}
 
 	js.mu.RLock()
-	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
+	isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, name)
 	js.mu.RUnlock()
 
 	// Make sure we are meta leader.
@@ -2842,22 +2842,23 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 		return
 	}
 
-	js.mu.RLock()
+	js.mu.Lock()
 	ns, nc := 0, 0
-	streams, hasAccount := cc.streams[accName]
-	for _, osa := range streams {
-		for _, oca := range osa.consumers {
-			oca.deleted = true
+	for osa := range js.streamAssignmentsOrInflightSeq(accName) {
+		for oca := range js.consumerAssignmentsOrInflightSeq(accName, osa.Config.Name) {
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client, Created: oca.Created}
 			meta.Propose(encodeDeleteConsumerAssignment(ca))
+			cc.trackInflightConsumerProposal(accName, osa.Config.Name, ca, true)
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client, Created: osa.Created}
 		meta.Propose(encodeDeleteStreamAssignment(sa))
+		cc.trackInflightStreamProposal(accName, sa, true)
 		ns++
 	}
-	js.mu.RUnlock()
+	js.mu.Unlock()
 
+	hasAccount := ns > 0
 	s.Noticef("Purge request for account %s (streams: %d, consumer: %d, hasAccount: %t)", accName, ns, nc, hasAccount)
 
 	resp.Initiated = true

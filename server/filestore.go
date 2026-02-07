@@ -5270,9 +5270,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	fsLock()
+	defer fsUnlock()
 
 	if fs.isClosed() {
-		fsUnlock()
 		return false, ErrStoreClosed
 	}
 	// If in encrypted mode negate secure rewrite here.
@@ -5286,16 +5286,20 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if seq <= fs.state.LastSeq {
 			err = ErrStoreMsgNotFound
 		}
-		fsUnlock()
 		return false, err
 	}
 
+	return fs.removeMsgFromBlock(mb, seq, secure, viaLimits)
+}
+
+// Remove a message from the given block, optionally rewriting the mb file.
+// fs lock should be held.
+func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLimits bool) (bool, error) {
 	mb.mu.Lock()
 
 	// See if we are closed or the sequence number is still relevant or if we know its deleted.
 	if mb.closed || seq < atomic.LoadUint64(&mb.first.seq) || mb.dmap.Exists(seq) {
 		mb.mu.Unlock()
-		fsUnlock()
 		return false, nil
 	}
 
@@ -5310,7 +5314,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 		didLoad = true
@@ -5336,7 +5339,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
-		fsUnlock()
 		// Mimic err behavior from above check to dmap. No error returned if already removed.
 		if err == errDeletedMsg {
 			err = nil
@@ -5353,12 +5355,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
 			finishedWithCache()
-			fsUnlock()
 			return false, err
 		}
 		if err := lmb.writeTombstone(sm.seq, sm.ts); err != nil {
 			finishedWithCache()
-			fsUnlock()
 			return false, err
 		}
 		mb.mu.Lock() // We'll need the lock back to carry on safely.
@@ -5377,13 +5377,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		if err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
-			fsUnlock()
 			return false, err
 		}
 	}
@@ -5484,15 +5482,47 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		delta := int64(msz)
 		cb(-1, -delta, seq, sm.subj)
 
-		if !needFSLock {
-			fs.mu.Lock()
-		}
-	} else if needFSLock {
-		// We acquired it so release it.
-		fs.mu.Unlock()
+		fs.mu.Lock()
 	}
 
 	return true, nil
+}
+
+// Remove all messages in the range [first, last]
+// Lock should be held.
+func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool) {
+	firstBlock := sort.Search(len(fs.blks), func(i int) bool {
+		return atomic.LoadUint64(&fs.blks[i].last.seq) >= first
+	})
+
+	if firstBlock > len(fs.blks) {
+		return
+	}
+
+	for i := firstBlock; i < len(fs.blks); {
+		mb := fs.blks[i]
+		mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
+		mbLastSeq := atomic.LoadUint64(&mb.last.seq)
+		if mbFirstSeq > last {
+			break
+		}
+		if mbFirstSeq >= first && mbLastSeq <= last && mb.numPriorTombs() == 0 {
+			// If this block stores no tombstones for previous blocks,
+			// and its sequences are within the range to be removed,
+			// we can get rid of the block entirely. To do that we use
+			// purgeMgsBlock, which also removes the block from fs.blks.
+			// After purgeMsgBlock, i will be the index of the following
+			// msgBlock, if any. Therefore, continue without incrementing i.
+			fs.purgeMsgBlock(mb)
+		} else {
+			from := max(first, mbFirstSeq)
+			to := min(last, mbLastSeq)
+			for seq := from; seq <= to; seq++ {
+				fs.removeMsgFromBlock(mb, seq, false, viaLimits)
+			}
+			i++
+		}
+	}
 }
 
 // Tests whether we should try to compact this block while inline removing msgs.
@@ -6498,10 +6528,16 @@ func (fs *fileStore) runMsgScheduling() {
 	}
 	fs.scheduling.running = true
 
-	scheduledMsgs := fs.scheduling.getScheduledMessages(func(seq uint64, smv *StoreMsg) *StoreMsg {
-		sm, _ := fs.msgForSeqLocked(seq, smv, false)
-		return sm
-	})
+	scheduledMsgs := fs.scheduling.getScheduledMessages(
+		func(seq uint64, smv *StoreMsg) *StoreMsg {
+			sm, _ := fs.msgForSeqLocked(seq, smv, false)
+			return sm
+		},
+		func(subj string, smv *StoreMsg) *StoreMsg {
+			sm, _ := fs.loadLastLocked(subj, smv)
+			return sm
+		},
+	)
 	if len(scheduledMsgs) > 0 {
 		fs.mu.Unlock()
 		for _, msg := range scheduledMsgs {
@@ -8244,8 +8280,12 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.loadLastLocked(subj, sm)
+}
 
-	if fs.lmb == nil {
+// Lock should be held.
+func (fs *fileStore) loadLastLocked(subj string, sm *StoreMsg) (lsm *StoreMsg, err error) {
+	if fs.isClosed() || fs.lmb == nil {
 		return nil, ErrStoreClosed
 	}
 
@@ -9592,6 +9632,13 @@ func (mb *msgBlock) tombsLocked() []msgId {
 	}
 
 	return tombs
+}
+
+// fs lock should be held.
+func (mb *msgBlock) numPriorTombs() int {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	return mb.numPriorTombsLocked()
 }
 
 // Return number of tombstones for messages prior to this msgBlock.
@@ -11246,10 +11293,15 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 	fs.readUnlockAllMsgBlocks()
 
 	for _, db := range needsCheck {
-		db.Range(func(dseq uint64) bool {
-			fs.removeMsg(dseq, false, true, false)
-			return true
-		})
+		if dr, ok := db.(*DeleteRange); ok {
+			first, last, _ := dr.State()
+			fs.removeMsgsInRange(first, last, true)
+		} else {
+			db.Range(func(dseq uint64) bool {
+				fs.removeMsg(dseq, false, true, false)
+				return true
+			})
+		}
 	}
 }
 

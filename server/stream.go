@@ -563,6 +563,7 @@ const (
 	JSSchedulePattern         = "Nats-Schedule"
 	JSScheduleTTL             = "Nats-Schedule-TTL"
 	JSScheduleTarget          = "Nats-Schedule-Target"
+	JSScheduleSource          = "Nats-Schedule-Source"
 )
 
 // Headers for published KV messages.
@@ -717,7 +718,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 	js.mu.RLock()
 	if isClustered {
-		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, cfg)
+		_, reserved = js.tieredStreamAndReservationCount(a.Name, tier, cfg)
 	}
 	if err := js.checkAllLimits(&selected, cfg, reserved, 0); err != nil {
 		js.mu.RUnlock()
@@ -2218,7 +2219,7 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 	js.mu.RLock()
 	defer js.mu.RUnlock()
 	if isClustered {
-		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[acc.Name], tier, &cfg)
+		_, reserved = js.tieredStreamAndReservationCount(acc.Name, tier, &cfg)
 	}
 	// reservation does not account for this stream, hence add the old value
 	if tier == _EMPTY_ && old.Replicas > 1 {
@@ -4931,6 +4932,14 @@ func getMessageScheduleTarget(hdr []byte) string {
 	return string(getHeader(JSScheduleTarget, hdr))
 }
 
+// Fast lookup of message schedule source.
+func getMessageScheduleSource(hdr []byte) string {
+	if len(hdr) == 0 {
+		return _EMPTY_
+	}
+	return string(getHeader(JSScheduleSource, hdr))
+}
+
 // Fast lookup of message scheduler.
 func getMessageScheduler(hdr []byte) string {
 	if len(hdr) == 0 {
@@ -5738,6 +5747,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
 					!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
 					apiErr := NewJSMessageSchedulesTargetInvalidError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				} else if scheduleSource := getMessageScheduleSource(hdr); scheduleSource != _EMPTY_ &&
+					(scheduleSource == scheduleTarget || scheduleSource == subject || !IsValidPublishSubject(scheduleSource)) {
+					apiErr := NewJSMessageSchedulesSourceInvalidError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
 						resp.Error = apiErr
@@ -6764,36 +6783,31 @@ type jsPubMsg struct {
 	o *consumer
 }
 
-var jsPubMsgPool sync.Pool
+var jsPubMsgPool = sync.Pool{
+	New: func() any {
+		return &jsPubMsg{}
+	},
+}
 
 func newJSPubMsg(dsubj, subj, reply string, hdr, msg []byte, o *consumer, seq uint64) *jsPubMsg {
-	var m *jsPubMsg
-	var buf []byte
-	pm := jsPubMsgPool.Get()
-	if pm != nil {
-		m = pm.(*jsPubMsg)
-		buf = m.buf[:0]
-		if hdr != nil {
-			hdr = append(m.hdr[:0], hdr...)
-		}
-	} else {
-		m = new(jsPubMsg)
+	m := getJSPubMsgFromPool()
+	if m.buf == nil {
+		m.buf = make([]byte, 0, len(hdr)+len(msg))
 	}
+	buf := append(m.buf[:0], hdr...)
+	buf = append(buf, msg...)
+	hdr = buf[:len(hdr):len(hdr)]
+	msg = buf[len(hdr):]
 	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
 	(*m) = jsPubMsg{dsubj, reply, StoreMsg{subj, hdr, msg, buf, seq, 0}, o}
-
 	return m
 }
 
 // Gets a jsPubMsg from the pool.
 func getJSPubMsgFromPool() *jsPubMsg {
-	pm := jsPubMsgPool.Get()
-	if pm != nil {
-		return pm.(*jsPubMsg)
-	}
-	return new(jsPubMsg)
+	return jsPubMsgPool.Get().(*jsPubMsg)
 }
 
 func (pm *jsPubMsg) returnToPool() {
@@ -6803,9 +6817,6 @@ func (pm *jsPubMsg) returnToPool() {
 	pm.subj, pm.dsubj, pm.reply, pm.hdr, pm.msg, pm.o = _EMPTY_, _EMPTY_, _EMPTY_, nil, nil, nil
 	if len(pm.buf) > 0 {
 		pm.buf = pm.buf[:0]
-	}
-	if len(pm.hdr) > 0 {
-		pm.hdr = pm.hdr[:0]
 	}
 	jsPubMsgPool.Put(pm)
 }
@@ -7821,7 +7832,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	if hasTier {
 		if isClustered {
 			js.mu.RLock()
-			_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, &cfg)
+			_, reserved = js.tieredStreamAndReservationCount(a.Name, tier, &cfg)
 			js.mu.RUnlock()
 		} else {
 			reserved = jsa.tieredReservation(tier, &cfg)
