@@ -1906,6 +1906,7 @@ func TestMQTTParseSub(t *testing.T) {
 		{"reserved flag", nil, 3, 0, "wrong subscribe reserved flags"},
 		{"ensure packet loaded", []byte{1, 2}, mqttSubscribeFlags, 10, io.ErrUnexpectedEOF.Error()},
 		{"error reading packet id", []byte{1}, mqttSubscribeFlags, 1, "reading packet identifier"},
+		{"packet id cannot be zero", []byte{0, 0}, mqttSubscribeFlags, 2, errMQTTPacketIdentifierIsZero.Error()},
 		{"missing filters", []byte{0, 1}, mqttSubscribeFlags, 2, "subscribe protocol must contain at least 1 topic filter"},
 		{"error reading topic", []byte{0, 1, 0, 2, 'a'}, mqttSubscribeFlags, 5, "topic filter"},
 		{"empty topic", []byte{0, 1, 0, 0}, mqttSubscribeFlags, 4, errMQTTTopicFilterCannotBeEmpty.Error()},
@@ -3968,6 +3969,7 @@ func TestMQTTParseUnsub(t *testing.T) {
 		{"reserved flag", nil, 3, 0, "wrong unsubscribe reserved flags"},
 		{"ensure packet loaded", []byte{1, 2}, mqttUnsubscribeFlags, 10, io.ErrUnexpectedEOF.Error()},
 		{"error reading packet id", []byte{1}, mqttUnsubscribeFlags, 1, "reading packet identifier"},
+		{"packet id cannot be zero", []byte{0, 0}, mqttUnsubscribeFlags, 2, errMQTTPacketIdentifierIsZero.Error()},
 		{"missing filters", []byte{0, 1}, mqttUnsubscribeFlags, 2, "subscribe protocol must contain at least 1 topic filter"},
 		{"error reading topic", []byte{0, 1, 0, 2, 'a'}, mqttUnsubscribeFlags, 5, "topic filter"},
 		{"empty topic", []byte{0, 1, 0, 0}, mqttUnsubscribeFlags, 4, errMQTTTopicFilterCannotBeEmpty.Error()},
@@ -7873,7 +7875,7 @@ func TestMQTTSparkbDeathHandling(t *testing.T) {
 	mcSub, rSub := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	defer mcSub.Close()
 	testMQTTCheckConnAck(t, rSub, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 0, mcSub, rSub, []*mqttFilter{{filter: "spBv1.0/ggg/#", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mcSub, rSub, []*mqttFilter{{filter: "spBv1.0/ggg/#", qos: 0}}, []byte{0})
 
 	for _, test := range []*struct {
 		name                  string
@@ -7983,7 +7985,7 @@ func TestMQTTSparkbBirthHandling(t *testing.T) {
 
 			// Subscribne at QoS2 to make sure the messages are posted at QoS0 and
 			// not truncated to sub QoS.
-			testMQTTSub(t, 0, test.mc, test.r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
+			testMQTTSub(t, 1, test.mc, test.r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
 		}
 
 		// connect the publisher
@@ -8007,7 +8009,7 @@ func TestMQTTSparkbBirthHandling(t *testing.T) {
 			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: fmt.Sprintf("sub-%v", i+100)}, o.MQTT.Host, o.MQTT.Port)
 			defer mc.Close()
 			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-			testMQTTSub(t, 0, mc, r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
+			testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
 			if test.flags&mqttPubFlagRetain != 0 {
 				testMQTTCheckPubMsg(t, mc, r, test.topic, test.flags, []byte(test.payload))
 			} else {
