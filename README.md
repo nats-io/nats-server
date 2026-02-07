@@ -1,3 +1,5 @@
+(This is for experimenting with features I need, see https://github.com/nats-io/nats-server/discussions/7677)
+
 <p align="center">
   <img src="logos/nats-horizontal-color.png" width="300" alt="NATS Logo">
 </p>
