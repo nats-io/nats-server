@@ -876,6 +876,7 @@ type leafNodeOption struct {
 	tlsFirstChanged    bool
 	compressionChanged bool
 	disabledChanged    bool
+	credentialsChanged bool
 }
 
 func (l *leafNodeOption) Apply(s *Server) {
@@ -975,6 +976,31 @@ func (l *leafNodeOption) Apply(s *Server) {
 				s.Noticef("Reloaded: LeafNode(s) enabled")
 			}
 		}
+	}
+	if l.credentialsChanged {
+		// Update credential fields in runtime config. New credentials take effect
+		// on next connection attempt; existing connections continue with old credentials
+		// until they reconnect.
+		s.mu.RLock()
+		max := len(opts.LeafNode.Remotes)
+		if lc := len(s.leafRemoteCfgs); lc < max {
+			max = lc
+		}
+		for i := range max {
+			lr := s.leafRemoteCfgs[i]
+			or := opts.LeafNode.Remotes[i]
+			// Copy all credential fields while holding lock to avoid partial updates
+			lr.Lock()
+			newUser, newPass := or.Username, or.Password
+			newToken, newCredFile := or.Token, or.CredentialsFile
+			lr.Username = newUser
+			lr.Password = newPass
+			lr.Token = newToken
+			lr.CredentialsFile = newCredFile
+			lr.Unlock()
+		}
+		s.mu.RUnlock()
+		s.Noticef("Reloaded: LeafNode remote credentials")
 	}
 }
 
@@ -1508,6 +1534,18 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 					break
 				}
 			}
+			// Check if credentials have changed for any remote.
+			var credentialsChanged bool
+			for i := range len(tmpOld.Remotes) {
+				oldR, newR := tmpOld.Remotes[i], tmpNew.Remotes[i]
+				if oldR.Username != newR.Username ||
+					oldR.Password != newR.Password ||
+					oldR.Token != newR.Token ||
+					oldR.CredentialsFile != newR.CredentialsFile {
+					credentialsChanged = true
+					break
+				}
+			}
 
 			// Need to do the same for remote leafnodes' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1601,6 +1639,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				tlsFirstChanged:    handshakeFirstChanged,
 				compressionChanged: compressionChanged,
 				disabledChanged:    disabledChanged,
+				credentialsChanged: credentialsChanged,
 			})
 		case "jetstream":
 			new := newValue.(bool)
@@ -1823,6 +1862,24 @@ func copyRemoteLNConfigForReloadCompare(current []*RemoteLeafOpts) []*RemoteLeaf
 		cp.Compression = CompressionOpts{}
 		// Reset disabled status
 		cp.Disabled = false
+		// Clear credential fields - they are handled separately for reload
+		cp.Username = _EMPTY_
+		cp.Password = _EMPTY_
+		cp.Token = _EMPTY_
+		cp.CredentialsFile = _EMPTY_
+		// Clear URL userinfo to allow credential changes in URLs
+		if len(cp.URLs) > 0 {
+			cp.URLs = make([]*url.URL, len(rcfg.URLs))
+			for i, u := range rcfg.URLs {
+				if u.User != nil {
+					newURL := *u
+					newURL.User = nil
+					cp.URLs[i] = &newURL
+				} else {
+					cp.URLs[i] = u
+				}
+			}
+		}
 		rlns = append(rlns, &cp)
 	}
 	return rlns
