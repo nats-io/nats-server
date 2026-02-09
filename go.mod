@@ -7,7 +7,7 @@ toolchain go1.24.13
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.5.0-default-no-op
 	github.com/google/go-tpm v0.9.8
-	github.com/klauspost/compress v1.18.3
+	github.com/klauspost/compress v1.18.4
 	github.com/nats-io/jwt/v2 v2.8.0
 	github.com/nats-io/nats.go v1.48.0
 	github.com/nats-io/nkeys v0.4.15
