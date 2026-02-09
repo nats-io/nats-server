@@ -4380,7 +4380,13 @@ func TestNRGProposeRemovePeerConcurrent(t *testing.T) {
 	require_NoError(t, err)
 
 	// Check that membership change is in progress.
-	require_True(t, n.MembershipChangeInProgress())
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if n.MembershipChangeInProgress() {
+			return nil
+		} else {
+			return errors.New("membership not in progress")
+		}
+	})
 
 	// Attempt to remove the second follower, should fail.
 	err = n.ProposeRemovePeer(locked[1].node().ID())
@@ -4627,18 +4633,19 @@ func TestNRGProposeRemovePeerAll(t *testing.T) {
 	followers := rg.followers()
 	require_Equal(t, len(followers), 2)
 
-	for _, follower := range followers {
+	peers := leader.node().Peers()
+	require_Equal(t, len(peers), 3)
+	for i, follower := range followers {
 		require_NoError(t, leader.node().ProposeRemovePeer(follower.node().ID()))
-		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
-			if leader.node().MembershipChangeInProgress() {
-				return errors.New("membership still in progress")
-			} else {
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			if peers = leader.node().Peers(); len(peers) == 2-i {
 				return nil
 			}
+			return errors.New("membership still in progress")
 		})
 	}
 
-	peers := leader.node().Peers()
+	peers = leader.node().Peers()
 	leaderID := leader.node().ID()
 
 	// The leader is the only one left...
@@ -4661,15 +4668,12 @@ func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
 
 	// Remove one follower
 	require_NoError(t, leader.node().ProposeRemovePeer(followers[0].node().ID()))
-	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
-		if leader.node().MembershipChangeInProgress() {
-			return errors.New("membership still in progress")
-		} else {
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if peers := leader.node().Peers(); len(peers) == 2 {
 			return nil
 		}
+		return errors.New("membership still in progress")
 	})
-
-	require_Equal(t, len(leader.node().Peers()), 2)
 
 	// Stop the leader and restart it.
 	// If bug is present: the leader resurrects the previously removed peer.

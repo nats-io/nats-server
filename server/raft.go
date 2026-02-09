@@ -943,24 +943,23 @@ func (n *raft) ForwardProposal(entry []byte) error {
 
 // ProposeAddPeer is called to add a peer to the group.
 func (n *raft) ProposeAddPeer(peer string) error {
-	n.Lock()
+	n.RLock()
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
-		n.Unlock()
+		n.RUnlock()
 		return errNotLeader
 	}
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.Unlock()
+		n.RUnlock()
 		return werr
 	}
 	if n.membChanging {
-		n.Unlock()
+		n.RUnlock()
 		return errMembershipChange
 	}
 	prop := n.prop
-	n.membChanging = true
-	n.Unlock()
+	n.RUnlock()
 
 	prop.push(newProposedEntry(newEntry(EntryAddPeer, []byte(peer)), _EMPTY_))
 	return nil
@@ -968,17 +967,17 @@ func (n *raft) ProposeAddPeer(peer string) error {
 
 // ProposeRemovePeer is called to remove a peer from the group.
 func (n *raft) ProposeRemovePeer(peer string) error {
-	n.Lock()
+	n.RLock()
 
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.Unlock()
+		n.RUnlock()
 		return werr
 	}
 
 	if n.State() != Leader {
 		subj := n.rpsubj
-		n.Unlock()
+		n.RUnlock()
 
 		// Forward the proposal to the leader
 		n.sendRPC(subj, _EMPTY_, []byte(peer))
@@ -986,18 +985,17 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	}
 
 	if n.membChanging {
-		n.Unlock()
+		n.RUnlock()
 		return errMembershipChange
 	}
 
 	if len(n.peers) <= 1 {
-		n.Unlock()
+		n.RUnlock()
 		return errRemoveLastNode
 	}
 
 	prop := n.prop
-	n.membChanging = true
-	n.Unlock()
+	n.RUnlock()
 
 	prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_))
 	return nil
@@ -2622,26 +2620,25 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		return
 	}
 
-	n.Lock()
+	n.RLock()
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader || !n.leaderState.Load() {
 		n.debug("Ignoring forwarded peer removal proposal, not leader")
-		n.Unlock()
+		n.RUnlock()
 		return
 	}
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.Unlock()
+		n.RUnlock()
 		return
 	}
 	if n.membChanging {
 		n.debug("Ignoring forwarded peer removal proposal, membership changing")
-		n.Unlock()
+		n.RUnlock()
 		return
 	}
 	prop := n.prop
-	n.membChanging = true
-	n.Unlock()
+	n.RUnlock()
 
 	// Need to copy since this is underlying client/route buffer.
 	peer := copyBytes(msg)
@@ -2717,11 +2714,13 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	n.Lock()
 	defer n.Unlock()
 
-	// Only makes sense to call this with entries that change membership
-	if !e.ChangesMembership() {
+	// Only makes sense to call this with entries that change membership.
+	// Also, ignore if we're already changing membership.
+	if !e.ChangesMembership() || n.membChanging {
 		return false
 	}
 
+	n.membChanging = true
 	err := n.sendAppendEntryLocked([]*Entry{e}, true)
 	if err != nil {
 		n.membChanging = false
