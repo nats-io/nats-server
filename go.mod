@@ -14,7 +14,7 @@ require (
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.6.0
 	golang.org/x/crypto v0.47.0
-	golang.org/x/sys v0.40.0
+	golang.org/x/sys v0.41.0
 	golang.org/x/time v0.14.0
 )
 
