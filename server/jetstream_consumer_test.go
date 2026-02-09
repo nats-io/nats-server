@@ -10696,3 +10696,71 @@ func TestJetStreamConsumerCheckNumPending(t *testing.T) {
 	o.mu.Unlock()
 	require_Equal(t, np, 1)
 }
+
+// https://github.com/nats-io/nats-server/issues/7779
+func TestJetStreamConsumerAllowOverlappingSubjectsIfNotSubset(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"event.>"},
+	})
+	require_NoError(t, err)
+
+	parts := []string{"foo", "bar", "baz", "oth"}
+	for _, start := range parts {
+		for _, end := range parts {
+			subj := fmt.Sprintf("event.%s.%s", start, end)
+			_, err = js.Publish(subj, nil)
+			require_NoError(t, err)
+		}
+	}
+
+	// First consumer isn't allowed, since 'event.*.foo' is a subset of 'event.>'.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable: "OVERLAP",
+		FilterSubjects: []string{
+			"event.>",
+			"event.*.foo",
+		},
+	})
+	require_Error(t, err, NewJSConsumerOverlappingSubjectFiltersError())
+
+	// The second consumer's subjects do overlap, but they are separate sets (that partially overlap).
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable: "DURABLE",
+		FilterSubjects: []string{
+			"event.foo.*",
+			"event.*.foo",
+		},
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "DURABLE", nats.BindStream("TEST"))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Confirm the consumer gets all messages in the expected order without duplicates.
+	batch := len(parts) * len(parts)
+	msgs, err := sub.Fetch(batch, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	var count int
+	for _, start := range parts {
+		for _, end := range parts {
+			if start != "foo" && end != "foo" {
+				continue
+			}
+			count++
+			require_True(t, len(msgs) >= count)
+			msg := msgs[count-1]
+			subj := fmt.Sprintf("event.%s.%s", start, end)
+			require_Equal(t, msg.Subject, subj)
+		}
+	}
+	require_Equal(t, count, 7)
+	require_Len(t, len(msgs), count)
+}
