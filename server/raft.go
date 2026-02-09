@@ -2622,20 +2622,26 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		return
 	}
 
-	n.RLock()
+	n.Lock()
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
 		n.debug("Ignoring forwarded peer removal proposal, not leader")
-		n.RUnlock()
+		n.Unlock()
 		return
 	}
-	prop, werr := n.prop, n.werr
-	n.RUnlock()
-
-	// Ignore if we have had a write error previous.
-	if werr != nil {
+	// Error if we had a previous write error.
+	if werr := n.werr; werr != nil {
+		n.Unlock()
 		return
 	}
+	if n.membChanging {
+		n.debug("Ignoring forwarded peer removal proposal, membership changing")
+		n.Unlock()
+		return
+	}
+	prop := n.prop
+	n.membChanging = true
+	n.Unlock()
 
 	// Need to copy since this is underlying client/route buffer.
 	peer := copyBytes(msg)
