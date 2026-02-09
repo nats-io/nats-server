@@ -38,10 +38,10 @@ jobs:
 
       - name: Install syft
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit deef08a0db64bfad603422135db61477b16cef56 = tag v0.22.1
-        uses: anchore/sbom-action/download-syft@deef08a0db64bfad603422135db61477b16cef56
+        # Commit 28d71544de8eaf1b958d335707167c5f783590ad = tag v0.22.2
+        uses: anchore/sbom-action/download-syft@28d71544de8eaf1b958d335707167c5f783590ad
         with:
-          syft-version: "v1.27.1"
+          syft-version: "v1.41.2"
 
       - name: Create release
         uses: goreleaser/goreleaser-action@v6
