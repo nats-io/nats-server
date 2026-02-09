@@ -4426,16 +4426,6 @@ func TestNRGUncommittedMembershipChangeOnNewLeader(t *testing.T) {
 	// become the new leader
 	n.term = 2
 	n.switchToLeader()
-	go n.runAsLeader()
-
-	// expect the membership to be still in progress
-	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
-		if n.MembershipChangeInProgress() {
-			return nil
-		} else {
-			return errors.New("membership not in progress")
-		}
-	})
 
 	err := n.ProposeRemovePeer(nats1)
 	require_Error(t, err, errMembershipChange)

@@ -2736,24 +2736,6 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	return true
 }
 
-// logContainsUncommittedMembershipChange returns true if the
-// log contains uncommitted entries that change membership.
-// Lock should be held.
-func (n *raft) logContainsUncommittedMembershipChange() (bool, error) {
-	for i := n.commit + 1; i <= n.pindex; i++ {
-		ae, err := n.loadEntry(i)
-		if err != nil {
-			return false, err
-		}
-		if len(ae.entries) > 0 && ae.entries[0].ChangesMembership() {
-			ae.returnToPool()
-			return true, nil
-		}
-		ae.returnToPool()
-	}
-	return false, nil
-}
-
 func (n *raft) runAsLeader() {
 	if n.State() == Closed {
 		return
@@ -2761,22 +2743,6 @@ func (n *raft) runAsLeader() {
 
 	n.Lock()
 	psubj, rpsubj := n.psubj, n.rpsubj
-
-	// Check if there are any uncommitted  membership changes.
-	// If so, we need to make sure we don't  propose any new
-	// ones until those are committed.
-	found, err := n.logContainsUncommittedMembershipChange()
-	if err != nil {
-		n.warn("Error while looking for membership changes in WAL: %v", err)
-		n.stepdownLocked(noLeader)
-		n.Unlock()
-		return
-
-	}
-	if found {
-		n.membChanging = true
-		n.debug("Log contains uncommitted membership change")
-	}
 
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
@@ -3986,6 +3952,8 @@ CONTINUE:
 				}
 			}
 		case EntryAddPeer:
+			// When receiving or restoring, mark membership as changing.
+			n.membChanging = true
 			if newPeer := string(e.Data); len(newPeer) == idLen {
 				// Track directly, but wait for commit to be official
 				if _, ok := n.peers[newPeer]; !ok {
@@ -3994,6 +3962,9 @@ CONTINUE:
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
 			}
+		case EntryRemovePeer:
+			// When receiving or restoring, mark membership as changing.
+			n.membChanging = true
 		}
 	}
 
@@ -4757,7 +4728,6 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.leaderState.Store(false)
 	n.leaderSince.Store(nil)
 	n.lxfer = false
-	n.membChanging = false
 
 	// Reset acks, we can't assume acks from a previous term are still valid in another term.
 	if len(n.acks) > 0 {
