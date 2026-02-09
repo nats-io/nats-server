@@ -6,4 +6,4 @@
 - The current and previous minor series are supported in terms of bug fixes and security patches.
 - Binaries are released via [GitHub Releases](https://github.com/nats-io/nats-server/releases) and Docker images are available as an [official image](https://hub.docker.com/_/nats).
 - Preview releases for the next minor version, e.g. 2.14.0, become available once feature development is complete.
-- [Nightly Docker images](https://hub.docker.com/r/synadia/nats-server/tags) of `main` are available for testing.
+- Tagged releases as well as nightly Docker images of `main` (for testing) are available in the [synadia/nats-server](https://hub.docker.com/r/synadia/nats-server/tags) Docker repository.
