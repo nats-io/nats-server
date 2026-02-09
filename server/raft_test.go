@@ -4438,6 +4438,36 @@ func TestNRGUncommittedMembershipChangeOnNewLeader(t *testing.T) {
 	require_Error(t, err, errMembershipChange)
 }
 
+func TestNRGUncommittedMembershipChangeGetsTruncated(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	aeMsg := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	entries = []*Entry{newEntry(EntryAddPeer, []byte(nats1))}
+	aeAddPeer := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+
+	// Set up a membership change.
+	n.processAppendEntry(aeMsg, n.aesub)
+	n.processAppendEntry(aeAddPeer, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_True(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.membChangeIndex, 2)
+
+	// If the entry containing the membership change isn't truncated, it should remain in progress.
+	n.truncateWAL(n.pterm, n.pindex)
+	require_True(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.membChangeIndex, 2)
+
+	// If the entry IS truncated, then it shouldn't be in progress anymore.
+	n.truncateWAL(n.pterm, n.pindex-1)
+	require_False(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.membChangeIndex, 0)
+}
+
 func TestNRGUncommittedMembershipChangeOnNewLeaderForwardedRemovePeerProposal(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
