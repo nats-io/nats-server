@@ -4455,6 +4455,7 @@ func TestNRGUncommittedMembershipChangeOnNewLeaderForwardedRemovePeerProposal(t 
 	// become the new leader
 	n.term = 2
 	n.switchToLeader()
+	n.leaderState.Store(true)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -4486,6 +4487,45 @@ func TestNRGUncommittedMembershipChangeOnNewLeaderForwardedRemovePeerProposal(t 
 	after, _, _ := n.Progress()
 	require_Equal(t, before, after)
 	require_True(t, n.MembershipChangeInProgress())
+}
+
+func TestNRGIgnoreForwardedProposalIfNotCaughtUpLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.term = 1
+	n.switchToLeader()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.runAsLeader()
+	}()
+	defer wg.Wait()
+
+	n.RLock()
+	// Although this server is the leader, mark it as not caught up yet.
+	n.leaderState.Store(false)
+	psubj := n.psubj
+	n.RUnlock()
+
+	nc, _ := jsClientConnect(t, n.s, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	// Forward a normal proposal to the new leader.
+	before, _, _ := n.Progress()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, err := nc.Request(psubj, nil, 100*time.Millisecond)
+		// Wait for the server to be subscribed and either respond or time out.
+		if err == nil || errors.Is(err, nats.ErrTimeout) {
+			return nil
+		}
+		return err
+	})
+	// The forwarded proposal should not be accepted.
+	time.Sleep(200 * time.Millisecond)
+	after, _, _ := n.Progress()
+	require_Equal(t, before, after)
 }
 
 func TestNRGProposeRemovePeerQuorum(t *testing.T) {

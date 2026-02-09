@@ -2624,7 +2624,7 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 
 	n.Lock()
 	// Check state under lock, we might not be leader anymore.
-	if n.State() != Leader {
+	if n.State() != Leader || !n.leaderState.Load() {
 		n.debug("Ignoring forwarded peer removal proposal, not leader")
 		n.Unlock()
 		return
@@ -2655,7 +2655,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 
 	n.RLock()
 	// Check state under lock, we might not be leader anymore.
-	if n.State() != Leader {
+	if n.State() != Leader || !n.leaderState.Load() {
 		n.debug("Ignoring forwarded proposal, not leader")
 		n.RUnlock()
 		return
