@@ -13180,9 +13180,7 @@ func TestFileStoreRemoveMsgsInRangeWithTombstones(t *testing.T) {
 
 func TestFileStoreCorrectChecksumAfterTruncate(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
-		created := time.Now()
-		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
-		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
 		defer fs.Stop()
 
