@@ -165,7 +165,7 @@ func urlsAreEqual(u1, u2 *url.URL) bool {
 // e.g. comma(834142) -> 834,142
 //
 // This function was copied from the github.com/dustin/go-humanize
-// package and is Copyright Dustin Sallings <dustin@spy.net>
+// package (MIT License) and is Copyright Dustin Sallings <dustin@spy.net>
 func comma(v int64) string {
 	sign := ""
 
@@ -195,6 +195,38 @@ func comma(v int64) string {
 	}
 	parts[j] = strconv.Itoa(int(v))
 	return sign + strings.Join(parts[j:], ",")
+}
+
+// bytesN produces a human-readable representation of an SI size.
+// n specifies the total number of digits to output, including the decimal part.
+// If n is less than or equal to the number of digits in the integer part, the decimal part will be omitted.
+//
+// bytesN(82854982, 3) -> 82.9 MB
+// bytesN(82854982, 4) -> 82.85 MB
+//
+// This function was copied from the github.com/dustin/go-humanize
+// package (MIT License) and is Copyright Dustin Sallings <dustin@spy.net>
+func bytesN(s uint64, n int) string {
+	if s < 10 {
+		return fmt.Sprintf("%dB", s)
+	}
+	sizes := []string{"B", "kB", "MB", "GB", "TB", "PB", "EB"}
+	e := math.Floor(math.Log(float64(s)) / math.Log(1000))
+	suffix := sizes[int(e)]
+	rounding := math.Pow10(n - 1)
+	val := math.Floor(float64(s)/math.Pow(1000, e)*rounding+0.5) / rounding
+	ff := "%%.%df%%s"
+	digits := 0
+	for n != 0 {
+		n /= 10
+		digits += 1
+	}
+	digits = n - digits
+	if digits < 0 {
+		digits = 0
+	}
+	f := fmt.Sprintf(ff, digits)
+	return fmt.Sprintf(f, val, suffix)
 }
 
 // Adds urlStr to the given map. If the string was already present, simply
