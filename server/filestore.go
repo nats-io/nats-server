@@ -11001,18 +11001,18 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		const minLen = 32
 		sfn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 		if buf, err := os.ReadFile(sfn); err == nil && len(buf) >= minLen {
+			fs.mu.Lock()
 			if fs.aek != nil {
 				ns := fs.aek.NonceSize()
 				buf, err = fs.aek.Open(nil, buf[:ns], buf[ns:len(buf)-highwayhash.Size64], nil)
 				if err == nil {
 					// Redo hash checksum at end on plaintext.
-					fs.mu.Lock()
 					hh.Reset()
 					hh.Write(buf)
 					buf = fs.hh.Sum(buf)
-					fs.mu.Unlock()
 				}
 			}
+			fs.mu.Unlock()
 			if err == nil && writeFile(msgPre+streamStreamStateFile, buf) != nil {
 				return
 			}
