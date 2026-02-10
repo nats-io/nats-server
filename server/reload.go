@@ -1659,7 +1659,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 					return nil, fmt.Errorf("config reload not supported for jetstream max memory and store")
 				}
 			}
-		case "jetstreammetacompact", "jetstreammetacompactsize":
+		case "jetstreammetacompact", "jetstreammetacompactsize", "jetstreammetacompactsync":
 			// Allowed at runtime but monitorCluster looks at s.opts directly, so no further work needed here.
 		case "websocket":
 			// Similar to gateways

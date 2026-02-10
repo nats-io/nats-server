@@ -165,7 +165,7 @@ func urlsAreEqual(u1, u2 *url.URL) bool {
 // e.g. comma(834142) -> 834,142
 //
 // This function was copied from the github.com/dustin/go-humanize
-// package and is Copyright Dustin Sallings <dustin@spy.net>
+// package (MIT License) and is Copyright Dustin Sallings <dustin@spy.net>
 func comma(v int64) string {
 	sign := ""
 
