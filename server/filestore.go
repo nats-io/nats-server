@@ -8883,7 +8883,9 @@ func (fs *fileStore) cacheLoads() uint64 {
 	var tl uint64
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
+		mb.mu.RLock()
 		tl += mb.cloads
+		mb.mu.RUnlock()
 	}
 	fs.mu.RUnlock()
 	return tl
@@ -8894,7 +8896,7 @@ func (fs *fileStore) cacheSize() uint64 {
 	var sz uint64
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
-		mb.mu.RLock()
+		mb.mu.Lock()
 		var needsCleanup bool
 		if mb.cache == nil {
 			mb.cache = mb.ecache.Value()
@@ -8906,7 +8908,7 @@ func (fs *fileStore) cacheSize() uint64 {
 		if needsCleanup {
 			mb.finishedWithCache()
 		}
-		mb.mu.RUnlock()
+		mb.mu.Unlock()
 	}
 	fs.mu.RUnlock()
 	return sz
