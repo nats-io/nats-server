@@ -5795,6 +5795,86 @@ func TestJetStreamClusterCheckFileStoreBlkSizes(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterWorkQueueBlockSizeWithMaxBytes(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// WorkQueue stream with large MaxBytes and MaxMsgs.
+	// Should use 4MB (defaultMediumBlockSize) blocks, not 8MB.
+	// MaxBytes needs to be > 32MB so that (maxBytes/4)+1 > 8MB,
+	// triggering the max block size cap.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "WQ_TEST",
+		Subjects:  []string{"wq.>"},
+		Retention: nats.WorkQueuePolicy,
+		Storage:   nats.FileStorage,
+		MaxBytes:  256 * 1024 * 1024, // 256MB
+		MaxMsgs:   1_000_000,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// Limits stream with same settings should use 8MB blocks.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "LIMITS_TEST",
+		Subjects: []string{"lim.>"},
+		Storage:  nats.FileStorage,
+		MaxBytes: 256 * 1024 * 1024, // 256MB
+		MaxMsgs:  1_000_000,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Interest stream with same settings should also use 8MB blocks.
+	// Unlike WorkQueue, Interest streams can accumulate messages when
+	// consumers lag, behaving more like Limits streams.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "INTEREST_TEST",
+		Subjects:  []string{"int.>"},
+		Retention: nats.InterestPolicy,
+		Storage:   nats.FileStorage,
+		MaxBytes:  256 * 1024 * 1024, // 256MB
+		MaxMsgs:   1_000_000,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	blkSize := func(fs *fileStore) uint64 {
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		return fs.fcfg.BlockSize
+	}
+
+	for _, s := range c.servers {
+		// WorkQueue stream should have medium block size (4MB).
+		mset, err := s.GlobalAccount().lookupStream("WQ_TEST")
+		require_NoError(t, err)
+		mset.mu.RLock()
+		fs := mset.store.(*fileStore)
+		mset.mu.RUnlock()
+		require_Equal(t, blkSize(fs), defaultMediumBlockSize)
+
+		// Limits stream should have large block size (8MB).
+		lset, err := s.GlobalAccount().lookupStream("LIMITS_TEST")
+		require_NoError(t, err)
+		lset.mu.RLock()
+		fs = lset.store.(*fileStore)
+		lset.mu.RUnlock()
+		require_Equal(t, blkSize(fs), defaultLargeBlockSize)
+
+		// Interest stream should have large block size (8MB).
+		iset, err := s.GlobalAccount().lookupStream("INTEREST_TEST")
+		require_NoError(t, err)
+		iset.mu.RLock()
+		fs = iset.store.(*fileStore)
+		iset.mu.RUnlock()
+		require_Equal(t, blkSize(fs), defaultLargeBlockSize)
+	}
+}
+
 func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
