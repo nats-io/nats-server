@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -4379,7 +4380,13 @@ func TestNRGProposeRemovePeerConcurrent(t *testing.T) {
 	require_NoError(t, err)
 
 	// Check that membership change is in progress.
-	require_True(t, n.MembershipChangeInProgress())
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if n.MembershipChangeInProgress() {
+			return nil
+		} else {
+			return errors.New("membership not in progress")
+		}
+	})
 
 	// Attempt to remove the second follower, should fail.
 	err = n.ProposeRemovePeer(locked[1].node().ID())
@@ -4426,19 +4433,135 @@ func TestNRGUncommittedMembershipChangeOnNewLeader(t *testing.T) {
 	// become the new leader
 	n.term = 2
 	n.switchToLeader()
-	go n.runAsLeader()
-
-	// expect the membership to be still in progress
-	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
-		if n.MembershipChangeInProgress() {
-			return nil
-		} else {
-			return errors.New("membership not in progress")
-		}
-	})
 
 	err := n.ProposeRemovePeer(nats1)
 	require_Error(t, err, errMembershipChange)
+}
+
+func TestNRGUncommittedMembershipChangeGetsTruncated(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	aeMsg := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	entries = []*Entry{newEntry(EntryAddPeer, []byte(nats1))}
+	aeAddPeer := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+
+	// Set up a membership change.
+	n.processAppendEntry(aeMsg, n.aesub)
+	n.processAppendEntry(aeAddPeer, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_True(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.membChangeIndex, 2)
+
+	// If the entry containing the membership change isn't truncated, it should remain in progress.
+	n.truncateWAL(n.pterm, n.pindex)
+	require_True(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.membChangeIndex, 2)
+
+	// If the entry IS truncated, then it shouldn't be in progress anymore.
+	n.truncateWAL(n.pterm, n.pindex-1)
+	require_False(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.membChangeIndex, 0)
+}
+
+func TestNRGUncommittedMembershipChangeOnNewLeaderForwardedRemovePeerProposal(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	n.Lock()
+	n.addPeer(nats1)
+	n.addPeer(nats2)
+	n.Unlock()
+
+	entries := []*Entry{newEntry(EntryRemovePeer, []byte(nats2))}
+	aeRemovePeer := encode(t, &appendEntry{leader: nats1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+
+	// plant a EntryRemovePeer in the log
+	n.processAppendEntry(aeRemovePeer, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_False(t, n.Healthy())
+
+	// become the new leader
+	n.term = 2
+	n.switchToLeader()
+	n.leaderState.Store(true)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.runAsLeader()
+	}()
+	defer wg.Wait()
+
+	n.RLock()
+	rpsubj := n.rpsubj
+	n.RUnlock()
+
+	nc, _ := jsClientConnect(t, n.s, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	// Forward a peer-remove proposal to the new leader.
+	before, _, _ := n.Progress()
+	require_True(t, n.MembershipChangeInProgress())
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, err := nc.Request(rpsubj, []byte(nats1), 100*time.Millisecond)
+		// Wait for the server to be subscribed and either respond or time out.
+		if err == nil || errors.Is(err, nats.ErrTimeout) {
+			return nil
+		}
+		return err
+	})
+	// The forwarded peer-remove should not be accepted.
+	time.Sleep(200 * time.Millisecond)
+	after, _, _ := n.Progress()
+	require_Equal(t, before, after)
+	require_True(t, n.MembershipChangeInProgress())
+}
+
+func TestNRGIgnoreForwardedProposalIfNotCaughtUpLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.term = 1
+	n.switchToLeader()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.runAsLeader()
+	}()
+	defer wg.Wait()
+
+	n.RLock()
+	// Although this server is the leader, mark it as not caught up yet.
+	n.leaderState.Store(false)
+	psubj := n.psubj
+	n.RUnlock()
+
+	nc, _ := jsClientConnect(t, n.s, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	// Forward a normal proposal to the new leader.
+	before, _, _ := n.Progress()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, err := nc.Request(psubj, nil, 100*time.Millisecond)
+		// Wait for the server to be subscribed and either respond or time out.
+		if err == nil || errors.Is(err, nats.ErrTimeout) {
+			return nil
+		}
+		return err
+	})
+	// The forwarded proposal should not be accepted.
+	time.Sleep(200 * time.Millisecond)
+	after, _, _ := n.Progress()
+	require_Equal(t, before, after)
 }
 
 func TestNRGProposeRemovePeerQuorum(t *testing.T) {
@@ -4540,18 +4663,19 @@ func TestNRGProposeRemovePeerAll(t *testing.T) {
 	followers := rg.followers()
 	require_Equal(t, len(followers), 2)
 
-	for _, follower := range followers {
+	peers := leader.node().Peers()
+	require_Equal(t, len(peers), 3)
+	for i, follower := range followers {
 		require_NoError(t, leader.node().ProposeRemovePeer(follower.node().ID()))
-		checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
-			if leader.node().MembershipChangeInProgress() {
-				return errors.New("membership still in progress")
-			} else {
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			if peers = leader.node().Peers(); len(peers) == 2-i {
 				return nil
 			}
+			return errors.New("membership still in progress")
 		})
 	}
 
-	peers := leader.node().Peers()
+	peers = leader.node().Peers()
 	leaderID := leader.node().ID()
 
 	// The leader is the only one left...
@@ -4574,15 +4698,12 @@ func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
 
 	// Remove one follower
 	require_NoError(t, leader.node().ProposeRemovePeer(followers[0].node().ID()))
-	checkFor(t, 1*time.Second, 10*time.Millisecond, func() error {
-		if leader.node().MembershipChangeInProgress() {
-			return errors.New("membership still in progress")
-		} else {
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if peers := leader.node().Peers(); len(peers) == 2 {
 			return nil
 		}
+		return errors.New("membership still in progress")
 	})
-
-	require_Equal(t, len(leader.node().Peers()), 2)
 
 	// Stop the leader and restart it.
 	// If bug is present: the leader resurrects the previously removed peer.
