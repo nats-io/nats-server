@@ -4019,7 +4019,11 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		mb.mu.Unlock()
 	}
 	// Make final adjustment.
-	total -= adjust
+	if adjust > total {
+		total = 0
+	} else {
+		total -= adjust
+	}
 
 	return total, validThrough, nil
 }
@@ -4353,7 +4357,11 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		mb.mu.Unlock()
 	}
 	// Make final adjustment.
-	total -= adjust
+	if adjust > total {
+		total = 0
+	} else {
+		total -= adjust
+	}
 
 	return total, validThrough, nil
 }
