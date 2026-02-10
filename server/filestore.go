@@ -4971,18 +4971,18 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 
 		bsubj := stringToBytes(subj)
 		if ss, ok := mb.fss.Find(bsubj); ok && ss != nil {
-			// Adjust first if it was not where we thought it should be.
-			if i != start {
-				if info, ok := fs.psim.Find(bsubj); ok {
-					info.fblk = i
-				}
-			}
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				mb.recalculateForSubj(subj, ss)
 			}
 			mb.mu.Unlock()
 			// Re-acquire fs lock
 			fs.mu.Lock()
+			// Adjust first if it was not where we thought it should be.
+			if i != start {
+				if info, ok := fs.psim.Find(bsubj); ok {
+					info.fblk = i
+				}
+			}
 			return ss.First, nil
 		}
 		// If we did not find it and we loaded this msgBlock try to expire as long as not the last.
