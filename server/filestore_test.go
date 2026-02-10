@@ -13211,3 +13211,43 @@ func TestFileStoreCorrectChecksumAfterTruncate(t *testing.T) {
 		require_True(t, bytes.Equal(fchkCmp, lchkCmp))
 	})
 }
+
+func TestFileStoreRecoverTTLAndScheduleStateAndCounters(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		created := time.Now()
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}, AllowMsgTTL: true, AllowMsgSchedules: true}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		ttl := int64(5)
+		sched := time.Now().Add(5 * time.Second)
+		hdr := genHeader(nil, JSMessageTTL, strconv.FormatInt(ttl, 10))
+		hdr = genHeader(hdr, JSSchedulePattern, fmt.Sprintf("@at %s", sched.Format(time.RFC3339)))
+		_, _, err = fs.StoreMsg("foo", hdr, nil, ttl)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		ttls := mb.ttls
+		schedules := mb.schedules
+		mb.mu.RUnlock()
+		require_Equal(t, ttls, 1)
+		require_Equal(t, schedules, 1)
+
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		mb = fs.getFirstBlock()
+		mb.mu.RLock()
+		ttls = mb.ttls
+		schedules = mb.schedules
+		mb.mu.RUnlock()
+		require_Equal(t, ttls, 1)
+		require_Equal(t, schedules, 1)
+	})
+}
