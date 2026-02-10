@@ -8965,6 +8965,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		if mb.cacheNotLoaded() {
 			if err := mb.loadMsgsWithLock(); err != nil {
 				mb.mu.Unlock()
+				fs.mu.Unlock()
 				return 0, err
 			}
 			shouldExpire = true
@@ -9068,6 +9069,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err := fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
+				fs.mu.Unlock()
 				return purged, err
 			}
 		}
@@ -9387,6 +9389,7 @@ SKIP:
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err := fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
+				fs.mu.Unlock()
 				return purged, err
 			}
 		}
@@ -9577,6 +9580,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// If we end up not needing to write tombstones, this block will be cleaned up at the end.
 	tmb, err := fs.newMsgBlockForWrite()
 	if err != nil {
+		fs.mu.Unlock()
 		return err
 	}
 
