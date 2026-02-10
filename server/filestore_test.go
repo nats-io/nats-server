@@ -13068,7 +13068,7 @@ func TestFileStoreRemoveMsgsInRangePartialBlocks(t *testing.T) {
 
 	// Remove everything
 	// empty block 21 20
-	fs.removeMsgsInRange(1, 20, true)
+	fs.removeMsgsInRange(1, 30, true)
 
 	require_Equal(t, len(fs.blks), 1)
 	require_Equal(t, atomic.LoadUint64(&fs.blks[0].first.seq), 21)
@@ -13166,4 +13166,14 @@ func TestFileStoreRemoveMsgsInRangeWithTombstones(t *testing.T) {
 	checkBlock(fs.blks[0], 1, 4, nil)
 	checkBlock(fs.blks[1], 13, 12, []uint64{4, 3, 2, 10})
 	checkBlock(fs.blks[2], 18, 20, []uint64{9, 11, 17})
+
+	// Remove everything (past the last sequence)
+	fs.removeMsgsInRange(1, 100, false)
+	require_Equal(t, len(fs.blks), 1)
+	checkBlock(fs.blks[0], 21, 20, []uint64{20})
+
+	// Attempt to remove the empty block
+	fs.removeMsgsInRange(1, 100, false)
+	require_Equal(t, len(fs.blks), 1)
+	checkBlock(fs.blks[0], 21, 20, []uint64{20})
 }
