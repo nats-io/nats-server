@@ -5974,10 +5974,10 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 		}
 	}
 
-	// If the block is compressed then we have to load it into memory
-	// and decompress it, truncate it and then write it back out.
+	// If the block is compressed/encrypted then we have to load it into memory
+	// and decompress/decrypt it, truncate it and then write it back out.
 	// Otherwise, truncate the file itself and close the descriptor.
-	if mb.cmp != NoCompression {
+	if mb.cmp != NoCompression || mb.bek != nil {
 		buf, err := mb.loadBlock(nil)
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to load block from disk: %w", err)
@@ -5989,7 +5989,7 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 			return 0, 0, fmt.Errorf("failed to decompress block: %w", err)
 		}
 		buf = buf[:eof]
-		copy(mb.lchk[0:], buf[:len(buf)-checksumSize])
+		copy(mb.lchk[0:], buf[len(buf)-checksumSize:])
 		// We did decompress but don't recompress the truncated buffer here since we're the last block
 		// and would otherwise have compressed data and allow to write uncompressed data in the same block.
 		if err = mb.atomicOverwriteFile(buf, false); err != nil {
