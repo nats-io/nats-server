@@ -11926,6 +11926,7 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	if o.aek != nil {
 		var err error
 		if buf, err = o.encryptState(buf); err != nil {
+			o.mu.Unlock()
 			return err
 		}
 	}
@@ -12291,6 +12292,7 @@ func (o *consumerFileStore) Stop() error {
 		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
 			if o.aek != nil {
 				if buf, err = o.encryptState(buf); err != nil {
+					o.mu.Unlock()
 					return err
 				}
 			}
