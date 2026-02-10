@@ -5491,11 +5491,16 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 // Remove all messages in the range [first, last]
 // Lock should be held.
 func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool) {
+	last = min(last, fs.state.LastSeq)
+	if first > last {
+		return
+	}
+
 	firstBlock := sort.Search(len(fs.blks), func(i int) bool {
 		return atomic.LoadUint64(&fs.blks[i].last.seq) >= first
 	})
 
-	if firstBlock > len(fs.blks) {
+	if firstBlock >= len(fs.blks) {
 		return
 	}
 
