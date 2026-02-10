@@ -12169,3 +12169,39 @@ func TestFileStoreSelectMsgBlockBinarySearch(t *testing.T) {
 		test()
 	})
 }
+
+func TestFileStoreCorrectChecksumAfterTruncate(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		created := time.Now()
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var fchkCmp []byte
+		var fchk [8]byte
+		for i := range 5 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			if i == 2 {
+				mb := fs.getFirstBlock()
+				mb.mu.RLock()
+				fchkCmp = mb.lastChecksum()
+				copy(fchk[:], mb.lchk[:])
+				mb.mu.RUnlock()
+			}
+		}
+		require_True(t, bytes.Equal(fchkCmp, fchk[:]))
+
+		// After truncating we should return to the checksum we stored above.
+		require_NoError(t, fs.Truncate(3))
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		lchkCmp := mb.lastChecksum()
+		var lchk [8]byte
+		copy(lchk[:], mb.lchk[:])
+		mb.mu.RUnlock()
+		require_True(t, bytes.Equal(lchkCmp, lchk[:]))
+		require_True(t, bytes.Equal(fchkCmp, lchkCmp))
+	})
+}
