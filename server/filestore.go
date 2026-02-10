@@ -1585,10 +1585,6 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 
 		hasHeaders := rl&hbit != 0
-		var ttl int64
-		if mb.fs.ttls != nil && len(hdr) > 0 {
-			ttl, _ = getMessageTTL(hdr)
-		}
 		// Clear any headers bit that could be set.
 		rl &^= hbit
 		dlen := int(rl) - msgHdrSize
@@ -1670,21 +1666,6 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		if !mb.dmap.Exists(seq) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
-			if ttl > 0 {
-				if mb.fs.ttls != nil {
-					expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
-					mb.fs.ttls.Add(seq, int64(expires))
-				}
-				// Need to count these regardless as we might want to enable TTLs
-				// later via UpdateConfig.
-				mb.ttls++
-			}
-			if mb.fs.scheduling != nil {
-				if schedule, ok := getMessageSchedule(hdr); ok && !schedule.IsZero() {
-					mb.fs.scheduling.add(seq, string(subj), schedule.UnixNano())
-					mb.schedules++
-				}
-			}
 		}
 
 		updateLast(seq, ts)
@@ -7350,7 +7331,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 	lbuf := uint32(len(buf))
 	var seq, ttls, schedules uint64
-	var sm StoreMsg // Used for finding TTL headers
+	var sm StoreMsg // Used for finding headers
 
 	// To ensure the sequence keeps moving up. As well as confirming our index
 	// is aligned with the mb's first and last sequence.
