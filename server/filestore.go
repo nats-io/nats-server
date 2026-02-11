@@ -1168,10 +1168,14 @@ func (fs *fileStore) recoverMsgBlock(index uint32) (*msgBlock, error) {
 	var lchk [8]byte
 	if mb.rbytes >= checksumSize {
 		if mb.bek != nil {
-			if buf, _ := mb.loadBlock(nil); len(buf) >= checksumSize {
+			// We pass nil, so get a buf from the block pool, we'll need to recycle it afterward.
+			buf, _ := mb.loadBlock(nil)
+			if len(buf) >= checksumSize {
 				mb.bek.XORKeyStream(buf, buf)
 				copy(lchk[0:], buf[len(buf)-checksumSize:])
 			}
+			// We can recycle it now.
+			recycleMsgBlockBuf(buf)
 		} else {
 			file.ReadAt(lchk[:], int64(mb.rbytes)-checksumSize)
 		}
