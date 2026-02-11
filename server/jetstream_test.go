@@ -22434,3 +22434,32 @@ func TestJetStreamCleanupNoInterestAboveThreshold(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamStoreFilterIsAll(t *testing.T) {
+	test := func(t *testing.T, storage nats.StorageType) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"c", "b", "a"},
+			Storage:  storage,
+		})
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if fs, ok := mset.store.(*fileStore); ok {
+			require_True(t, fs.filterIsAll([]string{"b", "a", "c"}))
+		} else if ms, ok := mset.store.(*memStore); ok {
+			require_True(t, ms.filterIsAll([]string{"b", "a", "c"}))
+		} else {
+			t.Fatal("unknown store type")
+		}
+	}
+	t.Run("Memory", func(t *testing.T) { test(t, nats.MemoryStorage) })
+	t.Run("File", func(t *testing.T) { test(t, nats.FileStorage) })
+}

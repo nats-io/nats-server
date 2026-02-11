@@ -13177,3 +13177,125 @@ func TestFileStoreRemoveMsgsInRangeWithTombstones(t *testing.T) {
 	require_Equal(t, len(fs.blks), 1)
 	checkBlock(fs.blks[0], 21, 20, []uint64{20})
 }
+
+func TestFileStoreCorrectChecksumAfterTruncate(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var fchkCmp []byte
+		var fchk [8]byte
+		for i := range 5 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			if i == 2 {
+				mb := fs.getFirstBlock()
+				mb.mu.RLock()
+				fchkCmp = mb.lastChecksum()
+				copy(fchk[:], mb.lchk[:])
+				mb.mu.RUnlock()
+			}
+		}
+		require_True(t, bytes.Equal(fchkCmp, fchk[:]))
+
+		// After truncating we should return to the checksum we stored above.
+		require_NoError(t, fs.Truncate(3))
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		lchkCmp := mb.lastChecksum()
+		var lchk [8]byte
+		copy(lchk[:], mb.lchk[:])
+		mb.mu.RUnlock()
+		require_True(t, bytes.Equal(lchkCmp, lchk[:]))
+		require_True(t, bytes.Equal(fchkCmp, lchkCmp))
+	})
+}
+
+func TestFileStoreRecoverTTLAndScheduleStateAndCounters(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		created := time.Now()
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}, AllowMsgTTL: true, AllowMsgSchedules: true}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		ttl := int64(5)
+		sched := time.Now().Add(5 * time.Second)
+		hdr := genHeader(nil, JSMessageTTL, strconv.FormatInt(ttl, 10))
+		hdr = genHeader(hdr, JSSchedulePattern, fmt.Sprintf("@at %s", sched.Format(time.RFC3339)))
+		_, _, err = fs.StoreMsg("foo", hdr, nil, ttl)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		ttls := mb.ttls
+		schedules := mb.schedules
+		mb.mu.RUnlock()
+		require_Equal(t, ttls, 1)
+		require_Equal(t, schedules, 1)
+
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		mb = fs.getFirstBlock()
+		mb.mu.RLock()
+		ttls = mb.ttls
+		schedules = mb.schedules
+		mb.mu.RUnlock()
+		require_Equal(t, ttls, 1)
+		require_Equal(t, schedules, 1)
+	})
+}
+
+func TestFileStoreCorruptionSetsHbitWithoutHeaders(t *testing.T) {
+	const (
+		KindMsgFromBuf = iota
+		KindIndexCacheBuf
+		KindRebuildState
+	)
+	test := func(t *testing.T, kind int) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			mb := fs.getFirstBlock()
+			fs.mu.Lock()
+			mb.mu.Lock()
+			err = mb.writeMsgRecordLocked(emptyRecordLen|hbit, 1, _EMPTY_, nil, nil, 0, false, false)
+			cache := mb.ecache.Value()
+			mb.mu.Unlock()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			require_NotNil(t, cache)
+
+			switch kind {
+			case KindMsgFromBuf:
+				mb.mu.Lock()
+				_, err = mb.msgFromBufNoCopy(cache.buf, nil, mb.hh)
+				mb.mu.Unlock()
+				require_True(t, strings.Contains(err.Error(), "sanity check failed"))
+			case KindIndexCacheBuf:
+				mb.mu.Lock()
+				err = mb.indexCacheBuf(cache.buf)
+				mb.mu.Unlock()
+				require_Error(t, err, errCorruptState)
+			case KindRebuildState:
+				require_NoError(t, mb.flushPendingMsgs())
+				_, _, err = mb.rebuildState()
+				require_True(t, err != nil)
+				require_True(t, strings.Contains(err.Error(), "sanity check failed"))
+			default:
+				t.Fatalf("unknown kind %d", kind)
+			}
+		})
+	}
+	t.Run("msgFromBuf", func(t *testing.T) { test(t, KindMsgFromBuf) })
+	t.Run("indexCacheBuf", func(t *testing.T) { test(t, KindIndexCacheBuf) })
+	t.Run("rebuildState", func(t *testing.T) { test(t, KindRebuildState) })
+}
