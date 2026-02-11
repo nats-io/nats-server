@@ -4873,11 +4873,15 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	const maxDeletes = 64 * 1024
 	mb := fs.lmb
 
+	var msgs uint64
 	numDeletes := int(num)
 	if mb != nil {
+		mb.mu.RLock()
 		numDeletes += mb.dmap.Size()
+		msgs = mb.msgs
+		mb.mu.RUnlock()
 	}
-	if mb == nil || numDeletes > maxDeletes && mb.msgs > 0 || mb.msgs > 0 && mb.blkSize()+emptyRecordLen > fs.fcfg.BlockSize {
+	if mb == nil || numDeletes > maxDeletes && msgs > 0 || msgs > 0 && mb.blkSize()+emptyRecordLen > fs.fcfg.BlockSize {
 		var err error
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
 			return err
