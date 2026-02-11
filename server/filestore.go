@@ -5608,15 +5608,16 @@ func (mb *msgBlock) compactWithFloor(floor uint64) error {
 
 	// Handle compression
 	if mb.cmp != NoCompression && len(nbuf) > 0 {
-		cbuf, err := mb.cmp.Compress(nbuf)
-		if err != nil {
+		originalSize := len(nbuf)
+		var err error
+		if nbuf, err = mb.cmp.Compress(nbuf); err != nil {
 			return err
 		}
 		meta := &CompressionInfo{
 			Algorithm:    mb.cmp,
-			OriginalSize: uint64(len(nbuf)),
+			OriginalSize: uint64(originalSize),
 		}
-		nbuf = append(meta.MarshalMetadata(), cbuf...)
+		nbuf = append(meta.MarshalMetadata(), nbuf...)
 	}
 
 	// Check for encryption.
@@ -7008,6 +7009,7 @@ func (mb *msgBlock) atomicOverwriteFile(buf []byte, allowCompress bool) error {
 		// The original buffer at this point is uncompressed, so we will now compress
 		// it if needed. Note that if the selected algorithm is NoCompression, the
 		// Compress function will just return the input buffer unmodified.
+		originalSize := len(buf)
 		if buf, err = alg.Compress(buf); err != nil {
 			return errorCleanup(fmt.Errorf("failed to compress block: %w", err))
 		}
@@ -7017,7 +7019,7 @@ func (mb *msgBlock) atomicOverwriteFile(buf []byte, allowCompress bool) error {
 		// writing metadata.
 		meta := &CompressionInfo{
 			Algorithm:    alg,
-			OriginalSize: uint64(len(buf)),
+			OriginalSize: uint64(originalSize),
 		}
 		buf = append(meta.MarshalMetadata(), buf...)
 	}
