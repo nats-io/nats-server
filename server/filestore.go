@@ -5329,18 +5329,15 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		}
 	}
 
-	var smv StoreMsg
-	var sm *StoreMsg
-	var err error
-	if secure {
-		// For a secure erase we can't use NoCopy, as eraseMsg will overwrite the
-		// cache and we won't be able to access sm.subj etc anymore later on.
-		sm, err = mb.cacheLookup(seq, &smv)
-	} else {
-		// For a non-secure erase it's fine to use NoCopy, as the cache won't change
-		// from underneath us.
-		sm, err = mb.cacheLookupNoCopy(seq, &smv)
-	}
+	var (
+		smv        StoreMsg
+		subj       string
+		ts         int64
+		lhdr, lmsg int
+		ttl        int64
+	)
+	// We don't use a copy as long as that's possible. When unlocking mb or erasing, we'll copy the subject.
+	sm, err := mb.cacheLookupNoCopy(seq, &smv)
 	if err != nil {
 		finishedWithCache()
 		mb.mu.Unlock()
@@ -5350,6 +5347,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			err = nil
 		}
 		return false, err
+	} else if sm != nil {
+		subj = sm.subj
+		ts = sm.ts
+		lhdr = len(sm.hdr)
+		lmsg = len(sm.msg)
+		ttl, _ = getMessageTTL(sm.hdr)
 	}
 
 	// Check if we need to write a deleted record tombstone.
@@ -5357,6 +5360,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	// when the last block is empty.
 	// If not via limits and not empty (empty writes tombstone below if last) write tombstone.
 	if !viaLimits && !isEmpty && sm != nil {
+		// Need to copy the subject since we unlock and re-acquire, and the cache could change.
+		subj = copyString(subj)
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
@@ -5364,7 +5369,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			fsUnlock()
 			return false, err
 		}
-		if err := lmb.writeTombstone(sm.seq, sm.ts); err != nil {
+		if err := lmb.writeTombstone(seq, ts); err != nil {
 			finishedWithCache()
 			fsUnlock()
 			return false, err
@@ -5373,7 +5378,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	// Grab size
-	msz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+	msz := fileStoreMsgSizeRaw(len(subj), lhdr, lmsg)
 
 	// Set cache timestamp for last remove.
 	mb.lrts = ats.AccessTime()
@@ -5388,6 +5393,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			fsUnlock()
 			return false, err
 		}
+		// Need to copy the subject, as eraseMsg will overwrite the cache and we won't
+		// be able to access sm.subj anymore later on.
+		subj = copyString(subj)
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
@@ -5426,13 +5434,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	mb.ensurePerSubjectInfoLoaded()
 
 	// If we are tracking multiple subjects here make sure we update that accounting.
-	mb.removeSeqPerSubject(sm.subj, seq)
-	fs.removePerSubject(sm.subj)
-	if fs.ttls != nil {
-		if ttl, err := getMessageTTL(sm.hdr); err == nil {
-			expires := time.Duration(sm.ts) + (time.Second * time.Duration(ttl))
-			fs.ttls.Remove(seq, int64(expires))
-		}
+	mb.removeSeqPerSubject(subj, seq)
+	fs.removePerSubject(subj)
+	if fs.ttls != nil && ttl > 0 {
+		expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
+		fs.ttls.Remove(seq, int64(expires))
 	}
 
 	if fifo {
@@ -5490,7 +5496,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		fs.mu.Unlock()
 		// Storage updates.
 		delta := int64(msz)
-		cb(-1, -delta, seq, sm.subj)
+		cb(-1, -delta, seq, subj)
 
 		if !needFSLock {
 			fs.mu.Lock()
