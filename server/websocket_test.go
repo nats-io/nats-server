@@ -1925,7 +1925,7 @@ func testNewWSClient(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Read
 }
 
 func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Reader, []byte, error) {
-	addr := fmt.Sprintf("%s:%d", o.host, o.port)
+	addr := net.JoinHostPort(o.host, fmt.Sprintf("%d", o.port))
 	wsc, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("Error creating ws connection: %v", err)
@@ -2225,7 +2225,7 @@ func TestWSTLSConnection(t *testing.T) {
 	s := RunServer(o)
 	defer s.Shutdown()
 
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 
 	for _, test := range []struct {
 		name   string
@@ -2285,7 +2285,7 @@ func TestWSTLSVerifyClientCert(t *testing.T) {
 	s := RunServer(o)
 	defer s.Shutdown()
 
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 
 	for _, test := range []struct {
 		name        string
@@ -2398,7 +2398,7 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 			s := RunServer(o)
 			defer s.Shutdown()
 
-			addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+			addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 			wsc, err := net.Dial("tcp", addr)
 			if err != nil {
 				t.Fatalf("Error creating ws connection: %v", err)
@@ -2499,7 +2499,7 @@ func TestWSHandshakeTimeout(t *testing.T) {
 	logger := &captureErrorLogger{errCh: make(chan string, 1)}
 	s.SetLogger(logger, false, false)
 
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
 	wsc, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Error creating ws connection: %v", err)
