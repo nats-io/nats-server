@@ -13251,3 +13251,51 @@ func TestFileStoreRecoverTTLAndScheduleStateAndCounters(t *testing.T) {
 		require_Equal(t, schedules, 1)
 	})
 }
+
+func TestFileStoreCorruptionSetsHbitWithoutHeaders(t *testing.T) {
+	const (
+		KindMsgFromBuf = iota
+		KindIndexCacheBuf
+		KindRebuildState
+	)
+	test := func(t *testing.T, kind int) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			mb := fs.getFirstBlock()
+			fs.mu.Lock()
+			mb.mu.Lock()
+			err = mb.writeMsgRecordLocked(emptyRecordLen|hbit, 1, _EMPTY_, nil, nil, 0, false, false)
+			cache := mb.ecache.Value()
+			mb.mu.Unlock()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			require_NotNil(t, cache)
+
+			switch kind {
+			case KindMsgFromBuf:
+				mb.mu.Lock()
+				_, err = mb.msgFromBufNoCopy(cache.buf, nil, mb.hh)
+				mb.mu.Unlock()
+				require_True(t, strings.Contains(err.Error(), "sanity check failed"))
+			case KindIndexCacheBuf:
+				mb.mu.Lock()
+				err = mb.indexCacheBuf(cache.buf)
+				mb.mu.Unlock()
+				require_Error(t, err, errCorruptState)
+			case KindRebuildState:
+				require_NoError(t, mb.flushPendingMsgs())
+				_, _, err = mb.rebuildState()
+				require_True(t, err != nil)
+				require_True(t, strings.Contains(err.Error(), "sanity check failed"))
+			default:
+				t.Fatalf("unknown kind %d", kind)
+			}
+		})
+	}
+	t.Run("msgFromBuf", func(t *testing.T) { test(t, KindMsgFromBuf) })
+	t.Run("indexCacheBuf", func(t *testing.T) { test(t, KindIndexCacheBuf) })
+	t.Run("rebuildState", func(t *testing.T) { test(t, KindRebuildState) })
+}
