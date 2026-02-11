@@ -79,7 +79,7 @@ jobs:
         # Commit 1481404843c368bc19ca9406f87d6e0fc97bdcfd = tag v7.0.0
         uses: golangci/golangci-lint-action@1481404843c368bc19ca9406f87d6e0fc97bdcfd
         with:
-          version: v2.3.1
+          version: v2.9.0
           skip-cache: true
           skip-save-cache: true
           args: --timeout=5m --config=.golangci.yml
