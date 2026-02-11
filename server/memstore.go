@@ -814,6 +814,7 @@ func (ms *memStore) filterIsAll(filters []string) bool {
 	}
 	// Sort so we can compare.
 	slices.Sort(filters)
+	slices.Sort(ms.cfg.Subjects)
 	for i, subj := range filters {
 		if !subjectIsSubsetMatch(ms.cfg.Subjects[i], subj) {
 			return false
