@@ -1038,7 +1038,7 @@ func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 			defer s.Shutdown()
 
 			host, port := test.url(o)
-			url := fmt.Sprintf("%s:%d", host, port)
+			url := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 			var conns []net.Conn
 
 			wg := sync.WaitGroup{}

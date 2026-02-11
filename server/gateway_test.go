@@ -518,7 +518,7 @@ func TestGatewayHeaderInfo(t *testing.T) {
 	s := runGatewayServer(o)
 	defer s.Shutdown()
 
-	gwconn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	gwconn, err := net.Dial("tcp", net.JoinHostPort(o.Gateway.Host, fmt.Sprintf("%d", o.Gateway.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
@@ -544,7 +544,7 @@ func TestGatewayHeaderInfo(t *testing.T) {
 	s = runGatewayServer(o)
 	defer s.Shutdown()
 
-	gwconn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	gwconn, err = net.Dial("tcp", net.JoinHostPort(o.Gateway.Host, fmt.Sprintf("%d", o.Gateway.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
@@ -6208,7 +6208,7 @@ func TestGatewayCloseTLSConnection(t *testing.T) {
 	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
 	waitForInboundGateways(t, sb1, 1, 2*time.Second)
 
-	endpoint := fmt.Sprintf("%s:%d", oa.Gateway.Host, oa.Gateway.Port)
+	endpoint := net.JoinHostPort(oa.Gateway.Host, fmt.Sprintf("%d", oa.Gateway.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)

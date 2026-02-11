@@ -369,7 +369,7 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 		}
 	}
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(o.Host, fmt.Sprintf("%d", o.Port)))
 	require_NoError(t, err)
 	defer conn.Close()
 	checkClientsCount(t, s, 1)
@@ -382,7 +382,7 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 	conn.Close()
 
 	// Now make sure we still do get timed out though.
-	conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
+	conn, err = net.Dial("tcp", net.JoinHostPort(o.Host, fmt.Sprintf("%d", o.Port)))
 	require_NoError(t, err)
 	defer conn.Close()
 	checkClientsCount(t, s, 1)
