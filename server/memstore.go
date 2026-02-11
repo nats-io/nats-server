@@ -1682,7 +1682,8 @@ func (ms *memStore) SubjectForSeq(seq uint64) (string, error) {
 		return _EMPTY_, ErrStoreMsgNotFound
 	}
 	if sm, ok := ms.msgs[seq]; ok {
-		return sm.subj, nil
+		// Copy the subject, as it's used elsewhere, and we've released the lock in the meantime.
+		return copyString(sm.subj), nil
 	}
 	return _EMPTY_, ErrStoreMsgNotFound
 }
