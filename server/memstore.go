@@ -793,6 +793,10 @@ func (ms *memStore) allLastSeqsLocked() ([]uint64, error) {
 
 	seqs := make([]uint64, 0, ms.fss.Size())
 	ms.fss.IterFast(func(subj []byte, ss *SimpleState) bool {
+		// Check if we need to recalculate. We only care about the last sequence.
+		if ss.lastNeedsUpdate {
+			ms.recalculateForSubj(bytesToString(subj), ss)
+		}
 		seqs = append(seqs, ss.Last)
 		return true
 	})
@@ -1733,6 +1737,10 @@ func (ms *memStore) loadLastLocked(subject string, smp *StoreMsg) (*StoreMsg, er
 	} else if subjectIsLiteral(subject) {
 		var ss *SimpleState
 		if ss, ok = ms.fss.Find(stringToBytes(subject)); ok && ss.Msgs > 0 {
+			// Check if we need to recalculate. We only care about the last sequence.
+			if ss.lastNeedsUpdate {
+				ms.recalculateForSubj(subject, ss)
+			}
 			sm, ok = ms.msgs[ss.Last]
 		}
 	} else if ss := ms.filteredStateLocked(1, subject, true); ss.Msgs > 0 {

@@ -888,3 +888,39 @@ func TestStoreGetSeqFromTimeWithTrailingDeletes(t *testing.T) {
 		},
 	)
 }
+
+func TestFileStoreMultiLastSeqsAndLoadLastMsgWithLazySubjectState(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}},
+		func(t *testing.T, fs StreamStore) {
+			for range 3 {
+				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+			seqs, err := fs.MultiLastSeqs([]string{"foo"}, 0, 0)
+			require_NoError(t, err)
+			require_Equal(t, len(seqs), 1)
+			require_Equal(t, seqs[0], 3)
+
+			_, err = fs.RemoveMsg(3)
+			require_NoError(t, err)
+			seqs, err = fs.MultiLastSeqs([]string{"foo"}, 0, 0)
+			require_NoError(t, err)
+			require_Equal(t, len(seqs), 1)
+			require_Equal(t, seqs[0], 2)
+
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			sm, err := fs.LoadLastMsg("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, sm.seq, 4)
+
+			_, err = fs.RemoveMsg(4)
+			require_NoError(t, err)
+			sm, err = fs.LoadLastMsg("foo", nil)
+			require_NoError(t, err)
+			require_Equal(t, sm.seq, 2)
+		},
+	)
+}

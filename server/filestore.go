@@ -3519,6 +3519,11 @@ func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
 			// Check if already been processed and accounted.
 			if _, ok := subs[string(bsubj)]; !ok {
+				// Check if we need to recalculate. We only care about the last sequence.
+				if ss.lastNeedsUpdate {
+					// mb is already loaded into the cache so should be fast-ish.
+					mb.recalculateForSubj(bytesToString(bsubj), ss)
+				}
 				seqs = append(seqs, ss.Last)
 				subs[string(bsubj)] = struct{}{}
 			}
@@ -8332,6 +8337,11 @@ func (fs *fileStore) loadLastLocked(subj string, sm *StoreMsg) (lsm *StoreMsg, e
 		// Optimize if subject is not a wildcard.
 		if !wc {
 			if ss, ok := mb.fss.Find(stringToBytes(subj)); ok && ss != nil {
+				// Check if we need to recalculate. We only care about the last sequence.
+				if ss.lastNeedsUpdate {
+					// mb is already loaded into the cache so should be fast-ish.
+					mb.recalculateForSubj(subj, ss)
+				}
 				l = ss.Last
 			}
 		}
