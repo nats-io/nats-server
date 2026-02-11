@@ -1685,7 +1685,7 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		} else if fseq == 0 && maxTombstoneSeq > 0 {
 			atomic.StoreUint64(&mb.first.seq, maxTombstoneSeq+1)
 			mb.first.ts = 0
-			if mb.last.seq == 0 {
+			if lseq := atomic.LoadUint64(&mb.last.seq); lseq == 0 {
 				atomic.StoreUint64(&mb.last.seq, maxTombstoneSeq)
 				mb.last.ts = maxTombstoneTs
 			}
@@ -1717,13 +1717,15 @@ func (fs *fileStore) debug(format string, args ...any) {
 
 // Track local state but ignore timestamps here.
 func updateTrackingState(state *StreamState, mb *msgBlock) {
+	first := atomic.LoadUint64(&mb.first.seq)
+	last := atomic.LoadUint64(&mb.last.seq)
 	if state.FirstSeq == 0 {
-		state.FirstSeq = mb.first.seq
-	} else if mb.first.seq < state.FirstSeq && mb.first.ts != 0 {
-		state.FirstSeq = mb.first.seq
+		state.FirstSeq = first
+	} else if first < state.FirstSeq && mb.first.ts != 0 {
+		state.FirstSeq = first
 	}
-	if mb.last.seq > state.LastSeq {
-		state.LastSeq = mb.last.seq
+	if last > state.LastSeq {
+		state.LastSeq = last
 	}
 	state.Msgs += mb.msgs
 	state.Bytes += mb.bytes
@@ -2291,7 +2293,7 @@ func (fs *fileStore) recoverMsgs() error {
 			// This is a truncate block with possibly no index. If the OS got shutdown
 			// out from underneath of us this is possible.
 			mb.mu.Lock()
-			if mb.first.seq == 0 {
+			if atomic.LoadUint64(&mb.first.seq) == 0 {
 				mb.dirtyCloseWithRemove(true)
 				fs.removeMsgBlockFromList(mb)
 				mb.mu.Unlock()
@@ -2560,6 +2562,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 	fs.selectNextFirst()
 
 	// Check if we have no messages and blocks left.
+
 	if fs.lmb == nil && last.seq != 0 {
 		if lmb, _ := fs.newMsgBlockForWrite(); lmb != nil {
 			fs.writeTombstone(last.seq, last.ts)
@@ -4121,7 +4124,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		var shouldExpire bool
 		var updateLLTS bool
 		// We need to walk this block to correct accounting from above.
-		if sseq > mb.first.seq {
+		if sseq > atomic.LoadUint64(&mb.first.seq) {
 			// Track the ones we add back in case more than one.
 			seen := make(map[string]bool)
 			// We need to discount the total by subjects seen before sseq, but also add them right back in if they are >= sseq for this blk.
