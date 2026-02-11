@@ -8511,26 +8511,25 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			maxc = selectedLimits.MaxConsumers
 		}
 		if maxc > 0 {
-			// Don't count DIRECTS.
-			total := 0
-			for ca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
-				if ca.unsupported != nil {
-					continue
+			// If the consumer name is specified and we think it already exists, then
+			// we're likely updating an existing consumer, so don't count it. Otherwise
+			// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
+			if oname == _EMPTY_ || js.consumerAssignmentOrInflight(acc.Name, stream, oname) == nil {
+				// Don't count DIRECTS.
+				total := 0
+				for ca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
+					if ca.unsupported != nil {
+						continue
+					}
+					if ca.Config != nil && !ca.Config.Direct {
+						total++
+					}
 				}
-				// If the consumer name is specified and we think it already exists, then
-				// we're likely updating an existing consumer, so don't count it. Otherwise
-				// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
-				if oname != _EMPTY_ && ca.Name == oname {
-					continue
+				if total >= maxc {
+					resp.Error = NewJSMaximumConsumersLimitError()
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+					return
 				}
-				if ca.Config != nil && !ca.Config.Direct {
-					total++
-				}
-			}
-			if total >= maxc {
-				resp.Error = NewJSMaximumConsumersLimitError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-				return
 			}
 		}
 	}
