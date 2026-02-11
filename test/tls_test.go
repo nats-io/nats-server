@@ -866,7 +866,7 @@ func TestTLSConnectionTimeout(t *testing.T) {
 	defer srv.Shutdown()
 
 	// Dial with normal TCP
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 	conn, err := net.Dial("tcp", endpoint)
 	if err != nil {
 		t.Fatalf("Could not connect to %q", endpoint)

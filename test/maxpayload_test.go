@@ -30,7 +30,7 @@ func TestMaxPayload(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/override.conf")
 	defer srv.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 	nc, err := nats.Connect(fmt.Sprintf("nats://%s/", endpoint))
 	if err != nil {
 		t.Fatalf("Could not connect to server: %v", err)
