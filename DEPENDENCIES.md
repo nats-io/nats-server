@@ -13,7 +13,6 @@ This file lists the dependencies used in this repository.
 | github.com/nats-io/nats.go | Apache License 2.0 |
 | github.com/nats-io/nkeys | Apache License 2.0 |
 | github.com/nats-io/nuid  | Apache License 2.0 |
-| go.uber.org/automaxprocs | MIT License |
 | golang.org/x/crypto | BSD 3-Clause "New" or "Revised" License |
 | golang.org/x/sys | BSD 3-Clause "New" or "Revised" License |
 | golang.org/x/time | BSD 3-Clause "New" or "Revised" License |
