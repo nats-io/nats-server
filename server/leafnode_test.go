@@ -986,7 +986,7 @@ func TestLeafNodeCloseTLSConnection(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.LeafNode.Host, opts.LeafNode.Port)
+	endpoint := net.JoinHostPort(opts.LeafNode.Host, fmt.Sprintf("%d", opts.LeafNode.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)

@@ -1264,7 +1264,7 @@ func TestAuthorizationTimeout(t *testing.T) {
 	s := RunServer(serverOptions)
 	defer s.Shutdown()
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", serverOptions.Host, serverOptions.Port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(serverOptions.Host, fmt.Sprintf("%d", serverOptions.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
@@ -1358,7 +1358,7 @@ func TestClientCloseTLSConnection(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)
@@ -2183,7 +2183,7 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	c, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
 	if err != nil {
 		t.Fatalf("Error connecting: %v", err)
 	}

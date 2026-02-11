@@ -147,7 +147,7 @@ func TestClosedAuthorizationTimeout(t *testing.T) {
 	s := RunServer(serverOptions)
 	defer s.Shutdown()
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", serverOptions.Host, serverOptions.Port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(serverOptions.Host, fmt.Sprintf("%d", serverOptions.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
@@ -224,7 +224,7 @@ func TestClosedMaxPayload(t *testing.T) {
 	defer s.Shutdown()
 
 	opts := s.getOpts()
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 
 	conn, err := net.DialTimeout("tcp", endpoint, time.Second)
 	if err != nil {
