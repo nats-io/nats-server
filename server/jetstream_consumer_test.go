@@ -1575,7 +1575,8 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 		if i%2 == 0 {
 			msg.Header.Add("Some-Header", "Value")
 		}
-		js.PublishMsg(msg)
+		_, err = js.PublishMsg(msg)
+		require_NoError(t, err)
 	}
 
 	req := JSApiConsumerGetNextRequest{Batch: 3, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{
@@ -1584,13 +1585,15 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	reqb, _ := json.Marshal(req)
 	reply := "ONE"
 	replies, err := nc.SubscribeSync(reply)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
 	require_NoError(t, err)
+	defer replies.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb))
 
 	reply2 := "TWO"
 	replies2, err := nc.SubscribeSync(reply2)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
 	require_NoError(t, err)
+	defer replies2.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb))
 
 	// This is the first Pull Request, so it should become the pinned one.
 	msg, err := replies.NextMsg(time.Second)
@@ -1623,8 +1626,9 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	reqBad, err := json.Marshal(req)
 	require_NoError(t, err)
 	replies3, err := nc.SubscribeSync(reply)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqBad)
 	require_NoError(t, err)
+	defer replies3.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqBad))
 
 	// and make sure we got error telling us it's wrong ID.
 	msg, err = replies3.NextMsg(time.Second)
@@ -1640,8 +1644,9 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	reqb, _ = json.Marshal(req)
 	reply = "FOUR"
 	replies4, err := nc.SubscribeSync(reply)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
 	require_NoError(t, err)
+	defer replies4.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb))
 
 	// and check that we got a message.
 	msg, err = replies4.NextMsg(time.Second)
@@ -1658,7 +1663,9 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	reqb, _ = json.Marshal(req)
 	reply = "FIVE"
 	replies5, err := nc.SubscribeSync(reply)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+	require_NoError(t, err)
+	defer replies5.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb))
 
 	checkFor(t, 20*time.Second, 1*time.Second, func() error {
 		_, err = replies5.NextMsg(500 * time.Millisecond)
@@ -1693,11 +1700,103 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	require_Equal(t, fmt.Sprintf("%s.TEST.C", JSAdvisoryConsumerUnpinnedPre), advisory.Subject)
 
 	replies6, err := nc.SubscribeSync(reply)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqBad)
 	require_NoError(t, err)
+	defer replies6.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqBad))
 
 	_, err = replies6.NextMsg(time.Second * 5)
 	require_NoError(t, err)
+}
+
+func TestJetStreamConsumerPinnedUnsetsAfterAtMostPinnedTTL(t *testing.T) {
+	test := func(t *testing.T, publish bool) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		acc := s.GlobalAccount()
+
+		mset, err := acc.addStream(&StreamConfig{
+			Name:      "TEST",
+			Subjects:  []string{"foo"},
+			Retention: LimitsPolicy,
+		})
+		require_NoError(t, err)
+
+		if publish {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+
+		o, err := mset.addConsumer(&ConsumerConfig{
+			Durable:        "C",
+			FilterSubject:  "foo",
+			PriorityGroups: []string{"A"},
+			PriorityPolicy: PriorityPinnedClient,
+			AckPolicy:      AckExplicit,
+			PinnedTTL:      time.Second,
+		})
+		require_NoError(t, err)
+
+		// We have a too large expiry with respect to the PinnedTTL, we can only keep the pin for 2xPinnedTTL at most.
+		req := JSApiConsumerGetNextRequest{Batch: 2, Expires: 2 * time.Second, PriorityGroup: PriorityGroup{Group: "A"}}
+		reqb, err := json.Marshal(req)
+		require_NoError(t, err)
+		reply := "ONE"
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		defer sub.Drain()
+		require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), reply, reqb))
+
+		// The pin should be held for PinnedTTL at most, especially since the expiry is way larger.
+		var pinId string
+		start := time.Now()
+		for time.Since(start) < 750*time.Millisecond {
+			o.mu.RLock()
+			currentPinId := o.currentPinId
+			o.mu.RUnlock()
+			if pinId == _EMPTY_ {
+				pinId = currentPinId
+			} else {
+				// The pin ID shouldn't change.
+				require_Equal(t, pinId, currentPinId)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// If a message was published, we should be pinned when this message was delivered.
+		if publish {
+			require_NotEqual(t, pinId, _EMPTY_)
+
+			// Wait some time so we can check we're not unpinned. After PinnedTTL it should be reset,
+			// even if the client's expiry was longer or its pull request is still there.
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		// If we didn't get any messages delivered (or after timeout) the consumer should be unpinned.
+		o.mu.RLock()
+		currentPinId := o.currentPinId
+		o.mu.RUnlock()
+		require_Equal(t, currentPinId, _EMPTY_)
+
+		// Finally, check that:
+		// - We received the published message first (if it was published).
+		// - We receive the request timeout for the pull expiring.
+		if publish {
+			msg, err := sub.NextMsg(200 * time.Millisecond)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Nats-Pin-Id"), pinId)
+			require_Equal(t, msg.Subject, "foo")
+		}
+		msg, err := sub.NextMsg(3 * time.Second)
+		require_NoError(t, err)
+		require_Equal(t, msg.Header.Get("Status"), "408")
+		require_Equal(t, msg.Header.Get("Description"), "Request Timeout")
+	}
+	t.Run("Publish", func(t *testing.T) { test(t, true) })
+	t.Run("NoMessages", func(t *testing.T) { test(t, false) })
 }
 
 func TestJetStreamConsumerPinnedUnsubscribeOnPinned(t *testing.T) {
@@ -1734,14 +1833,15 @@ func TestJetStreamConsumerPinnedUnsubscribeOnPinned(t *testing.T) {
 	reqb, _ := json.Marshal(req)
 	reply := "ONE"
 	replies, err := nc.SubscribeSync(reply)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
 	require_NoError(t, err)
+	defer replies.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb))
 
 	reply2 := "TWO"
 	replies2, err := nc.SubscribeSync(reply2)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
 	require_NoError(t, err)
-	defer replies2.Unsubscribe()
+	defer replies2.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb))
 
 	// This is the first Pull Request, so it should become the pinned one.
 	msg, err := replies.NextMsg(time.Second)
@@ -1815,13 +1915,15 @@ func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
 	reqb, _ := json.Marshal(req)
 	reply := "ONE"
 	replies, err := nc.SubscribeSync(reply)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
 	require_NoError(t, err)
+	defer replies.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb))
 
 	reply2 := "TWO"
 	replies2, err := nc.SubscribeSync(reply2)
-	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
 	require_NoError(t, err)
+	defer replies2.Drain()
+	require_NoError(t, nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb))
 
 	sendStreamMsg(t, nc, "foo", "data")
 	sendStreamMsg(t, nc, "foo", "data")
