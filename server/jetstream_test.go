@@ -26,6 +26,7 @@ import (
 	"math"
 	"math/big"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,7 +41,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/server/archive"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
@@ -3144,7 +3147,7 @@ func TestJetStreamCheckBytesLimitsOverflow(t *testing.T) {
 
 	// addBytes + maxBytesOffset overflow.
 	// In the snapshot-restore path, maxBytesOffset (bc) accumulates from
-	// hdr.Size and can be non-zero when addBytes is near MaxInt64.
+	// hdr.HeaderSize + hdr.PayloadSize and can be non-zero when addBytes is near MaxInt64.
 	// Previously this silently wrapped negative, bypassing the limit.
 	js.mu.RLock()
 	err := js.checkBytesLimits(limits, _EMPTY_, math.MaxInt64, 1, FileStorage, false, 0, 1)
@@ -3258,7 +3261,9 @@ func TestJetStreamSnapshots(t *testing.T) {
 	var obs []obsi
 	for i := 1; i <= numConsumers; i++ {
 		cname := fmt.Sprintf("WQ-%d", i)
-		o, err := mset.addConsumer(workerModeConfig(cname))
+		ocfg := workerModeConfig(cname)
+		ocfg.MemoryStorage = i == 1
+		o, err := mset.addConsumer(ocfg)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -3278,49 +3283,43 @@ func TestJetStreamSnapshots(t *testing.T) {
 	nc.Flush()
 
 	// Snapshot state of the stream and consumers.
-	info := info{mset.config(), mset.state(), obs}
+	sc, ss, snapshot := performStreamBackup(t, nc, "MY-STREAM")
 
-	sr, err := mset.snapshot(5*time.Second, false, true)
-	if err != nil {
-		t.Fatalf("Error getting snapshot: %v", err)
-	}
-	zr := sr.Reader
-	snapshot, err := io.ReadAll(zr)
-	if err != nil {
-		t.Fatalf("Error reading snapshot")
-	}
 	// Try to restore from snapshot with current stream present, should error.
-	r := bytes.NewReader(snapshot)
-	if _, err := acc.RestoreStream(&info.cfg, r); err == nil {
-		t.Fatalf("Expected an error trying to restore existing stream")
-	} else if !strings.Contains(err.Error(), "name already in use") {
-		t.Fatalf("Incorrect error received: %v", err)
-	}
+	require_False(t, performStreamRestore(t, nc, sc, ss, snapshot))
+
 	// Now delete so we can restore.
 	pusage := acc.JetStreamUsage()
 	mset.delete()
-	r.Reset(snapshot)
 
-	mset, err = acc.RestoreStream(&info.cfg, r)
+	require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
+
+	mset, err = acc.lookupStream("MY-STREAM")
 	require_NoError(t, err)
 	// Now compare to make sure they are equal.
-	if nusage := acc.JetStreamUsage(); !reflect.DeepEqual(nusage, pusage) {
+	// Have to ignore API calls here, as we performed an API call to restore the stream.
+	nusage := acc.JetStreamUsage()
+	pusage.API, nusage.API = JetStreamAPIStats{}, JetStreamAPIStats{}
+	if !reflect.DeepEqual(nusage, pusage) {
 		t.Fatalf("Usage does not match after restore: %+v vs %+v", nusage, pusage)
 	}
-	if state := mset.state(); !reflect.DeepEqual(state, info.state) {
-		t.Fatalf("State does not match: %+v vs %+v", state, info.state)
+	if state := mset.state(); !reflect.DeepEqual(state, ss) {
+		t.Fatalf("State does not match: %+v vs %+v", state, ss)
 	}
-	if cfg := mset.config(); !reflect.DeepEqual(cfg, info.cfg) {
-		t.Fatalf("Configs do not match: %+v vs %+v", cfg, info.cfg)
+	if cfg := mset.config(); !reflect.DeepEqual(cfg, sc) {
+		t.Fatalf("Configs do not match: %+v vs %+v", cfg, sc)
 	}
 	// Consumers.
-	if mset.numConsumers() != len(info.obs) {
-		t.Fatalf("Number of consumers do not match: %d vs %d", mset.numConsumers(), len(info.obs))
+	if mset.numConsumers() != ss.Consumers {
+		t.Fatalf("Number of consumers do not match: %d vs %d", mset.numConsumers(), ss.Consumers)
 	}
-	for _, oi := range info.obs {
+	for _, oi := range obs {
 		if o := mset.lookupConsumer(oi.cfg.Durable); o != nil {
 			if uint64(oi.ack+1) != o.nextSeq() {
 				t.Fatalf("[%v] Consumer next seq is not correct: %d vs %d", o.String(), oi.ack+1, o.nextSeq())
+			}
+			if oi.cfg.MemoryStorage {
+				require_Equal(t, o.store.GetConfig().Name, oi.cfg.Durable)
 			}
 		} else {
 			t.Fatalf("Expected to get an consumer")
@@ -3331,9 +3330,12 @@ func TestJetStreamSnapshots(t *testing.T) {
 	s2 := RunBasicJetStreamServer(t)
 	defer s2.Shutdown()
 
-	acc = s2.GlobalAccount()
-	r.Reset(snapshot)
-	mset, err = acc.RestoreStream(&info.cfg, r)
+	nc2 := clientConnectToServer(t, s2)
+	defer nc2.Close()
+
+	require_True(t, performStreamRestore(t, nc2, sc, ss, snapshot))
+
+	mset, err = acc.lookupStream("MY-STREAM")
 	require_NoError(t, err)
 
 	o := mset.lookupConsumer("WQ-1")
@@ -3341,12 +3343,444 @@ func TestJetStreamSnapshots(t *testing.T) {
 		t.Fatalf("Could not lookup consumer")
 	}
 
-	nc2 := clientConnectToServer(t, s2)
-	defer nc2.Close()
-
 	// Make sure we can read messages.
 	if _, err := nc2.Request(o.requestNextMsgSubject(), nil, 5*time.Second); err != nil {
 		t.Fatalf("Unexpected error getting next message: %v", err)
+	}
+}
+
+func TestJetStreamSnapshotV2ClampsConsumerStateToStream(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	})
+	require_NoError(t, err)
+	defer mset.delete()
+
+	require_NoError(t, mset.store.StoreRawMsg("foo", nil, []byte("one"), 1, time.Now().UnixNano(), 0, false))
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Name:      "C",
+		Durable:   "C",
+		AckPolicy: AckExplicit,
+	})
+	require_NoError(t, err)
+
+	var streamState StreamState
+	mset.store.FastState(&streamState)
+	require_Equal(t, streamState.LastSeq, uint64(1))
+
+	o.mu.Lock()
+	err = o.setStoreState(&ConsumerState{
+		Delivered: SequencePair{Consumer: 3, Stream: 3},
+		AckFloor:  SequencePair{Consumer: 2, Stream: 2},
+		Pending: map[uint64]*Pending{
+			3: {Sequence: 3, Timestamp: time.Now().UnixNano()},
+		},
+		Redelivered: map[uint64]uint64{1: 2, 3: 2},
+	})
+	o.mu.Unlock()
+	require_NoError(t, err)
+
+	pr, pw := net.Pipe()
+	defer pr.Close()
+	errCh := make(chan error, 1)
+	go mset.js.streamSnapshotV2(mset.store, &streamState, pw, true, nil, errCh)
+
+	dec := s2.NewReader(pr)
+	r := archive.NewReader(dec)
+
+	hdr, err := r.Next()
+	require_NoError(t, err)
+	require_Equal(t, hdr.Name, "state.json")
+	_, err = io.ReadAll(r)
+	require_NoError(t, err)
+
+	hdr, err = r.Next()
+	require_NoError(t, err)
+	require_Equal(t, hdr.Name, "consumers/C")
+	buf, err := io.ReadAll(r)
+	require_NoError(t, err)
+
+	var snapshot SnapshotConsumerState
+	require_NoError(t, json.Unmarshal(buf, &snapshot))
+	require_Equal(t, snapshot.Delivered, SequencePair{Consumer: 3, Stream: 1})
+	require_Equal(t, snapshot.AckFloor, SequencePair{Consumer: 2, Stream: 1})
+	require_Equal(t, len(snapshot.Pending), 0)
+	require_Equal(t, len(snapshot.Redelivered), 1)
+	dc, ok := snapshot.Redelivered[1]
+	require_True(t, ok)
+	require_Equal(t, dc, uint64(2))
+
+	_, err = io.Copy(io.Discard, dec)
+	require_NoError(t, err)
+	require_NoError(t, <-errCh)
+}
+
+func TestJetStreamSnapshotV2RestoreAtAccountReservationLimit(t *testing.T) {
+	const restoreBytes = 1 << 30
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	require_NoError(t, s.GlobalAccount().UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxMemory:    -1,
+			MaxStore:     restoreBytes,
+			MaxStreams:   -1,
+			MaxConsumers: -1,
+		},
+	}))
+
+	var snapshot bytes.Buffer
+	enc := s2.NewWriter(&snapshot)
+	w := archive.NewWriter(enc)
+	writeEntry := func(hdr *archive.Header, payload []byte) {
+		t.Helper()
+		require_NoError(t, w.WriteHeader(hdr))
+		if len(payload) > 0 {
+			_, err := w.Write(payload)
+			require_NoError(t, err)
+		}
+	}
+
+	state, err := json.Marshal(&StreamState{
+		Msgs:     1,
+		Bytes:    restoreBytes,
+		FirstSeq: 1,
+		LastSeq:  1,
+	})
+	require_NoError(t, err)
+	writeEntry(&archive.Header{Name: "state.json", PayloadSize: int64(len(state))}, state)
+
+	msg := []byte("snapshot")
+	writeEntry(&archive.Header{
+		Name:        "foo",
+		Sequence:    1,
+		Timestamp:   time.Now().UnixNano(),
+		PayloadSize: int64(len(msg)),
+	}, msg)
+	writeEntry(&archive.Header{}, nil)
+	require_NoError(t, w.Close())
+	require_NoError(t, enc.Close())
+
+	mset, err := s.GlobalAccount().RestoreStreamV2(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+		MaxBytes: restoreBytes,
+	}, bytes.NewReader(snapshot.Bytes()))
+	require_NoError(t, err)
+	defer mset.delete()
+	require_Equal(t, mset.store.State().Msgs, uint64(1))
+
+	js := s.getJetStream()
+	js.mu.RLock()
+	reserved := js.storeReserved
+	js.mu.RUnlock()
+	require_Equal(t, reserved, int64(restoreBytes))
+}
+
+func TestJetStreamSnapshotV2MemoryEphemeralConsumerRemainsEphemeral(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+	_, err := nc.Subscribe("deliver", func(*nats.Msg) {})
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Name:           "E",
+		DeliverSubject: "deliver",
+		AckPolicy:      AckExplicit,
+	})
+	require_NoError(t, err)
+
+	assertEphemeral := func(mset *stream) {
+		t.Helper()
+		o := mset.lookupConsumer("E")
+		if o == nil {
+			t.Fatal("ephemeral consumer not restored")
+		}
+		require_Equal(t, o.config().Durable, _EMPTY_)
+		require_Equal(t, o.store.GetConfig().Durable, _EMPTY_)
+	}
+
+	for range 2 {
+		sc, ss, snapshot := performStreamBackup(t, nc, "TEST")
+		mset.delete()
+		require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
+		mset, err = s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		assertEphemeral(mset)
+	}
+}
+
+func TestJetStreamRestoreV2MalformedConsumerStateCompletesConsumer(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("deliver")
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	var snapshot bytes.Buffer
+	enc := s2.NewWriter(&snapshot)
+	w := archive.NewWriter(enc)
+	writeEntry := func(name string, value any) {
+		t.Helper()
+		payload, err := json.Marshal(value)
+		require_NoError(t, err)
+		require_NoError(t, w.WriteHeader(&archive.Header{Name: name, PayloadSize: int64(len(payload))}))
+		_, err = w.Write(payload)
+		require_NoError(t, err)
+	}
+
+	writeEntry("state.json", &StreamState{FirstSeq: 1, Consumers: 1})
+	writeEntry("consumers/E", &SnapshotConsumerState{
+		ConsumerConfig: &ConsumerConfig{
+			Name:           "E",
+			DeliverSubject: "deliver",
+			AckPolicy:      AckExplicit,
+		},
+		ConsumerState: &ConsumerState{
+			Delivered: SequencePair{Consumer: 1, Stream: 1},
+			AckFloor:  SequencePair{Consumer: 2, Stream: 1},
+		},
+	})
+	require_NoError(t, w.Close())
+	require_NoError(t, enc.Close())
+
+	_, err = s.GlobalAccount().RestoreStreamV2(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	}, bytes.NewReader(snapshot.Bytes()))
+	require_Error(t, err)
+	if !strings.Contains(err.Error(), "failed to set consumer \"E\" state") {
+		t.Fatalf("unexpected restore error: %v", err)
+	}
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("E")
+	if o == nil {
+		t.Fatal("partial restore did not retain consumer")
+	}
+	if !o.isLeader() {
+		t.Fatal("retained consumer was not activated")
+	}
+	require_Equal(t, o.config().Durable, _EMPTY_)
+	require_Equal(t, o.store.GetConfig().Durable, _EMPTY_)
+
+	require_NoError(t, nc.Publish("foo", []byte("OK")))
+	require_NoError(t, nc.Flush())
+	_, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+}
+
+func TestJetStreamRestoreV2StagesStreamIngressAndSources(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	state, err := json.Marshal(&StreamState{FirstSeq: 1, LastSeq: 1})
+	require_NoError(t, err)
+
+	pr, pw := io.Pipe()
+	stateWritten := make(chan struct{})
+	continueRestore := make(chan struct{})
+	writerErr := make(chan error, 1)
+	go func() {
+		enc := s2.NewWriter(pw)
+		w := archive.NewWriter(enc)
+		writeEntry := func(hdr *archive.Header, payload []byte) error {
+			if err := w.WriteHeader(hdr); err != nil {
+				return err
+			}
+			if len(payload) > 0 {
+				if _, err := w.Write(payload); err != nil {
+					return err
+				}
+			}
+			return w.Flush()
+		}
+
+		if err := writeEntry(&archive.Header{Name: "state.json", PayloadSize: int64(len(state))}, state); err != nil {
+			pw.CloseWithError(err)
+			writerErr <- err
+			return
+		}
+		close(stateWritten)
+		<-continueRestore
+
+		msg := []byte("snapshot")
+		if err := writeEntry(&archive.Header{Name: "foo", Sequence: 1, Timestamp: time.Now().UnixNano(), PayloadSize: int64(len(msg))}, msg); err != nil {
+			pw.CloseWithError(err)
+			writerErr <- err
+			return
+		}
+		if err := writeEntry(&archive.Header{}, nil); err != nil {
+			pw.CloseWithError(err)
+			writerErr <- err
+			return
+		}
+		if err := w.Close(); err != nil {
+			pw.CloseWithError(err)
+			writerErr <- err
+			return
+		}
+		if err := enc.Close(); err != nil {
+			pw.CloseWithError(err)
+			writerErr <- err
+			return
+		}
+		writerErr <- pw.Close()
+	}()
+
+	type restoreResult struct {
+		mset *stream
+		err  error
+	}
+	restoreDone := make(chan restoreResult, 1)
+	go func() {
+		mset, err := s.GlobalAccount().RestoreStreamV2(&StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Storage:  MemoryStorage,
+			Sources:  []*StreamSource{{Name: "MISSING"}},
+		}, pr)
+		restoreDone <- restoreResult{mset, err}
+	}()
+
+	select {
+	case <-stateWritten:
+	case err := <-writerErr:
+		t.Fatalf("failed to start snapshot writer: %v", err)
+	}
+
+	var staged *stream
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		var err error
+		staged, err = s.GlobalAccount().lookupStream("TEST")
+		return err
+	})
+	staged.mu.RLock()
+	active, numSources := staged.active, len(staged.sources)
+	staged.mu.RUnlock()
+	require_False(t, active)
+	require_Equal(t, numSources, 0)
+
+	require_NoError(t, nc.Publish("foo", []byte("live during restore")))
+	require_NoError(t, nc.Flush())
+	require_Equal(t, staged.store.State().Msgs, uint64(0))
+
+	close(continueRestore)
+	result := <-restoreDone
+	require_NoError(t, result.err)
+	require_NoError(t, <-writerErr)
+	require_Equal(t, result.mset.store.State().Msgs, uint64(1))
+	require_Equal(t, result.mset.store.State().LastSeq, uint64(1))
+
+	result.mset.mu.RLock()
+	active, numSources = result.mset.active, len(result.mset.sources)
+	result.mset.mu.RUnlock()
+	require_True(t, active)
+	require_Equal(t, numSources, 1)
+
+	require_NoError(t, nc.Publish("foo", []byte("live after restore")))
+	require_NoError(t, nc.Flush())
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		state := result.mset.store.State()
+		if state.Msgs != 2 || state.LastSeq != 2 {
+			return fmt.Errorf("unexpected stream state: %+v", state)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamRestoreV2StagesConsumerActivation(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   MemoryStorage,
+		Retention: InterestPolicy,
+	})
+	require_NoError(t, err)
+	defer mset.delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("deliver")
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	const ackWait = 25 * time.Millisecond
+	o, err := mset.addConsumerForRestore(&ConsumerConfig{
+		Name:           "ephemeral",
+		Durable:        "ephemeral",
+		DeliverSubject: "deliver",
+		FilterSubject:  "foo",
+		AckPolicy:      AckExplicit,
+		AckWait:        ackWait,
+	})
+	require_NoError(t, err)
+	if o.isLeader() {
+		t.Fatal("consumer activated before restore completed")
+	}
+
+	o.mu.Lock()
+	err = o.setStoreState(&ConsumerState{
+		Delivered: SequencePair{Consumer: 1, Stream: 1},
+		Pending: map[uint64]*Pending{
+			1: {Sequence: 1, Timestamp: time.Now().Add(-time.Hour).UnixNano()},
+		},
+	})
+	o.mu.Unlock()
+	require_NoError(t, err)
+
+	// If the consumer were active, the expired pending timer would remove this
+	// entry because stream sequence 1 has not been restored yet.
+	time.Sleep(10 * ackWait)
+	state, err := o.store.State()
+	require_NoError(t, err)
+	if _, ok := state.Pending[1]; !ok {
+		t.Fatal("pending state was processed while consumer restore was staged")
+	}
+
+	err = mset.store.StoreRawMsg("foo", nil, []byte("OK"), 1, time.Now().UnixNano(), 0, false)
+	require_NoError(t, err)
+	if _, err := sub.NextMsg(2 * ackWait); err == nil {
+		t.Fatal("consumer delivered before restore completed")
+	}
+
+	o.switchToEphemeral()
+	require_NoError(t, o.completeRestore())
+	if !o.isLeader() {
+		t.Fatal("consumer did not activate after restore completed")
+	}
+	if _, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("pending message was not redelivered after restore completed: %v", err)
 	}
 }
 
@@ -3434,17 +3868,24 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	toSend := rand.Intn(100) + 1
+	toSend := max(30, rand.Intn(100)+1)
 	for i := 1; i <= toSend; i++ {
 		msg := fmt.Sprintf("Hello World %d", i)
 		subj := subjects[rand.Intn(len(subjects))]
 		sendStreamMsg(t, nc, subj, msg)
 	}
 
+	// Introduce a gap to ensure we handle that correctly on restore.
+	for n := range uint64(10) {
+		removed, err := mset.removeMsg(10 + n)
+		require_NoError(t, err)
+		require_True(t, removed)
+	}
+
 	o, err := mset.addConsumer(workerModeConfig("WQ"))
 	require_NoError(t, err)
 	// Now grab some messages.
-	toReceive := rand.Intn(toSend) + 1
+	toReceive := rand.Intn(int(mset.state().Msgs)) + 1
 	for r := 0; r < toReceive; r++ {
 		resp, err := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
 		if err != nil {
@@ -3750,13 +4191,272 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if err := json.Unmarshal(si.Data, &scResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if scResp.Error == nil {
-		t.Fatalf("Expected an error but got none")
+}
+
+func TestJetStreamSnapshotsAPIArchiveMessageLayout(t *testing.T) {
+	var buf bytes.Buffer
+	w := archive.NewWriter(&buf)
+
+	hdr := []byte("NATS/1.0\r\nNats-Msg-Id: X\r\n\r\n")
+	msg := []byte("hello world")
+	subj := "foo.bar"
+	body := append(hdr, msg...)
+	entry := archive.Header{
+		Name:        subj,
+		Timestamp:   12345,
+		Sequence:    99,
+		HeaderSize:  int64(len(hdr)),
+		PayloadSize: int64(len(msg)),
 	}
-	expect := "names do not match"
-	if !strings.Contains(scResp.Error.Description, expect) {
-		t.Fatalf("Expected description of %q, got %q", expect, scResp.Error.Description)
+	require_NoError(t, w.WriteHeader(&entry))
+	_, err := w.Write(body)
+	require_NoError(t, err)
+	require_NoError(t, w.Close())
+
+	r := archive.NewReader(bytes.NewReader(buf.Bytes()))
+	gotHdr, err := r.Next()
+	require_NoError(t, err)
+	require_Equal(t, subj, gotHdr.Name)
+	require_Equal(t, int64(len(hdr)), gotHdr.HeaderSize)
+	require_Equal(t, int64(len(msg)), gotHdr.PayloadSize)
+	require_Equal(t, uint64(99), gotHdr.Sequence)
+
+	gotBody, err := io.ReadAll(r)
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(body, gotBody))
+}
+
+func TestJetStreamSnapshotWithDeletedLastSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("foo", []byte("hello"))
+		require_NoError(t, err)
 	}
+	require_NoError(t, js.DeleteMsg("TEST", 10))
+
+	sc, ss, snapshot := performStreamBackup(t, nc, "TEST")
+	require_Equal(t, ss.LastSeq, uint64(10))
+	require_Equal(t, ss.Msgs, uint64(9))
+
+	require_NoError(t, js.DeleteStream("TEST"))
+	require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(9))
+}
+
+func TestJetStreamSnapshotFailedAdvisoryHasError(t *testing.T) {
+	oldSnapshotAckTimeout := snapshotAckTimeout
+	snapshotAckTimeout = 100 * time.Millisecond
+	defer func() { snapshotAckTimeout = oldSnapshotAckTimeout }()
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	var x uint32 = 1
+	payload := make([]byte, 4096)
+	for range 20 {
+		for i := range payload {
+			x = x*1664525 + 1013904223
+			payload[i] = byte(x >> 24)
+		}
+		_, err := js.Publish("foo", payload)
+		require_NoError(t, err)
+	}
+
+	advSub := natsSubSync(t, nc, JSAdvisoryStreamSnapshotCompletePre+".TEST")
+	deliver := nats.NewInbox()
+	snapSub, err := nc.SubscribeSync(deliver)
+	require_NoError(t, err)
+	defer snapSub.Unsubscribe()
+
+	req, err := json.Marshal(&JSApiStreamSnapshotRequest{
+		DeliverSubject: deliver,
+		ChunkSize:      1024,
+		WindowSize:     1024,
+	})
+	require_NoError(t, err)
+	respMsg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "TEST"), req, time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiStreamSnapshotResponse
+	require_NoError(t, json.Unmarshal(respMsg.Data, &resp))
+	require_True(t, resp.Error == nil)
+
+	msg, err := snapSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_True(t, len(msg.Data) > 0)
+	// Intentionally do not ack the chunk so the snapshot fails with no flow response.
+
+	advMsg, err := advSub.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+
+	var advisory struct {
+		Error json.RawMessage `json:"error,omitempty"`
+	}
+	require_NoError(t, json.Unmarshal(advMsg.Data, &advisory))
+	require_True(t, len(advisory.Error) > 0 && string(advisory.Error) != "null")
+}
+
+func TestJetStreamRestoreSkipsExpiredLastSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Storage:     nats.FileStorage,
+		AllowMsgTTL: true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("live"))
+	require_NoError(t, err)
+
+	msg := nats.NewMsg("foo")
+	msg.Header.Set(JSMessageTTL, "1s")
+	msg.Data = []byte("expires")
+	_, err = js.PublishMsg(msg)
+	require_NoError(t, err)
+
+	sc, ss, snapshot := performStreamBackup(t, nc, "TEST")
+	require_Equal(t, ss.LastSeq, uint64(2))
+	require_Equal(t, ss.Msgs, uint64(2))
+
+	time.Sleep(2 * time.Second)
+
+	require_NoError(t, js.DeleteStream("TEST"))
+	require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.LastSeq, uint64(2))
+	require_Equal(t, si.State.Msgs, uint64(1))
+
+	pa, err := js.Publish("foo", []byte("next"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, uint64(3))
+}
+
+func TestJetStreamSnapshotsAPIRestoreLimits(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 100 {
+		_, err := js.Publish("foo", []byte("hello world"))
+		require_NoError(t, err)
+	}
+
+	sc, ss, snapshot := performStreamBackup(t, nc, "TEST")
+
+	sendRestore := func(t *testing.T, nc *nats.Conn) *JSApiStreamCreateResponse {
+		t.Helper()
+		endpoint := fmt.Sprintf(JSApiStreamRestoreT, sc.Name)
+
+		req, err := json.Marshal(struct {
+			StreamState  `json:"state"`
+			StreamConfig `json:"config"`
+		}{
+			StreamState:  ss,
+			StreamConfig: sc,
+		})
+		require_NoError(t, err)
+
+		resp, err := nc.Request(endpoint, req, 5*time.Second)
+		require_NoError(t, err)
+
+		var rresp JSApiStreamRestoreResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &rresp))
+		require_True(t, IsValidLiteralSubject(rresp.DeliverSubject))
+
+		reader := bytes.NewReader(snapshot)
+		buf := make([]byte, 128*1024)
+		for {
+			n, err := reader.Read(buf)
+			if err == io.EOF {
+				break
+			}
+			require_NoError(t, err)
+			_, err = nc.Request(rresp.DeliverSubject, buf[:n], 5*time.Second)
+			require_NoError(t, err)
+		}
+
+		done, err := nc.Request(rresp.DeliverSubject, nil, 5*time.Second)
+		require_NoError(t, err)
+
+		var cresp JSApiStreamCreateResponse
+		require_NoError(t, json.Unmarshal(done.Data, &cresp))
+		return &cresp
+	}
+
+	// Restore onto a server with tight account limits — should fail.
+	t.Run("ExceedsLimits", func(t *testing.T) {
+		ns := RunBasicJetStreamServer(t)
+		defer ns.Shutdown()
+
+		require_NoError(t, ns.GlobalAccount().UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+			_EMPTY_: {
+				MaxMemory:    1024,
+				MaxStore:     1024,
+				MaxStreams:   -1,
+				MaxConsumers: -1,
+			},
+		}))
+
+		nnc := clientConnectToServer(t, ns)
+		defer nnc.Close()
+
+		resp := sendRestore(t, nnc)
+		require_NotNil(t, resp.Error)
+		require_Equal(t, resp.Error.ErrCode, 10047) // JSStorageResourcesExceededErr
+	})
+
+	// Restore onto a server with plenty of room — should succeed.
+	t.Run("WithinLimits", func(t *testing.T) {
+		ns := RunBasicJetStreamServer(t)
+		defer ns.Shutdown()
+
+		nnc := clientConnectToServer(t, ns)
+		defer nnc.Close()
+
+		resp := sendRestore(t, nnc)
+		require_True(t, resp.Error == nil)
+	})
 }
 
 func TestJetStreamPubAckPerf(t *testing.T) {
@@ -10520,8 +11220,12 @@ func TestJetStreamServerEncryption(t *testing.T) {
 				checkKeyFile(filepath.Join(sdir, JetStreamMetaFileKey))
 				checkFor(filepath.Join(sdir, JetStreamMetaFile), "TEST", "foo", "bar", "baz", "max_msgs", "max_bytes")
 				// Check a message block.
-				checkKeyFile(filepath.Join(sdir, "msgs", "1.key"))
-				checkFor(filepath.Join(sdir, "msgs", "1.blk"), "ENCRYPTED PAYLOAD!!", "foo", "bar", "baz")
+				blocks, err := filepath.Glob(filepath.Join(sdir, "msgs", "*.blk"))
+				require_NoError(t, err)
+				require_True(t, len(blocks) > 0)
+				block := blocks[0]
+				checkKeyFile(strings.TrimSuffix(block, ".blk") + ".key")
+				checkFor(block, "ENCRYPTED PAYLOAD!!", "foo", "bar", "baz")
 
 				// Check consumer meta and state.
 				checkKeyFile(filepath.Join(sdir, "obs", "dlc", JetStreamMetaFileKey))
@@ -10598,7 +11302,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 
 			nacc := ns.GlobalAccount()
 			r := bytes.NewReader(snapshot)
-			mset, err = nacc.RestoreStream(&scfg, r)
+			mset, err = nacc.RestoreStreamV2(&scfg, r)
 			require_NoError(t, err)
 			ss := mset.store.State()
 			if ss.Msgs != si.State.Msgs || ss.FirstSeq != si.State.FirstSeq || ss.LastSeq != si.State.LastSeq {
@@ -10612,7 +11316,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 
 			acc = s.GlobalAccount()
 			r.Reset(snapshot)
-			mset, err = acc.RestoreStream(&scfg, r)
+			mset, err = acc.RestoreStreamV2(&scfg, r)
 			require_NoError(t, err)
 			ss = mset.store.State()
 			if ss.Msgs != si.State.Msgs || ss.FirstSeq != si.State.FirstSeq || ss.LastSeq != si.State.LastSeq {

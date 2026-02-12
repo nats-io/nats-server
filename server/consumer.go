@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"os"
@@ -138,6 +139,25 @@ type ConsumerConfig struct {
 	PriorityGroups []string       `json:"priority_groups,omitempty"`
 	PriorityPolicy PriorityPolicy `json:"priority_policy,omitempty"`
 	PinnedTTL      time.Duration  `json:"priority_timeout,omitempty"`
+}
+
+// clone performs a deep copy of the ConsumerConfig struct, returning a new clone with
+// all values copied.
+func (cfg *ConsumerConfig) clone() *ConsumerConfig {
+	clone := *cfg
+	if cfg.BackOff != nil {
+		clone.BackOff = slices.Clone(cfg.BackOff)
+	}
+	if cfg.FilterSubjects != nil {
+		clone.FilterSubjects = slices.Clone(cfg.FilterSubjects)
+	}
+	if cfg.Metadata != nil {
+		clone.Metadata = maps.Clone(cfg.Metadata)
+	}
+	if cfg.PriorityGroups != nil {
+		clone.PriorityGroups = slices.Clone(cfg.PriorityGroups)
+	}
+	return &clone
 }
 
 // SequenceInfo has both the consumer and the stream sequence and last activity.
@@ -498,6 +518,9 @@ type consumer struct {
 	lat               time.Time
 	lwqic             time.Time
 	closed            bool
+	restoring         bool
+	restoreLeader     bool
+	restoreTerm       uint64
 
 	// Clustered.
 	ca        *consumerAssignment
@@ -1014,6 +1037,14 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 }
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction, pedantic bool) (*consumer, error) {
+	return mset.addConsumerWithAssignmentAndMode(config, oname, ca, isRecovering, action, pedantic, false)
+}
+
+func (mset *stream) addConsumerForRestore(config *ConsumerConfig) (*consumer, error) {
+	return mset.addConsumerWithAssignmentAndMode(config, _EMPTY_, nil, false, ActionCreateOrUpdate, false, true)
+}
+
+func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction, pedantic, restoring bool) (*consumer, error) {
 	// Check if this stream has closed.
 	if mset.closed.Load() {
 		return nil, NewJSStreamInvalidError()
@@ -1197,6 +1228,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		maxp:      config.MaxAckPending,
 		retention: cfg.Retention,
 		created:   time.Now().UTC(),
+		restoring: restoring,
 	}
 
 	// Add created timestamp used for the store, must match that of the consumer assignment if it exists.
@@ -1606,6 +1638,11 @@ func (o *consumer) isLeader() bool {
 
 func (o *consumer) setLeader(isLeader bool, term uint64) error {
 	o.mu.Lock()
+	if o.restoring {
+		o.restoreLeader, o.restoreTerm = isLeader, term
+		o.mu.Unlock()
+		return nil
+	}
 	mset, closed := o.mset, o.closed
 	wasLeader := o.leader.Swap(isLeader)
 
@@ -1890,6 +1927,22 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 				o.loopAndForwardProposals(node, qch, pch, term)
 			}()
 		}
+	}
+	return nil
+}
+
+func (o *consumer) completeRestore() error {
+	o.mu.Lock()
+	if !o.restoring {
+		o.mu.Unlock()
+		return nil
+	}
+	o.restoring = false
+	isLeader, term := o.restoreLeader, o.restoreTerm
+	o.restoreLeader, o.restoreTerm = false, 0
+	o.mu.Unlock()
+	if isLeader {
+		return o.setLeader(true, term)
 	}
 	return nil
 }
@@ -6855,18 +6908,22 @@ func deliveryFormsCycle(cfg *StreamConfig, deliverySubject string) bool {
 func (o *consumer) switchToEphemeral() {
 	o.mu.Lock()
 	o.cfg.Durable = _EMPTY_
-	store, ok := o.store.(*consumerFileStore)
+	store := o.store
 	interest := o.acc.sl.HasInterest(o.cfg.DeliverSubject)
 	// Setup dthresh.
 	o.updateInactiveThreshold(&o.cfg)
 	o.updatePauseState(&o.cfg)
+	cfg := o.cfg
 	o.mu.Unlock()
 
 	// Update interest
 	o.updateDeliveryInterest(interest)
 	// Write out new config
-	if ok {
-		store.updateConfig(o.cfg)
+	switch store := store.(type) {
+	case *consumerFileStore:
+		store.updateConfig(cfg)
+	case *consumerMemStore:
+		store.UpdateConfig(&cfg)
 	}
 }
 

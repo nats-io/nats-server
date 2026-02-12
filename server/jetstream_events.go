@@ -182,6 +182,7 @@ type JSSnapshotCompleteAdvisory struct {
 	End    time.Time   `json:"end"`
 	Client *ClientInfo `json:"client"`
 	Domain string      `json:"domain,omitempty"`
+	Error  string      `json:"error,omitempty"`
 }
 
 // JSSnapshotCompleteAdvisoryType is the schema type for JSSnapshotCreateAdvisory
