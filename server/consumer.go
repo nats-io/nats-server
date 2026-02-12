@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"os"
@@ -137,6 +138,25 @@ type ConsumerConfig struct {
 	PriorityGroups []string       `json:"priority_groups,omitempty"`
 	PriorityPolicy PriorityPolicy `json:"priority_policy,omitempty"`
 	PinnedTTL      time.Duration  `json:"priority_timeout,omitempty"`
+}
+
+// clone performs a deep copy of the ConsumerConfig struct, returning a new clone with
+// all values copied.
+func (cfg *ConsumerConfig) clone() *ConsumerConfig {
+	clone := *cfg
+	if cfg.BackOff != nil {
+		clone.BackOff = slices.Clone(cfg.BackOff)
+	}
+	if cfg.FilterSubjects != nil {
+		clone.FilterSubjects = slices.Clone(cfg.FilterSubjects)
+	}
+	if cfg.Metadata != nil {
+		clone.Metadata = maps.Clone(cfg.Metadata)
+	}
+	if cfg.PriorityGroups != nil {
+		clone.PriorityGroups = slices.Clone(cfg.PriorityGroups)
+	}
+	return &clone
 }
 
 // SequenceInfo has both the consumer and the stream sequence and last activity.

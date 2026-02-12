@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"math"
 	mrand "math/rand"
 	"net"
@@ -12639,6 +12640,14 @@ func (o *consumerFileStore) encodeState() ([]byte, error) {
 	return encodeConsumerState(state), nil
 }
 
+func (o *consumerFileStore) GetConfig() *ConsumerConfig {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	clone := o.cfg.clone()
+	clone.Name = o.name
+	return clone
+}
+
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -13254,6 +13263,19 @@ func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
 		}
 	}
 	return nil
+}
+
+func (fs *fileStore) Consumers() iter.Seq[ConsumerStore] {
+	return func(yield func(ConsumerStore) bool) {
+		fs.cmu.RLock()
+		defer fs.cmu.RUnlock()
+
+		for _, v := range fs.cfs {
+			if !yield(v) {
+				return
+			}
+		}
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
