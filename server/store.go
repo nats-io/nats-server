@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"strings"
 	"time"
@@ -129,6 +130,7 @@ type StreamStore interface {
 	ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error)
 	AddConsumer(o ConsumerStore) error
 	RemoveConsumer(o ConsumerStore) error
+	Consumers() iter.Seq[ConsumerStore]
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 	Utilization() (total, reported uint64, err error)
 	ResetState()
@@ -362,6 +364,7 @@ type ConsumerStore interface {
 	HasState() bool
 	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
 	UpdateAcks(dseq, sseq uint64) error
+	GetConfig() *ConsumerConfig
 	UpdateConfig(cfg *ConsumerConfig) error
 	Update(*ConsumerState) error
 	State() (*ConsumerState, error)

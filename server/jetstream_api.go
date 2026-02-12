@@ -14,6 +14,7 @@
 package server
 
 import (
+	"archive/tar"
 	"bytes"
 	"cmp"
 	"encoding/json"
@@ -29,6 +30,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nuid"
 )
 
@@ -3938,9 +3940,36 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 				// If we staged properly go ahead and do restore now.
 				if err == nil {
 					s.Debugf("Finalizing restore for stream '%s > %s'", acc.Name, streamName)
-					tfile.Seek(0, 0)
-					mset, err = acc.RestoreStream(cfg, tfile)
-				} else {
+					_, err = tfile.Seek(0, 0)
+				}
+				// Determine the snapshot format:
+				// - v1: First file in the tar will be meta.inf
+				// - v2: First file in the tar will be state.json
+				var v2 bool
+				if err == nil {
+					tr := tar.NewReader(s2.NewReader(tfile))
+					var th *tar.Header
+					if th, err = tr.Next(); err == nil && th != nil {
+						switch th.Name {
+						case "meta.inf":
+						case "state.json":
+							v2 = true
+						default:
+							err = fmt.Errorf("unknown snapshot version")
+						}
+					}
+				}
+				if err == nil {
+					_, err = tfile.Seek(0, 0)
+				}
+				if err == nil {
+					if v2 {
+						mset, err = acc.RestoreStreamV2(cfg, tfile)
+					} else {
+						mset, err = acc.RestoreStream(cfg, tfile)
+					}
+				}
+				if err != nil {
 					errStr := err.Error()
 					tmp := []rune(errStr)
 					tmp[0] = unicode.ToUpper(tmp[0])
@@ -4121,11 +4150,21 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 			Domain: s.getOpts().JetStreamDomain,
 		})
 
-		s.Noticef("Completed snapshot of %s for stream '%s > %s' in %v",
-			friendlyBytes(int64(sr.State.Bytes)),
-			mset.jsa.account.Name,
-			mset.name(),
-			end.Sub(start))
+		if err := <-sr.errCh; err != _EMPTY_ {
+			s.Warnf("Snapshot for stream '%s > %s' failed after %v: %s",
+				mset.jsa.account.Name,
+				mset.name(),
+				end.Sub(start),
+				err,
+			)
+		} else {
+			s.Noticef("Completed snapshot of %s for stream '%s > %s' in %v",
+				friendlyBytes(int64(sr.State.Bytes)),
+				mset.jsa.account.Name,
+				mset.name(),
+				end.Sub(start),
+			)
+		}
 	}()
 }
 

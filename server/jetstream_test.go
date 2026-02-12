@@ -3274,6 +3274,13 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		sendStreamMsg(t, nc, subj, msg)
 	}
 
+	// Introduce a gap to ensure we handle that correctly on restore.
+	for n := range uint64(10) {
+		removed, err := mset.removeMsg(10 + n)
+		require_NoError(t, err)
+		require_True(t, removed)
+	}
+
 	o, err := mset.addConsumer(workerModeConfig("WQ"))
 	require_NoError(t, err)
 	// Now grab some messages.

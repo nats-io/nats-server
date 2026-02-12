@@ -7766,7 +7766,8 @@ func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers
 		return nil, errStreamClosed
 	}
 	store := mset.store
-	return store.Snapshot(deadline, checkMsgs, includeConsumers)
+	return CreateStreamSnapshotV2(store, deadline, includeConsumers)
+	// return store.Snapshot(deadline, checkMsgs, includeConsumers)
 }
 
 const snapsDir = "__snapshots__"

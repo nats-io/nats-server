@@ -17,6 +17,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"iter"
 	"math"
 	"slices"
 	"sync"
@@ -44,7 +45,7 @@ type memStore struct {
 	ageChk      *time.Timer // Timer to expire messages.
 	ageChkRun   bool        // Whether message expiration is currently running.
 	ageChkTime  int64       // When the message expiration is scheduled to run.
-	consumers   int
+	consumers   []ConsumerStore
 	receivedAny bool
 	ttls        *thw.HashWheel
 	scheduling  *MsgScheduling
@@ -2184,7 +2185,7 @@ func (ms *memStore) FastState(state *StreamState) {
 			state.NumDeleted = 0
 		}
 	}
-	state.Consumers = ms.consumers
+	state.Consumers = len(ms.consumers)
 	state.NumSubjects = ms.fss.Size()
 	ms.mu.RUnlock()
 }
@@ -2194,7 +2195,7 @@ func (ms *memStore) State() StreamState {
 	defer ms.mu.RUnlock()
 
 	state := ms.state
-	state.Consumers = ms.consumers
+	state.Consumers = len(ms.consumers)
 	state.NumSubjects = ms.fss.Size()
 	state.Deleted = nil
 
@@ -2278,6 +2279,7 @@ func (ms *memStore) isClosed() bool {
 type consumerMemStore struct {
 	mu     sync.Mutex
 	ms     StreamStore
+	name   string
 	cfg    ConsumerConfig
 	state  ConsumerState
 	closed bool
@@ -2293,25 +2295,41 @@ func (ms *memStore) ConsumerStore(name string, _ time.Time, cfg *ConsumerConfig)
 	if cfg == nil || name == _EMPTY_ {
 		return nil, fmt.Errorf("bad consumer config")
 	}
-	o := &consumerMemStore{ms: ms, cfg: *cfg}
+	o := &consumerMemStore{ms: ms, name: name, cfg: *cfg}
 	ms.AddConsumer(o)
 	return o, nil
 }
 
 func (ms *memStore) AddConsumer(o ConsumerStore) error {
 	ms.mu.Lock()
-	ms.consumers++
+	ms.consumers = append(ms.consumers, o)
 	ms.mu.Unlock()
 	return nil
 }
 
 func (ms *memStore) RemoveConsumer(o ConsumerStore) error {
 	ms.mu.Lock()
-	if ms.consumers > 0 {
-		ms.consumers--
+	for i, cfs := range ms.consumers {
+		if o == cfs {
+			ms.consumers = append(ms.consumers[:i], ms.consumers[i+1:]...)
+			break
+		}
 	}
 	ms.mu.Unlock()
 	return nil
+}
+
+func (ms *memStore) Consumers() iter.Seq[ConsumerStore] {
+	return func(yield func(ConsumerStore) bool) {
+		ms.mu.RLock()
+		defer ms.mu.RUnlock()
+
+		for _, v := range ms.consumers {
+			if !yield(v) {
+				return
+			}
+		}
+	}
 }
 
 func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error) {
@@ -2601,6 +2619,14 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 	delete(o.state.Redelivered, sseq)
 
 	return nil
+}
+
+func (o *consumerMemStore) GetConfig() *ConsumerConfig {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	clone := o.cfg.clone()
+	clone.Name = o.name
+	return clone
 }
 
 func (o *consumerMemStore) UpdateConfig(cfg *ConsumerConfig) error {

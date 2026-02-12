@@ -19,6 +19,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2233,4 +2234,81 @@ func checkStateAndErr(t *testing.T, c *cluster, accountName, streamName string) 
 		return StreamState{}, errors.Join(errs...)
 	}
 	return streamLeader.State, nil
+}
+
+func performStreamBackup(t *testing.T, nc *nats.Conn, streamName string) (StreamConfig, StreamState, []byte) {
+	t.Helper()
+	endpoint := fmt.Sprintf(JSApiStreamSnapshotT, streamName)
+	inbox := nc.NewRespInbox()
+
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	resp, err := nc.RequestMsg(&nats.Msg{
+		Subject: endpoint,
+		Data:    fmt.Appendf(nil, `{"deliver_subject": %q}`, inbox),
+	}, 5*time.Second)
+	require_NoError(t, err)
+
+	var body struct {
+		StreamState  `json:"state"`
+		StreamConfig `json:"config"`
+	}
+	require_NoError(t, json.Unmarshal(resp.Data, &body))
+
+	buf := bytes.NewBuffer(nil)
+	for {
+		msg, err := sub.NextMsg(5 * time.Second)
+		require_NoError(t, err)
+		if msg.Reply != _EMPTY_ {
+			require_NoError(t, msg.Respond(nil))
+		}
+		if len(msg.Data) == 0 {
+			break
+		}
+		_, err = buf.Write(msg.Data)
+		require_NoError(t, err)
+	}
+	return body.StreamConfig, body.StreamState, buf.Bytes()
+}
+
+func performStreamRestore(t *testing.T, nc *nats.Conn, sc StreamConfig, ss StreamState, archive []byte) {
+	t.Helper()
+	endpoint := fmt.Sprintf(JSApiStreamRestoreT, sc.Name)
+
+	req, err := json.Marshal(struct {
+		StreamState  `json:"state"`
+		StreamConfig `json:"config"`
+	}{
+		StreamState:  ss,
+		StreamConfig: sc,
+	})
+	require_NoError(t, err)
+
+	resp, err := nc.RequestMsg(&nats.Msg{
+		Subject: endpoint,
+		Data:    req,
+	}, 5*time.Second)
+	require_NoError(t, err)
+
+	var res struct {
+		DeliverSubject string `json:"deliver_subject"`
+	}
+	require_NoError(t, json.Unmarshal(resp.Data, &res))
+
+	reader := bytes.NewReader(archive)
+	buf := make([]byte, 128*1024)
+	for {
+		n, err := reader.Read(buf)
+		if err == io.EOF {
+			break
+		}
+		require_NoError(t, err)
+
+		_, err = nc.Request(res.DeliverSubject, buf[:n], time.Second)
+		require_NoError(t, err)
+	}
+
+	_, err = nc.Request(res.DeliverSubject, nil, time.Second)
+	require_NoError(t, err)
 }
