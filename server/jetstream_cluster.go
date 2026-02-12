@@ -4499,6 +4499,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			s.Warnf("JetStream cluster detected stream remapping for '%s > %s' from %q to %q",
 				acc, cfg.Name, osa.Group.Name, sa.Group.Name)
 			mset.removeNode()
+			mset.signalMonitorQuit()
+			mset.monitorWg.Wait()
 			alreadyRunning, needsNode = false, true
 			// Make sure to clear from original.
 			js.mu.Lock()
@@ -4536,6 +4538,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
+			mset.signalMonitorQuit()
+			mset.monitorWg.Wait()
 			// In case we need to shutdown the cluster specific subs, etc.
 			mset.mu.Lock()
 			// Stop responding to sync requests.
