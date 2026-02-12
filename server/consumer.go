@@ -436,11 +436,13 @@ type consumer struct {
 	lss               *lastSeqSkipList
 	rlimit            *rate.Limiter
 	reqSub            *subscription
+	resetSub          *subscription
 	ackSub            *subscription
 	ackReplyT         string
 	ackSubj           string
 	nextMsgSubj       string
 	nextMsgReqs       *ipQueue[*nextMsgReq]
+	resetSubj         string
 	maxp              int
 	pblimit           int
 	maxpb             int
@@ -1276,6 +1278,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
+	o.resetSubj = fmt.Sprintf(JSApiConsumerResetT, mn, o.name)
 
 	// Check/update the inactive threshold
 	o.updateInactiveThreshold(&o.cfg)
@@ -1558,6 +1561,10 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.mu.Unlock()
 			return
 		}
+		if o.resetSub, err = o.subscribeInternal(o.resetSubj, o.processResetReq); err != nil {
+			o.mu.Unlock()
+			return
+		}
 
 		// Check on flow control settings.
 		if o.cfg.FlowControl {
@@ -1677,8 +1684,9 @@ func (o *consumer) setLeader(isLeader bool) {
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
+		o.unsubscribe(o.resetSub)
 		o.unsubscribe(o.fcSub)
-		o.ackSub, o.reqSub, o.fcSub = nil, nil, nil
+		o.ackSub, o.reqSub, o.resetSub, o.fcSub = nil, nil, nil, nil
 		if o.infoSub != nil {
 			o.srv.sysUnsubscribe(o.infoSub)
 			o.infoSub = nil
@@ -2611,6 +2619,78 @@ func (o *consumer) updateSkipped(seq uint64) {
 	var le = binary.LittleEndian
 	le.PutUint64(b[1:], seq)
 	o.propose(b[:])
+}
+
+func (o *consumer) resetStartingSeq(seq uint64, reply string) (uint64, bool, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// Reset to a specific sequence, or back to the ack floor.
+	if seq == 0 {
+		seq = o.asflr + 1
+	} else if o.cfg.DeliverPolicy == DeliverAll {
+		// Always allowed.
+		goto VALID
+	} else if o.cfg.DeliverPolicy == DeliverByStartSequence {
+		// Only allowed if not going below what's configured.
+		if seq < o.cfg.OptStartSeq {
+			return 0, false, errors.New("below start seq")
+		}
+		goto VALID
+	} else if o.cfg.DeliverPolicy == DeliverByStartTime && o.mset != nil {
+		// Only allowed if not going below what's configured.
+		nseq := o.mset.store.GetSeqFromTime(*o.cfg.OptStartTime)
+		if seq < nseq {
+			return 0, false, errors.New("below start time")
+		}
+		goto VALID
+	} else {
+		return 0, false, errors.New("not allowed")
+	}
+
+VALID:
+	// Must be a minimum of 1.
+	if seq <= 0 {
+		seq = 1
+	}
+	o.resetLocalStartingSeq(seq)
+	// Clustered mode and R>1.
+	if o.node != nil {
+		b := make([]byte, 1+8+len(reply))
+		b[0] = byte(resetSeqOp)
+		var le = binary.LittleEndian
+		le.PutUint64(b[1:], seq)
+		copy(b[1+8:], reply)
+		o.propose(b[:])
+		return seq, false, nil
+	} else if o.store != nil {
+		o.store.Reset(seq - 1)
+		// Cleanup messages that lost interest.
+		if o.retention == InterestPolicy {
+			if mset := o.mset; mset != nil {
+				o.mu.Unlock()
+				ss := mset.state()
+				o.checkStateForInterestStream(&ss)
+				o.mu.Lock()
+			}
+		}
+
+		// Recalculate pending, and re-trigger message delivery.
+		o.streamNumPending()
+		o.signalNewMessages()
+		return seq, true, nil
+	}
+	return seq, false, nil
+}
+
+// Lock should be held.
+func (o *consumer) resetLocalStartingSeq(seq uint64) {
+	o.pending, o.rdc = nil, nil
+	o.rdq = nil
+	o.rdqi.Empty()
+	o.sseq, o.dseq = seq, 1
+	o.adflr, o.asflr = o.dseq-1, o.sseq-1
+	o.ldt, o.lat = time.Time{}, time.Time{}
 }
 
 func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
@@ -4138,6 +4218,42 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		return
 	}
 	o.nextMsgReqs.push(newNextMsgReq(reply, copyBytes(msg)))
+}
+
+// processResetReq will reset a consumer to a new starting sequence.
+func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, reply string, rmsg []byte) {
+	if reply == _EMPTY_ {
+		return
+	}
+
+	s := o.srv
+	var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
+
+	hdr, msg := c.msgParts(rmsg)
+	if errorOnRequiredApiLevel(hdr) {
+		resp.Error = NewJSRequiredApiLevelError()
+		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+		return
+	}
+
+	// An empty message resets back to the ack floor, otherwise a custom sequence can be used.
+	var req JSApiConsumerResetRequest
+	if len(msg) > 0 {
+		if err := json.Unmarshal(msg, &req); err != nil {
+			resp.Error = NewJSInvalidJSONError(err)
+			s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+			return
+		}
+	}
+	resetSeq, canRespond, err := o.resetStartingSeq(req.Seq, reply)
+	if err != nil {
+		resp.Error = NewJSConsumerInvalidResetError(err)
+		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+	} else if canRespond {
+		resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+		resp.ResetSeq = resetSeq
+		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+	}
 }
 
 func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
@@ -6096,9 +6212,11 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	o.active = false
 	o.unsubscribe(o.ackSub)
 	o.unsubscribe(o.reqSub)
+	o.unsubscribe(o.resetSub)
 	o.unsubscribe(o.fcSub)
 	o.ackSub = nil
 	o.reqSub = nil
+	o.resetSub = nil
 	o.fcSub = nil
 	if o.infoSub != nil {
 		o.srv.sysUnsubscribe(o.infoSub)
