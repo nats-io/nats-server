@@ -1373,6 +1373,12 @@ func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
 }
 
 func TestNoRaceJetStreamSnapshotsWithSlowAckDontSlowConsumer(t *testing.T) {
+	// Test takes less time this way.
+	snapshotAckTimeout = 500 * time.Millisecond
+	t.Cleanup(func() {
+		snapshotAckTimeout = defaultSnapshotAckTimeout
+	})
+
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -1429,7 +1435,7 @@ func TestNoRaceJetStreamSnapshotsWithSlowAckDontSlowConsumer(t *testing.T) {
 		require_Equal(t, msg.Header.Get("Description"), "No Flow Response")
 	case <-ech:
 		t.Fatalf("Got disconnected: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(snapshotAckTimeout * 2):
 		t.Fatalf("Should have received EOF with error status")
 	}
 }
