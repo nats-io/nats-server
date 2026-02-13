@@ -7253,6 +7253,16 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 	}
 	checkStreamInfo(js)
 
+	// Block the meta snapshots on all servers so they need to replay the log.
+	for _, rs := range c.servers {
+		meta := rs.getJetStream().getMetaGroup().(*raft)
+		meta.Lock()
+		indexUpdates := newIPQueue[uint64](rs, "block snapshot")
+		indexUpdates.push(1000)
+		meta.progress = map[string]*ipQueue[uint64]{"peer": indexUpdates}
+		meta.Unlock()
+	}
+
 	// Update replicas down to 1
 	for i := 0; i < numStreams; i++ {
 		sname := fmt.Sprintf("TEST_%v", i)
