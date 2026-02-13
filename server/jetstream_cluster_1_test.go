@@ -10806,6 +10806,7 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
 	// For this test using two large values so we remain in catchup.
 	meta.Lock()
 	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+	meta.sendCatchupSignal()
 	meta.Unlock()
 
 	// Deleting a stream should be staged, not immediately performed.

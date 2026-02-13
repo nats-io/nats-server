@@ -1939,6 +1939,48 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		}
 	}
 
+	// If we're not recovering, we need to check if we have any left-over streams or consumers that aren't
+	// tracked in our assignments. This could happen if we've restarted and recovered streams or consumers
+	// from disk, but then got sent a snapshot to catch up from the meta-leader.
+	if !isRecovering {
+		var deleteStreams []*stream
+		var deleteConsumers []*consumer
+		js.mu.RLock()
+		js.srv.accounts.Range(func(k, v any) bool {
+			a := v.(*Account)
+			a.mu.RLock()
+			jsa := a.js
+			a.mu.RUnlock()
+			if jsa == nil {
+				return true
+			}
+			accStreams := cc.streams[a.Name]
+			jsa.mu.RLock()
+			for _, mset := range jsa.streams {
+				stream := accStreams[mset.name()]
+				if stream == nil {
+					deleteStreams = append(deleteStreams, mset)
+					continue
+				}
+				for _, o := range mset.getPublicConsumers() {
+					if stream.consumers[o.name] == nil {
+						deleteConsumers = append(deleteConsumers, o)
+					}
+				}
+			}
+			jsa.mu.RUnlock()
+			return true
+		})
+		js.mu.RUnlock()
+
+		// Now delete all streams and consumers that we're not supposed to have based on the snapshot.
+		for _, mset := range deleteStreams {
+			mset.stop(true, false)
+		}
+		for _, o := range deleteConsumers {
+			o.deleteWithoutAdvisory()
+		}
+	}
 	return nil
 }
 

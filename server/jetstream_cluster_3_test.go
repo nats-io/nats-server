@@ -387,7 +387,13 @@ func TestJetStreamClusterDeleteConsumerWhileServerDown(t *testing.T) {
 	})
 	require_NoError(t, err)
 
+	// Shut down the server but ensure it can't make a snapshot during shutdown.
 	s = c.randomNonConsumerLeader("$G", "TEST", "DC")
+	meta := s.getJetStream().getMetaGroup().(*raft)
+	meta.Lock()
+	meta.progress = make(map[string]*ipQueue[uint64])
+	meta.progress["blockSnapshots"] = newIPQueue[uint64](meta.s, "blockSnapshots")
+	meta.Unlock()
 	s.Shutdown()
 
 	c.waitOnLeader()                                 // In case that was metaleader.
