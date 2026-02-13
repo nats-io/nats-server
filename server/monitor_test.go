@@ -5347,7 +5347,7 @@ func TestMonitorJsz(t *testing.T) {
 			for _, srv := range srvs {
 				if js := srv.getJetStream(); js != nil {
 					if mg := js.getMetaGroup(); mg != nil {
-						if snap, err := js.metaSnapshot(); err == nil {
+						if snap, _, _, err := js.metaSnapshot(); err == nil {
 							mg.InstallSnapshot(snap)
 						}
 					}

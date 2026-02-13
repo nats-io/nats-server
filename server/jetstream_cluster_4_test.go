@@ -4170,7 +4170,7 @@ func TestJetStreamClusterMetaSnapshotReCreateConsistency(t *testing.T) {
 	mjs.mu.Unlock()
 
 	// Get the snapshot before removing the stream below so we can recover fresh.
-	snap, err := mjs.metaSnapshot()
+	snap, _, _, err := mjs.metaSnapshot()
 	require_NoError(t, err)
 	require_NoError(t, js.DeleteStream("TEST"))
 	nc.Close()
@@ -4244,7 +4244,7 @@ func TestJetStreamClusterMetaSnapshotConsumerDeleteConsistency(t *testing.T) {
 	mjs.mu.Unlock()
 
 	// Get the snapshot before removing the stream below so we can recover fresh.
-	snap, err := mjs.metaSnapshot()
+	snap, _, _, err := mjs.metaSnapshot()
 	require_NoError(t, err)
 	require_NoError(t, js.DeleteStream("TEST"))
 	nc.Close()
