@@ -8901,7 +8901,13 @@ func (mb *msgBlock) readIndexInfo() error {
 	}
 
 	// Check for consistency if accounting. If something is off bail and we will rebuild.
-	if mb.msgs != (atomic.LoadUint64(&mb.last.seq)-atomic.LoadUint64(&mb.first.seq)+1)-dmapLen {
+	var expected uint64
+	if mb.isEmpty() {
+		expected = 0
+	} else {
+		expected = (atomic.LoadUint64(&mb.last.seq) - atomic.LoadUint64(&mb.first.seq) + 1) - dmapLen
+	}
+	if mb.msgs != expected {
 		os.Remove(ifn)
 		return fmt.Errorf("accounting inconsistent")
 	}
