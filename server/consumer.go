@@ -513,7 +513,7 @@ type consumer struct {
 	// Details described in ADR-42.
 
 	// currentPinId is the current nuid for the pinned consumer.
-	// If the  Consumer is running in `PriorityPinnedClient` mode, server will
+	// If the Consumer is running in `PriorityPinnedClient` mode, server will
 	// pick up a new nuid and assign it to first pending pull request.
 	currentPinId string
 	/// pinnedTtl is the remaining time before the current PinId expires.
@@ -1698,6 +1698,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		} else if o.srv.gateway.enabled {
 			stopAndClearTimer(&o.gwdtmr)
 		}
+		o.unassignPinId()
 		// If we were the leader make sure to drain queued up acks.
 		if wasLeader {
 			o.ackMsgs.drain()
@@ -3999,11 +4000,38 @@ func (o *consumer) setPinnedTimer(priorityGroup string) {
 	} else {
 		o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
 			o.mu.Lock()
-			o.currentPinId = _EMPTY_
+			// Skip if already unset.
+			if o.currentPinId == _EMPTY_ {
+				o.mu.Unlock()
+				return
+			}
+			o.unassignPinId()
 			o.sendUnpinnedAdvisoryLocked(priorityGroup, "timeout")
 			o.mu.Unlock()
 			o.signalNewMessages()
 		})
+	}
+}
+
+// Lock should be held.
+func (o *consumer) assignNewPinId(wr *waitingRequest) {
+	if wr.priorityGroup == nil || wr.priorityGroup.Group == _EMPTY_ {
+		return
+	}
+	o.currentPinId = nuid.Next()
+	o.pinnedTS = time.Now().UTC()
+	wr.priorityGroup.Id = o.currentPinId
+	o.setPinnedTimer(wr.priorityGroup.Group)
+	o.sendPinnedAdvisoryLocked(wr.priorityGroup.Group)
+}
+
+// Lock should be held.
+func (o *consumer) unassignPinId() {
+	o.currentPinId = _EMPTY_
+	o.pinnedTS = time.Time{}
+	if o.pinnedTtl != nil {
+		o.pinnedTtl.Stop()
+		o.pinnedTtl = nil
 	}
 }
 
@@ -4017,11 +4045,6 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 
 	// Check if server needs to assign a new pin id.
 	needNewPin := o.currentPinId == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
-	// As long as we support only one priority group, we can capture  that group here and reuse it.
-	var priorityGroup string
-	if len(o.cfg.PriorityGroups) > 0 {
-		priorityGroup = o.cfg.PriorityGroups[0]
-	}
 
 	numCycled := 0
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
@@ -4055,11 +4078,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			if needNewPin {
 				if wr.priorityGroup.Id == _EMPTY_ {
-					o.currentPinId = nuid.Next()
-					o.pinnedTS = time.Now().UTC()
-					wr.priorityGroup.Id = o.currentPinId
-					o.setPinnedTimer(priorityGroup)
-
+					o.assignNewPinId(wr)
 				} else {
 					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
 					// Probably this is the old pin id.
@@ -4111,19 +4130,10 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				}
 			}
 			if wr.acc.sl.HasInterest(wr.interest) {
-				if needNewPin {
-					o.sendPinnedAdvisoryLocked(priorityGroup)
-				}
 				return o.waiting.popOrPopAndRequeue(o.cfg.PriorityPolicy)
 			} else if time.Since(wr.received) < defaultGatewayRecentSubExpiration && (o.srv.leafNodeEnabled || o.srv.gateway.enabled) {
-				if needNewPin {
-					o.sendPinnedAdvisoryLocked(priorityGroup)
-				}
 				return o.waiting.popOrPopAndRequeue(o.cfg.PriorityPolicy)
 			} else if o.srv.gateway.enabled && o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) {
-				if needNewPin {
-					o.sendPinnedAdvisoryLocked(priorityGroup)
-				}
 				return o.waiting.popOrPopAndRequeue(o.cfg.PriorityPolicy)
 			}
 		} else {
@@ -4317,15 +4327,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			sendErr(400, "Bad Request - Priority Group missing")
 			return
 		}
-
-		found := false
-		for _, group := range o.cfg.PriorityGroups {
-			if group == priorityGroup.Group {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(o.cfg.PriorityGroups, priorityGroup.Group) {
 			sendErr(400, "Bad Request - Invalid Priority Group")
 			return
 		}

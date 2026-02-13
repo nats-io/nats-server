@@ -3554,9 +3554,10 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 	}
 
 	o.mu.Lock()
-	o.currentPinId = _EMPTY_
+	o.unassignPinId()
 	o.sendUnpinnedAdvisoryLocked(req.Group, "admin")
 	o.mu.Unlock()
+	o.signalNewMessages()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
