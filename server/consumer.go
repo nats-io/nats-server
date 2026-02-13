@@ -4117,9 +4117,13 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 
 			if o.cfg.PriorityPolicy == PriorityOverflow {
 				if wr.priorityGroup != nil &&
+					// If both limits are zero we don't cycle and the request will be fulfilled.
+					(wr.priorityGroup.MinPending > 0 || wr.priorityGroup.MinAckPending > 0) &&
 					// We need to check o.npc+1, because before calling nextWaiting, we do o.npc--
-					(wr.priorityGroup.MinPending > 0 && wr.priorityGroup.MinPending > o.npc+1 ||
-						wr.priorityGroup.MinAckPending > 0 && wr.priorityGroup.MinAckPending > int64(len(o.pending))) {
+					// If one OR the other limit is exceeded, we want to fulfill the request.
+					// This is an inverted check. For clarity, we check the positive condition and negate.
+					!((wr.priorityGroup.MinPending > 0 && wr.priorityGroup.MinPending <= o.npc+1) ||
+						(wr.priorityGroup.MinAckPending > 0 && wr.priorityGroup.MinAckPending <= int64(len(o.pending)))) {
 					o.waiting.cycle()
 					numCycled++
 					// We're done cycling through the requests.

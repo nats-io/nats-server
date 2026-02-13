@@ -2413,6 +2413,7 @@ func TestJetStreamConsumerPriorityPullRequests(t *testing.T) {
 		{"Pinned Pull Request, against standard consumer", nc, "STANDARD", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", Id: "PINNED-ID"}}, "Bad Request - Not a Pinned Client Priority consumer"},
 		{"Overflow Pull Request, overflow below threshold", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 1000}}, "Request Timeout"},
 		{"Overflow Pull Request, overflow above threshold", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, ""},
+		{"Overflow Pull Request, minPending OR minAckPending above threshold", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10, MinAckPending: 5}}, ""},
 		{"Overflow Pull Request, against pinned", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, "Bad Request - Not a Overflow Priority consumer"},
 		{"Overflow Pull Request, against standard consumer", nc, "STANDARD", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, "Bad Request - Not a Overflow Priority consumer"},
 	} {
