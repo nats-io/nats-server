@@ -250,6 +250,7 @@ type catchupState struct {
 	pterm  uint64        // Starting term
 	pindex uint64        // Starting index
 	active time.Time     // Last time we received a message for this catchup
+	signal bool          // Whether the EntryCatchup signal was sent.
 }
 
 // lps holds peer state of last time and last index replicated.
@@ -3487,9 +3488,8 @@ func (n *raft) cancelCatchup() {
 
 	if n.catchup != nil && n.catchup.sub != nil {
 		n.unsubscribe(n.catchup.sub)
-		// Send nil entry to signal the upper layers we are done catching up.
-		n.apply.push(nil)
 	}
+	n.cancelCatchupSignal()
 	n.catchup = nil
 }
 
@@ -3516,9 +3516,6 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 	// Cleanup any old ones.
 	if n.catchup != nil && n.catchup.sub != nil {
 		n.unsubscribe(n.catchup.sub)
-	} else {
-		// Signal to the upper layer that the following entries are catchup entries, up until the nil guard.
-		n.apply.push(newCommittedEntry(0, []*Entry{{EntryCatchup, nil}}))
 	}
 	// Snapshot term and index.
 	n.catchup = &catchupState{
@@ -3531,8 +3528,26 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 	inbox := n.newCatchupInbox()
 	sub, _ := n.subscribe(inbox, n.handleAppendEntry)
 	n.catchup.sub = sub
-
 	return inbox
+}
+
+// Lock should be held.
+func (n *raft) sendCatchupSignal() {
+	if n.catchup == nil || n.catchup.signal {
+		return
+	}
+	n.catchup.signal = true
+	// Signal to the upper layer that the following entries are catchup entries, up until the nil guard.
+	n.apply.push(newCommittedEntry(0, []*Entry{{EntryCatchup, nil}}))
+}
+
+// Lock should be held.
+func (n *raft) cancelCatchupSignal() {
+	if n.catchup == nil || !n.catchup.signal {
+		return
+	}
+	// Send nil entry to signal the upper layers we are done catching up.
+	n.apply.push(nil)
 }
 
 // Truncate our WAL and reset.
@@ -3890,6 +3905,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 
 			// Inherit state from appendEntry with the leader's snapshot.
+			hadPreviousSnapshot := n.snapfile != _EMPTY_
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
@@ -3908,8 +3924,18 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			n.resetInitializing()
 
+			if !hadPreviousSnapshot {
+				// If the first snapshot we install is received from another server, then we immediately signal
+				// to the upper-layer it can coalesce catchup entries.
+				n.sendCatchupSignal()
+			}
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
 			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
+			if hadPreviousSnapshot {
+				// Signal catchup only after we've sent the snapshot. That ensures the upper-layer processes the snapshot
+				// as-is and can only coalesce other catchup entries after this one.
+				n.sendCatchupSignal()
+			}
 			n.Unlock()
 			return
 		}
@@ -3989,6 +4015,10 @@ CONTINUE:
 
 	// Apply anything we need here.
 	if aeCommit > n.commit {
+		// If we're catching up, we might need to signal that it's okay to potentially coalesce entries from here.
+		if catchingUp {
+			n.sendCatchupSignal()
+		}
 		if n.paused {
 			n.hcommit = aeCommit
 			n.debug("Paused, not applying %d", aeCommit)

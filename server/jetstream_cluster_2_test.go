@@ -7257,9 +7257,8 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 	for _, rs := range c.servers {
 		meta := rs.getJetStream().getMetaGroup().(*raft)
 		meta.Lock()
-		indexUpdates := newIPQueue[uint64](rs, "block snapshot")
-		indexUpdates.push(1000)
-		meta.progress = map[string]*ipQueue[uint64]{"peer": indexUpdates}
+		meta.progress = make(map[string]*ipQueue[uint64])
+		meta.progress["blockSnapshots"] = newIPQueue[uint64](meta.s, "blockSnapshots")
 		meta.Unlock()
 	}
 
