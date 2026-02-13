@@ -1392,27 +1392,7 @@ func (js *jetStream) checkForOrphans() {
 		s.Debugf("JetStream cluster skipping check for orphans, not current with the meta-leader")
 		return
 	}
-
-	var streams []*stream
-	var consumers []*consumer
-
-	for accName, jsa := range js.accounts {
-		asa := cc.streams[accName]
-		jsa.mu.RLock()
-		for stream, mset := range jsa.streams {
-			if sa := asa[stream]; sa == nil {
-				streams = append(streams, mset)
-			} else {
-				// This one is good, check consumers now.
-				for _, o := range mset.getConsumers() {
-					if sa.consumers[o.String()] == nil {
-						consumers = append(consumers, o)
-					}
-				}
-			}
-		}
-		jsa.mu.RUnlock()
-	}
+	streams, consumers := js.getOrphans()
 	js.mu.Unlock()
 
 	for _, mset := range streams {
@@ -1444,6 +1424,31 @@ func (js *jetStream) checkForOrphans() {
 			s.Warnf("Deleting consumer encountered an error: %v", err)
 		}
 	}
+}
+
+// Returns orphaned streams and consumers that were recovered from disk, but don't
+// exist as clustered stream/consumer assignments.
+// Lock should be held.
+func (js *jetStream) getOrphans() (streams []*stream, consumers []*consumer) {
+	cc := js.cluster
+	for accName, jsa := range js.accounts {
+		asa := cc.streams[accName]
+		jsa.mu.RLock()
+		for stream, mset := range jsa.streams {
+			if sa := asa[stream]; sa == nil {
+				streams = append(streams, mset)
+			} else {
+				// This one is good, check consumers now.
+				for _, o := range mset.getConsumers() {
+					if sa.consumers[o.String()] == nil {
+						consumers = append(consumers, o)
+					}
+				}
+			}
+		}
+		jsa.mu.RUnlock()
+	}
+	return streams, consumers
 }
 
 func (js *jetStream) monitorCluster() {
@@ -1943,37 +1948,12 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 	// tracked in our assignments. This could happen if we've restarted and recovered streams or consumers
 	// from disk, but then got sent a snapshot to catch up from the meta-leader.
 	if !isRecovering {
-		var deleteStreams []*stream
-		var deleteConsumers []*consumer
+		// This logic is similar to that of checkForOrphans. But, this cleanup is focused on aligning with
+		// a snapshot from a meta leader as a result of catchup. We silently delete them here, instead of
+		// logging and sending out advisories.
 		js.mu.RLock()
-		js.srv.accounts.Range(func(k, v any) bool {
-			a := v.(*Account)
-			a.mu.RLock()
-			jsa := a.js
-			a.mu.RUnlock()
-			if jsa == nil {
-				return true
-			}
-			accStreams := cc.streams[a.Name]
-			jsa.mu.RLock()
-			for _, mset := range jsa.streams {
-				stream := accStreams[mset.name()]
-				if stream == nil {
-					deleteStreams = append(deleteStreams, mset)
-					continue
-				}
-				for _, o := range mset.getPublicConsumers() {
-					if stream.consumers[o.name] == nil {
-						deleteConsumers = append(deleteConsumers, o)
-					}
-				}
-			}
-			jsa.mu.RUnlock()
-			return true
-		})
+		deleteStreams, deleteConsumers := js.getOrphans()
 		js.mu.RUnlock()
-
-		// Now delete all streams and consumers that we're not supposed to have based on the snapshot.
 		for _, mset := range deleteStreams {
 			mset.stop(true, false)
 		}
