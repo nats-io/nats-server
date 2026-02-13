@@ -767,10 +767,17 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64, encrypted bool) uint6
 		if m := blkSize % 100; m != 0 {
 			blkSize += 100 - m
 		}
+		maxBlkSize := int64(FileStoreMaxBlkSize)
+
+		// WorkQueue streams should use smaller blocks to prevent memory issues
+		// during bursts of traffic into the stream.
+		if retention == WorkQueuePolicy {
+			maxBlkSize = defaultMediumBlockSize
+		}
 		if blkSize <= FileStoreMinBlkSize {
 			blkSize = FileStoreMinBlkSize
-		} else if blkSize >= FileStoreMaxBlkSize {
-			blkSize = FileStoreMaxBlkSize
+		} else if blkSize >= maxBlkSize {
+			blkSize = maxBlkSize
 		} else {
 			blkSize = defaultMediumBlockSize
 		}
