@@ -6230,7 +6230,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				hdr = fmt.Appendf(hdr[:end:end], htho[hoff:], name, subject, seq, tsStr, tlseq, len(msg))
 			}
 		}
-		outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, hdr, rpMsg, nil, seq))
+		outq.send(newJSPubMsg(tsubj, subject, reply, hdr, rpMsg, nil, seq))
 	}
 
 	// Send response here.
