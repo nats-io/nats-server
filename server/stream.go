@@ -1082,8 +1082,12 @@ func (mset *stream) monitorQuitC() <-chan struct{} {
 	if mset == nil {
 		return nil
 	}
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	// Recreate if a prior monitor routine was stopped.
+	if mset.mqch == nil {
+		mset.mqch = make(chan struct{})
+	}
 	return mset.mqch
 }
 

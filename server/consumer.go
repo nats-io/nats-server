@@ -1409,8 +1409,12 @@ func (o *consumer) monitorQuitC() <-chan struct{} {
 	if o == nil {
 		return nil
 	}
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// Recreate if a prior monitor routine was stopped.
+	if o.mqch == nil {
+		o.mqch = make(chan struct{})
+	}
 	return o.mqch
 }
 
