@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -2576,7 +2575,7 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, _ *Acco
 	}
 
 	js.mu.RLock()
-	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
+	isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, name)
 	js.mu.RUnlock()
 
 	// Make sure we are meta leader.
@@ -3135,22 +3134,23 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 		return
 	}
 
-	js.mu.RLock()
+	js.mu.Lock()
 	ns, nc := 0, 0
-	streams, hasAccount := cc.streams[accName]
-	for _, osa := range streams {
-		for _, oca := range osa.consumers {
-			oca.deleted = true
+	for osa := range js.streamAssignmentsOrInflightSeq(accName) {
+		for oca := range js.consumerAssignmentsOrInflightSeq(accName, osa.Config.Name) {
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client, Created: oca.Created}
 			meta.Propose(encodeDeleteConsumerAssignment(ca))
+			cc.trackInflightConsumerProposal(accName, osa.Config.Name, ca, true)
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client, Created: osa.Created}
 		meta.Propose(encodeDeleteStreamAssignment(sa))
+		cc.trackInflightStreamProposal(accName, sa, true)
 		ns++
 	}
-	js.mu.RUnlock()
+	js.mu.Unlock()
 
+	hasAccount := ns > 0
 	s.Noticef("Purge request for account %s (streams: %d, consumer: %d, hasAccount: %t)", accName, ns, nc, hasAccount)
 
 	resp.Initiated = true
@@ -3830,9 +3830,10 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 	}
 
 	o.mu.Lock()
-	o.currentPinId = _EMPTY_
+	o.unassignPinId()
 	o.sendUnpinnedAdvisoryLocked(req.Group, "admin")
 	o.mu.Unlock()
+	o.signalNewMessages()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -4400,6 +4401,9 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 // Default chunk size for now.
 const defaultSnapshotChunkSize = 128 * 1024
 const defaultSnapshotWindowSize = 8 * 1024 * 1024 // 8MB
+const defaultSnapshotAckTimeout = 5 * time.Second
+
+var snapshotAckTimeout = defaultSnapshotAckTimeout
 
 // streamSnapshot will stream out our snapshot to the reply subject.
 func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
@@ -4411,6 +4415,11 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 	reply := req.DeliverSubject
 	r := sr.Reader
 	defer r.Close()
+
+	// In case we run into an error, this allows subscription callbacks
+	// to not sit and block endlessly.
+	done := make(chan struct{})
+	defer close(done)
 
 	// Check interest for the snapshot deliver subject.
 	inch := make(chan bool, 1)
@@ -4427,76 +4436,66 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 
 	// Create our ack flow handler.
 	// This is very simple for now.
-	ackSize := defaultSnapshotWindowSize / chunkSize
-	if ackSize < 8 {
-		ackSize = 8
-	} else if ackSize > 8*1024 {
-		ackSize = 8 * 1024
+	maxInflight := defaultSnapshotWindowSize / chunkSize
+	if maxInflight < 8 {
+		maxInflight = 8
+	} else if maxInflight > 8*1024 {
+		maxInflight = 8 * 1024
 	}
-	acks := make(chan struct{}, ackSize)
-	acks <- struct{}{}
 
-	// Track bytes outstanding.
-	var out int32
+	// One slot per chunk. Each chunk read takes a slot, each ack will
+	// replace it. Smooths out in-flight number of chunks.
+	slots := make(chan struct{}, maxInflight)
+	for range maxInflight {
+		slots <- struct{}{}
+	}
 
 	// We will place sequence number and size of chunk sent in the reply.
 	ackSubj := fmt.Sprintf(jsSnapshotAckT, mset.name(), nuid.Next())
 	ackSub, _ := mset.subscribeInternal(ackSubj+".>", func(_ *subscription, _ *client, _ *Account, subject, _ string, _ []byte) {
-		cs, _ := strconv.Atoi(tokenAt(subject, 6))
-		// This is very crude and simple, but ok for now.
-		// This only matters when sending multiple chunks.
-		if atomic.AddInt32(&out, int32(-cs)) < defaultSnapshotWindowSize {
-			select {
-			case acks <- struct{}{}:
-			default:
-			}
+		select {
+		case slots <- struct{}{}:
+		case <-done:
 		}
 	})
 	defer mset.unsubscribe(ackSub)
 
-	// TODO(dlc) - Add in NATS-Chunked-Sequence header
 	var hdr []byte
+	chunk := make([]byte, chunkSize)
 	for index := 1; ; index++ {
-		chunk := make([]byte, chunkSize)
-		n, err := r.Read(chunk)
-		chunk = chunk[:n]
+		select {
+		case <-slots:
+			// A slot has become available.
+		case <-inch:
+			// The receiver appears to have gone away.
+			hdr = []byte("NATS/1.0 408 No Interest\r\n\r\n")
+			goto done
+		case err := <-sr.errCh:
+			// The snapshotting goroutine has failed for some reason.
+			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %s\r\n\r\n", err))
+			goto done
+		case <-time.After(snapshotAckTimeout):
+			// It's taking a very long time for the receiver to send us acks,
+			// they have probably stalled or there is high loss on the link.
+			hdr = []byte("NATS/1.0 408 No Flow Response\r\n\r\n")
+			goto done
+		}
+		n, err := io.ReadFull(r, chunk)
+		chunk := chunk[:n]
 		if err != nil {
 			if n > 0 {
 				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0))
 			}
 			break
 		}
-
-		// Wait on acks for flow control if past our window size.
-		// Wait up to 10ms for now if no acks received.
-		if atomic.LoadInt32(&out) > defaultSnapshotWindowSize {
-			select {
-			case <-acks:
-				// ok to proceed.
-			case <-inch:
-				// Lost interest
-				hdr = []byte("NATS/1.0 408 No Interest\r\n\r\n")
-				goto done
-			case <-time.After(2 * time.Second):
-				hdr = []byte("NATS/1.0 408 No Flow Response\r\n\r\n")
-				goto done
-			}
-		}
 		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
 		if hdr == nil {
 			hdr = []byte("NATS/1.0 204\r\n\r\n")
 		}
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, ackReply, nil, chunk, nil, 0))
-		atomic.AddInt32(&out, int32(len(chunk)))
-	}
-
-	if err := <-sr.errCh; err != _EMPTY_ {
-		hdr = []byte(fmt.Sprintf("NATS/1.0 500 %s\r\n\r\n", err))
 	}
 
 done:
-	// Send last EOF
-	// TODO(dlc) - place hash in header
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 

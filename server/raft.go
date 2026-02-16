@@ -179,6 +179,8 @@ type raft struct {
 	applied   uint64 // Index of the most recently applied commit
 	papplied  uint64 // First sequence of our log, matches when we last installed a snapshot.
 
+	membChangeIndex uint64 // Index of uncommitted membership change entry (0 means no change in progress)
+
 	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
 	leader string // The ID of the leader
@@ -231,7 +233,6 @@ type raft struct {
 	observer     bool // The node is observing, i.e. not able to become leader
 	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
-	membChanging bool // There is a membership change proposal in progress
 	deleted      bool // If the node was deleted.
 }
 
@@ -926,24 +927,23 @@ func (n *raft) ForwardProposal(entry []byte) error {
 
 // ProposeAddPeer is called to add a peer to the group.
 func (n *raft) ProposeAddPeer(peer string) error {
-	n.Lock()
+	n.RLock()
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader {
-		n.Unlock()
+		n.RUnlock()
 		return errNotLeader
 	}
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.Unlock()
+		n.RUnlock()
 		return werr
 	}
-	if n.membChanging {
-		n.Unlock()
+	if n.membChangeIndex > 0 {
+		n.RUnlock()
 		return errMembershipChange
 	}
 	prop := n.prop
-	n.membChanging = true
-	n.Unlock()
+	n.RUnlock()
 
 	prop.push(newProposedEntry(newEntry(EntryAddPeer, []byte(peer)), _EMPTY_))
 	return nil
@@ -951,36 +951,35 @@ func (n *raft) ProposeAddPeer(peer string) error {
 
 // ProposeRemovePeer is called to remove a peer from the group.
 func (n *raft) ProposeRemovePeer(peer string) error {
-	n.Lock()
+	n.RLock()
 
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.Unlock()
+		n.RUnlock()
 		return werr
 	}
 
 	if n.State() != Leader {
 		subj := n.rpsubj
-		n.Unlock()
+		n.RUnlock()
 
 		// Forward the proposal to the leader
 		n.sendRPC(subj, _EMPTY_, []byte(peer))
 		return nil
 	}
 
-	if n.membChanging {
-		n.Unlock()
+	if n.membChangeIndex > 0 {
+		n.RUnlock()
 		return errMembershipChange
 	}
 
 	if len(n.peers) <= 1 {
-		n.Unlock()
+		n.RUnlock()
 		return errRemoveLastNode
 	}
 
 	prop := n.prop
-	n.membChanging = true
-	n.Unlock()
+	n.RUnlock()
 
 	prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_))
 	return nil
@@ -989,7 +988,7 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 func (n *raft) MembershipChangeInProgress() bool {
 	n.RLock()
 	defer n.RUnlock()
-	return n.membChanging
+	return n.membChangeIndex > 0
 }
 
 // ClusterSize reports back the total cluster size.
@@ -1606,6 +1605,10 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 			n.Unlock()
 			time.Sleep(time.Millisecond)
 			n.Lock()
+			if n.State() == Closed {
+				n.debug("Node closed during health check, returning not current")
+				return false
+			}
 			if n.commit-n.applied < startDelta {
 				// The gap is getting smaller, so we're making forward progress.
 				clearBehindState()
@@ -2192,7 +2195,7 @@ func (n *raft) setObserverLocked(isObserver bool, extSt extensionState) {
 	// If we're leaving observer state then reset the election timer or
 	// we might end up waiting for up to the observerModeInterval.
 	if wasObserver && !isObserver {
-		n.resetElect(randCampaignTimeout())
+		n.resetElect(randElectionTimeout())
 	}
 }
 
@@ -2610,18 +2613,23 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 
 	n.RLock()
 	// Check state under lock, we might not be leader anymore.
-	if n.State() != Leader {
+	if n.State() != Leader || !n.leaderState.Load() {
 		n.debug("Ignoring forwarded peer removal proposal, not leader")
 		n.RUnlock()
 		return
 	}
-	prop, werr := n.prop, n.werr
-	n.RUnlock()
-
-	// Ignore if we have had a write error previous.
-	if werr != nil {
+	// Error if we had a previous write error.
+	if werr := n.werr; werr != nil {
+		n.RUnlock()
 		return
 	}
+	if n.membChangeIndex > 0 {
+		n.debug("Ignoring forwarded peer removal proposal, membership changing")
+		n.RUnlock()
+		return
+	}
+	prop := n.prop
+	n.RUnlock()
 
 	// Need to copy since this is underlying client/route buffer.
 	peer := copyBytes(msg)
@@ -2635,7 +2643,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 
 	n.RLock()
 	// Check state under lock, we might not be leader anymore.
-	if n.State() != Leader {
+	if n.State() != Leader || !n.leaderState.Load() {
 		n.debug("Ignoring forwarded proposal, not leader")
 		n.RUnlock()
 		return
@@ -2697,14 +2705,18 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	n.Lock()
 	defer n.Unlock()
 
-	// Only makes sense to call this with entries that change membership
-	if !e.ChangesMembership() {
+	// Only makes sense to call this with entries that change membership.
+	// Also, ignore if we're already changing membership.
+	if !e.ChangesMembership() || n.membChangeIndex > 0 {
 		return false
 	}
 
+	// Set to the index where we will store the membership change.
+	// It needs to be before we send, since if we're cluster size 1 we try to commit immediately.
+	n.membChangeIndex = n.pindex + 1
 	err := n.sendAppendEntryLocked([]*Entry{e}, true)
 	if err != nil {
-		n.membChanging = false
+		n.membChangeIndex = 0
 		return false
 	}
 
@@ -2722,24 +2734,6 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	return true
 }
 
-// logContainsUncommittedMembershipChange returns true if the
-// log contains uncommitted entries that change membership.
-// Lock should be held.
-func (n *raft) logContainsUncommittedMembershipChange() (bool, error) {
-	for i := n.commit + 1; i <= n.pindex; i++ {
-		ae, err := n.loadEntry(i)
-		if err != nil {
-			return false, err
-		}
-		if len(ae.entries) > 0 && ae.entries[0].ChangesMembership() {
-			ae.returnToPool()
-			return true, nil
-		}
-		ae.returnToPool()
-	}
-	return false, nil
-}
-
 func (n *raft) runAsLeader() {
 	if n.State() == Closed {
 		return
@@ -2747,22 +2741,6 @@ func (n *raft) runAsLeader() {
 
 	n.Lock()
 	psubj, rpsubj := n.psubj, n.rpsubj
-
-	// Check if there are any uncommitted  membership changes.
-	// If so, we need to make sure we don't  propose any new
-	// ones until those are committed.
-	found, err := n.logContainsUncommittedMembershipChange()
-	if err != nil {
-		n.warn("Error while looking for membership changes in WAL: %v", err)
-		n.stepdownLocked(noLeader)
-		n.Unlock()
-		return
-
-	}
-	if found {
-		n.membChanging = true
-		n.debug("Log contains uncommitted membership change")
-	}
 
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
@@ -3138,9 +3116,8 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	indexUpdates := newIPQueue[uint64](n.s, fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group))
 	indexUpdates.push(ae.pindex)
 	n.progress[ar.peer] = indexUpdates
-	n.Unlock()
-
 	n.wg.Add(1)
+	n.Unlock()
 	n.s.startGoRoutine(func() {
 		defer n.wg.Done()
 		n.runCatchup(ar, indexUpdates)
@@ -3245,7 +3222,7 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 
 			// We are done with this membership change
-			n.membChanging = false
+			n.membChangeIndex = 0
 
 		case EntryRemovePeer:
 			peer := string(e.Data)
@@ -3260,7 +3237,7 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 
 			// We are done with this membership change
-			n.membChanging = false
+			n.membChangeIndex = 0
 
 			// If this is us and we are the leader signal the caller
 			// to attempt to stepdown.
@@ -3607,6 +3584,11 @@ func (n *raft) truncateWAL(term, index uint64) {
 	}
 	// Set after we know we have truncated properly.
 	n.pterm, n.pindex = term, index
+
+	// Check if we're truncating an uncommitted membership change.
+	if n.membChangeIndex > 0 && n.membChangeIndex > index {
+		n.membChangeIndex = 0
+	}
 }
 
 // Reset our WAL. This is equivalent to truncating all data from the log.
@@ -3975,6 +3957,9 @@ CONTINUE:
 				}
 			}
 		case EntryAddPeer:
+			// When receiving or restoring, mark membership as changing.
+			// Set to the index where this entry was stored (pindex is now this entry's index)
+			n.membChangeIndex = n.pindex
 			if newPeer := string(e.Data); len(newPeer) == idLen {
 				// Track directly, but wait for commit to be official
 				if _, ok := n.peers[newPeer]; !ok {
@@ -3983,6 +3968,10 @@ CONTINUE:
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
 			}
+		case EntryRemovePeer:
+			// When receiving or restoring, mark membership as changing.
+			// Set to the index where this entry was stored (pindex is now this entry's index)
+			n.membChangeIndex = n.pindex
 		}
 	}
 
@@ -4746,7 +4735,6 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.leaderState.Store(false)
 	n.leaderSince.Store(nil)
 	n.lxfer = false
-	n.membChanging = false
 
 	// Reset acks, we can't assume acks from a previous term are still valid in another term.
 	if len(n.acks) > 0 {

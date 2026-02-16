@@ -1309,7 +1309,7 @@ func TestRouteCloseTLSConnection(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.Cluster.Host, opts.Cluster.Port)
+	endpoint := net.JoinHostPort(opts.Cluster.Host, fmt.Sprintf("%d", opts.Cluster.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)
@@ -4744,7 +4744,7 @@ func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Cluster.Port))
+	c, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Cluster.Port)))
 	if err != nil {
 		t.Fatalf("Error connecting: %v", err)
 	}

@@ -12042,3 +12042,252 @@ func TestFileStoreLoadNextMsgMultiSkipAhead(t *testing.T) {
 		t.Run(fmt.Sprintf("%s/Interior", title), func(t *testing.T) { test(t, false, singleSubjPerBlock) })
 	}
 }
+
+func TestFileStoreTrailingSkipMsgsFromStreamStateFile(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 10 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		mfn := lmb.mfn
+		lmb.mu.RUnlock()
+		require_NotEqual(t, mfn, _EMPTY_)
+
+		// Stop the store and truncate the block file.
+		// Stopping should write out our stream state file, letting us "remember" the highest last sequence.
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Truncate(mfn, 33*5))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// We should recover with the right state, the last sequence coming from the stream state file,
+		// and the messages from the recovered blocks.
+		state := fs.State()
+		require_Equal(t, state.Msgs, 5)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 10)
+
+		// Go through all messages, they should properly report deletes.
+		for seq := uint64(1); seq <= 10; seq++ {
+			_, err = fs.LoadMsg(seq, nil)
+			if seq <= 5 {
+				require_NoError(t, err)
+			} else {
+				require_Error(t, err, ErrStoreMsgNotFound)
+			}
+		}
+
+		// Also check a new block was created to represent this.
+		fs.mu.RLock()
+		lmb = fs.lmb
+		lblks := len(fs.blks)
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		ldmap := lmb.dmap.Size()
+		lmb.mu.RUnlock()
+		require_Len(t, lblks, 2)
+		require_Len(t, ldmap, 0)
+		require_Equal(t, atomic.LoadUint64(&lmb.first.seq), 11)
+		require_Equal(t, atomic.LoadUint64(&lmb.last.seq), 10)
+	})
+}
+
+func TestFileStoreSelectMsgBlockBinarySearch(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		created := time.Now()
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 33 {
+			if i > 0 {
+				_, err = fs.newMsgBlockForWrite()
+				require_NoError(t, err)
+			}
+			for range 2 {
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+			if i == 15 {
+				for _, seq := range []uint64{2, 5} {
+					_, err = fs.newMsgBlockForWrite()
+					require_NoError(t, err)
+					_, err = fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+			}
+		}
+
+		test := func() {
+			// Select a block containing a message we deleted.
+			i, mb := fs.selectMsgBlockWithIndex(2)
+			require_Equal(t, i, 0)
+			require_Equal(t, mb.index, 1)
+
+			// Once more for the other deleted message.
+			i, mb = fs.selectMsgBlockWithIndex(5)
+			require_Equal(t, i, 2)
+			require_Equal(t, mb.index, 3)
+
+			// Select the first block/message.
+			i, mb = fs.selectMsgBlockWithIndex(1)
+			require_Equal(t, i, 0)
+			require_Equal(t, mb.index, 1)
+
+			// Select a block before the delete block, but after the deleted sequences.
+			i, mb = fs.selectMsgBlockWithIndex(10)
+			require_Equal(t, i, 4)
+			require_Equal(t, mb.index, 5)
+
+			// Select a block after the delete block AND after the deleted sequences.
+			i, mb = fs.selectMsgBlockWithIndex(64)
+			require_Equal(t, i, 33)
+			require_Equal(t, mb.index, 34)
+		}
+		test()
+
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+		test()
+	})
+}
+
+func TestFileStoreCorrectChecksumAfterTruncate(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var fchkCmp []byte
+		var fchk [8]byte
+		for i := range 5 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			if i == 2 {
+				mb := fs.getFirstBlock()
+				mb.mu.RLock()
+				fchkCmp = mb.lastChecksum()
+				copy(fchk[:], mb.lchk[:])
+				mb.mu.RUnlock()
+			}
+		}
+		require_True(t, bytes.Equal(fchkCmp, fchk[:]))
+
+		// After truncating we should return to the checksum we stored above.
+		require_NoError(t, fs.Truncate(3))
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		lchkCmp := mb.lastChecksum()
+		var lchk [8]byte
+		copy(lchk[:], mb.lchk[:])
+		mb.mu.RUnlock()
+		require_True(t, bytes.Equal(lchkCmp, lchk[:]))
+		require_True(t, bytes.Equal(fchkCmp, lchkCmp))
+	})
+}
+
+func TestFileStoreRecoverTTLAndScheduleStateAndCounters(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		created := time.Now()
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}, AllowMsgTTL: true, AllowMsgSchedules: true}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		ttl := int64(5)
+		sched := time.Now().Add(5 * time.Second)
+		hdr := genHeader(nil, JSMessageTTL, strconv.FormatInt(ttl, 10))
+		hdr = genHeader(hdr, JSSchedulePattern, fmt.Sprintf("@at %s", sched.Format(time.RFC3339)))
+		_, _, err = fs.StoreMsg("foo", hdr, nil, ttl)
+		require_NoError(t, err)
+
+		mb := fs.getFirstBlock()
+		mb.mu.RLock()
+		ttls := mb.ttls
+		schedules := mb.schedules
+		mb.mu.RUnlock()
+		require_Equal(t, ttls, 1)
+		require_Equal(t, schedules, 1)
+
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		mb = fs.getFirstBlock()
+		mb.mu.RLock()
+		ttls = mb.ttls
+		schedules = mb.schedules
+		mb.mu.RUnlock()
+		require_Equal(t, ttls, 1)
+		require_Equal(t, schedules, 1)
+	})
+}
+
+func TestFileStoreCorruptionSetsHbitWithoutHeaders(t *testing.T) {
+	const (
+		KindMsgFromBuf = iota
+		KindIndexCacheBuf
+		KindRebuildState
+	)
+	test := func(t *testing.T, kind int) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			mb := fs.getFirstBlock()
+			fs.mu.Lock()
+			mb.mu.Lock()
+			err = mb.writeMsgRecordLocked(emptyRecordLen|hbit, 1, _EMPTY_, nil, nil, 0, false, false)
+			cache := mb.ecache.Value()
+			mb.mu.Unlock()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			require_NotNil(t, cache)
+
+			switch kind {
+			case KindMsgFromBuf:
+				mb.mu.Lock()
+				_, err = mb.msgFromBufNoCopy(cache.buf, nil, mb.hh)
+				mb.mu.Unlock()
+				require_True(t, strings.Contains(err.Error(), "sanity check failed"))
+			case KindIndexCacheBuf:
+				mb.mu.Lock()
+				err = mb.indexCacheBuf(cache.buf)
+				mb.mu.Unlock()
+				require_Error(t, err, errCorruptState)
+			case KindRebuildState:
+				require_NoError(t, mb.flushPendingMsgs())
+				_, _, err = mb.rebuildState()
+				require_True(t, err != nil)
+				require_True(t, strings.Contains(err.Error(), "sanity check failed"))
+			default:
+				t.Fatalf("unknown kind %d", kind)
+			}
+		})
+	}
+	t.Run("msgFromBuf", func(t *testing.T) { test(t, KindMsgFromBuf) })
+	t.Run("indexCacheBuf", func(t *testing.T) { test(t, KindIndexCacheBuf) })
+	t.Run("rebuildState", func(t *testing.T) { test(t, KindRebuildState) })
+}

@@ -2058,16 +2058,6 @@ func TestJetStreamClusterMaxConsumersMultipleConcurrentRequests(t *testing.T) {
 	if nc := len(names); nc > 1 {
 		t.Fatalf("Expected only 1 consumer, got %d", nc)
 	}
-
-	metaLeader := c.leader()
-	mjs := metaLeader.getJetStream()
-	mjs.mu.RLock()
-	sa := mjs.streamAssignment(globalAccountName, "MAXCC")
-	require_NotNil(t, sa)
-	for _, ca := range sa.consumers {
-		require_False(t, ca.pending)
-	}
-	mjs.mu.RUnlock()
 }
 
 func TestJetStreamClusterAccountMaxStreamsAndConsumersMultipleConcurrentRequests(t *testing.T) {
@@ -7262,6 +7252,16 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 		})
 	}
 	checkStreamInfo(js)
+
+	// Block the meta snapshots on all servers so they need to replay the log.
+	for _, rs := range c.servers {
+		meta := rs.getJetStream().getMetaGroup().(*raft)
+		meta.Lock()
+		indexUpdates := newIPQueue[uint64](rs, "block snapshot")
+		indexUpdates.push(1000)
+		meta.progress = map[string]*ipQueue[uint64]{"peer": indexUpdates}
+		meta.Unlock()
+	}
 
 	// Update replicas down to 1
 	for i := 0; i < numStreams; i++ {

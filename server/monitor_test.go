@@ -2008,7 +2008,7 @@ func TestMonitorConnzClosedConnsBadClient(t *testing.T) {
 
 	opts := s.getOpts()
 
-	rc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	rc, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
 	if err != nil {
 		t.Fatalf("Error on dial: %v", err)
 	}
@@ -2057,7 +2057,7 @@ func TestMonitorConnzClosedConnsBadTLSClient(t *testing.T) {
 
 	opts = s.getOpts()
 
-	rc, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	rc, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
 	if err != nil {
 		t.Fatalf("Error on dial: %v", err)
 	}
@@ -2267,7 +2267,7 @@ func TestMonitorConnzTLSInHandshake(t *testing.T) {
 	defer s.Shutdown()
 
 	// Create bare TCP connection to delay client TLS handshake
-	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
+	c, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
 	if err != nil {
 		t.Fatalf("Error on dial: %v", err)
 	}
