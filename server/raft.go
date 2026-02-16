@@ -87,6 +87,7 @@ type RaftNode interface {
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
+	SetUpperLayerHealthcheck(f func() error)
 }
 
 type WAL interface {
@@ -234,6 +235,9 @@ type raft struct {
 	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	deleted      bool // If the node was deleted.
+
+	hcf      func() error // Healthcheck function from the upper layer, optional
+	hcfailed bool         // Healthcheck function from the upper layer last reported failed
 }
 
 type proposedEntry struct {
@@ -638,6 +642,15 @@ func (n *raft) GetTrafficAccountName() string {
 	n.RLock()
 	defer n.RUnlock()
 	return n.acc.GetName()
+}
+
+// If provided, periodically check when leader if the upper layer is still responding.
+// If it does not return that it is happy then we will step down. The healthcheck
+// function can block, which is fine, because during that time runAsLeader can't send HBs.
+func (n *raft) SetUpperLayerHealthcheck(f func() error) {
+	n.Lock()
+	defer n.Unlock()
+	n.hcf = f
 }
 
 func (n *raft) RecreateInternalSubs() error {
@@ -2236,6 +2249,15 @@ func (n *raft) processAppendEntries() {
 // runAsFollower is called by run and will block for as long as the node is
 // running in the follower state.
 func (n *raft) runAsFollower() {
+	// If we entered the follower state with a failed healthcheck then we
+	// will start a timer to keep checking it, as we might recover.
+	hct := make(<-chan time.Time)
+	if n.hcf != nil && n.hcfailed {
+		hcf := time.NewTicker(hbInterval * 30)
+		defer hcf.Stop()
+		hct = hcf.C
+	}
+
 	for n.State() == Follower {
 		elect := n.electTimer()
 
@@ -2269,6 +2291,12 @@ func (n *raft) runAsFollower() {
 				n.Unlock()
 			} else {
 				n.switchToCandidate()
+				return
+			}
+		case <-hct:
+			if err := n.hcf(); err == nil {
+				n.warn("Upper layer healthcheck failure has cleared")
+				n.setObserver(false, extUndetermined)
 				return
 			}
 		case <-n.votes.ch:
@@ -2785,6 +2813,9 @@ func (n *raft) runAsLeader() {
 	lq := time.NewTicker(lostQuorumCheck)
 	defer lq.Stop()
 
+	hcf := time.NewTicker(hbInterval * 30)
+	defer hcf.Stop()
+
 	for n.State() == Leader {
 		select {
 		case <-n.s.quitCh:
@@ -2840,6 +2871,18 @@ func (n *raft) runAsLeader() {
 		case <-lq.C:
 			if n.lostQuorum() {
 				n.stepdown(noLeader)
+				return
+			}
+		case <-hcf.C:
+			if n.hcf == nil {
+				continue
+			}
+			if err := n.hcf(); err != nil {
+				n.hcfailed = true
+				n.warn("Upper layer healthcheck failed: %v", err)
+				n.warn("Stepping down from leader and switching to observer mode")
+				n.stepdown(noLeader)
+				n.setObserver(true, extUndetermined)
 				return
 			}
 		case <-n.votes.ch:
@@ -3396,6 +3439,9 @@ func (n *raft) runAsCandidate() {
 	votes := map[string]struct{}{}
 	emptyVotes := map[string]struct{}{}
 
+	hcf := time.NewTicker(hbInterval * 30)
+	defer hcf.Stop()
+
 	for n.State() == Candidate {
 		elect := n.electTimer()
 		select {
@@ -3414,6 +3460,18 @@ func (n *raft) runAsCandidate() {
 		case <-elect.C:
 			n.switchToCandidate()
 			return
+		case <-hcf.C:
+			if n.hcf == nil {
+				continue
+			}
+			if err := n.hcf(); err != nil && !n.hcfailed {
+				n.hcfailed = true
+				n.warn("Upper layer healthcheck failed: %v", err)
+				n.warn("Stepping down from candidate and switching to observer mode")
+				n.stepdown(noLeader)
+				n.setObserver(true, extUndetermined)
+				return
+			}
 		case <-n.votes.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			vresp, ok := n.votes.popOne()
@@ -4789,6 +4847,17 @@ func (n *raft) switchToCandidate() {
 
 	n.Lock()
 	defer n.Unlock()
+
+	if n.hcf != nil {
+		if err := n.hcf(); err != nil {
+			n.debug("Not switching to candidate due to healthcheck failure:", err)
+			return
+		} else if n.hcfailed {
+			n.hcfailed = false
+			n.warn("Upper layer healthcheck failure has cleared")
+			n.setObserver(false, extUndetermined)
+		}
+	}
 
 	// If we are catching up or are in observer mode we can not switch.
 	// Avoid petitioning to become leader if we're behind on applies.
