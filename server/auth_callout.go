@@ -50,6 +50,12 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	} else {
 		acc = c.acc
 	}
+	if acc == nil {
+		// FIX for 7841 - hand rolled creds on leafnode became crasher here
+		errStr = fmt.Sprintf("%s not mapped to a callout account", c.kindString())
+		s.Warnf(errStr)
+		return false, errStr
+	}
 
 	// Check if we have been requested to encrypt.
 	var xkp nkeys.KeyPair

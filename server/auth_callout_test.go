@@ -2492,3 +2492,182 @@ func TestAuthCalloutProxyRequiredInUserNotInAuthJWT(t *testing.T) {
 	// Auth callout should have been invoked once.
 	require_Equal(t, 1, int(invoked.Load()))
 }
+
+func TestAuthCalloutOperatorModeMismatchedCalloutCreds(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH callout service account.
+	ckp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	cpk, err := ckp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, _ := createAuthServiceUser(t, ckp)
+
+	authClaim := jwt.NewAccountClaims(cpk)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add("*")
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, spub, cpk, authJwt, spub, sysJwt)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Create mismatched creds for the auth service user:
+	// JWT with the auth user's public key, but a different seed.
+	ukpBad, _ := nkeys.CreateUser()
+	seedBad, _ := ukpBad.Seed()
+
+	uclaim := newJWTTestUserClaims()
+	uclaim.Name = "auth-service"
+	uclaim.Subject = upub // auth user's public key
+	ujwt, err := uclaim.Encode(ckp)
+	require_NoError(t, err)
+	badCreds := genCredsFile(t, ujwt, seedBad)
+	defer removeFile(t, badCreds)
+
+	// Client auth will time out because the callout service didn't connect.
+	_, err = nats.Connect(s.ClientURL(), nats.UserCredentials(badCreds), nats.MaxReconnects(0))
+	require_Error(t, err)
+
+	// Server should still be running.
+	time.Sleep(500 * time.Millisecond)
+	require_True(t, s.Running())
+}
+
+func TestAuthCalloutLeafNodeOperatorModeMismatchedCreds(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// A account.
+	akp, apk := createKey(t)
+	aClaim := jwt.NewAccountClaims(apk)
+	aClaim.Name = "A"
+	aJwt, err := aClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH callout service account.
+	ckp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	cpk, err := ckp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, ckp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(cpk)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add("*")
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+			%s: %s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+    `, ojwt, spub, cpk, authJwt, apk, aJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Token == "token" {
+			ujwt := createAuthUser(t, user, "user_a", apk, "", akp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer at.Cleanup()
+
+	// Good leaf node connection.
+	lcreds := createBasicAccountLeaf(t, ckp)
+	defer removeFile(t, lcreds)
+
+	hopts := at.srv.getOpts()
+	lconf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "LEAF"
+		leafnodes {
+			remotes [
+				{
+					url: "nats://token@127.0.0.1:%d"
+					credentials: "%s"
+				}
+			]
+		}
+	`, hopts.LeafNode.Port, lcreds)))
+	leaf, _ := RunServerWithConfig(lconf)
+	defer leaf.Shutdown()
+	checkLeafNodeConnected(t, leaf)
+
+	// Now create a leaf with mismatched JWT/seed - JWT from one user,
+	// seed from another. This should not crash the server.
+	ukp1, _ := nkeys.CreateUser()
+	seed1, _ := ukp1.Seed()
+
+	ukp2, _ := nkeys.CreateUser()
+	upub2, _ := ukp2.PublicKey()
+
+	// Create JWT for user2 but pair with seed from user1.
+	uclaim := newJWTTestUserClaims()
+	uclaim.Subject = upub2
+	uclaim.Name = "mismatched-leaf"
+	ujwt, err := uclaim.Encode(ckp)
+	require_NoError(t, err)
+	badCreds := genCredsFile(t, ujwt, seed1)
+	defer removeFile(t, badCreds)
+
+	lconf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "BAD_LEAF"
+		leafnodes {
+			remotes [
+				{
+					url: "nats://token@127.0.0.1:%d"
+					credentials: "%s"
+				}
+			]
+		}
+	`, hopts.LeafNode.Port, badCreds)))
+	leaf2, _ := RunServerWithConfig(lconf2)
+	defer leaf2.Shutdown()
+
+	// Bad leaf should fail to connect but NOT crash the server.
+	time.Sleep(50 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, leaf2, 0)
+
+	// Verify the hub server is still running and healthy.
+	checkLeafNodeConnectedCount(t, at.srv, 1)
+}
