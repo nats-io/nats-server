@@ -3123,13 +3123,6 @@ func (o *consumer) setStoreState(state *ConsumerState) error {
 }
 
 // Update our state to the store.
-func (o *consumer) writeStoreState() error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.writeStoreStateUnlocked()
-}
-
-// Update our state to the store.
 // Lock should be held.
 func (o *consumer) writeStoreStateUnlocked() error {
 	if o.store == nil {
@@ -6049,54 +6042,59 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 	if o.sseq < sseq {
 		o.sseq = sseq
 	}
-
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
-		// We need to remove those no longer relevant from pending.
-		for seq, p := range o.pending {
-			if seq <= o.asflr {
-				if p.Sequence > o.adflr {
-					o.adflr = p.Sequence
-					if o.adflr > o.dseq {
-						o.dseq = o.adflr
+	}
+	// We need to remove those no longer relevant from pending.
+	for seq, p := range o.pending {
+		if seq <= o.asflr {
+			if p.Sequence > o.adflr {
+				o.adflr = p.Sequence
+				if o.adflr > o.dseq {
+					o.dseq = o.adflr
+				}
+			}
+			delete(o.pending, seq)
+			delete(o.rdc, seq)
+			// rdq handled below.
+		}
+		if isWider && store != nil {
+			// Our filtered subject, which could be all, is wider than the underlying purge.
+			// We need to check if the pending items left are still valid.
+			var smv StoreMsg
+			if _, err := store.LoadMsg(seq, &smv); err == errDeletedMsg || err == ErrStoreMsgNotFound {
+				// Only update delivered floor if this was the next to deliver.
+				if dseq := p.Sequence; dseq == o.adflr+1 {
+					o.adflr, o.asflr = dseq, sseq
+					for ss := sseq + 1; ss < o.sseq; ss++ {
+						if p, ok := o.pending[ss]; ok {
+							if p.Sequence > 0 {
+								o.adflr, o.asflr = p.Sequence-1, ss-1
+							}
+							break
+						}
 					}
 				}
 				delete(o.pending, seq)
 				delete(o.rdc, seq)
-				// rdq handled below.
-			}
-			if isWider && store != nil {
-				// Our filtered subject, which could be all, is wider than the underlying purge.
-				// We need to check if the pending items left are still valid.
-				var smv StoreMsg
-				if _, err := store.LoadMsg(seq, &smv); err == errDeletedMsg || err == ErrStoreMsgNotFound {
-					if p.Sequence > o.adflr {
-						o.adflr = p.Sequence
-						if o.adflr > o.dseq {
-							o.dseq = o.adflr
-						}
-					}
-					delete(o.pending, seq)
-					delete(o.rdc, seq)
-				}
 			}
 		}
 	}
 
 	// This means we can reset everything at this point.
 	if len(o.pending) == 0 {
-		o.pending, o.rdc = nil, nil
+		o.pending = nil
 		o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	}
 
 	// We need to remove all those being queued for redelivery under o.rdq
-	if len(o.rdq) > 0 {
-		rdq := o.rdq
+	if len(o.rdc) > 0 {
 		o.rdq = nil
 		o.rdqi.Empty()
-		for _, sseq := range rdq {
-			if sseq >= o.sseq { // TODO(mvv): should this be purged sseq??
-				o.addToRedeliverQueue(sseq)
+		for rseq, dc := range o.rdc {
+			// Only re-add those sequences that are still in the stream.
+			if rseq >= o.asflr && dc < o.maxdc {
+				o.addToRedeliverQueue(rseq)
 			}
 		}
 	}
