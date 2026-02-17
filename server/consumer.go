@@ -6095,18 +6095,19 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 		o.rdq = nil
 		o.rdqi.Empty()
 		for _, sseq := range rdq {
-			if sseq >= o.sseq {
+			if sseq >= o.sseq { // TODO(mvv): should this be purged sseq??
 				o.addToRedeliverQueue(sseq)
 			}
 		}
 	}
-	// Grab some info in case of error below.
-	s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-	o.mu.Unlock()
-
-	if err := o.writeStoreState(); err != nil && s != nil && mset != nil {
+	if o.node != nil {
+		snap := encodeConsumerState(o.generateConsumerState())
+		o.node.SendSnapshot(snap)
+	} else if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+		s, acc, mset, name := o.srv, o.acc, o.mset, o.name
 		s.Warnf("Consumer '%s > %s > %s' error on write store state from purge: %v", acc, mset.nameLocked(false), name, err)
 	}
+	o.mu.Unlock()
 }
 
 func stopAndClearTimer(tp **time.Timer) {

@@ -11333,3 +11333,98 @@ func TestJetStreamConsumerTODO(t *testing.T) {
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
+
+func TestJetStreamConsumerTODO2(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		for range 3 {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+
+		sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+			nats.BindStream("TEST"),
+			nats.MaxDeliver(1),
+			nats.ConsumerReplicas(replicas),
+			nats.AckExplicit(),
+			nats.AckWait(200*time.Millisecond),
+		)
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		msgs, err := sub.Fetch(3, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 3)
+		require_NoError(t, msgs[0].AckSync())
+		require_NoError(t, msgs[2].AckSync())
+
+		_, err = sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+		require_Error(t, err, nats.ErrTimeout)
+
+		require_NoError(t, js.PurgeStream("TEST"))
+		time.Sleep(200 * time.Millisecond)
+
+		cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+		require_NotNil(t, cl)
+		for _, s := range c.servers {
+			if !s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				continue
+			}
+			mset, err := cl.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			o := mset.lookupConsumer("CONSUMER")
+			require_NotNil(t, o)
+			o.mu.RLock()
+			pending, rdc := len(o.pending), len(o.rdc)
+			state, err := o.store.State()
+			o.mu.RUnlock()
+			require_NoError(t, err)
+			require_Equal(t, pending, 0)
+			require_Equal(t, rdc, 0)
+			require_Equal(t, state.AckFloor.Consumer, 3)
+			require_Equal(t, state.AckFloor.Stream, 3)
+			require_Equal(t, state.Delivered.Consumer, 3)
+			require_Equal(t, state.Delivered.Stream, 3)
+			require_Len(t, len(state.Pending), 0)
+			require_Len(t, len(state.Redelivered), 0)
+		}
+
+		//c.stopAll()
+		//c.restartAll()
+		//
+		//c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+		//cl = c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+		//require_NotNil(t, cl)
+		//mset, err = cl.globalAccount().lookupStream("TEST")
+		//require_NoError(t, err)
+		//o = mset.lookupConsumer("CONSUMER")
+		//require_NotNil(t, o)
+		//o.mu.RLock()
+		//pending, rdc = len(o.pending), len(o.rdc)
+		//state, err = o.store.State()
+		//o.mu.RUnlock()
+		//require_NoError(t, err)
+		//require_Equal(t, pending, 0)
+		//require_Equal(t, rdc, 1)
+		//require_Equal(t, state.AckFloor.Consumer, 3)
+		//require_Equal(t, state.AckFloor.Stream, 3)
+		//require_Equal(t, state.Delivered.Consumer, 3)
+		//require_Equal(t, state.Delivered.Stream, 3)
+		//require_Len(t, len(state.Pending), 0)
+		//require_Len(t, len(state.Redelivered), 1)
+	}
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
