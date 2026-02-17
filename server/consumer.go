@@ -3068,25 +3068,6 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 	return o.cfg.AckWait + ackWaitDelay
 }
 
-// Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
-// Lock should be held.
-func (o *consumer) checkRedelivered() {
-	var shouldUpdateState bool
-	for sseq := range o.rdc {
-		if sseq <= o.asflr {
-			delete(o.rdc, sseq)
-			o.removeFromRedeliverQueue(sseq)
-			shouldUpdateState = true
-		}
-	}
-	if shouldUpdateState {
-		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil && !o.closed {
-			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-			s.Warnf("Consumer '%s > %s > %s' error on write store state from check redelivered: %v", acc, mset.getCfgName(), name, err)
-		}
-	}
-}
-
 // This will restore the state from disk.
 // Lock should be held.
 func (o *consumer) readStoredState() error {
@@ -3096,9 +3077,6 @@ func (o *consumer) readStoredState() error {
 	state, err := o.store.State()
 	if err == nil {
 		o.applyState(state)
-		if len(o.rdc) > 0 {
-			o.checkRedelivered()
-		}
 	}
 	return err
 }
@@ -3157,7 +3135,13 @@ func (o *consumer) writeStoreStateUnlocked() error {
 	if o.store == nil {
 		return nil
 	}
-	state := ConsumerState{
+	state := o.generateConsumerState()
+	return o.store.Update(state)
+}
+
+// Lock should be held.
+func (o *consumer) generateConsumerState() *ConsumerState {
+	return &ConsumerState{
 		Delivered: SequencePair{
 			Consumer: o.dseq - 1,
 			Stream:   o.sseq - 1,
@@ -3169,7 +3153,6 @@ func (o *consumer) writeStoreStateUnlocked() error {
 		Pending:     o.pending,
 		Redelivered: o.rdc,
 	}
-	return o.store.Update(&state)
 }
 
 // Returns an initial info. Only applicable for non-clustered consumers.
@@ -5756,11 +5739,15 @@ func (o *consumer) checkPending() {
 		o.pending = nil
 		// Mimic behavior in processAckMsg when pending is empty.
 		o.adflr, o.asflr = o.dseq-1, o.sseq-1
+		shouldUpdateState = true
 	}
 
 	// Update our state if needed.
 	if shouldUpdateState {
-		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil && !o.closed {
+		if o.node != nil {
+			snap := encodeConsumerState(o.generateConsumerState())
+			o.node.SendSnapshot(snap)
+		} else if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil && !o.closed {
 			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
 			s.Warnf("Consumer '%s > %s > %s' error on write store state from check pending: %v", acc, mset.getCfgName(), name, err)
 		}
