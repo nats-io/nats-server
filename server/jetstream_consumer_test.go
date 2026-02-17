@@ -11334,6 +11334,21 @@ func TestJetStreamConsumerTODO(t *testing.T) {
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
+func loopOverConsumerState(t *testing.T, c *cluster, check func(state *ConsumerState)) {
+	for _, s := range c.servers {
+		if !s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		state, err := o.store.State()
+		require_NoError(t, err)
+		check(state)
+	}
+}
+
 func TestJetStreamConsumerTODO2(t *testing.T) {
 	test := func(t *testing.T, replicas int) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -11364,21 +11379,6 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 		require_NoError(t, err)
 		defer sub.Drain()
 
-		loopOverConsumerState := func(check func(state *ConsumerState)) {
-			for _, s := range c.servers {
-				if !s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
-					continue
-				}
-				mset, err := s.globalAccount().lookupStream("TEST")
-				require_NoError(t, err)
-				o := mset.lookupConsumer("CONSUMER")
-				require_NotNil(t, o)
-				state, err := o.store.State()
-				require_NoError(t, err)
-				check(state)
-			}
-		}
-
 		for range 2 {
 			msgs, err := sub.Fetch(3, nats.MaxWait(time.Second))
 			require_NoError(t, err)
@@ -11388,7 +11388,7 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 
 		require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 2}))
 		time.Sleep(200 * time.Millisecond)
-		loopOverConsumerState(func(state *ConsumerState) {
+		loopOverConsumerState(t, c, func(state *ConsumerState) {
 			require_Equal(t, state.AckFloor.Consumer, 1)
 			require_Equal(t, state.AckFloor.Stream, 1)
 			require_Equal(t, state.Delivered.Consumer, 6)
@@ -11407,7 +11407,7 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 		require_NoError(t, err)
 		require_Len(t, len(msgs), 5)
 		time.Sleep(500 * time.Millisecond)
-		loopOverConsumerState(func(state *ConsumerState) {
+		loopOverConsumerState(t, c, func(state *ConsumerState) {
 			require_Equal(t, state.AckFloor.Consumer, 1)
 			require_Equal(t, state.AckFloor.Stream, 1)
 			require_Equal(t, state.Delivered.Consumer, 11)
@@ -11419,7 +11419,7 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 
 		require_NoError(t, js.DeleteMsg("TEST", 3))
 		time.Sleep(200 * time.Millisecond)
-		loopOverConsumerState(func(state *ConsumerState) {
+		loopOverConsumerState(t, c, func(state *ConsumerState) {
 			require_Equal(t, state.AckFloor.Consumer, 1)
 			require_Equal(t, state.AckFloor.Stream, 1)
 			require_Equal(t, state.Delivered.Consumer, 11)
@@ -11431,7 +11431,7 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 
 		require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "bar"}))
 		time.Sleep(200 * time.Millisecond)
-		loopOverConsumerState(func(state *ConsumerState) {
+		loopOverConsumerState(t, c, func(state *ConsumerState) {
 			require_Equal(t, state.AckFloor.Consumer, 1)
 			require_Equal(t, state.AckFloor.Stream, 1)
 			require_Equal(t, state.Delivered.Consumer, 11)
@@ -11443,7 +11443,7 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 
 		_, err = sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
 		require_Error(t, err, nats.ErrTimeout)
-		loopOverConsumerState(func(state *ConsumerState) {
+		loopOverConsumerState(t, c, func(state *ConsumerState) {
 			require_Equal(t, state.AckFloor.Consumer, 11)
 			require_Equal(t, state.AckFloor.Stream, 6)
 			require_Equal(t, state.Delivered.Consumer, 11)
@@ -11457,7 +11457,7 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 		require_NoError(t, err)
 		require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "bar"}))
 		time.Sleep(200 * time.Millisecond)
-		loopOverConsumerState(func(state *ConsumerState) {
+		loopOverConsumerState(t, c, func(state *ConsumerState) {
 			require_Equal(t, state.AckFloor.Consumer, 11)
 			require_Equal(t, state.AckFloor.Stream, 6)
 			require_Equal(t, state.Delivered.Consumer, 11)
@@ -11465,6 +11465,56 @@ func TestJetStreamConsumerTODO2(t *testing.T) {
 			require_Len(t, len(state.Pending), 0)
 			require_Len(t, len(state.Redelivered), 1)
 			require_Equal(t, state.Redelivered[2], 3)
+		})
+	}
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamConsumerTODO3(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		for range 3 {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+
+		sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+			nats.BindStream("TEST"),
+			nats.MaxDeliver(3),
+			nats.ConsumerReplicas(replicas),
+			nats.AckExplicit(),
+			nats.AckWait(200*time.Millisecond),
+		)
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+		require_NotNil(t, cl)
+		mset, err := cl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		o.leader.Store(false)
+		
+		require_NoError(t, js.PurgeStream("TEST"))
+		time.Sleep(200*time.Millisecond)
+		
+		o.leader.Store(true)
+		loopOverConsumerState(t, c, func(state *ConsumerState) {
+			fmt.Println(state)
 		})
 	}
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
