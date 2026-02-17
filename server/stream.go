@@ -7715,15 +7715,8 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 		return false
 	}
 
-	var shouldRemove bool
-	switch mset.cfg.Retention {
-	case WorkQueuePolicy:
-		// Normally we just remove a message when its ack'd here but if we have direct consumers
-		// from sources and/or mirrors we need to make sure they have delivered the msg.
-		shouldRemove = mset.directs <= 0 || mset.noInterest(seq, o)
-	case InterestPolicy:
-		shouldRemove = mset.noInterest(seq, o)
-	}
+	// If there's no interest left on this message for all consumers, we can remove it.
+	shouldRemove := mset.noInterest(seq, nil)
 
 	// If nothing else to do.
 	if !shouldRemove {
