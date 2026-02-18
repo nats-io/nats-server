@@ -41,7 +41,7 @@ type RaftNode interface {
 	Propose(entry []byte) error
 	ProposeMulti(entries []*Entry) error
 	ForwardProposal(entry []byte) error
-	InstallSnapshot(snap []byte) error
+	InstallSnapshot(snap []byte, force bool) error
 	CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error)
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
@@ -1293,11 +1293,11 @@ func (n *raft) SendSnapshot(data []byte) error {
 // Used to install a snapshot for the given term and applied index. This will release
 // all of the log entries up to and including index. This should not be called with
 // entries that have been applied to the FSM but have not been applied to the raft state.
-func (n *raft) InstallSnapshot(data []byte) error {
+func (n *raft) InstallSnapshot(data []byte, force bool) error {
 	n.Lock()
 	defer n.Unlock()
 
-	c, err := n.createSnapshotCheckpointLocked(false)
+	c, err := n.createSnapshotCheckpointLocked(force)
 	if err != nil {
 		return err
 	}

@@ -393,7 +393,7 @@ func (a *stateAdder) snapshot(t *testing.T) {
 	data := make([]byte, binary.MaxVarintLen64)
 	n := binary.PutVarint(data, sum)
 	snap := data[:n]
-	require_NoError(t, rn.InstallSnapshot(snap))
+	require_NoError(t, rn.InstallSnapshot(snap, false))
 }
 
 // Helper to wait for a certain state.

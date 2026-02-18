@@ -447,7 +447,7 @@ func (s *Server) JetStreamSnapshotMeta() error {
 		return err
 	}
 
-	return meta.InstallSnapshot(snap)
+	return meta.InstallSnapshot(snap, false)
 }
 
 func (s *Server) JetStreamStepdownStream(account, stream string) error {
@@ -532,7 +532,7 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 		mset.mu.Unlock()
 		return nil
 	}
-	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked())
+	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked(), false)
 	mset.mu.Unlock()
 
 	return err
@@ -2916,9 +2916,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}()
 
 	const (
-		compactInterval = 2 * time.Minute
-		compactSizeMin  = 8 * 1024 * 1024
-		compactNumMin   = 65536
+		compactInterval    = 2 * time.Minute
+		compactMinInterval = 15 * time.Second
+		compactSizeMin     = 8 * 1024 * 1024
+		compactNumMin      = 65536
 	)
 
 	// Spread these out for large numbers on server restart.
@@ -2949,8 +2950,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// fully recovered from disk.
 	isRecovering := true
 
-	doSnapshot := func() {
-		if mset == nil || isRecovering || isRestore {
+	var failedSnapshots int
+	doSnapshot := func(force bool) {
+		// Suppress during recovery.
+		// If snapshots have failed, and we're not forced to, we'll wait for the timer since it'll now be forced.
+		if mset == nil || isRecovering || isRestore || (!force && failedSnapshots > 0) {
 			return
 		}
 
@@ -2969,10 +2973,27 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		// Make sure all pending data is flushed before allowing snapshots.
 		mset.flushAllPending()
-		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
+
+		// If we had a significant number of failed snapshots, start relaxing Raft-layer checks
+		// to force it through. We might have been catching up a peer for a long period, and this
+		// protects our log size from growing indefinitely.
+		forceSnapshot := failedSnapshots > 4
+		if err := n.InstallSnapshot(mset.stateSnapshot(), forceSnapshot); err == nil {
 			lastState = curState
+			// If there was a failed snapshot before, we reduced the timer's interval.
+			// Reset it back to the original interval now.
+			if failedSnapshots > 0 {
+				t.Reset(compactInterval + rci)
+			}
+			failedSnapshots = 0
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
 			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
+			// If this is the first failure, reduce the interval of the snapshot timer.
+			// This ensures we're not waiting too long for snapshotting to eventually become forced.
+			if failedSnapshots == 0 {
+				t.Reset(compactMinInterval)
+			}
+			failedSnapshots++
 		}
 	}
 
@@ -3049,14 +3070,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
-			doSnapshot()
+			doSnapshot(false)
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
 			// Don't snapshot if not shutting down, monitor goroutine could be going away
 			// on a scale down or a remove for example.
 			if s.isShuttingDown() {
-				doSnapshot()
+				doSnapshot(false)
 			}
 			return
 		case <-qch:
@@ -3154,7 +3175,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
 			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
-				doSnapshot()
+				doSnapshot(false)
 			}
 
 		case isLeader = <-lch:
@@ -3173,7 +3194,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config, _EMPTY_, sa.Reply, _EMPTY_)
 					continue
 				} else if n != nil && n.NeedSnapshot() {
-					doSnapshot()
+					doSnapshot(false)
 				}
 				// Always cancel if this was running.
 				stopDirectMonitoring()
@@ -3249,7 +3270,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			stopDirectMonitoring()
 
 		case <-t.C:
-			doSnapshot()
+			// Start forcing snapshots if they failed previously.
+			forceIfFailed := failedSnapshots > 0
+			doSnapshot(forceIfFailed)
 
 		case <-uch:
 			// keep stream assignment current
@@ -6051,10 +6074,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 
 	const (
-		compactInterval = 2 * time.Minute
-		compactSizeMin  = 64 * 1024 // What is stored here is always small for consumers.
-		compactNumMin   = 1024
-		minSnapDelta    = 10 * time.Second
+		compactInterval    = 2 * time.Minute
+		compactMinInterval = 15 * time.Second
+		compactSizeMin     = 64 * 1024 // What is stored here is always small for consumers.
+		compactNumMin      = 1024
+		minSnapDelta       = 10 * time.Second
 	)
 
 	// Spread these out for large numbers on server restart.
@@ -6074,9 +6098,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	// fully recovered from disk.
 	recovering := true
 
+	var failedSnapshots int
 	doSnapshot := func(force bool) {
 		// Bail if trying too fast and not in a forced situation.
-		if recovering || (!force && time.Since(lastSnapTime) < minSnapDelta) {
+		// If snapshots have failed, and we're not forced to, we'll wait for the timer since it'll now be forced.
+		if recovering || (!force && (time.Since(lastSnapTime) < minSnapDelta || failedSnapshots > 0)) {
 			return
 		}
 
@@ -6097,10 +6123,26 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// lot on an idle stream, log entries get distributed but the
 			// state never changes, therefore the log never gets compacted.
 			if !bytes.Equal(hash[:], lastSnap) || ne >= compactNumMin || nb >= compactSizeMin {
-				if err := n.InstallSnapshot(snap); err == nil {
+				// If we had a significant number of failed snapshots, start relaxing Raft-layer checks
+				// to force it through. We might have been catching up a peer for a long period, and this
+				// protects our log size from growing indefinitely.
+				forceSnapshot := failedSnapshots > 4
+				if err := n.InstallSnapshot(snap, forceSnapshot); err == nil {
 					lastSnap, lastSnapTime = hash[:], time.Now()
+					// If there was a failed snapshot before, we reduced the timer's interval.
+					// Reset it back to the original interval now.
+					if failedSnapshots > 0 {
+						t.Reset(compactInterval + rci)
+					}
+					failedSnapshots = 0
 				} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
 					s.RateLimitWarnf("Failed to install snapshot for '%s > %s > %s' [%s]: %v", o.acc.Name, ca.Stream, ca.Name, n.Group(), err)
+					// If this is the first failure, reduce the interval of the snapshot timer.
+					// This ensures we're not waiting too long for snapshotting to eventually become forced.
+					if failedSnapshots == 0 {
+						t.Reset(compactMinInterval)
+					}
+					failedSnapshots++
 				}
 			}
 		}
@@ -6273,7 +6315,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 
 		case <-t.C:
-			doSnapshot(false)
+			// Start forcing snapshots if they failed previously.
+			forceIfFailed := failedSnapshots > 0
+			doSnapshot(forceIfFailed)
 		}
 	}
 }
@@ -10671,7 +10715,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {
 							if snap := mset.stateSnapshot(); snap != nil {
-								n.InstallSnapshot(snap)
+								n.InstallSnapshot(snap, true)
 							}
 						}
 						// If we allow gap markers check if we have one pending.
