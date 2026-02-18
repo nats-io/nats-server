@@ -2626,7 +2626,7 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 		// This will force a snapshot which will prune the normal log.
 		// We will remove the snapshot to simulate the error condition.
 		if i == 10 {
-			if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+			if err := node.InstallSnapshot(mset.stateSnapshot(), false); err != nil {
 				t.Fatalf("Error installing snapshot: %v", err)
 			}
 		}
@@ -3287,7 +3287,7 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected to find a stream for %q", "TEST")
 	}
-	if err := mset.raftNode().InstallSnapshot(mset.stateSnapshot()); err != nil {
+	if err := mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -4891,7 +4891,7 @@ func TestJetStreamClusterDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T)
 	require_NoError(t, err)
 	if node := mset.raftNode(); node == nil {
 		t.Fatalf("Could not get stream group name")
-	} else if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+	} else if err := node.InstallSnapshot(mset.stateSnapshot(), false); err != nil {
 		t.Fatalf("Error installing snapshot: %v", err)
 	}
 
@@ -6198,7 +6198,7 @@ func TestJetStreamClusterStreamCatchupWithTruncateAndPriorSnapshot(t *testing.T)
 	require_NoError(t, err)
 
 	// Force snapshot
-	require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot()))
+	require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false))
 
 	// Now truncate the store on purpose.
 	err = mset.store.Truncate(50)
@@ -6310,7 +6310,7 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	mset, err := nsl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	// Snapshot could already be done during shutdown. If so, snapshotting again will not be available.
-	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
 	if err != nil {
 		require_Error(t, err, errNoSnapAvailable)
 	}
@@ -6415,7 +6415,7 @@ func TestJetStreamClusterEncryptedDoubleSnapshotBug(t *testing.T) {
 	nl := c.randomNonStreamLeader("$G", "TEST")
 	mset, err := nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
-	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 
 	_, err = js.Publish("foo", []byte("SNAP2"))
@@ -6425,7 +6425,7 @@ func TestJetStreamClusterEncryptedDoubleSnapshotBug(t *testing.T) {
 		js.DeleteMsg("TEST", seq)
 	}
 
-	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 
 	_, err = js.Publish("foo", []byte("SNAP3"))
@@ -6678,7 +6678,7 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 	// Force snapshot on the leader.
 	mset, err := sl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
-	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 
 	// Purge
@@ -7377,7 +7377,7 @@ func TestJetStreamClusterMaxOutstandingCatchup(t *testing.T) {
 	// Cause snapshots on leader
 	mset, err := c.streamLeader(globalAccountName, "TEST").GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
-	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 
 	// Resart server and it should be able to catchup
@@ -7621,7 +7621,7 @@ func TestJetStreamClusterMessageTTLCatchup(t *testing.T) {
 	node := mset.raftNode()
 	gname := node.Group()
 	require_NotNil(t, node)
-	require_NoError(t, node.InstallSnapshot(mset.stateSnapshot()))
+	require_NoError(t, node.InstallSnapshot(mset.stateSnapshot(), false))
 	var state StreamState
 	node.(*raft).wal.FastState(&state)
 	require_Equal(t, state.Msgs, 0)
@@ -8197,14 +8197,14 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 		sl := c.streamLeader(globalAccountName, "TEST")
 		mset, err := sl.globalAccount().lookupStream("TEST")
 		require_NoError(t, err)
-		require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot()))
+		require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false))
 		streamGroup := mset.raftNode().Group()
 
 		o := mset.lookupConsumer("CONSUMER")
 		require_NotNil(t, o)
 		state, err := o.store.EncodedState()
 		require_NoError(t, err)
-		require_NoError(t, o.raftNode().InstallSnapshot(state))
+		require_NoError(t, o.raftNode().InstallSnapshot(state, false))
 		consumerGroup := o.raftNode().Group()
 
 		// Stop stream/consumer leader, and clear state on the followers except for meta.

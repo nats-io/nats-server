@@ -3967,7 +3967,7 @@ func TestNoRaceJetStreamClusterStreamSeqMismatchIssue(t *testing.T) {
 		if node == nil {
 			t.Fatalf("Could not get stream group")
 		}
-		if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+		if err := node.InstallSnapshot(mset.stateSnapshot(), false); err != nil {
 			t.Fatalf("Error installing snapshot: %v", err)
 		}
 	}
@@ -4057,7 +4057,7 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 	if node == nil {
 		t.Fatalf("Could not get stream group")
 	}
-	if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+	if err := node.InstallSnapshot(mset.stateSnapshot(), false); err != nil {
 		t.Fatalf("Error installing snapshot: %v", err)
 	}
 
@@ -5044,7 +5044,7 @@ func TestNoRaceJetStreamAccountLimitsAndRestartForceSnapshot(t *testing.T) {
 		mset, err := acc.lookupStream("TEST")
 		require_NoError(t, err)
 		n := mset.raftNode().(*raft)
-		require_NoError(t, n.InstallSnapshot(mset.stateSnapshot()))
+		require_NoError(t, n.InstallSnapshot(mset.stateSnapshot(), false))
 	}
 
 	c.stopAll()
@@ -6237,7 +6237,7 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 	node := mset.raftNode()
 	require_True(t, node != nil)
 
-	err = node.InstallSnapshot(mset.stateSnapshot())
+	err = node.InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 
 	// Now publish more than should be needed to cause an additional snapshot.
@@ -6268,7 +6268,7 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 
 	snap, err := o.store.EncodedState()
 	require_NoError(t, err)
-	err = node.InstallSnapshot(snap)
+	err = node.InstallSnapshot(snap, false)
 	require_NoError(t, err)
 
 	received, done := 0, make(chan bool, 1)

@@ -2300,7 +2300,7 @@ func TestNoRaceJetStreamClusterMemoryStreamLastSequenceResetAfterRestart(t *test
 			require_NoError(t, err)
 			node := mset.raftNode()
 			require_NotNil(t, node)
-			node.InstallSnapshot(mset.stateSnapshot())
+			node.InstallSnapshot(mset.stateSnapshot(), false)
 		}
 	}
 
@@ -2903,7 +2903,7 @@ func TestNoRaceJetStreamClusterLargeMetaSnapshotTiming(t *testing.T) {
 	start := time.Now()
 	snap, _, _, err := js.metaSnapshot()
 	require_NoError(t, err)
-	require_NoError(t, n.InstallSnapshot(snap))
+	require_NoError(t, n.InstallSnapshot(snap, false))
 	t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
 }
 
