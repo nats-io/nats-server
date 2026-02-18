@@ -691,6 +691,7 @@ var jsClusterImportsTempl = `
 				{ service: "$JS.API.>", response: stream }
 				{ service: "TEST" } # For publishing to the stream.
 				{ service: "$JS.ACK.TEST.*.>" }
+				{ service: "$JS.ACK.*.*.TEST.*.>" }
 			]
 		}
 		IA {
@@ -699,6 +700,7 @@ var jsClusterImportsTempl = `
 				{ service: { subject: "$JS.API.>", account: JS }}
 				{ service: { subject: "TEST", account: JS }}
 				{ service: { subject: "$JS.ACK.TEST.*.>", account: JS }}
+				{ service: { subject: "$JS.ACK.*.*.TEST.*.>", account: JS }}
 			]
 		}
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }

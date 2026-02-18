@@ -437,9 +437,16 @@ type consumer struct {
 	rlimit            *rate.Limiter
 	reqSub            *subscription
 	resetSub          *subscription
+	ackSubOld         *subscription
+	ackReplyOldT      string
+	ackSubjOld        string
 	ackSub            *subscription
 	ackReplyT         string
 	ackSubj           string
+	fcPreOld          string
+	fcSubjOld         string
+	fcPre             string
+	fcSubj            string
 	nextMsgSubj       string
 	nextMsgReqs       *ipQueue[*nextMsgReq]
 	resetSubj         string
@@ -449,6 +456,7 @@ type consumer struct {
 	pbytes            int
 	fcsz              int
 	fcid              string
+	fcSubOld          *subscription
 	fcSub             *subscription
 	outq              *jsOutQ
 	pending           map[uint64]*Pending
@@ -1274,9 +1282,28 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Escape '%' in consumer and stream names, as `pre` is used as a template later
 	// in consumer.ackReply(), resulting in erroneous formatting of the ack subject.
 	mn := strings.ReplaceAll(cfg.Name, "%", "%%")
-	pre := fmt.Sprintf(jsAckT, mn, strings.ReplaceAll(o.name, "%", "%%"))
+	on := strings.ReplaceAll(o.name, "%", "%%")
+	domain := strings.ReplaceAll(o.srv.getOpts().JetStreamDomain, "%", "%%")
+	if domain == _EMPTY_ {
+		domain = "_"
+	}
+	accHash := getHash(accName)
+
+	// v1 format: $JS.(ACK|FC).<stream>.<consumer>.etc.
+	o.fcPreOld = jsFlowControlPre
+	o.fcSubjOld = fmt.Sprintf(jsFlowControl, cfg.Name, o.name)
+	preOld := fmt.Sprintf(jsAckT, mn, on)
+	o.ackReplyOldT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", preOld)
+	o.ackSubjOld = fmt.Sprintf("%s.*.*.*.*.*", preOld)
+
+	// v2 format: $JS.(ACK|FC).<domain>.<accHash>.<stream>.<consumer>.etc.
+	o.fcPre = fmt.Sprintf("%s%s.%s.", jsFlowControlPre, domain, accHash)
+	o.fcSubj = fmt.Sprintf(jsFlowControlV2, domain, accHash, cfg.Name, o.name)
+	pre := fmt.Sprintf(jsAckTv2, domain, accHash, mn, on)
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
-	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
+	// Subscribe on this ack subject for v2, we require 11 tokens, but allow for more tokens/extension.
+	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.>", pre)
+
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 	o.resetSubj = fmt.Sprintf(JSApiConsumerResetT, mn, o.name)
 
@@ -1553,6 +1580,10 @@ func (o *consumer) setLeader(isLeader bool) {
 
 		var err error
 		if o.cfg.AckPolicy != AckNone {
+			if o.ackSubOld, err = o.subscribeInternal(o.ackSubjOld, o.pushAck); err != nil {
+				o.mu.Unlock()
+				return
+			}
 			if o.ackSub, err = o.subscribeInternal(o.ackSubj, o.pushAck); err != nil {
 				o.mu.Unlock()
 				return
@@ -1573,8 +1604,11 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Check on flow control settings.
 		if o.cfg.FlowControl {
 			o.setMaxPendingBytes(JsFlowControlMaxPending)
-			fcsubj := fmt.Sprintf(jsFlowControl, stream, o.name)
-			if o.fcSub, err = o.subscribeInternal(fcsubj, o.processFlowControl); err != nil {
+			if o.fcSubOld, err = o.subscribeInternal(o.fcSubjOld, o.processFlowControl); err != nil {
+				o.mu.Unlock()
+				return
+			}
+			if o.fcSub, err = o.subscribeInternal(o.fcSubj, o.processFlowControl); err != nil {
 				o.mu.Unlock()
 				return
 			}
@@ -1686,11 +1720,13 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.pending = nil
 		o.resetPendingDeliveries()
 		// ok if they are nil, we protect inside unsubscribe()
+		o.unsubscribe(o.ackSubOld)
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
 		o.unsubscribe(o.resetSub)
+		o.unsubscribe(o.fcSubOld)
 		o.unsubscribe(o.fcSub)
-		o.ackSub, o.reqSub, o.resetSub, o.fcSub = nil, nil, nil, nil
+		o.ackSubOld, o.ackSub, o.reqSub, o.resetSub, o.fcSubOld, o.fcSub = nil, nil, nil, nil, nil, nil
 		if o.infoSub != nil {
 			o.srv.sysUnsubscribe(o.infoSub)
 			o.infoSub = nil
@@ -2566,7 +2602,7 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 		msg = rmsg
 	}
 
-	sseq, dseq, dc := ackReplyInfo(subject)
+	sseq, dseq, dc, _, _ := ackReplyInfo(subject)
 
 	skipAckReply := sseq == 0
 
@@ -5233,6 +5269,8 @@ func (o *consumer) sendIdleHeartbeat(subj string) {
 }
 
 func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) string {
+	// TODO(mvv): should put the new format behind an opt-in flag
+	//return fmt.Sprintf(o.ackReplyOldT, dc, sseq, dseq, ts, pending)
 	return fmt.Sprintf(o.ackReplyT, dc, sseq, dseq, ts, pending)
 }
 
@@ -5476,7 +5514,9 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, su
 // Lock should be held.
 func (o *consumer) fcReply() string {
 	var sb strings.Builder
-	sb.WriteString(jsFlowControlPre)
+	// TODO(mvv): should put the new format behind an opt-in flag
+	//sb.WriteString(o.fcPreOld)
+	sb.WriteString(o.fcPre)
 	sb.WriteString(o.stream)
 	sb.WriteByte(btsep)
 	sb.WriteString(o.name)
@@ -5769,13 +5809,13 @@ func (o *consumer) checkPending() {
 
 // SeqFromReply will extract a sequence number from a reply subject.
 func (o *consumer) seqFromReply(reply string) uint64 {
-	_, dseq, _ := ackReplyInfo(reply)
+	_, dseq, _, _, _ := ackReplyInfo(reply)
 	return dseq
 }
 
 // StreamSeqFromReply will extract the stream sequence from the reply subject.
 func (o *consumer) streamSeqFromReply(reply string) uint64 {
-	sseq, _, _ := ackReplyInfo(reply)
+	sseq, _, _, _, _ := ackReplyInfo(reply)
 	return sseq
 }
 
@@ -5793,11 +5833,14 @@ func parseAckReplyNum(d string) (n int64) {
 	return n
 }
 
-const expectedNumReplyTokens = 9
+const (
+	expectedNumReplyTokensV1 = 9
+	expectedNumReplyTokensV2 = 11
+)
 
 // Grab encoded information in the reply subject for a delivered message.
-func replyInfo(subject string) (sseq, dseq, dc uint64, ts int64, pending uint64) {
-	tsa := [expectedNumReplyTokens]string{}
+func ackReplyInfo(subject string) (sseq, dseq, dc uint64, ts int64, pending uint64) {
+	tsa := [expectedNumReplyTokensV2]string{}
 	start, tokens := 0, tsa[:0]
 	for i := 0; i < len(subject); i++ {
 		if subject[i] == btsep {
@@ -5806,36 +5849,21 @@ func replyInfo(subject string) (sseq, dseq, dc uint64, ts int64, pending uint64)
 		}
 	}
 	tokens = append(tokens, subject[start:])
-	if len(tokens) != expectedNumReplyTokens || tokens[0] != "$JS" || tokens[1] != "ACK" {
+	if (len(tokens) != expectedNumReplyTokensV1 && len(tokens) < expectedNumReplyTokensV2) || tokens[0] != "$JS" || tokens[1] != "ACK" {
 		return 0, 0, 0, 0, 0
 	}
+	offset := 2
+	if len(tokens) >= expectedNumReplyTokensV2 {
+		offset = 4
+	}
 	// TODO(dlc) - Should we error if we do not match consumer name?
-	// stream is tokens[2], consumer is 3.
-	dc = uint64(parseAckReplyNum(tokens[4]))
-	sseq, dseq = uint64(parseAckReplyNum(tokens[5])), uint64(parseAckReplyNum(tokens[6]))
-	ts = parseAckReplyNum(tokens[7])
-	pending = uint64(parseAckReplyNum(tokens[8]))
+	// stream is tokens[offset], consumer is offset+1.
+	dc = uint64(parseAckReplyNum(tokens[offset+2]))
+	sseq, dseq = uint64(parseAckReplyNum(tokens[offset+3])), uint64(parseAckReplyNum(tokens[offset+4]))
+	ts = parseAckReplyNum(tokens[offset+5])
+	pending = uint64(parseAckReplyNum(tokens[offset+6]))
 
 	return sseq, dseq, dc, ts, pending
-}
-
-func ackReplyInfo(subject string) (sseq, dseq, dc uint64) {
-	tsa := [expectedNumReplyTokens]string{}
-	start, tokens := 0, tsa[:0]
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	tokens = append(tokens, subject[start:])
-	if len(tokens) != expectedNumReplyTokens || tokens[0] != "$JS" || tokens[1] != "ACK" {
-		return 0, 0, 0
-	}
-	dc = uint64(parseAckReplyNum(tokens[4]))
-	sseq, dseq = uint64(parseAckReplyNum(tokens[5])), uint64(parseAckReplyNum(tokens[6]))
-
-	return sseq, dseq, dc
 }
 
 // NextSeq returns the next delivered sequence number for this consumer.
@@ -6220,13 +6248,17 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	mset := o.mset
 	o.mset = nil
 	o.active = false
+	o.unsubscribe(o.ackSubOld)
 	o.unsubscribe(o.ackSub)
 	o.unsubscribe(o.reqSub)
 	o.unsubscribe(o.resetSub)
+	o.unsubscribe(o.fcSubOld)
 	o.unsubscribe(o.fcSub)
+	o.ackSubOld = nil
 	o.ackSub = nil
 	o.reqSub = nil
 	o.resetSub = nil
+	o.fcSubOld = nil
 	o.fcSub = nil
 	if o.infoSub != nil {
 		o.srv.sysUnsubscribe(o.infoSub)

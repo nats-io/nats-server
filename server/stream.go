@@ -2855,8 +2855,8 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 
 // Checks that the message is from our current direct consumer. We can not depend on sub comparison
 // since cross account imports break.
-func (si *sourceInfo) isCurrentSub(reply string) bool {
-	return si.cname != _EMPTY_ && strings.HasPrefix(reply, jsAckPre) && si.cname == tokenAt(reply, 4)
+func (si *sourceInfo) isCurrentSub(cname string) bool {
+	return si.cname != _EMPTY_ && si.cname == cname
 }
 
 // processInboundMirrorMsg handles processing messages bound for a stream.
@@ -2873,10 +2873,11 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	}
 
 	isControl := m.isControlMsg()
+	cname := consumerFromAckReply(m.rply)
 
 	// Ignore from old subscriptions.
 	// The reason we can not just compare subs is that on cross account imports they will not match.
-	if !mset.mirror.isCurrentSub(m.rply) && !isControl {
+	if !mset.mirror.isCurrentSub(cname) && !isControl {
 		mset.mu.Unlock()
 		return false
 	}
@@ -2903,7 +2904,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		return !needsRetry
 	}
 
-	sseq, dseq, dc, ts, pending := replyInfo(m.rply)
+	sseq, dseq, dc, ts, pending := ackReplyInfo(m.rply)
 
 	if dc > 1 {
 		mset.mu.Unlock()
@@ -2920,7 +2921,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		mset.mu.Unlock()
 		return true
 	} else if mset.mirror.cname == _EMPTY_ {
-		mset.mirror.cname = tokenAt(m.rply, 4)
+		mset.mirror.cname = cname
 		mset.mirror.dseq, mset.mirror.sseq = dseq, sseq
 	} else {
 		// If the deliver sequence matches then the upstream stream has expired or deleted messages.
@@ -3867,9 +3868,10 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	}
 
 	isControl := m.isControlMsg()
+	cname := consumerFromAckReply(m.rply)
 
 	// Ignore from old subscriptions.
-	if !si.isCurrentSub(m.rply) && !isControl {
+	if !si.isCurrentSub(cname) && !isControl {
 		mset.mu.Unlock()
 		return false
 	}
@@ -3894,7 +3896,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		return !needsRetry
 	}
 
-	sseq, dseq, dc, _, pending := replyInfo(m.rply)
+	sseq, dseq, dc, _, pending := ackReplyInfo(m.rply)
 
 	if dc > 1 {
 		mset.mu.Unlock()
@@ -3907,7 +3909,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		si.sseq = sseq
 	} else if dseq > si.dseq {
 		if si.cname == _EMPTY_ {
-			si.cname = tokenAt(m.rply, 4)
+			si.cname = cname
 			si.dseq, si.sseq = dseq, sseq
 		} else {
 			mset.retrySourceConsumerAtSeq(si.iname, si.sseq+1)
@@ -4014,7 +4016,7 @@ func (si *sourceInfo) genSourceHeader(orig, reply string) string {
 	b.WriteString(iNameParts[0])
 	b.WriteByte(' ')
 	// Grab sequence as text here from reply subject.
-	var tsa [expectedNumReplyTokens]string
+	var tsa [expectedNumReplyTokensV2]string
 	start, tokens := 0, tsa[:0]
 	for i := 0; i < len(reply); i++ {
 		if reply[i] == btsep {
@@ -4023,8 +4025,12 @@ func (si *sourceInfo) genSourceHeader(orig, reply string) string {
 	}
 	tokens = append(tokens, reply[start:])
 	seq := "1" // Default
-	if len(tokens) == expectedNumReplyTokens && tokens[0] == "$JS" && tokens[1] == "ACK" {
-		seq = tokens[5]
+	if tokens[0] == "$JS" && tokens[1] == "ACK" {
+		if len(tokens) == expectedNumReplyTokensV1 {
+			seq = tokens[5]
+		} else if len(tokens) == expectedNumReplyTokensV2 {
+			seq = tokens[7]
+		}
 	}
 	b.WriteString(seq)
 
@@ -4039,7 +4045,7 @@ func (si *sourceInfo) genSourceHeader(orig, reply string) string {
 
 // Original version of header that stored ack reply direct.
 func streamAndSeqFromAckReply(reply string) (string, string, uint64) {
-	tsa := [expectedNumReplyTokens]string{}
+	tsa := [expectedNumReplyTokensV2]string{}
 	start, tokens := 0, tsa[:0]
 	for i := 0; i < len(reply); i++ {
 		if reply[i] == btsep {
@@ -4047,10 +4053,33 @@ func streamAndSeqFromAckReply(reply string) (string, string, uint64) {
 		}
 	}
 	tokens = append(tokens, reply[start:])
-	if len(tokens) != expectedNumReplyTokens || tokens[0] != "$JS" || tokens[1] != "ACK" {
+	if (len(tokens) != expectedNumReplyTokensV1 && len(tokens) < expectedNumReplyTokensV2) || tokens[0] != "$JS" || tokens[1] != "ACK" {
 		return _EMPTY_, _EMPTY_, 0
 	}
-	return tokens[2], _EMPTY_, uint64(parseAckReplyNum(tokens[5]))
+	offset := 2
+	if len(tokens) >= expectedNumReplyTokensV2 {
+		offset = 4
+	}
+	return tokens[offset], _EMPTY_, uint64(parseAckReplyNum(tokens[offset+3]))
+}
+
+func consumerFromAckReply(reply string) string {
+	tsa := [expectedNumReplyTokensV2]string{}
+	start, tokens := 0, tsa[:0]
+	for i := 0; i < len(reply); i++ {
+		if reply[i] == btsep {
+			tokens, start = append(tokens, reply[start:i]), i+1
+		}
+	}
+	tokens = append(tokens, reply[start:])
+	if (len(tokens) != expectedNumReplyTokensV1 && len(tokens) < expectedNumReplyTokensV2) || tokens[0] != "$JS" || tokens[1] != "ACK" {
+		return _EMPTY_
+	}
+	offset := 3
+	if len(tokens) >= expectedNumReplyTokensV2 {
+		offset = 5
+	}
+	return tokens[offset]
 }
 
 // Extract the stream name, the source index name and the message sequence number from the source header.

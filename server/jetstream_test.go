@@ -2051,7 +2051,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				_, _, _, _, pending := replyInfo(m.Reply)
+				_, _, _, _, pending := ackReplyInfo(m.Reply)
 				if pending != uint64(ep) {
 					t.Fatalf("Expected ack reply pending of %d, got %d - reply: %q", ep, pending, m.Reply)
 				}
@@ -2278,7 +2278,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error waiting for message[%d]: %v", i, err)
 				}
-				sseq, dseq, dcount, _, _ := replyInfo(m.Reply)
+				sseq, dseq, dcount, _, _ := ackReplyInfo(m.Reply)
 				if sseq != uint64(i) {
 					t.Fatalf("Expected set sequence of %d , got %d", i, sseq)
 				}
@@ -2350,7 +2350,7 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				rsseq, rdseq, _, _, _ := replyInfo(m.Reply)
+				rsseq, rdseq, _, _, _ := ackReplyInfo(m.Reply)
 				if rdseq != uint64(dseq) {
 					t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
 				}
@@ -2425,7 +2425,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				rsseq, rdseq, _, _, _ := replyInfo(m.Reply)
+				rsseq, rdseq, _, _, _ := ackReplyInfo(m.Reply)
 				if rdseq != uint64(dseq) {
 					t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
 				}
@@ -2506,7 +2506,7 @@ func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				rsseq, rdseq, _, _, _ := replyInfo(m.Reply)
+				rsseq, rdseq, _, _, _ := ackReplyInfo(m.Reply)
 				if rdseq != uint64(dseq) {
 					t.Fatalf("Expected delivered sequence of %d , got %d", dseq, rdseq)
 				}
@@ -3897,7 +3897,7 @@ func TestJetStreamMetadata(t *testing.T) {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 
-				sseq, dseq, dcount, ts, _ := replyInfo(m.Reply)
+				sseq, dseq, dcount, ts, _ := ackReplyInfo(m.Reply)
 
 				mreq := &JSApiMsgGetRequest{Seq: sseq}
 				req, err := json.Marshal(mreq)
@@ -4000,7 +4000,7 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 
-				sseq, dseq, dcount, _, _ := replyInfo(m.Reply)
+				sseq, dseq, dcount, _, _ := ackReplyInfo(m.Reply)
 
 				// Make sure we keep getting stream sequence #1
 				if sseq != 1 {
@@ -8040,6 +8040,7 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 					{ stream: "deliver.ORDERS" }
 					# This is to ack received messages. This is a service to ack acks..
 					{ service: "$JS.ACK.ORDERS.*.>" }
+					{ service: "$JS.ACK.*.*.ORDERS.*.>" }
 				]
 			},
 			IU: {
@@ -8049,6 +8050,7 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 					{ service: { subject: "$JS.API.CONSUMER.MSG.NEXT.ORDERS.d", account: JS }, to: "nxt.msg" }
 					{ stream:  { subject: "deliver.ORDERS", account: JS }, to: "d" }
 					{ service: { subject: "$JS.ACK.ORDERS.*.>", account: JS } }
+					{ service: { subject: "$JS.ACK.*.*.ORDERS.*.>", account: JS } }
 				]
 			},
 		}
@@ -12910,10 +12912,6 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 					# This is streaming to a delivery subject for a push based consumer.
 					{ stream: "deliver.*" }
 					{ stream: "foo.*" }
-					# This is to ack received messages. This is a service to support sync ack.
-					{ service: "$JS.ACK.ORDERS.*.>" }
-					# To support ordered consumers, flow control.
-					{ service: "$JS.FC.>" }
 				]
 			},
 			IM: {
@@ -12921,7 +12919,6 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 				imports [
 					{ stream:  { account: JS, subject: "deliver.ORDERS" }, to: "d.*" }
 					{ stream:  { account: JS, subject: "foo.*" }, to: "bar.*" }
-					{ service: { account: JS, subject: "$JS.FC.>" }}
 				]
 			},
 		}

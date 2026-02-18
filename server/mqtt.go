@@ -1981,7 +1981,7 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	// The as.jsa.id is immutable, so no need to have a rlock here.
 	local := rm.Origin == as.jsa.id
 	// Get the stream sequence for this message.
-	seq, _, _ := ackReplyInfo(reply)
+	seq, _, _, _, _ := ackReplyInfo(reply)
 	if len(m) == 0 {
 		// An empty payload means that we need to remove the retained message.
 		rmSeq := as.removeRetainedMsg(rm.Subject, 0)
@@ -3414,7 +3414,7 @@ func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string) (uint16, bool)
 	}
 
 	// Get the stream sequence and duplicate flag from the ack reply subject.
-	sseq, _, dcount := ackReplyInfo(jsAckSubject)
+	sseq, _, dcount, _, _ := ackReplyInfo(jsAckSubject)
 	if dcount > 1 {
 		dup = true
 	}
@@ -3518,7 +3518,7 @@ func (sess *mqttSession) trackAsPubRel(pi uint16, jsAckSubject string) {
 		return
 	}
 
-	sseq, _, _ := ackReplyInfo(jsAckSubject)
+	sseq, _, _, _, _ := ackReplyInfo(jsAckSubject)
 
 	if sess.cpending == nil {
 		sess.cpending = make(map[string]map[uint64]uint16)

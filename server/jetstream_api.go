@@ -217,13 +217,15 @@ const (
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT      = "$JS.ACK.%s.%s"
+	jsAckTv2    = "$JS.ACK.%s.%s.%s.%s"
 	jsAckPre    = "$JS.ACK."
 	jsAckPreLen = len(jsAckPre)
 
 	// jsFlowControl is for flow control subjects.
 	jsFlowControlPre = "$JS.FC."
 	// jsFlowControl is for FC responses.
-	jsFlowControl = "$JS.FC.%s.%s.*"
+	jsFlowControl   = "$JS.FC.%s.%s.*"
+	jsFlowControlV2 = "$JS.FC.%s.%s.%s.%s.*"
 
 	// JSAdvisoryPrefix is a prefix for all JetStream advisories.
 	JSAdvisoryPrefix = "$JS.EVENT.ADVISORY"
