@@ -115,6 +115,35 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 	)
 }
 
+func TestStoreLoadNextMsgWildcardStartBeforeFirstMatch(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"bar.*", "foo.*"}},
+		func(t *testing.T, fs StreamStore) {
+			// Fill non-matching subjects first so the first wildcard match starts
+			// strictly after the requested start sequence.
+			for i := 0; i < 100; i++ {
+				subj := fmt.Sprintf("bar.%d", i)
+				_, _, err := fs.StoreMsg(subj, nil, nil, 0)
+				require_NoError(t, err)
+			}
+			seq, _, err := fs.StoreMsg("foo.1", nil, nil, 0)
+			require_NoError(t, err)
+			require_Equal(t, seq, uint64(101))
+
+			var smv StoreMsg
+			sm, nseq, err := fs.LoadNextMsg("foo.*", true, 1, &smv)
+			require_NoError(t, err)
+			require_Equal(t, sm.subj, "foo.1")
+			require_Equal(t, nseq, uint64(101))
+
+			_, nseq, err = fs.LoadNextMsg("foo.*", true, nseq+1, &smv)
+			require_Error(t, err)
+			require_Equal(t, nseq, uint64(101))
+		},
+	)
+}
+
 func TestStoreDeleteSlice(t *testing.T) {
 	ds := DeleteSlice{2}
 	var deletes []uint64

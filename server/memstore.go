@@ -1801,6 +1801,78 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 	return ms.loadNextMsgLocked(filter, wc, start, smp)
 }
 
+// Find sequence bounds matching a wildcard filter from ms.fss.
+// Returns (first, last, true) if there is at least one matching
+// subject at or after start (start <= first <= last).
+// Returns (0, 0, false) if the subject does not exist or has no
+// messages at or after start.
+// Lock should be held.
+func (ms *memStore) nextWildcardMatchLocked(filter string, start uint64) (uint64, uint64, bool) {
+	found := false
+	first, last := ms.state.LastSeq, uint64(0)
+	ms.fss.MatchUntil(stringToBytes(filter), func(subj []byte, ss *SimpleState) bool {
+		ms.recalculateForSubj(string(subj), ss)
+
+		// Skip matches that are below our starting sequence
+		if start > ss.Last {
+			return true
+		}
+
+		// A match was found, adjust the bounds accordingly
+		found = true
+		if ss.First < first {
+			first = ss.First
+		}
+		if ss.Last > last {
+			last = ss.Last
+		}
+
+		// If first > start, there may be more matches between
+		// start and first, in which case we keep searching.
+		// If not, we have a match between start and last, we
+		// can break out of the search.
+		// This could be further optimized: if first and start
+		// are "close", we could just extend the linear search,
+		// especially if we know that the remaining ms.fss to
+		// explore is large.
+		return first > start
+	})
+	if !found {
+		return 0, 0, false
+	}
+	return max(first, start), last, found
+}
+
+// Find sequence bounds matching a literal filter from ms.fss.
+// Returns (first, last, true) if there is a matching literal
+// subject at or after start (start <= first <= last).
+// Returns (0, 0, false) if the subject does not exist or has no
+// messages at or after start.
+// Lock should be held.
+func (ms *memStore) nextLiteralMatchLocked(filter string, start uint64) (uint64, uint64, bool) {
+	ss, ok := ms.fss.Find(stringToBytes(filter))
+	if !ok {
+		return 0, 0, false
+	}
+	ms.recalculateForSubj(filter, ss)
+	if start > ss.Last {
+		return 0, 0, false
+	}
+	return max(start, ss.First), ss.Last, true
+}
+
+// Returns true if LoadNextMsg should perform a linear scan,
+// false if it should use the subject tree to try to reduce
+// the search space.
+// Lock should be held.
+func (ms *memStore) shouldLinearScan(filter string, wc bool, start uint64) bool {
+	// Skip scan of ms.fss if number of messages in the block are less than
+	// 1/2 the number of subjects in ms.fss. Or we have a wc and lots of fss entries.
+	const linearScanMaxFSS = 256
+	isAll := filter == fwcs
+	return isAll || 2*int(ms.state.LastSeq-start) < ms.fss.Size() || (wc && ms.fss.Size() > linearScanMaxFSS)
+}
+
 // Lock should be held.
 func (ms *memStore) loadNextMsgLocked(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
 	if start < ms.state.FirstSeq {
@@ -1817,40 +1889,18 @@ func (ms *memStore) loadNextMsgLocked(filter string, wc bool, start uint64, smp 
 	}
 	isAll := filter == fwcs
 
-	// Skip scan of ms.fss if number of messages in the block are less than
-	// 1/2 the number of subjects in ms.fss. Or we have a wc and lots of fss entries.
-	const linearScanMaxFSS = 256
-	doLinearScan := isAll || 2*int(ms.state.LastSeq-start) < ms.fss.Size() || (wc && ms.fss.Size() > linearScanMaxFSS)
-
 	// Initial setup.
 	fseq, lseq := start, ms.state.LastSeq
 
-	if !doLinearScan {
-		subs := []string{filter}
-		if wc || isAll {
-			subs = subs[:0]
-			ms.fss.Match(stringToBytes(filter), func(subj []byte, val *SimpleState) {
-				subs = append(subs, string(subj))
-			})
+	if !ms.shouldLinearScan(filter, wc, start) {
+		var found bool
+		if wc {
+			fseq, lseq, found = ms.nextWildcardMatchLocked(filter, start)
+		} else {
+			fseq, lseq, found = ms.nextLiteralMatchLocked(filter, start)
 		}
-		fseq, lseq = ms.state.LastSeq, uint64(0)
-		for _, subj := range subs {
-			ss, ok := ms.fss.Find(stringToBytes(subj))
-			if !ok {
-				continue
-			}
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				ms.recalculateForSubj(subj, ss)
-			}
-			if ss.First < fseq {
-				fseq = ss.First
-			}
-			if ss.Last > lseq {
-				lseq = ss.Last
-			}
-		}
-		if fseq < start {
-			fseq = start
+		if !found {
+			return nil, ms.state.LastSeq, ErrStoreEOF
 		}
 	}
 
