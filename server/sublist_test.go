@@ -2448,3 +2448,148 @@ func Benchmark_SubjectFilterMatchers(b *testing.B) {
 		})
 	}
 }
+
+// tokenizeOld is the previous byte-by-byte tokenization for benchmarking comparison.
+func tokenizeOld(tts []string, subject string) []string {
+	start := 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			tts = append(tts, subject[start:i])
+			start = i + 1
+		}
+	}
+	tts = append(tts, subject[start:])
+	return tts
+}
+
+func benchTokenize(b *testing.B, subject string, fn func([]string, string) []string) {
+	b.Helper()
+	tsa := [32]string{}
+	for i := 0; i < b.N; i++ {
+		fn(tsa[:0], subject)
+	}
+}
+
+func Benchmark________TokenizeOld_SingleToken(b *testing.B) {
+	benchTokenize(b, "foo", tokenizeOld)
+}
+
+func Benchmark________TokenizeNew_SingleToken(b *testing.B) {
+	benchTokenize(b, "foo", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark_________TokenizeOld_TwoTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar", tokenizeOld)
+}
+
+func Benchmark_________TokenizeNew_TwoTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark________TokenizeOld_FourTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar.baz.quux", tokenizeOld)
+}
+
+func Benchmark________TokenizeNew_FourTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar.baz.quux", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark_____TokenizeOld_FiveTokensLong(b *testing.B) {
+	benchTokenize(b, "this-is-a-longer-token.another-longer-token.yet-another-one.and-more-here.final-token", tokenizeOld)
+}
+
+func Benchmark_____TokenizeNew_FiveTokensLong(b *testing.B) {
+	benchTokenize(b, "this-is-a-longer-token.another-longer-token.yet-another-one.and-more-here.final-token", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark__TokenizeOld_ThreeTokensTypical(b *testing.B) {
+	benchTokenize(b, "events.user.created", tokenizeOld)
+}
+
+func Benchmark__TokenizeNew_ThreeTokensTypical(b *testing.B) {
+	benchTokenize(b, "events.user.created", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark_TokenizeOld_FourTokensSysPrefix(b *testing.B) {
+	benchTokenize(b, "$SYS.REQ.SERVER.PING", tokenizeOld)
+}
+
+func Benchmark_TokenizeNew_FourTokensSysPrefix(b *testing.B) {
+	benchTokenize(b, "$SYS.REQ.SERVER.PING", tokenizeSubjectIntoSlice)
+}
+
+const nineTokenSubject = "acct1.svc-events.v2.nats1.request-data.response-type.dispatch.account-session-token.cluster-region-useast"
+
+func Benchmark_______TokenizeOld_NineTokens(b *testing.B) {
+	benchTokenize(b, nineTokenSubject, tokenizeOld)
+}
+func Benchmark_______TokenizeNew_NineTokens(b *testing.B) {
+	benchTokenize(b, nineTokenSubject, tokenizeSubjectIntoSlice)
+}
+
+// --- Direct-call benchmarks: measure ACTUAL performance including inlining ---
+// Unlike benchTokenize(), these call tokenizeSubjectIntoSlice directly so the
+// compiler can inline the call at the call site.
+
+func Benchmark__TokenizeDirect_SingleToken(b *testing.B) {
+	var tsa [32]string
+	for i := 0; i < b.N; i++ {
+		tokenizeSubjectIntoSlice(tsa[:0], "foo")
+	}
+}
+func Benchmark__TokenizeDirect_TwoTokens(b *testing.B) {
+	var tsa [32]string
+	for i := 0; i < b.N; i++ {
+		tokenizeSubjectIntoSlice(tsa[:0], "foo.bar")
+	}
+}
+func Benchmark__TokenizeDirect_ThreeTokens(b *testing.B) {
+	var tsa [32]string
+	for i := 0; i < b.N; i++ {
+		tokenizeSubjectIntoSlice(tsa[:0], "events.user.created")
+	}
+}
+func Benchmark__TokenizeDirect_FourTokens(b *testing.B) {
+	var tsa [32]string
+	for i := 0; i < b.N; i++ {
+		tokenizeSubjectIntoSlice(tsa[:0], "$SYS.REQ.SERVER.PING")
+	}
+}
+func Benchmark__TokenizeDirect_FiveTokens(b *testing.B) {
+	var tsa [32]string
+	for i := 0; i < b.N; i++ {
+		tokenizeSubjectIntoSlice(tsa[:0], "this-is-a-longer-token.another-longer-token.yet-another-one.and-more-here.final-token")
+	}
+}
+func Benchmark__TokenizeDirect_NineTokens(b *testing.B) {
+	var tsa [32]string
+	for i := 0; i < b.N; i++ {
+		tokenizeSubjectIntoSlice(tsa[:0], nineTokenSubject)
+	}
+}
+
+// benchSubjects exercises progressively longer subjects with realistic
+// NATS token patterns (3-10 tokens, 51-161 bytes).
+var benchSubjects = []string{
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH.ABCDEFGHIJKLM",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH.ABCDEFGHIJKLM.ABCDEFGHIJ",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH.ABCDEFGHIJKLM.ABCDEFGHIJ.NATS0",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH.ABCDEFGHIJKLM.ABCDEFGHIJ.NATS0.ABCDEFGH",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH.ABCDEFGHIJKLM.ABCDEFGHIJ.NATS0.ABCDEFGH.ABCDEFGHIJKL",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH.ABCDEFGHIJKLM.ABCDEFGHIJ.NATS0.ABCDEFGH.ABCDEFGHIJKL.ABCDEFGHIJKLMNOPQRSTU",
+	"NATS0.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGH.ABCDEFGHIJKLM.ABCDEFGHIJ.NATS0.ABCDEFGH.ABCDEFGHIJKL.ABCDEFGHIJKLMNOPQRSTU.ABCDEFGHIJKLMNOPQRSTU",
+}
+
+func BenchmarkTokenizeSubjects(b *testing.B) {
+	for _, subj := range benchSubjects {
+		name := fmt.Sprintf("%03d_%dt", len(subj), strings.Count(subj, ".")+1)
+		b.Run(name, func(b *testing.B) {
+			var tsa [32]string
+			for i := 0; i < b.N; i++ {
+				tokenizeSubjectIntoSlice(tsa[:0], subj)
+			}
+		})
+	}
+}
