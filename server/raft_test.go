@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -4910,4 +4911,159 @@ func TestNRGMustNotResetVoteOnStepDownOrLeaderTransfer(t *testing.T) {
 	n.processAppendEntry(aeLeaderTransfer, n.aesub)
 	require_Equal(t, n.term, 1)
 	require_Equal(t, n.vote, nats0)
+}
+
+func TestNRGInstallSnapshotFromCheckpoint(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2, entries: entries})
+	aeMsg4 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 4, pterm: 1, pindex: 4, entries: nil})
+
+	// Process the first set of messages.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Start the first checkpoint, creating the first snapshot.
+	c, err := n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	// There's no previous snapshot.
+	buf, err := c.LoadLastSnapshot()
+	require_Error(t, err, errNoSnapAvailable)
+	require_True(t, buf == nil)
+
+	// Since only 1 entry was applied, we should be able to retrieve that here.
+	var count int
+	for ae, err := range c.AppendEntriesSeq() {
+		count++
+		require_NoError(t, err)
+		require_Equal(t, ae.pindex, 0)
+	}
+	require_Equal(t, count, 1)
+
+	// Install the snapshot and confirm we can retrieve it.
+	_, err = c.InstallSnapshot([]byte("old"))
+	require_NoError(t, err)
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(snap.data, []byte("old")))
+
+	// Checkpoint was installed, so all should now abort.
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errSnapAborted)
+	count = 0
+	for _, err = range c.AppendEntriesSeq() {
+		count++
+		require_Error(t, err, errSnapAborted)
+	}
+	require_Equal(t, count, 1)
+	_, err = c.InstallSnapshot(nil)
+	require_Error(t, err, errSnapAborted)
+
+	// Process the next set of messages, we'll be able to compact two append entries now.
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.commit, 2)
+	n.processAppendEntry(aeMsg4, n.aesub)
+	require_Equal(t, n.pindex, 4)
+	require_Equal(t, n.commit, 3)
+	n.Applied(3)
+	require_Equal(t, n.applied, 3)
+
+	// Check a couple edge cases now, a second checkpoint should fail noting a snapshot is already in progress.
+	c, err = n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+	_, err = n.CreateSnapshotCheckpoint(false)
+	require_Error(t, err, errSnapInProgress)
+
+	// Abort checkpoint, so all should now abort.
+	c.Abort()
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errSnapAborted)
+	count = 0
+	for _, err = range c.AppendEntriesSeq() {
+		count++
+		require_Error(t, err, errSnapAborted)
+	}
+	require_Equal(t, count, 1) // Must always iterate at least once to retrieve the error.
+	_, err = c.InstallSnapshot(nil)
+	require_Error(t, err, errSnapAborted)
+
+	// Start the second checkpoint, creating the second snapshot.
+	c, err = n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	// Should load the previous snapshot.
+	buf, err = c.LoadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(buf, []byte("old")))
+
+	// Iterate over the two append entries part of this new snapshot.
+	count = 0
+	for ae, err := range c.AppendEntriesSeq() {
+		count++
+		require_NoError(t, err)
+		require_Equal(t, ae.pindex, uint64(count))
+	}
+	require_Equal(t, count, 2)
+
+	// Install the snapshot and confirm we can retrieve it.
+	_, err = c.InstallSnapshot([]byte("new"))
+	require_NoError(t, err)
+	snap, err = n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(snap.data, []byte("new")))
+
+	// Commit and apply the last entry to test for the final edge case.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.pindex, 4)
+	require_Equal(t, n.commit, 4)
+	n.Applied(4)
+	require_Equal(t, n.applied, 4)
+
+	// Start an async snapshot.
+	c, err = n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	// Installing a snapshot normally should be denied, as one is already in progress.
+	require_Error(t, n.InstallSnapshot(nil), errSnapInProgress)
+
+	// The checkpoint should still work successfully.
+	buf, err = c.LoadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(buf, []byte("new")))
+
+	// However, if we install using the internal API, this should be allowed and abort our checkpoint.
+	// This API will be used as a result of receiving a snapshot as part of catchup, so it's really important
+	// we aren't allowed to replace this newest snapshot with an older snapshot from an earlier checkpoint.
+	snap.lastIndex++
+	require_NoError(t, n.installSnapshot(snap))
+
+	// Check it's aborted.
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errSnapAborted)
+
+	// Check if the last snapshot was updated from underneath of us.
+	n.Lock()
+	n.snapshotting = true
+	n.Unlock()
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errors.New("snapshot index mismatch"))
 }

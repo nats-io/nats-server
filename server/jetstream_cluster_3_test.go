@@ -7146,7 +7146,7 @@ func TestJetStreamClusterStreamRescaleCatchup(t *testing.T) {
 				}
 				sjs := s.getJetStream()
 				n := sjs.getMetaGroup()
-				snap, err := sjs.metaSnapshot()
+				snap, _, _, err := sjs.metaSnapshot()
 				require_NoError(t, err)
 				require_NoError(t, n.InstallSnapshot(snap))
 			}
@@ -7373,7 +7373,7 @@ func TestJetStreamClusterConsumerRescaleCatchup(t *testing.T) {
 				}
 				sjs := s.getJetStream()
 				n := sjs.getMetaGroup()
-				snap, err := sjs.metaSnapshot()
+				snap, _, _, err := sjs.metaSnapshot()
 				require_NoError(t, err)
 				require_NoError(t, n.InstallSnapshot(snap))
 			}
