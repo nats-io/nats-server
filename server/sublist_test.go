@@ -2389,3 +2389,72 @@ func Benchmark___________________subjectIsLiteral(b *testing.B) {
 		subjectIsLiteral("foo.bar.baz.22")
 	}
 }
+
+// tokenizeOld is the previous byte-by-byte tokenization for benchmarking comparison.
+func tokenizeOld(tts []string, subject string) []string {
+	start := 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			tts = append(tts, subject[start:i])
+			start = i + 1
+		}
+	}
+	tts = append(tts, subject[start:])
+	return tts
+}
+
+func benchTokenize(b *testing.B, subject string, fn func([]string, string) []string) {
+	b.Helper()
+	tsa := [32]string{}
+	for i := 0; i < b.N; i++ {
+		fn(tsa[:0], subject)
+	}
+}
+
+func Benchmark________TokenizeOld_SingleToken(b *testing.B) {
+	benchTokenize(b, "foo", tokenizeOld)
+}
+
+func Benchmark________TokenizeNew_SingleToken(b *testing.B) {
+	benchTokenize(b, "foo", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark_________TokenizeOld_TwoTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar", tokenizeOld)
+}
+
+func Benchmark_________TokenizeNew_TwoTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark________TokenizeOld_FourTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar.baz.quux", tokenizeOld)
+}
+
+func Benchmark________TokenizeNew_FourTokens(b *testing.B) {
+	benchTokenize(b, "foo.bar.baz.quux", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark_____TokenizeOld_FiveTokensLong(b *testing.B) {
+	benchTokenize(b, "this-is-a-longer-token.another-longer-token.yet-another-one.and-more-here.final-token", tokenizeOld)
+}
+
+func Benchmark_____TokenizeNew_FiveTokensLong(b *testing.B) {
+	benchTokenize(b, "this-is-a-longer-token.another-longer-token.yet-another-one.and-more-here.final-token", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark__TokenizeOld_ThreeTokensTypical(b *testing.B) {
+	benchTokenize(b, "events.user.created", tokenizeOld)
+}
+
+func Benchmark__TokenizeNew_ThreeTokensTypical(b *testing.B) {
+	benchTokenize(b, "events.user.created", tokenizeSubjectIntoSlice)
+}
+
+func Benchmark_TokenizeOld_FourTokensSysPrefix(b *testing.B) {
+	benchTokenize(b, "$SYS.REQ.SERVER.PING", tokenizeOld)
+}
+
+func Benchmark_TokenizeNew_FourTokensSysPrefix(b *testing.B) {
+	benchTokenize(b, "$SYS.REQ.SERVER.PING", tokenizeSubjectIntoSlice)
+}
