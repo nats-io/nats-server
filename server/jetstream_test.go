@@ -19539,7 +19539,7 @@ func TestJetStreamUpgradeConsumerVersioning(t *testing.T) {
 	require_NoError(t, err)
 
 	// Create consumer config.
-	cfg := &ConsumerConfig{Durable: "CONSUMER"}
+	cfg := &ConsumerConfig{Durable: "CONSUMER", Name: "CONSUMER"}
 	selectedLimits, _, _, apiErr := acc.selectLimits(cfg.replicas(&mset.cfg))
 	if apiErr != nil {
 		require_NoError(t, apiErr)

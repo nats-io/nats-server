@@ -8335,7 +8335,7 @@ func TestJetStreamClusterUpgradeConsumerVersioning(t *testing.T) {
 	require_NoError(t, err)
 
 	// Create consumer config.
-	cfg := &ConsumerConfig{Durable: "CONSUMER"}
+	cfg := &ConsumerConfig{Durable: "CONSUMER", Name: "CONSUMER"}
 	streamCfg, ok := sjs.clusterStreamConfig(acc.Name, "TEST")
 	if !ok {
 		require_NoError(t, NewJSStreamNotFoundError())
