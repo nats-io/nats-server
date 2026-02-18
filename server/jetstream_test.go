@@ -19181,6 +19181,79 @@ func TestJetStreamInterestMaxDeliveryReached(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/7817
+func TestJetStreamWQMaxDeliveryReached(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	for range 3 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.MaxDeliver(2),
+		nats.AckExplicit(),
+		nats.AckWait(200*time.Millisecond),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	msgs, err := sub.Fetch(3, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 3)
+
+	msgs, err = sub.Fetch(3, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 3)
+
+	_, err = sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_Error(t, err, nats.ErrTimeout)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	msgs, err = sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	require_NoError(t, msgs[0].AckSync())
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+	o.mu.RLock()
+	pending, rdc, adflr, asflr := len(o.pending), len(o.rdc), o.adflr, o.asflr
+	o.mu.RUnlock()
+	require_Equal(t, pending, 0)
+	require_Equal(t, rdc, 3)
+	require_Equal(t, adflr, 7)
+	require_Equal(t, asflr, 4)
+
+	mset.checkInterestState()
+	time.Sleep(200 * time.Millisecond)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sm, err := mset.store.LoadMsg(1, nil)
+	require_NoError(t, err)
+	require_Equal(t, sm.subj, "foo")
+}
+
 // https://github.com/nats-io/nats-server/issues/6874
 func TestJetStreamMaxDeliveryRedeliveredReporting(t *testing.T) {
 	s := RunBasicJetStreamServer(t)

@@ -4816,7 +4816,17 @@ func TestJetStreamClusterStreamAckMsgR1SignalsRemovedMsg(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, sm.subj, "foo")
 
+	// Should not remove if the message is still pending, even if we call ack.
+	require_False(t, mset.ackMsg(o, 1))
+	sm, err = mset.store.LoadMsg(1, &smv)
+	require_NoError(t, err)
+	require_Equal(t, sm.subj, "foo")
+
 	// Now do a proper ack, should immediately remove the message since it's R1.
+	o.mu.Lock()
+	o.sseq, o.dseq = 2, 2
+	o.asflr, o.adflr = 1, 1
+	o.mu.Unlock()
 	require_True(t, mset.ackMsg(o, 1))
 	_, err = mset.store.LoadMsg(1, &smv)
 	require_Error(t, err, ErrStoreMsgNotFound)
@@ -4891,6 +4901,16 @@ func TestJetStreamClusterStreamAckMsgR3SignalsRemovedMsg(t *testing.T) {
 	// Too high sequence, should register pre-ack and return true allowing for retries.
 	require_True(t, msetL.ackMsg(ol, 100))
 	require_True(t, msetF.ackMsg(of, 100))
+
+	// We're bypassing the normal ack flow, so must set these values ourselves.
+	ol.mu.Lock()
+	ol.sseq, ol.dseq = 2, 2
+	ol.asflr, ol.adflr = 1, 1
+	ol.mu.Unlock()
+	require_NoError(t, of.store.Update(&ConsumerState{
+		Delivered: SequencePair{1, 1},
+		AckFloor:  SequencePair{1, 1},
+	}))
 
 	// Ack message on follower, should not remove message as that's proposed by the leader.
 	// But should still signal message removal.
