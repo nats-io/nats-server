@@ -562,6 +562,7 @@ const (
 	JSBatchSeq                = "Nats-Batch-Sequence"
 	JSBatchCommit             = "Nats-Batch-Commit"
 	JSSchedulePattern         = "Nats-Schedule"
+	JSScheduleTimeZone        = "Nats-Schedule-Time-Zone"
 	JSScheduleTTL             = "Nats-Schedule-TTL"
 	JSScheduleTarget          = "Nats-Schedule-Target"
 	JSScheduleSource          = "Nats-Schedule-Source"
@@ -4898,9 +4899,7 @@ func getMessageSchedule(hdr []byte) (time.Time, bool) {
 	if len(hdr) == 0 {
 		return time.Time{}, true
 	}
-	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
-	schedule, _, ok := parseMsgSchedule(val, time.Now().UTC().UnixNano())
-	return schedule, ok
+	return nextMessageSchedule(hdr, time.Now().UTC().UnixNano())
 }
 
 // Fast lookup and calculation of next message schedule.
@@ -4909,7 +4908,8 @@ func nextMessageSchedule(hdr []byte, ts int64) (time.Time, bool) {
 		return time.Time{}, true
 	}
 	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
-	schedule, _, ok := parseMsgSchedule(val, ts)
+	tz := bytesToString(sliceHeader(JSScheduleTimeZone, hdr))
+	schedule, _, ok := parseMsgSchedule(val, tz, ts)
 	return schedule, ok
 }
 

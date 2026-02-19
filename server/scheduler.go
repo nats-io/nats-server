@@ -178,7 +178,8 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 				ms.remove(seq)
 				return true
 			}
-			next, repeat, ok := parseMsgSchedule(pattern, ts)
+			tz := bytesToString(sliceHeader(JSScheduleTimeZone, sm.hdr))
+			next, repeat, ok := parseMsgSchedule(pattern, tz, ts)
 			if !ok {
 				ms.remove(seq)
 				return true
@@ -299,17 +300,25 @@ func (ms *MsgScheduling) decode(b []byte) (uint64, error) {
 
 // parseMsgSchedule parses a message schedule pattern and returns the time
 // to fire, whether it is a repeating schedule, and whether the pattern was valid.
-func parseMsgSchedule(pattern string, ts int64) (time.Time, bool, bool) {
+func parseMsgSchedule(pattern string, tz string, ts int64) (time.Time, bool, bool) {
 	if pattern == _EMPTY_ {
 		return time.Time{}, false, true
 	}
 	// Exact time.
 	if strings.HasPrefix(pattern, "@at ") {
+		// Time zone is not supported for @at.
+		if tz != _EMPTY_ {
+			return time.Time{}, false, false
+		}
 		t, err := time.Parse(time.RFC3339, pattern[4:])
 		return t, false, err == nil
 	}
 	// Repeating on a simple interval.
 	if strings.HasPrefix(pattern, "@every ") {
+		// Time zone is not supported for @every.
+		if tz != _EMPTY_ {
+			return time.Time{}, false, false
+		}
 		dur, err := time.ParseDuration(pattern[7:])
 		if err != nil {
 			return time.Time{}, false, false
@@ -325,6 +334,33 @@ func parseMsgSchedule(pattern string, ts int64) (time.Time, bool, bool) {
 		}
 		return next, true, true
 	}
-	return time.Time{}, false, false
 
+	// Predefined schedules for cron.
+	switch pattern {
+	case "@yearly", "@annually":
+		pattern = "0 0 0 1 1 *"
+	case "@monthly":
+		pattern = "0 0 0 1 * *"
+	case "@weekly":
+		pattern = "0 0 0 * * 0"
+	case "@daily", "@midnight":
+		pattern = "0 0 0 * * *"
+	case "@hourly":
+		pattern = "0 0 * * * *"
+	}
+
+	// Parse the cron pattern.
+	next, err := parseCron(pattern, tz, ts)
+	if err != nil {
+		return time.Time{}, false, false
+	}
+	// If this schedule would trigger multiple times, for example after a restart, skip ahead and only fire once.
+	if now := time.Now().UTC(); next.Before(now) {
+		ts = now.Round(time.Second).UnixNano()
+		next, err = parseCron(pattern, tz, ts)
+		if err != nil {
+			return time.Time{}, false, false
+		}
+	}
+	return next, true, true
 }
