@@ -438,7 +438,8 @@ func initSingleMemRaftNodeWithCluster(t *testing.T) (*raft, *cluster) {
 	require_NoError(t, err)
 	cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: ms}
 
-	err = s.bootstrapRaftNode(cfg, nil, false)
+	id := s.sys.shash[:idLen]
+	err = s.bootstrapRaftNode(cfg, []string{id}, true)
 	require_NoError(t, err)
 	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
 	require_NoError(t, err)

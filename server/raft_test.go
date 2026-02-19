@@ -2480,6 +2480,13 @@ func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	nats1 := "yrzKKRBu" // "nats-1"
+	n.Lock()
+	n.addPeer(nats1)
+	// Keep quorum at 2 so the initial leader NOOP does not auto-commit.
+	n.lsut = time.Time{}
+	n.Unlock()
+
 	// Switch this node to leader which sends an entry.
 	n.term++
 	n.switchToLeader()
@@ -3682,6 +3689,14 @@ func TestNRGLostQuorum(t *testing.T) {
 
 	nats0 := "S1Nunr6R" // "nats-0"
 
+	nats1 := "yrzKKRBu" // "nats-1"
+	n.Lock()
+	n.addPeer(nats1)
+	// Ignore scale-up grace period so this
+	// test focuses on lost-quorum tracking.
+	n.lsut = time.Time{}
+	n.Unlock()
+
 	require_Equal(t, n.State(), Follower)
 	require_False(t, n.Quorum())
 	require_True(t, n.lostQuorum())
@@ -3805,6 +3820,14 @@ func TestNRGReportLeaderAfterNoopEntry(t *testing.T) {
 func TestNRGSendSnapshotInstallsSnapshot(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.Lock()
+	n.addPeer(nats0)
+	n.addPeer(nats1)
+	n.Unlock()
 
 	require_Equal(t, n.pindex, 0)
 	require_Equal(t, n.snapfile, _EMPTY_)
@@ -4530,6 +4553,14 @@ func TestNRGIgnoreForwardedProposalIfNotCaughtUpLeader(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	n.Lock()
+	n.addPeer(nats1)
+	n.addPeer(nats2)
+	n.Unlock()
+
 	n.term = 1
 	n.switchToLeader()
 	var wg sync.WaitGroup
@@ -5185,4 +5216,91 @@ func TestNRGInstallSnapshotFromCheckpointAfterTruncateToSnapshot(t *testing.T) {
 		require_Equal(t, ae.pindex, 100)
 	}
 	require_Equal(t, count, 1)
+}
+
+func TestNRGInitSingleMemRaftNodeDefaults(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+	require_Equal(t, n.ID(), "esFhDys3")
+	require_Equal(t, len(n.Peers()), 1)
+	require_Equal(t, n.Peers()[0].ID, "esFhDys3")
+	require_Equal(t, n.ClusterSize(), 1)
+	require_True(t, n.Quorum())
+}
+
+func TestNRGReplayAddPeerKeepsClusterSize(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0]
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:   storeDir,
+		BlockSize:  defaultMediumBlockSize,
+		AsyncFlush: false,
+		srv:        s,
+	}
+	scfg := StreamConfig{Name: "RAFT", Storage: FileStorage}
+	fs, err := newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+
+	// Seed peer state as a 3-node group.
+	s.mu.RLock()
+	self := s.sys.shash[:idLen]
+	s.mu.RUnlock()
+	peerA, peerB := "yrzKKRBu", "cnrtt3eg"
+	require_NoError(t, s.bootstrapRaftNode(cfg, []string{self, peerA, peerB}, true))
+
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	require_Equal(t, n.ClusterSize(), 3)
+
+	// Store a normal entry and a EntryAddPeer and commit them.
+	// The latter triggered the bug at restart.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	aeMsg1 := encode(t, &appendEntry{
+		leader:  self,
+		term:    2,
+		commit:  0,
+		pterm:   0,
+		pindex:  0,
+		entries: []*Entry{newEntry(EntryNormal, esm)},
+	})
+	aeMsg2 := encode(t, &appendEntry{
+		leader:  self,
+		term:    2,
+		commit:  2,
+		pterm:   2,
+		pindex:  1,
+		entries: []*Entry{newEntry(EntryAddPeer, []byte(peerA))},
+	})
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+
+	// Restart from disk, forcing replay of the two WAL entries.
+	n.Stop()
+	n.WaitForStop()
+	fs.Stop()
+
+	fs, err = newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+	cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// If bug is present, cluster size is 1 instead of 3.
+	// EntryAddPeer would increases the initial cluster
+	// of size of 0 to 1. initRaftNode() would then add
+	// the remaining peers from peer state file, but would
+	// not adjust cluster size and quorum accordingly.
+	// This could lead to erroneously create singleton
+	// clusters after restart.
+	require_Equal(t, n.ClusterSize(), 3)
+	require_Equal(t, n.qn, 2)
+
+	n.Stop()
+	n.WaitForStop()
+	fs.Stop()
 }
