@@ -408,6 +408,19 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
 func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (*raft, error) {
+	restorePeerState := func(n *raft) error {
+		ps, err := readPeerState(cfg.Store)
+		if err != nil {
+			return err
+		}
+		if ps == nil {
+			return errNoPeerState
+		}
+		n.processPeerState(ps)
+		n.extSt = ps.domainExt
+		return nil
+	}
+
 	if cfg == nil {
 		return nil, errNilCfg
 	}
@@ -419,15 +432,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	hash := s.sys.shash
 	s.mu.RUnlock()
 
-	// Do this here to process error quicker.
-	ps, err := readPeerState(cfg.Store)
-	if err != nil {
-		return nil, err
-	}
-	if ps == nil {
-		return nil, errNoPeerState
-	}
-
 	qpfx := fmt.Sprintf("[ACC:%s] RAFT '%s' ", accName, cfg.Name)
 	n := &raft{
 		created:  time.Now(),
@@ -437,8 +441,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		wal:      cfg.Log,
 		wtype:    cfg.Log.Type(),
 		track:    cfg.Track,
-		csz:      ps.clusterSize,
-		qn:       ps.clusterSize/2 + 1,
 		peers:    make(map[string]*lps),
 		acks:     make(map[uint64]map[string]struct{}),
 		pae:      make(map[uint64]*appendEntry),
@@ -454,7 +456,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		accName:  accName,
 		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
-		extSt:    ps.domainExt,
 	}
 
 	// Setup our internal subscriptions for proposals, votes and append entries.
@@ -492,6 +493,15 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		// a partial view of the world.
 		n.shutdown()
 		return nil, err
+	}
+
+	// We may have restored the peer state from the
+	// snapshot above. If not, we restore peers from
+	// the peer state file.
+	if len(n.peers) == 0 {
+		if err := restorePeerState(n); err != nil {
+			return nil, err
+		}
 	}
 
 	// Make sure that the snapshots directory exists.
@@ -567,18 +577,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		}
 	}
 
-	// Make sure to track ourselves.
-	n.peers[n.id] = &lps{time.Now(), 0, true}
-
-	// Track known peers
-	for _, peer := range ps.knownPeers {
-		if peer != n.id {
-			// Set these to 0 to start but mark as known peer.
-			n.peers[peer] = &lps{time.Time{}, 0, true}
-		}
-	}
-
-	n.debug("Started")
+	n.debug("Started (cluster size %d, quorum %d)", n.csz, n.qn)
 
 	// Check if we need to start in observer mode due to lame duck status.
 	// This will stop us from taking on the leader role when we're about to
@@ -1630,6 +1629,14 @@ func (n *raft) setupLastSnapshot() error {
 	// Applied will move up when the snapshot is actually applied.
 	n.commit = snap.lastIndex
 	n.papplied = snap.lastIndex
+	// Restore the peerState
+	ps, err := decodePeerState(snap.peerstate)
+	if err != nil {
+		return err
+	}
+	n.processPeerState(ps)
+	n.extSt = ps.domainExt
+
 	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
