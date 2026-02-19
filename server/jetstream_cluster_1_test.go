@@ -8209,7 +8209,7 @@ func TestJetStreamClusterRecreateConsumerFromMetaSnapshot(t *testing.T) {
 			sjs.mu.RLock()
 			meta := sjs.cluster.meta
 			sjs.mu.RUnlock()
-			require_NoError(t, meta.InstallSnapshot(snap))
+			require_NoError(t, meta.InstallSnapshot(snap, false))
 		}
 	}
 
@@ -9705,7 +9705,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 			snap, _, _, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			meta := sjs.getMetaGroup()
-			meta.InstallSnapshot(snap)
+			meta.InstallSnapshot(snap, false)
 		}
 
 		c.stopAll()
@@ -10010,7 +10010,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 			snap, _, _, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			meta := sjs.getMetaGroup()
-			meta.InstallSnapshot(snap)
+			meta.InstallSnapshot(snap, false)
 		}
 
 		c.stopAll()
@@ -11062,7 +11062,7 @@ func TestJetStreamClusterMetaRecoveryRecreateStream(t *testing.T) {
 			mset, err := rs.globalAccount().lookupStream("TEST")
 			require_NoError(t, err)
 			streamNode := mset.raftNode()
-			require_NoError(t, streamNode.InstallSnapshot(mset.stateSnapshot()))
+			require_NoError(t, streamNode.InstallSnapshot(mset.stateSnapshot(), false))
 		}
 
 		// Although the meta node is paused, we add one more meta entry to move the commit up one more.

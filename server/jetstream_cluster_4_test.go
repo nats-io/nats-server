@@ -4059,7 +4059,7 @@ func TestJetStreamClusterDesyncAfterRestartReplacesLeaderSnapshot(t *testing.T) 
 	// Install a snapshot on the leader, ensuring RAFT entries are compacted and a snapshot remains.
 	mset = lookupStream(leader)
 	n = mset.node.(*raft)
-	err = n.InstallSnapshot(mset.stateSnapshot())
+	err = n.InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 
 	c.stopAll()
@@ -4476,7 +4476,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 	require_NoError(t, err)
 	mset, err := acc.lookupStream("TEST")
 	require_NoError(t, err)
-	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked())
+	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked(), false)
 	require_NoError(t, err)
 
 	// Validate the snapshot reflects applied.
@@ -4582,7 +4582,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	require_NotNil(t, o)
 	snapBytes, err := o.store.EncodedState()
 	require_NoError(t, err)
-	err = o.node.InstallSnapshot(snapBytes)
+	err = o.node.InstallSnapshot(snapBytes, false)
 	require_NoError(t, err)
 
 	// Validate the snapshot reflects applied.

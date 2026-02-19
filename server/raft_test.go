@@ -1540,7 +1540,7 @@ func TestNRGDontRemoveSnapshotIfTruncateToApplied(t *testing.T) {
 	n.Applied(1)
 
 	// Install snapshot and check it exists.
-	err = n.InstallSnapshot(nil)
+	err = n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 
 	snapshots := path.Join(n.sd, snapshotsDir)
@@ -1616,7 +1616,7 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	n.Applied(3)
 
 	// Install snapshot and check it exists.
-	err = n.InstallSnapshot(nil)
+	err = n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 
 	snapshots := path.Join(n.sd, snapshotsDir)
@@ -1676,7 +1676,7 @@ func TestNRGIgnoreDoubleSnapshot(t *testing.T) {
 	require_Equal(t, n.term, 2)
 
 	// Snapshot, and confirm state.
-	err := n.InstallSnapshot(nil)
+	err := n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 	snap, err := n.loadLastSnapshot()
 	require_NoError(t, err)
@@ -1684,7 +1684,7 @@ func TestNRGIgnoreDoubleSnapshot(t *testing.T) {
 	require_Equal(t, snap.lastIndex, 1)
 
 	// Snapshot again, should not overwrite previous snapshot.
-	err = n.InstallSnapshot(nil)
+	err = n.InstallSnapshot(nil, false)
 	require_Error(t, err, errNoSnapAvailable)
 	snap, err = n.loadLastSnapshot()
 	require_NoError(t, err)
@@ -2008,7 +2008,7 @@ func TestNRGMemoryWALEmptiesSnapshotsDir(t *testing.T) {
 
 	// Manually call back down to applied, and then snapshot.
 	n.Applied(1)
-	err := n.InstallSnapshot(nil)
+	err := n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 
 	// Stop current node and restart it.
@@ -2804,7 +2804,7 @@ func TestNRGSnapshotRecovery(t *testing.T) {
 	require_Equal(t, n.applied, 1)
 
 	// Install the snapshot.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 
 	// Restoring the snapshot should not up applied, because the apply queue is async.
 	n.pindex, n.commit, n.processed, n.applied = 0, 0, 0, 0
@@ -2991,7 +2991,7 @@ func TestNRGReplayOnSnapshotSameTerm(t *testing.T) {
 	require_Equal(t, n.applied, 1)
 
 	// Install snapshot.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	snap, err := n.loadLastSnapshot()
 	require_NoError(t, err)
 	require_Equal(t, snap.lastIndex, 1)
@@ -3035,7 +3035,7 @@ func TestNRGReplayOnSnapshotDifferentTerm(t *testing.T) {
 	require_Equal(t, n.applied, 1)
 
 	// Install snapshot.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	snap, err := n.loadLastSnapshot()
 	require_NoError(t, err)
 	require_Equal(t, snap.lastIndex, 1)
@@ -3109,7 +3109,7 @@ func TestNRGSizeAndApplied(t *testing.T) {
 
 	// Installing a snapshot should properly correct n.papplied and n.bytes
 	n.applied = 1 // Reset just for testing.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	require_Equal(t, n.papplied, 1)
 	require_Equal(t, n.bytes, 105)
 	entries, bytes = n.Size()
@@ -3120,7 +3120,7 @@ func TestNRGSizeAndApplied(t *testing.T) {
 	require_Equal(t, entries, 1)
 	require_Equal(t, bytes, 105)
 
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	require_Equal(t, n.papplied, 2)
 	require_Equal(t, n.bytes, 0)
 	entries, bytes = n.Size()
@@ -3177,7 +3177,7 @@ func TestNRGDelayedMessagesAfterCatchupDontCountTowardQuorum(t *testing.T) {
 	require_Equal(t, n.commit, 1)
 	n.Applied(1)
 	require_Equal(t, n.applied, 1)
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 
 	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 	require_NoError(t, err)
@@ -3588,7 +3588,7 @@ func TestNRGDrainAndReplaySnapshot(t *testing.T) {
 	// This catchup timed out and we would then call into DrainAndReplaySnapshot.
 	snap := []byte("snapshot")
 	n.Applied(1)
-	require_NoError(t, n.InstallSnapshot(snap))
+	require_NoError(t, n.InstallSnapshot(snap, false))
 
 	require_True(t, n.DrainAndReplaySnapshot())
 	require_True(t, n.paused)
@@ -3990,7 +3990,7 @@ func TestNRGTruncateLogWithMisalignedSnapshotGap(t *testing.T) {
 
 	// Manually call back down to applied, and then snapshot.
 	n.Applied(1)
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 
 	state := n.wal.State()
 	require_Equal(t, state.FirstSeq, 2)
@@ -5043,7 +5043,7 @@ func TestNRGInstallSnapshotFromCheckpoint(t *testing.T) {
 	require_NoError(t, err)
 
 	// Installing a snapshot normally should be denied, as one is already in progress.
-	require_Error(t, n.InstallSnapshot(nil), errSnapInProgress)
+	require_Error(t, n.InstallSnapshot(nil, false), errSnapInProgress)
 
 	// The checkpoint should still work successfully.
 	buf, err = c.LoadLastSnapshot()
@@ -5066,4 +5066,38 @@ func TestNRGInstallSnapshotFromCheckpoint(t *testing.T) {
 	n.Unlock()
 	_, err = c.LoadLastSnapshot()
 	require_Error(t, err, errors.New("snapshot index mismatch"))
+}
+
+func TestNRGInstallSnapshotForce(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Block snapshots unless they're forced to skip in-progress catchups.
+	n.progress = make(map[string]*ipQueue[uint64])
+	n.progress["blockSnapshots"] = newIPQueue[uint64](n.s, "blockSnapshots")
+
+	require_Error(t, n.InstallSnapshot(nil, false), errCatchupsRunning)
+	require_Equal(t, n.papplied, 0)
+
+	require_NoError(t, n.InstallSnapshot(nil, true))
+	require_Equal(t, n.papplied, 1)
 }
