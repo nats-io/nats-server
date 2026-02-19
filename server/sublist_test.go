@@ -2389,3 +2389,62 @@ func Benchmark___________________subjectIsLiteral(b *testing.B) {
 		subjectIsLiteral("foo.bar.baz.22")
 	}
 }
+
+// Test to determine the fastest way to match a filter
+// with wildcards against a literal subject.
+func Benchmark_SubjectFilterMatchers(b *testing.B) {
+	cases := []struct {
+		name    string
+		subject string
+		filter  string
+		want    bool
+	}{
+		{
+			name:    "short_single_wc_match",
+			subject: "foo.baz.12345",
+			filter:  "foo.baz.*",
+			want:    true,
+		},
+		{
+			name:    "short_mixed_wc_match",
+			subject: "foo.baz.12345",
+			filter:  "foo.*.>",
+			want:    true,
+		},
+		{
+			name:    "long_single_wc_match",
+			subject: "foo.alpha.beta.gamma.delta.epsilon.zeta.12345",
+			filter:  "foo.alpha.beta.gamma.delta.epsilon.zeta.*",
+			want:    true,
+		},
+		{
+			name:    "long_many_wc_late_mismatch",
+			subject: "foo.alpha.beta.gamma.delta.epsilon.zeta.12345",
+			filter:  "foo.*.*.*.*.*.*.99999",
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.Run("subjectIsSubsetMatch", func(b *testing.B) {
+				var matched bool
+				for i := 0; i < b.N; i++ {
+					matched = subjectIsSubsetMatch(tc.subject, tc.filter)
+				}
+				if matched != tc.want {
+					b.Fatalf("unexpected result: got %v, want %v", matched, tc.want)
+				}
+			})
+			b.Run("matchLiteral", func(b *testing.B) {
+				var matched bool
+				for i := 0; i < b.N; i++ {
+					matched = matchLiteral(tc.subject, tc.filter)
+				}
+				if matched != tc.want {
+					b.Fatalf("unexpected result: got %v, want %v", matched, tc.want)
+				}
+			})
+		})
+	}
+}
