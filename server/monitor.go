@@ -4111,6 +4111,8 @@ type RaftzGroup struct {
 	QuorumNeeded  int                       `json:"quorum_needed"`
 	Observer      bool                      `json:"observer,omitempty"`
 	Paused        bool                      `json:"paused,omitempty"`
+	Overrun       bool                      `json:"overrun,omitempty"`
+	OverrunCount  uint64                    `json:"overrun_count,omitempty"`
 	Committed     uint64                    `json:"committed"`
 	Applied       uint64                    `json:"applied"`
 	CatchingUp    bool                      `json:"catching_up,omitempty"`
@@ -4219,6 +4221,8 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			QuorumNeeded:  n.qn,
 			Observer:      n.observer,
 			Paused:        n.paused,
+			Overrun:       n.quorumPaused || n.isLeaderOverrun(),
+			OverrunCount:  n.overrunCount,
 			Committed:     n.commit,
 			Applied:       n.applied,
 			CatchingUp:    n.catchup != nil,
