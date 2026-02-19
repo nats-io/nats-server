@@ -1530,6 +1530,11 @@ func (c *client) readLoop(pre []byte) {
 				acc.stats.Unlock()
 			}
 
+			if c.kind == CLIENT {
+				atomic.AddInt64(&s.inClientMsgs, inMsgs)
+				atomic.AddInt64(&s.inClientBytes, inBytes)
+			}
+
 			atomic.AddInt64(&s.inMsgs, inMsgs)
 			atomic.AddInt64(&s.inBytes, inBytes)
 		}
