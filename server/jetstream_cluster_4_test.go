@@ -7345,7 +7345,7 @@ func TestJetStreamClusterStreamSnapshots(t *testing.T) {
 		require_NoError(t, err)
 
 		require_NoError(t, js.DeleteStream("test_stream"))
-		performStreamRestore(t, nc, cfg, state, archive)
+		require_True(t, performStreamRestore(t, nc, cfg, state, archive))
 		c.waitOnAllCurrent()
 
 		nsi, err := js.StreamInfo("test_stream")

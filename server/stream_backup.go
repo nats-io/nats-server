@@ -284,7 +284,11 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (*stream, err
 		}
 		mhdr, msg := buf[:hlen], buf[hlen:]
 		// TODO(nat): check TTL and discard new headers
-		if err = store.StoreRawMsg(sb.String(), mhdr, msg, seq, hdr.ModTime.UnixNano(), 0, false); err != nil {
+		ttl, err := getMessageTTL(mhdr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse message TTL: %w", err)
+		}
+		if err = store.StoreRawMsg(sb.String(), mhdr, msg, seq, hdr.ModTime.UnixNano(), ttl, false); err != nil {
 			return nil, fmt.Errorf("failed to store message sequence %d: %w", seq, err)
 		}
 	}

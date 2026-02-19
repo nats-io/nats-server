@@ -2272,7 +2272,7 @@ func performStreamBackup(t *testing.T, nc *nats.Conn, streamName string) (Stream
 	return body.StreamConfig, body.StreamState, buf.Bytes()
 }
 
-func performStreamRestore(t *testing.T, nc *nats.Conn, sc StreamConfig, ss StreamState, archive []byte) {
+func performStreamRestore(t *testing.T, nc *nats.Conn, sc StreamConfig, ss StreamState, archive []byte) bool {
 	t.Helper()
 	endpoint := fmt.Sprintf(JSApiStreamRestoreT, sc.Name)
 
@@ -2295,6 +2295,9 @@ func performStreamRestore(t *testing.T, nc *nats.Conn, sc StreamConfig, ss Strea
 		DeliverSubject string `json:"deliver_subject"`
 	}
 	require_NoError(t, json.Unmarshal(resp.Data, &res))
+	if !IsValidLiteralSubject(res.DeliverSubject) {
+		return false
+	}
 
 	reader := bytes.NewReader(archive)
 	buf := make([]byte, 128*1024)
@@ -2311,4 +2314,5 @@ func performStreamRestore(t *testing.T, nc *nats.Conn, sc StreamConfig, ss Strea
 
 	_, err = nc.Request(res.DeliverSubject, nil, time.Second)
 	require_NoError(t, err)
+	return true
 }

@@ -4708,43 +4708,8 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	sreq := &JSApiStreamSnapshotRequest{
-		DeliverSubject: nats.NewInbox(),
-		ChunkSize:      512,
-	}
-	req, _ := json.Marshal(sreq)
-	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "TEST"), req, time.Second)
-	require_NoError(t, err)
-
-	var resp JSApiStreamSnapshotResponse
-	json.Unmarshal(rmsg.Data, &resp)
-	require_True(t, resp.Error == nil)
-
-	state := *resp.State
-	cfg := *resp.Config
-
-	var snapshot []byte
-	done := make(chan bool)
-
-	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
-		// EOF
-		if len(m.Data) == 0 {
-			done <- true
-			return
-		}
-		// Could be writing to a file here too.
-		snapshot = append(snapshot, m.Data...)
-		// Flow ack
-		m.Respond(nil)
-	})
-	defer sub.Unsubscribe()
-
-	// Wait to receive the snapshot.
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Did not receive our snapshot in time")
-	}
+	// Take a backup of the stream.
+	sc, ss, snapshot := performStreamBackup(t, nc, "TEST")
 
 	// Delete before we try to restore.
 	require_NoError(t, js.DeleteStream("TEST"))
@@ -4765,53 +4730,15 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 		})
 	}
 
-	var rresp JSApiStreamRestoreResponse
-	rreq := &JSApiStreamRestoreRequest{
-		Config: cfg,
-		State:  state,
-	}
-	req, _ = json.Marshal(rreq)
-
-	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
-	require_NoError(t, err)
-
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, rresp.Error == nil)
-
-	checkHealth()
-
-	// We will now chunk the snapshot responses (and EOF).
-	var chunk [1024]byte
-	for i, r := 0, bytes.NewReader(snapshot); ; {
-		n, err := r.Read(chunk[:])
-		if err != nil {
-			break
-		}
-		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
-		i++
-		// We will call healthz for all servers halfway through the restore.
-		if i%100 == 0 {
-			checkHealth()
-		}
-	}
-	rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
-	require_NoError(t, err)
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, rresp.Error == nil)
-
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_True(t, si.State.Msgs == uint64(toSend))
-
+	// Restore the backup.
+	require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
 	checkHealth()
 
 	// Make sure stepdown works, this would fail before the fix.
 	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, 5*time.Second)
 	require_NoError(t, err)
 
-	si, err = js.StreamInfo("TEST")
+	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == uint64(toSend))
 
@@ -4824,29 +4751,8 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	nc, _ = jsClientConnect(t, s)
 	defer nc.Close()
 
-	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
-	require_NoError(t, err)
-
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, rresp.Error == nil)
-
-	for i, r := 0, bytes.NewReader(snapshot); ; {
-		n, err := r.Read(chunk[:])
-		if err != nil {
-			break
-		}
-		_, err = nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
-		require_NoError(t, err)
-		i++
-	}
-	rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
-	require_NoError(t, err)
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-
-	require_True(t, rresp.Error != nil)
-	require_Equal(t, rresp.ApiResponse.Error.ErrCode, 10074)
+	// Restore the backup.
+	require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
 
 	status := s.healthz(nil)
 	require_Equal(t, status.StatusCode, 200)
