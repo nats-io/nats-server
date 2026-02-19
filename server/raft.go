@@ -3787,9 +3787,6 @@ func (n *raft) truncateWAL(term, index uint64) {
 		if n.applied > n.processed {
 			n.applied = n.processed
 		}
-		if n.papplied > n.applied {
-			n.papplied = n.applied
-		}
 		// Refresh bytes count after truncate.
 		var state StreamState
 		n.wal.FastState(&state)

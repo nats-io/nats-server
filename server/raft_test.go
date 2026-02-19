@@ -5101,3 +5101,88 @@ func TestNRGInstallSnapshotForce(t *testing.T) {
 	require_NoError(t, n.InstallSnapshot(nil, true))
 	require_Equal(t, n.papplied, 1)
 }
+
+func TestNRGInstallSnapshotFromCheckpointAfterTruncateToSnapshot(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 100, pterm: 1, pindex: 100, entries: entries})
+	aeHeartbeat2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 101, pterm: 1, pindex: 101, entries: nil})
+
+	// Process the first message.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+	n.processAppendEntry(aeHeartbeat1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Install a snapshot as normal to set up papplied.
+	require_NoError(t, n.InstallSnapshot(nil, false))
+	require_Equal(t, n.papplied, 1)
+
+	// Simulate being caught up from a leader with a snapshot.
+	snap := &snapshot{
+		lastTerm:  1,
+		lastIndex: 100,
+		peerstate: encodePeerState(n.currentPeerState()),
+		data:      []byte("catchup"),
+	}
+	n.pterm = snap.lastTerm
+	n.pindex = snap.lastIndex
+	n.commit = snap.lastIndex
+	require_NoError(t, n.installSnapshot(snap))
+	require_Equal(t, n.papplied, 100)
+	require_Equal(t, n.applied, 1)
+
+	// Simulate uncommitted entries being truncated up to the above snapshot.
+	n.truncateWAL(1, 100)
+	require_Equal(t, n.papplied, 100)
+
+	// We haven't applied anything since the previous snapshot, so should error.
+	_, err := n.CreateSnapshotCheckpoint(false)
+	require_Error(t, err, errNoSnapAvailable)
+
+	// We have only applied the previous snapshot, so should still error as there's nothing (new) to snapshot.
+	n.Applied(100)
+	require_Equal(t, n.applied, 100)
+	_, err = n.CreateSnapshotCheckpoint(false)
+	require_Error(t, err, errNoSnapAvailable)
+
+	// Process a second message such that we can snapshot.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 101)
+	require_Equal(t, n.commit, 100)
+	n.processAppendEntry(aeHeartbeat2, n.aesub)
+	require_Equal(t, n.pindex, 101)
+	require_Equal(t, n.commit, 101)
+	n.Applied(101)
+	require_Equal(t, n.applied, 101)
+
+	// The checkpoint should function, load the previous/catchup snapshot and load above entry.
+	c, err := n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	buf, err := c.LoadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(buf, []byte("catchup")))
+
+	var count int
+	for ae, err := range c.AppendEntriesSeq() {
+		count++
+		require_NoError(t, err)
+		require_Equal(t, ae.pindex, 100)
+	}
+	require_Equal(t, count, 1)
+}
