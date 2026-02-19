@@ -404,6 +404,8 @@ type stats struct {
 	outMsgs          int64
 	inBytes          int64
 	outBytes         int64
+	inClientMsgs     int64
+	inClientBytes    int64
 	slowConsumers    int64
 	staleConnections int64
 	stalls           int64

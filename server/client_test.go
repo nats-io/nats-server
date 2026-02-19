@@ -3855,3 +3855,55 @@ func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestClientMsgsMetric(t *testing.T) {
+	o1 := DefaultOptions()
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	o2 := DefaultOptions()
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	nc1 := natsConnect(t, s1.ClientURL())
+	defer nc1.Close()
+
+	nc2 := natsConnect(t, s2.ClientURL())
+	defer nc1.Close()
+
+	natsSub(t, nc1, "foo", func(m *nats.Msg) {
+		m.Respond(m.Data)
+	})
+	natsSub(t, nc2, "bar", func(m *nats.Msg) {
+		m.Respond(m.Data)
+	})
+	nc1.Flush()
+	nc2.Flush()
+
+	_, err := nc2.Request("foo", []byte("6bytes"), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on receiving: %v", err)
+	}
+	_, err = nc1.Request("bar", []byte("ninebytes"), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on receiving: %v", err)
+	}
+	nc1.Flush()
+	nc2.Flush()
+
+	// inMsgs and inBytes counts include routed messages
+	require_Equal(t, atomic.LoadInt64(&s1.inMsgs), 4)
+	require_Equal(t, atomic.LoadInt64(&s1.inBytes), 6+6+9+9)
+	require_Equal(t, atomic.LoadInt64(&s2.inMsgs), 4)
+	require_Equal(t, atomic.LoadInt64(&s2.inBytes), 6+6+9+9)
+
+	// only count messages received from clients
+	require_Equal(t, atomic.LoadInt64(&s1.inClientMsgs), 2)
+	require_Equal(t, atomic.LoadInt64(&s1.inClientBytes), 6+9)
+	require_Equal(t, atomic.LoadInt64(&s2.inClientMsgs), 2)
+	require_Equal(t, atomic.LoadInt64(&s2.inClientBytes), 6+9)
+
+}
