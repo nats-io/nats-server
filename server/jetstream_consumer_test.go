@@ -11232,3 +11232,47 @@ func TestJetStreamConsumerResetToSequenceConstraintOnStartTime(t *testing.T) {
 	require_Equal(t, string(msgs[0].Data), "msg3")
 	require_NoError(t, msgs[0].AckSync())
 }
+
+// https://github.com/nats-io/nats-server/issues/7847
+func TestJetStreamConsumerLegacyDurableCreateSetsConsumerName(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	cc := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:   "CONSUMER",
+			AckPolicy: AckExplicit,
+			Replicas:  1,
+		},
+		Action: ActionCreate,
+	}
+	req, err := json.Marshal(cc)
+	require_NoError(t, err)
+
+	msg, err := nc.Request("$JS.API.CONSUMER.CREATE.TEST.CONSUMER", req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerCreateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_Equal(t, resp.Config.Durable, "CONSUMER")
+	require_Equal(t, resp.Config.Name, "CONSUMER")
+
+	msg, err = nc.Request("$JS.API.CONSUMER.DURABLE.CREATE.TEST.CONSUMER", req, time.Second)
+	require_NoError(t, err)
+	resp = JSApiConsumerCreateResponse{}
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_Equal(t, resp.Config.Durable, "CONSUMER")
+	require_Equal(t, resp.Config.Name, "CONSUMER")
+}
