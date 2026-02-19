@@ -5304,3 +5304,87 @@ func TestNRGReplayAddPeerKeepsClusterSize(t *testing.T) {
 	n.WaitForStop()
 	fs.Stop()
 }
+
+func TestNRGLeaderDropsProposalsIfOverrun(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Proposals are only accepted if we're the leader.
+	require_Error(t, n.Propose(nil), errNotLeader)
+	require_Error(t, n.ProposeMulti(nil), errNotLeader)
+
+	n.switchToLeader()
+	require_NoError(t, n.Propose(nil))
+	require_NoError(t, n.ProposeMulti(nil))
+
+	// Proposing while we're exactly at the threshold still succeeds.
+	n.pindex, n.applied = pauseQuorumThreshold, 0
+	require_NoError(t, n.Propose(nil))
+	require_NoError(t, n.ProposeMulti(nil))
+
+	// While we're over the threshold, we temporarily don't send proposals.
+	n.pindex, n.applied = pauseQuorumThreshold+1, 0
+	require_Error(t, n.Propose(nil), errProposalDropped)
+	require_Error(t, n.ProposeMulti(nil), errProposalDropped)
+}
+
+func TestNRGFollowerPausesQuorumIfOverrun(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	aeReply := "$TEST"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(aeReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// Timeline
+	nats0 := "S1Nunr6R" // "nats-0"
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: nil, reply: aeReply})
+
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar := decodeAppendEntryResponse(msg.Data)
+	require_True(t, ar.success)
+	require_Equal(t, msg.Reply, _EMPTY_)
+
+	// Processing while we're exactly at the threshold still succeeds.
+	n.commit, n.applied = pauseQuorumThreshold, 0
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar = decodeAppendEntryResponse(msg.Data)
+	require_True(t, ar.success)
+	require_Equal(t, msg.Reply, _EMPTY_)
+
+	// When we're over the threshold, we pause processing until we're sufficiently below it again.
+	n.commit, n.applied = pauseQuorumThreshold+1, 0
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	_, err = sub.NextMsg(200 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+	require_True(t, n.quorumPaused)
+
+	// Confirm we remain paused while we're almost at the unpause threshold.
+	n.applied = n.commit - paeWarnThreshold - 1
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	_, err = sub.NextMsg(200 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+	require_True(t, n.quorumPaused)
+
+	// Once we're at the lower threshold, we should be unpaused and accept new entries again.
+	// Afterward we'd likely catch up from a snapshot instead of normal append entries.
+	n.applied = n.commit - paeWarnThreshold
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_False(t, n.quorumPaused)
+
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar = decodeAppendEntryResponse(msg.Data)
+	require_True(t, ar.success)
+	require_Equal(t, msg.Reply, _EMPTY_)
+}
