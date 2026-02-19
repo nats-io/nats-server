@@ -1467,6 +1467,7 @@ func (js *jetStream) monitorCluster() {
 	defer s.isMetaLeader.Store(false)
 
 	const compactInterval = time.Minute
+	const compactMinInterval = 15 * time.Second
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
@@ -1547,11 +1548,16 @@ func (js *jetStream) monitorCluster() {
 		// If we had a significant number of failed snapshots, start relaxing Raft-layer checks
 		// to force it through. We might have been catching up a peer for a long period, and this
 		// protects our log size from growing indefinitely.
-		forceSnapshot := failedSnapshots.Load() > 10
+		forceSnapshot := failedSnapshots.Load() > 4
 		c, err := n.CreateSnapshotCheckpoint(forceSnapshot)
 		if err != nil {
 			if err != errNoSnapAvailable && err != errNodeClosed {
 				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
+				// If this is the first failure, reduce the interval of the snapshot timer.
+				// This ensures we're not waiting too long for snapshotting to eventually become forced.
+				if failedSnapshots.Load() == 0 {
+					t.Reset(compactMinInterval)
+				}
 				failedSnapshots.Add(1)
 			}
 			snapMu.Unlock()
@@ -1583,6 +1589,11 @@ func (js *jetStream) monitorCluster() {
 				c.Abort()
 			} else if csz, err := c.InstallSnapshot(snap); err == nil {
 				lastSnapTime = time.Now()
+				// If there was a failed snapshot before, we reduced the timer's interval.
+				// Reset it back to the original interval now.
+				if failedSnapshots.Load() > 0 {
+					t.Reset(compactInterval)
+				}
 				failedSnapshots.Store(0)
 				// Fallback snapshot was successful, the next one can be async again.
 				fallbackSnapshot = false
@@ -1595,6 +1606,11 @@ func (js *jetStream) monitorCluster() {
 				c.Abort()
 				if err != errNoSnapAvailable && err != errNodeClosed && err != errSnapAborted {
 					s.Warnf("Error snapshotting JetStream cluster state: %v", err)
+					// If this is the first failure, reduce the interval of the snapshot timer.
+					// This ensures we're not waiting too long for snapshotting to eventually become forced.
+					if failedSnapshots.Load() == 0 {
+						t.Reset(compactMinInterval)
+					}
 					failedSnapshots.Add(1)
 				}
 			}
@@ -1615,6 +1631,11 @@ func (js *jetStream) monitorCluster() {
 				if err != errNoSnapAvailable && err != errNodeClosed && err != errSnapAborted {
 					s.Warnf("Error snapshotting JetStream cluster state: %v, will fall back to blocking snapshot", err)
 					fallbackSnapshot = true
+					// If this is the first failure, reduce the interval of the snapshot timer.
+					// This ensures we're not waiting too long for snapshotting to eventually become forced.
+					if failedSnapshots.Load() == 0 {
+						t.Reset(compactMinInterval)
+					}
 					failedSnapshots.Add(1)
 				}
 				snapshotting = false
@@ -1639,6 +1660,11 @@ func (js *jetStream) monitorCluster() {
 			} else {
 				// Successful snapshot.
 				lastSnapTime = time.Now()
+				// If there was a failed snapshot before, we reduced the timer's interval.
+				// Reset it back to the original interval now.
+				if failedSnapshots.Load() > 0 {
+					t.Reset(compactInterval)
+				}
 				failedSnapshots.Store(0)
 				if took := time.Since(start); took > 2*time.Second {
 					s.rateLimitFormatWarnf("Metalayer async snapshot took %.3fs (streams: %d, consumers: %d, compacted: %s)",
