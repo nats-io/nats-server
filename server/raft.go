@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1338,6 +1339,7 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	}
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
+	n.debug("Set snapfile in installSnapshot: %s (%d)", n.snapfile, snap.lastIndex)
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		return err
@@ -1435,6 +1437,14 @@ func (c *checkpoint) LoadLastSnapshot() ([]byte, error) {
 	}
 	if snap.lastIndex != c.papplied {
 		// Another snapshot was installed in the meantime. This invalidates our checkpoint.
+		assert.Unreachable("snapshot index mismatch", map[string]any{
+			"id":             c.n.id,
+			"group":          c.n.group,
+			"stack":          string(debug.Stack()),
+			"snap.lastIndex": snap.lastIndex,
+			"c.papplied":     c.papplied,
+			"n.papplied":     c.n.papplied,
+		})
 		return nil, errors.New("snapshot index mismatch")
 	}
 	return snap.data, nil
@@ -1518,6 +1528,7 @@ func (c *checkpoint) InstallSnapshot(data []byte) (uint64, error) {
 	}
 	// Remember our latest snapshot file.
 	n.snapfile = c.snapFile
+	n.debug("Set snapfile from checkpoint: %s", n.snapfile)
 
 	// Unlock while compacting.
 	n.Unlock()
@@ -1536,6 +1547,7 @@ func (c *checkpoint) InstallSnapshot(data []byte) (uint64, error) {
 	n.wal.FastState(&state)
 	n.papplied = snap.lastIndex
 	n.bytes = state.Bytes
+	n.debug("Set papplied from checkpoint: %s", snap.lastIndex)
 
 	// Expose compacted size.
 	if n.bytes > compacted {
@@ -1616,6 +1628,7 @@ func (n *raft) setupLastSnapshot() error {
 	defer n.Unlock()
 
 	n.snapfile = latest
+	n.debug("Set snapfile in setupLastSnapshot: %s", n.snapfile)
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
 		return err
