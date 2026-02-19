@@ -1906,7 +1906,7 @@ func (ms *memStore) loadNextMsgLocked(filter string, wc bool, start uint64, smp 
 
 	eq := subjectsEqual
 	if wc {
-		eq = subjectIsSubsetMatch
+		eq = matchLiteral
 	}
 
 	for nseq := fseq; nseq <= lseq; nseq++ {
