@@ -153,7 +153,6 @@ type raft struct {
 
 	created time.Time      // Time that the group was created
 	accName string         // Account name of the asset this raft group is for
-	acc     *Account       // Account that NRG traffic will be sent/received in
 	group   string         // Raft group
 	sd      string         // Store directory
 	id      string         // Node ID
@@ -200,7 +199,6 @@ type raft struct {
 	vote   string // Our current vote state
 
 	s  *Server    // Reference to top-level server
-	c  *client    // Internal client for subscriptions
 	js *jetStream // JetStream, if running, to see if we are out of resources
 
 	hasleader atomic.Bool // Is there a group leader right now?
@@ -219,7 +217,7 @@ type raft struct {
 	asubj  string // Append entries subject
 	areply string // Append entries responses subject
 
-	sq    *sendq        // Send queue for outbound RPC messages
+	t     raftTransport // Transport that handles Raft messaging
 	aesub *subscription // Subscription for handleAppendEntry callbacks
 
 	wtv []byte // Term and vote to be written
@@ -271,7 +269,6 @@ type catchupState struct {
 type lps struct {
 	ts time.Time // Last timestamp
 	li uint64    // Last index replicated
-	kp bool      // Known peer
 }
 
 const (
@@ -314,6 +311,8 @@ type RaftConfig struct {
 	// We need to protect against losing state due to the new peers starting with an empty log.
 	// Therefore, these empty servers can't try to become leader until they at least have _some_ state.
 	ScaleUp bool
+
+	Transport raftTransportFactory
 }
 
 var (
@@ -457,6 +456,12 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
 	}
+
+	factory := cfg.Transport
+	if factory == nil {
+		factory = defaultRaftTransport
+	}
+	n.t = factory(s, n)
 
 	// Setup our internal subscriptions for proposals, votes and append entries.
 	// If we fail to do this for some reason then this is fatal — we cannot
@@ -652,7 +657,7 @@ func (n *raft) IsSystemAccount() bool {
 func (n *raft) GetTrafficAccountName() string {
 	n.RLock()
 	defer n.RUnlock()
-	return n.acc.GetName()
+	return n.t.Account().GetName()
 }
 
 func (n *raft) RecreateInternalSubs() error {
@@ -702,7 +707,7 @@ func (n *raft) recreateInternalSubsLocked() error {
 			}
 		}
 	}
-	if n.aesub != nil && n.acc == nrgAcc {
+	if n.aesub != nil && n.t.Account() == nrgAcc {
 		// Subscriptions already exist and the account NRG state
 		// hasn't changed.
 		return nil
@@ -713,33 +718,11 @@ func (n *raft) recreateInternalSubsLocked() error {
 	// the next step...
 	n.cancelCatchup()
 
-	// If we have an existing client then tear down any existing
-	// subscriptions and close the internal client.
-	if c := n.c; c != nil {
-		c.mu.Lock()
-		subs := make([]*subscription, 0, len(c.subs))
-		for _, sub := range c.subs {
-			subs = append(subs, sub)
-		}
-		c.mu.Unlock()
-		for _, sub := range subs {
-			n.unsubscribe(sub)
-		}
-		c.closeConnection(InternalClient)
-	}
-
-	if n.acc != nrgAcc {
+	if n.t.Account() != nrgAcc {
 		n.debug("Subscribing in '%s'", nrgAcc.GetName())
 	}
 
-	c := n.s.createInternalSystemClient()
-	c.registerWithAccount(nrgAcc)
-	if nrgAcc.sq == nil {
-		nrgAcc.sq = n.s.newSendQ(nrgAcc)
-	}
-	n.c = c
-	n.sq = nrgAcc.sq
-	n.acc = nrgAcc
+	n.t.Reset(nrgAcc)
 
 	// Recreate any internal subscriptions for voting, append
 	// entries etc in the new account.
@@ -2192,17 +2175,12 @@ func (n *raft) newInbox() string {
 // Our internal subscribe.
 // Lock should be held.
 func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
-	if n.c == nil {
-		return nil, errNoInternalClient
-	}
-	return n.s.systemSubscribe(subject, _EMPTY_, false, n.c, cb)
+	return n.t.Subscribe(subject, cb)
 }
 
 // Lock should be held.
 func (n *raft) unsubscribe(sub *subscription) {
-	if n.c != nil && sub != nil {
-		n.c.processUnsub(sub.sid)
-	}
+	n.t.Unsubscribe(sub)
 }
 
 // Lock should be held.
@@ -2327,19 +2305,7 @@ runner:
 	n.Lock()
 	defer n.Unlock()
 
-	if c := n.c; c != nil {
-		var subs []*subscription
-		c.mu.Lock()
-		for _, sub := range c.subs {
-			subs = append(subs, sub)
-		}
-		c.mu.Unlock()
-		for _, sub := range subs {
-			n.unsubscribe(sub)
-		}
-		c.closeConnection(InternalClient)
-		n.c = nil
-	}
+	n.t.Close()
 
 	// Unregistering ipQueues do not prevent them from push/pop
 	// just will remove them from the central monitoring map
@@ -2882,13 +2848,10 @@ func (n *raft) addPeer(peer string) {
 		delete(n.removed, peer)
 	}
 
-	if lp, ok := n.peers[peer]; !ok {
+	if _, ok := n.peers[peer]; !ok {
 		// We are not tracking this one automatically so we need
 		// to bump cluster size.
-		n.peers[peer] = &lps{time.Time{}, 0, true}
-	} else {
-		// Mark as added.
-		lp.kp = true
+		n.peers[peer] = &lps{time.Time{}, 0}
 	}
 
 	// Adjust cluster size and quorum if needed.
@@ -3145,13 +3108,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		if len(n.progress) == 0 {
 			n.progress = nil
 		}
-		// Check if this is a new peer and if so go ahead and propose adding them.
-		_, exists := n.peers[peer]
 		n.Unlock()
-		if !exists {
-			n.debug("Catchup done for %q, will add into peers", peer)
-			n.ProposeAddPeer(peer)
-		}
 		indexUpdatesQ.unregister()
 	}()
 
@@ -3415,36 +3372,13 @@ func (n *raft) applyCommit(index uint64) error {
 					data:      e.Data,
 				})
 			}
-		case EntryPeerState:
-			if n.State() != Leader {
-				if ps, err := decodePeerState(e.Data); err == nil {
-					n.processPeerState(ps)
-				}
-			}
 		case EntryAddPeer:
-			newPeer := string(e.Data)
-			n.debug("Added peer %q", newPeer)
-
-			// Store our peer in our global peer map for all peers.
-			peers.LoadOrStore(newPeer, newPeer)
-
-			n.addPeer(newPeer)
-
 			// We pass these up as well.
 			committed = append(committed, e)
 
 			// We are done with this membership change
 			n.membChangeIndex = 0
-
 		case EntryRemovePeer:
-			peer := string(e.Data)
-			n.debug("Removing peer %q", peer)
-
-			n.removePeer(peer)
-
-			// Remove from string intern map.
-			peers.Delete(peer)
-
 			// We pass these up as well.
 			committed = append(committed, e)
 
@@ -3453,6 +3387,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// If this is us and we are the leader signal the caller
 			// to attempt to stepdown.
+			peer := string(e.Data)
 			if peer == n.id && n.State() == Leader {
 				return errNodeRemoved
 			}
@@ -3532,25 +3467,20 @@ func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 // Used to adjust cluster size and peer count based on added official peers.
 // lock should be held.
 func (n *raft) adjustClusterSizeAndQuorum() {
-	pcsz, ncsz := n.csz, 0
-	for _, peer := range n.peers {
-		if peer.kp {
-			ncsz++
-		}
-	}
-	n.csz = ncsz
+	pcsz := n.csz
+	n.csz = len(n.peers)
 	n.qn = n.csz/2 + 1
 
-	if ncsz > pcsz {
-		n.debug("Expanding our clustersize: %d -> %d", pcsz, ncsz)
+	if n.csz > pcsz {
+		n.debug("Expanding our clustersize: %d -> %d", pcsz, n.csz)
 		n.lsut = time.Now()
-	} else if ncsz < pcsz {
-		n.debug("Decreasing our clustersize: %d -> %d", pcsz, ncsz)
+	} else if n.csz < pcsz {
+		n.debug("Decreasing our clustersize: %d -> %d", pcsz, n.csz)
 		if n.State() == Leader {
 			go n.sendHeartbeat()
 		}
 	}
-	if ncsz != pcsz {
+	if n.csz != pcsz {
 		n.recreateInternalSubsLocked()
 	}
 }
@@ -3568,7 +3498,7 @@ func (n *raft) trackPeer(peer string) error {
 		}
 	}
 	if n.State() == Leader {
-		if lp, ok := n.peers[peer]; !ok || !lp.kp {
+		if _, ok := n.peers[peer]; !ok {
 			// Check if this peer had been removed previously.
 			needPeerAdd = !isRemoved
 		}
@@ -4190,22 +4120,30 @@ CONTINUE:
 					}
 				}
 			}
+		case EntryPeerState:
+			if n.State() != Leader {
+				if ps, err := decodePeerState(e.Data); err == nil {
+					n.processPeerState(ps)
+				}
+			}
 		case EntryAddPeer:
 			// When receiving or restoring, mark membership as changing.
 			// Set to the index where this entry was stored (pindex is now this entry's index)
 			n.membChangeIndex = n.pindex
-			if newPeer := string(e.Data); len(newPeer) == idLen {
-				// Track directly, but wait for commit to be official
-				if _, ok := n.peers[newPeer]; !ok {
-					n.peers[newPeer] = &lps{time.Time{}, 0, false}
-				}
-				// Store our peer in our global peer map for all peers.
-				peers.LoadOrStore(newPeer, newPeer)
-			}
+			peer := string(e.Data)
+			// Store our peer in our global peer map for all peers.
+			peers.LoadOrStore(peer, peer)
+			n.addPeer(peer)
+			n.debug("Added peer %q", peer)
 		case EntryRemovePeer:
 			// When receiving or restoring, mark membership as changing.
 			// Set to the index where this entry was stored (pindex is now this entry's index)
 			n.membChangeIndex = n.pindex
+			peer := string(e.Data)
+			// Remove from string intern map.
+			peers.Delete(peer)
+			n.removePeer(peer)
+			n.debug("Removed peer %q", peer)
 		}
 	}
 
@@ -4271,10 +4209,9 @@ func (n *raft) processPeerState(ps *peerState) {
 	n.peers = make(map[string]*lps)
 	for _, peer := range ps.knownPeers {
 		if lp := old[peer]; lp != nil {
-			lp.kp = true
 			n.peers[peer] = lp
 		} else {
-			n.peers[peer] = &lps{time.Time{}, 0, true}
+			n.peers[peer] = &lps{time.Time{}, 0}
 		}
 	}
 	n.debug("Update peers from leader to %+v", n.peers)
@@ -4516,10 +4453,8 @@ func decodePeerState(buf []byte) (*peerState, error) {
 // Lock should be held.
 func (n *raft) peerNames() []string {
 	var peers []string
-	for name, peer := range n.peers {
-		if peer.kp {
-			peers = append(peers, name)
-		}
+	for name := range n.peers {
+		peers = append(peers, name)
 	}
 	return peers
 }
@@ -4872,15 +4807,11 @@ func (n *raft) requestVote() {
 }
 
 func (n *raft) sendRPC(subject, reply string, msg []byte) {
-	if n.sq != nil {
-		n.sq.send(subject, reply, nil, msg)
-	}
+	n.t.Publish(subject, reply, msg)
 }
 
 func (n *raft) sendReply(subject string, msg []byte) {
-	if n.sq != nil {
-		n.sq.send(subject, _EMPTY_, nil, msg)
-	}
+	n.t.Publish(subject, _EMPTY_, msg)
 }
 
 func (n *raft) wonElection(votes int) bool {
