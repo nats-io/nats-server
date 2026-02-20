@@ -2463,12 +2463,10 @@ func TestJetStreamRollupIsolatedRead(t *testing.T) {
 			require_Equal(t, msg.Header.Get(JSNumPending), "0")
 			require_Equal(t, msg.Header.Get(JSSequence), "2")
 		} else {
-			// $JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<tm>.<pending>
 			require_True(t, strings.HasPrefix(msg.Reply, jsAckPre))
-			tokens := strings.Split(msg.Reply, ".")
-			require_Len(t, len(tokens), 9)
-			require_Equal(t, tokens[8], "0") // pending
-			require_Equal(t, tokens[5], "2") // sseq
+			sseq, _, _, _, pending := ackReplyInfo(msg.Reply)
+			require_Equal(t, pending, 0)
+			require_Equal(t, sseq, 2)
 		}
 	}
 

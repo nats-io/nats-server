@@ -2469,7 +2469,7 @@ func TestNoRaceJetStreamClusterMirrorSkipSequencingBug(t *testing.T) {
 		si, err := js.StreamInfo("M")
 		require_NoError(t, err)
 		if si.State.Msgs != 500_000 {
-			return fmt.Errorf("Expected 1M msgs, got state: %+v", si.State)
+			return fmt.Errorf("Expected 500k msgs, got state: %+v", si.State)
 		}
 		return nil
 	})

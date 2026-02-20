@@ -2830,10 +2830,6 @@ func TestJetStreamSuperClusterImportConsumerStreamSubjectRemap(t *testing.T) {
 			exports [
 				# This is streaming to a delivery subject for a push based consumer.
 				{ stream: "deliver.ORDERS.*" }
-				# This is to ack received messages. This is a service to support sync ack.
-				{ service: "$JS.ACK.ORDERS.*.>" }
-				# To support ordered consumers, flow control.
-				{ service: "$JS.FC.>" }
 			]
 		},
 		IM: {
@@ -2843,7 +2839,6 @@ func TestJetStreamSuperClusterImportConsumerStreamSubjectRemap(t *testing.T) {
 				{ stream:  { account: JS, subject: "deliver.ORDERS.gateway" }}
 				{ stream:  { account: JS, subject: "deliver.ORDERS.leaf1" }}
 				{ stream:  { account: JS, subject: "deliver.ORDERS.leaf2" }}
-				{ service: {account: JS, subject: "$JS.FC.>" }}
 			]
 		},
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] },
@@ -2967,17 +2962,12 @@ func TestJetStreamSuperClusterImportConsumerStreamSubjectRemap(t *testing.T) {
 					exports [
 						# This is streaming to a delivery subject for a push based consumer.
 						{ stream: "deliver.ORDERS.leaf2" }
-						# This is to ack received messages. This is a service to support sync ack.
-						{ service: "$JS.ACK.ORDERS.*.>" }
-						# To support ordered consumers, flow control.
-						{ service: "$JS.FC.>" }
 					]
 				},
 				IM2: {
 					users: [ {user: im, password: pwd} ]
 					imports [
 						{ stream:  { account: JS2, subject: "deliver.ORDERS.leaf2" }}
-						{ service: {account: JS2, subject: "$JS.FC.>" }}
 					]
 				},
 			}

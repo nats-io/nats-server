@@ -3208,7 +3208,7 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 
 			msg, err := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
 			require_NoError(t, err)
-			sseq, dseq, _, _, _ := replyInfo(msg.Reply)
+			sseq, dseq, _, _, _ := ackReplyInfo(msg.Reply)
 			if dseq != 1 {
 				t.Fatalf("Expected delivered seq of 1, got %d", dseq)
 			}
@@ -3960,7 +3960,7 @@ func TestJetStreamConsumerDurableReconnectWithOnlyPending(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				sseq, _, dc, _, _ := replyInfo(msg.Reply)
+				sseq, _, dc, _, _ := ackReplyInfo(msg.Reply)
 				if sseq == 1 && dc == 1 {
 					t.Fatalf("Expected a redelivery count greater then 1 for sseq 1, got %d", dc)
 				}
@@ -4039,7 +4039,7 @@ func TestJetStreamConsumerDurableFilteredSubjectReconnect(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				rsseq, roseq, dcount, _, _ := replyInfo(m.Reply)
+				rsseq, roseq, dcount, _, _ := ackReplyInfo(m.Reply)
 				if roseq != uint64(seq) {
 					t.Fatalf("Expected consumer sequence of %d , got %d", seq, roseq)
 				}
@@ -4058,7 +4058,7 @@ func TestJetStreamConsumerDurableFilteredSubjectReconnect(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				_, roseq, dcount, _, _ := replyInfo(m.Reply)
+				_, roseq, dcount, _, _ := ackReplyInfo(m.Reply)
 				if roseq != uint64(seq) {
 					t.Fatalf("Expected consumer sequence of %d , got %d", seq, roseq)
 				}
@@ -4853,7 +4853,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Error getting message: %v", err)
 				}
-				seq, _, _, _, _ := replyInfo(m.Reply)
+				seq, _, _, _, _ := ackReplyInfo(m.Reply)
 				// 4, 8, 12, 16, 20
 				if seq%4 == 0 {
 					m.Respond(nil)
@@ -4911,7 +4911,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				if eseq <= uint64(toSend) && eseq%4 == 0 {
 					eseq++
 				}
-				seq, _, dc, _, _ := replyInfo(m.Reply)
+				seq, _, dc, _, _ := ackReplyInfo(m.Reply)
 				if seq != eseq {
 					t.Fatalf("Expected stream sequence of %d, got %d", eseq, seq)
 				}
@@ -4945,7 +4945,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				if eseq <= uint64(toSend) && eseq%4 == 0 {
 					eseq++
 				}
-				seq, _, dc, _, _ := replyInfo(m.Reply)
+				seq, _, dc, _, _ := ackReplyInfo(m.Reply)
 				if seq != eseq {
 					t.Fatalf("Expected stream sequence of %d, got %d", eseq, seq)
 				}
@@ -5234,7 +5234,7 @@ func TestJetStreamConsumerPullMaxAckPendingRedeliveries(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				sseq, dseq, dcount, _, pending := replyInfo(m.Reply)
+				sseq, dseq, dcount, _, pending := ackReplyInfo(m.Reply)
 				if sseq != expSeq {
 					t.Fatalf("Expected stream sequence of %d, got %d", expSeq, sseq)
 				}
@@ -8410,7 +8410,7 @@ func TestJetStreamConsumerPullRemoveInterest(t *testing.T) {
 
 	msg, err := nc.Request(rqn, nil, time.Second)
 	require_NoError(t, err)
-	_, dseq, dc, _, _ := replyInfo(msg.Reply)
+	_, dseq, dc, _, _ := ackReplyInfo(msg.Reply)
 	if dseq != 1 {
 		t.Fatalf("Expected consumer sequence of 1, got %d", dseq)
 	}
@@ -8434,7 +8434,7 @@ func TestJetStreamConsumerPullRemoveInterest(t *testing.T) {
 
 	msg, err = nc.Request(rqn, nil, time.Second)
 	require_NoError(t, err)
-	_, dseq, dc, _, _ = replyInfo(msg.Reply)
+	_, dseq, dc, _, _ = ackReplyInfo(msg.Reply)
 	if dseq != 2 {
 		t.Fatalf("Expected consumer sequence of 2, got %d", dseq)
 	}
@@ -9532,7 +9532,7 @@ func TestJetStreamConsumerPullMaxBytes(t *testing.T) {
 	require_NoError(t, err)
 
 	// Put in ~2MB, each ~100k
-	msz, dsz := 100_000, 99_950
+	msz, dsz := 100_000, 99_900
 	total, msg := 20, []byte(strings.Repeat("Z", dsz))
 
 	for i := 0; i < total; i++ {
@@ -11275,4 +11275,41 @@ func TestJetStreamConsumerLegacyDurableCreateSetsConsumerName(t *testing.T) {
 	require_True(t, resp.Error == nil)
 	require_Equal(t, resp.Config.Durable, "CONSUMER")
 	require_Equal(t, resp.Config.Name, "CONSUMER")
+}
+
+func TestJetStreamConsumerAckReplyFormats(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 4 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe("foo", "C", nats.AckExplicit())
+	require_NoError(t, err)
+
+	msgs, err := sub.Fetch(4)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 4)
+
+	for _, ackReply := range []string{
+		"$JS.ACK.TEST.C.1.1.1.0.0",                               // v1 (9 tokens)
+		"$JS.ACK._.szMpdrwD.TEST.C.1.2.2.0.0",                    // v2 (11 tokens)
+		"$JS.ACK._.szMpdrwD.TEST.C.1.3.3.0.0.random",             // v2 (11+ tokens)
+		"$JS.ACK._.szMpdrwD.TEST.C.1.4.4.0.0.random.more.tokens", // v2 (11+ tokens)
+	} {
+		msg, err := nc.Request(ackReply, nil, 250*time.Millisecond)
+		require_NoError(t, err)
+		require_Len(t, len(msg.Data), 0)
+	}
 }
