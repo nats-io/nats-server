@@ -1370,6 +1370,149 @@ func TestMemStoreMessageSchedule(t *testing.T) {
 	require_Equal(t, bytesToString(getHeader(JSScheduleNext, im.hdr)), JSScheduleNextPurge)
 }
 
+func TestMemStoreNextWildcardMatch(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.>"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("msg")
+	storeN := func(subj string, n int) {
+		t.Helper()
+		for range n {
+			_, _, err := ms.StoreMsg(subj, nil, msg, 0)
+			require_NoError(t, err)
+		}
+	}
+	storeN("foo.bar.a", 1)
+	storeN("foo.baz.bar", 10)
+	storeN("foo.bar.b", 1)
+	storeN("foo.baz.bar", 10)
+	storeN("foo.baz.bar.no.match", 10)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	first, last, found := ms.nextWildcardMatchLocked("foo.bar.*", 0)
+	require_True(t, found)
+	require_Equal(t, first, 1)
+	require_Equal(t, last, 12)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.bar.*", 1)
+	require_True(t, found)
+	require_Equal(t, first, 1)
+	require_Equal(t, last, 12)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.bar.*", 2)
+	require_True(t, found)
+	require_Equal(t, first, 12)
+	require_Equal(t, last, 12)
+
+	_, _, found = ms.nextWildcardMatchLocked("foo.bar.*", first+1)
+	require_False(t, found)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.baz.*", 1)
+	require_True(t, found)
+	require_Equal(t, first, 2)
+	require_Equal(t, last, 22)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.baz.*", 11)
+	require_True(t, found)
+	require_Equal(t, first, 11)
+	require_Equal(t, last, 22)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.baz.*", 12)
+	require_True(t, found)
+	require_Equal(t, first, 12)
+	require_Equal(t, last, 22)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.baz.*", 22)
+	require_True(t, found)
+	require_Equal(t, first, 22)
+	require_Equal(t, last, 22)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.baz.*", 23)
+	require_False(t, found)
+	require_Equal(t, first, 0)
+	require_Equal(t, last, 0)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.nope.*", 1)
+	require_False(t, found)
+	require_Equal(t, first, 0)
+	require_Equal(t, last, 0)
+
+	first, last, found = ms.nextWildcardMatchLocked("foo.>", 1)
+	require_True(t, found)
+	require_Equal(t, first, 1)
+	require_Equal(t, last, 32)
+}
+
+func TestMemStoreNextLiteralMatch(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.>"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("msg")
+	storeN := func(subj string, n int) {
+		t.Helper()
+		for range n {
+			_, _, err := ms.StoreMsg(subj, nil, msg, 0)
+			require_NoError(t, err)
+		}
+	}
+	storeN("foo.bar.a", 1)             // seq 1
+	storeN("foo.baz.bar", 10)          // seqs 2-11
+	storeN("foo.bar.b", 1)             // seq 12
+	storeN("foo.baz.bar", 10)          // seqs 13-22
+	storeN("foo.baz.bar.no.match", 10) // seqs 23-32
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	first, last, found := ms.nextLiteralMatchLocked("foo.bar.a", 0)
+	require_True(t, found)
+	require_Equal(t, first, 1)
+	require_Equal(t, last, 1)
+
+	_, _, found = ms.nextLiteralMatchLocked("foo.bar.a", 2)
+	require_False(t, found)
+
+	first, last, found = ms.nextLiteralMatchLocked("foo.baz.bar", 1)
+	require_True(t, found)
+	require_Equal(t, first, 2)
+	require_Equal(t, last, 22)
+
+	first, last, found = ms.nextLiteralMatchLocked("foo.baz.bar", 11)
+	require_True(t, found)
+	require_Equal(t, first, 11)
+	require_Equal(t, last, 22)
+
+	first, last, found = ms.nextLiteralMatchLocked("foo.baz.bar", 22)
+	require_True(t, found)
+	require_Equal(t, first, 22)
+	require_Equal(t, last, 22)
+
+	first, last, found = ms.nextLiteralMatchLocked("foo.baz.bar", 23)
+	require_False(t, found)
+	require_Equal(t, first, 0)
+	require_Equal(t, last, 0)
+
+	first, last, found = ms.nextLiteralMatchLocked("foo.nope", 1)
+	require_False(t, found)
+	require_Equal(t, first, 0)
+	require_Equal(t, last, 0)
+
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
@@ -1455,5 +1598,96 @@ func Benchmark_MemStoreSubjectStateConsistencyOptimizationPerf(b *testing.B) {
 			_, _, err = ms.StoreMsg(subject, nil, nil, 0)
 			require_NoError(b, err)
 		}
+	}
+}
+
+// This benchmark populates a memstore and then measures
+// the time it takes to load the entire store using
+// LoadNextMsg repeatedly until the store returns ErrStoreEOF.
+func Benchmark_MemStoreLoadNextMsgFiltered(b *testing.B) {
+	cases := []struct {
+		name             string
+		msgs             int
+		matchingMsgEvery int
+		filter           string
+		wc               bool
+		matchingSubject  func(i int) string
+		expectLinear     bool
+	}{
+		{
+			name:             "wildcard_linear_scan",
+			msgs:             10_000_000,
+			matchingMsgEvery: 10_000,
+			filter:           "foo.baz.*",
+			wc:               true,
+			matchingSubject: func(i int) string {
+				return fmt.Sprintf("foo.baz.%d", i)
+			},
+			expectLinear: true,
+		},
+		{
+			name:             "wildcard_bounded_scan",
+			msgs:             10_000_000,
+			matchingMsgEvery: 100_000,
+			filter:           "foo.baz.*",
+			wc:               true,
+			matchingSubject: func(i int) string {
+				return fmt.Sprintf("foo.baz.%d", i)
+			},
+			expectLinear: false,
+		},
+		{
+			name:             "literal_bounded_scan",
+			msgs:             10_000_000,
+			matchingMsgEvery: 100_000,
+			filter:           "foo.baz",
+			wc:               false,
+			matchingSubject: func(i int) string {
+				return "foo.baz"
+			},
+			expectLinear: false,
+		},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Storage: MemoryStorage}
+			ms, err := newMemStore(cfg)
+			require_NoError(b, err)
+			defer ms.Stop()
+
+			msg := []byte("ok")
+			for i := range tc.msgs {
+				subject := "foo.bar"
+				if i%tc.matchingMsgEvery == 0 {
+					subject = tc.matchingSubject(i)
+				}
+				_, _, err = ms.StoreMsg(subject, nil, msg, 0)
+				require_NoError(b, err)
+			}
+
+			ms.mu.Lock()
+			require_Equal(b, ms.shouldLinearScan(tc.filter, tc.wc, 1), tc.expectLinear)
+			ms.mu.Unlock()
+
+			var smv StoreMsg
+			expectedMatches := uint64(tc.msgs / tc.matchingMsgEvery)
+
+			b.ResetTimer()
+			for b.Loop() {
+				var start uint64
+				var count uint64
+				for {
+					_, start, err = ms.LoadNextMsg(tc.filter, tc.wc, start, &smv)
+					start++
+					if err == ErrStoreEOF {
+						require_Equal(b, count, expectedMatches)
+						break
+					}
+					require_NoError(b, err)
+					count++
+				}
+			}
+		})
 	}
 }

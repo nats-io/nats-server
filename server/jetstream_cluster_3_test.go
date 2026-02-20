@@ -387,7 +387,13 @@ func TestJetStreamClusterDeleteConsumerWhileServerDown(t *testing.T) {
 	})
 	require_NoError(t, err)
 
+	// Shut down the server but ensure it can't make a snapshot during shutdown.
 	s = c.randomNonConsumerLeader("$G", "TEST", "DC")
+	meta := s.getJetStream().getMetaGroup().(*raft)
+	meta.Lock()
+	meta.progress = make(map[string]*ipQueue[uint64])
+	meta.progress["blockSnapshots"] = newIPQueue[uint64](meta.s, "blockSnapshots")
+	meta.Unlock()
 	s.Shutdown()
 
 	c.waitOnLeader()                                 // In case that was metaleader.
@@ -741,7 +747,7 @@ func TestJetStreamClusterFirstSeqMismatch(t *testing.T) {
 	nl.Shutdown()
 
 	time.Sleep(500 * time.Millisecond)
-	node.InstallSnapshot(mset.stateSnapshot())
+	node.InstallSnapshot(mset.stateSnapshot(), false)
 	time.Sleep(3500 * time.Millisecond)
 
 	c.restartServer(nl)
@@ -1529,7 +1535,7 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	require_NoError(t, err)
 	node := mset.raftNode()
 	require_NotNil(t, node)
-	node.InstallSnapshot(mset.stateSnapshot())
+	node.InstallSnapshot(mset.stateSnapshot(), false)
 
 	nl = c.restartServer(nl)
 	c.waitOnStreamCurrent(nl, globalAccountName, "TEST")
@@ -3254,7 +3260,7 @@ func TestJetStreamClusterInterestBasedStreamAndConsumerSnapshots(t *testing.T) {
 
 	n := o.raftNode()
 	require_NotNil(t, n)
-	require_NoError(t, n.InstallSnapshot(snap))
+	require_NoError(t, n.InstallSnapshot(snap, false))
 
 	// Now restart the downed server.
 	s = c.restartServer(s)
@@ -3709,7 +3715,7 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 		// Also snapshot to remove any raft entries that could affect it.
 		snap, err := o.store.EncodedState()
 		require_NoError(t, err)
-		require_NoError(t, o.raftNode().InstallSnapshot(snap))
+		require_NoError(t, o.raftNode().InstallSnapshot(snap, false))
 	}
 
 	cl := c.consumerLeader(globalAccountName, "TEST", "C")
@@ -3926,7 +3932,7 @@ func TestJetStreamClusterStreamNodeShutdownBugOnStop(t *testing.T) {
 	require_NoError(t, err)
 	node := mset.raftNode()
 	require_NotNil(t, node)
-	node.InstallSnapshot(mset.stateSnapshot())
+	node.InstallSnapshot(mset.stateSnapshot(), false)
 	// Stop the stream
 	mset.stop(false, false)
 	node.WaitForStop()
@@ -5296,7 +5302,7 @@ func TestJetStreamClusterStreamFailTrackingSnapshots(t *testing.T) {
 	require_NoError(t, err)
 	node := mset.raftNode()
 	require_NotNil(t, node)
-	node.InstallSnapshot(mset.stateSnapshot())
+	node.InstallSnapshot(mset.stateSnapshot(), false)
 
 	// Now restart nl
 	nl = c.restartServer(nl)

@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -1539,7 +1540,7 @@ func TestNRGDontRemoveSnapshotIfTruncateToApplied(t *testing.T) {
 	n.Applied(1)
 
 	// Install snapshot and check it exists.
-	err = n.InstallSnapshot(nil)
+	err = n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 
 	snapshots := path.Join(n.sd, snapshotsDir)
@@ -1615,7 +1616,7 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	n.Applied(3)
 
 	// Install snapshot and check it exists.
-	err = n.InstallSnapshot(nil)
+	err = n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 
 	snapshots := path.Join(n.sd, snapshotsDir)
@@ -1675,7 +1676,7 @@ func TestNRGIgnoreDoubleSnapshot(t *testing.T) {
 	require_Equal(t, n.term, 2)
 
 	// Snapshot, and confirm state.
-	err := n.InstallSnapshot(nil)
+	err := n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 	snap, err := n.loadLastSnapshot()
 	require_NoError(t, err)
@@ -1683,7 +1684,7 @@ func TestNRGIgnoreDoubleSnapshot(t *testing.T) {
 	require_Equal(t, snap.lastIndex, 1)
 
 	// Snapshot again, should not overwrite previous snapshot.
-	err = n.InstallSnapshot(nil)
+	err = n.InstallSnapshot(nil, false)
 	require_Error(t, err, errNoSnapAvailable)
 	snap, err = n.loadLastSnapshot()
 	require_NoError(t, err)
@@ -2007,7 +2008,7 @@ func TestNRGMemoryWALEmptiesSnapshotsDir(t *testing.T) {
 
 	// Manually call back down to applied, and then snapshot.
 	n.Applied(1)
-	err := n.InstallSnapshot(nil)
+	err := n.InstallSnapshot(nil, false)
 	require_NoError(t, err)
 
 	// Stop current node and restart it.
@@ -2479,6 +2480,13 @@ func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	nats1 := "yrzKKRBu" // "nats-1"
+	n.Lock()
+	n.addPeer(nats1)
+	// Keep quorum at 2 so the initial leader NOOP does not auto-commit.
+	n.lsut = time.Time{}
+	n.Unlock()
+
 	// Switch this node to leader which sends an entry.
 	n.term++
 	n.switchToLeader()
@@ -2803,7 +2811,7 @@ func TestNRGSnapshotRecovery(t *testing.T) {
 	require_Equal(t, n.applied, 1)
 
 	// Install the snapshot.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 
 	// Restoring the snapshot should not up applied, because the apply queue is async.
 	n.pindex, n.commit, n.processed, n.applied = 0, 0, 0, 0
@@ -2990,7 +2998,7 @@ func TestNRGReplayOnSnapshotSameTerm(t *testing.T) {
 	require_Equal(t, n.applied, 1)
 
 	// Install snapshot.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	snap, err := n.loadLastSnapshot()
 	require_NoError(t, err)
 	require_Equal(t, snap.lastIndex, 1)
@@ -3034,7 +3042,7 @@ func TestNRGReplayOnSnapshotDifferentTerm(t *testing.T) {
 	require_Equal(t, n.applied, 1)
 
 	// Install snapshot.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	snap, err := n.loadLastSnapshot()
 	require_NoError(t, err)
 	require_Equal(t, snap.lastIndex, 1)
@@ -3108,7 +3116,7 @@ func TestNRGSizeAndApplied(t *testing.T) {
 
 	// Installing a snapshot should properly correct n.papplied and n.bytes
 	n.applied = 1 // Reset just for testing.
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	require_Equal(t, n.papplied, 1)
 	require_Equal(t, n.bytes, 105)
 	entries, bytes = n.Size()
@@ -3119,7 +3127,7 @@ func TestNRGSizeAndApplied(t *testing.T) {
 	require_Equal(t, entries, 1)
 	require_Equal(t, bytes, 105)
 
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 	require_Equal(t, n.papplied, 2)
 	require_Equal(t, n.bytes, 0)
 	entries, bytes = n.Size()
@@ -3176,7 +3184,7 @@ func TestNRGDelayedMessagesAfterCatchupDontCountTowardQuorum(t *testing.T) {
 	require_Equal(t, n.commit, 1)
 	n.Applied(1)
 	require_Equal(t, n.applied, 1)
-	require_NoError(t, n.InstallSnapshot(nil))
+	require_NoError(t, n.InstallSnapshot(nil, false))
 
 	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 	require_NoError(t, err)
@@ -3587,7 +3595,7 @@ func TestNRGDrainAndReplaySnapshot(t *testing.T) {
 	// This catchup timed out and we would then call into DrainAndReplaySnapshot.
 	snap := []byte("snapshot")
 	n.Applied(1)
-	require_NoError(t, n.InstallSnapshot(snap))
+	require_NoError(t, n.InstallSnapshot(snap, false))
 
 	require_True(t, n.DrainAndReplaySnapshot())
 	require_True(t, n.paused)
@@ -3680,6 +3688,14 @@ func TestNRGLostQuorum(t *testing.T) {
 	defer cleanup()
 
 	nats0 := "S1Nunr6R" // "nats-0"
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	n.Lock()
+	n.addPeer(nats1)
+	// Ignore scale-up grace period so this
+	// test focuses on lost-quorum tracking.
+	n.lsut = time.Time{}
+	n.Unlock()
 
 	require_Equal(t, n.State(), Follower)
 	require_False(t, n.Quorum())
@@ -3804,6 +3820,14 @@ func TestNRGReportLeaderAfterNoopEntry(t *testing.T) {
 func TestNRGSendSnapshotInstallsSnapshot(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.Lock()
+	n.addPeer(nats0)
+	n.addPeer(nats1)
+	n.Unlock()
 
 	require_Equal(t, n.pindex, 0)
 	require_Equal(t, n.snapfile, _EMPTY_)
@@ -4344,6 +4368,14 @@ func TestNRGIgnoreForwardedProposalIfNotCaughtUpLeader(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	n.Lock()
+	n.addPeer(nats1)
+	n.addPeer(nats2)
+	n.Unlock()
+
 	n.term = 1
 	n.switchToLeader()
 	var wg sync.WaitGroup
@@ -4725,4 +4757,365 @@ func TestNRGMustNotResetVoteOnStepDownOrLeaderTransfer(t *testing.T) {
 	n.processAppendEntry(aeLeaderTransfer, n.aesub)
 	require_Equal(t, n.term, 1)
 	require_Equal(t, n.vote, nats0)
+}
+
+func TestNRGInstallSnapshotFromCheckpoint(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2, entries: entries})
+	aeMsg4 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 4, pterm: 1, pindex: 4, entries: nil})
+
+	// Process the first set of messages.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Start the first checkpoint, creating the first snapshot.
+	c, err := n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	// There's no previous snapshot.
+	buf, err := c.LoadLastSnapshot()
+	require_Error(t, err, errNoSnapAvailable)
+	require_True(t, buf == nil)
+
+	// Since only 1 entry was applied, we should be able to retrieve that here.
+	var count int
+	for ae, err := range c.AppendEntriesSeq() {
+		count++
+		require_NoError(t, err)
+		require_Equal(t, ae.pindex, 0)
+	}
+	require_Equal(t, count, 1)
+
+	// Install the snapshot and confirm we can retrieve it.
+	_, err = c.InstallSnapshot([]byte("old"))
+	require_NoError(t, err)
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(snap.data, []byte("old")))
+
+	// Checkpoint was installed, so all should now abort.
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errSnapAborted)
+	count = 0
+	for _, err = range c.AppendEntriesSeq() {
+		count++
+		require_Error(t, err, errSnapAborted)
+	}
+	require_Equal(t, count, 1)
+	_, err = c.InstallSnapshot(nil)
+	require_Error(t, err, errSnapAborted)
+
+	// Process the next set of messages, we'll be able to compact two append entries now.
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.commit, 2)
+	n.processAppendEntry(aeMsg4, n.aesub)
+	require_Equal(t, n.pindex, 4)
+	require_Equal(t, n.commit, 3)
+	n.Applied(3)
+	require_Equal(t, n.applied, 3)
+
+	// Check a couple edge cases now, a second checkpoint should fail noting a snapshot is already in progress.
+	c, err = n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+	_, err = n.CreateSnapshotCheckpoint(false)
+	require_Error(t, err, errSnapInProgress)
+
+	// Abort checkpoint, so all should now abort.
+	c.Abort()
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errSnapAborted)
+	count = 0
+	for _, err = range c.AppendEntriesSeq() {
+		count++
+		require_Error(t, err, errSnapAborted)
+	}
+	require_Equal(t, count, 1) // Must always iterate at least once to retrieve the error.
+	_, err = c.InstallSnapshot(nil)
+	require_Error(t, err, errSnapAborted)
+
+	// Start the second checkpoint, creating the second snapshot.
+	c, err = n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	// Should load the previous snapshot.
+	buf, err = c.LoadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(buf, []byte("old")))
+
+	// Iterate over the two append entries part of this new snapshot.
+	count = 0
+	for ae, err := range c.AppendEntriesSeq() {
+		count++
+		require_NoError(t, err)
+		require_Equal(t, ae.pindex, uint64(count))
+	}
+	require_Equal(t, count, 2)
+
+	// Install the snapshot and confirm we can retrieve it.
+	_, err = c.InstallSnapshot([]byte("new"))
+	require_NoError(t, err)
+	snap, err = n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(snap.data, []byte("new")))
+
+	// Commit and apply the last entry to test for the final edge case.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.pindex, 4)
+	require_Equal(t, n.commit, 4)
+	n.Applied(4)
+	require_Equal(t, n.applied, 4)
+
+	// Start an async snapshot.
+	c, err = n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	// Installing a snapshot normally should be denied, as one is already in progress.
+	require_Error(t, n.InstallSnapshot(nil, false), errSnapInProgress)
+
+	// The checkpoint should still work successfully.
+	buf, err = c.LoadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(buf, []byte("new")))
+
+	// However, if we install using the internal API, this should be allowed and abort our checkpoint.
+	// This API will be used as a result of receiving a snapshot as part of catchup, so it's really important
+	// we aren't allowed to replace this newest snapshot with an older snapshot from an earlier checkpoint.
+	snap.lastIndex++
+	require_NoError(t, n.installSnapshot(snap))
+
+	// Check it's aborted.
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errSnapAborted)
+
+	// Check if the last snapshot was updated from underneath of us.
+	n.Lock()
+	n.snapshotting = true
+	n.Unlock()
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errors.New("snapshot index mismatch"))
+}
+
+func TestNRGInstallSnapshotForce(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Block snapshots unless they're forced to skip in-progress catchups.
+	n.progress = make(map[string]*ipQueue[uint64])
+	n.progress["blockSnapshots"] = newIPQueue[uint64](n.s, "blockSnapshots")
+
+	require_Error(t, n.InstallSnapshot(nil, false), errCatchupsRunning)
+	require_Equal(t, n.papplied, 0)
+
+	require_NoError(t, n.InstallSnapshot(nil, true))
+	require_Equal(t, n.papplied, 1)
+}
+
+func TestNRGInstallSnapshotFromCheckpointAfterTruncateToSnapshot(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 100, pterm: 1, pindex: 100, entries: entries})
+	aeHeartbeat2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 101, pterm: 1, pindex: 101, entries: nil})
+
+	// Process the first message.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+	n.processAppendEntry(aeHeartbeat1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 1)
+	n.Applied(1)
+	require_Equal(t, n.applied, 1)
+
+	// Install a snapshot as normal to set up papplied.
+	require_NoError(t, n.InstallSnapshot(nil, false))
+	require_Equal(t, n.papplied, 1)
+
+	// Simulate being caught up from a leader with a snapshot.
+	snap := &snapshot{
+		lastTerm:  1,
+		lastIndex: 100,
+		peerstate: encodePeerState(n.currentPeerState()),
+		data:      []byte("catchup"),
+	}
+	n.pterm = snap.lastTerm
+	n.pindex = snap.lastIndex
+	n.commit = snap.lastIndex
+	require_NoError(t, n.installSnapshot(snap))
+	require_Equal(t, n.papplied, 100)
+	require_Equal(t, n.applied, 1)
+
+	// Simulate uncommitted entries being truncated up to the above snapshot.
+	n.truncateWAL(1, 100)
+	require_Equal(t, n.papplied, 100)
+
+	// We haven't applied anything since the previous snapshot, so should error.
+	_, err := n.CreateSnapshotCheckpoint(false)
+	require_Error(t, err, errNoSnapAvailable)
+
+	// We have only applied the previous snapshot, so should still error as there's nothing (new) to snapshot.
+	n.Applied(100)
+	require_Equal(t, n.applied, 100)
+	_, err = n.CreateSnapshotCheckpoint(false)
+	require_Error(t, err, errNoSnapAvailable)
+
+	// Process a second message such that we can snapshot.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 101)
+	require_Equal(t, n.commit, 100)
+	n.processAppendEntry(aeHeartbeat2, n.aesub)
+	require_Equal(t, n.pindex, 101)
+	require_Equal(t, n.commit, 101)
+	n.Applied(101)
+	require_Equal(t, n.applied, 101)
+
+	// The checkpoint should function, load the previous/catchup snapshot and load above entry.
+	c, err := n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	buf, err := c.LoadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(buf, []byte("catchup")))
+
+	var count int
+	for ae, err := range c.AppendEntriesSeq() {
+		count++
+		require_NoError(t, err)
+		require_Equal(t, ae.pindex, 100)
+	}
+	require_Equal(t, count, 1)
+}
+
+func TestNRGInitSingleMemRaftNodeDefaults(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+	require_Equal(t, n.ID(), "esFhDys3")
+	require_Equal(t, len(n.Peers()), 1)
+	require_Equal(t, n.Peers()[0].ID, "esFhDys3")
+	require_Equal(t, n.ClusterSize(), 1)
+	require_True(t, n.Quorum())
+}
+
+func TestNRGReplayAddPeerKeepsClusterSize(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0]
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:   storeDir,
+		BlockSize:  defaultMediumBlockSize,
+		AsyncFlush: false,
+		srv:        s,
+	}
+	scfg := StreamConfig{Name: "RAFT", Storage: FileStorage}
+	fs, err := newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+
+	// Seed peer state as a 3-node group.
+	s.mu.RLock()
+	self := s.sys.shash[:idLen]
+	s.mu.RUnlock()
+	peerA, peerB := "yrzKKRBu", "cnrtt3eg"
+	require_NoError(t, s.bootstrapRaftNode(cfg, []string{self, peerA, peerB}, true))
+
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	require_Equal(t, n.ClusterSize(), 3)
+
+	// Store a normal entry and a EntryAddPeer and commit them.
+	// The latter triggered the bug at restart.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	aeMsg1 := encode(t, &appendEntry{
+		leader:  self,
+		term:    2,
+		commit:  0,
+		pterm:   0,
+		pindex:  0,
+		entries: []*Entry{newEntry(EntryNormal, esm)},
+	})
+	aeMsg2 := encode(t, &appendEntry{
+		leader:  self,
+		term:    2,
+		commit:  2,
+		pterm:   2,
+		pindex:  1,
+		entries: []*Entry{newEntry(EntryAddPeer, []byte(peerA))},
+	})
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+
+	// Restart from disk, forcing replay of the two WAL entries.
+	n.Stop()
+	n.WaitForStop()
+	fs.Stop()
+
+	fs, err = newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+	cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// If bug is present, cluster size is 1 instead of 3.
+	// EntryAddPeer would increases the initial cluster
+	// of size of 0 to 1. initRaftNode() would then add
+	// the remaining peers from peer state file, but would
+	// not adjust cluster size and quorum accordingly.
+	// This could lead to erroneously create singleton
+	// clusters after restart.
+	require_Equal(t, n.ClusterSize(), 3)
+	require_Equal(t, n.qn, 2)
+
+	n.Stop()
+	n.WaitForStop()
+	fs.Stop()
 }

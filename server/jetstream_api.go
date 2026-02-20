@@ -562,9 +562,17 @@ type JSApiStreamSnapshotRequest struct {
 	DeliverSubject string `json:"deliver_subject"`
 	// Do not include consumers in the snapshot.
 	NoConsumers bool `json:"no_consumers,omitempty"`
-	// Optional chunk size preference.
-	// Best to just let server select.
+	// Optional chunk size preference. Defaults to 128KB,
+	// automatically clamped to within the range 1KB to 1MB.
+	// A smaller chunk size means more in-flight messages
+	// and more acks needed. Links with good throughput
+	// but high latency may need to increase this.
 	ChunkSize int `json:"chunk_size,omitempty"`
+	// Optional window size preference. Defaults to 8MB,
+	// automatically clamped to within the range 1KB to 32MB.
+	// very slow connections may need to reduce this to
+	// avoid slow consumer issues.
+	WindowSize int `json:"window_size,omitempty"`
 	// Check all message's checksums prior to snapshot.
 	CheckMsgs bool `json:"jsck,omitempty"`
 }
@@ -4399,18 +4407,26 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 }
 
 // Default chunk size for now.
-const defaultSnapshotChunkSize = 128 * 1024
-const defaultSnapshotWindowSize = 8 * 1024 * 1024 // 8MB
+const defaultSnapshotChunkSize = 128 * 1024       // 128KiB
+const defaultSnapshotWindowSize = 8 * 1024 * 1024 // 8MiB
 const defaultSnapshotAckTimeout = 5 * time.Second
 
 var snapshotAckTimeout = defaultSnapshotAckTimeout
 
 // streamSnapshot will stream out our snapshot to the reply subject.
 func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
-	chunkSize := req.ChunkSize
+	chunkSize, wndSize := req.ChunkSize, req.WindowSize
 	if chunkSize == 0 {
 		chunkSize = defaultSnapshotChunkSize
 	}
+	if wndSize == 0 {
+		wndSize = defaultSnapshotWindowSize
+	}
+	chunkSize = min(max(1024, chunkSize), 1024*1024) // Clamp within 1KiB to 1MiB
+	wndSize = min(max(1024, wndSize), 32*1024*1024)  // Clamp within 1KiB to 32MiB
+	wndSize = max(wndSize, chunkSize)                // Guarantee at least one chunk
+	maxInflight := wndSize / chunkSize               // Between 1 and 32,768
+
 	// Setup for the chunk stream.
 	reply := req.DeliverSubject
 	r := sr.Reader
@@ -4432,15 +4448,6 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 		case <-inch:
 		case <-time.After(2 * time.Second):
 		}
-	}
-
-	// Create our ack flow handler.
-	// This is very simple for now.
-	maxInflight := defaultSnapshotWindowSize / chunkSize
-	if maxInflight < 8 {
-		maxInflight = 8
-	} else if maxInflight > 8*1024 {
-		maxInflight = 8 * 1024
 	}
 
 	// One slot per chunk. Each chunk read takes a slot, each ack will
@@ -4638,6 +4645,8 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+		// Durable, so we need to honor the name.
+		req.Config.Name = consumerName
 	}
 	// If new style and durable set make sure they match.
 	if rt == ccNew {

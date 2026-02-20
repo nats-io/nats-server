@@ -8262,12 +8262,12 @@ func TestJetStreamClusterRecreateConsumerFromMetaSnapshot(t *testing.T) {
 		if s != rs {
 			sjs := s.getJetStream()
 			require_NotNil(t, sjs)
-			snap, err := sjs.metaSnapshot()
+			snap, _, _, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			sjs.mu.RLock()
 			meta := sjs.cluster.meta
 			sjs.mu.RUnlock()
-			require_NoError(t, meta.InstallSnapshot(snap))
+			require_NoError(t, meta.InstallSnapshot(snap, false))
 		}
 	}
 
@@ -8393,7 +8393,7 @@ func TestJetStreamClusterUpgradeConsumerVersioning(t *testing.T) {
 	require_NoError(t, err)
 
 	// Create consumer config.
-	cfg := &ConsumerConfig{Durable: "CONSUMER"}
+	cfg := &ConsumerConfig{Durable: "CONSUMER", Name: "CONSUMER"}
 	streamCfg, ok := sjs.clusterStreamConfig(acc.Name, "TEST")
 	if !ok {
 		require_NoError(t, NewJSStreamNotFoundError())
@@ -9597,10 +9597,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 		t.Helper()
 		for _, s := range c.servers {
 			sjs = s.getJetStream()
-			snap, err := sjs.metaSnapshot()
+			snap, _, _, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			meta := sjs.getMetaGroup()
-			meta.InstallSnapshot(snap)
+			meta.InstallSnapshot(snap, false)
 		}
 
 		c.stopAll()
@@ -9623,7 +9623,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
 		t.Helper()
-		snap, err := sjs.metaSnapshot()
+		snap, _, _, err := sjs.metaSnapshot()
 		require_NoError(t, err)
 		require_True(t, len(snap) > 0)
 		dec, err := s2.Decode(nil, snap)
@@ -9733,7 +9733,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 
 	// Deleting a stream should always work, even if it is unsupported.
 	require_NoError(t, js.DeleteStream("DowngradeStreamTest"))
-	snap, err := sjs.metaSnapshot()
+	snap, _, _, err := sjs.metaSnapshot()
 	require_NoError(t, err)
 	require_True(t, snap == nil)
 
@@ -9902,10 +9902,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 		t.Helper()
 		for _, s := range c.servers {
 			sjs = s.getJetStream()
-			snap, err := sjs.metaSnapshot()
+			snap, _, _, err := sjs.metaSnapshot()
 			require_NoError(t, err)
 			meta := sjs.getMetaGroup()
-			meta.InstallSnapshot(snap)
+			meta.InstallSnapshot(snap, false)
 		}
 
 		c.stopAll()
@@ -9928,7 +9928,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
 		t.Helper()
-		snap, err := sjs.metaSnapshot()
+		snap, _, _, err := sjs.metaSnapshot()
 		require_NoError(t, err)
 		require_True(t, len(snap) > 0)
 		dec, err := s2.Decode(nil, snap)
@@ -10022,7 +10022,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	// Deleting a stream should always work, even if it is unsupported.
 	require_NoError(t, js.DeleteStream("DowngradeStreamTest"))
-	snap, err := sjs.metaSnapshot()
+	snap, _, _, err := sjs.metaSnapshot()
 	require_NoError(t, err)
 	require_True(t, snap == nil)
 
@@ -10150,7 +10150,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerUpdate(t *testing.T) {
 
 	getValidMetaSnapshot := func() (wsas []writeableStreamAssignment) {
 		t.Helper()
-		snap, err := sjs.metaSnapshot()
+		snap, _, _, err := sjs.metaSnapshot()
 		require_NoError(t, err)
 		require_True(t, len(snap) > 0)
 		dec, err := s2.Decode(nil, snap)
@@ -10701,6 +10701,7 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
 	// For this test using two large values so we remain in catchup.
 	meta.Lock()
 	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+	meta.sendCatchupSignal()
 	meta.Unlock()
 
 	// Deleting a stream should be staged, not immediately performed.
@@ -10956,7 +10957,7 @@ func TestJetStreamClusterMetaRecoveryRecreateStream(t *testing.T) {
 			mset, err := rs.globalAccount().lookupStream("TEST")
 			require_NoError(t, err)
 			streamNode := mset.raftNode()
-			require_NoError(t, streamNode.InstallSnapshot(mset.stateSnapshot()))
+			require_NoError(t, streamNode.InstallSnapshot(mset.stateSnapshot(), false))
 		}
 
 		// Although the meta node is paused, we add one more meta entry to move the commit up one more.

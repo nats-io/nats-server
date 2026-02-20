@@ -395,6 +395,40 @@ func TestSubjectTreeMatchNodes(t *testing.T) {
 	match(t, st, "foo.baz.>", 3)
 }
 
+func matchUntilCount[T any](st *SubjectTree[T], filter string, stopAfter int) (int, bool) {
+	var n int
+	completed := st.MatchUntil(b(filter), func(_ []byte, _ *T) bool {
+		n++
+		return n < stopAfter
+	})
+	return n, completed
+}
+
+func TestSubjectTreeMatchUntil(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.bar.A"), 1)
+	st.Insert(b("foo.bar.B"), 2)
+	st.Insert(b("foo.bar.C"), 3)
+	st.Insert(b("foo.baz.A"), 11)
+	st.Insert(b("foo.baz.B"), 22)
+	st.Insert(b("foo.baz.C"), 33)
+	st.Insert(b("foo.bar"), 42)
+
+	// Ensure early stop terminates traversal.
+	count, completed := matchUntilCount(st, "foo.>", 3)
+	require_Equal(t, count, 3)
+	require_False(t, completed)
+
+	// Match completes
+	count, completed = matchUntilCount(st, "foo.bar", 3)
+	require_Equal(t, count, 1)
+	require_True(t, completed)
+
+	count, completed = matchUntilCount(st, "foo.baz.*", 4)
+	require_Equal(t, count, 3)
+	require_True(t, completed)
+}
+
 func TestSubjectTreeNoPrefix(t *testing.T) {
 	st := NewSubjectTree[int]()
 	for i := 0; i < 26; i++ {
