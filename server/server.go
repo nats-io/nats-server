@@ -2795,7 +2795,12 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
-	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
+	var hp string
+	if len(opts.Host) > 0 && opts.Host[0] == '/' {
+		hp = opts.Host // Unix socket path
+	} else {
+		hp = net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
+	}
 	l, e := s.getServerListener(hp)
 	s.listenerErr = e
 	if e != nil {
@@ -2803,8 +2808,12 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		s.Fatalf("Error listening on port: %s, %q", hp, e)
 		return
 	}
-	s.Noticef("Listening for client connections on %s",
-		net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
+	if len(opts.Host) > 0 && opts.Host[0] == '/' {
+		s.Noticef("Listening for client connections on unix socket %s", opts.Host)
+	} else {
+		s.Noticef("Listening for client connections on %s",
+			net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
+	}
 
 	// Alert if PROXY protocol is enabled
 	if opts.ProxyProtocol {
@@ -2861,11 +2870,16 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 // If the Server already has an active listener (s.listener), it returns that listener
 // along with any previous error (s.listenerErr). Otherwise, it creates and returns
 // a new TCP listener on the specified address using natsListen.
+// If the address starts with '/', it is treated as a Unix socket path.
 func (s *Server) getServerListener(hp string) (net.Listener, error) {
 	if s.listener != nil {
 		return s.listener, s.listenerErr
 	}
 
+	if len(hp) > 0 && hp[0] == '/' {
+		os.Remove(hp)
+		return natsListen("unix", hp)
+	}
 	return natsListen("tcp", hp)
 }
 

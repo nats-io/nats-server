@@ -5824,8 +5824,13 @@ func setBaselineOptions(opts *Options) {
 		opts.Host = DEFAULT_HOST
 	}
 	if opts.HTTPHost == _EMPTY_ {
-		// Default to same bind from server if left undefined
-		opts.HTTPHost = opts.Host
+		// Default to same bind from server if left undefined,
+		// but not if Host is a Unix socket path.
+		if len(opts.Host) > 0 && opts.Host[0] == '/' {
+			opts.HTTPHost = DEFAULT_HOST
+		} else {
+			opts.HTTPHost = opts.Host
+		}
 	}
 	if opts.Port == 0 {
 		opts.Port = DEFAULT_PORT
