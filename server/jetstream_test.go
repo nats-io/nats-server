@@ -22536,3 +22536,135 @@ func TestJetStreamStoreFilterIsAll(t *testing.T) {
 	t.Run("Memory", func(t *testing.T) { test(t, nats.MemoryStorage) })
 	t.Run("File", func(t *testing.T) { test(t, nats.FileStorage) })
 }
+
+// Test that flow control works correctly when a stream sources from two
+// different external accounts. Each account's $JS.FC.> service import
+// causes FC replies to fan out to all accounts, but only the correct
+// account's consumer handles the reply. This verifies the fan-out
+// doesn't prevent FC from completing.
+func TestJetStreamFlowControlCrossAccountFanOut(t *testing.T) {
+	conf := createConfFile(t, fmt.Appendf(nil, `
+		listen: "127.0.0.1:-1"
+		jetstream: {store_dir: %q}
+		accounts: {
+			ACCT_A: {
+				jetstream: enabled
+				users: [{user: usrA, password: pwd}]
+				exports: [
+					{service: "$JS.API.CONSUMER.>"}
+					{stream: "RI.DELIVER.A.>"}
+					{service: "$JS.FC.>"}
+				]
+			}
+			ACCT_B: {
+				jetstream: enabled
+				users: [{user: usrB, password: pwd}]
+				exports: [
+					{service: "$JS.API.CONSUMER.>"}
+					{stream: "RI.DELIVER.B.>"}
+					{service: "$JS.FC.>"}
+				]
+			}
+			SOURCER: {
+				jetstream: enabled
+				users: [{user: src, password: pwd}]
+				imports: [
+					{service: {account: ACCT_A, subject: "$JS.API.CONSUMER.>"}, to: "RI.JS.A.API.CONSUMER.>"}
+					{stream: {account: ACCT_A, subject: "RI.DELIVER.A.>"}}
+					{service: {account: ACCT_A, subject: "$JS.FC.>"}}
+					{service: {account: ACCT_B, subject: "$JS.API.CONSUMER.>"}, to: "RI.JS.B.API.CONSUMER.>"}
+					{stream: {account: ACCT_B, subject: "RI.DELIVER.B.>"}}
+					{service: {account: ACCT_B, subject: "$JS.FC.>"}}
+				]
+			}
+			$SYS {users: [{user: admin, password: pwd}]}
+		}
+	`, t.TempDir()))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Create source streams in each account.
+	ncA, jsA := jsClientConnect(t, s, nats.UserInfo("usrA", "pwd"))
+	defer ncA.Close()
+	_, err := jsA.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"A"}})
+	require_NoError(t, err)
+
+	ncB, jsB := jsClientConnect(t, s, nats.UserInfo("usrB", "pwd"))
+	defer ncB.Close()
+	_, err = jsB.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"B"}})
+	require_NoError(t, err)
+
+	// Publish 10 x 256KB messages to each source. Total 2.56MB exceeds the
+	// initial FC threshold (maxpb/2 = 1MB), triggering at least one FC
+	// round-trip per source.
+	payload := []byte(strings.Repeat("X", 256*1024))
+	for i := 0; i < 10; i++ {
+		_, err = jsA.Publish("A", payload)
+		require_NoError(t, err)
+		_, err = jsB.Publish("B", payload)
+		require_NoError(t, err)
+	}
+
+	// Create sourcing stream that pulls from both accounts.
+	ncS, jsS := jsClientConnect(t, s, nats.UserInfo("src", "pwd"))
+	defer ncS.Close()
+	_, err = jsS.AddStream(&nats.StreamConfig{
+		Name: "DEST",
+		Sources: []*nats.StreamSource{
+			{
+				Name: "TEST",
+				External: &nats.ExternalStream{
+					APIPrefix:     "RI.JS.A.API",
+					DeliverPrefix: "RI.DELIVER.A",
+				},
+			},
+			{
+				Name: "TEST",
+				External: &nats.ExternalStream{
+					APIPrefix:     "RI.JS.B.API",
+					DeliverPrefix: "RI.DELIVER.B",
+				},
+			},
+		},
+	})
+	require_NoError(t, err)
+
+	// Wait for all 20 messages to arrive.
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := jsS.StreamInfo("DEST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 20 {
+			return fmt.Errorf("expected 20 msgs, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Verify both sources converged with zero lag.
+	si, err := jsS.StreamInfo("DEST")
+	require_NoError(t, err)
+	require_Equal(t, len(si.Sources), 2)
+	for _, src := range si.Sources {
+		require_Equal(t, src.Lag, 0)
+	}
+
+	// Verify FC was exercised by checking that the internal consumers on
+	// each source account ramped up their maxpb beyond the initial value.
+	for _, accName := range []string{"ACCT_A", "ACCT_B"} {
+		acc, err := s.lookupAccount(accName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		consumers := mset.getConsumers()
+		require_Equal(t, len(consumers), 1)
+		o := consumers[0]
+		o.mu.RLock()
+		maxpb := o.maxpb
+		pblimit := o.pblimit
+		o.mu.RUnlock()
+		if maxpb <= pblimit/16 {
+			t.Fatalf("account %s: expected FC ramp-up (maxpb=%d > initial=%d)", accName, maxpb, pblimit/16)
+		}
+	}
+}
