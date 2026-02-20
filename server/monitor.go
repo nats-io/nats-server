@@ -1258,10 +1258,12 @@ type Varz struct {
 	Routes                int                    `json:"routes"`                            // Routes is the number of connected route servers
 	Remotes               int                    `json:"remotes"`                           // Remotes is the configured route remote endpoints
 	Leafs                 int                    `json:"leafnodes"`                         // Leafs is the number connected leafnode clients
-	InMsgs                int64                  `json:"in_msgs"`                           // InMsgs is the number of messages this server received
+	InMsgs                int64                  `json:"in_msgs"`                           // InMsgs is the total number of messages this server received. This includes messages from the clients, routers, gateways and leaf nodes.
 	OutMsgs               int64                  `json:"out_msgs"`                          // OutMsgs is the number of message this server sent
-	InBytes               int64                  `json:"in_bytes"`                          // InBytes is the number of bytes this server received
+	InBytes               int64                  `json:"in_bytes"`                          // InBytes is the total number of bytes this server received. This includes messages from the clients, routers, gateways and leaf nodes.
 	OutBytes              int64                  `json:"out_bytes"`                         // OutMsgs is the number of bytes this server sent
+	InClientMsgs          int64                  `json:"in_client_msgs"`                    // InClientMsgs is the number of messages this server received from the clients
+	InClientBytes         int64                  `json:"in_client_bytes"`                   // InClientBytes is the number of bytes this server received from the clients
 	SlowConsumers         int64                  `json:"slow_consumers"`                    // SlowConsumers is the total count of clients that were disconnected since start due to being slow consumers
 	StaleConnections      int64                  `json:"stale_connections"`                 // StaleConnections is the total count of stale connections that were detected
 	StalledClients        int64                  `json:"stalled_clients"`                   // StalledClients is the total number of times that clients have been stalled.
@@ -1854,7 +1856,9 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.Remotes = s.numRemotes()
 	v.Leafs = len(s.leafs)
 	v.InMsgs = atomic.LoadInt64(&s.inMsgs)
+	v.InClientMsgs = atomic.LoadInt64(&s.inClientMsgs)
 	v.InBytes = atomic.LoadInt64(&s.inBytes)
+	v.InClientBytes = atomic.LoadInt64(&s.inClientBytes)
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)

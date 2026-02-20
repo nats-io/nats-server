@@ -373,6 +373,7 @@ type ServerStats struct {
 	NumSubs              uint32                `json:"subscriptions"`
 	Sent                 DataStats             `json:"sent"`
 	Received             DataStats             `json:"received"`
+	ReceivedFromClients  DataStats             `json:"received_from_clients"`
 	SlowConsumers        int64                 `json:"slow_consumers"`
 	SlowConsumersStats   *SlowConsumersStats   `json:"slow_consumer_stats,omitempty"`
 	StaleConnections     int64                 `json:"stale_connections,omitempty"`
@@ -945,6 +946,8 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.ActiveAccounts = int(atomic.LoadInt32(&s.activeAccounts))
 	m.Stats.Received.Msgs = atomic.LoadInt64(&s.inMsgs)
 	m.Stats.Received.Bytes = atomic.LoadInt64(&s.inBytes)
+	m.Stats.ReceivedFromClients.Msgs = atomic.LoadInt64(&s.inClientMsgs)
+	m.Stats.ReceivedFromClients.Bytes = atomic.LoadInt64(&s.inClientBytes)
 	m.Stats.Sent.Msgs = atomic.LoadInt64(&s.outMsgs)
 	m.Stats.Sent.Bytes = atomic.LoadInt64(&s.outBytes)
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
