@@ -3574,128 +3574,50 @@ func (fs *fileStore) filterIsAll(filters []string) bool {
 // We will not exceed the maxSeq, which if 0 becomes the store's last sequence.
 func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	fs.mu.RLock()
-	defer fs.mu.RUnlock()
 
 	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
+		fs.mu.RUnlock()
 		return nil, nil
 	}
 
 	// See if we can short circuit if we think they are asking for all last sequences and have no maxSeq or maxAllowed set.
 	if maxSeq == 0 && maxAllowed <= 0 && fs.filterIsAll(filters) {
+		defer fs.mu.RUnlock()
 		return fs.allLastSeqsLocked()
 	}
 
-	lastBlkIndex := len(fs.blks) - 1
-	lastMB := fs.blks[lastBlkIndex]
-
-	// Implied last sequence.
-	if maxSeq == 0 {
-		maxSeq = fs.state.LastSeq
-	} else {
-		// Udate last mb index if not last seq.
-		lastBlkIndex, lastMB = fs.selectMsgBlockWithIndex(maxSeq)
-	}
-	// Make sure non-nil
-	if lastMB == nil {
-		return nil, nil
-	}
-
-	// Grab our last mb index (not same as blk index).
-	lastMB.mu.RLock()
-	lastMBIndex := lastMB.index
-	lastMB.mu.RUnlock()
-
-	subs := make(map[string]*psi)
-	var numLess int
-	var maxBlk uint32
-
+	// Build up a list of literals we are interested in. Don't proceed above the
+	// maxium number of allowed subjects though.
+	literals := gsl.NewSimpleSublist()
 	for _, filter := range filters {
-		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-			subs[string(subj)] = psi
-			if psi.lblk < lastMBIndex {
-				numLess++
-				if psi.lblk > maxBlk {
-					maxBlk = psi.lblk
-				}
-			}
-		})
+		if !fs.psim.MatchUntil(stringToBytes(filter), func(subj []byte, psi *psi) bool {
+			literals.Insert(string(subj), struct{}{})
+			return literals.Count() <= uint32(maxAllowed)
+		}) {
+			fs.mu.RUnlock()
+			return nil, ErrTooManyResults
+		}
 	}
-
-	// If all subjects have a lower last index, select the largest for our walk backwards.
-	if numLess == len(subs) {
-		lastMB = fs.bim[maxBlk]
-	}
+	fs.mu.RUnlock()
 
 	// Collect all sequences needed.
-	seqs := make([]uint64, 0, len(subs))
-	for i, lnf := lastBlkIndex, false; i >= 0; i-- {
-		if len(subs) == 0 {
+	seqs := make([]uint64, 0, literals.Count())
+	start, end := fs.state.LastSeq+1, fs.state.FirstSeq
+	if maxSeq > 0 {
+		start = min(maxSeq, start)
+	}
+	var smv StoreMsg
+	for literals.Count() > 0 {
+		sm, _, err := fs.LoadPrevMsgMulti(literals, start, &smv)
+		if err == ErrStoreEOF {
 			break
+		} else if err != nil {
+			return nil, err
 		}
-		mb := fs.blks[i]
-		if !lnf {
-			if mb != lastMB {
-				continue
-			}
-			lnf = true
-		}
-		// We can start properly looking here.
-		mb.mu.Lock()
-		mb.ensurePerSubjectInfoLoaded()
-
-		// Iterate the fss and check against our subs. We will delete from subs as we add.
-		// Once len(subs) == 0 we are done.
-		var ierr error
-		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
-			// Already been processed and accounted for was not matched in the first place.
-			if subs[string(bsubj)] == nil {
-				return true
-			}
-			// Check if we need to recalculate. We only care about the last sequence.
-			if ss.lastNeedsUpdate {
-				// mb is already loaded into the cache so should be fast-ish.
-				mb.recalculateForSubj(bytesToString(bsubj), ss)
-			}
-			// If we are equal or below just add to seqs slice.
-			if ss.Last <= maxSeq {
-				seqs = append(seqs, ss.Last)
-				delete(subs, bytesToString(bsubj))
-			} else {
-				// Need to search for the real last since recorded last is > maxSeq.
-				var didLoad bool
-				if mb.cacheNotLoaded() {
-					if ierr = mb.loadMsgsWithLock(); ierr != nil {
-						return false
-					}
-					didLoad = true
-				}
-				var smv StoreMsg
-				fseq := atomic.LoadUint64(&mb.first.seq)
-				lseq := min(atomic.LoadUint64(&mb.last.seq), maxSeq)
-				ssubj := bytesToString(bsubj)
-				for seq := lseq; seq >= fseq; seq-- {
-					sm, _ := mb.cacheLookupNoCopy(seq, &smv)
-					if sm == nil || sm.subj != ssubj {
-						continue
-					}
-					seqs = append(seqs, sm.seq)
-					delete(subs, ssubj)
-					break
-				}
-				if didLoad {
-					mb.finishedWithCache()
-				}
-			}
-			return true
-		})
-		mb.mu.Unlock()
-		if ierr != nil {
-			return nil, ierr
-		}
-
-		// If maxAllowed was sepcified check that we will not exceed that.
-		if maxAllowed > 0 && len(seqs) > maxAllowed {
-			return nil, ErrTooManyResults
+		literals.Remove(sm.subj, struct{}{})
+		seqs = append(seqs, sm.seq)
+		if start = sm.seq; start <= end {
+			break // Reached the store first sequence.
 		}
 	}
 	if len(seqs) == 0 {
