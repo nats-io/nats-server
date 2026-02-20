@@ -2583,7 +2583,7 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 	case bytes.HasPrefix(msg, AckNak):
 		o.processNak(sseq, dseq, dc, msg)
 	case bytes.Equal(msg, AckProgress):
-		o.progressUpdate(sseq)
+		o.progressUpdate(sseq, dseq, dc)
 	case bytes.HasPrefix(msg, AckTerm):
 		var reason string
 		if buf := msg[len(AckTerm):]; len(buf) > 0 {
@@ -2602,15 +2602,34 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 }
 
 // Used to process a working update to delay redelivery.
-func (o *consumer) progressUpdate(seq uint64) {
+func (o *consumer) progressUpdate(sseq, dseq, dc uint64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if p, ok := o.pending[seq]; ok {
-		p.Timestamp = time.Now().UnixNano()
+	t := time.Now()
+	if p, ok := o.pending[sseq]; ok {
+		p.Timestamp = t.UnixNano()
 		// Update store system.
-		o.updateDelivered(p.Sequence, seq, 1, p.Timestamp)
+		o.updateDelivered(p.Sequence, sseq, 1, p.Timestamp)
 	}
+
+	// Deliver an advisory
+	e := JSConsumerDeliveryInProgress{
+		TypedEvent: TypedEvent{
+			Type: JSConsumerDeliveryInProgressType,
+			ID:   nuid.Next(),
+			Time: t.UTC(),
+		},
+		Stream:      o.stream,
+		Consumer:    o.name,
+		ConsumerSeq: dseq,
+		StreamSeq:   sseq,
+		Deliveries:  dc,
+		Domain:      o.srv.getOpts().JetStreamDomain,
+	}
+
+	subj := JSAdvisoryConsumerMsgInProgress + "." + o.stream + "." + o.name
+	o.sendAdvisory(subj, e)
 }
 
 // Lock should be held.
