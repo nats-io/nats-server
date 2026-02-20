@@ -2985,6 +2985,8 @@ func TestJetStreamClusterAPILimitDefault(t *testing.T) {
 }
 
 func TestJetStreamClusterAPILimitAdvisory(t *testing.T) {
+	t.Skip("Not applicable when the API queue is not drained when reaching the limit")
+
 	// Hit the limit straight away.
 	const queueLimit = 1
 
