@@ -13299,3 +13299,87 @@ func TestFileStoreCorruptionSetsHbitWithoutHeaders(t *testing.T) {
 	t.Run("indexCacheBuf", func(t *testing.T) { test(t, KindIndexCacheBuf) })
 	t.Run("rebuildState", func(t *testing.T) { test(t, KindRebuildState) })
 }
+
+// Test readIndexInfo upgrade scenario: old < 2.10 .idx file with empty block.
+// Simulates upgrading from pre-2.10 server that wrote .idx files.
+func TestFileStoreReadIndexInfoUpgradeEmptyBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+		created := time.Now()
+
+		// Simulate old server (< 2.10) that wrote .idx files.
+		// Create a store, add messages, then manually create an old-format .idx file.
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+
+		// Store messages
+		for i := 0; i < 3; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("msg"), 0)
+			require_NoError(t, err)
+		}
+
+		fs.mu.RLock()
+		mb := fs.blks[0]
+		fs.mu.RUnlock()
+
+		mb.mu.Lock()
+		last := atomic.LoadUint64(&mb.last.seq)
+		mb.mu.Unlock()
+
+		require_NoError(t, fs.Stop())
+
+		// Simulate old server wrote .idx file with empty block state (after purge).
+		// In old server, after purge: first = last + 1 (empty block).
+		// Create .idx file as if it was written by old server before upgrade.
+		ifn := filepath.Join(fcfg.StoreDir, msgDir, fmt.Sprintf("%d.idx", mb.index))
+		buf := make([]byte, 0, 100)
+		buf = append(buf, 22, 1) // magic, version (old format)
+
+		// Empty block: first > last (e.g., first=4, last=3 after purge)
+		emptyFirst := last + 1
+		emptyLast := last
+
+		buf = binary.AppendUvarint(buf, 0)          // msgs = 0
+		buf = binary.AppendUvarint(buf, 0)          // bytes = 0
+		buf = binary.AppendUvarint(buf, emptyFirst) // first.seq
+		buf = binary.AppendVarint(buf, 0)           // first.ts
+		buf = binary.AppendUvarint(buf, emptyLast)  // last.seq
+		buf = binary.AppendVarint(buf, 0)           // last.ts
+		buf = binary.AppendUvarint(buf, 1)          // dmapLen > 0 (had deleted entries before purge)
+
+		// For old format (version 1), dmapLen entries follow as offsets from first.seq
+		// Add one deleted entry offset (0 = first.seq itself was deleted)
+		buf = binary.AppendUvarint(buf, 0)
+
+		// Checksum (8 bytes) - for empty block, checksum check passes if rbytes==0 && msgs==0
+		// So we can use zeros here since the block will be empty
+		buf = append(buf, make([]byte, 8)...)
+
+		require_NoError(t, os.WriteFile(ifn, buf, 0644))
+
+		// Also create empty .blk file to match empty state
+		blkFile := filepath.Join(fcfg.StoreDir, msgDir, fmt.Sprintf("%d.blk", mb.index))
+		require_NoError(t, os.WriteFile(blkFile, nil, 0644))
+
+		// Now simulate upgrade: new server (>= 2.10) reads old .idx file
+		fs2, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs2.Stop()
+
+		// Verify upgrade succeeded: readIndexInfo should accept empty block with dmapLen > 0
+		fs2.mu.RLock()
+		require_True(t, len(fs2.blks) > 0)
+		mb2 := fs2.blks[0]
+		fs2.mu.RUnlock()
+
+		mb2.mu.RLock()
+		// Block should be recognized as empty
+		require_True(t, mb2.isEmpty())
+		require_Equal(t, mb2.msgs, uint64(0))
+		mb2.mu.RUnlock()
+
+		// Verify .idx file was not removed (recovery succeeded)
+		_, err = os.Stat(ifn)
+		require_NoError(t, err)
+	})
+}
