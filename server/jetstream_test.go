@@ -13530,6 +13530,77 @@ func TestJetStreamStreamRepublishHeadersOnly(t *testing.T) {
 	}
 }
 
+func TestJetStreamStreamRepublishReplySubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create a stream with republish configured
+	cfg := &StreamConfig{
+		Name:     "REP",
+		Storage:  MemoryStorage,
+		Subjects: []string{"request"},
+		RePublish: &RePublish{
+			Source:      "request",
+			Destination: "republished.request",
+			HeadersOnly: false,
+		},
+	}
+	addStream(t, nc, cfg)
+
+	// Subscribe to the republish destination
+	sub, err := nc.SubscribeSync("republished.request")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// Create a reply subject
+	replySubj := nats.NewInbox()
+	replySub, err := nc.SubscribeSync(replySubj)
+	require_NoError(t, err)
+	defer replySub.Unsubscribe()
+	nc.Flush()
+
+	// Publish a message with a reply subject
+	msg := nats.NewMsg("request")
+	msg.Data = []byte("test request")
+	msg.Reply = replySubj
+
+	err = nc.PublishMsg(msg)
+	require_NoError(t, err)
+	nc.Flush()
+
+	// Wait for the republished message
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	// Verify the republished message has the original reply subject preserved
+	if m.Reply != replySubj {
+		t.Fatalf("Expected reply subject %q, got %q", replySubj, m.Reply)
+	}
+
+	// Verify the message data is preserved
+	if string(m.Data) != "test request" {
+		t.Fatalf("Expected message data %q, got %q", "test request", string(m.Data))
+	}
+
+	// Verify headers are present
+	if m.Header.Get(JSStream) != "REP" {
+		t.Fatalf("Expected stream header %q, got %q", "REP", m.Header.Get(JSStream))
+	}
+
+	// Verify that a responder on the republish destination can reply correctly
+	responder, err := nc.Subscribe("republished.request", func(msg *nats.Msg) {
+		if msg.Reply != "" {
+			nc.Publish(msg.Reply, []byte("response"))
+		}
+	})
+	require_NoError(t, err)
+	defer responder.Unsubscribe()
+	nc.Flush()
+}
+
 func TestJetStreamMsgGetNoAdvisory(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
