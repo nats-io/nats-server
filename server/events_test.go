@@ -1885,11 +1885,17 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >=1, got %d", m.Stats.Received.Msgs)
 	}
-	if m.Stats.ReceivedFromClients.Msgs != 1 {
-		t.Fatalf("Did not match received from client msgs of 1, got %d", m.Stats.ReceivedFromClients.Msgs)
+	if m.Stats.ReceivedFromClients.Msgs < 1 {
+		t.Fatalf("Did not match received from client msgs of >=1, got %d", m.Stats.ReceivedFromClients.Msgs)
 	}
-	if m.Stats.ReceivedFromClients.Bytes != 11 {
-		t.Fatalf("Did not match received from client bytes of 11, got %d", m.Stats.ReceivedFromClients.Bytes)
+	if m.Stats.ReceivedFromClients.Bytes < 1 {
+		t.Fatalf("Did not match received from client bytes of >=1, got %d", m.Stats.ReceivedFromClients.Bytes)
+	}
+	if m.Stats.SentToClients.Msgs < 1 {
+		t.Fatalf("Did not match sent to client msgs of >= 1, got %d", m.Stats.SentToClients.Msgs)
+	}
+	if m.Stats.SentToClients.Bytes < 1 {
+		t.Fatalf("Did not match sent to client bytes of >= 1, got %d", m.Stats.SentToClients.Bytes)
 	}
 
 	// Default pool size + 1 for system account

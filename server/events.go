@@ -373,6 +373,7 @@ type ServerStats struct {
 	ActiveAccounts       int                   `json:"active_accounts"`
 	NumSubs              uint32                `json:"subscriptions"`
 	Sent                 DataStats             `json:"sent"`
+	SentToClients        DataStats             `json:"sent_to_clients"`
 	Received             DataStats             `json:"received"`
 	ReceivedFromClients  DataStats             `json:"received_from_clients"`
 	SlowConsumers        int64                 `json:"slow_consumers"`
@@ -951,6 +952,8 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.ReceivedFromClients.Bytes = atomic.LoadInt64(&s.inClientBytes)
 	m.Stats.Sent.Msgs = atomic.LoadInt64(&s.outMsgs)
 	m.Stats.Sent.Bytes = atomic.LoadInt64(&s.outBytes)
+	m.Stats.SentToClients.Msgs = atomic.LoadInt64(&s.outClientMsgs)
+	m.Stats.SentToClients.Bytes = atomic.LoadInt64(&s.outClientBytes)
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	// Evaluate the slow consumer stats, but set it only if one of the value is not 0.
 	scs := &SlowConsumersStats{

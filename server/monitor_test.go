@@ -304,20 +304,26 @@ func TestMonitorHandleVarz(t *testing.T) {
 		if v.InMsgs != 1 {
 			t.Fatalf("Expected InMsgs of 1, got %v\n", v.InMsgs)
 		}
-		if v.InClientMsgs != 1 {
-			t.Fatalf("Expected InClientMsgs of 1, got %v\n", v.InClientMsgs)
+		if v.InBytes != 5 {
+			t.Fatalf("Expected InBytes of 5, got %v\n", v.InBytes)
 		}
 		if v.OutMsgs != 1 {
 			t.Fatalf("Expected OutMsgs of 1, got %v\n", v.OutMsgs)
 		}
-		if v.InBytes != 5 {
-			t.Fatalf("Expected InBytes of 5, got %v\n", v.InBytes)
+		if v.OutBytes != 5 {
+			t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
+		}
+		if v.InClientMsgs != 1 {
+			t.Fatalf("Expected InClientMsgs of 1, got %v\n", v.InClientMsgs)
 		}
 		if v.InClientBytes != 5 {
 			t.Fatalf("Expected InClientBytes of 5, got %v\n", v.InClientBytes)
 		}
-		if v.OutBytes != 5 {
-			t.Fatalf("Expected OutBytes of 5, got %v\n", v.OutBytes)
+		if v.OutClientMsgs != 1 {
+			t.Fatalf("Expected OutClientMsgs of 1, got %v\n", v.OutClientMsgs)
+		}
+		if v.OutClientBytes != 5 {
+			t.Fatalf("Expected OutClientBytes of 5, got %v\n", v.OutClientBytes)
 		}
 		if v.Subscriptions <= 10 {
 			t.Fatalf("Expected Subscriptions of at least 10, got %v\n", v.Subscriptions)
