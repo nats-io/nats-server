@@ -3858,52 +3858,98 @@ func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
 
 func TestClientMsgsMetric(t *testing.T) {
 	o1 := DefaultOptions()
+	o1.ServerName = "S1"
 	s1 := RunServer(o1)
 	defer s1.Shutdown()
 
 	o2 := DefaultOptions()
+	o2.ServerName = "S2"
 	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
 
 	checkClusterFormed(t, s1, s2)
 
-	nc1 := natsConnect(t, s1.ClientURL())
-	defer nc1.Close()
+	ncS1 := natsConnect(t, s1.ClientURL())
+	defer ncS1.Close()
 
-	nc2 := natsConnect(t, s2.ClientURL())
-	defer nc1.Close()
+	ncS2 := natsConnect(t, s2.ClientURL())
+	defer ncS2.Close()
 
-	natsSub(t, nc1, "foo", func(m *nats.Msg) {
-		m.Respond(m.Data)
-	})
-	natsSub(t, nc2, "bar", func(m *nats.Msg) {
-		m.Respond(m.Data)
-	})
-	nc1.Flush()
-	nc2.Flush()
+	natsSub(t, ncS1, "foo", func(m *nats.Msg) { m.Respond(m.Data) })
+	natsSub(t, ncS2, "bar", func(m *nats.Msg) { m.Respond(m.Data) })
+	ncS1.Flush()
+	ncS2.Flush()
 
-	_, err := nc2.Request("foo", []byte("6bytes"), 3*time.Second)
+	fooMsg := "6bytes"
+	// Requesting foo from S1 and bar from S2
+	// to verify to make sure client messages are counted correctly
+	_, err := ncS2.Request("foo", []byte(fooMsg), 3*time.Second)
 	if err != nil {
 		t.Fatalf("Error on receiving: %v", err)
 	}
-	_, err = nc1.Request("bar", []byte("ninebytes"), 3*time.Second)
+	barMsg := "ninebytes"
+	_, err = ncS1.Request("bar", []byte(barMsg), 3*time.Second)
 	if err != nil {
 		t.Fatalf("Error on receiving: %v", err)
 	}
-	nc1.Flush()
-	nc2.Flush()
+	ncS1.Flush()
+	ncS2.Flush()
 
-	// inMsgs and inBytes counts include routed messages
+	// in/out Msgs/Bytes counts include routed messages
 	require_Equal(t, atomic.LoadInt64(&s1.inMsgs), 4)
-	require_Equal(t, atomic.LoadInt64(&s1.inBytes), 6+6+9+9)
+	require_Equal(t, atomic.LoadInt64(&s1.inBytes), int64(len(fooMsg)*2+len(barMsg)*2))
 	require_Equal(t, atomic.LoadInt64(&s2.inMsgs), 4)
-	require_Equal(t, atomic.LoadInt64(&s2.inBytes), 6+6+9+9)
+	require_Equal(t, atomic.LoadInt64(&s2.inBytes), int64(len(fooMsg)*2+len(barMsg)*2))
 
-	// only count messages received from clients
+	require_Equal(t, atomic.LoadInt64(&s1.outMsgs), 4)
+	require_Equal(t, atomic.LoadInt64(&s1.outBytes), int64(len(fooMsg)*2+len(barMsg)*2))
+	require_Equal(t, atomic.LoadInt64(&s2.outMsgs), 4)
+	require_Equal(t, atomic.LoadInt64(&s2.outBytes), int64(len(fooMsg)*2+len(barMsg)*2))
+
+	// in/out ClientMsgs/Bytes only count client messages
 	require_Equal(t, atomic.LoadInt64(&s1.inClientMsgs), 2)
-	require_Equal(t, atomic.LoadInt64(&s1.inClientBytes), 6+9)
+	require_Equal(t, atomic.LoadInt64(&s1.inClientBytes), int64(len(fooMsg)+len(barMsg)))
 	require_Equal(t, atomic.LoadInt64(&s2.inClientMsgs), 2)
-	require_Equal(t, atomic.LoadInt64(&s2.inClientBytes), 6+9)
+	require_Equal(t, atomic.LoadInt64(&s2.inClientBytes), int64(len(fooMsg)+len(barMsg)))
 
+	require_Equal(t, atomic.LoadInt64(&s1.outClientMsgs), 2)
+	require_Equal(t, atomic.LoadInt64(&s1.outClientBytes), int64(len(fooMsg)+len(barMsg)))
+	require_Equal(t, atomic.LoadInt64(&s2.outClientMsgs), 2)
+	require_Equal(t, atomic.LoadInt64(&s2.outClientBytes), int64(len(fooMsg)+len(barMsg)))
+
+	natsQueueSub(t, ncS1, "orders.new", "workers", func(m *nats.Msg) { m.Respond(m.Data) })
+	natsQueueSub(t, ncS2, "orders.new", "workers", func(m *nats.Msg) { m.Respond(m.Data) })
+	ncS1.Flush()
+	ncS2.Flush()
+
+	orderMsg := "order"
+	_, err = ncS1.Request("orders.new", []byte(orderMsg), 3*time.Second)
+	if err != nil {
+		t.Fatalf("Error on receiving: %v", err)
+	}
+	ncS1.Flush()
+	ncS2.Flush()
+
+	if atomic.LoadInt64(&s1.outClientMsgs) == 4 {
+		require_Equal(t, atomic.LoadInt64(&s2.outClientMsgs), 2)
+
+		require_Equal(t, atomic.LoadInt64(&s1.outClientBytes),
+			int64(len(fooMsg)+len(barMsg)+len(orderMsg)*2))
+
+		require_Equal(t, atomic.LoadInt64(&s2.outClientBytes),
+			int64(len(fooMsg)+len(barMsg)))
+
+	} else if atomic.LoadInt64(&s1.outClientMsgs) == 3 {
+		require_Equal(t, atomic.LoadInt64(&s2.outClientMsgs), 3)
+
+		require_Equal(t, atomic.LoadInt64(&s1.outClientBytes),
+			int64(len(fooMsg)+len(barMsg)+len(orderMsg)))
+
+		require_Equal(t, atomic.LoadInt64(&s2.outClientBytes),
+			int64(len(fooMsg)+len(barMsg)+len(orderMsg)))
+
+	} else {
+		t.Fatalf("Did not get expected outClientMsg/Bytes for message sent on qsub")
+	}
 }

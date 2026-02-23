@@ -401,11 +401,13 @@ type nodeInfo struct {
 
 type stats struct {
 	inMsgs           int64
-	outMsgs          int64
 	inBytes          int64
+	outMsgs          int64
 	outBytes         int64
 	inClientMsgs     int64
 	inClientBytes    int64
+	outClientMsgs    int64
+	outClientBytes   int64
 	slowConsumers    int64
 	staleConnections int64
 	stalls           int64
