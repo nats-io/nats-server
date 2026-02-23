@@ -2293,6 +2293,7 @@ func (s *Server) Start() {
 		s.Noticef("  Node:     %s", getHash(s.info.Name))
 	}
 	s.Noticef("  ID:       %s", s.info.ID)
+	s.printFeatureFlags(opts)
 
 	defer s.Noticef("Server is ready")
 

@@ -1,4 +1,4 @@
-// Copyright 2012-2025 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -124,7 +124,8 @@ func TestConfigFile(t *testing.T) {
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
 		Metadata:              map[string]string{"key1": "value1", "key2": "value2"},
-		configDigest:          "sha256:a1104db0c8e838096a4f0509ec4d1e7c2c26ff60261ecb8f6a12dde1317872c3",
+		FeatureFlags:          map[string]bool{"feature": false, "fix": true, "revert_fix": true},
+		configDigest:          "sha256:f10eacddb9ce83a6bdc79b42c851b9628d49cf8b3c6ba95b1ecf090307504948",
 		authBlockDefined:      true,
 	}
 
@@ -298,7 +299,8 @@ func TestMergeOverrides(t *testing.T) {
 		StoreDir:              "/store/dir",
 		authBlockDefined:      true,
 		Metadata:              map[string]string{"key1": "value1", "key2": "value2"},
-		configDigest:          "sha256:a1104db0c8e838096a4f0509ec4d1e7c2c26ff60261ecb8f6a12dde1317872c3",
+		FeatureFlags:          map[string]bool{"feature": false, "fix": true, "revert_fix": true},
+		configDigest:          "sha256:f10eacddb9ce83a6bdc79b42c851b9628d49cf8b3c6ba95b1ecf090307504948",
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
