@@ -1066,6 +1066,11 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 	var preBuf []byte
 	if solicited {
+		// Ensure remote is not nil when solicited is true
+		if remote == nil {
+			c.mu.Unlock()
+			return nil
+		}
 		// For websocket connection, we need to send an HTTP request,
 		// and get the response before starting the readLoop to get
 		// the INFO, etc..

@@ -7144,7 +7144,7 @@ checkCache:
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
 			var ld *LostStreamData
-			if ld, _, err = mb.rebuildStateLocked(); ld != nil {
+			if ld, _, err = mb.rebuildStateLocked(); ld != nil && mb.fs != nil {
 				// We do not know if fs is locked or not at this point.
 				// This should be an exceptional condition so do so in Go routine.
 				go mb.fs.rebuildState(ld)
