@@ -154,7 +154,7 @@ type wsUpgradeResult struct {
 }
 
 type wsReadInfo struct {
-	rem   int
+	rem   uint64
 	fs    bool
 	ff    bool
 	fc    bool
@@ -175,19 +175,19 @@ func (r *wsReadInfo) init() {
 // of bytes found up to `needed` and the new position is returned. If not
 // enough bytes are found, the bytes found in `buf` are copied to the returned
 // slice and the remaning bytes are read from `r`.
-func wsGet(r io.Reader, buf []byte, pos, needed int) ([]byte, int, error) {
-	avail := len(buf) - pos
+func wsGet(r io.Reader, buf []byte, pos, needed uint64) ([]byte, uint64, error) {
+	avail := uint64(len(buf)) - pos
 	if avail >= needed {
 		return buf[pos : pos+needed], pos + needed, nil
 	}
 	b := make([]byte, needed)
-	start := copy(b, buf[pos:])
+	start := uint64(copy(b, buf[pos:]))
 	for start != needed {
 		n, err := r.Read(b[start:cap(b)])
 		if err != nil {
 			return nil, 0, err
 		}
-		start += n
+		start += uint64(n)
 	}
 	return b, pos + avail, nil
 }
@@ -210,8 +210,8 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 		bufs   [][]byte
 		tmpBuf []byte
 		err    error
-		pos    int
-		max    = len(buf)
+		pos    uint64
+		max    = uint64(len(buf))
 		mpay   = int(atomic.LoadInt32(&c.mpay))
 	)
 	for pos != max {
@@ -235,7 +235,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 			}
 
 			// Store size in case it is < 125
-			r.rem = int(b1 & 0x7F)
+			r.rem = uint64(b1 & 0x7F)
 
 			switch frameType {
 			case wsPingMessage, wsPongMessage, wsCloseMessage:
@@ -269,13 +269,15 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 				if err != nil {
 					return bufs, err
 				}
-				r.rem = int(binary.BigEndian.Uint16(tmpBuf))
+				r.rem = uint64(binary.BigEndian.Uint16(tmpBuf))
 			case 127:
 				tmpBuf, pos, err = wsGet(ior, buf, pos, 8)
 				if err != nil {
 					return bufs, err
 				}
-				r.rem = int(binary.BigEndian.Uint64(tmpBuf))
+				if r.rem = binary.BigEndian.Uint64(tmpBuf); r.rem&(uint64(1)<<63) != 0 {
+					return bufs, c.wsHandleProtocolError("invalid 64-bit payload length")
+				}
 			}
 
 			if r.mask {
@@ -302,7 +304,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 		}
 		if pos < max {
 			var b []byte
-			var n int
+			var n uint64
 
 			n = r.rem
 			if pos+n > max {
@@ -445,7 +447,7 @@ func (r *wsReadInfo) decompress(mpay int) ([]byte, error) {
 // Handles the PING, PONG and CLOSE websocket control frames.
 //
 // Client lock MUST NOT be held on entry.
-func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.Reader, buf []byte, pos int) (int, error) {
+func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.Reader, buf []byte, pos uint64) (uint64, error) {
 	var payload []byte
 	var err error
 
