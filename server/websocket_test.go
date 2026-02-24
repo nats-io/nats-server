@@ -73,9 +73,9 @@ func TestWSGet(t *testing.T) {
 
 	for _, test := range []struct {
 		name   string
-		pos    int
-		needed int
-		newpos int
+		pos    uint64
+		needed uint64
+		newpos uint64
 		trmax  int
 		result string
 		reterr bool
@@ -970,6 +970,16 @@ func TestWSReadErrors(t *testing.T) {
 				return testWSCreateClientMsg(99, 1, false, false, []byte("hello"))
 			},
 			"unknown opcode", 1,
+		},
+		{
+			func() []byte {
+				msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, nil)
+				msg = append(msg, 0, 0, 0, 0)
+				msg[1] = 127 | wsMaskBit
+				binary.BigEndian.PutUint64(msg[2:], uint64(1)<<63)
+				return msg
+			},
+			"invalid 64-bit payload length", 1,
 		},
 	} {
 		t.Run(test.err, func(t *testing.T) {
