@@ -32,6 +32,7 @@ type parseState struct {
 	msgBuf  []byte
 	header  http.Header // access via getHeader
 	scratch [MAX_CONTROL_LINE_SIZE]byte
+	argsa   [MAX_HMSG_ARGS + 1][]byte // pre-allocated args array to avoid per-call heap escape
 }
 
 type pubArg struct {

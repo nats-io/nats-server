@@ -2916,8 +2916,7 @@ func (c *client) processLeafUnsub(arg []byte) error {
 
 func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
-	a := [MAX_MSG_ARGS][]byte{}
-	args := a[:0]
+	args := c.argsa[:0]
 	start := -1
 	for i, b := range arg {
 		switch b {
@@ -3000,8 +2999,7 @@ func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
 
 func (c *client) processLeafMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
-	a := [MAX_MSG_ARGS][]byte{}
-	args := a[:0]
+	args := c.argsa[:0]
 	start := -1
 	for i, b := range arg {
 		switch b {
