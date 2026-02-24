@@ -3912,44 +3912,56 @@ func TestClientMsgsMetric(t *testing.T) {
 
 	checkClusterFormed(t, s1, s2)
 
-	ncS1 := natsConnect(t, s1.ClientURL())
+	ncS1 := natsConnect(t, s1.ClientURL(), nats.IgnoreDiscoveredServers())
 	defer ncS1.Close()
 
-	ncS2 := natsConnect(t, s2.ClientURL())
+	ncS2 := natsConnect(t, s2.ClientURL(), nats.IgnoreDiscoveredServers())
 	defer ncS2.Close()
 
+	// Echo the message back
 	natsSub(t, ncS1, "foo", func(m *nats.Msg) { m.Respond(m.Data) })
 	natsSub(t, ncS2, "bar", func(m *nats.Msg) { m.Respond(m.Data) })
 	ncS1.Flush()
 	ncS2.Flush()
 
+	checkSubInterest(t, s1, globalAccountName, "bar", 5*time.Second)
+	checkSubInterest(t, s2, globalAccountName, "foo", 5*time.Second)
+
+	// Request foo and bar from non-local servers,
+	// to make sure client messages are counted correctly.
 	fooMsg := "6bytes"
-	// Requesting foo from S1 and bar from S2
-	// to verify to make sure client messages are counted correctly
-	_, err := ncS2.Request("foo", []byte(fooMsg), 3*time.Second)
+	_, err := ncS2.Request("foo", []byte(fooMsg), 5*time.Second)
 	if err != nil {
 		t.Fatalf("Error on receiving: %v", err)
 	}
 	barMsg := "ninebytes"
-	_, err = ncS1.Request("bar", []byte(barMsg), 3*time.Second)
+	_, err = ncS1.Request("bar", []byte(barMsg), 5*time.Second)
 	if err != nil {
 		t.Fatalf("Error on receiving: %v", err)
 	}
-	ncS1.Flush()
-	ncS2.Flush()
+	err = ncS1.Flush()
+	if err != nil {
+		t.Fatalf("Error on flushing connection: %v", err)
+	}
+	err = ncS2.Flush()
+	if err != nil {
+		t.Fatalf("Error on flushing connection: %v", err)
+	}
 
-	// in/out Msgs/Bytes counts include routed messages
-	require_Equal(t, atomic.LoadInt64(&s1.inMsgs), 4)
-	require_Equal(t, atomic.LoadInt64(&s1.inBytes), int64(len(fooMsg)*2+len(barMsg)*2))
-	require_Equal(t, atomic.LoadInt64(&s2.inMsgs), 4)
-	require_Equal(t, atomic.LoadInt64(&s2.inBytes), int64(len(fooMsg)*2+len(barMsg)*2))
+	// In/out Msgs/Bytes include routed messages, including STATSZ heartbeats too.
+	// So there should be at least 2 foo and 2 bar messages received and sent by each server,
+	// but depending on the test timing, we may also catch some STATSZ messages.
+	require_True(t, atomic.LoadInt64(&s1.inMsgs) >= 4)
+	require_True(t, atomic.LoadInt64(&s1.inBytes) >= int64(len(fooMsg)*2+len(barMsg)*2))
+	require_True(t, atomic.LoadInt64(&s2.inMsgs) >= 4)
+	require_True(t, atomic.LoadInt64(&s2.inBytes) >= int64(len(fooMsg)*2+len(barMsg)*2))
 
-	require_Equal(t, atomic.LoadInt64(&s1.outMsgs), 4)
-	require_Equal(t, atomic.LoadInt64(&s1.outBytes), int64(len(fooMsg)*2+len(barMsg)*2))
-	require_Equal(t, atomic.LoadInt64(&s2.outMsgs), 4)
-	require_Equal(t, atomic.LoadInt64(&s2.outBytes), int64(len(fooMsg)*2+len(barMsg)*2))
+	require_True(t, atomic.LoadInt64(&s1.outMsgs) >= 4)
+	require_True(t, atomic.LoadInt64(&s1.outBytes) >= int64(len(fooMsg)*2+len(barMsg)*2))
+	require_True(t, atomic.LoadInt64(&s2.outMsgs) >= 4)
+	require_True(t, atomic.LoadInt64(&s2.outBytes) >= int64(len(fooMsg)*2+len(barMsg)*2))
 
-	// in/out ClientMsgs/Bytes only count client messages
+	// In/out ClientMsgs/Bytes only count client messages.
 	require_Equal(t, atomic.LoadInt64(&s1.inClientMsgs), 2)
 	require_Equal(t, atomic.LoadInt64(&s1.inClientBytes), int64(len(fooMsg)+len(barMsg)))
 	require_Equal(t, atomic.LoadInt64(&s2.inClientMsgs), 2)
@@ -3960,19 +3972,29 @@ func TestClientMsgsMetric(t *testing.T) {
 	require_Equal(t, atomic.LoadInt64(&s2.outClientMsgs), 2)
 	require_Equal(t, atomic.LoadInt64(&s2.outClientBytes), int64(len(fooMsg)+len(barMsg)))
 
+	// Now test that messages delivered as part of queue subscriptions are counted correctly
 	natsQueueSub(t, ncS1, "orders.new", "workers", func(m *nats.Msg) { m.Respond(m.Data) })
 	natsQueueSub(t, ncS2, "orders.new", "workers", func(m *nats.Msg) { m.Respond(m.Data) })
 	ncS1.Flush()
 	ncS2.Flush()
 
 	orderMsg := "order"
-	_, err = ncS1.Request("orders.new", []byte(orderMsg), 3*time.Second)
+	_, err = ncS1.Request("orders.new", []byte(orderMsg), 5*time.Second)
 	if err != nil {
 		t.Fatalf("Error on receiving: %v", err)
 	}
-	ncS1.Flush()
-	ncS2.Flush()
+	err = ncS1.Flush()
+	if err != nil {
+		t.Fatalf("Error on flushing connection: %v", err)
+	}
+	err = ncS2.Flush()
+	if err != nil {
+		t.Fatalf("Error on flushing connection: %v", err)
+	}
 
+	// We do not know which client the message will be routed to, so check both cases.
+	// If the queue subscriber on S1 receives the message, S1 will send total 4 client messages:
+	// 2 messages from previous step, qsub message, and echo reply.
 	if atomic.LoadInt64(&s1.outClientMsgs) == 4 {
 		require_Equal(t, atomic.LoadInt64(&s2.outClientMsgs), 2)
 
@@ -3982,6 +4004,7 @@ func TestClientMsgsMetric(t *testing.T) {
 		require_Equal(t, atomic.LoadInt64(&s2.outClientBytes),
 			int64(len(fooMsg)+len(barMsg)))
 
+		// If message received by S2, both servers will have 3 messages total.
 	} else if atomic.LoadInt64(&s1.outClientMsgs) == 3 {
 		require_Equal(t, atomic.LoadInt64(&s2.outClientMsgs), 3)
 
