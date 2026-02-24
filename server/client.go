@@ -1686,9 +1686,11 @@ func (c *client) flushOutbound() bool {
 
 		cw.Reset(&bb)
 		for _, buf := range collapsed {
-			if _, err = cw.Write(buf); err != nil {
-				break
+			if err == nil {
+				_, err = cw.Write(buf)
 			}
+			// Return always after consumed or error.
+			nbPoolPut(buf)
 		}
 		if err == nil {
 			err = cw.Close()

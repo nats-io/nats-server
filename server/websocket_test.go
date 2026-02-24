@@ -3450,6 +3450,59 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 	}
 }
 
+func TestWSCompressionPoolBufferRecycling(t *testing.T) {
+	opts := testWSOptions()
+	opts.MaxPending = MAX_PENDING_SIZE
+	s := &Server{opts: opts}
+	c := &client{srv: s, ws: &websocket{compress: true}}
+	c.initClient()
+
+	// Use a payload larger than wsCompressThreshold (64 bytes)
+	// to trigger the compression path.
+	payload := make([]byte, 256)
+	for i := range payload {
+		// Semi-random to be compressible.
+		payload[i] = byte(i % 251)
+	}
+
+	// Warm up: populate the pool and initialize the compressor.
+	nbSlice := make(net.Buffers, 1)
+	for i := 0; i < 10; i++ {
+		c.mu.Lock()
+		data := nbPoolGet(len(payload))
+		data = append(data, payload...)
+		nbSlice[0] = data
+		c.out.nb = nbSlice
+		c.out.pb = int64(len(payload))
+		c.ws.fs = 0
+		bufs, _ := c.collapsePtoNB()
+		for _, buf := range bufs {
+			nbPoolPut(buf)
+		}
+		c.out.nb = nil
+		c.mu.Unlock()
+	}
+
+	allocs := testing.AllocsPerRun(500, func() {
+		c.mu.Lock()
+		data := nbPoolGet(len(payload))
+		data = append(data, payload...)
+		nbSlice[0] = data
+		c.out.nb = nbSlice
+		c.out.pb = int64(len(payload))
+		c.ws.fs = 0
+		bufs, _ := c.collapsePtoNB()
+		for _, buf := range bufs {
+			nbPoolPut(buf)
+		}
+		c.out.nb = nil
+		c.mu.Unlock()
+	})
+	if allocs > 2 {
+		t.Fatalf("Too many allocs per iteration (%.1f); pool buffers are likely being leaked", allocs)
+	}
+}
+
 func TestWSBasicAuth(t *testing.T) {
 	for _, test := range []struct {
 		name    string
