@@ -161,17 +161,25 @@ type raftGroup struct {
 	node RaftNode
 }
 
+// desiredGroupPlacement specifies the desired peer set.
+// A streamAssignment or consumerAssignment can be scaled or moved safely based on this desired state.
+type desiredGroupPlacement struct {
+	Placement *Placement `json:"placement,omitempty"`
+	Group     *raftGroup `json:"group,omitempty"`
+}
+
 // streamAssignment is what the meta controller uses to assign streams to peers.
 type streamAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
-	Created    time.Time       `json:"created"`
-	ConfigJSON json.RawMessage `json:"stream"`
-	Config     *StreamConfig   `json:"-"`
-	Group      *raftGroup      `json:"group"`
-	Sync       string          `json:"sync"`
-	Subject    string          `json:"subject,omitempty"`
-	Reply      string          `json:"reply,omitempty"`
-	Restore    *StreamState    `json:"restore_state,omitempty"`
+	Client           *ClientInfo            `json:"client,omitempty"`
+	Created          time.Time              `json:"created"`
+	ConfigJSON       json.RawMessage        `json:"stream"`
+	Config           *StreamConfig          `json:"-"`
+	Group            *raftGroup             `json:"group"`
+	Sync             string                 `json:"sync"`
+	Subject          string                 `json:"subject,omitempty"`
+	Reply            string                 `json:"reply,omitempty"`
+	Restore          *StreamState           `json:"restore_state,omitempty"`
+	DesiredPlacement *desiredGroupPlacement `json:"desired_placement,omitempty"`
 	// Internal
 	consumers   map[string]*consumerAssignment
 	responded   bool
@@ -247,16 +255,17 @@ func (usa *unsupportedStreamAssignment) closeInfoSub(s *Server) {
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
 type consumerAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
-	Created    time.Time       `json:"created"`
-	Name       string          `json:"name"`
-	Stream     string          `json:"stream"`
-	ConfigJSON json.RawMessage `json:"consumer"`
-	Config     *ConsumerConfig `json:"-"`
-	Group      *raftGroup      `json:"group"`
-	Subject    string          `json:"subject,omitempty"`
-	Reply      string          `json:"reply,omitempty"`
-	State      *ConsumerState  `json:"state,omitempty"`
+	Client           *ClientInfo            `json:"client,omitempty"`
+	Created          time.Time              `json:"created"`
+	Name             string                 `json:"name"`
+	Stream           string                 `json:"stream"`
+	ConfigJSON       json.RawMessage        `json:"consumer"`
+	Config           *ConsumerConfig        `json:"-"`
+	Group            *raftGroup             `json:"group"`
+	Subject          string                 `json:"subject,omitempty"`
+	Reply            string                 `json:"reply,omitempty"`
+	State            *ConsumerState         `json:"state,omitempty"`
+	DesiredPlacement *desiredGroupPlacement `json:"desired_placement,omitempty"`
 	// Internal
 	responded   bool
 	recovering  bool
@@ -329,12 +338,13 @@ func (uca *unsupportedConsumerAssignment) closeInfoSub(s *Server) {
 }
 
 type writeableConsumerAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
-	Created    time.Time       `json:"created"`
-	Name       string          `json:"name"`
-	Stream     string          `json:"stream"`
-	ConfigJSON json.RawMessage `json:"consumer"`
-	Group      *raftGroup      `json:"group"`
+	Client           *ClientInfo            `json:"client,omitempty"`
+	Created          time.Time              `json:"created"`
+	Name             string                 `json:"name"`
+	Stream           string                 `json:"stream"`
+	ConfigJSON       json.RawMessage        `json:"consumer"`
+	Group            *raftGroup             `json:"group"`
+	DesiredPlacement *desiredGroupPlacement `json:"desired_placement,omitempty"`
 }
 
 // streamPurge is what the stream leader will replicate when purging a stream.
@@ -1879,12 +1889,13 @@ func (js *jetStream) checkClusterSize() {
 
 // Represents our stable meta state that we can write out.
 type writeableStreamAssignment struct {
-	Client     *ClientInfo     `json:"client,omitempty"`
-	Created    time.Time       `json:"created"`
-	ConfigJSON json.RawMessage `json:"stream"`
-	Group      *raftGroup      `json:"group"`
-	Sync       string          `json:"sync"`
-	Consumers  []*writeableConsumerAssignment
+	Client           *ClientInfo            `json:"client,omitempty"`
+	Created          time.Time              `json:"created"`
+	ConfigJSON       json.RawMessage        `json:"stream"`
+	Group            *raftGroup             `json:"group"`
+	Sync             string                 `json:"sync"`
+	DesiredPlacement *desiredGroupPlacement `json:"desired_placement,omitempty"`
+	Consumers        []*writeableConsumerAssignment
 }
 
 func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConfig, bool) {
