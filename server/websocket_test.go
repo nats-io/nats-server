@@ -920,78 +920,94 @@ func TestWSReadErrors(t *testing.T) {
 		cframe func() []byte
 		err    string
 		nbufs  int
+		setup  func(*client)
 	}{
 		{
-			func() []byte {
+			cframe: func() []byte {
 				msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("hello"))
 				msg[1] &= ^byte(wsMaskBit)
 				return msg
 			},
-			"mask bit missing", 1,
+			err: "mask bit missing", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(wsPingMessage, 1, true, false, make([]byte, 200))
 			},
-			"control frame length bigger than maximum allowed", 1,
+			err: "control frame length bigger than maximum allowed", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(wsPingMessage, 1, false, false, []byte("hello"))
 			},
-			"control frame does not have final bit set", 1,
+			err: "control frame does not have final bit set", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, []byte("frag1"))
 				newMsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("new message"))
 				all := append([]byte(nil), frag1...)
 				all = append(all, newMsg...)
 				return all
 			},
-			"new message started before final frame for previous message was received", 2,
+			err: "new message started before final frame for previous message was received", nbufs: 2,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				frame := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("frame"))
 				frag := testWSCreateClientMsg(wsBinaryMessage, 2, false, false, []byte("continuation"))
 				all := append([]byte(nil), frame...)
 				all = append(all, frag...)
 				return all
 			},
-			"invalid continuation frame", 2,
+			err: "invalid continuation frame", nbufs: 2,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(wsBinaryMessage, 2, false, false, []byte("frame"))
 			},
-			"invalid continuation frame", 1,
+			err: "invalid continuation frame", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(11, 1, false, false, []byte("hello"))
 			},
-			"unknown opcode", 1,
+			err: "unknown opcode", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, nil)
 				msg = append(msg, 0, 0, 0, 0)
 				msg[1] = 127 | wsMaskBit
 				binary.BigEndian.PutUint64(msg[2:], uint64(1)<<63)
 				return msg
 			},
-			"invalid 64-bit payload length", 1,
+			err: "invalid 64-bit payload length", nbufs: 1,
 		},
 		{
-			func() []byte {
+			cframe: func() []byte {
 				return testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("compressed"))
 			},
-			"compressed frame received without negotiated permessage-deflate", 1,
+			err: "compressed frame received without negotiated permessage-deflate", nbufs: 1,
+		},
+		{
+			cframe: func() []byte {
+				frame := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, make([]byte, 32))
+				frame[0] |= wsRsv1Bit
+				return frame
+			},
+			err: ErrMaxPayload.Error(), nbufs: 1,
+			setup: func(c *client) {
+				atomic.StoreInt32(&c.mpay, 16)
+				c.ws.compress = true
+			},
 		},
 	} {
 		t.Run(test.err, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
+			if test.setup != nil {
+				test.setup(c)
+			}
 			// Add a valid message first
 			msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("hello"))
 			// Then add the bad frame
