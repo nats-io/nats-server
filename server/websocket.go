@@ -811,7 +811,10 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	// We will do masking if asked (unless we reject for tests)
 	noMasking := r.Header.Get(wsNoMaskingHeader) == wsNoMaskingValue && !wsTestRejectNoMasking
 
-	h := w.(http.Hijacker)
+	h, ok := w.(http.Hijacker)
+	if !ok {
+		return nil, wsReturnHTTPError(w, r, http.StatusBadRequest, "websocket upgrade not supported")
+	}
 	conn, brw, err := h.Hijack()
 	if err != nil {
 		if conn != nil {

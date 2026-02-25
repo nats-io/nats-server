@@ -1129,6 +1129,26 @@ func (trw *testResponseWriter) Header() http.Header {
 	return trw.headers
 }
 
+type testNoHijackResponseWriter struct {
+	buf     bytes.Buffer
+	headers http.Header
+}
+
+func (trw *testNoHijackResponseWriter) Write(p []byte) (int, error) {
+	return trw.buf.Write(p)
+}
+
+func (trw *testNoHijackResponseWriter) WriteHeader(status int) {
+	trw.buf.WriteString(fmt.Sprintf("%v", status))
+}
+
+func (trw *testNoHijackResponseWriter) Header() http.Header {
+	if trw.headers == nil {
+		trw.headers = make(http.Header)
+	}
+	return trw.headers
+}
+
 type testWSFakeNetConn struct {
 	net.Conn
 	wbuf            bytes.Buffer
@@ -1436,6 +1456,24 @@ func TestWSUpgradeResponseWriteError(t *testing.T) {
 	}
 	if !rw.conn.isClosed {
 		t.Fatal("Connection should have been closed")
+	}
+}
+
+func TestWSUpgradeNoHijacker(t *testing.T) {
+	opts := testWSOptions()
+	s := &Server{opts: opts}
+	rw := &testNoHijackResponseWriter{}
+	req := testWSCreateValidReq()
+	res, err := s.wsUpgrade(rw, req)
+	if err == nil || !strings.Contains(err.Error(), "websocket upgrade not supported") {
+		t.Fatalf("Should get error %q, got %v", "websocket upgrade not supported", err)
+	}
+	if res != nil {
+		t.Fatalf("Should not have returned a result, got %v", res)
+	}
+	expected := fmt.Sprintf("%v%s\n", http.StatusBadRequest, http.StatusText(http.StatusBadRequest))
+	if got := rw.buf.String(); got != expected {
+		t.Fatalf("Expected %q got %q", expected, got)
 	}
 }
 
