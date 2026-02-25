@@ -1217,6 +1217,7 @@ func TestWSCheckOrigin(t *testing.T) {
 		{"same origin ok", sameOrigin, allowedListEmpty, "host.com", false, "http://host.com:80", ""},
 		{"same origin bad host", sameOrigin, allowedListEmpty, "host.com", false, "http://other.host.com", "not same origin"},
 		{"same origin bad port", sameOrigin, allowedListEmpty, "host.com", false, "http://host.com:81", "not same origin"},
+		{"same origin bad scheme explicit port", sameOrigin, allowedListEmpty, "host.com:443", true, "http://host.com:443", "not same origin"},
 		{"same origin bad scheme", sameOrigin, allowedListEmpty, "host.com", true, "http://host.com", "not same origin"},
 		{"same origin bad uri", sameOrigin, allowedListEmpty, "host.com", false, "@@@://invalid:url:1234", "invalid URI"},
 		{"same origin bad url", sameOrigin, allowedListEmpty, "host.com", false, "http://invalid:url:1234", "too many colons"},
