@@ -588,6 +588,17 @@ func TestMaxConnections(t *testing.T) {
 	}
 }
 
+func TestMaxConnectionsPreventsAll(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxConn = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	_, err := nats.Connect(addr)
+	require_Error(t, err)
+}
+
 func TestMaxSubscriptions(t *testing.T) {
 	opts := DefaultOptions()
 	opts.MaxSubs = 10

@@ -2025,6 +2025,59 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 	}
 }
 
+// Ensure Reload supports refusing all connections. Test this by starting a
+// server with no max connections, connecting two clients, reloading with a
+// max connections of one, and ensuring one client is disconnected.
+func TestConfigReloadMaxConnectionsPreventAll(t *testing.T) {
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
+	defer server.Shutdown()
+
+	// Make two connections.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
+	nc1, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc1.Close()
+	closed := make(chan struct{}, 1)
+	nc1.SetDisconnectHandler(func(*nats.Conn) {
+		closed <- struct{}{}
+	})
+	nc2, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc2.Close()
+	nc2.SetDisconnectHandler(func(*nats.Conn) {
+		closed <- struct{}{}
+	})
+
+	if numClients := server.NumClients(); numClients != 2 {
+		t.Fatalf("Expected 2 clients, got %d", numClients)
+	}
+
+	// Set max connections to one.
+	changeCurrentConfigContent(t, config, "./configs/reload/max_connections_refuse_all.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure one connection was closed.
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Expected to be disconnected")
+	}
+
+	checkClientsCount(t, server, 0)
+
+	// Ensure new connections fail.
+	_, err = nats.Connect(addr)
+	if err == nil {
+		t.Fatal("Expected error on connect")
+	}
+}
+
 // Ensure reload supports changing the max payload size. Test this by starting
 // a server with the default size limit, ensuring publishes work, reloading
 // with a restrictive limit, and ensuring publishing an oversized message fails
