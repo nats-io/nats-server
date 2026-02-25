@@ -220,6 +220,12 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 			frameType := wsOpCode(b0 & 0xF)
 			final := b0&wsFinalBit != 0
 			compressed := b0&wsRsv1Bit != 0
+			if b0&(wsRsv2Bit|wsRsv3Bit) != 0 {
+				return bufs, c.wsHandleProtocolError("RSV2 and RSV3 must be clear")
+			}
+			if compressed && !c.ws.compress {
+				return bufs, c.wsHandleProtocolError("compressed frame received without negotiated permessage-deflate")
+			}
 			pos++
 
 			tmpBuf, pos, err = wsGet(ior, buf, pos, 1)
@@ -246,6 +252,9 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 				}
 				if !final {
 					return bufs, c.wsHandleProtocolError("control frame does not have final bit set")
+				}
+				if compressed {
+					return bufs, c.wsHandleProtocolError("control frame must not be compressed")
 				}
 			case wsTextMessage, wsBinaryMessage:
 				if !r.ff {

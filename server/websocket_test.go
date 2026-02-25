@@ -410,6 +410,7 @@ func TestWSReadUncompressedFrames(t *testing.T) {
 
 func TestWSReadCompressedFrames(t *testing.T) {
 	c, ri, tr := testWSSetupForRead()
+	c.ws.compress = true
 	uncompressed := []byte("this is the uncompress data")
 	wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, uncompressed)
 	rb := append([]byte(nil), wsmsg1...)
@@ -477,6 +478,7 @@ func TestWSReadCompressedFrames(t *testing.T) {
 
 func TestWSReadCompressedFrameCorrupted(t *testing.T) {
 	c, ri, tr := testWSSetupForRead()
+	c.ws.compress = true
 	uncompressed := []byte("this is the uncompress data")
 	wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, uncompressed)
 	copy(wsmsg1[10:], []byte{1, 2, 3, 4})
@@ -961,13 +963,13 @@ func TestWSReadErrors(t *testing.T) {
 		},
 		{
 			func() []byte {
-				return testWSCreateClientMsg(wsBinaryMessage, 2, false, true, []byte("frame"))
+				return testWSCreateClientMsg(wsBinaryMessage, 2, false, false, []byte("frame"))
 			},
 			"invalid continuation frame", 1,
 		},
 		{
 			func() []byte {
-				return testWSCreateClientMsg(99, 1, false, false, []byte("hello"))
+				return testWSCreateClientMsg(11, 1, false, false, []byte("hello"))
 			},
 			"unknown opcode", 1,
 		},
@@ -980,6 +982,12 @@ func TestWSReadErrors(t *testing.T) {
 				return msg
 			},
 			"invalid 64-bit payload length", 1,
+		},
+		{
+			func() []byte {
+				return testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("compressed"))
+			},
+			"compressed frame received without negotiated permessage-deflate", 1,
 		},
 	} {
 		t.Run(test.err, func(t *testing.T) {
