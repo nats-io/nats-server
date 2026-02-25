@@ -163,6 +163,7 @@ type wsReadInfo struct {
 	mkey  [4]byte
 	cbufs [][]byte
 	coff  int
+	csz   uint64
 }
 
 func (r *wsReadInfo) init() {
@@ -214,6 +215,9 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 		max    = uint64(len(buf))
 		mpay   = int(atomic.LoadInt32(&c.mpay))
 	)
+	if mpay <= 0 {
+		mpay = MAX_PAYLOAD_SIZE
+	}
 	for pos != max {
 		if r.fs {
 			b0 := buf[pos]
@@ -331,9 +335,16 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 			if r.fc {
 				// Assume that we may have continuation frames or not the full payload.
 				addToBufs = false
+				if r.csz+uint64(len(b)) > uint64(mpay) {
+					r.cbufs = nil
+					r.coff = 0
+					r.csz = 0
+					return bufs, ErrMaxPayload
+				}
 				// Make a copy of the buffer before adding it to the list
 				// of compressed fragments.
 				r.cbufs = append(r.cbufs, append([]byte(nil), b...))
+				r.csz += uint64(len(b))
 				// When we have the final frame and we have read the full payload,
 				// we can decompress it.
 				if r.ff && r.rem == 0 {
@@ -450,6 +461,8 @@ func (r *wsReadInfo) decompress(mpay int) ([]byte, error) {
 	decompressorPool.Put(d)
 	// Now reset the compressed buffers list.
 	r.cbufs = nil
+	r.coff = 0
+	r.csz = 0
 	return b, err
 }
 
