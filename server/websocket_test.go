@@ -1798,6 +1798,16 @@ func TestWSValidateOptions(t *testing.T) {
 			o.Websocket.AllowedOrigins = []string{"http://this:is:bad:url"}
 			return o
 		}, "unable to parse"},
+		{"allowed origin must be absolute URL", func() *Options {
+			o := wso.Clone()
+			o.Websocket.AllowedOrigins = []string{"foo"}
+			return o
+		}, "must be absolute URLs with http or https scheme"},
+		{"allowed origin scheme must be http or https", func() *Options {
+			o := wso.Clone()
+			o.Websocket.AllowedOrigins = []string{"ftp://host.com"}
+			return o
+		}, "must be absolute URLs with http or https scheme"},
 		{"missing trusted configuration", func() *Options {
 			o := wso.Clone()
 			o.Websocket.JWTCookie = "jwt"
