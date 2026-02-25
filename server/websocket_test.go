@@ -799,23 +799,20 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 	// Make the io reader return the rest of the frame
 	tr.buf = closeMsg[1:]
 	bufs, err = c.wsRead(ri, tr, closeFirtByte[:])
-	// It is expected that wsRead returns io.EOF on processing a close.
-	if err != io.EOF {
+	if err == nil || !strings.Contains(err.Error(), "close frame payload cannot be 1 byte") {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if n := len(bufs); n != 0 {
 		t.Fatalf("Unexpected buffer returned: %v", n)
 	}
-	// Since no status was received, the server will send a close frame without
-	// status code nor payload.
 	c.mu.Lock()
 	nb, _ = c.collapsePtoNB()
 	c.mu.Unlock()
 	if n := len(nb); n == 0 {
 		t.Fatalf("Expected buffers, got %v", n)
 	}
-	if expected := 2; expected != len(nb[0]) {
-		t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
+	if len(nb[0]) < 4 {
+		t.Fatalf("Expected buffer to be at least 4 bytes long, got %v", len(nb[0]))
 	}
 	b = nb[0][0]
 	if b&wsFinalBit == 0 {
@@ -823,6 +820,36 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 	}
 	if b&byte(wsCloseMessage) == 0 {
 		t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
+	}
+	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusProtocolError {
+		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusProtocolError, status)
+	}
+
+	// Now test close with invalid status code.
+	c, ri, tr = testWSSetupForRead()
+	payload = make([]byte, 2)
+	binary.BigEndian.PutUint16(payload, wsCloseStatusNoStatusReceived)
+	closeMsg = testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload)
+	closeFirtByte = []byte{closeMsg[0]}
+	tr.buf = closeMsg[1:]
+	bufs, err = c.wsRead(ri, tr, closeFirtByte[:])
+	if err == nil || !strings.Contains(err.Error(), "invalid close status code") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n := len(bufs); n != 0 {
+		t.Fatalf("Unexpected buffer returned: %v", n)
+	}
+	c.mu.Lock()
+	nb, _ = c.collapsePtoNB()
+	c.mu.Unlock()
+	if n := len(nb); n == 0 {
+		t.Fatalf("Expected buffers, got %v", n)
+	}
+	if len(nb[0]) < 4 {
+		t.Fatalf("Expected buffer to be at least 4 bytes long, got %v", len(nb[0]))
+	}
+	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusProtocolError {
+		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusProtocolError, status)
 	}
 }
 
