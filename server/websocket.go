@@ -1000,7 +1000,11 @@ func (w *srvWebsocket) checkOrigin(r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if oh != rh || op != rp {
+		rs := "http"
+		if r.TLS != nil {
+			rs = "https"
+		}
+		if oh != rh || op != rp || !strings.EqualFold(u.Scheme, rs) {
 			return errors.New("not same origin")
 		}
 		// I guess it is possible to have cases where one wants to check
