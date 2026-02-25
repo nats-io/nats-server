@@ -170,6 +170,16 @@ func (r *wsReadInfo) init() {
 	r.fs, r.ff = true, true
 }
 
+func (r *wsReadInfo) resetCompressedState() {
+	r.fs = true
+	r.ff = true
+	r.fc = false
+	r.rem = 0
+	r.cbufs = nil
+	r.coff = 0
+	r.csz = 0
+}
+
 // Returns a slice containing `needed` bytes from the given buffer `buf`
 // starting at position `pos`, and possibly read from the given reader `r`.
 // When bytes are present in `buf`, the `pos` is incremented by the number
@@ -336,9 +346,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 				// Assume that we may have continuation frames or not the full payload.
 				addToBufs = false
 				if r.csz+uint64(len(b)) > uint64(mpay) {
-					r.cbufs = nil
-					r.coff = 0
-					r.csz = 0
+					r.resetCompressedState()
 					return bufs, ErrMaxPayload
 				}
 				// Make a copy of the buffer before adding it to the list
@@ -350,6 +358,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 				if r.ff && r.rem == 0 {
 					b, err = r.decompress(mpay)
 					if err != nil {
+						r.resetCompressedState()
 						return bufs, err
 					}
 					r.fc = false
