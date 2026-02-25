@@ -1252,6 +1252,7 @@ func TestWSCheckOrigin(t *testing.T) {
 	sameOrigin := true
 	allowedListEmpty := []string{}
 	someList := []string{"http://host1.com", "http://host2.com:1234"}
+	sameHostMultiScheme := []string{"http://host3.com", "https://host3.com"}
 
 	for _, test := range []struct {
 		name       string
@@ -1276,6 +1277,8 @@ func TestWSCheckOrigin(t *testing.T) {
 		{"no origin same origin and list ignored", sameOrigin, someList, "", false, "", ""},
 		{"allowed from list", notSameOrigin, someList, "", false, "http://host2.com:1234", ""},
 		{"allowed with different path", notSameOrigin, someList, "", false, "http://host1.com/some/path", ""},
+		{"allowed from list same host http", notSameOrigin, sameHostMultiScheme, "", false, "http://host3.com", ""},
+		{"allowed from list same host https", notSameOrigin, sameHostMultiScheme, "", false, "https://host3.com", ""},
 		{"list bad port", notSameOrigin, someList, "", false, "http://host1.com:1234", "not in the allowed list"},
 		{"list bad scheme", notSameOrigin, someList, "", false, "https://host2.com:1234", "not in the allowed list"},
 	} {
@@ -1890,7 +1893,7 @@ func TestWSValidateOptions(t *testing.T) {
 			o := wso.Clone()
 			o.Websocket.AllowedOrigins = []string{"foo"}
 			return o
-		}, "must be absolute URLs with http or https scheme"},
+		}, "unable to parse"},
 		{"allowed origin scheme must be http or https", func() *Options {
 			o := wso.Clone()
 			o.Websocket.AllowedOrigins = []string{"ftp://host.com"}

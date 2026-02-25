@@ -128,7 +128,7 @@ type srvWebsocket struct {
 	server         *http.Server
 	listener       net.Listener
 	listenerErr    error
-	allowedOrigins map[string]*allowedOrigin // host will be the key
+	allowedOrigins map[string][]*allowedOrigin // host will be the key
 	sameOrigin     bool
 	connectURLs    []string
 	connectURLsMap refCountedUrlSet
@@ -1034,9 +1034,16 @@ func (w *srvWebsocket) checkOrigin(r *http.Request) error {
 	}
 	if !listEmpty {
 		w.mu.RLock()
-		ao := w.allowedOrigins[oh]
+		origins := w.allowedOrigins[oh]
 		w.mu.RUnlock()
-		if ao == nil || u.Scheme != ao.scheme || op != ao.port {
+		var allowed bool
+		for _, ao := range origins {
+			if u.Scheme == ao.scheme && op == ao.port {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
 			return errors.New("not in the allowed list")
 		}
 	}
@@ -1172,9 +1179,9 @@ func (s *Server) wsSetOriginOptions(o *WebsocketOpts) {
 		}
 		h, p, _ := wsGetHostAndPort(u.Scheme == "https", u.Host)
 		if ws.allowedOrigins == nil {
-			ws.allowedOrigins = make(map[string]*allowedOrigin, len(o.AllowedOrigins))
+			ws.allowedOrigins = make(map[string][]*allowedOrigin, len(o.AllowedOrigins))
 		}
-		ws.allowedOrigins[h] = &allowedOrigin{scheme: u.Scheme, port: p}
+		ws.allowedOrigins[h] = append(ws.allowedOrigins[h], &allowedOrigin{scheme: u.Scheme, port: p})
 	}
 }
 
