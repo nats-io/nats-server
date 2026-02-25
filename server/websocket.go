@@ -1053,7 +1053,17 @@ func validateWebsocketOptions(o *Options) error {
 	}
 	// Make sure that allowed origins, if specified, can be parsed.
 	for _, ao := range wo.AllowedOrigins {
-		if _, err := url.Parse(ao); err != nil {
+		u, err := url.ParseRequestURI(ao)
+		if err != nil {
+			return fmt.Errorf("unable to parse allowed origin: %v", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("unable to parse allowed origin %q: allowed origins must be absolute URLs with http or https scheme", ao)
+		}
+		if u.Host == _EMPTY_ {
+			return fmt.Errorf("unable to parse allowed origin %q: host is required", ao)
+		}
+		if _, _, err := wsGetHostAndPort(u.Scheme == "https", u.Host); err != nil {
 			return fmt.Errorf("unable to parse allowed origin: %v", err)
 		}
 	}
