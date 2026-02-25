@@ -488,6 +488,9 @@ func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.R
 		status := wsCloseStatusNoStatusReceived
 		var body string
 		lp := len(payload)
+		if lp == 1 {
+			return pos, c.wsHandleProtocolError("close frame payload cannot be 1 byte")
+		}
 		// If there is a payload, the status is represented as a 2-byte
 		// unsigned integer (in network byte order). Then, there may be an
 		// optional body.
@@ -495,6 +498,9 @@ func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.R
 		if hasStatus {
 			// Decode the status
 			status = int(binary.BigEndian.Uint16(payload[:wsCloseSatusSize]))
+			if !wsIsValidCloseStatus(status) {
+				return pos, c.wsHandleProtocolError(fmt.Sprintf("invalid close status code %v", status))
+			}
 			// Now if there is a body, capture it and make sure this is a valid UTF-8.
 			if hasBody {
 				body = string(payload[wsCloseSatusSize:])
@@ -729,6 +735,21 @@ func (c *client) wsHandleProtocolError(message string) error {
 	c.wsEnqueueControlMessage(wsCloseMessage, buf)
 	nbPoolPut(buf) // wsEnqueueControlMessage has taken a copy.
 	return errors.New(message)
+}
+
+func wsIsValidCloseStatus(code int) bool {
+	switch code {
+	case wsCloseStatusNoStatusReceived, 1004, 1006, wsCloseStatusTLSHandshake:
+		return false
+	}
+	if code < 1000 || code >= 5000 {
+		return false
+	}
+	// 1016-2999 are currently reserved.
+	if code >= 1016 && code <= 2999 {
+		return false
+	}
+	return true
 }
 
 // Create a close message with the given `status` and `body`.
