@@ -564,21 +564,20 @@ type maxConnOption struct {
 // below the limit if necessary.
 func (m *maxConnOption) Apply(server *Server) {
 	server.mu.Lock()
-	var (
-		clients = make([]*client, len(server.clients))
-		i       = 0
-	)
+	clients := make([]*client, 0, len(server.clients))
 	// Map iteration is random, which allows us to close random connections.
 	for _, client := range server.clients {
-		clients[i] = client
-		i++
+		if isInternalClient(client.kind) {
+			continue
+		}
+		clients = append(clients, client)
 	}
 	server.mu.Unlock()
 
-	if m.newValue > 0 && len(clients) > m.newValue {
+	if newc := max(0, m.newValue); len(clients) > newc {
 		// Close connections til we are within the limit.
 		var (
-			numClose = len(clients) - m.newValue
+			numClose = len(clients) - newc
 			closed   = 0
 		)
 		for _, client := range clients {

@@ -7123,6 +7123,7 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:     fmt.Sprintf("foo:%d", i),
 			Subjects: []string{fmt.Sprintf("foo.%d", i)},
+			Replicas: 3, // Must be R3 to stop flaking due to stream placement
 		})
 		require_NoError(t, err)
 

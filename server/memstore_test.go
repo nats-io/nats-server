@@ -1513,6 +1513,42 @@ func TestMemStoreNextLiteralMatch(t *testing.T) {
 
 }
 
+func TestMemStoreMultiLastSeqsDoesNotUseStaleLastValue(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo", "bar", "baz"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	subjects := []string{"foo", "bar", "foo", " baz", "foo", "foo", "bar", "foo", "bar", "baz"}
+	for _, s := range subjects {
+		_, _, err := ms.StoreMsg(s, nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// Initially we expect last seq for `foo` to be 8
+	seqs, err := ms.MultiLastSeqs([]string{"foo", "bar"}, 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, len(seqs), 2)
+	require_Equal(t, seqs[0], uint64(8))
+
+	// Remove latest foo message
+	removed, err := ms.RemoveMsg(8)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	// If bug is present: MultiLastSeqs returns last sequence
+	// 8 for subject `foo`.
+	// After removal, expect last sequence 6 for subject `foo`.
+	seqs, err = ms.MultiLastSeqs([]string{"foo", "bar"}, 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, len(seqs), 2)
+	require_Equal(t, seqs[0], uint64(6))
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

@@ -819,8 +819,8 @@ func (ms *memStore) filterIsAll(filters []string) bool {
 // MultiLastSeqs will return a sorted list of sequences that match all subjects presented in filters.
 // We will not exceed the maxSeq, which if 0 becomes the store's last sequence.
 func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 
 	if len(ms.msgs) == 0 {
 		return nil, nil
@@ -848,6 +848,9 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 
 	for _, filter := range filters {
 		ms.fss.Match(stringToBytes(filter), func(subj []byte, ss *SimpleState) {
+			if ss.lastNeedsUpdate {
+				ms.recalculateForSubj(bytesToString(subj), ss)
+			}
 			if ss.Last <= maxSeq {
 				addIfNotDupe(ss.Last)
 			} else if ss.Msgs > 1 {
