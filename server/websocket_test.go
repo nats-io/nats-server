@@ -948,6 +948,7 @@ func TestWSReadErrors(t *testing.T) {
 		err    string
 		nbufs  int
 		setup  func(*client)
+		verify func(*testing.T, *wsReadInfo)
 	}{
 		{
 			cframe: func() []byte {
@@ -1028,6 +1029,53 @@ func TestWSReadErrors(t *testing.T) {
 				atomic.StoreInt32(&c.mpay, 16)
 				c.ws.compress = true
 			},
+			verify: func(t *testing.T, ri *wsReadInfo) {
+				if !ri.fs {
+					t.Fatal("Expected r.fs=true after compressed payload rejection")
+				}
+				if ri.fc {
+					t.Fatal("Expected r.fc=false after compressed payload rejection")
+				}
+				if !ri.ff {
+					t.Fatal("Expected r.ff=true after compressed payload rejection")
+				}
+				if ri.cbufs != nil || ri.coff != 0 || ri.csz != 0 || ri.rem != 0 {
+					t.Fatalf("Expected compressed state reset, got cbufs=%v coff=%d csz=%d rem=%d", ri.cbufs != nil, ri.coff, ri.csz, ri.rem)
+				}
+			},
+		},
+		{
+			cframe: func() []byte {
+				payload := bytes.Repeat([]byte{0}, 2048)
+				buf := &bytes.Buffer{}
+				compressor, _ := flate.NewWriter(buf, 1)
+				compressor.Write(payload)
+				compressor.Flush()
+				compressed := buf.Bytes()
+				compressed = compressed[:len(compressed)-4]
+				frame := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, compressed)
+				frame[0] |= wsRsv1Bit
+				return frame
+			},
+			err: ErrMaxPayload.Error(), nbufs: 1,
+			setup: func(c *client) {
+				atomic.StoreInt32(&c.mpay, 16)
+				c.ws.compress = true
+			},
+			verify: func(t *testing.T, ri *wsReadInfo) {
+				if !ri.fs {
+					t.Fatal("Expected r.fs=true after decompression error")
+				}
+				if ri.fc {
+					t.Fatal("Expected r.fc=false after decompression error")
+				}
+				if !ri.ff {
+					t.Fatal("Expected r.ff=true after decompression error")
+				}
+				if ri.cbufs != nil || ri.coff != 0 || ri.csz != 0 || ri.rem != 0 {
+					t.Fatalf("Expected compressed state reset, got cbufs=%v coff=%d csz=%d rem=%d", ri.cbufs != nil, ri.coff, ri.csz, ri.rem)
+				}
+			},
 		},
 	} {
 		t.Run(test.err, func(t *testing.T) {
@@ -1051,6 +1099,9 @@ func TestWSReadErrors(t *testing.T) {
 			}
 			if string(bufs[0]) != "hello" {
 				t.Fatalf("Unexpected content: %s", bufs[0])
+			}
+			if test.verify != nil {
+				test.verify(t, ri)
 			}
 		})
 	}
