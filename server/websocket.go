@@ -790,6 +790,10 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	if key == _EMPTY_ {
 		return nil, wsReturnHTTPError(w, r, http.StatusBadRequest, "key missing")
 	}
+	decoded, err := base64.StdEncoding.DecodeString(key)
+	if err != nil || len(decoded) != 16 {
+		return nil, wsReturnHTTPError(w, r, http.StatusBadRequest, "invalid websocket key")
+	}
 	// Point 6.
 	if !wsHeaderContains(r.Header, "Sec-Websocket-Version", "13") {
 		return nil, wsReturnHTTPError(w, r, http.StatusBadRequest, "invalid version")

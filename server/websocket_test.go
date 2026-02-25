@@ -1350,6 +1350,28 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 			http.StatusBadRequest,
 		},
 		{
+			"invalid key encoding",
+			func() (*Options, *testResponseWriter, *http.Request) {
+				opts := testWSOptions()
+				req := testWSCreateValidReq()
+				req.Header.Set("Sec-Websocket-Key", "%%%")
+				return opts, nil, req
+			},
+			"invalid websocket key",
+			http.StatusBadRequest,
+		},
+		{
+			"invalid key length",
+			func() (*Options, *testResponseWriter, *http.Request) {
+				opts := testWSOptions()
+				req := testWSCreateValidReq()
+				req.Header.Set("Sec-Websocket-Key", base64.StdEncoding.EncodeToString([]byte("short")))
+				return opts, nil, req
+			},
+			"invalid websocket key",
+			http.StatusBadRequest,
+		},
+		{
 			"missing version",
 			func() (*Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
