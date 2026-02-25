@@ -4571,13 +4571,14 @@ func TestWSDecompressLimit(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, fmt.Appendf(nil, `
-				listen: "127.0.0.1:-1"
-				websocket {
 					listen: "127.0.0.1:-1"
-					no_tls: true
-				}
-				%s
-			`, test.mpayCfg))
+					websocket {
+						listen: "127.0.0.1:-1"
+						no_tls: true
+						compression: true
+					}
+					%s
+				`, test.mpayCfg))
 			s, o := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
