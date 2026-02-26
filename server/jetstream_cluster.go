@@ -3626,7 +3626,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 			js.processClusterCreateStream(acc, sa)
 			// Reset consumers.
 			for _, ca := range consumers {
-				js.processClusterCreateConsumer(ca, nil, false)
+				js.processClusterCreateConsumer(nil, ca, nil, false)
 			}
 		}
 	}()
@@ -5392,7 +5392,9 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Check if we have an existing consumer assignment.
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
-	} else if oca := sa.consumers[ca.Name]; oca != nil {
+	}
+	oca := sa.consumers[ca.Name]
+	if oca != nil {
 		wasExisting = true
 		// Copy over private existing state from former CA.
 		if ca.Group != nil {
@@ -5474,7 +5476,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 
 	// Check if this is for us..
 	if isMember {
-		js.processClusterCreateConsumer(ca, state, wasExisting)
+		js.processClusterCreateConsumer(oca, ca, state, wasExisting)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		if o := mset.lookupConsumer(ca.Name); o != nil {
 			// We have one here even though we are not a member. This can happen on re-assignment.
@@ -5572,7 +5574,7 @@ type consumerAssignmentResult struct {
 }
 
 // processClusterCreateConsumer is when we are a member of the group and need to create the consumer.
-func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state *ConsumerState, wasExisting bool) {
+func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, state *ConsumerState, wasExisting bool) {
 	if ca == nil {
 		return
 	}
@@ -5612,6 +5614,19 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 
 	// Check if we already have this consumer running.
 	o := mset.lookupConsumer(consumer)
+
+	if o != nil && oca != nil && oca.Group.Name != ca.Group.Name {
+		s.Warnf("JetStream cluster detected consumer remapping for '%s > %s' from %q to %q",
+			acc, ca.Name, oca.Group.Name, ca.Group.Name)
+		o.clearNode()
+		o.signalMonitorQuit()
+		o.monitorWg.Wait()
+		alreadyRunning = false
+		// Make sure to clear from original.
+		js.mu.Lock()
+		oca.Group.node = nil
+		js.mu.Unlock()
+	}
 
 	// Process the raft group and make sure it's running if needed.
 	storage := mset.config().Storage

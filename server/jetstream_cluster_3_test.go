@@ -7382,3 +7382,78 @@ func TestJetStreamClusterScaleDownWaitsForMonitorRoutineQuit(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create R3 stream and consumer.
+	scfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	ccfg := &nats.ConsumerConfig{Name: "CONSUMER", Replicas: 3}
+	_, err := js.AddStream(scfg)
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+	ml := c.leader()
+	sjs, cc := ml.getJetStreamCluster()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if sjs.streamAssignment(globalAccountName, "TEST") == nil {
+			return errors.New("stream not found")
+		}
+		if sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER") == nil {
+			return errors.New("consumer not found")
+		}
+		return nil
+	})
+
+	mset, err := ml.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Increment the wait group for this test to confirm the right ordering.
+	o.mu.Lock()
+	inMonitor := o.inMonitor
+	wg := &o.monitorWg
+	wg.Add(1)
+	rn := o.node
+	o.mu.Unlock()
+	require_True(t, inMonitor)
+
+	// Simulate a consumer Raft group remapping that has been collapsed down into just a single update.
+	// Instead of one update to R1 and then to R3, it's just one update straight to the new R3 group.
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, ca)
+	cca := ca.copyGroup()
+	cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
+	require_NoError(t, cc.meta.Propose(encodeAddConsumerAssignment(cca)))
+
+	// The monitor routine should stop.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.inMonitor {
+			return errors.New("consumer still in monitor")
+		}
+		return nil
+	})
+
+	// The previous Raft node should be stopped.
+	require_Equal(t, rn.State(), Closed)
+
+	// Simulate the monitor routine being done now and the new monitor routine being started.
+	wg.Done()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.node == nil {
+			return errors.New("consumer has no Raft node yet")
+		} else if !o.inMonitor {
+			return errors.New("consumer monitor not started")
+		}
+		return nil
+	})
+}
