@@ -271,6 +271,17 @@ func (sa *streamAssignment) desiredOrigin() *desiredRaftGroupOrigin {
 	return sa.legacyMoveOrigin()
 }
 
+// isR1ScaleUpSource reports whether the given peer is the source for an
+// in-progress R1 scale-up.
+func (sa *streamAssignment) isR1ScaleUpSource(peer string) bool {
+	if sa == nil || sa.Group == nil || sa.Group.Desired == nil {
+		return false
+	}
+	d := sa.Group.Desired
+	return d.Origin != nil && d.Origin.Replicas == 1 && len(d.Peers) > 1 &&
+		len(d.Origin.Peers) == 1 && d.Origin.Peers[0] == peer
+}
+
 // moveInFlight returns whether a move is still converging, including one that was
 // started before the upgrade to desired state.
 func (sa *streamAssignment) moveInFlight() bool {
@@ -891,14 +902,14 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 
 	// Hold lock when installing snapshot.
 	mset.mu.Lock()
+	defer mset.mu.Unlock()
 	if mset.node == nil {
-		mset.mu.Unlock()
 		return nil
 	}
-	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked(), false)
-	mset.mu.Unlock()
-
-	return err
+	if err := mset.flushAllPending(); err != nil {
+		return err
+	}
+	return mset.node.InstallSnapshot(mset.stateSnapshotLocked(), false)
 }
 
 func (s *Server) JetStreamClusterPeers() []string {
@@ -3648,6 +3659,49 @@ func (mset *stream) waitOnConsumerAssignments() {
 	}
 }
 
+func prepareStreamRecovery(mset *stream, n RaftNode) error {
+	if n == nil || mset == nil || !mset.shouldReplayFromWAL() {
+		return nil
+	}
+
+	index, _, _ := n.Progress()
+	if index == 0 {
+		return nil
+	}
+
+	snapIndex, snapData, err := n.LoadLastSnapshot()
+	if err != nil {
+		if err != errNoSnapAvailable {
+			return err
+		}
+		// A newly created R3 stream can legitimately have no
+		// snapshot before its first periodic snapshot.
+		// In that case the WAL contains a complete history
+		// we can replay from.
+		// During an R1 scaleup, the new WAL does not contain
+		// the existing R1 history. Preserve the store if
+		// the source has restarted before the initial snapshot
+		// was installed
+		if mset.streamAssignment().isR1ScaleUpSource(n.ID()) {
+			return nil
+		}
+	}
+
+	// In case of clean shutdown, no need to replay from WAL
+	if snapIndex == index {
+		return nil
+	}
+
+	var snap *StreamReplicatedState
+	if err == nil {
+		snap, err = decodeStreamSnapshot(snapData)
+		if err != nil {
+			return err
+		}
+	}
+	return mset.prepareForWALReplay(snap)
+}
+
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
 	s, cc := js.server(), js.cluster
@@ -3726,6 +3780,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
 	isRecovering := true
+
+	// Prepare the store for recovery. A newly created Raft node for
+	// an existing stream will skip this step, and instead bootstrap
+	// the WAL with a snapshot.
+	if !sendSnapshot {
+		if err := prepareStreamRecovery(mset, n); err != nil {
+			s.Warnf("Error preparing WAL replay recovery for stream '%s > %s': %v", accName, sa.Config.Name, err)
+			return
+		}
+	}
 
 	var (
 		snapMu           sync.Mutex
@@ -4613,6 +4677,17 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
 	}
 
+	// Before publishing a stable R1 assignment, make the store independently durable
+	// because applying the assignment will remove the Raft node and its WAL.
+	if exactMatch && replicas == 1 {
+		if err := mset.flushForScaleDown(); err != nil {
+			if errors.Is(err, ErrStoreClosed) {
+				return mstat(MigrationStatusUnavailable, "shutting down")
+			}
+			return mstat(MigrationStatusSnapshot, "waiting to flush stream before finalizing R1 assignment").withErr(err)
+		}
+	}
+
 	// We're done.
 	update.MetaPeers = actualPeers
 	update.PeersMatch = exactMatch
@@ -5116,9 +5191,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				return 0, fmt.Errorf("unknown stream entry op type: %v", op)
 			}
 		} else if e.Type == EntrySnapshot {
-			// Everything operates on new replicated state. Will convert legacy snapshots to this for processing.
-			var ss *StreamReplicatedState
-
 			onBadState := func(err error) {
 				// If we are the leader or recovering, meaning we own the snapshot,
 				// we should stepdown and clear our raft state since our snapshot is bad.
@@ -5131,31 +5203,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 			}
 
-			// Check if we are the new binary encoding.
-			if IsEncodedStreamState(e.Data) {
-				var err error
-				ss, err = DecodeStreamState(e.Data)
-				if err != nil {
-					onBadState(err)
-					return 0, err
-				}
-			} else {
-				var snap streamSnapshot
-				if err := json.Unmarshal(e.Data, &snap); err != nil {
-					onBadState(err)
-					return 0, err
-				}
-				// Convert over to StreamReplicatedState
-				ss = &StreamReplicatedState{
-					Msgs:     snap.Msgs,
-					Bytes:    snap.Bytes,
-					FirstSeq: snap.FirstSeq,
-					LastSeq:  snap.LastSeq,
-					Failed:   snap.Failed,
-				}
-				if len(snap.Deleted) > 0 {
-					ss.Deleted = append(ss.Deleted, DeleteSlice(snap.Deleted))
-				}
+			ss, err := decodeStreamSnapshot(e.Data)
+			if err != nil {
+				onBadState(err)
+				return 0, err
 			}
 
 			if err := mset.processSnapshot(ss, ce.Index); err != nil {
@@ -11752,6 +11803,28 @@ type streamSnapshot struct {
 	Deleted  []uint64 `json:"deleted,omitempty"`
 }
 
+func decodeStreamSnapshot(data []byte) (*StreamReplicatedState, error) {
+	if IsEncodedStreamState(data) {
+		return DecodeStreamState(data)
+	}
+
+	var snap streamSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil, err
+	}
+	state := &StreamReplicatedState{
+		Msgs:     snap.Msgs,
+		Bytes:    snap.Bytes,
+		FirstSeq: snap.FirstSeq,
+		LastSeq:  snap.LastSeq,
+		Failed:   snap.Failed,
+	}
+	if len(snap.Deleted) > 0 {
+		state.Deleted = append(state.Deleted, DeleteSlice(snap.Deleted))
+	}
+	return state, nil
+}
+
 // Grab a snapshot of a stream for clustered mode.
 func (mset *stream) stateSnapshot() []byte {
 	mset.mu.RLock()
@@ -12169,9 +12242,9 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 		return errCatchupCorruptSnapshot
 	}
 
-	// Just return if up to date.
+	// No catchup is needed, flush any snapshot deletes before returning.
 	if sreq == nil {
-		return nil
+		return mset.flushAllPending()
 	}
 
 	// We need to catch up, but are already exceeding limits.
@@ -12302,7 +12375,7 @@ RETRY:
 		sreq = mset.calculateSyncRequest(&state, snap, index)
 		mset.mu.RUnlock()
 		if sreq == nil {
-			return nil
+			return mset.flushAllPending()
 		}
 	}
 
@@ -12548,6 +12621,13 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 // flushAllPending will flush any pending writes as a result of installing a snapshot or performing catchup.
 func (mset *stream) flushAllPending() error {
 	return mset.store.FlushAllPending()
+}
+
+func (mset *stream) flushForScaleDown() error {
+	if fs, ok := mset.store.(*fileStore); ok {
+		return fs.flushForScaleDown()
+	}
+	return nil
 }
 
 func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
@@ -13113,11 +13193,13 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						s.Warnf("Catchup for stream '%s > %s' completed (took %v), but requested sequence %d was larger than current state: %+v",
 							mset.account(), mset.name(), time.Since(start).Round(time.Millisecond), seq, state)
 						// Try our best to redo our invalidated snapshot as well.
-						if n := mset.raftNode(); n != nil {
-							if snap := mset.stateSnapshot(); snap != nil {
-								n.InstallSnapshot(snap, true)
+						mset.mu.Lock()
+						if n := mset.node; n != nil {
+							if err := mset.flushAllPending(); err == nil {
+								n.InstallSnapshot(mset.stateSnapshotLocked(), true)
 							}
 						}
+						mset.mu.Unlock()
 						// If we allow gap markers check if we have one pending.
 						if drOk && dr.First > 0 {
 							sendDR()

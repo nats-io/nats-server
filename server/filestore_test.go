@@ -8051,14 +8051,24 @@ func TestFileStoreMsgBlockShouldCompact(t *testing.T) {
 }
 
 func TestFileStoreInlineCompactionSync(t *testing.T) {
-	for _, syncAlways := range []bool{false, true} {
-		t.Run(fmt.Sprintf("sync_always_%v", syncAlways), func(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		syncAlways  bool
+		syncOnFlush bool
+		needSync    bool
+	}{
+		{"no_sync", false, false, true},
+		{"sync_always", true, false, false},
+		{"sync_on_flush", true, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			fs, err := newFileStore(
 				FileStoreConfig{
 					StoreDir:     t.TempDir(),
 					BlockSize:    3 * 1024 * 1024,
 					SyncInterval: time.Hour,
-					SyncAlways:   syncAlways,
+					SyncAlways:   test.syncAlways,
+					SyncOnFlush:  test.syncOnFlush,
 				},
 				StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
 			)
@@ -8100,8 +8110,8 @@ func TestFileStoreInlineCompactionSync(t *testing.T) {
 			fmb.mu.RUnlock()
 			// Compaction happened
 			require_LessThan(t, newRawbytes, oldRawbytes)
-			// SyncAlways store should sync inline compaction
-			require_Equal(t, needSync, !syncAlways)
+			// Durability modes should sync inline compaction.
+			require_Equal(t, needSync, test.needSync)
 		})
 	}
 }
@@ -15465,6 +15475,24 @@ func TestFileStoreEncryptionKeyFileSyncedBySyncBlocks(t *testing.T) {
 	fs2.mu.RLock()
 	lmb = fs2.lmb
 	fs2.mu.RUnlock()
+	require_NotNil(t, lmb)
+	lmb.mu.RLock()
+	needKeySync = lmb.needKeySync
+	lmb.mu.RUnlock()
+	require_False(t, needKeySync)
+
+	// With SyncOnFlush the key file write is also already synced, so the flag should not be set.
+	fcfg = FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES, SyncAlways: true, SyncOnFlush: true}
+	fs3, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "S3", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs3.Stop()
+
+	_, _, err = fs3.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	fs3.mu.RLock()
+	lmb = fs3.lmb
+	fs3.mu.RUnlock()
 	require_NotNil(t, lmb)
 	lmb.mu.RLock()
 	needKeySync = lmb.needKeySync
