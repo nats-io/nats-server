@@ -33,6 +33,7 @@ import (
 
 	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
+	"github.com/nats-io/nats-server/v2/server/metric"
 
 	"github.com/minio/highwayhash"
 )
@@ -248,6 +249,9 @@ type raft struct {
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	deleted      bool // If the node was deleted.
 	snapshotting bool // Snapshot is in progress.
+
+	batchHist metric.Histogram
+	aeCount   metric.Counter
 }
 
 type proposedEntry struct {
@@ -457,6 +461,11 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
 	}
+
+	n.batchHist = metric.NewHistogram(100000)
+	s.metrics.Add(fmt.Sprintf("%s.RAFT.BATCHING", accName), &n.batchHist)
+	n.aeCount = metric.NewCounter()
+	s.metrics.Add(fmt.Sprintf("%s.RAFT.APPEND_ENTRIES", accName), &n.aeCount)
 
 	// Setup our internal subscriptions for proposals, votes and append entries.
 	// If we fail to do this for some reason then this is fatal — we cannot
@@ -4433,6 +4442,8 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 		}
 		n.active = time.Now()
 		n.cachePendingEntry(ae)
+		n.batchHist.Push(len(ae.entries))
+		n.aeCount.Add(uint64(len(ae.entries)))
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 	if !shouldStore {

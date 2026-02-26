@@ -49,6 +49,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/logger"
+	"github.com/nats-io/nats-server/v2/server/metric"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -381,6 +382,8 @@ type Server struct {
 	// verification when processing incoming proxy connections.
 	proxiesKeyPairs []nkeys.KeyPair
 	proxiedConns    map[string]map[uint64]*client
+
+	metrics *metric.Registry
 }
 
 // For tracking JS nodes.
@@ -792,6 +795,7 @@ func NewServer(opts *Options) (*Server, error) {
 		rateLimitLoggingCh: make(chan time.Duration, 1),
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
+		metrics:            metric.NewRegistry(),
 	}
 
 	// Delayed API response queue. Create regardless if JetStream is configured
