@@ -1065,6 +1065,7 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 		}
 	}
 	fsCfg.StoreDir = storeDir
+	fsCfg.accName = a.Name
 	// Grab configured sync interval.
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
