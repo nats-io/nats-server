@@ -539,8 +539,8 @@ const (
 	// JSStreamMoveAndScaleErr can not move and scale a stream in a single update
 	JSStreamMoveAndScaleErr ErrorIdentifier = 10123
 
-	// JSStreamMoveInProgressF stream move already in progress: {msg}
-	JSStreamMoveInProgressF ErrorIdentifier = 10124
+	// JSStreamMoveInProgressErr stream move already in progress
+	JSStreamMoveInProgressErr ErrorIdentifier = 10124
 
 	// JSStreamMoveNotInProgress stream move not in progress
 	JSStreamMoveNotInProgress ErrorIdentifier = 10129
@@ -816,7 +816,7 @@ var (
 		JSStreamMirrorNotUpdatableErr:                {Code: 400, ErrCode: 10055, Description: "stream mirror configuration can not be updated"},
 		JSStreamMismatchErr:                          {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                      {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
-		JSStreamMoveInProgressF:                      {Code: 400, ErrCode: 10124, Description: "stream move already in progress: {msg}"},
+		JSStreamMoveInProgressErr:                    {Code: 400, ErrCode: 10124, Description: "stream move already in progress"},
 		JSStreamMoveNotInProgress:                    {Code: 400, ErrCode: 10129, Description: "stream move not in progress"},
 		JSStreamMsgDeleteFailedF:                     {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameContainsPathSeparatorsErr:        {Code: 400, ErrCode: 10128, Description: "Stream name can not contain path separators"},
@@ -2863,20 +2863,14 @@ func NewJSStreamMoveAndScaleError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamMoveAndScaleErr]
 }
 
-// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgressF error: "stream move already in progress: {msg}"
-func NewJSStreamMoveInProgressError(msg interface{}, opts ...ErrorOption) *ApiError {
+// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgressErr error: "stream move already in progress"
+func NewJSStreamMoveInProgressError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	e := ApiErrors[JSStreamMoveInProgressF]
-	args := e.toReplacerArgs([]interface{}{"{msg}", msg})
-	return &ApiError{
-		Code:        e.Code,
-		ErrCode:     e.ErrCode,
-		Description: strings.NewReplacer(args...).Replace(e.Description),
-	}
+	return ApiErrors[JSStreamMoveInProgressErr]
 }
 
 // NewJSStreamMoveNotInProgressError creates a new JSStreamMoveNotInProgress error: "stream move not in progress"

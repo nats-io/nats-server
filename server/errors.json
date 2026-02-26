@@ -1230,10 +1230,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSStreamMoveInProgressF",
+    "constant": "JSStreamMoveInProgressErr",
     "code": 400,
     "error_code": 10124,
-    "description": "stream move already in progress: {msg}",
+    "description": "stream move already in progress",
     "comment": "",
     "help": "",
     "url": "",
