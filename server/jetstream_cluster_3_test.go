@@ -6446,6 +6446,64 @@ func TestJetStreamClusterAccountFileStoreLimits(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterTieredReservationConsistency(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, cjs := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for _, replicas := range []int{1, 3} {
+		subj := fmt.Sprintf("R%d", replicas)
+		maxBytes := int64(1)
+		if replicas > 1 {
+			maxBytes = 10
+		}
+		_, err := cjs.AddStream(&nats.StreamConfig{
+			Name:      subj,
+			Replicas:  replicas,
+			Storage:   nats.FileStorage,
+			Retention: nats.LimitsPolicy,
+			MaxBytes:  maxBytes,
+		})
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "R3")
+	})
+
+	sl := c.streamLeader(globalAccountName, "R1")
+	_, js, jsa := sl.globalAccount().getJetStreamFromAccount()
+
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
+
+	cfg := &StreamConfig{Storage: FileStorage}
+
+	// No tier, R1: 1, R3: 10*R
+	tier := _EMPTY_
+	require_Equal(t, jsa.tieredReservation(tier, cfg), 31)
+	streams, reservation := js.tieredStreamAndReservationCount(globalAccountName, tier, cfg)
+	require_Equal(t, streams, 2)
+	require_Equal(t, reservation, 31)
+
+	// R1 tier, R1: 1
+	tier, cfg.Replicas = "R1", 1
+	require_Equal(t, jsa.tieredReservation(tier, cfg), 1)
+	streams, reservation = js.tieredStreamAndReservationCount(globalAccountName, tier, cfg)
+	require_Equal(t, streams, 1)
+	require_Equal(t, reservation, 1)
+
+	// R3 tier, R3: 10
+	tier, cfg.Replicas = "R3", 3
+	require_Equal(t, jsa.tieredReservation(tier, cfg), 10)
+	streams, reservation = js.tieredStreamAndReservationCount(globalAccountName, tier, cfg)
+	require_Equal(t, streams, 1)
+	require_Equal(t, reservation, 10)
+}
+
 func TestJetStreamClusterProcessSnapshotPanicAfterStreamDelete(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

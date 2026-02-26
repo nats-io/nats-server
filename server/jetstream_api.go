@@ -1585,23 +1585,19 @@ func (s *Server) jsonResponse(v any) string {
 
 // Read lock must be held
 func (jsa *jsAccount) tieredReservation(tier string, cfg *StreamConfig) int64 {
-	reservation := int64(0)
-	if tier == _EMPTY_ {
-		for _, sa := range jsa.streams {
-			if sa.cfg.MaxBytes > 0 {
-				if sa.cfg.Storage == cfg.Storage && sa.cfg.Name != cfg.Name {
-					reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
-				}
-			}
+	var reservation int64
+	for _, sa := range jsa.streams {
+		// Don't count the stream toward the limit if it already exists.
+		if sa.cfg.Name == cfg.Name {
+			continue
 		}
-	} else {
-		for _, sa := range jsa.streams {
-			if sa.cfg.Replicas == cfg.Replicas {
-				if sa.cfg.MaxBytes > 0 {
-					if isSameTier(&sa.cfg, cfg) && sa.cfg.Name != cfg.Name {
-						reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
-					}
-				}
+		if (tier == _EMPTY_ || sa.cfg.Replicas == cfg.Replicas) && sa.cfg.MaxBytes > 0 && sa.cfg.Storage == cfg.Storage {
+			// If tier is empty, all storage is flat and we should adjust for replicas.
+			// Otherwise if tiered, storage replication already taken into consideration.
+			if tier == _EMPTY_ && sa.cfg.Replicas > 1 {
+				reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
+			} else {
+				reservation += sa.cfg.MaxBytes
 			}
 		}
 	}
