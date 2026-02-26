@@ -5386,9 +5386,6 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		return
 	}
 
-	// Might need this below.
-	numReplicas := sa.Config.Replicas
-
 	// Track if this existed already.
 	var wasExisting bool
 
@@ -5478,64 +5475,44 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Check if this is for us..
 	if isMember {
 		js.processClusterCreateConsumer(ca, state, wasExisting)
-	} else {
-		// We need to be removed here, we are no longer assigned.
-		// Grab consumer if we have it.
-		var o *consumer
-		if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
-			o = mset.lookupConsumer(ca.Name)
-		}
-
-		// Check if we have a raft node running, meaning we are no longer part of the group but were.
-		js.mu.Lock()
-		if node := ca.Group.node; node != nil {
+	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
+		if o := mset.lookupConsumer(ca.Name); o != nil {
 			// We have one here even though we are not a member. This can happen on re-assignment.
-			s.Debugf("JetStream removing consumer '%s > %s > %s' from this server", sa.Client.serviceAccount(), sa.Config.Name, ca.Name)
-			if node.Leader() {
-				s.Debugf("JetStream consumer '%s > %s > %s' is being removed and was the leader, will perform stepdown",
-					sa.Client.serviceAccount(), sa.Config.Name, ca.Name)
-
-				peers, cn := node.Peers(), s.cachedClusterName()
-				migrating := numReplicas != len(peers)
-
-				// Select a new peer to transfer to. If we are a migrating make sure its from the new cluster.
-				var npeer string
-				for _, r := range peers {
-					if !r.Current {
-						continue
-					}
-					if !migrating {
-						npeer = r.ID
-						break
-					} else if sir, ok := s.nodeToInfo.Load(r.ID); ok && sir != nil {
-						si := sir.(nodeInfo)
-						if si.cluster != cn {
-							npeer = r.ID
-							break
-						}
-					}
-				}
-				// Clear the raftnode from our consumer so that a subsequent o.delete will not also issue a stepdown.
-				if o != nil {
-					o.clearRaftNode()
-				}
-				// Manually handle the stepdown and deletion of the node.
-				node.UpdateKnownPeers(ca.Group.Peers)
-				node.StepDown(npeer)
-				node.Delete()
-			} else {
-				node.UpdateKnownPeers(ca.Group.Peers)
-			}
-		}
-		// Always clear the old node.
-		ca.Group.node = nil
-		ca.err = nil
-		js.mu.Unlock()
-
-		if o != nil {
-			o.deleteWithoutAdvisory()
+			s.removeConsumer(o, ca)
 		}
 	}
+}
+
+// Common function to remove ourselves from this server.
+// This can happen on re-assignment, move, etc
+func (s *Server) removeConsumer(o *consumer, nca *consumerAssignment) {
+	if o == nil {
+		return
+	}
+	// Make sure to use the new stream assignment, not our own.
+	s.Debugf("JetStream removing consumer '%s > %s > %s' from this server", nca.Client.serviceAccount(), nca.Stream, nca.Name)
+	if node := o.raftNode(); node != nil {
+		node.StepDown(nca.Group.Preferred)
+		// shutdown monitor by shutting down raft.
+		node.Delete()
+	}
+
+	var isShuttingDown bool
+	// Make sure this node is no longer attached to our consumer assignment.
+	if js, _ := s.getJetStreamCluster(); js != nil {
+		js.mu.Lock()
+		nca.Group.node = nil
+		nca.err = nil
+		isShuttingDown = js.shuttingDown
+		js.mu.Unlock()
+	}
+
+	if !isShuttingDown {
+		// wait for monitor to be shutdown.
+		o.signalMonitorQuit()
+		o.monitorWg.Wait()
+	}
+	o.deleteWithoutAdvisory()
 }
 
 func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
@@ -5794,12 +5771,14 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// Check for scale down to 1..
 			if node != nil && len(rg.Peers) == 1 {
 				o.clearNode()
-				o.setLeader(true)
+				o.signalMonitorQuit()
+				o.monitorWg.Wait()
 				// Need to clear from rg too.
 				js.mu.Lock()
 				rg.node = nil
 				client, subject, reply := ca.Client, ca.Subject, ca.Reply
 				js.mu.Unlock()
+				o.setLeader(true)
 				var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 				resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
@@ -6056,15 +6035,6 @@ func (o *consumer) raftGroup() *raftGroup {
 		return nil
 	}
 	return o.ca.Group
-}
-
-func (o *consumer) clearRaftNode() {
-	if o == nil {
-		return
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.node = nil
 }
 
 func (o *consumer) raftNode() RaftNode {

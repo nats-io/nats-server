@@ -7274,3 +7274,111 @@ func TestJetStreamClusterStreamUpdateMaxConsumersLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterScaleDownWaitsForMonitorRoutineQuit(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create R3 stream and consumer.
+	scfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	ccfg := &nats.ConsumerConfig{Name: "CONSUMER", Replicas: 3}
+	_, err := js.AddStream(scfg)
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			if sjs.streamAssignment(globalAccountName, "TEST") == nil {
+				return errors.New("stream not found")
+			}
+			if sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER") == nil {
+				return errors.New("consumer not found")
+			}
+		}
+		return nil
+	})
+
+	cf := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cf)
+	mset, err := cf.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Increment the wait group for this test to confirm the right ordering.
+	o.mu.Lock()
+	inMonitor := o.inMonitor
+	wg := &o.monitorWg
+	wg.Add(1)
+	o.mu.Unlock()
+	require_True(t, inMonitor)
+
+	// The monitor routine should stop.
+	ccfg.Replicas = 1
+	_, err = js.UpdateConsumer("TEST", ccfg)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.inMonitor {
+			return errors.New("consumer still in monitor")
+		}
+		return nil
+	})
+
+	// The consumer itself should still exist.
+	require_NotNil(t, mset.lookupConsumer("CONSUMER"))
+
+	// Simulate the monitor routine being done now and the consumer being removed.
+	wg.Done()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if mset.lookupConsumer("CONSUMER") != nil {
+			return errors.New("consumer still exists")
+		}
+		return nil
+	})
+
+	sf := c.randomNonStreamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sf)
+	mset, err = sf.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Increment the wait group for this test to confirm the right ordering.
+	mset.mu.Lock()
+	inMonitor = mset.inMonitor
+	wg = &mset.monitorWg
+	wg.Add(1)
+	mset.mu.Unlock()
+	require_True(t, inMonitor)
+
+	// The monitor routine should stop.
+	scfg.Replicas = 1
+	_, err = js.UpdateStream(scfg)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if mset.inMonitor {
+			return errors.New("stream still in monitor")
+		}
+		return nil
+	})
+
+	// The stream itself should still exist.
+	_, err = sf.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Simulate the monitor routine being done now and the stream being removed.
+	wg.Done()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, err = sf.globalAccount().lookupStream("TEST")
+		if !errors.Is(err, NewJSStreamNotFoundError()) {
+			return errors.New("stream still exists")
+		}
+		return nil
+	})
+}
