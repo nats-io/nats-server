@@ -6103,7 +6103,7 @@ func TestJetStreamClusterParallelCreateRaftGroup(t *testing.T) {
 		go func() {
 			wg.Done()
 			defer finish.Done()
-			if n, rerr := sjs.createRaftGroup(acc.GetName(), rg, false, storage, pprofLabels{}); rerr == nil {
+			if n, rerr := sjs.createRaftGroup(acc.GetName(), rg, nil, false, storage, pprofLabels{}); rerr == nil {
 				mu.Lock()
 				nodes = append(nodes, n)
 				mu.Unlock()
@@ -6205,7 +6205,7 @@ func TestJetStreamClusterParallelCreateRaftGroupHighConcurrency(t *testing.T) {
 			defer done.Done()
 			ready.Done()
 			<-start
-			n, rerr := sjs.createRaftGroup(acc.GetName(), rg, false, storage, pprofLabels{})
+			n, rerr := sjs.createRaftGroup(acc.GetName(), rg, nil, false, storage, pprofLabels{})
 			mu.Lock()
 			nodes = append(nodes, n)
 			errs = append(errs, rerr)
@@ -6276,7 +6276,7 @@ func TestJetStreamClusterParallelCreateRaftGroupHAAssetsLimit(t *testing.T) {
 			defer done.Done()
 			ready.Done()
 			<-start
-			n, _ := sjs.createRaftGroup(acc.GetName(), rg, false, FileStorage, pprofLabels{})
+			n, _ := sjs.createRaftGroup(acc.GetName(), rg, nil, false, FileStorage, pprofLabels{})
 			if n != nil {
 				mu.Lock()
 				nodes = append(nodes, n)

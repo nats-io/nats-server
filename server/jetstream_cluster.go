@@ -2713,6 +2713,32 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 	return isRecovering, didSnap, nil
 }
 
+func (cc *jetStreamCluster) isMemberOfStreamAssignment(sa *streamAssignment) bool {
+	ourID := cc.meta.ID()
+	if sa.Group != nil && sa.Group.isMember(ourID) {
+		return true
+	}
+	if p := sa.DesiredPlacement; p != nil && p.Group != nil && p.Group.isMember(ourID) {
+		return true
+	}
+	return false
+}
+
+func (rg *raftGroup) combinePeersWithDesired(desired *desiredGroupPlacement) []string {
+	if desired == nil || desired.Group == nil {
+		return rg.Peers
+	}
+
+	peerSet := make([]string, 0, len(rg.Peers))
+	peerSet = append(peerSet, rg.Peers...)
+	for _, peer := range desired.Group.Peers {
+		if !slices.Contains(peerSet, peer) {
+			peerSet = append(peerSet, peer)
+		}
+	}
+	return peerSet
+}
+
 func (rg *raftGroup) isMember(id string) bool {
 	if rg == nil {
 		return false
@@ -2761,7 +2787,7 @@ func (rg *raftGroup) setPreferred(s *Server) {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering bool, storage StorageType, labels pprofLabels) (RaftNode, error) {
+func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, desired *desiredGroupPlacement, recovering bool, storage StorageType, labels pprofLabels) (RaftNode, error) {
 	// js.mu protects the lookup/registration of raft groups so that two parallel
 	// calls for the same identifier can't end up creating duplicate instances.
 	// It is released around blocking work (waiting for a previous instance to
@@ -2775,8 +2801,19 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering b
 		return nil, NewJSClusterNotActiveError()
 	}
 
+	ourID := cc.meta.ID()
+	isMember := rg.isMember(ourID)
+	peerSet := rg.combinePeersWithDesired(desired)
+	name, preferred, scaleUp := rg.Name, rg.Preferred, rg.ScaleUp
+	if desired != nil && desired.Group != nil {
+		isMember = isMember || desired.Group.isMember(ourID)
+		// Note that the group name MUST NOT be different normally.
+		// However, when scaling up from R1 we've renamed it to mark a distinct replicated group.
+		name, preferred, scaleUp = desired.Group.Name, desired.Group.Preferred, desired.Group.ScaleUp
+	}
+
 	// If this is a single peer raft group or we are not a member return.
-	if len(rg.Peers) <= 1 || !rg.isMember(cc.meta.ID()) {
+	if (desired == nil && len(peerSet) <= 1) || !isMember {
 		// Nothing to do here.
 		return nil, nil
 	}
@@ -2784,7 +2821,7 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering b
 retry:
 	// If another goroutine is mid-creation for this raft group, wait for it
 	// to finish (without holding js.mu) and then retry the lookup.
-	if ch, ok := cc.creatingRaftGroups[rg.Name]; ok {
+	if ch, ok := cc.creatingRaftGroups[name]; ok {
 		js.mu.Unlock()
 		<-ch
 		js.mu.Lock()
@@ -2796,7 +2833,7 @@ retry:
 		goto retry
 	}
 	// Check if we already have this assigned.
-	if node := s.lookupRaftNode(rg.Name); node != nil {
+	if node := s.lookupRaftNode(name); node != nil {
 		if node.State() == Closed {
 			// We're waiting for this node to finish shutting down before we replace it.
 			js.mu.Unlock()
@@ -2804,40 +2841,7 @@ retry:
 			js.mu.Lock()
 			goto retry
 		}
-		s.Debugf("JetStream cluster already has raft group %q assigned", rg.Name)
-		// Check and see if the group has the same peers. If not then we
-		// will update the known peers, which will send a peerstate if leader.
-		groupPeerIDs := append([]string{}, rg.Peers...)
-		var samePeers bool
-		if nodePeers := node.Peers(); len(rg.Peers) == len(nodePeers) {
-			nodePeerIDs := make([]string, 0, len(nodePeers))
-			for _, n := range nodePeers {
-				nodePeerIDs = append(nodePeerIDs, n.ID)
-			}
-			slices.Sort(groupPeerIDs)
-			slices.Sort(nodePeerIDs)
-			samePeers = slices.Equal(groupPeerIDs, nodePeerIDs)
-		}
-		if !samePeers {
-			// At this point we have no way of knowing:
-			// 1. Whether the group has lost enough nodes to cause a quorum
-			//    loss, in which case a proposal may fail, therefore we will
-			//    force a peerstate write;
-			// 2. Whether nodes in the group have other applies queued up
-			//    that could change the peerstate again, therefore the leader
-			//    should send out a new proposal anyway too just to make sure
-			//    that this change gets captured in the log.
-			node.UpdateKnownPeers(groupPeerIDs)
-
-			// If the peers changed as a result of an update by the meta layer, we must reflect that in the log of
-			// this group. Otherwise, a new peer would come up and instantly reset the peer state back to whatever is
-			// in the log at that time, overwriting what the meta layer told it.
-			// Will need to address this properly later on, by for example having the meta layer decide the new
-			// placement, but have the leader of this group propose it through its own log instead.
-			if node.Leader() {
-				node.ProposeKnownPeers(groupPeerIDs)
-			}
-		}
+		s.Debugf("JetStream cluster already has raft group %q assigned", name)
 		rg.node = node
 		return node, nil
 	}
@@ -2868,12 +2872,11 @@ retry:
 		cc.creatingRaftGroups = make(map[string]chan struct{})
 	}
 	doneCh := make(chan struct{})
-	cc.creatingRaftGroups[rg.Name] = doneCh
+	cc.creatingRaftGroups[name] = doneCh
 
-	// Snapshot rg fields; we drop js.mu below and rg is shared.
-	rgName, rgScaleUp := rg.Name, rg.ScaleUp
-	rgPeers := copyStrings(rg.Peers)
-	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
+	// Snapshot fields; we drop js.mu below and rg is shared.
+	peerSet = copyStrings(peerSet)
+	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, name)
 	js.mu.Unlock()
 
 	n, err := func() (RaftNode, error) {
@@ -2882,10 +2885,10 @@ retry:
 			opts := s.getOpts()
 			fs, err := newFileStoreWithCreated(
 				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s},
-				StreamConfig{Name: rgName, Storage: FileStorage, Metadata: labels},
+				StreamConfig{Name: name, Storage: FileStorage, Metadata: labels},
 				time.Now().UTC(),
-				s.jsKeyGen(opts.JetStreamKey, rgName),
-				s.jsKeyGen(opts.JetStreamOldKey, rgName),
+				s.jsKeyGen(opts.JetStreamKey, name),
+				s.jsKeyGen(opts.JetStreamOldKey, name),
 			)
 			if err != nil {
 				s.Errorf("Error creating filestore WAL: %v", err)
@@ -2893,7 +2896,7 @@ retry:
 			}
 			store = fs
 		} else {
-			ms, err := newMemStore(&StreamConfig{Name: rgName, Storage: MemoryStorage})
+			ms, err := newMemStore(&StreamConfig{Name: name, Storage: MemoryStorage})
 			if err != nil {
 				s.Errorf("Error creating memstore WAL: %v", err)
 				return nil, err
@@ -2901,10 +2904,10 @@ retry:
 			store = ms
 		}
 
-		cfg := &RaftConfig{Name: rgName, Store: storeDir, Log: store, Track: true, Recovering: recovering, ScaleUp: rgScaleUp}
+		cfg := &RaftConfig{Name: name, Store: storeDir, Log: store, Track: true, Recovering: recovering, ScaleUp: scaleUp}
 
 		if _, err := readPeerState(storeDir); err != nil {
-			s.bootstrapRaftNode(cfg, rgPeers, true)
+			s.bootstrapRaftNode(cfg, peerSet, true)
 		}
 
 		n, err := s.startRaftNode(accName, cfg, labels)
@@ -2916,7 +2919,7 @@ retry:
 	}()
 
 	js.mu.Lock()
-	delete(cc.creatingRaftGroups, rg.Name)
+	delete(cc.creatingRaftGroups, name)
 	close(doneCh)
 	if err != nil || n == nil {
 		return nil, err
@@ -2928,7 +2931,7 @@ retry:
 	// Need JS lock to be held for the assignment to avoid data-race reports
 	rg.node = n
 	// See if we are preferred and should start campaign immediately.
-	if n.ID() == rg.Preferred && n.Term() == 0 {
+	if n.ID() == preferred && n.Term() == 0 {
 		n.CampaignImmediately()
 	}
 	return n, nil
@@ -4812,19 +4815,13 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	s, cc := js.srv, js.cluster
 	accName, stream := sa.Client.serviceAccount(), sa.Config.Name
 	noMeta := cc == nil || cc.meta == nil
-	var ourID string
-	if !noMeta {
-		ourID = cc.meta.ID()
-	}
-	var isMember bool
-	if sa.Group != nil && ourID != _EMPTY_ {
-		isMember = sa.Group.isMember(ourID)
-	}
 
 	if s == nil || noMeta {
 		js.mu.Unlock()
 		return
 	}
+
+	isMember := cc.isMemberOfStreamAssignment(sa)
 
 	// Remove this stream from the inflight proposals
 	cc.removeInflightStreamProposal(accName, sa.Config.Name)
@@ -4939,12 +4936,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	// Remove this stream from the inflight proposals
 	cc.removeInflightStreamProposal(accName, sa.Config.Name)
 
-	ourID := cc.meta.ID()
-
-	var isMember bool
-	if sa.Group != nil {
-		isMember = sa.Group.isMember(ourID)
-	}
+	isMember := cc.isMemberOfStreamAssignment(sa)
 
 	accStreams := cc.streams[accName]
 	if accStreams == nil {
@@ -4965,6 +4957,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	sa.err = osa.err
 
 	// If we detect we are scaling down to 1, non-clustered, and we had a previous node, clear it here.
+	// FIXME(mvv): this is unsafe
 	if sa.Config.Replicas == 1 && sa.Group.node != nil {
 		sa.Group.node = nil
 	}
@@ -5071,7 +5064,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	js.mu.RLock()
-	s, rg := js.srv, sa.Group
+	s, rg, desired := js.srv, sa.Group, sa.DesiredPlacement
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	alreadyRunning, oldNumReplicas, numReplicas := osa.Group.node != nil, len(osa.Group.Peers), len(rg.Peers)
 	needsNode := rg.node == nil
@@ -5095,7 +5088,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			js.mu.Unlock()
 		}
 
-		if !alreadyRunning && numReplicas > 1 {
+		if !alreadyRunning && (numReplicas > 1 || desired != nil) {
 			if needsNode {
 				// Must run before startClusterSubs reads mset.sa.Sync.
 				mset.setStreamAssignment(sa)
@@ -5106,7 +5099,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 				mset.startClusterSubs()
 				mset.mu.Unlock()
 
-				js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
+				js.createRaftGroup(acc.GetName(), rg, desired, recovering, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
 					"stream":  mset.name(),
@@ -5222,7 +5215,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	}
 
 	js.mu.RLock()
-	s, rg, created := js.srv, sa.Group, sa.Created
+	s, rg, desired, created := js.srv, sa.Group, sa.DesiredPlacement, sa.Created
 	alreadyRunning := rg.node != nil
 	storage := sa.Config.Storage
 	restore := sa.Restore
@@ -5230,7 +5223,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	_, err := js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
+	_, err := js.createRaftGroup(acc.GetName(), rg, desired, recovering, storage, pprofLabels{
 		"type":    "stream",
 		"account": acc.Name,
 		"stream":  sa.Config.Name,
@@ -5301,9 +5294,10 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			if !reflect.DeepEqual(&cfg, sa.Config) {
 				if err = mset.updateWithAdvisory(sa.Config, false, false); err != nil {
 					s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
+					// FIXME(mvv): I don't think this makes any sense, should probably just cut our losses and remove the below?
 					if osa != nil {
 						// Process the raft group and make sure it's running if needed.
-						js.createRaftGroup(acc.GetName(), osa.Group, osa.recovering, storage, pprofLabels{
+						js.createRaftGroup(acc.GetName(), osa.Group, osa.DesiredPlacement, osa.recovering, storage, pprofLabels{
 							"type":    "stream",
 							"account": mset.accName(),
 							"stream":  mset.name(),
@@ -5857,7 +5851,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 	}
 	js.mu.RLock()
 	s := js.srv
-	rg := ca.Group
+	rg, desired := ca.Group, ca.DesiredPlacement
 	alreadyRunning := rg != nil && rg.node != nil
 	accName, stream, consumer := ca.Client.serviceAccount(), ca.Stream, ca.Name
 	recovering := ca.recovering
@@ -5910,7 +5904,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		storage = MemoryStorage
 	}
 	// No-op if R1.
-	js.createRaftGroup(accName, rg, recovering, storage, pprofLabels{
+	js.createRaftGroup(accName, rg, desired, recovering, storage, pprofLabels{
 		"type":     "consumer",
 		"account":  mset.accName(),
 		"stream":   ca.Stream,
@@ -8195,38 +8189,14 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	var consumers []*consumerAssignment
 
 	// Check if this is a move request, but no cancellation, and we are already moving this stream.
-	if isMoveRequest && !isMoveCancel && osa.Config.Replicas != len(rg.Peers) {
-		// obtain stats to include in error message
-		msg := _EMPTY_
-		if s.allPeersOffline(rg) {
-			msg = fmt.Sprintf("all %d peers offline", len(rg.Peers))
-		} else {
-			// Need to release js lock.
-			js.mu.Unlock()
-			if si, err := sysRequest[StreamInfo](s, clusterStreamInfoT, ci.serviceAccount(), cfg.Name); err != nil {
-				msg = fmt.Sprintf("error retrieving info: %s", err.Error())
-			} else if si != nil {
-				currentCount := 0
-				if si.Cluster.Leader != _EMPTY_ {
-					currentCount++
-				}
-				combinedLag := uint64(0)
-				for _, r := range si.Cluster.Replicas {
-					if r.Current {
-						currentCount++
-					}
-					combinedLag += r.Lag
-				}
-				msg = fmt.Sprintf("total peers: %d, current peers: %d, combined lag: %d",
-					len(rg.Peers), currentCount, combinedLag)
-			}
-			// Re-acquire here.
-			js.mu.Lock()
-		}
-		resp.Error = NewJSStreamMoveInProgressError(msg)
+	if osa.DesiredPlacement != nil && osa.DesiredPlacement.Placement != nil {
+		resp.Error = NewJSStreamMoveInProgressError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
+
+	// FIXME(mvv): move cancel
+	_ = isMoveCancel
 
 	// Can not move and scale at same time.
 	if isMoveRequest && isReplicaChange {
@@ -8475,7 +8445,16 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	if syncSubject == _EMPTY_ {
 		syncSubject = syncSubjForStream()
 	}
-	sa := &streamAssignment{Group: rg, Sync: syncSubject, Created: osa.Created, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
+	sa := &streamAssignment{Group: osa.Group, Sync: syncSubject, Created: osa.Created, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
+	if isMoveRequest || isReplicaChange {
+		// TODO(mvv): docs, preserve peers but optionally need to change the name if scaling up/to R1
+		// FIXME(mvv): should this still be done when scaling down to R1?
+		//sa.Group = osa.copyGroup().Group
+		//sa.Group.Name = rg.Name
+		sa.DesiredPlacement = &desiredGroupPlacement{Placement: newCfg.Placement, Group: rg}
+		// TODO(mvv): docs, reset placement
+		newCfg.Placement = osa.Config.Placement
+	}
 	if err := meta.Propose(encodeUpdateStreamAssignment(sa)); err != nil {
 		return
 	}
