@@ -66,6 +66,8 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
 	SyncAlways bool
+	// SyncOnFlush sync all writes before on FlushAllPending
+	SyncOnFlush bool
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
@@ -4947,9 +4949,13 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 
 // FlushAllPending flushes all data that was still pending to be written.
 func (fs *fileStore) FlushAllPending() {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	fs.checkAndFlushLastBlock()
+	if fs.fcfg.SyncOnFlush {
+		fs.syncBlocks()
+	} else {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		fs.checkAndFlushLastBlock()
+	}
 }
 
 // Lock should be held.
@@ -12565,7 +12571,7 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
-	return writeAtomically(name, data, perm, fs.fcfg.SyncAlways)
+	return writeAtomically(name, data, perm, fs.fcfg.SyncAlways || fs.fcfg.SyncOnFlush)
 }
 
 func writeFileWithSync(name string, data []byte, perm fs.FileMode) error {

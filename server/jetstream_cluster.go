@@ -2891,6 +2891,42 @@ func (mset *stream) waitOnConsumerAssignments() {
 	}
 }
 
+func prepareStreamRecovery(s *Server, mset *stream, n RaftNode) error {
+	if n == nil || mset == nil || !mset.shouldReplayFromWAL() {
+		return nil
+	}
+
+	index, _, _ := n.Progress()
+	if index == 0 {
+		return nil
+	}
+
+	var snapIndex uint64
+	var snap *StreamReplicatedState
+	snapIndex, snapData, err := n.LoadLastSnapshot()
+	if err != nil && err != errNoSnapAvailable {
+		return err
+	}
+
+	// In case of clean shutdown, no need to replay from WAL
+	if snapIndex == index {
+		return nil
+	}
+
+	switch err {
+	case nil:
+		snap, err = DecodeStreamState(snapData)
+		if err != nil {
+			return err
+		}
+		return mset.prepareForWALReplay(snap)
+	case errNoSnapAvailable:
+		return mset.prepareForWALReplay(nil)
+	}
+
+	return err
+}
+
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
 	s, cc := js.server(), js.cluster
@@ -2975,6 +3011,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
 	isRecovering := true
+	if err := prepareStreamRecovery(s, mset, n); err != nil {
+		s.Warnf("Error preparing WAL replay recovery for stream '%s > %s': %v", accName, sa.Config.Name, err)
+		return
+	}
 
 	var failedSnapshots int
 	doSnapshot := func(force bool) {
