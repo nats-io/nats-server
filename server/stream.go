@@ -892,6 +892,15 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.Compression = config.Compression
 	// Async flushing is only allowed if the stream has a sync log backing it.
 	fsCfg.AsyncFlush = !fsCfg.SyncAlways && config.Replicas > 1
+	if config.Replicas > 1 && fsCfg.SyncAlways {
+		// If the stream is backed by a Raft log, we can
+		// relax SyncAlways so that we flush and sync
+		// whenever a stream snapshot is created.
+		// We can recover from the snapshot and the tail
+		// of the log.
+		fsCfg.SyncAlways = false
+		fsCfg.SyncOnFlush = true
+	}
 
 	// Async persist mode opts in to async flushing,
 	// sync always would also be disabled if it was configured.
