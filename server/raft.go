@@ -41,6 +41,7 @@ type RaftNode interface {
 	Propose(term uint64, entry []byte) error
 	ProposeMulti(term uint64, entries []*Entry) error
 	ForwardProposal(entry []byte) error
+	LoadLastSnapshot() (uint64, []byte, error)
 	InstallSnapshot(snap []byte, force bool) error
 	CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error)
 	SendSnapshot(snap []byte) error
@@ -1745,6 +1746,20 @@ func (n *raft) setupLastSnapshot() error {
 	}
 
 	return nil
+}
+
+func (n *raft) LoadLastSnapshot() (uint64, []byte, error) {
+	n.Lock()
+	defer n.Unlock()
+	snap, err := n.loadLastSnapshot()
+	if err != nil {
+		return 0, nil, err
+	}
+	if snap.lastIndex != n.papplied {
+		return 0, nil, errors.New("snapshot index mismatch")
+	}
+	return snap.lastIndex, snap.data, nil
+
 }
 
 // loadLastSnapshot will load and return our last snapshot.

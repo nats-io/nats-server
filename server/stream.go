@@ -996,6 +996,15 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		fsCfg.SyncAlways = false
 		fsCfg.AsyncFlush = true
 	}
+
+	// If the stream is backed by a Raft log, we can relax
+	// SyncAlways so that we flush and sync whenever a
+	// stream snapshot is created. We can safely recover
+	// from the snapshot and the tail of the log.
+	if fsCfg.SyncAlways && config.Replicas > 1 {
+		fsCfg.SyncOnFlush = true
+	}
+
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
 		return nil, NewJSStreamStoreFailedError(err)
@@ -1464,6 +1473,49 @@ func (mset *stream) rebuildDedupe() {
 			mset.lmsgId = msgId
 		}
 	}
+}
+
+// Returns true if the underlying store should use the
+// Raft log for replaying the tail of stream during
+// recovery.
+func (mset *stream) shouldReplayFromWAL() bool {
+	if mset == nil || mset.node == nil || mset.store == nil || mset.store.Type() != FileStorage {
+		return false
+	}
+	fs, ok := mset.store.(*fileStore)
+	if !ok {
+		return false
+	}
+	return fs.syncOnFlush.Load()
+}
+
+// prepareForWALReplay truncates the stream's filestore
+// from the last sequence of the given snapshot, in
+// preparation of replaying the tail of the store the
+// Raft log.
+func (mset *stream) prepareForWALReplay(snap *StreamReplicatedState) error {
+	if mset == nil || mset.store == nil {
+		return nil
+	}
+
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	snapSeq := uint64(0)
+	if snap != nil {
+		snapSeq = snap.LastSeq
+	}
+
+	mset.srv.Debugf("Truncate to snapshot sequence %d", snapSeq)
+	if err := mset.store.Truncate(snapSeq); err != nil {
+		return err
+	}
+
+	mset.lseq = snapSeq
+	if snapSeq == 0 {
+		mset.clfs = 0
+	}
+	return nil
 }
 
 // Lock should be held.

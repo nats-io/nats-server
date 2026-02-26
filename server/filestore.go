@@ -68,6 +68,8 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
 	SyncAlways bool
+	// SyncOnFlush relaxes SyncAlways to flush writes on FlushAllPending.
+	SyncOnFlush bool
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
@@ -190,6 +192,7 @@ type fileStore struct {
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
 	syncAlways  atomic.Bool // Mirrors FileStoreConfig.SyncAlways for lock-free reads from writeFileWithOptionalSync.
+	syncOnFlush atomic.Bool // Effective sync on flush behavior. True only if SyncAlways and replicas > 1.
 	prf         keyGen
 	oldprf      keyGen
 	aek         cipher.AEAD
@@ -452,7 +455,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fsld:   make(chan struct{}),
 		srv:    fcfg.srv,
 	}
-	fs.syncAlways.Store(fcfg.SyncAlways)
+	fs.syncAlways.Store(fcfg.SyncAlways && !fcfg.SyncOnFlush)
+	fs.syncOnFlush.Store(fcfg.SyncOnFlush)
 	if fs.srv != nil && fs.srv.metrics != nil {
 		c := metric.NewCounter()
 		fs.fsyncs = &c
@@ -775,6 +779,13 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		}
 	}
 
+	// If the stream is backed by a Raft WAL we can relax SyncAlways setting.
+	if fs.fcfg.SyncAlways {
+		syncOnFlush := cfg.Replicas > 1
+		fs.syncOnFlush.Store(syncOnFlush)
+		fs.syncAlways.Store(!syncOnFlush)
+	}
+
 	if lmb := fs.lmb; lmb != nil {
 		// Enable/disable async flush depending on if it's supported and already initialized.
 		supportsAsyncFlush := !fs.fcfg.SyncAlways && cfg.Replicas > 1
@@ -787,6 +798,10 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 			fs.syncAlways.Store(false)
 			lmb.mu.Lock()
 			lmb.syncAlways = false
+			lmb.mu.Unlock()
+		} else {
+			lmb.mu.Lock()
+			lmb.syncAlways = fs.syncAlways.Load()
 			lmb.mu.Unlock()
 		}
 
@@ -1143,7 +1158,7 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 		cexp:       fs.fcfg.CacheExpire,
 		fexp:       fs.fcfg.SubjectStateExpire,
 		noTrack:    fs.noTrackSubjects(),
-		syncAlways: fs.fcfg.SyncAlways,
+		syncAlways: fs.syncAlways.Load(),
 	}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
@@ -5445,6 +5460,10 @@ func (fs *fileStore) FlushAllPending() error {
 	if fs.werr != nil {
 		return fs.werr
 	}
+	if fs.syncOnFlush.Load() {
+		fs.syncBlocksLocked()
+		return fs.werr
+	}
 	return fs.checkAndFlushLastBlock()
 }
 
@@ -7851,12 +7870,17 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.syncBlocksLocked()
+}
+
+// Lock should be held on entry and will be held on return.
+func (fs *fileStore) syncBlocksLocked() {
 	if fs.isClosed() {
 		return
 	}
-	fs.mu.Lock()
 	if err := fs.werr; err != nil {
-		fs.mu.Unlock()
 		return
 	}
 	blks := append([]*msgBlock(nil), fs.blks...)
@@ -8020,17 +8044,17 @@ func (fs *fileStore) syncBlocks() {
 	}
 
 	if fs.isClosed() {
+		fs.mu.Lock()
 		return
 	}
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	fs.setSyncTimer()
 	if markDirty {
 		fs.dirty++
 	}
 
 	// Sync state file if we are not running with sync always.
-	if !fs.fcfg.SyncAlways {
+	if !fs.syncAlways.Load() {
 		fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 		var fd *os.File
 		var err error
@@ -13965,7 +13989,8 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
-	return writeAtomically(fs.dios, name, data, perm, fs.syncAlways.Load())
+	sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
+	return writeAtomically(fs.dios, name, data, perm, sync)
 }
 
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {

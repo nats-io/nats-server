@@ -10397,6 +10397,60 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 	t.Run("SyncAlways", func(t *testing.T) { test(t, true) })
 }
 
+func TestJetStreamClusterFileStoreSyncOnFlushReplicaTransitions(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		s.opts.SyncAlways = true
+		s.optsMu.Unlock()
+	}
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+		Replicas: 3,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	checkMode := func(expectSyncAlways, expectSyncOnFlush bool) {
+		t.Helper()
+		s := c.streamLeader(globalAccountName, cfg.Name)
+		mset, err := s.globalAccount().lookupStream(cfg.Name)
+		require_NoError(t, err)
+		fs := mset.Store().(*fileStore)
+		fs.mu.RLock()
+		configuredSyncAlways := fs.fcfg.SyncAlways
+		configuredSyncOnFlush := fs.fcfg.SyncOnFlush
+		fs.mu.RUnlock()
+		require_True(t, configuredSyncAlways)
+		require_True(t, configuredSyncOnFlush)
+		require_Equal(t, fs.syncAlways.Load(), expectSyncAlways)
+		require_Equal(t, fs.syncOnFlush.Load(), expectSyncOnFlush)
+	}
+
+	checkMode(false, true)
+
+	cfg.Replicas = 1
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_NoError(t, err)
+	checkMode(true, false)
+
+	cfg.Replicas = 3
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, cfg.Name)
+	})
+	checkMode(false, true)
+}
+
 func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
