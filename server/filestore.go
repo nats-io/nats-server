@@ -68,6 +68,8 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
 	SyncAlways bool
+	// SyncOnFlush sync all writes before on FlushAllPending
+	SyncOnFlush bool
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
@@ -5400,6 +5402,10 @@ func (fs *fileStore) FlushAllPending() error {
 	if fs.werr != nil {
 		return fs.werr
 	}
+	if fs.fcfg.SyncOnFlush {
+		fs.syncBlocksLocked()
+		return fs.werr
+	}
 	return fs.checkAndFlushLastBlock()
 }
 
@@ -7783,12 +7789,17 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.syncBlocksLocked()
+}
+
+// Lock should be held on entry and will be held on return.
+func (fs *fileStore) syncBlocksLocked() {
 	if fs.isClosed() {
 		return
 	}
-	fs.mu.Lock()
 	if err := fs.werr; err != nil {
-		fs.mu.Unlock()
 		return
 	}
 	blks := append([]*msgBlock(nil), fs.blks...)
@@ -7954,10 +7965,10 @@ func (fs *fileStore) syncBlocks() {
 	}
 
 	if fs.isClosed() {
+		fs.mu.Lock()
 		return
 	}
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	fs.setSyncTimer()
 	if markDirty {
 		fs.dirty++
@@ -13835,7 +13846,7 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
-	return writeAtomically(fs.dios, name, data, perm, fs.syncAlways.Load())
+	return writeAtomically(fs.dios, name, data, perm, fs.syncAlways.Load() || fs.fcfg.SyncOnFlush)
 }
 
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {
