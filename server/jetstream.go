@@ -1563,7 +1563,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 		}
 
 		// Add in the stream.
-		mset, err := a.addStream(&cfg.StreamConfig)
+		mset, err := a.recoverStream(&cfg.StreamConfig)
 		if err != nil {
 			s.Warnf("  Error recreating stream %q: %v", cfg.Name, err)
 			// If we removed a keyfile from above make sure to put it back.
