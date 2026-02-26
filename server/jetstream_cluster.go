@@ -1026,7 +1026,7 @@ func (js *jetStream) setupMetaGroup() error {
 	syncInterval := js.srv.opts.SyncInterval
 	js.srv.optsMu.RUnlock()
 	fs, err := newFileStoreWithCreated(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s, accName: sysAcc.Name},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 		time.Now().UTC(),
 		s.jsKeyGen(s.getOpts().JetStreamKey, defaultMetaGroupName),
@@ -2998,7 +2998,7 @@ retry:
 	// Snapshot rg fields; we drop js.mu below and rg is shared.
 	rgName, rgScaleUp := rg.Name, rg.ScaleUp
 	rgPeers := copyStrings(rg.Peers)
-	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
+	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rgName)
 	js.mu.Unlock()
 
 	n, err := func() (RaftNode, error) {
@@ -3006,7 +3006,7 @@ retry:
 		if storage == FileStorage {
 			opts := s.getOpts()
 			fs, err := newFileStoreWithCreated(
-				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s},
+				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s, accName: accName},
 				StreamConfig{Name: rgName, Storage: FileStorage, Metadata: labels},
 				time.Now().UTC(),
 				s.jsKeyGen(opts.JetStreamKey, rgName),

@@ -48,6 +48,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/elastic"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats-server/v2/server/metric"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nats-server/v2/server/thw"
 	"golang.org/x/crypto/chacha20"
@@ -76,6 +77,8 @@ type FileStoreConfig struct {
 
 	// Internal reference to our server.
 	srv *Server
+	// Internal account name for grouping metrics.
+	accName string
 }
 
 // FileStreamInfo allows us to remember created time.
@@ -216,6 +219,7 @@ type fileStore struct {
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
+	fsyncs      *metric.Counter
 }
 
 // Represents a message store block and its data.
@@ -446,6 +450,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		srv:    fcfg.srv,
 	}
 	fs.syncAlways.Store(fcfg.SyncAlways)
+	if fs.srv != nil && fs.srv.metrics != nil {
+		c := metric.NewCounter()
+		fs.fsyncs = &c
+		metricPath := fmt.Sprintf("%s.STORE.%s.FSYNCS", fs.fcfg.accName, cfg.Name)
+		fs.srv.metrics.Add(metricPath, fs.fsyncs)
+	}
 
 	// Register with access time service.
 	ats.Register()
@@ -662,6 +672,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 func (fs *fileStore) lockAllMsgBlocks() {
 	for _, mb := range fs.blks {
 		mb.mu.Lock()
+	}
+}
+
+func (fs *fileStore) countFsync() {
+	if fs != nil && fs.fsyncs != nil {
+		fs.fsyncs.Increment()
 	}
 }
 
@@ -7914,6 +7930,7 @@ func (fs *fileStore) syncBlocks() {
 			}
 			// If we have an fd.
 			if fd != nil {
+				fs.countFsync()
 				if err = fd.Sync(); err != nil {
 					// Close fd if we opened it, but ignore its error since sync takes precedence.
 					if didOpen {
@@ -8347,6 +8364,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Check if we are in sync always mode.
 	if mb.syncAlways {
+		mb.fs.countFsync()
 		if err = mb.mfd.Sync(); err != nil {
 			mb.werr = err
 			assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
