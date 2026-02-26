@@ -15119,6 +15119,24 @@ func TestFileStoreEncryptionKeyFileSyncedBySyncBlocks(t *testing.T) {
 	needKeySync = lmb.needKeySync
 	lmb.mu.RUnlock()
 	require_False(t, needKeySync)
+
+	// With SyncOnFlush the key file write is also already synced, so the flag should not be set.
+	fcfg = FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES, SyncAlways: true, SyncOnFlush: true}
+	fs3, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "S3", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs3.Stop()
+
+	_, _, err = fs3.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	fs3.mu.RLock()
+	lmb = fs3.lmb
+	fs3.mu.RUnlock()
+	require_NotNil(t, lmb)
+	lmb.mu.RLock()
+	needKeySync = lmb.needKeySync
+	lmb.mu.RUnlock()
+	require_False(t, needKeySync)
 }
 
 func TestFileStoreStoreRawMsgVsConcurrentBlockRemovalNoWriteErr(t *testing.T) {
