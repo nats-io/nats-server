@@ -444,6 +444,74 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	require_Equal(t, n.resp.len(), 0)
 }
 
+func TestNRGNextBatch(t *testing.T) {
+	pe := func(t EntryType, data string) *proposedEntry {
+		return &proposedEntry{Entry: &Entry{Type: t, Data: []byte(data)}}
+	}
+	check := func(t *testing.T, batch, expected []*proposedEntry) {
+		t.Helper()
+		require_Equal(t, len(batch), len(expected))
+		for i := range expected {
+			require_True(t, batch[i] == expected[i])
+		}
+	}
+
+	es := []*proposedEntry{
+		pe(EntryNormal, "aaaa"),
+		pe(EntryNormal, "bbbb"),
+		pe(EntryAddPeer, "peer-a"),
+		pe(EntryNormal, "x"),
+		pe(EntrySnapshot, "snap"),
+		pe(EntryNormal, "a"),
+		pe(EntryNormal, "b"),
+		pe(EntryNormal, "c"),
+		pe(EntryRemovePeer, "peer-b"),
+		pe(EntryNormal, "d"),
+	}
+
+	const maxBatch = 8
+	const maxEntries = 3
+
+	rem := es
+
+	// First batch flushes on the size threshold.
+	batch := nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[:2])
+	rem = rem[len(batch):]
+
+	// Add-peer stays standalone.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[2:3])
+	rem = rem[len(batch):]
+
+	// A normal entry stops before the snapshot barrier.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[3:4])
+	rem = rem[len(batch):]
+
+	// Snapshot stays standalone.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[4:5])
+	rem = rem[len(batch):]
+
+	// Next normal batch flushes on maxEntries:
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[5:8])
+	rem = rem[len(batch):]
+
+	// Remove-peer stays standalone.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[8:9])
+	rem = rem[len(batch):]
+
+	// Final tail entry is returned alone.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[9:10])
+	rem = rem[len(batch):]
+
+	require_Equal(t, len(rem), 0)
+}
+
 func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -1098,7 +1166,12 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 			ae := n.buildAppendEntry(entries)
 			ae.buf, err = ae.encode(scratch[:])
 			require_NoError(t, err)
-			err = n.storeToWAL(ae)
+			size, seq, err := n.storeToWAL(ae)
+			if err == nil {
+				n.bytes += size
+				n.pterm = ae.term
+				n.pindex = seq
+			}
 			n.Unlock()
 			require_NoError(t, err)
 
@@ -1626,7 +1699,13 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	require_Equal(t, n.wal.State().Msgs, 0)
 
 	// Store a third message, it stays uncommitted.
-	require_NoError(t, n.storeToWAL(aeMsg3))
+	size, seq, err := n.storeToWAL(aeMsg3)
+	require_NoError(t, err)
+	n.Lock()
+	n.bytes += size
+	n.pterm = aeMsg3.term
+	n.pindex = seq
+	n.Unlock()
 	require_Equal(t, n.commit, 3)
 	require_Equal(t, n.wal.State().Msgs, 1)
 	entry, err = n.loadEntry(4)
@@ -3091,13 +3170,25 @@ func TestNRGSizeAndApplied(t *testing.T) {
 	require_Equal(t, bytes, 0)
 
 	// Store the first append entry.
-	require_NoError(t, n.storeToWAL(aeMsg1))
+	size, seq, err := n.storeToWAL(aeMsg1)
+	require_NoError(t, err)
+	n.Lock()
+	n.bytes += size
+	n.pterm = aeMsg1.term
+	n.pindex = seq
+	n.Unlock()
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 1)
 	require_Equal(t, bytes, 105)
 
 	// Store the second append entry.
-	require_NoError(t, n.storeToWAL(aeMsg2))
+	size, seq, err = n.storeToWAL(aeMsg2)
+	require_NoError(t, err)
+	n.Lock()
+	n.bytes += size
+	n.pterm = aeMsg2.term
+	n.pindex = seq
+	n.Unlock()
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 2)
 	require_Equal(t, bytes, 210)
@@ -3547,7 +3638,7 @@ func TestNRGSendAppendEntryNotLeader(t *testing.T) {
 	require_NoError(t, nc.Flush())
 
 	// sendAppendEntry acquires the lock by itself, so it must also protect against us not being leader anymore.
-	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, nil)})
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, nil)}, true)
 
 	// We're a follower, so we should not be able to send or store a message.
 	require_Equal(t, n.pindex, 0)
@@ -3844,10 +3935,23 @@ func TestNRGSendSnapshotInstallsSnapshot(t *testing.T) {
 	require_NoError(t, n.applyCommit(1))
 	require_Equal(t, n.snapfile, _EMPTY_)
 
-	// On scaleup, we send a snapshot.
+	go func() {
+		n.runAsLeader()
+	}()
+
+	// On scaleup, we enqueue a snapshot and let the leader loop send it.
 	require_NoError(t, n.SendSnapshot([]byte("snapshot_data")))
-	require_Equal(t, n.pindex, 2)
-	require_Equal(t, n.snapfile, _EMPTY_)
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		n.RLock()
+		defer n.RUnlock()
+		if n.pindex != 2 {
+			return fmt.Errorf("expected pindex 2, got %d", n.pindex)
+		}
+		if n.snapfile != _EMPTY_ {
+			return fmt.Errorf("expected no snapshot file, got %q", n.snapfile)
+		}
+		return nil
+	})
 
 	// When applying the entry, the sent snapshot should be installed.
 	require_NoError(t, n.applyCommit(2))

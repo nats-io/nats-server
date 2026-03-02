@@ -1850,7 +1850,7 @@ func TestJetStreamAtomicBatchPublishProposeOne(t *testing.T) {
 		}
 		mset.clMu.Unlock()
 		n := mset.raftNode().(*raft)
-		n.sendAppendEntry(entries)
+		n.sendAppendEntry(entries, true)
 
 		pubAck, err = js.Publish("foo", nil)
 		require_NoError(t, err)
@@ -1907,14 +1907,14 @@ func TestJetStreamAtomicBatchPublishProposeMultiple(t *testing.T) {
 		mset.clseq++
 		mset.clMu.Unlock()
 		n := mset.raftNode().(*raft)
-		n.sendAppendEntry(entries)
+		n.sendAppendEntry(entries, true)
 
 		mset.clMu.Lock()
 		hdr = setHeader("Nats-Batch-Sequence", "2", hdr)
 		esm = encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, msg, mset.clseq, 0, false, "uuid", 2, false)
 		mset.clseq++
 		mset.clMu.Unlock()
-		n.sendAppendEntry([]*Entry{newEntry(EntryNormal, esm)})
+		n.sendAppendEntry([]*Entry{newEntry(EntryNormal, esm)}, true)
 
 		entries = nil
 		mset.clMu.Lock()
@@ -1931,7 +1931,7 @@ func TestJetStreamAtomicBatchPublishProposeMultiple(t *testing.T) {
 			mset.clseq++
 		}
 		mset.clMu.Unlock()
-		n.sendAppendEntry(entries)
+		n.sendAppendEntry(entries, true)
 
 		pubAck, err = js.Publish("foo", nil)
 		require_NoError(t, err)
@@ -2000,7 +2000,7 @@ func TestJetStreamAtomicBatchPublishProposeOnePartialBatch(t *testing.T) {
 			}
 			mset.clMu.Unlock()
 			n := mset.raftNode().(*raft)
-			n.sendAppendEntry(entries)
+			n.sendAppendEntry(entries, true)
 
 			pubAck, err = js.Publish("foo", nil)
 			require_NoError(t, err)
@@ -2067,7 +2067,7 @@ func TestJetStreamAtomicBatchPublishProposeMultiplePartialBatches(t *testing.T) 
 		}
 		mset.clMu.Unlock()
 		n := mset.raftNode().(*raft)
-		n.sendAppendEntry(entries)
+		n.sendAppendEntry(entries, true)
 
 		pubAck, err = js.Publish("foo", nil)
 		require_NoError(t, err)
@@ -2151,7 +2151,7 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 		esm := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr, payload, mset.clseq, 0, false, "ID_1", 1, false)
 		mset.clseq++
 		mset.clMu.Unlock()
-		n.sendAppendEntry([]*Entry{newEntry(EntryNormal, esm)})
+		n.sendAppendEntry([]*Entry{newEntry(EntryNormal, esm)}, true)
 
 		var entries []*Entry
 		mset.clMu.Lock()
@@ -2175,7 +2175,7 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 		mset.clseq++
 		entries = append(entries, newEntry(EntryNormal, esm))
 		mset.clMu.Unlock()
-		n.sendAppendEntry(entries)
+		n.sendAppendEntry(entries, true)
 
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			n.RLock()
@@ -2297,7 +2297,7 @@ func TestJetStreamAtomicBatchPublishPartiallyAppliedBatchOnRecovery(t *testing.T
 		// publish informs the followers that it can be committed.
 		n := mset.raftNode().(*raft)
 		_, _, applied := n.Progress()
-		n.sendAppendEntry(entries)
+		n.sendAppendEntry(entries, true)
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			_, _, napplied := n.Progress()
 			if applied == napplied {
