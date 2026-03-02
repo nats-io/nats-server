@@ -9029,8 +9029,8 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			if !s.allPeersOffline(ca.Group) {
 				// Need to release js lock.
 				js.mu.Unlock()
-				if ci, err := sysRequest[ConsumerInfo](s, clusterConsumerInfoT, ci.serviceAccount(), sa.Config.Name, cfg.Durable); err != nil {
-					s.Warnf("Did not receive consumer info results for '%s > %s > %s' due to: %s", acc, sa.Config.Name, cfg.Durable, err)
+				if ci, err := sysRequest[ConsumerInfo](s, clusterConsumerInfoT, ci.serviceAccount(), sa.Config.Name, oname); err != nil {
+					s.Warnf("Did not receive consumer info results for '%s > %s > %s' due to: %s", acc, sa.Config.Name, oname, err)
 				} else if ci != nil {
 					if cl := ci.Cluster; cl != nil {
 						curLeader = getHash(cl.Leader)
