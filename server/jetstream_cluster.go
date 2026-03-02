@@ -5795,15 +5795,36 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 				rg.node = nil
 				client, subject, reply := ca.Client, ca.Subject, ca.Reply
 				js.mu.Unlock()
-				o.setLeader(true)
-				var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-				resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
-				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+				// Perform the leader change in a goroutine, otherwise we could block meta operations.
+				if o.shouldStartMonitor() {
+					started := s.startGoRoutine(
+						func() {
+							defer s.grWG.Done()
+							defer o.clearMonitorRunning()
+							o.setLeader(true)
+							var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+							resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+						},
+						pprofLabels{
+							"type":     "consumer",
+							"account":  mset.accName(),
+							"stream":   mset.name(),
+							"consumer": ca.Name,
+						},
+					)
+					if !started {
+						o.clearMonitorRunning()
+					}
+				}
 				return
 			}
 		}
 
 		if node == nil {
+			// Wait for the previous routine to stop running.
+			o.signalMonitorQuit()
+			o.monitorWg.Wait()
 			// Single replica consumer, process manually here.
 			js.mu.Lock()
 			// Force response in case we think this is an update.
@@ -5811,13 +5832,15 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 				ca.responded = false
 			}
 			js.mu.Unlock()
-			js.processConsumerLeaderChange(o, true)
-		} else {
-			// Clustered consumer.
-			// Start our monitoring routine if needed.
-			if !alreadyRunning && o.shouldStartMonitor() {
+			cca := o.consumerAssignment()
+			// Perform the leader change in a goroutine, otherwise we could block meta operations.
+			if o.shouldStartMonitor() {
 				started := s.startGoRoutine(
-					func() { js.monitorConsumer(o, ca) },
+					func() {
+						defer s.grWG.Done()
+						defer o.clearMonitorRunning()
+						js.processConsumerLeaderChangeWithAssignment(o, cca, true)
+					},
 					pprofLabels{
 						"type":     "consumer",
 						"account":  mset.accName(),
@@ -5827,6 +5850,28 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 				)
 				if !started {
 					o.clearMonitorRunning()
+				}
+			}
+		} else {
+			// Clustered consumer.
+			// Start our monitoring routine if needed.
+			if !alreadyRunning {
+				// Wait for the previous routine to stop running.
+				o.signalMonitorQuit()
+				o.monitorWg.Wait()
+				if o.shouldStartMonitor() {
+					started := s.startGoRoutine(
+						func() { js.monitorConsumer(o, ca) },
+						pprofLabels{
+							"type":     "consumer",
+							"account":  mset.accName(),
+							"stream":   mset.name(),
+							"consumer": ca.Name,
+						},
+					)
+					if !started {
+						o.clearMonitorRunning()
+					}
 				}
 			}
 			// For existing consumer, only send response if not recovering.
@@ -6605,6 +6650,10 @@ func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err err
 }
 
 func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) error {
+	return js.processConsumerLeaderChangeWithAssignment(o, nil, isLeader)
+}
+
+func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *consumerAssignment, isLeader bool) error {
 	stepDownIfLeader := func() error {
 		if node := o.raftNode(); node != nil && isLeader {
 			node.StepDown()
@@ -6616,7 +6665,9 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 		return stepDownIfLeader()
 	}
 
-	ca := o.consumerAssignment()
+	if ca == nil {
+		ca = o.consumerAssignment()
+	}
 	if ca == nil {
 		return stepDownIfLeader()
 	}
