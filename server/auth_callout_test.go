@@ -42,6 +42,11 @@ func decodeAuthRequest(t *testing.T, ejwt []byte) (string, *jwt.ServerID, *jwt.C
 	return ac.UserNkey, &ac.Server, &ac.ClientInformation, &ac.ConnectOptions, ac.TLS
 }
 
+func TestTitleCaseEmptyString(t *testing.T) {
+	defer require_NoPanic(t)
+	require_Equal(t, titleCase(_EMPTY_), _EMPTY_)
+}
+
 const (
 	authCalloutPub        = "UBO2MQV67TQTVIRV3XFTEZOACM4WLOCMCDMAWN5QVN5PI2N6JHTVDRON"
 	authCalloutSeed       = "SUAP277QP7U4JMFFPVZHLJYEQJ2UHOTYVEIZJYAWRJXQLP4FRSEHYZJJOU"

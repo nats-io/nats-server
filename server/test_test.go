@@ -83,6 +83,14 @@ func require_NoError(t testing.TB, err error) {
 	}
 }
 
+// Must be used in a defer call.
+func require_NoPanic(t testing.TB) {
+	t.Helper()
+	if err := recover(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func require_NotNil[T any](t testing.TB, vs ...T) {
 	t.Helper()
 	for _, v := range vs {

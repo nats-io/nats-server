@@ -221,34 +221,28 @@ func TestDNSAltNameMatching(t *testing.T) {
 }
 
 func TestProcessUserPermissionsTemplateMalformedOpDoesNotPanic(t *testing.T) {
+	defer require_NoPanic(t)
+
 	lim := jwt.UserPermissionLimits{}
 	lim.Permissions.Sub.Deny = jwt.StringList{"foo.{{x}}"}
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("Did not expect panic for malformed template operation, got %v", r)
-		}
-	}()
 
 	_, err := processUserPermissionsTemplate(lim, &jwt.UserClaims{}, &Account{})
 	require_Error(t, err)
 }
 
 func TestProcessUserPermissionsTemplateUnknownAllowOpDoesNotPanic(t *testing.T) {
+	defer require_NoPanic(t)
+
 	lim := jwt.UserPermissionLimits{}
 	lim.Permissions.Pub.Allow = jwt.StringList{"foo.{{unknown()}}"}
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("Did not expect panic for unknown allow template operation, got %v", r)
-		}
-	}()
 
 	_, err := processUserPermissionsTemplate(lim, &jwt.UserClaims{}, &Account{})
 	require_Error(t, err)
 }
 
 func TestProcessUserPermissionsTemplateRejectsExcessiveTagExpansions(t *testing.T) {
+	defer require_NoPanic(t)
+
 	lim := jwt.UserPermissionLimits{}
 	lim.Permissions.Pub.Allow = jwt.StringList{"foo.{{tag(a)}}.{{tag(b)}}"}
 
