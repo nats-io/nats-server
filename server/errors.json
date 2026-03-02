@@ -2028,5 +2028,55 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishDisabledErr",
+    "code": 400,
+    "error_code": 10205,
+    "description": "batch publish is disabled",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishInvalidPatternErr",
+    "code": 400,
+    "error_code": 10206,
+    "description": "batch publish pattern is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishInvalidBatchIDErr",
+    "code": 400,
+    "error_code": 10207,
+    "description": "batch publish ID is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishUnknownBatchIDErr",
+    "code": 400,
+    "error_code": 10208,
+    "description": "batch publish ID unknown",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorWithBatchPublishErr",
+    "code": 400,
+    "error_code": 10209,
+    "description": "stream mirrors can not also use batch publishing",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
