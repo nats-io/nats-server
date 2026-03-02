@@ -2061,13 +2061,34 @@ func (n *raft) Peers() []*Peer {
 
 	var peers []*Peer
 	for id, ps := range n.peers {
+		var current bool
 		var lag uint64
-		if n.commit > ps.li {
-			lag = n.commit - ps.li
+		if id == n.id {
+			// We are current and have no lag when compared with ourselves.
+			current = true
+		} else if n.id == n.leader {
+			// We are the leader, we know how many entries this replica has persisted.
+			// Lag is determined by how many entries we have quorum on in our log that haven't yet
+			// been persisted on the replica. They are current if there's no lag.
+			// This will show all peers that are part of quorum as "current".
+			if n.commit > ps.li {
+				lag = n.commit - ps.li
+			}
+			current = lag == 0
+		} else if id == n.leader {
+			// This peer is the leader, we don't know our lag, but we can report
+			// on whether we've seen the leader recently.
+			okInterval := hbInterval * 2
+			current = time.Since(ps.ts) <= okInterval
+		} else {
+			// The remaining condition is another follower that we're not in contact with.
+			// We intentionally leave current and lag as empty.
+			current, lag = false, 0
 		}
+
 		p := &Peer{
 			ID:      id,
-			Current: id == n.leader || ps.li >= n.applied,
+			Current: current,
 			Last:    ps.ts,
 			Lag:     lag,
 		}
@@ -3838,14 +3859,17 @@ func (n *raft) updateLeader(newLeader string) {
 			}
 		}
 	}
-	// Reset last seen timestamps.
+	// Reset last seen timestamps and indices.
 	// If we are (or were) the leader we track(ed) everyone, and don't reset.
 	// But if we're a follower we only track the leader, and reset all others.
 	if newLeader != n.id && !wasLeader {
 		for peer, ps := range n.peers {
+			// Always reset last replicated index.
+			ps.li = 0
 			if peer == newLeader {
 				continue
 			}
+			// Only reset the last seen timestamp if this peer is not the leader.
 			ps.ts = time.Time{}
 		}
 	}
