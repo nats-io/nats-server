@@ -1135,7 +1135,8 @@ default_js_domain: {B:"DHUB"}
 	sLeaf1, _ := RunServerWithConfig(confLeaf1)
 	defer sLeaf1.Shutdown()
 
-	confLeaf2 := createConfFile(t, []byte(fmt.Sprintf(tmplL2, sd3, sHub1.getOpts().LeafNode.Port, sHub1.getOpts().LeafNode.Port)))
+	sd4 := t.TempDir()
+	confLeaf2 := createConfFile(t, []byte(fmt.Sprintf(tmplL2, sd4, sHub1.getOpts().LeafNode.Port, sHub1.getOpts().LeafNode.Port)))
 	sLeaf2, _ := RunServerWithConfig(confLeaf2)
 	defer sLeaf2.Shutdown()
 
