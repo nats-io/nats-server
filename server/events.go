@@ -66,6 +66,8 @@ const (
 	serverStatsSubj           = "$SYS.SERVER.%s.STATSZ"
 	serverDirectReqSubj       = "$SYS.REQ.SERVER.%s.%s"
 	serverPingReqSubj         = "$SYS.REQ.SERVER.PING.%s"
+	serverMetricsReqSubj      = "$SYS.REQ.SERVER.%s.METRICS.>"
+	serverMetricsPingReqSubj  = "$SYS.REQ.SERVER.PING.METRICS.>"
 	serverStatsPingReqSubj    = "$SYS.REQ.SERVER.PING"             // use $SYS.REQ.SERVER.PING.STATSZ instead
 	serverReloadReqSubj       = "$SYS.REQ.SERVER.%s.RELOAD"        // with server ID
 	leafNodeConnectEventSubj  = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT" // for internal use only
@@ -1335,6 +1337,20 @@ func (s *Server) initEventTracking() {
 			return
 		}
 	}
+	if _, err := s.sysSubscribe(fmt.Sprintf(serverMetricsReqSubj, s.info.ID), s.noInlineCallback(s.metricsReq)); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+		return
+	}
+	if s.info.Name != s.info.ID {
+		if _, err := s.sysSubscribe(fmt.Sprintf(serverMetricsReqSubj, s.info.Name), s.noInlineCallback(s.metricsReq)); err != nil {
+			s.Errorf("Error setting up internal tracking: %v", err)
+			return
+		}
+	}
+	if _, err := s.sysSubscribe(serverMetricsPingReqSubj, s.noInlineCallback(s.metricsReq)); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+		return
+	}
 	extractAccount := func(subject string) (string, error) {
 		if tk := strings.Split(subject, tsep); len(tk) != accReqTokens {
 			return _EMPTY_, fmt.Errorf("subject %q is malformed", subject)
@@ -2247,6 +2263,62 @@ func getAcceptEncoding(hdr []byte) compressionType {
 		return gzipCompression
 	}
 	return unsupportedCompression
+}
+
+type metricsResetResponse struct {
+	Success bool `json:"SUCCESS"`
+}
+
+type metricsErrorResponse struct {
+	Error string `json:"ERROR"`
+}
+
+func (s *Server) metricsReq(_ *subscription, _ *client, _ *Account, subject, reply string, _ []byte, msg []byte) {
+	if reply == _EMPTY_ {
+		return
+	}
+
+	if len(msg) > 0 {
+		var fopts EventFilterOptions
+		if err := json.Unmarshal(msg, &fopts); err != nil {
+			s.sendInternalMsg(reply, _EMPTY_, nil, &metricsErrorResponse{Error: err.Error()})
+			return
+		}
+		if s.filterRequest(&fopts) {
+			return
+		}
+	}
+
+	tokens := strings.Split(subject, tsep)
+	idx := -1
+	for i, tok := range tokens {
+		if tok == "METRICS" {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 || idx+1 >= len(tokens) {
+		s.sendInternalMsg(reply, _EMPTY_, nil, &metricsErrorResponse{Error: "invalid metrics request subject"})
+		return
+	}
+
+	action := strings.ToUpper(tokens[idx+1])
+	path := strings.Join(tokens[idx+2:], tsep)
+
+	switch action {
+	case "LIST":
+		resp, err := s.metrics.Query(path)
+		if err != nil {
+			s.sendInternalMsg(reply, _EMPTY_, nil, &metricsErrorResponse{Error: err.Error()})
+			return
+		}
+		s.sendInternalMsg(reply, _EMPTY_, nil, resp)
+	case "RESET":
+		s.metrics.Reset(path)
+		s.sendInternalMsg(reply, _EMPTY_, nil, &metricsResetResponse{Success: true})
+	default:
+		s.sendInternalMsg(reply, _EMPTY_, nil, &metricsErrorResponse{Error: "invalid metrics action"})
+	}
 }
 
 func (s *Server) zReq(_ *client, reply string, hdr, msg []byte, fOpts *EventFilterOptions, optz any, respf func() (any, error)) {

@@ -46,6 +46,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/elastic"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats-server/v2/server/metric"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nats-server/v2/server/thw"
 	"golang.org/x/crypto/chacha20"
@@ -65,6 +66,8 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
 	SyncAlways bool
+	// SyncOnFlush sync all writes before on FlushAllPending
+	SyncOnFlush bool
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
@@ -74,6 +77,8 @@ type FileStoreConfig struct {
 
 	// Internal reference to our server.
 	srv *Server
+	// Internal account name for grouping metrics.
+	accName string
 }
 
 // FileStreamInfo allows us to remember created time.
@@ -211,6 +216,7 @@ type fileStore struct {
 	scheduling  *MsgScheduling
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
+	fsyncs      *metric.Counter
 }
 
 // Represents a message store block and its data.
@@ -433,6 +439,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fsld:   make(chan struct{}),
 		srv:    fcfg.srv,
 	}
+	if fs.srv != nil && fs.srv.metrics != nil {
+		c := metric.NewCounter()
+		fs.fsyncs = &c
+		metricPath := fmt.Sprintf("%s.STORE.%s.FSYNCS", fs.fcfg.accName, cfg.Name)
+		fs.srv.metrics.Add(metricPath, fs.fsyncs)
+	}
 
 	// Register with access time service.
 	ats.Register()
@@ -641,6 +653,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 func (fs *fileStore) lockAllMsgBlocks() {
 	for _, mb := range fs.blks {
 		mb.mu.Lock()
+	}
+}
+
+func (fs *fileStore) countFsync() {
+	if fs != nil && fs.fsyncs != nil {
+		fs.fsyncs.Increment()
 	}
 }
 
@@ -4931,9 +4949,13 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 
 // FlushAllPending flushes all data that was still pending to be written.
 func (fs *fileStore) FlushAllPending() {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	fs.checkAndFlushLastBlock()
+	if fs.fcfg.SyncOnFlush {
+		fs.syncBlocks()
+	} else {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		fs.checkAndFlushLastBlock()
+	}
 }
 
 // Lock should be held.
@@ -7253,6 +7275,7 @@ func (fs *fileStore) syncBlocks() {
 			}
 			// If we have an fd.
 			if fd != nil {
+				fs.countFsync()
 				canClear := fd.Sync() == nil
 				// If we opened the file close the fd.
 				if didOpen {
@@ -7663,6 +7686,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Check if we are in sync always mode.
 	if mb.syncAlways {
+		mb.fs.countFsync()
 		mb.mfd.Sync()
 	} else {
 		mb.needSync = true
