@@ -250,6 +250,20 @@ func TestProcessUserPermissionsTemplateUnknownAllowOpDoesNotPanic(t *testing.T) 
 	require_Error(t, err)
 }
 
+func TestProcessUserPermissionsTemplateRejectsExcessiveTagExpansions(t *testing.T) {
+	lim := jwt.UserPermissionLimits{}
+	lim.Permissions.Pub.Allow = jwt.StringList{"foo.{{tag(a)}}.{{tag(b)}}"}
+
+	uc := &jwt.UserClaims{}
+	for i := range 128 {
+		uc.Tags = append(uc.Tags, fmt.Sprintf("a:v%d", i))
+		uc.Tags = append(uc.Tags, fmt.Sprintf("b:v%d", i))
+	}
+
+	_, err := processUserPermissionsTemplate(lim, uc, &Account{})
+	require_Error(t, err)
+}
+
 func TestNoAuthUser(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: "127.0.0.1:-1"
