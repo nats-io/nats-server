@@ -7367,7 +7367,12 @@ func TestJetStreamClusterCatchupMustStallWhenBehindOnApplies(t *testing.T) {
 	n := mset.node.(*raft)
 	n.Lock()
 	ae := n.buildAppendEntry(nil)
-	err = n.storeToWAL(ae)
+	size, seq, err := n.storeToWAL(ae)
+	if err == nil {
+		n.bytes += size
+		n.pterm = ae.term
+		n.pindex = seq
+	}
 	n.Unlock()
 	index, commit, applied := n.Progress()
 	require_NoError(t, err)
@@ -12902,7 +12907,7 @@ func TestJetStreamClusterMalformedEntrySetsWriteErr(t *testing.T) {
 	// Craft a malformed streamMsgOp, this must surface as a stream write error.
 	bad := append([]byte{byte(streamMsgOp)}, 1, 2, 3)
 	n := mset.raftNode().(*raft)
-	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, bad)})
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, bad)}, true)
 
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
 		werr := mset.getWriteErr()
@@ -12953,7 +12958,7 @@ func TestJetStreamClusterMalformedConsumerEntrySetsWriteErr(t *testing.T) {
 	// Craft a malformed consumer entry using an unknown op, this must surface as a consumer write error.
 	bad := []byte{255, 1, 2, 3}
 	n := o.raftNode().(*raft)
-	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, bad)})
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, bad)}, true)
 
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
 		werr := o.getWriteErr()
@@ -12986,7 +12991,7 @@ func TestJetStreamClusterMalformedMetaEntrySetsWriteErr(t *testing.T) {
 	// Craft a malformed meta entry using an unknown op, this must surface as a meta write error.
 	bad := []byte{255, 1, 2, 3}
 	n := mjs.getMetaGroup().(*raft)
-	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, bad)})
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, bad)}, true)
 
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
 		werr := mjs.getMetaWriteErr()
