@@ -896,9 +896,11 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 
 	// Check for X-Forwarded-For header
 	if cips, ok := r.Header[wsXForwardedForHeader]; ok {
-		cip := cips[0]
-		if net.ParseIP(cip) != nil {
-			ws.clientIP = cip
+		if len(cips) > 0 {
+			cip := cips[0]
+			if net.ParseIP(cip) != nil {
+				ws.clientIP = cip
+			}
 		}
 	}
 

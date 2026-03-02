@@ -1599,6 +1599,21 @@ func TestWSUpgradeConnDeadline(t *testing.T) {
 	}
 }
 
+func TestWSUpgradeWithEmptyXForwardedForSliceDoesNotPanic(t *testing.T) {
+	opts := testWSOptions()
+	s := &Server{opts: opts}
+	rw := &testResponseWriter{}
+	req := testWSCreateValidReq()
+	req.Header[wsXForwardedForHeader] = []string{}
+	defer require_NoPanic(t)
+
+	res, err := s.wsUpgrade(rw, req)
+	require_NoError(t, err)
+	require_NotNil(t, res)
+	require_NotNil(t, res.ws)
+	require_Equal(t, res.ws.clientIP, _EMPTY_)
+}
+
 func TestWSCompressNegotiation(t *testing.T) {
 	// No compression on the server, but client asks
 	opts := testWSOptions()
