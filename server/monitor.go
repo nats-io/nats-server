@@ -4209,7 +4209,7 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			PTerm:         n.pterm,
 			PIndex:        n.pindex,
 			SystemAcc:     n.IsSystemAccount(),
-			TrafficAcc:    n.acc.GetName(),
+			TrafficAcc:    n.t.Account().GetName(),
 			IPQPropLen:    n.prop.len(),
 			IPQEntryLen:   n.entry.len(),
 			IPQRespLen:    n.resp.len(),
@@ -4224,8 +4224,10 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			}
 			peer := RaftzGroupPeer{
 				Name:                s.serverNameForNode(id),
-				Known:               p.kp,
 				LastReplicatedIndex: p.li,
+				// The Raft layer no longer distinguishes between
+				// 'known' and 'unknown' peers.
+				Known: true,
 			}
 			if !p.ts.IsZero() {
 				peer.LastSeen = time.Since(p.ts).String()
