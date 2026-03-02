@@ -32,6 +32,14 @@ const (
 	AuthRequestXKeyHeader = "Nats-Server-Xkey"
 )
 
+func titleCase(m string) string {
+	r := []rune(m)
+	if len(r) == 0 {
+		return _EMPTY_
+	}
+	return string(append([]rune{unicode.ToUpper(r[0])}, r[1:]...))
+}
+
 // Process a callout on this client's behalf.
 func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequired, trustedProxy bool) (authorized bool, errStr string) {
 	isOperatorMode := len(opts.TrustedKeys) > 0
@@ -241,11 +249,6 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	}
 
 	processReply := func(_ *subscription, rc *client, racc *Account, subject, reply string, rmsg []byte) {
-		titleCase := func(m string) string {
-			r := []rune(m)
-			return string(append([]rune{unicode.ToUpper(r[0])}, r[1:]...))
-		}
-
 		arc, err := decodeResponse(rc, rmsg, racc)
 		if err != nil {
 			c.authViolation()
