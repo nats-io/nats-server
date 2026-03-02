@@ -418,7 +418,9 @@ func (c *client) matchesPinnedCert(tlsPinnedCerts PinnedCertSet) bool {
 }
 
 var (
-	mustacheRE = regexp.MustCompile(`{{2}([^}]+)}{2}`)
+	mustacheRE                             = regexp.MustCompile(`{{2}([^}]+)}{2}`)
+	maxPermTemplateSubjectExpansions       = 4096
+	errPermTemplateExpansionLimit    error = fmt.Errorf("template expansion exceeds limit")
 )
 
 func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.UserClaims, acc *Account) (jwt.UserPermissionLimits, error) {
@@ -541,6 +543,20 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 					return nil, fmt.Errorf("generated invalid subject")
 				}
 			} else {
+				expCount := 1
+				for _, v := range values {
+					if len(v) == 0 {
+						expCount = 0
+						break
+					}
+					if expCount > maxPermTemplateSubjectExpansions/len(v) {
+						return nil, fmt.Errorf("%w: %d", errPermTemplateExpansionLimit, maxPermTemplateSubjectExpansions)
+					}
+					expCount *= len(v)
+				}
+				if len(emittedList) > maxPermTemplateSubjectExpansions-expCount {
+					return nil, fmt.Errorf("%w: %d", errPermTemplateExpansionLimit, maxPermTemplateSubjectExpansions)
+				}
 				a := nArrayCartesianProduct(values...)
 				for _, aa := range a {
 					subj := list[i]
