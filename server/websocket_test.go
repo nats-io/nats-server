@@ -1121,6 +1121,14 @@ func TestWSReadHugePayloadLenDoesNotPanic(t *testing.T) {
 	require_Error(t, err, errors.New("invalid 64-bit payload length"))
 }
 
+func TestWSReadByteWithEmptyCompressedBufferDoesNotPanic(t *testing.T) {
+	r := &wsReadInfo{cbufs: [][]byte{{}}}
+	defer require_NoPanic(t)
+
+	_, err := r.ReadByte()
+	require_Error(t, err, io.EOF)
+}
+
 func TestWSEnqueueCloseMsg(t *testing.T) {
 	for _, test := range []struct {
 		reason ClosedState

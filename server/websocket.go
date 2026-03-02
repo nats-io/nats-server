@@ -422,6 +422,9 @@ func (r *wsReadInfo) nextCBuf() []byte {
 }
 
 func (r *wsReadInfo) ReadByte() (byte, error) {
+	for len(r.cbufs) > 0 && len(r.cbufs[0]) == 0 {
+		r.nextCBuf()
+	}
 	if len(r.cbufs) == 0 {
 		return 0, io.EOF
 	}
