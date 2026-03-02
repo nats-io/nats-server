@@ -2760,6 +2760,14 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	}
 
 	acc := c.acc
+	// Guard against LS+ arriving before CONNECT has been processed, which
+	// can happen when compression is enabled.
+	if acc == nil {
+		c.mu.Unlock()
+		c.sendErr("Authorization Violation")
+		c.closeConnection(ProtocolViolation)
+		return nil
+	}
 	// Check if we have a loop.
 	ldsPrefix := bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix))
 
@@ -2876,12 +2884,20 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
-	acc := c.acc
 	srv := c.srv
 
 	c.mu.Lock()
 	if c.isClosed() {
 		c.mu.Unlock()
+		return nil
+	}
+
+	acc := c.acc
+	// Guard against LS- arriving before CONNECT has been processed.
+	if acc == nil {
+		c.mu.Unlock()
+		c.sendErr("Authorization Violation")
+		c.closeConnection(ProtocolViolation)
 		return nil
 	}
 

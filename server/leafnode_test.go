@@ -10891,3 +10891,227 @@ func TestLeafNodesBasicTokenAuth(t *testing.T) {
 	checkLeafNodeConnected(t, hub)
 	checkLeafNodeConnected(t, leaf)
 }
+
+func TestLeafNodeNoAccPanicOnLeafSubBeforeConnect(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Port = -1
+	// Default compression is s2_auto, which causes the auth timer to use
+	// c.ping.tmr instead of c.atmr. This makes awaitingAuth() return false,
+	// allowing LS+ through the parser before CONNECT sets c.acc.
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	// Read the INFO.
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	if !strings.HasPrefix(string(l), "INFO") {
+		t.Fatalf("Expected INFO, got %q", l)
+	}
+
+	// Send LS+ without CONNECT first. This should not panic the server.
+	_, err = c.Write([]byte("LS+ test\r\n"))
+	require_NoError(t, err)
+
+	// The server should close the connection.
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 256)
+	for {
+		_, err = c.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+
+	// Make sure the server is still running.
+	s.mu.Lock()
+	shutdown := s.isShuttingDown()
+	s.mu.Unlock()
+	if shutdown {
+		t.Fatal("Server should not have shutdown")
+	}
+}
+
+func TestLeafNodeNoAccPanicOnLeafUnsubBeforeConnect(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Port = -1
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	// Read the INFO.
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	if !strings.HasPrefix(string(l), "INFO") {
+		t.Fatalf("Expected INFO, got %q", l)
+	}
+
+	// Send LS- without CONNECT first. This should not panic the server.
+	_, err = c.Write([]byte("LS- test\r\n"))
+	require_NoError(t, err)
+
+	// The server should close the connection.
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 256)
+	for {
+		_, err = c.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+
+	// Make sure the server is still running.
+	s.mu.Lock()
+	shutdown := s.isShuttingDown()
+	s.mu.Unlock()
+	if shutdown {
+		t.Fatal("Server should not have shutdown")
+	}
+}
+
+func TestLeafNodeLeafSubBeforeConnectCompressionEffect(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		compression string
+		// With compression off, the auth timer (c.atmr) is set, so
+		// awaitingAuth() returns true and the parser blocks LS+ with
+		// an auth violation. With compression on (default s2_auto),
+		// c.ping.tmr is used instead, awaitingAuth() returns false,
+		// and LS+ reaches processLeafSub where our nil acc guard
+		// catches it. Both paths send the same "Authorization Violation"
+		// error for consistency.
+	}{
+		{"compression off", CompressionOff},
+		{"compression s2_auto", CompressionS2Auto},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.LeafNode.Port = -1
+			o.LeafNode.Compression.Mode = test.compression
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+			c, err := net.Dial("tcp", addr)
+			require_NoError(t, err)
+			defer c.Close()
+
+			br := bufio.NewReader(c)
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			l, _, err := br.ReadLine()
+			require_NoError(t, err)
+			if !strings.HasPrefix(string(l), "INFO") {
+				t.Fatalf("Expected INFO, got %q", l)
+			}
+
+			// Send LS+ without CONNECT.
+			_, err = c.Write([]byte("LS+ test\r\n"))
+			require_NoError(t, err)
+
+			// Read the error response before the connection is closed.
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			l, _, err = br.ReadLine()
+			require_NoError(t, err)
+			errMsg := string(l)
+
+			if !strings.Contains(errMsg, "Authorization Violation") {
+				t.Fatalf("Expected auth violation error, got %q", errMsg)
+			}
+
+			// Make sure the server is still running.
+			s.mu.Lock()
+			shutdown := s.isShuttingDown()
+			s.mu.Unlock()
+			if shutdown {
+				t.Fatal("Server should not have shutdown")
+			}
+		})
+	}
+}
+
+func TestLeafNodeNoAccPanicOnLeafSubBeforeConnectOperatorMode(t *testing.T) {
+	// Setup operator JWT-based server with leafnode port.
+	// This confirms that even with full operator/JWT auth configured,
+	// a raw TCP connection can bypass auth and trigger the panic.
+	sysAcc, _ := nkeys.CreateAccount()
+	sysAccPub, _ := sysAcc.PublicKey()
+
+	okp, _ := nkeys.FromSeed(oSeed)
+	opub, _ := okp.PublicKey()
+
+	// Create operator claim with system account.
+	oc := jwt.NewOperatorClaims(opub)
+	oc.SystemAccount = sysAccPub
+	operatorJwt, err := oc.Encode(okp)
+	require_NoError(t, err)
+
+	// Create the system account JWT.
+	sysAccClaim := jwt.NewAccountClaims(sysAccPub)
+	sysAccJwt, err := sysAccClaim.Encode(okp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: OP
+		operator: %s
+		system_account: %s
+		resolver: MEMORY
+		resolver_preload: {
+			%s: %s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`, operatorJwt, sysAccPub, sysAccPub, sysAccJwt)))
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", opts.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	// Read the INFO.
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	if !strings.HasPrefix(string(l), "INFO") {
+		t.Fatalf("Expected INFO, got %q", l)
+	}
+
+	// Send LS+ without CONNECT first, bypassing JWT auth entirely.
+	// Without the fix this would panic on nil c.acc dereference.
+	_, err = c.Write([]byte("LS+ test\r\n"))
+	require_NoError(t, err)
+
+	// The server should close the connection.
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 256)
+	for {
+		_, err = c.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+
+	// Make sure the server is still running.
+	s.mu.Lock()
+	shutdown := s.isShuttingDown()
+	s.mu.Unlock()
+	if shutdown {
+		t.Fatal("Server should not have shutdown")
+	}
+}
