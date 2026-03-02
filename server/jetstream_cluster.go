@@ -2965,22 +2965,36 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 	accName := acc.GetName()
 
-	// Used to represent how we can detect a changed state quickly and without representing
-	// a complete and detailed state which could be costly in terms of memory, cpu and GC.
-	// This only entails how many messages, and the first and last sequence of the stream.
-	// This is all that is needed to detect a change, and we can get this from FilteredState()
-	// with an empty filter.
-	var lastState SimpleState
-
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
 	isRecovering := true
 
-	var failedSnapshots int
+	var (
+		snapMu           sync.Mutex
+		snapshotting     bool
+		fallbackSnapshot bool
+		failedSnapshots  int
+		// Used to represent how we can detect a changed state quickly and without representing
+		// a complete and detailed state which could be costly in terms of memory, cpu and GC.
+		// This only entails how many messages, and the first and last sequence of the stream.
+		// This is all that is needed to detect a change, and we can get this from FilteredState()
+		// with an empty filter.
+		lastState SimpleState
+	)
+
 	doSnapshot := func(force bool) {
 		// Suppress during recovery.
+		if mset == nil || isRecovering || isRestore {
+			return
+		}
+		snapMu.Lock()
+		defer snapMu.Unlock()
 		// If snapshots have failed, and we're not forced to, we'll wait for the timer since it'll now be forced.
-		if mset == nil || isRecovering || isRestore || (!force && failedSnapshots > 0) {
+		if !force && failedSnapshots > 0 {
+			return
+		}
+		// Suppress if an async snapshot is already in progress.
+		if snapshotting {
 			return
 		}
 
@@ -2997,29 +3011,77 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		}
 
-		// Make sure all pending data is flushed before allowing snapshots.
-		mset.flushAllPending()
-
 		// If we had a significant number of failed snapshots, start relaxing Raft-layer checks
 		// to force it through. We might have been catching up a peer for a long period, and this
 		// protects our log size from growing indefinitely.
 		forceSnapshot := failedSnapshots > 4
-		if err := n.InstallSnapshot(mset.stateSnapshot(), forceSnapshot); err == nil {
-			lastState = curState
-			// If there was a failed snapshot before, we reduced the timer's interval.
-			// Reset it back to the original interval now.
-			if failedSnapshots > 0 {
-				t.Reset(compactInterval + rci)
+		c, err := n.CreateSnapshotCheckpoint(forceSnapshot)
+		if err != nil {
+			if err != errNoSnapAvailable && err != errNodeClosed {
+				s.Warnf("Failed to install snapshot for '%s > %s' [%s]: %v",
+					mset.acc.Name, mset.name(), n.Group(), err)
+				// If this is the first failure, reduce the interval of the snapshot timer.
+				// This ensures we're not waiting too long for snapshotting to eventually become forced.
+				if failedSnapshots == 0 {
+					t.Reset(compactMinInterval)
+				}
+				failedSnapshots++
 			}
-			failedSnapshots = 0
-		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
-			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
-			// If this is the first failure, reduce the interval of the snapshot timer.
-			// This ensures we're not waiting too long for snapshotting to eventually become forced.
-			if failedSnapshots == 0 {
-				t.Reset(compactMinInterval)
+			return
+		}
+
+		// Make sure all pending data is flushed before allowing snapshots.
+		mset.flushAllPending()
+		snap := mset.stateSnapshot()
+
+		handleInstallResult := func(err error) {
+			snapshotting = false
+			if err == nil {
+				lastState = curState
+				// If there was a failed snapshot before, we reduced the timer's interval.
+				// Reset it back to the original interval now.
+				if failedSnapshots > 0 {
+					t.Reset(compactInterval + rci)
+				}
+				failedSnapshots = 0
+				fallbackSnapshot = false
+			} else {
+				c.Abort()
+
+				if err == errNoSnapAvailable || err == errNodeClosed || err == errCatchupsRunning || err == errSnapAborted {
+					return
+				}
+
+				s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v, will fall back to blocking snapshot",
+					mset.acc.Name, mset.name(), n.Group(), err)
+				fallbackSnapshot = true
+				// If this is the first failure, reduce the interval of the snapshot timer.
+				// This ensures we're not waiting too long for snapshotting to eventually become forced.
+				if failedSnapshots == 0 {
+					t.Reset(compactMinInterval)
+				}
+				failedSnapshots++
 			}
-			failedSnapshots++
+		}
+
+		snapshotting = true
+		if fallbackSnapshot {
+			_, err = c.InstallSnapshot(snap)
+			handleInstallResult(err)
+		} else {
+			started := s.startGoRoutine(func() {
+				defer s.grWG.Done()
+
+				_, err := c.InstallSnapshot(snap)
+
+				snapMu.Lock()
+				defer snapMu.Unlock()
+				handleInstallResult(err)
+			})
+			if !started {
+				snapshotting = false
+				c.Abort()
+			}
 		}
 	}
 
@@ -3096,6 +3158,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
+			snapMu.Lock()
+			fallbackSnapshot = true
+			snapMu.Unlock()
 			doSnapshot(false)
 			return
 		case <-mqch:
@@ -3103,6 +3168,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Don't snapshot if not shutting down, monitor goroutine could be going away
 			// on a scale down or a remove for example.
 			if s.isShuttingDown() {
+				snapMu.Lock()
+				fallbackSnapshot = true
+				snapMu.Unlock()
 				doSnapshot(false)
 			}
 			return
@@ -3297,7 +3365,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case <-t.C:
 			// Start forcing snapshots if they failed previously.
+			snapMu.Lock()
 			forceIfFailed := failedSnapshots > 0
+			snapMu.Unlock()
 			doSnapshot(forceIfFailed)
 
 		case <-uch:
