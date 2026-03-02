@@ -1107,6 +1107,20 @@ func TestWSReadErrors(t *testing.T) {
 	}
 }
 
+func TestWSReadHugePayloadLenDoesNotPanic(t *testing.T) {
+	c, ri, tr := testWSSetupForRead()
+	defer require_NoPanic(t)
+
+	rb := make([]byte, 14)
+	rb[0] = byte(wsBinaryMessage) | wsFinalBit
+	rb[1] = 127 | wsMaskBit
+	binary.BigEndian.PutUint64(rb[2:], ^uint64(0))
+	copy(rb[10:], []byte{1, 2, 3, 4})
+
+	_, err := c.wsRead(ri, tr, rb)
+	require_Error(t, err, errors.New("invalid 64-bit payload length"))
+}
+
 func TestWSEnqueueCloseMsg(t *testing.T) {
 	for _, test := range []struct {
 		reason ClosedState
