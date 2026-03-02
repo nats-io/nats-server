@@ -2986,10 +2986,23 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	return true
 }
 
+// Returns the maximum number of bytes we can safely
+// send in a single message.
+func (n *raft) maxBatchSize() int {
+	maxPayload := MAX_PAYLOAD_SIZE
+	if n.s.info.MaxPayload > 0 {
+		maxPayload = int(n.s.info.MaxPayload)
+	}
+	if n.acc != nil && n.acc.mpay > 0 {
+		maxPayload = int(n.acc.mpay)
+	}
+	return maxPayload - MAX_CONTROL_LINE_SIZE
+}
+
 // nextBatch returns a slice of proposedEntry to be sent next.
-// Normal entries can be batched together, up to maxBatch bytes or maxEntries entries.
-// Membership changes and snapshot entries are always returned unbatched, as we treat
-// those entries specially.
+// Normal entries can be batched together, up to maxBatch encoded bytes
+// or maxEntries entries. Membership changes and snapshot entries are
+// always returned unbatched, as we treat those entries specially.
 func nextBatch(es []*proposedEntry, maxBatch, maxEntries int) []*proposedEntry {
 	cantBatch := func(e *proposedEntry) bool {
 		return e.Type == EntrySnapshot ||
@@ -3001,17 +3014,18 @@ func nextBatch(es []*proposedEntry, maxBatch, maxEntries int) []*proposedEntry {
 		return es[:1]
 	}
 
-	sz := 0
+	batchSize := appendEntryBaseLen
 	end := 0
 	for i, pe := range es {
 		if cantBatch(pe) {
 			break
 		}
-		sz += len(pe.Data) + 1
-		end = i + 1
-		if sz >= maxBatch || end >= maxEntries {
+		msgSize := len(pe.Data) + 1 + 4 // to encode type and size
+		if end > 0 && (batchSize+msgSize > maxBatch || end >= maxEntries) {
 			break
 		}
+		batchSize += msgSize
+		end = i + 1
 	}
 	return es[:end]
 }
@@ -3069,8 +3083,8 @@ func (n *raft) runAsLeader() {
 			}
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
-			const maxBatch = 256 * 1024
-			const maxEntries = 512
+			const maxEntries = math.MaxUint16
+			maxBatch := n.maxBatchSize()
 
 			batchEntries := func(batch []*proposedEntry) []*Entry {
 				dst := make([]*Entry, 0, len(batch))
