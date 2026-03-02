@@ -513,50 +513,57 @@ func TestNRGNextBatch(t *testing.T) {
 	}
 
 	es := []*proposedEntry{
-		pe(EntryNormal, "aaaa"),
-		pe(EntryNormal, "bbbb"),
+		pe(EntryNormal, "aaaaaaaaaa"),
+		pe(EntryNormal, "bbbbbbbbbb"),
+		pe(EntryNormal, "cccccccccc"),
 		pe(EntryAddPeer, "peer-a"),
 		pe(EntryNormal, "x"),
 		pe(EntryNormal, "a"),
 		pe(EntryNormal, "b"),
 		pe(EntryNormal, "c"),
-		pe(EntryRemovePeer, "peer-b"),
 		pe(EntryNormal, "d"),
+		pe(EntryRemovePeer, "peer-b"),
+		pe(EntryNormal, "e"),
 	}
 
-	const maxBatch = 8
+	const maxBatch = appendEntryBaseLen + 30
 	const maxEntries = 3
 
 	rem := es
 
-	// First batch flushes on the size threshold.
+	// First batch flushes on the size threshold: two large entries fit, a third would exceed maxBatch.
 	batch := nextBatch(rem, maxBatch, maxEntries)
 	check(t, batch, es[:2])
 	rem = rem[len(batch):]
 
-	// Add-peer stays standalone.
+	// A normal entry stops before the add-peer barrier.
 	batch = nextBatch(rem, maxBatch, maxEntries)
 	check(t, batch, es[2:3])
 	rem = rem[len(batch):]
 
-	// Next normal batch flushes on maxEntries.
+	// Add-peer stays standalone.
 	batch = nextBatch(rem, maxBatch, maxEntries)
-	check(t, batch, es[3:6])
+	check(t, batch, es[3:4])
 	rem = rem[len(batch):]
 
-	// The remaining normal entry stops before the remove-peer barrier.
+	// Next normal batch flushes on maxEntries: three small entries fit under maxBatch.
 	batch = nextBatch(rem, maxBatch, maxEntries)
-	check(t, batch, es[6:7])
+	check(t, batch, es[4:7])
+	rem = rem[len(batch):]
+
+	// The remaining normal entries stop before the remove-peer barrier.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[7:9])
 	rem = rem[len(batch):]
 
 	// Remove-peer stays standalone.
 	batch = nextBatch(rem, maxBatch, maxEntries)
-	check(t, batch, es[7:8])
+	check(t, batch, es[9:10])
 	rem = rem[len(batch):]
 
 	// Final tail entry is returned alone.
 	batch = nextBatch(rem, maxBatch, maxEntries)
-	check(t, batch, es[8:9])
+	check(t, batch, es[10:11])
 	rem = rem[len(batch):]
 
 	require_Equal(t, len(rem), 0)
