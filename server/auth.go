@@ -529,7 +529,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 						// generate an invalid subject?
 						values[tokenNum] = []string{" "}
 					}
-				} else if failOnBadSubject {
+				} else {
 					return nil, fmt.Errorf("template operation in %q: %q is not defined", list[i], op)
 				}
 			}

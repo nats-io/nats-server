@@ -236,6 +236,20 @@ func TestProcessUserPermissionsTemplateMalformedOpDoesNotPanic(t *testing.T) {
 	require_Error(t, err)
 }
 
+func TestProcessUserPermissionsTemplateUnknownAllowOpDoesNotPanic(t *testing.T) {
+	lim := jwt.UserPermissionLimits{}
+	lim.Permissions.Pub.Allow = jwt.StringList{"foo.{{unknown()}}"}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Did not expect panic for unknown allow template operation, got %v", r)
+		}
+	}()
+
+	_, err := processUserPermissionsTemplate(lim, &jwt.UserClaims{}, &Account{})
+	require_Error(t, err)
+}
+
 func TestNoAuthUser(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: "127.0.0.1:-1"
