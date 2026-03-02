@@ -142,33 +142,6 @@ jobs:
       - name: Build NATS Server
         run: go build
 
-  claude:
-    name: Claude Code Review
-    needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_MEDIUM || 'ubuntu-latest' }}
-    if: >-
-      github.event_name == 'pull_request' &&
-      (github.event.action == 'opened' || github.event.action == 'synchronize')
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Request review
-        uses: anthropics/claude-code-action@v1
-        if: env.HAS_TOKEN == 'true'
-        env:
-          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: --model opus
-          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
-          plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-
   store:
     name: Test Stores
     needs: [build-latest, build-supported, lint]
