@@ -3409,7 +3409,7 @@ func (n *raft) runAsLeader() {
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
 			const maxBatch = 256 * 1024
-			const maxEntries = 512
+			const maxEntries = 4096 // larger batches showed no benefit
 			var entries []*Entry
 
 			es, sz := n.prop.pop(), 0
