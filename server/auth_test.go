@@ -220,6 +220,20 @@ func TestDNSAltNameMatching(t *testing.T) {
 	}
 }
 
+func TestProcessUserPermissionsTemplateMalformedOpDoesNotPanic(t *testing.T) {
+	lim := jwt.UserPermissionLimits{}
+	lim.Permissions.Sub.Deny = jwt.StringList{"foo.{{x}}"}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Did not expect panic for malformed template operation, got %v", r)
+		}
+	}()
+
+	_, err := processUserPermissionsTemplate(lim, &jwt.UserClaims{}, &Account{})
+	require_Error(t, err)
+}
+
 func TestNoAuthUser(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: "127.0.0.1:-1"

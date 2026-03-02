@@ -453,11 +453,11 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 		return p
 	}
 	isTag := func(op string) []string {
-		if strings.EqualFold("tag(", op[:4]) && strings.HasSuffix(op, ")") {
+		if len(op) >= 4 && strings.EqualFold("tag(", op[:4]) && strings.HasSuffix(op, ")") {
 			v := strings.TrimPrefix(op, "tag(")
 			v = strings.TrimSuffix(v, ")")
 			return []string{"tag", v}
-		} else if strings.EqualFold("account-tag(", op[:12]) && strings.HasSuffix(op, ")") {
+		} else if len(op) >= 12 && strings.EqualFold("account-tag(", op[:12]) && strings.HasSuffix(op, ")") {
 			v := strings.TrimPrefix(op, "account-tag(")
 			v = strings.TrimSuffix(v, ")")
 			return []string{"account-tag", v}
