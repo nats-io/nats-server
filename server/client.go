@@ -4760,7 +4760,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			}
 		} else if c.kind != LEAF || c.pa.hdr < 0 || len(sliceHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
 			ci = c.getClientInfo(share)
-			// FIXME(mvv): fast batch requires the original subject, test for various topologies (acc bounds, leaf, gateway)
+			// Fast batch requires knowledge of the original reply subject.
 			if bytes.HasSuffix(c.pa.reply, []byte(FastBatchSuffix)) {
 				ci.Reply = bytesToString(c.pa.reply)
 			}

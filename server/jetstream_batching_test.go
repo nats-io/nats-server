@@ -3921,3 +3921,65 @@ func TestJetStreamFastBatchSequentialDuplicateAndErrorPubAck(t *testing.T) {
 	// Technically, we shouldn't return a zero-sequence, but it's unavoidable.
 	require_Equal(t, pubAck.Sequence, 0)
 }
+
+func TestJetStreamFastBatchPublishAccImportExport(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 1MB, max_file_store: 1MB, store_dir: %q}
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [ {user: a, password: a} ]
+				exports [
+					{ service: "foo" }
+				]
+			},
+			B: {
+				users: [ {user: b, password: b} ]
+				imports [
+					{ service: { subject: "foo", account: A } }
+				]
+			},
+		}
+	`, t.TempDir())))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("a", "a"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		AllowBatchPublish: true,
+	}
+	_, err = jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	checkFastBatchPublish := func(user string) {
+		nc, err := nats.Connect(s.ClientURL(), nats.UserInfo(user, user))
+		require_NoError(t, err)
+		defer nc.Close()
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		require_Equal(t, pubAck.BatchSize, 1)
+	}
+	checkFastBatchPublish("a")
+	checkFastBatchPublish("b")
+}
