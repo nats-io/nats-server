@@ -2176,8 +2176,8 @@ func (ms *memStore) FastState(state *StreamState) {
 }
 
 func (ms *memStore) State() StreamState {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 
 	state := ms.state
 	state.Consumers = ms.consumers
