@@ -23118,7 +23118,7 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 	req, err = json.Marshal(&sConfig)
 	require_NoError(t, err)
 
-	r, err = nc.Request("$JS.API.STREAM.CREATE.C", req, 5*time.Second)
+	_, err = nc.Request("$JS.API.STREAM.CREATE.C", req, 5*time.Second)
 	require_NoError(t, err)
 
 	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {

@@ -4097,7 +4097,6 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				}
 				// Retry in all type of errors we do not want to skip if we are still leader.
 				if mset.isLeader() && !errors.Is(err, errMsgIdDuplicate) && (!si.sdn || !errors.Is(err, ErrMaxMsgsPerSubject) && !errors.Is(err, ErrMaxMsgs) && !errors.Is(err, ErrMaxBytes)) {
-					fmt.Printf("Retrying source consumer for '%s > %s' on %s due to error: %v\n", accName, sname, m.subj, err)
 					// This will make sure the source is still in mset.sources map,
 					// find the last sequence and then call setupSourceConsumer.
 					iNameMap := map[string]struct{}{iName: {}}
@@ -4105,6 +4104,9 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 					mset.mu.Lock()
 					mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
 					mset.mu.Unlock()
+				} else {
+					// skipping the message but keep processing the rest of the batch
+					return true
 				}
 			}
 		}
