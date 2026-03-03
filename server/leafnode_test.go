@@ -10891,3 +10891,444 @@ func TestLeafNodesBasicTokenAuth(t *testing.T) {
 	checkLeafNodeConnected(t, hub)
 	checkLeafNodeConnected(t, leaf)
 }
+
+// Test parsing of new credential fields in remote leafnode config.
+func TestLeafNodeRemoteCredentialsParsing(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config string
+		check  func(*testing.T, *RemoteLeafOpts)
+	}{
+		{
+			name: "username and password",
+			config: `
+				leafnodes {
+					remotes [{ url: "nats://127.0.0.1:7422", username: "user1", password: "pass1" }]
+				}
+			`,
+			check: func(t *testing.T, r *RemoteLeafOpts) {
+				require_Equal(t, r.Username, "user1")
+				require_Equal(t, r.Password, "pass1")
+			},
+		},
+		{
+			name: "token",
+			config: `
+				leafnodes {
+					remotes [{ url: "nats://127.0.0.1:7422", token: "secret-token" }]
+				}
+			`,
+			check: func(t *testing.T, r *RemoteLeafOpts) {
+				require_Equal(t, r.Token, "secret-token")
+			},
+		},
+		{
+			name: "credentials_file",
+			config: `
+				leafnodes {
+					remotes [{ url: "nats://127.0.0.1:7422", credentials_file: "../test/configs/creds/test.creds" }]
+				}
+			`,
+			check: func(t *testing.T, r *RemoteLeafOpts) {
+				require_True(t, strings.HasSuffix(r.CredentialsFile, "test.creds"))
+			},
+		},
+		{
+			name: "auth_file alias",
+			config: `
+				leafnodes {
+					remotes [{ url: "nats://127.0.0.1:7422", auth_file: "../test/configs/creds/test.creds" }]
+				}
+			`,
+			check: func(t *testing.T, r *RemoteLeafOpts) {
+				require_True(t, strings.HasSuffix(r.CredentialsFile, "test.creds"))
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(test.config))
+			opts, err := ProcessConfigFile(conf)
+			require_NoError(t, err)
+			require_True(t, len(opts.LeafNode.Remotes) == 1)
+			test.check(t, opts.LeafNode.Remotes[0])
+		})
+	}
+}
+
+// Test validation rejects multiple auth methods.
+func TestLeafNodeRemoteCredentialsValidation(t *testing.T) {
+	// Create a dummy credentials file for validation
+	credFile := createConfFile(t, []byte("user1\npass1"))
+
+	for _, test := range []struct {
+		name        string
+		config      string
+		expectError string
+	}{
+		{
+			name: "nkey and token rejected",
+			config: `
+				listen: "127.0.0.1:-1"
+				leafnodes {
+					remotes [{
+						url: "nats://127.0.0.1:7422"
+						nkey: "SUAIBDPBAUTWCWBKIO6XHQNINK5FWJW4OHLXC3HQ2KFE4PEJUA44CNHTC4"
+						token: "secret"
+					}]
+				}
+			`,
+			expectError: "multiple auth methods",
+		},
+		{
+			name: "credentials_file and username rejected",
+			config: fmt.Sprintf(`
+				listen: "127.0.0.1:-1"
+				leafnodes {
+					remotes [{
+						url: "nats://127.0.0.1:7422"
+						credentials_file: %q
+						username: "user1"
+					}]
+				}
+			`, credFile),
+			expectError: "multiple auth methods",
+		},
+		{
+			name: "credentials_file not found",
+			config: `
+				listen: "127.0.0.1:-1"
+				leafnodes {
+					remotes [{
+						url: "nats://127.0.0.1:7422"
+						credentials_file: "/nonexistent/path/creds.txt"
+					}]
+				}
+			`,
+			expectError: "credentials_file",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(test.config))
+			opts, err := ProcessConfigFile(conf)
+			if err != nil {
+				t.Fatalf("Unexpected config parse error: %v", err)
+			}
+			// Validation happens during server creation
+			err = validateLeafNode(opts)
+			if err == nil {
+				t.Fatal("Expected error but got none")
+			}
+			if !strings.Contains(err.Error(), test.expectError) {
+				t.Fatalf("Expected error containing %q, got: %v", test.expectError, err)
+			}
+		})
+	}
+}
+
+// Test leafnode connection using inline username/password.
+func TestLeafNodeRemoteInlineUsernamePassword(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				user: leafuser
+				password: leafpass
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes [{
+				url: "nats://127.0.0.1:%d"
+				username: leafuser
+				password: leafpass
+			}]
+		}
+	`, ohub.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+}
+
+// Test leafnode connection using inline token.
+func TestLeafNodeRemoteInlineToken(t *testing.T) {
+	// Note: Token auth for leafnodes uses top-level authorization block,
+	// not leafnodes.authorization (which only supports user/pass/nkey).
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		authorization {
+			token: secret-token
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes [{
+				url: "nats://127.0.0.1:%d"
+				token: secret-token
+			}]
+		}
+	`, ohub.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+}
+
+// Test leafnode connection using credentials_file.
+func TestLeafNodeRemoteCredentialsFile(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				user: fileuser
+				password: filepass
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	// Create credentials file with username/password
+	credFile := createConfFile(t, []byte("fileuser\nfilepass"))
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes [{
+				url: "nats://127.0.0.1:%d"
+				credentials_file: %q
+			}]
+		}
+	`, ohub.LeafNode.Port, credFile)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+}
+
+// Test leafnode connection using credentials_file with token (single line).
+func TestLeafNodeRemoteCredentialsFileToken(t *testing.T) {
+	// Note: Token auth for leafnodes uses top-level authorization block,
+	// not leafnodes.authorization (which only supports user/pass/nkey).
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		authorization {
+			token: file-token
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	// Create credentials file with just token (single line)
+	credFile := createConfFile(t, []byte("file-token"))
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes [{
+				url: "nats://127.0.0.1:%d"
+				credentials_file: %q
+			}]
+		}
+	`, ohub.LeafNode.Port, credFile)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+}
+
+// Test that inline credentials take precedence over URL-embedded credentials.
+func TestLeafNodeRemoteCredentialsPrecedence(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				user: correct
+				password: creds
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	// URL has wrong credentials, but inline has correct ones
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes [{
+				url: "nats://wrong:creds@127.0.0.1:%d"
+				username: correct
+				password: creds
+			}]
+		}
+	`, ohub.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+}
+
+// Test config reload of leafnode remote credentials.
+func TestLeafNodeRemoteCredentialsReload(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				user: user1
+				password: pass1
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafTmpl := `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes [{
+				url: "nats://127.0.0.1:%d"
+				username: %s
+				password: %s
+			}]
+		}
+	`
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(leafTmpl, ohub.LeafNode.Port, "user1", "pass1")))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	// Now reload with same credentials - should work
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(leafTmpl, ohub.LeafNode.Port, "user1", "pass1"))
+	checkLeafNodeConnected(t, hub)
+
+	// Reload with different credentials - should succeed (reload allowed)
+	// but connection will fail on next reconnect since hub still expects old creds
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(leafTmpl, ohub.LeafNode.Port, "user2", "pass2"))
+
+	// Verify reload was successful by checking the updated config
+	leaf.mu.RLock()
+	require_True(t, len(leaf.leafRemoteCfgs) > 0)
+	leaf.leafRemoteCfgs[0].RLock()
+	require_Equal(t, leaf.leafRemoteCfgs[0].Username, "user2")
+	require_Equal(t, leaf.leafRemoteCfgs[0].Password, "pass2")
+	leaf.leafRemoteCfgs[0].RUnlock()
+	leaf.mu.RUnlock()
+}
+
+// Test that credentials_file is re-read on reconnection.
+// Verify the file is read each time by checking that updated credentials are used.
+func TestLeafNodeRemoteCredentialsFileReread(t *testing.T) {
+	// Start hub with multiple valid users
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				users [
+					{user: user1, password: pass1}
+					{user: user2, password: pass2}
+				]
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	// Create initial credentials file with user1
+	credFile := createConfFile(t, []byte("user1\npass1"))
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			reconnect: "100ms"
+			remotes [{
+				url: "nats://127.0.0.1:%d"
+				credentials_file: %q
+			}]
+		}
+	`, ohub.LeafNode.Port, credFile)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	// Get the connected client's user
+	getLeafUser := func() string {
+		var user string
+		hub.mu.RLock()
+		for _, c := range hub.leafs {
+			c.mu.Lock()
+			user = c.opts.Username
+			c.mu.Unlock()
+			break
+		}
+		hub.mu.RUnlock()
+		return user
+	}
+
+	// Verify initial user
+	require_Equal(t, getLeafUser(), "user1")
+
+	// Update credentials file to user2
+	os.WriteFile(credFile, []byte("user2\npass2"), 0o644)
+
+	// Force reconnect by closing the leafnode connection on hub
+	// Collect connections first, then close outside the lock to avoid deadlock
+	var conns []*client
+	hub.mu.RLock()
+	for _, c := range hub.leafs {
+		conns = append(conns, c)
+	}
+	hub.mu.RUnlock()
+	for _, c := range conns {
+		c.closeConnection(ClientClosed)
+	}
+
+	// Wait for reconnection
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	// Verify new user from re-read file
+	require_Equal(t, getLeafUser(), "user2")
+}
