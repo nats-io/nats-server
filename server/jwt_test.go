@@ -5601,7 +5601,7 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	require_True(t, ci.Config.MaxAckPending == 2000)
 }
 
-func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
+func TestJWTJetStreamMaxStore(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
@@ -5610,7 +5610,7 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	accClaim := jwt.NewAccountClaims(accPub)
 	accClaim.Name = "acc"
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit,
+		DiskStorage: 1024, MemoryStorage: jwt.NoLimit,
 		Consumer: jwt.NoLimit, Streams: jwt.NoLimit,
 		DiskMaxStreamBytes: 1024, MaxBytesRequired: false,
 	}
@@ -5650,30 +5650,26 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	require_NoError(t, err)
 
 	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 2048})
-	require_Error(t, err)
-	require_Equal(t, err.Error(), "nats: stream max bytes exceeds account limit max stream bytes")
+	require_Error(t, err, NewJSStorageResourcesExceededError())
 	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 1024})
 	require_NoError(t, err)
 
 	msg := [900]byte{}
-	_, err = js.AddStream(&nats.StreamConfig{Name: "baz", Replicas: 1})
+	_, err = js.Publish("foo", msg[:])
 	require_NoError(t, err)
-	_, err = js.Publish("baz", msg[:])
-	require_NoError(t, err)
-	_, err = js.Publish("baz", msg[:]) // exceeds max stream bytes
+	_, err = js.Publish("foo", msg[:]) // exceeds storage limit
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit, Consumer: jwt.NoLimit, Streams: jwt.NoLimit,
+		DiskStorage: 3072, MemoryStorage: jwt.NoLimit, Consumer: jwt.NoLimit, Streams: jwt.NoLimit,
 		DiskMaxStreamBytes: 2048, MaxBytesRequired: true}
 	accJwt2 := encodeClaim(t, accClaim, accPub)
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
 
 	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 3000})
-	require_Error(t, err)
-	require_Equal(t, err.Error(), "nats: stream max bytes exceeds account limit max stream bytes")
+	require_Error(t, err, NewJSStorageResourcesExceededError())
 	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 2048})
 	require_NoError(t, err)
 
@@ -5682,22 +5678,26 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	require_Equal(t, ainfo.Tiers["R1"].Store, 933)
 
 	// This should be exactly at the limit of the account.
-	_, err = js.Publish("baz", []byte(strings.Repeat("A", 1082)))
+	_, err = js.Publish("foo", []byte(strings.Repeat("A", 991)))
 	require_NoError(t, err)
-
 	ainfo, err = js.AccountInfo()
 	require_NoError(t, err)
-	require_Equal(t, ainfo.Tiers["R1"].Store, 2048)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 1024)
+	_, err = js.Publish("bar", []byte(strings.Repeat("A", 2015)))
+	require_NoError(t, err)
+	ainfo, err = js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 3072)
 
-	// Exceed max stream bytes limit.
-	_, err = js.Publish("baz", []byte("1"))
+	// Exceed storage limit.
+	_, err = js.Publish("bar", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
 	// Confirm no changes after rejected publish.
 	ainfo, err = js.AccountInfo()
 	require_NoError(t, err)
-	require_Equal(t, ainfo.Tiers["R1"].Store, 2048)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 3072)
 
 	// test disabling max bytes required
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Replicas: 1})
