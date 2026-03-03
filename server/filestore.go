@@ -11130,6 +11130,29 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) error {
 	return nil
 }
 
+// Calls os.RemoveAll on the given `dir` directory, but if an error occurs,
+// retries up to one second. If that still fails, returns the last error
+// that os.RemoveAll returned.
+func removeAllWithRetry(dir string) error {
+	<-dios
+	err := os.RemoveAll(dir)
+	dios <- struct{}{}
+	if err == nil {
+		return nil
+	}
+	ttl := time.Now().Add(time.Second)
+	for time.Now().Before(ttl) {
+		time.Sleep(10 * time.Millisecond)
+		<-dios
+		err = os.RemoveAll(dir)
+		dios <- struct{}{}
+		if err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
 // Close the message block.
 func (mb *msgBlock) close(sync bool) {
 	if mb == nil {
@@ -11230,28 +11253,12 @@ func (fs *fileStore) Delete(inline bool) error {
 	}
 	// Do this in separate Go routine in case lots of blocks.
 	// Purge above protects us as does the removal of meta artifacts above.
-	removeDir := func() {
-		<-dios
-		err := os.RemoveAll(ndir)
-		dios <- struct{}{}
-		if err == nil {
-			return
-		}
-		ttl := time.Now().Add(time.Second)
-		for time.Now().Before(ttl) {
-			time.Sleep(10 * time.Millisecond)
-			<-dios
-			err = os.RemoveAll(ndir)
-			dios <- struct{}{}
-			if err == nil {
-				return
-			}
-		}
-	}
 	if inline {
-		removeDir()
+		if err := removeAllWithRetry(ndir); err != nil {
+			return err
+		}
 	} else {
-		go removeDir()
+		go removeAllWithRetry(ndir)
 	}
 	return nil
 }
@@ -13208,7 +13215,6 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 		o.qch = nil
 	}
 
-	var err error
 	odir := o.odir
 	o.odir = _EMPTY_
 	o.closed = true
@@ -13217,21 +13223,18 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 
 	// If our stream was not deleted this will remove the directories.
 	if odir != _EMPTY_ && !streamDeleted {
-		<-dios
-		err = os.RemoveAll(odir)
-		dios <- struct{}{}
-		if err != nil {
+		if err := removeAllWithRetry(odir); err != nil {
 			return err
 		}
 	}
 
 	if !streamDeleted {
-		if err = fs.RemoveConsumer(o); err != nil {
+		if err := fs.RemoveConsumer(o); err != nil {
 			return err
 		}
 	}
 
-	return err
+	return nil
 }
 
 func (fs *fileStore) AddConsumer(o ConsumerStore) error {

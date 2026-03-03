@@ -13479,3 +13479,40 @@ func TestFileStoreSyncBlocksNoErrorOnConcurrentRemovedBlock(t *testing.T) {
 	require_True(t, mb.werr == nil)
 	require_True(t, fs.werr == nil)
 }
+
+func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	mconfig := StreamConfig{Name: "TEST_DELETE", Storage: FileStorage, Subjects: []string{"foo"}, Replicas: 1}
+	fs, err := newFileStore(fcfg, mconfig)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	oconfig := ConsumerConfig{
+		DeliverSubject: "d",
+		FilterSubject:  "foo",
+		AckPolicy:      AckExplicit,
+	}
+
+	for i := range 100 {
+		oname := fmt.Sprintf("delcons_%d", i)
+		obs, err := fs.ConsumerStore(oname, time.Time{}, &oconfig)
+		require_NoError(t, err)
+
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				if err := obs.SetStarting(uint64(i + 1)); err != nil {
+					return
+				}
+			}
+		}()
+
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+
+		err = obs.Delete()
+		require_NoError(t, err)
+		wg.Wait()
+	}
+}
