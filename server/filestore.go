@@ -10347,7 +10347,9 @@ func (fs *fileStore) Delete(inline bool) error {
 	// Do this in separate Go routine in case lots of blocks.
 	// Purge above protects us as does the removal of meta artifacts above.
 	if inline {
-		removeAllWithRetry(ndir)
+		if err := removeAllWithRetry(ndir); err != nil {
+			return err
+		}
 	} else {
 		go removeAllWithRetry(ndir)
 	}
