@@ -2365,8 +2365,10 @@ func tierName(replicas int) string {
 }
 
 func isSameTier(cfgA, cfgB *StreamConfig) bool {
+	a := max(1, cfgA.Replicas)
+	b := max(1, cfgB.Replicas)
 	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
-	return cfgA.Replicas == cfgB.Replicas
+	return a == b
 }
 
 func (jsa *jsAccount) jetStreamAndClustered() (*jetStream, bool) {
@@ -2441,17 +2443,11 @@ func (jsa *jsAccount) wouldExceedLimits(storeType StorageType, tierName string, 
 	// Since tiers are flat we need to scale limit up by replicas when checking.
 	if storeType == MemoryStorage {
 		totalMem := inUse.total.mem + (int64(memStoreMsgSize(subj, hdr, msg)) * r)
-		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes*lr {
-			return true, nil
-		}
 		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory*lr {
 			return true, nil
 		}
 	} else {
 		totalStore := inUse.total.store + (int64(fileStoreMsgSize(subj, hdr, msg)) * r)
-		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes*lr {
-			return true, nil
-		}
 		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore*lr {
 			return true, nil
 		}

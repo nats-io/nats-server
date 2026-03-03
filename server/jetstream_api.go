@@ -1591,7 +1591,7 @@ func (jsa *jsAccount) tieredReservation(tier string, cfg *StreamConfig) int64 {
 		if sa.cfg.Name == cfg.Name {
 			continue
 		}
-		if (tier == _EMPTY_ || sa.cfg.Replicas == cfg.Replicas) && sa.cfg.MaxBytes > 0 && sa.cfg.Storage == cfg.Storage {
+		if (tier == _EMPTY_ || isSameTier(&sa.cfg, cfg)) && sa.cfg.MaxBytes > 0 && sa.cfg.Storage == cfg.Storage {
 			// If tier is empty, all storage is flat and we should adjust for replicas.
 			// Otherwise if tiered, storage replication already taken into consideration.
 			if tier == _EMPTY_ && sa.cfg.Replicas > 1 {
