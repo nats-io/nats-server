@@ -6078,7 +6078,7 @@ func TestJetStreamClusterLimitsBasedStreamFileStoreDesync(t *testing.T) {
 	    ]
 	  }
 	  js {
-	    jetstream = { store_max_stream_bytes = 3mb }
+	    jetstream = { max_store = 3mb }
 	    users = [
 	      { user: js, pass: js }
 	    ]
@@ -8113,4 +8113,112 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamAccountStoreLimits(t *testing.T) {
+	test := func(t *testing.T, replicas int, storage nats.StorageType) {
+		storeLimit := fileStoreMsgSize("B", nil, nil)
+		memLimit := memStoreMsgSize("B", nil, nil)
+		limit := JetStreamAccountLimits{
+			MaxMemory:            int64(memLimit * 6),
+			MemoryMaxStreamBytes: int64(memLimit * 3),
+			MaxStore:             int64(storeLimit * 6),
+			StoreMaxStreamBytes:  int64(storeLimit * 3),
+			MaxBytesRequired:     true,
+		}
+		tier := fmt.Sprintf("R%d", replicas)
+		limits := map[string]JetStreamAccountLimits{tier: limit}
+
+		var s *Server
+		var c *cluster
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+			require_NoError(t, s.globalAccount().UpdateJetStreamLimits(limits))
+		} else {
+			c = createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			for _, cs := range c.servers {
+				require_NoError(t, cs.globalAccount().UpdateJetStreamLimits(limits))
+			}
+			s = c.randomServer()
+		}
+
+		resourcesErr := NewJSStorageResourcesExceededError()
+		maxAcc, maxBytes := limit.MaxStore, limit.StoreMaxStreamBytes
+		if storage == nats.MemoryStorage {
+			resourcesErr = NewJSMemoryResourcesExceededError()
+			maxAcc, maxBytes = limit.MaxMemory, limit.MemoryMaxStreamBytes
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		// No MaxBytes errors because it's required.
+		_, err := js.AddStream(&nats.StreamConfig{Name: "A", Replicas: replicas, Storage: storage})
+		require_Error(t, err, NewJSStreamMaxBytesRequiredError())
+
+		// MaxBytes larger than account limit errors.
+		_, err = js.AddStream(&nats.StreamConfig{Name: "A", Replicas: replicas, Storage: storage, MaxBytes: maxAcc + 1})
+		if replicas == 1 {
+			require_Error(t, err, resourcesErr)
+		} else {
+			require_Error(t, err, NewJSStreamMaxStreamBytesExceededError())
+		}
+
+		// MaxBytes larger than bytes limit errors.
+		_, err = js.AddStream(&nats.StreamConfig{Name: "A", Replicas: replicas, Storage: storage, MaxBytes: maxBytes + 1})
+		require_Error(t, err, NewJSStreamMaxStreamBytesExceededError())
+
+		// Create two streams that exactly fit the limit.
+		for _, subj := range []string{"A", "B"} {
+			_, err = js.AddStream(&nats.StreamConfig{Name: subj, Replicas: replicas, Storage: storage, MaxBytes: maxBytes})
+			require_NoError(t, err)
+		}
+
+		// Another stream over the limit errors.
+		_, err = js.AddStream(&nats.StreamConfig{Name: "C", Replicas: replicas, Storage: storage, MaxBytes: 1})
+		require_Error(t, err, resourcesErr)
+
+		// We can publish more than the maximum bytes into the stream as it is DiscardOld.
+		for range 10 {
+			_, err = js.Publish("A", nil)
+			require_NoError(t, err)
+		}
+
+		// Once the last stream fills up too close to the account limit, we eventually get an error.
+		start := time.Now()
+		for i := 0; ; i++ {
+			if time.Since(start) > 5*time.Second {
+				t.Fatalf("timed out waiting for error")
+			}
+			_, err = js.Publish("B", nil)
+			if i < 3 {
+				require_NoError(t, err)
+			} else if replicas == 1 {
+				// Expect an error immediately after we hit the limit if we're R1.
+				require_Error(t, err, NewJSAccountResourcesExceededError())
+				break
+			} else if err != nil {
+				// For replicated this might take some time as servers report about their usage.
+				require_Error(t, err, NewJSAccountResourcesExceededError())
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// If clustered, confirm all is in sync still.
+		if c != nil {
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				return checkState(t, c, globalAccountName, "B")
+			})
+		}
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			t.Run("Memory", func(t *testing.T) { test(t, replicas, nats.MemoryStorage) })
+			t.Run("File", func(t *testing.T) { test(t, replicas, nats.FileStorage) })
+		})
+	}
 }
