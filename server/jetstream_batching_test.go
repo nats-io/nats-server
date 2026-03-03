@@ -3568,7 +3568,7 @@ func TestJetStreamFastBatchPublishDuplicatesCluster(t *testing.T) {
 
 	// Now simulate the second message we published is processed.
 	reply := generateFastBatchReply(inbox, "uuid", 2, 4, FastBatchGapFail, FastBatchOpAppend)
-	batches.fastBatchRegisterSequences(mset, reply, "uuid", 2, 2)
+	batches.fastBatchRegisterSequences(mset, reply, 2, true, &FastBatch{id: "uuid", seq: 2})
 	batches.mu.Unlock()
 
 	// Normally we'd receive two flow control messages, but since both were triggered due to
@@ -3982,4 +3982,240 @@ func TestJetStreamFastBatchPublishAccImportExport(t *testing.T) {
 	}
 	checkFastBatchPublish("a")
 	checkFastBatchPublish("b")
+}
+
+func TestJetStreamFastBatchPublishFlowControlOnLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc := clientConnectToServer(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		Replicas:          3,
+		AllowBatchPublish: true,
+	}
+
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	m := nats.NewMsg("foo")
+	for seq := uint64(1); seq <= 3; seq++ {
+		if seq == 1 {
+			m.Reply = generateFastBatchReply(inbox, "uuid", seq, 2, FastBatchGapFail, FastBatchOpStart)
+		} else {
+			m.Reply = generateFastBatchReply(inbox, "uuid", seq, 2, FastBatchGapFail, FastBatchOpAppend)
+		}
+		require_NoError(t, nc.PublishMsg(m))
+	}
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowAck BatchFlowAck
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+	require_Equal(t, batchFlowAck.Sequence, 0)
+
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+	require_Equal(t, batchFlowAck.Sequence, 2)
+
+	// Should receive a flow ack after a leader change. This sends us a ping, but also informs us which
+	// messages were persisted after the leader change.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	require_NoError(t, mset.raftNode().StepDown())
+
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+	require_Equal(t, batchFlowAck.Sequence, 3)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if err = checkState(t, c, globalAccountName, "TEST"); err != nil {
+			return err
+		}
+		for _, s := range c.servers {
+			mset, err = s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			mset.mu.RLock()
+			var batches int
+			if mset.batches != nil {
+				mset.batches.mu.Lock()
+				batches = len(mset.batches.fast)
+				mset.batches.mu.Unlock()
+			}
+			mset.mu.RUnlock()
+			if batches != 1 {
+				return fmt.Errorf("expected 1 batch on %s, got %d", s.Name(), batches)
+			}
+		}
+		return nil
+	})
+
+	// We now expect a new flow ack after two messages.
+	for seq := uint64(4); seq <= 5; seq++ {
+		m.Reply = generateFastBatchReply(inbox, "uuid", seq, 2, FastBatchGapFail, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(m))
+	}
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	batchFlowAck = BatchFlowAck{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 2)
+	require_Equal(t, batchFlowAck.Sequence, 5)
+
+	// Commit the final message. We expect that the followers also clean up their state.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 6, 2, FastBatchGapFail, FastBatchOpCommit)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.BatchId, "uuid")
+	require_Equal(t, pubAck.BatchSize, 6)
+	require_Equal(t, pubAck.Sequence, 6)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if err = checkState(t, c, globalAccountName, "TEST"); err != nil {
+			return err
+		}
+		for _, s := range c.servers {
+			mset, err = s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			mset.mu.RLock()
+			var batches int
+			if mset.batches != nil {
+				mset.batches.mu.Lock()
+				batches = len(mset.batches.fast)
+				mset.batches.mu.Unlock()
+			}
+			mset.mu.RUnlock()
+			if batches > 0 {
+				return fmt.Errorf("expected no batches on %s, got %d", s.Name(), batches)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamFastBatchPublishFlowControlOnLeaderChangeAfterFailedCommitProposal(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc := clientConnectToServer(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		Replicas:          3,
+		AllowBatchPublish: true,
+	}
+
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	m := nats.NewMsg("foo")
+	for seq := uint64(1); seq <= 3; seq++ {
+		if seq == 1 {
+			m.Reply = generateFastBatchReply(inbox, "uuid", seq, 0, FastBatchGapFail, FastBatchOpStart)
+		} else {
+			m.Reply = generateFastBatchReply(inbox, "uuid", seq, 0, FastBatchGapFail, FastBatchOpAppend)
+		}
+		require_NoError(t, nc.PublishMsg(m))
+	}
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowAck BatchFlowAck
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Messages, 10)
+	require_Equal(t, batchFlowAck.Sequence, 0)
+
+	// Should receive a flow ack after a leader change. This sends us a ping, but also informs us which
+	// messages were persisted after the leader change.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	mset.mu.Lock()
+	if mset.batches == nil {
+		mset.mu.Unlock()
+		t.Fatal("batches map is nil")
+	}
+	mset.batches.mu.Lock()
+	b := mset.batches.fast["uuid"]
+	if b == nil {
+		mset.batches.mu.Unlock()
+		mset.mu.Unlock()
+		t.Fatal("batch is nil")
+	}
+	// Simulate one more pending message that commits, but the proposal didn't make it due to the leader change.
+	b.commit = true
+	b.pending++
+	mset.batches.mu.Unlock()
+	mset.mu.Unlock()
+
+	// Change to any other leader.
+	require_NoError(t, mset.raftNode().StepDown())
+
+	// Change back to the previous leader.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	nl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, nl)
+	require_NotEqual(t, nl, sl)
+	nmset, err := nl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	require_NoError(t, nmset.raftNode().StepDown(mset.raftNode().ID()))
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	require_Equal(t, c.streamLeader(globalAccountName, "TEST"), sl)
+
+	// The previous leader should now have reset the committed flag as the proposal failed.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if mset.batches == nil {
+			return errors.New("batches map is nil")
+		}
+		mset.batches.mu.Lock()
+		defer mset.batches.mu.Unlock()
+		b = mset.batches.fast["uuid"]
+		if b == nil {
+			return errors.New("batch is nil")
+		}
+		if b.pending != 0 {
+			return errors.New("pending isn't reset")
+		}
+		if b.commit {
+			return errors.New("commit isn't reset")
+		}
+		return nil
+	})
 }

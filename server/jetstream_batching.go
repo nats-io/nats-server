@@ -54,6 +54,7 @@ type fastBatch struct {
 	pending        uint32      // Number of pending messages in the batch waiting to be persisted.
 	ackMessages    uint16      // Ack will be sent every N messages.
 	maxAckMessages uint16      // Maximum ackMessages value the client allows.
+	reply          string      // The last reply subject seen when persisting a message.
 	gapOk          bool        // Whether a gap is okay, if not, the batch would be rejected.
 	commit         bool        // If the batch is committed.
 }
@@ -160,26 +161,78 @@ func (b *atomicBatch) readyForCommit() *BatchAbandonReason {
 // newFastBatch creates a fast batch publish object.
 // Lock should be held.
 func (batches *batching) newFastBatch(mset *stream, batchId string, gapOk bool, maxAckMessages uint16) *fastBatch {
-	// If it's the first batch, just allow what the client wants, otherwise we'll
-	// need to coordinate and slowly ramp up this publisher.
-	// TODO(mvv): fast ingest's initial flow value improvements?
-	ackMessages := min(500, maxAckMessages)
-	if len(batches.fast) > 1 {
-		ackMessages = 1
-	}
-	b := &fastBatch{gapOk: gapOk, ackMessages: ackMessages, maxAckMessages: maxAckMessages}
+	b := &fastBatch{gapOk: gapOk, maxAckMessages: maxAckMessages}
+	batches.fastBatchInit(b)
 	b.setupCleanupTimer(mset, batchId, batches)
 	return b
 }
 
+// fastBatchInit (re)initializes the ackMessages field for a fast batch.
+// Lock should be held.
+func (batches *batching) fastBatchInit(b *fastBatch) {
+	// If it's the first batch, just allow what the client wants, otherwise we'll
+	// need to coordinate and slowly ramp up this publisher.
+	// TODO(mvv): fast ingest's initial flow value improvements?
+	ackMessages := min(500, b.maxAckMessages)
+	if len(batches.fast) > 1 {
+		ackMessages = 1
+	}
+	b.ackMessages = ackMessages
+}
+
+// fastBatchReset resets the fast batch to an empty state and sends a flow control message.
+// Lock should be held.
+func (batches *batching) fastBatchReset(mset *stream, batchId string, b *fastBatch) {
+	// If the timer already stopped before we could commit, we clean it up.
+	if b.timer == nil || (!b.commit && !b.timer.Stop()) {
+		b.cleanupLocked(batchId, batches)
+		return
+	}
+	// Otherwise, reset the state.
+	batches.fastBatchInit(b)
+	b.timer.Reset(getCleanupTimeout(mset))
+	b.commit = false
+	b.pending = 0
+	b.fseq, b.lseq = b.pseq, b.pseq
+	b.sendFlowControl(b.fseq, mset, b.reply)
+}
+
 // fastBatchRegisterSequences registers the highest stored batch and stream sequence and returns
 // whether a PubAck should be sent if the batch has been committed.
+// If this is called on a follower, it only registers the highest stream and persisted batch sequences.
 // Lock should be held.
-func (batches *batching) fastBatchRegisterSequences(mset *stream, reply string, batchId string, batchSeq, streamSeq uint64) bool {
-	b, ok := batches.fast[batchId]
-	if !ok {
+func (batches *batching) fastBatchRegisterSequences(mset *stream, reply string, streamSeq uint64, isLeader bool, batch *FastBatch) bool {
+	b, ok := batches.fast[batch.id]
+	if !ok || !isLeader {
+		// If this batch has committed, we can clean it up.
+		if batch.commit {
+			if b != nil {
+				b.cleanupLocked(batch.id, batches)
+			}
+			return false
+		}
+		// Otherwise, even as a follower, we record the latest state of this batch.
+		if b == nil || !b.resetCleanupTimer(mset) {
+			if b != nil {
+				// The timer couldn't be reset, this means the timer already runs and is likely
+				// waiting to acquire the lock. We reset the timer here so it doesn't clean up
+				// this batch that we're about to overwrite.
+				b.timer = nil
+			}
+			// We'll need a copy as we'll use it as a key and later for cleanup.
+			batchId := copyString(batch.id)
+			b = batches.newFastBatch(mset, batchId, batch.gapOk, batch.flow)
+			if batches.fast == nil {
+				batches.fast = make(map[string]*fastBatch, 1)
+			}
+			batches.fast[batchId] = b
+		}
+		b.sseq = streamSeq
+		b.pseq, b.lseq = batch.seq, batch.seq
+		b.reply = reply
 		return false
 	}
+	b.reply = reply
 	if b.pending > 0 {
 		b.pending--
 	}
@@ -192,17 +245,17 @@ func (batches *batching) fastBatchRegisterSequences(mset *stream, reply string, 
 		skipped = true
 		b.pseq = b.lseq
 	} else {
-		b.pseq = batchSeq
+		b.pseq = batch.seq
 	}
 	// If the PubAck needs to be sent now as a result of a commit.
 	if b.lseq == b.pseq && b.commit {
-		b.cleanupLocked(batchId, batches)
+		b.cleanupLocked(batch.id, batches)
 		// If we skipped ahead due to duplicate messages, send the PubAck with the highest sequence.
 		if skipped {
 			var buf [256]byte
 			pubAck := append(buf[:0], mset.pubAck...)
 			response := append(pubAck, strconv.FormatUint(b.sseq, 10)...)
-			response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, b.lseq)...)
+			response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batch.id, b.lseq)...)
 			if len(reply) > 0 {
 				mset.outq.sendMsg(reply, response)
 			}
@@ -274,10 +327,14 @@ func (b *fastBatch) sendFlowControl(batchSeq uint64, mset *stream, reply string)
 // after the last message has been persisted.
 // Lock should be held.
 func (batches *batching) fastBatchCommit(b *fastBatch, batchId string, mset *stream, reply string) bool {
+	// Either we commit now, or we clean up later, so stop the timer.
+	if b.timer == nil || (!b.commit && !b.timer.Stop()) {
+		// Shouldn't be possible for the timer to already be stopped if we haven't committed yet,
+		// since we pre-check being able to reset the timer. But guard against it anyhow.
+		return true
+	}
 	// Mark that this batch commits.
 	b.commit = true
-	// Either we commit now, or we clean up later, so stop the timer.
-	b.timer.Stop()
 	// If the whole batch has been persisted, we can respond with the PubAck now.
 	if b.lseq == b.pseq {
 		b.cleanupLocked(batchId, batches)
@@ -300,7 +357,10 @@ func (b *fastBatch) setupCleanupTimer(mset *stream, batchId string, batches *bat
 	timeout := getCleanupTimeout(mset)
 	b.timer = time.AfterFunc(timeout, func() {
 		b.cleanup(batchId, batches)
-		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
+		// Only send the advisory if we're the leader. (Since we do the tracking on followers too)
+		if mset.IsLeader() {
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
+		}
 	})
 }
 
@@ -309,6 +369,9 @@ func (b *fastBatch) setupCleanupTimer(mset *stream, batchId string, batches *bat
 func (b *fastBatch) resetCleanupTimer(mset *stream) bool {
 	if b.commit {
 		return true
+	}
+	if b.timer == nil {
+		return false
 	}
 	timeout := getCleanupTimeout(mset)
 	return b.timer.Reset(timeout)
@@ -323,6 +386,11 @@ func (b *fastBatch) cleanup(batchId string, batches *batching) {
 
 // Lock should be held.
 func (b *fastBatch) cleanupLocked(batchId string, batches *batching) {
+	// If the timer is nil, it means this batch has been replaced with a new one.
+	// This can happen on a follower depending on timing.
+	if b.timer == nil {
+		return
+	}
 	b.timer.Stop()
 	delete(batches.fast, batchId)
 }

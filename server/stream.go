@@ -1234,6 +1234,16 @@ func (mset *stream) setLeader(isLeader bool) error {
 			mset.mu.Unlock()
 			return err
 		}
+
+		// Reset any inflight fast batches. We were likely a follower before and need
+		// to send an ack to the publishers so they know we're still there.
+		if mset.batches != nil {
+			mset.batches.mu.Lock()
+			for batchId, b := range mset.batches.fast {
+				mset.batches.fastBatchReset(mset, batchId, b)
+			}
+			mset.batches.mu.Unlock()
+		}
 	} else {
 		// cancel timer to create the source consumers if not fired yet
 		if mset.sourcesConsumerSetup != nil {
@@ -4598,8 +4608,17 @@ func (mset *stream) unsubscribeToStream(stopping, shuttingDown bool) error {
 	}
 	// Clear batching state.
 	mset.deleteAtomicBatches(shuttingDown)
-	mset.deleteFastBatches()
-	mset.batches = nil
+	if stopping || shuttingDown {
+		mset.deleteFastBatches()
+	}
+	if mset.batches != nil {
+		mset.batches.mu.Lock()
+		reset := len(mset.batches.atomic) == 0 && len(mset.batches.fast) == 0
+		mset.batches.mu.Unlock()
+		if reset {
+			mset.batches = nil
+		}
+	}
 
 	if stopping {
 		// In case we had a direct get subscriptions.
@@ -5739,9 +5758,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	var resp = &JSPubAckResponse{}
 
 	var (
-		batchId     string
-		batchSeq    uint64
-		batchAtomic bool
+		batchId  string
+		batchSeq uint64
 	)
 	// Populate batch details.
 	if fastBatch != nil {
@@ -5759,7 +5777,6 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	}
 	if len(hdr) > 0 && batchId == _EMPTY_ {
 		if batchId = getBatchId(hdr); batchId != _EMPTY_ {
-			batchAtomic = true
 			batchSeq, _ = getBatchSequence(hdr)
 			// Disable consistency checking if this was already done
 			// earlier as part of the batch consistency check.
@@ -6323,11 +6340,14 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 		// If using fast batch publish, we occasionally send flow control messages.
 		// And, we need to ensure a PubAck is sent if the commit happens through EOB.
-		if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
-			batches := mset.batches
-			batches.mu.Lock()
-			commit := batches.fastBatchRegisterSequences(mset, reply, batchId, batchSeq, mset.lseq)
-			batches.mu.Unlock()
+		if fastBatch != nil {
+			if mset.batches == nil {
+				mset.batches = &batching{}
+			}
+			mset.batches.mu.Lock()
+			// Check full leader state so we only send the client an update once we're caught up.
+			commit := mset.batches.fastBatchRegisterSequences(mset, reply, mset.lseq, mset.isLeader(), fastBatch)
+			mset.batches.mu.Unlock()
 			if !commit {
 				reply = _EMPTY_
 				canRespond = false
@@ -6523,11 +6543,14 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 
 	// If using fast batch publish, we occasionally send flow control messages.
 	// And, we need to ensure a PubAck is sent if the commit happens through EOB.
-	if batchId != _EMPTY_ && !batchAtomic && mset.batches != nil {
-		batches := mset.batches
-		batches.mu.Lock()
-		commit := batches.fastBatchRegisterSequences(mset, reply, batchId, batchSeq, mset.lseq)
-		batches.mu.Unlock()
+	if fastBatch != nil {
+		if mset.batches == nil {
+			mset.batches = &batching{}
+		}
+		mset.batches.mu.Lock()
+		// Check full leader state so we only send the client an update once we're caught up.
+		commit := mset.batches.fastBatchRegisterSequences(mset, reply, mset.lseq, mset.isLeader(), fastBatch)
+		mset.batches.mu.Unlock()
 		if !commit {
 			reply = _EMPTY_
 			canRespond = false
