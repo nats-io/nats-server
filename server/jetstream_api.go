@@ -859,11 +859,19 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
 	// Check pending and warn if getting backed up.
-	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
-	limit := atomic.LoadInt64(&js.queueLimit)
+	var queue *ipQueue[*jsAPIRoutedReq]
+	var limit int64
+	if js.infoSubs.HasInterest(subject) {
+		queue = s.jsAPIRoutedInfoReqs
+		limit = atomic.LoadInt64(&js.infoQueueLimit)
+	} else {
+		queue = s.jsAPIRoutedReqs
+		limit = atomic.LoadInt64(&js.queueLimit)
+	}
+	pending, _ := queue.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
 	if pending >= int(limit) {
-		s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", pending)
-		drained := int64(s.jsAPIRoutedReqs.drain())
+		s.rateLimitFormatWarnf("%s limit reached, dropping %d requests", queue.name, pending)
+		drained := int64(queue.drain())
 		atomic.AddInt64(&js.apiInflight, -drained)
 
 		s.publishAdvisory(nil, JSAdvisoryAPILimitReached, JSAPILimitReachedAdvisory{
@@ -883,29 +891,45 @@ func (s *Server) processJSAPIRoutedRequests() {
 	defer s.grWG.Done()
 
 	s.mu.RLock()
-	queue := s.jsAPIRoutedReqs
+	queue, infoqueue := s.jsAPIRoutedReqs, s.jsAPIRoutedInfoReqs
 	client := &client{srv: s, kind: JETSTREAM}
 	s.mu.RUnlock()
 
 	js := s.getJetStream()
 
+	processFromQueue := func(ipq *ipQueue[*jsAPIRoutedReq]) {
+		// Only pop one item at a time here, otherwise if the system is recovering
+		// from queue buildup, then one worker will pull off all the tasks and the
+		// others will be starved of work.
+		if r, ok := ipq.popOne(); ok && r != nil {
+			client.pa = r.pa
+			start := time.Now()
+			r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
+			if dur := time.Since(start); dur >= readLoopReportThreshold {
+				s.Warnf("Internal subscription on %q took too long: %v", r.subject, dur)
+			}
+			atomic.AddInt64(&js.apiInflight, -1)
+		}
+	}
+
 	for {
+		// First select case is prioritizing queue, we will only fall through
+		// to the second select case that considers infoqueue if queue is empty.
+		// This effectively means infos are deprioritized.
 		select {
 		case <-queue.ch:
-			// Only pop one item at a time here, otherwise if the system is recovering
-			// from queue buildup, then one worker will pull off all the tasks and the
-			// others will be starved of work.
-			for r, ok := queue.popOne(); ok && r != nil; r, ok = queue.popOne() {
-				client.pa = r.pa
-				start := time.Now()
-				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
-				if dur := time.Since(start); dur >= readLoopReportThreshold {
-					s.Warnf("Internal subscription on %q took too long: %v", r.subject, dur)
-				}
-				atomic.AddInt64(&js.apiInflight, -1)
-			}
+			processFromQueue(queue)
 		case <-s.quitCh:
 			return
+		default:
+			select {
+			case <-infoqueue.ch:
+				processFromQueue(infoqueue)
+			case <-queue.ch:
+				processFromQueue(queue)
+			case <-s.quitCh:
+				return
+			}
 		}
 	}
 }
@@ -924,7 +948,8 @@ func (s *Server) setJetStreamExportSubs() error {
 	if mp > maxProcs {
 		mp = maxProcs
 	}
-	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](s, "Routed JS API Requests")
+	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](s, "JetStream API queue")
+	s.jsAPIRoutedInfoReqs = newIPQueue[*jsAPIRoutedReq](s, "JetStream API info queue")
 	for i := 0; i < mp; i++ {
 		s.startGoRoutine(s.processJSAPIRoutedRequests)
 	}
@@ -940,16 +965,13 @@ func (s *Server) setJetStreamExportSubs() error {
 	}
 
 	// API handles themselves.
+	// infopairs are deprioritized compared to pairs in processJSAPIRoutedRequests.
 	pairs := []struct {
 		subject string
 		handler msgHandler
 	}{
-		{JSApiAccountInfo, s.jsAccountInfoRequest},
 		{JSApiStreamCreate, s.jsStreamCreateRequest},
 		{JSApiStreamUpdate, s.jsStreamUpdateRequest},
-		{JSApiStreams, s.jsStreamNamesRequest},
-		{JSApiStreamList, s.jsStreamListRequest},
-		{JSApiStreamInfo, s.jsStreamInfoRequest},
 		{JSApiStreamDelete, s.jsStreamDeleteRequest},
 		{JSApiStreamPurge, s.jsStreamPurgeRequest},
 		{JSApiStreamSnapshot, s.jsStreamSnapshotRequest},
@@ -962,20 +984,37 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiConsumerCreateEx, s.jsConsumerCreateRequest},
 		{JSApiConsumerCreate, s.jsConsumerCreateRequest},
 		{JSApiDurableCreate, s.jsConsumerCreateRequest},
-		{JSApiConsumers, s.jsConsumerNamesRequest},
-		{JSApiConsumerList, s.jsConsumerListRequest},
-		{JSApiConsumerInfo, s.jsConsumerInfoRequest},
 		{JSApiConsumerDelete, s.jsConsumerDeleteRequest},
 		{JSApiConsumerPause, s.jsConsumerPauseRequest},
 		{JSApiConsumerUnpin, s.jsConsumerUnpinRequest},
+	}
+	infopairs := []struct {
+		subject string
+		handler msgHandler
+	}{
+		{JSApiAccountInfo, s.jsAccountInfoRequest},
+		{JSApiStreams, s.jsStreamNamesRequest},
+		{JSApiStreamList, s.jsStreamListRequest},
+		{JSApiStreamInfo, s.jsStreamInfoRequest},
+		{JSApiConsumers, s.jsConsumerNamesRequest},
+		{JSApiConsumerList, s.jsConsumerListRequest},
+		{JSApiConsumerInfo, s.jsConsumerInfoRequest},
 	}
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
-	for _, p := range pairs {
+	// As well as populating js.apiSubs for the dispatch function to use, we
+	// will also populate js.infoSubs, so that the dispatch function can
+	// decide quickly whether or not the request is an info request or not.
+	for _, p := range append(infopairs, pairs...) {
 		sub := &subscription{subject: []byte(p.subject), icb: p.handler}
 		if err := js.apiSubs.Insert(sub); err != nil {
+			return err
+		}
+	}
+	for _, p := range infopairs {
+		if err := js.infoSubs.Insert(p.subject, struct{}{}); err != nil {
 			return err
 		}
 	}

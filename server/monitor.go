@@ -1570,8 +1570,12 @@ func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 				v.Meta.Replicas = ci.Replicas
 			}
 			if ipq := s.jsAPIRoutedReqs; ipq != nil {
-				v.Meta.Pending = ipq.len()
+				v.Meta.PendingRequests = ipq.len()
 			}
+			if ipq := s.jsAPIRoutedInfoReqs; ipq != nil {
+				v.Meta.PendingInfos = ipq.len()
+			}
+			v.Meta.Pending = v.Meta.PendingRequests + v.Meta.PendingInfos
 		}
 	}
 }
@@ -3010,13 +3014,15 @@ type MetaSnapshotStats struct {
 
 // MetaClusterInfo shows information about the meta group.
 type MetaClusterInfo struct {
-	Name     string             `json:"name,omitempty"`     // Name is the name of the cluster
-	Leader   string             `json:"leader,omitempty"`   // Leader is the server name of the cluster leader
-	Peer     string             `json:"peer,omitempty"`     // Peer is unique ID of the leader
-	Replicas []*PeerInfo        `json:"replicas,omitempty"` // Replicas is a list of known peers
-	Size     int                `json:"cluster_size"`       // Size is the known size of the cluster
-	Pending  int                `json:"pending"`            // Pending is how many RAFT messages are not yet processed
-	Snapshot *MetaSnapshotStats `json:"snapshot"`           // Snapshot contains meta snapshot statistics
+	Name            string             `json:"name,omitempty"`     // Name is the name of the cluster
+	Leader          string             `json:"leader,omitempty"`   // Leader is the server name of the cluster leader
+	Peer            string             `json:"peer,omitempty"`     // Peer is unique ID of the leader
+	Replicas        []*PeerInfo        `json:"replicas,omitempty"` // Replicas is a list of known peers
+	Size            int                `json:"cluster_size"`       // Size is the known size of the cluster
+	Pending         int                `json:"pending"`            // Pending is how many RAFT messages are not yet processed
+	PendingRequests int                `json:"pending_requests"`   // PendingRequests is how many CRUD operations are queued for processing
+	PendingInfos    int                `json:"pending_infos"`      // PendingInfos is how many info operations are queued for processing
+	Snapshot        *MetaSnapshotStats `json:"snapshot"`           // Snapshot contains meta snapshot statistics
 }
 
 // JSInfo has detailed information on JetStream.
@@ -3239,8 +3245,12 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 				jsi.Meta.Replicas = ci.Replicas
 			}
 			if ipq := s.jsAPIRoutedReqs; ipq != nil {
-				jsi.Meta.Pending = ipq.len()
+				jsi.Meta.PendingRequests = ipq.len()
 			}
+			if ipq := s.jsAPIRoutedInfoReqs; ipq != nil {
+				jsi.Meta.PendingInfos = ipq.len()
+			}
+			jsi.Meta.Pending = jsi.Meta.PendingRequests + jsi.Meta.PendingInfos
 			// Add meta snapshot stats
 			jsi.Meta.Snapshot = &MetaSnapshotStats{
 				PendingEntries: entries,

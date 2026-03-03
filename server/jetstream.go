@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/minio/highwayhash"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats-server/v2/server/tpm"
 	"github.com/nats-io/nkeys"
@@ -102,22 +103,24 @@ type JetStreamAPIStats struct {
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
 	// These are here first because of atomics on 32bit systems.
-	apiInflight   int64
-	apiTotal      int64
-	apiErrors     int64
-	memReserved   int64
-	storeReserved int64
-	memUsed       int64
-	storeUsed     int64
-	queueLimit    int64
-	clustered     int32
-	mu            sync.RWMutex
-	srv           *Server
-	config        JetStreamConfig
-	cluster       *jetStreamCluster
-	accounts      map[string]*jsAccount
-	apiSubs       *Sublist
-	started       time.Time
+	apiInflight    int64
+	apiTotal       int64
+	apiErrors      int64
+	memReserved    int64
+	storeReserved  int64
+	memUsed        int64
+	storeUsed      int64
+	queueLimit     int64
+	infoQueueLimit int64
+	clustered      int32
+	mu             sync.RWMutex
+	srv            *Server
+	config         JetStreamConfig
+	cluster        *jetStreamCluster
+	accounts       map[string]*jsAccount
+	apiSubs        *Sublist
+	infoSubs       *gsl.SimpleSublist // Subjects for info-specific queue.
+	started        time.Time
 
 	// System level request to purge a stream move
 	accountPurge *subscription
@@ -412,7 +415,7 @@ func (s *Server) initJetStreamEncryption() (err error) {
 
 // enableJetStream will start up the JetStream subsystem.
 func (s *Server) enableJetStream(cfg JetStreamConfig) error {
-	js := &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache()}
+	js := &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache(), infoSubs: gsl.NewSimpleSublist()}
 	s.gcbMu.Lock()
 	if s.gcbOutMax = s.getOpts().JetStreamMaxCatchup; s.gcbOutMax == 0 {
 		s.gcbOutMax = defaultMaxTotalCatchupOutBytes
@@ -421,6 +424,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 
 	// TODO: Not currently reloadable.
 	atomic.StoreInt64(&js.queueLimit, s.getOpts().JetStreamRequestQueueLimit)
+	atomic.StoreInt64(&js.infoQueueLimit, s.getOpts().JetStreamInfoQueueLimit)
 
 	s.js.Store(js)
 

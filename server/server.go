@@ -367,7 +367,8 @@ type Server struct {
 	syncOutSem chan struct{}
 
 	// Queue to process JS API requests that come from routes (or gateways)
-	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
+	jsAPIRoutedReqs     *ipQueue[*jsAPIRoutedReq]
+	jsAPIRoutedInfoReqs *ipQueue[*jsAPIRoutedReq]
 
 	// Delayed API responses.
 	delayedAPIResponses *ipQueue[*delayedAPIResponse]
