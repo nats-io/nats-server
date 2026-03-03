@@ -294,7 +294,7 @@ type Server struct {
 	// to know if it should update the cluster's URLs array.
 	varzUpdateRouteURLs bool
 
-	// Keeps a sublist of of subscriptions attached to leafnode connections
+	// Keeps a sublist of subscriptions attached to leafnode connections
 	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
 	// gateway reply.
 	gwLeafSubs *Sublist
@@ -4415,7 +4415,7 @@ func (s *Server) isLameDuckMode() bool {
 // LameDuckShutdown will perform a lame duck shutdown of NATS, whereby
 // the client listener is closed, existing client connections are
 // kicked, Raft leaderships are transferred, JetStream is shutdown
-// and then finally shutdown the the NATS Server itself.
+// and then finally shutdown the NATS Server itself.
 // This function blocks and will not return until the NATS Server
 // has completed the entire shutdown operation.
 func (s *Server) LameDuckShutdown() {
