@@ -8697,7 +8697,7 @@ func TestFileStoreResetConsumerToStreamState(t *testing.T) {
 
 	// update should fail but force update should pass
 	err = obs.Update(newState)
-	require_Error(t, err, fmt.Errorf("old update ignored"))
+	require_Error(t, err, ErrStoreOldUpdate)
 
 	err = obs.ForceUpdate(newState)
 	require_NoError(t, err)

@@ -65,6 +65,8 @@ var (
 	ErrCorruptStreamState = errors.New("stream state snapshot is corrupt")
 	// ErrTooManyResults
 	ErrTooManyResults = errors.New("too many matching results for request")
+	// ErrStoreOldUpdate is returned when a consumer update is older than the current state.
+	ErrStoreOldUpdate = errors.New("old update ignored")
 )
 
 // StoreMsg is the stored message format for messages that are retained by the Store layer.
