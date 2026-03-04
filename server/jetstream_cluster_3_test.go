@@ -7458,7 +7458,7 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 	})
 }
 
-func TestJetStreamAccountStoreLimits(t *testing.T) {
+func TestJetStreamClusterAccountStoreLimits(t *testing.T) {
 	test := func(t *testing.T, replicas int, storage nats.StorageType) {
 		storeLimit := fileStoreMsgSize("B", nil, nil)
 		memLimit := memStoreMsgSize("B", nil, nil)
