@@ -22818,3 +22818,72 @@ func TestJetStreamFlowControlCrossAccountFanOut(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamStreamCheckSourcesWithExternal(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "ORIGIN"})
+	require_NoError(t, err)
+
+	// Specifying both fields errors.
+	src := &nats.StreamSource{
+		Name:          "ORIGIN",
+		FilterSubject: "filter",
+		SubjectTransforms: []nats.SubjectTransformConfig{
+			{Source: "filter"},
+		},
+	}
+	cfg := &nats.StreamConfig{Name: "SOURCE", Sources: []*nats.StreamSource{src}}
+	for _, external := range []*nats.ExternalStream{nil, {}} {
+		src.External = external
+		_, err = js.AddStream(cfg)
+		require_Error(t, err, NewJSSourceMultipleFiltersNotAllowedError())
+	}
+
+	// Invalid source subject errors.
+	src = &nats.StreamSource{
+		Name: "ORIGIN",
+		SubjectTransforms: []nats.SubjectTransformConfig{
+			{Source: ".invalid"},
+		},
+	}
+	cfg = &nats.StreamConfig{Name: "SOURCE", Sources: []*nats.StreamSource{src}}
+	for _, external := range []*nats.ExternalStream{nil, {}} {
+		src.External = external
+		_, err = js.AddStream(cfg)
+		require_Error(t, err, NewJSSourceInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, ".invalid")))
+	}
+
+	// Invalid destination subject errors.
+	src = &nats.StreamSource{
+		Name: "ORIGIN",
+		SubjectTransforms: []nats.SubjectTransformConfig{
+			{Source: "src", Destination: ".invalid"},
+		},
+	}
+	cfg = &nats.StreamConfig{Name: "SOURCE", Sources: []*nats.StreamSource{src}}
+	for _, external := range []*nats.ExternalStream{nil, {}} {
+		src.External = external
+		_, err = js.AddStream(cfg)
+		require_Error(t, err, NewJSSourceInvalidTransformDestinationError(ErrInvalidMappingDestinationSubject))
+	}
+
+	// Overlap errors.
+	src = &nats.StreamSource{
+		Name: "ORIGIN",
+		SubjectTransforms: []nats.SubjectTransformConfig{
+			{Source: "src"},
+			{Source: "src"},
+		},
+	}
+	cfg = &nats.StreamConfig{Name: "SOURCE", Sources: []*nats.StreamSource{src}}
+	for _, external := range []*nats.ExternalStream{nil, {}} {
+		src.External = external
+		_, err = js.AddStream(cfg)
+		require_Error(t, err, NewJSSourceOverlappingSubjectFiltersError())
+	}
+}

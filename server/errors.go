@@ -251,6 +251,9 @@ type mappingDestinationErr struct {
 }
 
 func (e *mappingDestinationErr) Error() string {
+	if e.token == _EMPTY_ {
+		return e.err.Error()
+	}
 	return fmt.Sprintf("%s in %s", e.err, e.token)
 }
 
