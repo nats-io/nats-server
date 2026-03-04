@@ -7330,3 +7330,131 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 		})
 	}
 }
+
+// Test that a consumer survives a server restart when the consumer's Raft
+// snapshot entry contains state older than what's already on disk.
+// Before the fix, an ErrStoreOldUpdate from setStoreState would cause
+// the consumer to be stopped during processClusterCreateConsumer.
+func TestJetStreamClusterConsumerSurvivesRestartWithStaleSnapshotState(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Publish messages and ack them to advance the consumer state.
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo", []byte("msg"))
+		require_NoError(t, err)
+	}
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs {
+		err = m.AckSync()
+		require_NoError(t, err)
+	}
+
+	// Force a snapshot on the consumer leader, which captures the current
+	// advanced state. This snapshot will be "stale" after we publish more.
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	acc, err := cl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+	snapBytes, err := o.store.EncodedState()
+	require_NoError(t, err)
+	err = o.node.InstallSnapshot(snapBytes, false)
+	require_NoError(t, err)
+
+	// Now publish more messages and ack them to advance the consumer state
+	// beyond the snapshot we just took.
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo", []byte("msg2"))
+		require_NoError(t, err)
+	}
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs {
+		err = m.AckSync()
+		require_NoError(t, err)
+	}
+
+	// Wait for all consumer followers to be caught up.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			a, err := s.lookupAccount(globalAccountName)
+			if err != nil {
+				return err
+			}
+			ms, err := a.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			co := ms.lookupConsumer("CONSUMER")
+			if co == nil {
+				return errors.New("consumer not found")
+			}
+			info := co.info()
+			if info.AckFloor.Consumer != 20 {
+				return fmt.Errorf("expected ack floor 20, got %d", info.AckFloor.Consumer)
+			}
+		}
+		return nil
+	})
+
+	// Pick a non-leader to restart. It has a stale snapshot in its Raft WAL
+	// but newer state on disk.
+	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	rs.Shutdown()
+	rs.WaitForShutdown()
+
+	// Restart the server. During Raft replay, the stale snapshot entry will
+	// be applied. The consumer store's Update method should return
+	// ErrStoreOldUpdate since the disk state is newer, and this should not
+	// prevent the consumer from being available.
+	rs = c.restartServer(rs)
+	c.waitOnServerCurrent(rs)
+
+	// Verify the consumer still exists and has correct state on the
+	// restarted server.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		a, err := rs.lookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		ms, err := a.lookupStream("TEST")
+		if err != nil {
+			return err
+		}
+		co := ms.lookupConsumer("CONSUMER")
+		if co == nil {
+			return errors.New("consumer not found after restart")
+		}
+		info := co.info()
+		if info.AckFloor.Consumer != 20 {
+			return fmt.Errorf("expected ack floor 20 after restart, got %d", info.AckFloor.Consumer)
+		}
+		return nil
+	})
+}
