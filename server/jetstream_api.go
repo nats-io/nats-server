@@ -2006,7 +2006,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		State:      mset.stateWithDetail(details),
 		Config:     *setDynamicStreamMetadata(&config),
 		Domain:     s.getOpts().JetStreamDomain,
-		Cluster:    js.clusterInfo(mset.raftGroup()),
+		Cluster:    js.clusterInfoOfStreamAssignment(mset.streamAssignment()),
 		Mirror:     mset.mirrorInfo(),
 		Sources:    mset.sourcesInfo(),
 		Alternates: js.streamAlternates(ci, config.Name),

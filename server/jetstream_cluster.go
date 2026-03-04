@@ -1162,9 +1162,10 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	}
 	// Check if we are the leader of this raftGroup assigned to the stream.
 	ourID := cc.meta.ID()
-	for _, peer := range rg.Peers {
+	peerSet := rg.combinePeersWithDesired(sa.DesiredPlacement)
+	for _, peer := range peerSet {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
+			if len(peerSet) == 1 || (rg.node != nil && rg.node.Leader()) {
 				return true
 			}
 		}
@@ -1195,10 +1196,14 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 		return false
 	}
 	rg := ca.Group
+	if rg == nil {
+		return false
+	}
 	ourID := cc.meta.ID()
-	for _, peer := range rg.Peers {
+	peerSet := rg.combinePeersWithDesired(sa.DesiredPlacement)
+	for _, peer := range peerSet {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
+			if len(peerSet) == 1 || (rg.node != nil && rg.node.Leader()) {
 				return true
 			}
 		}
@@ -4386,7 +4391,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 			Created:   mset.createdTime(),
 			State:     mset.state(),
 			Config:    *setDynamicStreamMetadata(&msetCfg),
-			Cluster:   js.clusterInfo(mset.raftGroup()),
+			Cluster:   js.clusterInfoOfStreamAssignment(mset.streamAssignment()),
 			Sources:   mset.sourcesInfo(),
 			Mirror:    mset.mirrorInfo(),
 			TimeStamp: time.Now().UTC(),
@@ -4719,7 +4724,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 
 	// If we detect we are scaling down to 1, non-clustered, and we had a previous node, clear it here.
 	// FIXME(mvv): this is unsafe
-	if sa.Config.Replicas == 1 && sa.Group.node != nil {
+	if sa.Config.Replicas == 1 && sa.Group.node != nil && sa.DesiredPlacement == nil {
 		sa.Group.node = nil
 	}
 
@@ -4955,7 +4960,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		Created:   mset.createdTime(),
 		State:     mset.state(),
 		Config:    *setDynamicStreamMetadata(&msetCfg),
-		Cluster:   js.clusterInfo(mset.raftGroup()),
+		Cluster:   js.clusterInfoOfStreamAssignment(mset.streamAssignment()),
 		Mirror:    mset.mirrorInfo(),
 		Sources:   mset.sourcesInfo(),
 		TimeStamp: time.Now().UTC(),
@@ -5024,7 +5029,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 								Created:   mset.createdTime(),
 								State:     mset.state(),
 								Config:    *setDynamicStreamMetadata(&msetCfg),
-								Cluster:   js.clusterInfo(mset.raftGroup()),
+								Cluster:   js.clusterInfoOfStreamAssignment(mset.streamAssignment()),
 								Sources:   mset.sourcesInfo(),
 								Mirror:    mset.mirrorInfo(),
 								TimeStamp: time.Now().UTC(),
@@ -10358,6 +10363,116 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	return ci
 }
 
+func (js *jetStream) clusterInfoOfStreamAssignment(sa *streamAssignment) *ClusterInfo {
+	if js == nil {
+		return nil
+	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	s := js.srv
+	if sa == nil || sa.Group == nil || (sa.Group.node == nil && sa.DesiredPlacement == nil) {
+		return &ClusterInfo{
+			Name:   s.cachedClusterName(),
+			Leader: s.Name(),
+		}
+	}
+
+	ci := &ClusterInfo{
+		Name:      s.cachedClusterName(),
+		RaftGroup: sa.Group.Name,
+		Leader:    s.Name(),
+	}
+
+	rg := sa.Group
+	var desiredRg *raftGroup
+	if sa.DesiredPlacement != nil && sa.DesiredPlacement.Group != nil {
+		desiredRg = sa.DesiredPlacement.Group
+	}
+
+	id := s.Node()
+	if n := rg.node; n != nil {
+		ci.RaftGroup = n.Group()
+		ci.Leader = s.serverNameForNode(n.GroupLeader())
+		ci.LeaderSince = n.LeaderSince()
+		ci.SystemAcc = n.IsSystemAccount()
+		ci.TrafficAcc = n.GetTrafficAccountName()
+
+		// If we are leaderless, do not suppress putting us in the peer list.
+		if ci.Leader == _EMPTY_ {
+			id = _EMPTY_
+		}
+
+		peers, now := n.Peers(), time.Now()
+		for _, rp := range peers {
+			// The peer is either in the actual or desired peer set.
+			if rp.ID != id && (rg.isMember(rp.ID) || (desiredRg != nil && desiredRg.isMember(rp.ID))) {
+				var lastSeen time.Duration
+				if now.After(rp.Last) && !rp.Last.IsZero() {
+					lastSeen = now.Sub(rp.Last)
+				}
+				current := rp.Current
+				if current && lastSeen > lostQuorumInterval {
+					current = false
+				}
+				// Create a peer info with common settings if the peer has not been seen
+				// yet (which can happen after the whole cluster is stopped and only some
+				// of the nodes are restarted).
+				pi := &PeerInfo{
+					Current: current,
+					Offline: true,
+					Active:  lastSeen,
+					Lag:     rp.Lag,
+					Peer:    rp.ID,
+				}
+				// If node is found, complete/update the settings.
+				if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
+					si := sir.(nodeInfo)
+					pi.Name, pi.Offline = si.name, si.offline
+				} else {
+					// If not, then add a name that indicates that the server name
+					// is unknown at this time, and clear the lag since it is misleading
+					// (the node may not have that much lag).
+					// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+					// would technically not be required, but keeping it for now.
+					pi.Name, pi.Lag = fmt.Sprintf("Server name unknown at this time (peerID: %s)", rp.ID), 0
+				}
+				ci.Replicas = append(ci.Replicas, pi)
+			}
+		}
+	}
+	if desiredRg != nil {
+		for _, peer := range desiredRg.Peers {
+			// Skip if the desired peer is already present.
+			if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
+				continue
+			}
+			pi := &PeerInfo{
+				Current: false,
+				Offline: true,
+				Peer:    peer,
+			}
+			// If node is found, complete/update the settings.
+			if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
+				si := sir.(nodeInfo)
+				pi.Name, pi.Offline = si.name, si.offline
+			} else {
+				// If not, then add a name that indicates that the server name
+				// is unknown at this time, and clear the lag since it is misleading
+				// (the node may not have that much lag).
+				// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+				// would technically not be required, but keeping it for now.
+				pi.Name = fmt.Sprintf("Server name unknown at this time (peerID: %s)", peer)
+			}
+			ci.Replicas = append(ci.Replicas, pi)
+		}
+	}
+	// Order the result based on the name so that we get something consistent
+	// when doing repeated stream info in the CLI, etc...
+	slices.SortFunc(ci.Replicas, func(i, j *PeerInfo) int { return cmp.Compare(i.Name, j.Name) })
+	return ci
+}
+
 func (mset *stream) checkClusterInfo(ci *ClusterInfo) {
 	for _, r := range ci.Replicas {
 		peer := getHash(r.Name)
@@ -10449,7 +10564,7 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 		Created:   mset.createdTime(),
 		State:     mset.state(),
 		Config:    config,
-		Cluster:   js.clusterInfo(mset.raftGroup()),
+		Cluster:   js.clusterInfoOfStreamAssignment(mset.streamAssignment()),
 		Sources:   mset.sourcesInfo(),
 		Mirror:    mset.mirrorInfo(),
 		TimeStamp: time.Now().UTC(),
