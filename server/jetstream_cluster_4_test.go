@@ -7484,3 +7484,230 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdate(t *testing.T) {
 		require_NoError(t, err)
 	}
 }
+
+// Test that demonstrates how async meta snapshots (introduced in #7827)
+// preserve stale consumer State from WAL entries, making the consumer
+// deletion bug more likely to trigger.
+//
+// Before #7827, metaSnapshot() read ca.State from the live in-memory
+// cc.streams map where State had already been nil-ed out by
+// processConsumerAssignment. The sync snapshot was safe.
+//
+// After #7827, the async path replays raw WAL entries via
+// collectStreamAndConsumerChanges, which preserves the original ca.State
+// from the proposal. When this snapshot is installed and a server catches
+// up from it, processClusterCreateConsumer receives stale State, causing
+// setStoreState to return ErrStoreOldUpdate and the consumer to be
+// stopped and its Raft node deleted.
+func TestJetStreamClusterAsyncMetaSnapshotPreservesStaleConsumerState(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Publish messages and ack them to advance the consumer state.
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo", []byte("msg"))
+		require_NoError(t, err)
+	}
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs {
+		err = m.AckSync()
+		require_NoError(t, err)
+	}
+
+	// Wait for all consumers to be caught up to ack floor 10.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			a, err := s.lookupAccount(globalAccountName)
+			if err != nil {
+				return err
+			}
+			ms, err := a.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			co := ms.lookupConsumer("CONSUMER")
+			if co == nil {
+				return errors.New("consumer not found")
+			}
+			info := co.info()
+			if info.AckFloor.Consumer != 10 {
+				return fmt.Errorf("expected ack floor 10, got %d", info.AckFloor.Consumer)
+			}
+		}
+		return nil
+	})
+
+	// Force a sync meta snapshot on the meta leader. This creates the
+	// baseline snapshot that the async path will build upon. All WAL
+	// entries before this point will be compacted.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mljs := ml.getJetStream()
+	mljs.mu.RLock()
+	cc := mljs.cluster
+	meta := cc.meta
+	mljs.mu.RUnlock()
+
+	syncSnap, _, _, err := mljs.metaSnapshot()
+	require_NoError(t, err)
+	require_NoError(t, meta.InstallSnapshot(syncSnap, true))
+
+	// Shut down a follower BEFORE proposing the stale entry. This way
+	// the follower misses the entry and must catch up from the leader
+	// when it restarts.
+	var rs *Server
+	for _, s := range c.servers {
+		if s != ml {
+			rs = s
+			break
+		}
+	}
+	require_NotNil(t, rs)
+
+	rs.Shutdown()
+	rs.WaitForShutdown()
+
+	// Reconnect to the meta leader.
+	nc.Close()
+	nc, js = jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Propose a consumer assignment with stale State (ack floor 5).
+	// This simulates what happens during a stream scale-down reassignment
+	// where the consumer info has older state than what the consumer
+	// already has on disk.
+	mljs.mu.RLock()
+	ca := mljs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, ca)
+	mljs.mu.RUnlock()
+
+	cca := ca.copyGroup()
+	cca.State = &ConsumerState{
+		Delivered: SequencePair{Consumer: 5, Stream: 5},
+		AckFloor: SequencePair{Consumer: 5, Stream: 5},
+	}
+	require_NoError(t, cc.meta.Propose(encodeAddConsumerAssignment(cca)))
+
+	// Wait for the proposal to be applied on the running servers.
+	// processConsumerAssignment nils out ca.State after extracting it.
+	time.Sleep(time.Second)
+
+	// Verify the sync snapshot does NOT contain State.
+	// This is why the bug was rare before #7827: the sync metaSnapshot()
+	// reads from the live in-memory cc.streams map where State is nil.
+	syncSnap2, _, _, err := mljs.metaSnapshot()
+	require_NoError(t, err)
+	syncStreams, err := mljs.decodeMetaSnapshot(syncSnap2)
+	require_NoError(t, err)
+	for _, asa := range syncStreams {
+		for _, sa := range asa {
+			for _, sca := range sa.consumers {
+				if sca.Name == "CONSUMER" {
+					if sca.State != nil {
+						t.Fatalf("sync snapshot should NOT contain consumer State, but got: %+v", sca.State)
+					}
+				}
+			}
+		}
+	}
+	t.Log("Confirmed: sync metaSnapshot() does not contain stale consumer State (safe)")
+
+	// Now simulate the async snapshot path from #7827:
+	// 1. Create a checkpoint
+	// 2. Load the last snapshot (the baseline we installed above)
+	// 3. Replay WAL entries since that snapshot (which includes our stale State proposal)
+	// 4. Encode the result
+	// The async path replays raw WAL entries, so the State from the
+	// proposal is preserved in the resulting snapshot.
+	checkpoint, err := meta.CreateSnapshotCheckpoint(true)
+	require_NoError(t, err)
+
+	lastSnap, err := checkpoint.LoadLastSnapshot()
+	if err == errNoSnapAvailable {
+		lastSnap = nil
+		err = nil
+	}
+	require_NoError(t, err)
+
+	asyncStreams, err := mljs.decodeMetaSnapshot(lastSnap)
+	require_NoError(t, err)
+	err = mljs.collectStreamAndConsumerChanges(checkpoint, asyncStreams)
+	require_NoError(t, err)
+
+	// Verify the async snapshot DOES contain State.
+	// This is the key difference: the async path replays raw WAL entries
+	// where State was set, so it gets baked into the snapshot.
+	var foundState bool
+	for _, asa := range asyncStreams {
+		for _, sa := range asa {
+			for _, sca := range sa.consumers {
+				if sca.Name == "CONSUMER" && sca.State != nil {
+					foundState = true
+					t.Logf("Confirmed: async snapshot DOES contain stale consumer State: AckFloor=%+v", sca.State.AckFloor)
+				}
+			}
+		}
+	}
+	if !foundState {
+		t.Fatalf("async snapshot should contain consumer State from WAL entry, but State was nil")
+	}
+
+	// Install the async snapshot on the meta leader. This compacts the
+	// WAL, so the follower that was shut down can only catch up via the
+	// snapshot (which now contains stale State).
+	asyncSnap, _, _, err := mljs.encodeMetaSnapshot(asyncStreams)
+	require_NoError(t, err)
+	_, err = checkpoint.InstallSnapshot(asyncSnap)
+	require_NoError(t, err)
+
+	// Restart the follower. During meta catchup, the leader sends the
+	// snapshot (which has stale consumer State). The follower applies it
+	// via applyMetaSnapshot -> processConsumerAssignment ->
+	// processClusterCreateConsumer with stale state. Without the fix,
+	// setStoreState returns ErrStoreOldUpdate, triggering
+	// rg.node.Delete() and o.stop(), destroying the consumer.
+	rs = c.restartServer(rs)
+	c.waitOnServerCurrent(rs)
+
+	// Verify the consumer still exists on the restarted server.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		a, err := rs.lookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		ms, err := a.lookupStream("TEST")
+		if err != nil {
+			return err
+		}
+		co := ms.lookupConsumer("CONSUMER")
+		if co == nil {
+			return errors.New("consumer not found after restart - async snapshot with stale State caused consumer loss")
+		}
+		info := co.info()
+		if info.AckFloor.Consumer != 10 {
+			return fmt.Errorf("expected ack floor 10, got %d", info.AckFloor.Consumer)
+		}
+		return nil
+	})
+}
