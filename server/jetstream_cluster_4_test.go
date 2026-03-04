@@ -7331,12 +7331,11 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 	}
 }
 
-// Test that setStoreState treats ErrStoreOldUpdate as a non-error.
-// This can happen during processClusterCreateConsumer when a consumer
-// assignment carries stale state (e.g. from a stream restore or meta
-// snapshot), but the consumer was already recovered from disk with
-// newer state. Without the fix, the error would propagate and cause
-// the consumer to be stopped and its Raft node deleted.
+// Test that when processClusterCreateConsumer receives a consumer assignment
+// with stale state (e.g. from a stream restore), the consumer is NOT stopped
+// and its Raft node is NOT deleted. Without the fix, setStoreState would
+// return ErrStoreOldUpdate which would propagate up and trigger the error
+// path in processClusterCreateConsumer that calls rg.node.Delete() and o.stop().
 func TestJetStreamClusterConsumerSetStoreStateOldUpdate(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -7373,9 +7372,7 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdate(t *testing.T) {
 		require_NoError(t, err)
 	}
 
-	// Wait for all consumers to be caught up.
-	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
-	require_NotNil(t, cl)
+	// Wait for all consumers on all servers to be caught up to ack floor 10.
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		for _, s := range c.servers {
 			a, err := s.lookupAccount(globalAccountName)
@@ -7398,29 +7395,68 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdate(t *testing.T) {
 		return nil
 	})
 
-	// Grab a consumer on any server.
-	acc, err := cl.lookupAccount(globalAccountName)
+	// Pick a follower server to test on. This simulates the scenario where
+	// a consumer already exists with advanced state and then
+	// processClusterCreateConsumer is called with stale state.
+	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, rs)
+
+	// Grab the consumer's Raft node before the stale state is applied.
+	acc, err := rs.lookupAccount(globalAccountName)
 	require_NoError(t, err)
 	mset, err := acc.lookupStream("TEST")
 	require_NoError(t, err)
 	o := mset.lookupConsumer("CONSUMER")
 	require_NotNil(t, o)
+	o.mu.RLock()
+	raftNode := o.node
+	o.mu.RUnlock()
+	require_NotNil(t, raftNode)
 
-	// Simulate what processClusterCreateConsumer does when it receives a
-	// consumer assignment with stale state (e.g. from a stream restore).
-	// The consumer's store already has state at ack floor 10, so providing
-	// an older state at ack floor 5 should NOT return an error.
+	// Build a consumer assignment with stale state, as would happen during
+	// a stream restore where the consumer info returned has older state.
+	rsjs := rs.getJetStream()
+	rsjs.mu.RLock()
+	ca := rsjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	rsjs.mu.RUnlock()
+	require_NotNil(t, ca)
+
 	staleState := &ConsumerState{
 		Delivered: SequencePair{Consumer: 5, Stream: 5},
 		AckFloor: SequencePair{Consumer: 5, Stream: 5},
 	}
-	o.mu.Lock()
-	err = o.setStoreState(staleState)
-	o.mu.Unlock()
-	require_NoError(t, err)
 
-	// Verify consumer is still functional with the correct (newer) state.
+	// Call processClusterCreateConsumer with the stale state, simulating
+	// what happens during stream restore or meta snapshot recovery.
+	// Without the fix, this would delete the consumer's Raft node and stop it.
+	rsjs.processClusterCreateConsumer(ca, ca, staleState, true)
+
+	// Verify the consumer still exists on this server.
+	o = mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Verify the consumer's Raft node was NOT deleted.
+	o.mu.RLock()
+	nodeAfter := o.node
+	o.mu.RUnlock()
+	require_NotNil(t, nodeAfter)
+	require_Equal(t, raftNode, nodeAfter)
+
+	// Verify the consumer retained its correct (newer) state, not the stale state.
 	info := o.info()
 	require_Equal(t, info.AckFloor.Consumer, 10)
 	require_Equal(t, info.AckFloor.Stream, 10)
+
+	// Verify the consumer is still fully functional by publishing and consuming more.
+	for i := 0; i < 5; i++ {
+		_, err = js.Publish("foo", []byte("after-stale"))
+		require_NoError(t, err)
+	}
+	msgs, err = sub.Fetch(5)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 5)
+	for _, m := range msgs {
+		err = m.AckSync()
+		require_NoError(t, err)
+	}
 }
