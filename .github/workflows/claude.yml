@@ -1,0 +1,28 @@
+name: Claude Code
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, reopened]
+
+jobs:
+  claude:
+    uses: synadia-io/ai-workflows/.github/workflows/claude.yml@v1
+    with:
+      review_focus: |
+        Additionally focus on:
+        - Performance implications (hot paths, allocations, lock contention)
+        - Concurrency safety (goroutine leaks, race conditions, deadlocks)
+        - Raft consensus and JetStream clustering correctness
+        - Security boundaries (authentication, authorization, TLS handling)
+    secrets:
+      claude_oauth_token: ${{ secrets.CLAUDE_OAUTH_TOKEN }}
