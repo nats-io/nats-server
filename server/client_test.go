@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -3853,5 +3854,46 @@ func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestFlushOutboundS2CompressionPoolBufferRecycling(t *testing.T) {
+	opts := DefaultOptions()
+	s := &Server{opts: opts}
+
+	fakeConn := &testConnWritePartial{}
+	c := &client{srv: s, nc: fakeConn, kind: ROUTER}
+	c.initClient()
+	c.out.cw = s2.NewWriter(nil, s2.WriterConcurrency(1))
+
+	payload := make([]byte, 256)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	// Queue multiple buffers per iteration so each leaked pool
+	// buffer adds one extra allocation, making the leak obvious.
+	const numBuffers = 10
+
+	// Warm up: run a few iterations to populate the pool.
+	for i := 0; i < 5; i++ {
+		c.mu.Lock()
+		for j := 0; j < numBuffers; j++ {
+			c.queueOutbound(payload)
+		}
+		c.flushOutbound()
+		c.mu.Unlock()
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		c.mu.Lock()
+		for j := 0; j < numBuffers; j++ {
+			c.queueOutbound(payload)
+		}
+		c.flushOutbound()
+		c.mu.Unlock()
+	})
+	if allocs > 15 {
+		t.Fatalf("Too many allocs per iteration (%.1f); pool buffers are likely being leaked", allocs)
 	}
 }
