@@ -1920,6 +1920,30 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		} else {
 			return StreamConfig{}, NewJSSourceDuplicateDetectedError()
 		}
+
+		if src.FilterSubject != _EMPTY_ && len(src.SubjectTransforms) != 0 {
+			return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
+		}
+
+		for _, tr := range src.SubjectTransforms {
+			if tr.Source != _EMPTY_ && !IsValidSubject(tr.Source) {
+				return StreamConfig{}, NewJSSourceInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, tr.Source))
+			}
+			err := ValidateMapping(tr.Source, tr.Destination)
+			if err != nil {
+				return StreamConfig{}, NewJSSourceInvalidTransformDestinationError(err)
+			}
+		}
+
+		// Check subject filters overlap.
+		for outer, tr := range src.SubjectTransforms {
+			for inner, innertr := range src.SubjectTransforms {
+				if inner != outer && subjectIsSubsetMatch(tr.Source, innertr.Source) {
+					return StreamConfig{}, NewJSSourceOverlappingSubjectFiltersError()
+				}
+			}
+		}
+
 		// Do not perform checks if External is provided, as it could lead to
 		// checking against itself (if sourced stream name is the same on different JetStream)
 		if src.External == nil {
@@ -1930,30 +1954,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 			if exists {
 				if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 					return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
-				}
-			}
-
-			if src.FilterSubject != _EMPTY_ && len(src.SubjectTransforms) != 0 {
-				return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
-			}
-
-			for _, tr := range src.SubjectTransforms {
-				if tr.Source != _EMPTY_ && !IsValidSubject(tr.Source) {
-					return StreamConfig{}, NewJSSourceInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, tr.Source))
-				}
-
-				err := ValidateMapping(tr.Source, tr.Destination)
-				if err != nil {
-					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError(err)
-				}
-			}
-
-			// Check subject filters overlap.
-			for outer, tr := range src.SubjectTransforms {
-				for inner, innertr := range src.SubjectTransforms {
-					if inner != outer && subjectIsSubsetMatch(tr.Source, innertr.Source) {
-						return StreamConfig{}, NewJSSourceOverlappingSubjectFiltersError()
-					}
 				}
 			}
 			continue
