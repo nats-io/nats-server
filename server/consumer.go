@@ -3059,6 +3059,11 @@ func (o *consumer) setStoreState(state *ConsumerState) error {
 	err := o.store.Update(state)
 	if err == nil {
 		o.applyState(state)
+	} else if err == ErrStoreOldUpdate {
+		// Our store already has a newer state, which is normal during recovery
+		// when the consumer was loaded from disk before the meta snapshot state
+		// was applied.
+		return nil
 	}
 	return err
 }

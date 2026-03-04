@@ -11708,7 +11708,7 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 
 	// Check to see if this is an outdated update.
 	if state.Delivered.Consumer < o.state.Delivered.Consumer || state.AckFloor.Stream < o.state.AckFloor.Stream {
-		return fmt.Errorf("old update ignored")
+		return ErrStoreOldUpdate
 	}
 
 	o.state.Delivered = state.Delivered
