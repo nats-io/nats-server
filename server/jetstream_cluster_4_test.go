@@ -2977,10 +2977,13 @@ func TestJetStreamClusterAPILimitDefault(t *testing.T) {
 	for _, s := range c.servers {
 		s.optsMu.RLock()
 		lim := s.opts.JetStreamRequestQueueLimit
+		ilim := s.opts.JetStreamInfoQueueLimit
 		s.optsMu.RUnlock()
 
 		require_Equal(t, lim, JSDefaultRequestQueueLimit)
+		require_Equal(t, ilim, JSDefaultRequestQueueLimit)
 		require_Equal(t, atomic.LoadInt64(&s.getJetStream().queueLimit), JSDefaultRequestQueueLimit)
+		require_Equal(t, atomic.LoadInt64(&s.getJetStream().infoQueueLimit), JSDefaultRequestQueueLimit)
 	}
 }
 
@@ -5384,7 +5387,7 @@ func TestJetStreamClusterRoutedAPIRecoverPerformance(t *testing.T) {
 		require_NoError(t, nc.PublishMsg(msg))
 	}
 	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
-		if queued := leader.jsAPIRoutedReqs.len(); queued != count {
+		if queued := leader.jsAPIRoutedInfoReqs.len(); queued != count {
 			return fmt.Errorf("expected %d queued requests, got %d", count, queued)
 		}
 		return nil
