@@ -334,7 +334,6 @@ type writeableConsumerAssignment struct {
 	Stream     string          `json:"stream"`
 	ConfigJSON json.RawMessage `json:"consumer"`
 	Group      *raftGroup      `json:"group"`
-	State      *ConsumerState  `json:"state,omitempty"`
 }
 
 // streamPurge is what the stream leader will replicate when purging a stream.
@@ -2056,7 +2055,7 @@ func (js *jetStream) decodeMetaSnapshot(buf []byte) (map[string]map[string]*stre
 				if wca.Stream == _EMPTY_ {
 					wca.Stream = sa.Config.Name // Rehydrate from the stream name.
 				}
-				ca := &consumerAssignment{Client: wca.Client, Created: wca.Created, Name: wca.Name, Stream: wca.Stream, ConfigJSON: wca.ConfigJSON, Group: wca.Group, State: wca.State}
+				ca := &consumerAssignment{Client: wca.Client, Created: wca.Created, Name: wca.Name, Stream: wca.Stream, ConfigJSON: wca.ConfigJSON, Group: wca.Group}
 				if err := decodeConsumerAssignmentConfig(ca); err != nil {
 					return nil, err
 				}
@@ -2096,7 +2095,6 @@ func (js *jetStream) encodeMetaSnapshot(streams map[string]map[string]*streamAss
 					Stream:     ca.Stream,
 					ConfigJSON: ca.ConfigJSON,
 					Group:      ca.Group,
-					State:      ca.State,
 				}
 				wsa.Consumers = append(wsa.Consumers, &wca)
 				nca++
