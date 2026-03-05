@@ -8222,3 +8222,69 @@ func TestJetStreamClusterAccountStoreLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterDontEncodeConsumerStateInMetaSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Add a replicated stream and a single replica consumer.
+	scfg := &nats.StreamConfig{Name: "TEST", Replicas: 3}
+	_, err := js.AddStream(scfg)
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "CONSUMER", Replicas: 1})
+	require_NoError(t, err)
+
+	// Ensure the stream and consumer leaders differ.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	if sl == cl {
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NoError(t, mset.raftNode().StepDown())
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		sl = c.streamLeader(globalAccountName, "TEST")
+	}
+	require_NotEqual(t, sl, cl)
+
+	// Scale down the stream so the R1 consumer needs to be moved to a different server.
+	scfg.Replicas = 1
+	_, err = js.UpdateStream(scfg)
+	require_NoError(t, err)
+
+	// Signal that the meta leader should create a snapshot. We need to do this indirectly
+	// through a noop peer change, as we need the monitor goroutine to perform the snapshot.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	meta := ml.getJetStream().getMetaGroup().(*raft)
+	meta.RLock()
+	papplied := meta.papplied
+	meta.RUnlock()
+	require_NoError(t, meta.ProposeAddPeer(meta.ID()))
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		meta.RLock()
+		defer meta.RUnlock()
+		if papplied == meta.papplied {
+			return errors.New("no snapshot yet")
+		}
+		return nil
+	})
+
+	// Load the new snapshot and validate consumer state isn't preserved.
+	snap, err := meta.loadLastSnapshot()
+	require_NoError(t, err)
+	sjs := ml.getJetStream()
+	accStreams, err := sjs.decodeMetaSnapshot(snap.data)
+	require_NoError(t, err)
+	require_Len(t, len(accStreams), 1)
+	streams := accStreams[globalAccountName]
+	require_Len(t, len(streams), 1)
+	stream := streams["TEST"]
+	require_NotNil(t, stream)
+	require_Len(t, len(stream.consumers), 1)
+	consumer := stream.consumers["CONSUMER"]
+	require_NotNil(t, consumer)
+	require_True(t, consumer.State == nil)
+}
