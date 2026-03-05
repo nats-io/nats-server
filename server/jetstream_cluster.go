@@ -2073,7 +2073,14 @@ func (js *jetStream) decodeMetaSnapshot(buf []byte) (map[string]map[string]*stre
 			as = make(map[string]*streamAssignment)
 			streams[wsa.Client.serviceAccount()] = as
 		}
-		sa := &streamAssignment{Client: wsa.Client, Created: wsa.Created, ConfigJSON: wsa.ConfigJSON, Group: wsa.Group, Sync: wsa.Sync}
+		sa := &streamAssignment{
+			Client:           wsa.Client,
+			Created:          wsa.Created,
+			ConfigJSON:       wsa.ConfigJSON,
+			Group:            wsa.Group,
+			Sync:             wsa.Sync,
+			DesiredPlacement: wsa.DesiredPlacement,
+		}
 		if err := decodeStreamAssignmentConfig(js.srv, sa); err != nil {
 			return nil, err
 		}
@@ -2083,7 +2090,15 @@ func (js *jetStream) decodeMetaSnapshot(buf []byte) (map[string]map[string]*stre
 				if wca.Stream == _EMPTY_ {
 					wca.Stream = sa.Config.Name // Rehydrate from the stream name.
 				}
-				ca := &consumerAssignment{Client: wca.Client, Created: wca.Created, Name: wca.Name, Stream: wca.Stream, ConfigJSON: wca.ConfigJSON, Group: wca.Group}
+				ca := &consumerAssignment{
+					Client:           wca.Client,
+					Created:          wca.Created,
+					Name:             wca.Name,
+					Stream:           wca.Stream,
+					ConfigJSON:       wca.ConfigJSON,
+					Group:            wca.Group,
+					DesiredPlacement: wca.DesiredPlacement,
+				}
 				if err := decodeConsumerAssignmentConfig(ca); err != nil {
 					return nil, err
 				}
@@ -2108,21 +2123,23 @@ func (js *jetStream) encodeMetaSnapshot(streams map[string]map[string]*streamAss
 	for _, asa := range streams {
 		for _, sa := range asa {
 			wsa := writeableStreamAssignment{
-				Client:     sa.Client.forAssignmentSnap(),
-				Created:    sa.Created,
-				ConfigJSON: sa.ConfigJSON,
-				Group:      sa.Group,
-				Sync:       sa.Sync,
-				Consumers:  make([]*writeableConsumerAssignment, 0, len(sa.consumers)),
+				Client:           sa.Client.forAssignmentSnap(),
+				Created:          sa.Created,
+				ConfigJSON:       sa.ConfigJSON,
+				Group:            sa.Group,
+				Sync:             sa.Sync,
+				DesiredPlacement: sa.DesiredPlacement,
+				Consumers:        make([]*writeableConsumerAssignment, 0, len(sa.consumers)),
 			}
 			for _, ca := range sa.consumers {
 				wca := writeableConsumerAssignment{
-					Client:     ca.Client.forAssignmentSnap(),
-					Created:    ca.Created,
-					Name:       ca.Name,
-					Stream:     ca.Stream,
-					ConfigJSON: ca.ConfigJSON,
-					Group:      ca.Group,
+					Client:           ca.Client.forAssignmentSnap(),
+					Created:          ca.Created,
+					Name:             ca.Name,
+					Stream:           ca.Stream,
+					ConfigJSON:       ca.ConfigJSON,
+					Group:            ca.Group,
+					DesiredPlacement: ca.DesiredPlacement,
 				}
 				wsa.Consumers = append(wsa.Consumers, &wca)
 				nca++
