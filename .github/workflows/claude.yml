@@ -1,10 +1,7 @@
 name: Claude Code
 
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
+# GITHUB_TOKEN is neutered — all GitHub API access uses the App token instead.
+permissions: {}
 
 on:
   issue_comment:
@@ -16,8 +13,10 @@ on:
 
 jobs:
   claude:
-    uses: synadia-io/ai-workflows/.github/workflows/claude.yml@v1
+    uses: synadia-io/ai-workflows/.github/workflows/claude.yml@v2
     with:
+      gh_app_id: ${{ vars.CLAUDE_GH_APP_ID }}
+      checkout_mode: "base"
       review_focus: |
         Additionally focus on:
         - Performance implications (hot paths, allocations, lock contention)
@@ -26,3 +25,4 @@ jobs:
         - Security boundaries (authentication, authorization, TLS handling)
     secrets:
       claude_oauth_token: ${{ secrets.CLAUDE_OAUTH_TOKEN }}
+      gh_app_private_key: ${{ secrets.CLAUDE_GH_APP_PRIVATE_KEY }}
