@@ -9752,11 +9752,6 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 	if fs.isClosed() {
 		return 0, ErrStoreClosed
 	}
-	// Always return previous write errors.
-	if err := fs.werr; err != nil {
-		fs.mu.Unlock()
-		return 0, err
-	}
 
 	// Persist any write errors.
 	defer func() {
@@ -9768,6 +9763,12 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 	}()
 
 	fs.mu.Lock()
+
+	// Always return previous write errors.
+	if err := fs.werr; err != nil {
+		fs.mu.Unlock()
+		return 0, err
+	}
 
 	purged = fs.state.Msgs
 	rbytes := int64(fs.state.Bytes)
