@@ -5626,7 +5626,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
-		fsUnlock()
 		return false, err
 	}
 	// If in encrypted mode negate secure rewrite here.
