@@ -1576,6 +1576,7 @@ func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 				v.Meta.PendingInfos = ipq.len()
 			}
 			v.Meta.Pending = v.Meta.PendingRequests + v.Meta.PendingInfos
+			v.Meta.Snapshot = s.metaClusterSnapshotStats(js, mg)
 		}
 	}
 }
@@ -3012,6 +3013,32 @@ type MetaSnapshotStats struct {
 	LastDuration   time.Duration `json:"last_duration,omitempty"` // LastDuration is how long the last meta snapshot took
 }
 
+// metaClusterSnapshotStats returns snapshot statistics for the meta group.
+func (s *Server) metaClusterSnapshotStats(js *jetStream, mg RaftNode) *MetaSnapshotStats {
+	entries, bytes := mg.Size()
+	snap := &MetaSnapshotStats{
+		PendingEntries: entries,
+		PendingSize:    bytes,
+	}
+
+	js.mu.RLock()
+	cluster := js.cluster
+	js.mu.RUnlock()
+
+	if cluster != nil {
+		timeNanos := atomic.LoadInt64(&cluster.lastMetaSnapTime)
+		durationNanos := atomic.LoadInt64(&cluster.lastMetaSnapDuration)
+		if timeNanos > 0 {
+			snap.LastTime = time.Unix(0, timeNanos).UTC()
+		}
+		if durationNanos > 0 {
+			snap.LastDuration = time.Duration(durationNanos)
+		}
+	}
+
+	return snap
+}
+
 // MetaClusterInfo shows information about the meta group.
 type MetaClusterInfo struct {
 	Name            string             `json:"name,omitempty"`     // Name is the name of the cluster
@@ -3239,7 +3266,6 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
-			entries, bytes := mg.Size()
 			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize()}
 			if isLeader {
 				jsi.Meta.Replicas = ci.Replicas
@@ -3251,24 +3277,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 				jsi.Meta.PendingInfos = ipq.len()
 			}
 			jsi.Meta.Pending = jsi.Meta.PendingRequests + jsi.Meta.PendingInfos
-			// Add meta snapshot stats
-			jsi.Meta.Snapshot = &MetaSnapshotStats{
-				PendingEntries: entries,
-				PendingSize:    bytes,
-			}
-			js.mu.RLock()
-			cluster := js.cluster
-			js.mu.RUnlock()
-			if cluster != nil {
-				timeNanos := atomic.LoadInt64(&cluster.lastMetaSnapTime)
-				durationNanos := atomic.LoadInt64(&cluster.lastMetaSnapDuration)
-				if timeNanos > 0 {
-					jsi.Meta.Snapshot.LastTime = time.Unix(0, timeNanos).UTC()
-				}
-				if durationNanos > 0 {
-					jsi.Meta.Snapshot.LastDuration = time.Duration(durationNanos)
-				}
-			}
+			jsi.Meta.Snapshot = s.metaClusterSnapshotStats(js, mg)
 		}
 	}
 
