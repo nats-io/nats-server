@@ -5615,7 +5615,7 @@ func TestMonitorWebsocket(t *testing.T) {
 		TLSMap:           true,
 		TLSPinnedCerts:   pinnedCerts,
 		SameOrigin:       true,
-		AllowedOrigins:   []string{"origin1", "origin2"},
+		AllowedOrigins:   []string{"https://origin1", "https://origin2"},
 		Compression:      true,
 		HandshakeTimeout: 4 * time.Second,
 	}
@@ -5633,7 +5633,7 @@ func TestMonitorWebsocket(t *testing.T) {
 		TLSMap:           true,
 		TLSPinnedCerts:   []string{"7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"},
 		SameOrigin:       true,
-		AllowedOrigins:   []string{"origin1", "origin2"},
+		AllowedOrigins:   []string{"https://origin1", "https://origin2"},
 		Compression:      true,
 		HandshakeTimeout: 4 * time.Second,
 	}
