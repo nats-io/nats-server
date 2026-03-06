@@ -1398,6 +1398,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			Retention:  LimitsPolicy,
 			Replicas:   replicas,
 			MaxMsgsPer: 1,
+			AllowDirect: true
 		}
 		// We will need "si" outside of this block.
 		si, _, err = jsa.createStream(cfg)
