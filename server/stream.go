@@ -587,20 +587,21 @@ type sourceInfo struct {
 	cname string        // The name of the current consumer for this source.
 	sub   *subscription // The subscription to the consumer.
 
-	msgs  *ipQueue[*inMsg]    // Intra-process queue for incoming messages.
-	sseq  uint64              // Last stream message sequence number seen from the source.
-	dseq  uint64              // Last delivery (i.e. consumer's) sequence number.
-	lag   uint64              // 0 or number of messages pending (as last reported by the consumer) - 1.
-	err   *ApiError           // The API error that caused the last consumer setup to fail.
-	fails int                 // The number of times trying to setup the consumer failed.
-	last  atomic.Int64        // Time the consumer was created or of last message it received.
-	lreq  time.Time           // The last time setupMirrorConsumer/setupSourceConsumer was called.
-	qch   chan struct{}       // Quit channel.
-	sip   bool                // Setup in progress.
-	wg    sync.WaitGroup      // WaitGroup for the consumer's go routine.
-	sf    string              // The subject filter.
-	sfs   []string            // The subject filters.
-	trs   []*subjectTransform // The subject transforms.
+	msgs   *ipQueue[*inMsg]    // Intra-process queue for incoming messages.
+	sseq   uint64              // Last stream message sequence number seen from the source.
+	dseq   uint64              // Last delivery (i.e. consumer's) sequence number.
+	lag    uint64              // 0 or number of messages pending (as last reported by the consumer) - 1.
+	err    *ApiError           // The API error that caused the last consumer setup to fail.
+	fails  int                 // The number of times trying to setup the consumer failed.
+	pfails int                 // The number of times persisting messages failed.
+	last   atomic.Int64        // Time the consumer was created or of last message it received.
+	lreq   time.Time           // The last time setupMirrorConsumer/setupSourceConsumer was called.
+	qch    chan struct{}       // Quit channel.
+	sip    bool                // Setup in progress.
+	wg     sync.WaitGroup      // WaitGroup for the consumer's go routine.
+	sf     string              // The subject filter.
+	sfs    []string            // The subject filters.
+	trs    []*subjectTransform // The subject transforms.
 }
 
 // For mirrors and direct get
@@ -2990,6 +2991,10 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 				// Other side thinks we are stalled, so send flow control reply.
 				mset.outq.sendMsg(string(fcReply), nil)
 			}
+			// If the stream is idle, slowly "eat away" persisting failures based on heartbeats.
+			if !needsRetry && mset.mirror.pfails > 0 {
+				mset.mirror.pfails--
+			}
 		}
 		mset.mu.Unlock()
 		if needsRetry {
@@ -3062,6 +3067,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 
 	s, js, stype := mset.srv, mset.js, mset.cfg.Storage
 	node := mset.node
+	pfails := mset.mirror.pfails
 	mset.mu.Unlock()
 
 	var err error
@@ -3091,19 +3097,33 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			// We may have missed messages, restart.
 			if sseq <= mset.lastSeq() {
 				mset.mu.Lock()
-				mset.mirror.lag = olag
-				mset.mirror.sseq = osseq
-				mset.mirror.dseq = odseq
+				if mset.mirror != nil {
+					mset.mirror.lag = olag
+					mset.mirror.sseq = osseq
+					mset.mirror.dseq = odseq
+				}
 				mset.mu.Unlock()
 				return false
 			} else {
 				mset.mu.Lock()
-				mset.mirror.dseq = odseq
-				mset.mirror.sseq = osseq
+				if mset.mirror != nil {
+					mset.mirror.dseq = odseq
+					mset.mirror.sseq = osseq
+					// Increment fails, so we delay retrying. If the consumer creation succeeds
+					// immediately, but we can't persist any messages, we should slow down too.
+					mset.mirror.pfails++
+				}
 				mset.mu.Unlock()
 				mset.retryMirrorConsumer()
 			}
 		}
+	} else if pfails > 0 {
+		mset.mu.Lock()
+		if mset.mirror != nil {
+			// Clear on success.
+			mset.mirror.pfails = 0
+		}
+		mset.mu.Unlock()
 	}
 	return err == nil
 }
@@ -3199,7 +3219,7 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 		next = 0
 	}
 	// Take into account failures here.
-	next += calculateRetryBackoff(mset.mirror.fails)
+	next += calculateRetryBackoff(mset.mirror.fails + mset.mirror.pfails)
 
 	// Add some jitter.
 	next += time.Duration(rand.Intn(int(100*time.Millisecond))) + 100*time.Millisecond
@@ -3394,6 +3414,12 @@ func (mset *stream) setupMirrorConsumer() error {
 				// If sub is not nil means we re-established somewhere else so do not re-attempt here.
 				if retry && mset.mirror.sub == nil {
 					mset.mirror.fails++
+					// If we got failures during persisting, we keep decrementing to keep a balanced failure count
+					// as these failure counts are additive. Repeated failures to create the consumer will
+					// slowly "eat away" persisting failures.
+					if mset.mirror.pfails > 0 {
+						mset.mirror.pfails--
+					}
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(mset.mirror)
 					mset.scheduleSetupMirrorConsumerRetry()
@@ -3594,8 +3620,8 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 			scheduleDelay = sourceConsumerRetryThreshold - sinceLast
 		}
 		// Is it a retry? If so, add a backoff
-		if si.fails > 0 {
-			scheduleDelay += calculateRetryBackoff(si.fails)
+		if si.fails > 0 || si.pfails > 0 {
+			scheduleDelay += calculateRetryBackoff(si.fails + si.pfails)
 		}
 	}
 
@@ -3762,6 +3788,12 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 				// If sub is not nil means we re-established somewhere else so do not re-attempt here.
 				if retry && si.sub == nil {
 					si.fails++
+					// If we got failures during persisting, we keep decrementing to keep a balanced failure count
+					// as these failure counts are additive. Repeated failures to create the consumer will
+					// slowly "eat away" persisting failures.
+					if si.pfails > 0 {
+						si.pfails--
+					}
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(si)
 					mset.setupSourceConsumer(iname, seq, startTime)
@@ -3984,6 +4016,10 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				// Other side thinks we are stalled, so send flow control reply.
 				mset.outq.sendMsg(string(fcReply), nil)
 			}
+			// If the stream is idle, slowly "eat away" persisting failures based on heartbeats.
+			if !needsRetry && si.pfails > 0 {
+				si.pfails--
+			}
 		}
 		mset.mu.Unlock()
 		return !needsRetry
@@ -4020,6 +4056,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		si.lag = pending - 1
 	}
 	node := mset.node
+	pfails := si.pfails
 	mset.mu.Unlock()
 
 	hdr, msg := m.hdr, m.msg
@@ -4090,12 +4127,20 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 					iNameMap := map[string]struct{}{iName: {}}
 					mset.setStartingSequenceForSources(iNameMap)
 					mset.mu.Lock()
+					// Increment fails, so we delay retrying. If the consumer creation succeeds
+					// immediately, but we can't persist any messages, we should slow down too.
+					si.pfails++
 					mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
 					mset.mu.Unlock()
 				}
 			}
 		}
 		return false
+	} else if pfails > 0 {
+		mset.mu.Lock()
+		// Clear on success.
+		si.pfails = 0
+		mset.mu.Unlock()
 	}
 
 	return true
