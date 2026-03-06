@@ -1851,7 +1851,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 
 	// If applicable, evict the old one.
 	if old != nil {
-		old.sendErrAndErr(DuplicateRemoteLeafnodeConnection.String())
+		old.sendErrAndErr(DuplicateRemoteLeafnodeConnection.String() + " - remoteServer: " + old.leaf.remoteServer + ", remoteCluster: " + old.leaf.remoteCluster + ", remoteAccount: " + old.leaf.remoteAccName)
 		old.closeConnection(DuplicateRemoteLeafnodeConnection)
 		c.Warnf("Replacing connection from same server")
 	}
