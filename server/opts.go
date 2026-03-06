@@ -479,6 +479,9 @@ type Options struct {
 	// Metadata describing the server. They will be included in 'Z' responses.
 	Metadata map[string]string `json:"-"`
 
+	// FeatureFlags the server opts-in to (or opts-out of). They will be included in 'Z' responses.
+	FeatureFlags map[string]bool `json:"-"`
+
 	// OCSPConfig enables OCSP Stapling in the server.
 	OCSPConfig    *OCSPConfig
 	tlsConfigOpts *TLSConfigOpts
@@ -1744,6 +1747,24 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			}
 		default:
 			err = &configErr{tk, fmt.Sprintf("error parsing metadata: unsupported type %T", v)}
+		}
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+	case "feature_flags":
+		var err error
+		switch v := v.(type) {
+		case map[string]any:
+			for mk, mv := range v {
+				tk, mv = unwrapValue(mv, &lt)
+				if o.FeatureFlags == nil {
+					o.FeatureFlags = make(map[string]bool)
+				}
+				o.FeatureFlags[mk] = mv.(bool)
+			}
+		default:
+			err = &configErr{tk, fmt.Sprintf("error parsing feature flags: unsupported type %T", v)}
 		}
 		if err != nil {
 			*errors = append(*errors, err)
