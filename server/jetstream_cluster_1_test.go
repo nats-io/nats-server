@@ -9755,6 +9755,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 	}
 	sa := &streamAssignment{
 		Config:  scfg,
+		Sync:    syncSubjForStream(),
 		Group:   rg,
 		Created: time.Now().UTC(),
 		Client:  ci,
@@ -10059,6 +10060,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 	}
 	sa := &streamAssignment{
 		Config:  scfg,
+		Sync:    syncSubjForStream(),
 		Group:   rg,
 		Created: time.Now().UTC(),
 		Client:  ci,
