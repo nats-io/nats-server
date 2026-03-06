@@ -1061,6 +1061,7 @@ func (s *Server) sendStatsz(subj string) {
 					jStat.Meta.PendingInfos = ipq.len()
 				}
 				jStat.Meta.Pending = jStat.Meta.PendingRequests + jStat.Meta.PendingInfos
+				jStat.Meta.Snapshot = s.metaClusterSnapshotStats(js, mg)
 			}
 		}
 		jStat.Limits = &s.getOpts().JetStreamLimits
