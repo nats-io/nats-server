@@ -5440,3 +5440,170 @@ func TestNRGPeersResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestNRGLeaderStepsDownIfOverrun(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Proposals are only accepted if we're the leader.
+	require_Error(t, n.Propose(nil), errNotLeader)
+	require_Error(t, n.ProposeMulti(nil), errNotLeader)
+
+	n.switchToLeader()
+	require_NoError(t, n.Propose(nil))
+	require_NoError(t, n.ProposeMulti(nil))
+	require_Equal(t, n.State(), Leader)
+
+	// Too many uncommitted entries in our log.
+	t.Run("Uncommitted", func(t *testing.T) {
+		n.state.Store(int32(Leader))
+
+		// Proposing while we're exactly at the threshold still succeeds.
+		n.pindex, n.commit, n.applied = pauseQuorumThreshold, 0, 0
+		require_NoError(t, n.Propose(nil))
+		require_NoError(t, n.ProposeMulti(nil))
+		require_Equal(t, n.State(), Leader)
+
+		// While we're over the threshold, we temporarily don't send proposals.
+		n.pindex, n.commit, n.applied = pauseQuorumThreshold+1, 0, 0
+		require_Error(t, n.Propose(nil), errNotLeader)
+		require_Equal(t, n.State(), Follower)
+
+		n.state.Store(int32(Leader))
+		require_Error(t, n.ProposeMulti(nil), errNotLeader)
+		require_Equal(t, n.State(), Follower)
+	})
+
+	// Too many unapplied entries in our log and in-memory.
+	t.Run("Unapplied", func(t *testing.T) {
+		n.state.Store(int32(Leader))
+
+		// Proposing while we're exactly at the threshold still succeeds.
+		n.pindex, n.commit, n.applied = pauseQuorumThreshold, pauseQuorumThreshold, 0
+		require_NoError(t, n.Propose(nil))
+		require_NoError(t, n.ProposeMulti(nil))
+		require_Equal(t, n.State(), Leader)
+
+		// While we're over the threshold, we temporarily don't send proposals.
+		n.pindex, n.commit, n.applied = pauseQuorumThreshold+1, pauseQuorumThreshold+1, 0
+		require_Error(t, n.Propose(nil), errNotLeader)
+		require_Equal(t, n.State(), Follower)
+
+		n.state.Store(int32(Leader))
+		require_Error(t, n.ProposeMulti(nil), errNotLeader)
+		require_Equal(t, n.State(), Follower)
+	})
+}
+
+func TestNRGFollowerPausesQuorumIfOverrun(t *testing.T) {
+	test := func(t *testing.T, new bool) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		aeReply := "$TEST"
+		nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer nc.Close()
+
+		sub, err := nc.SubscribeSync(aeReply)
+		require_NoError(t, err)
+		defer sub.Drain()
+		require_NoError(t, nc.Flush())
+
+		// Timeline
+		nats0 := "S1Nunr6R" // "nats-0"
+		aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: nil, reply: aeReply})
+
+		aesub := n.aesub
+		if !new {
+			aesub = nil
+		}
+
+		n.processAppendEntry(aeHeartbeat, aesub)
+		msg, err := sub.NextMsg(200 * time.Millisecond)
+		if new {
+			require_NoError(t, err)
+			ar := decodeAppendEntryResponse(msg.Data)
+			require_True(t, ar.success)
+			require_Equal(t, msg.Reply, _EMPTY_)
+		} else {
+			require_Error(t, err, nats.ErrTimeout)
+		}
+
+		// Processing while we're exactly at the threshold still succeeds.
+		n.commit, n.applied = pauseQuorumThreshold, 0
+		n.processAppendEntry(aeHeartbeat, aesub)
+		msg, err = sub.NextMsg(200 * time.Millisecond)
+		if new {
+			require_NoError(t, err)
+			ar := decodeAppendEntryResponse(msg.Data)
+			require_True(t, ar.success)
+			require_Equal(t, msg.Reply, _EMPTY_)
+		} else {
+			require_Error(t, err, nats.ErrTimeout)
+		}
+
+		// When we're over the threshold, we pause processing until we're sufficiently below it again.
+		n.commit, n.applied = pauseQuorumThreshold+1, 0
+		n.processAppendEntry(aeHeartbeat, aesub)
+		_, err = sub.NextMsg(200 * time.Millisecond)
+		require_Error(t, err, nats.ErrTimeout)
+		require_Equal(t, n.quorumPaused, new)
+
+		// Confirm we remain paused while we're almost at the unpause threshold.
+		n.applied = n.commit - paeWarnThreshold - 1
+		n.processAppendEntry(aeHeartbeat, aesub)
+		_, err = sub.NextMsg(200 * time.Millisecond)
+		require_Error(t, err, nats.ErrTimeout)
+		require_Equal(t, n.quorumPaused, new)
+
+		// Once we're at the lower threshold, we should be unpaused and accept new entries again.
+		// Afterward we'd likely catch up from a snapshot instead of normal append entries.
+		n.applied = n.commit - paeWarnThreshold
+		n.processAppendEntry(aeHeartbeat, aesub)
+		require_False(t, n.quorumPaused)
+
+		msg, err = sub.NextMsg(200 * time.Millisecond)
+		if new {
+			require_NoError(t, err)
+			ar := decodeAppendEntryResponse(msg.Data)
+			require_True(t, ar.success)
+			require_Equal(t, msg.Reply, _EMPTY_)
+		} else {
+			require_Error(t, err, nats.ErrTimeout)
+		}
+
+		if new {
+			// Guard against an underflow. We should unpause shortly after snapshot install.
+			n.quorumPaused = true
+			n.applied, n.papplied = paeWarnThreshold, paeWarnThreshold
+			n.commit = 0
+			n.processAppendEntry(aeHeartbeat, aesub)
+			require_False(t, n.quorumPaused)
+
+			msg, err = sub.NextMsg(200 * time.Millisecond)
+			require_NoError(t, err)
+			ar := decodeAppendEntryResponse(msg.Data)
+			require_True(t, ar.success)
+			require_Equal(t, msg.Reply, _EMPTY_)
+		}
+	}
+
+	t.Run("Replay", func(t *testing.T) { test(t, false) })
+	t.Run("New", func(t *testing.T) { test(t, true) })
+}
+
+func TestNRGSwitchToCandidateResetsQuorumPaused(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Manually set the quorumPaused flag as if the follower was overrun.
+	n.quorumPaused = true
+	require_Equal(t, n.term, 0)
+
+	// Switching to a candidate has a similar prerequisite to check all committed entries
+	// have been applied. We can therefore reset quorumPaused.
+	n.switchToCandidate()
+	require_Equal(t, n.term, 1)
+	require_False(t, n.quorumPaused)
+}
