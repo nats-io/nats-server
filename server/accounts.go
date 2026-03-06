@@ -138,6 +138,12 @@ type sconns struct {
 	leafs int32
 }
 
+// clampInt64ToInt32 safely converts an int64 limit to int32,
+// clamping values to the [math.MinInt32, math.MaxInt32] range.
+func clampInt64ToInt32(v int64) int32 {
+	return int32(max(math.MinInt32, min(math.MaxInt32, v)))
+}
+
 // Import stream mapping struct
 type streamImport struct {
 	acc     *Account
@@ -3716,10 +3722,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 
 	// Now do limits if they are present.
 	a.mu.Lock()
-	a.msubs = int32(ac.Limits.Subs)
-	a.mpay = int32(ac.Limits.Payload)
-	a.mconns = int32(ac.Limits.Conn)
-	a.mleafs = int32(ac.Limits.LeafNodeConn)
+	a.msubs = clampInt64ToInt32(ac.Limits.Subs)
+	a.mpay = clampInt64ToInt32(ac.Limits.Payload)
+	a.mconns = clampInt64ToInt32(ac.Limits.Conn)
+	a.mleafs = clampInt64ToInt32(ac.Limits.LeafNodeConn)
 	a.disallowBearer = ac.Limits.DisallowBearer
 	// Check for any revocations
 	if len(ac.Revocations) > 0 {
