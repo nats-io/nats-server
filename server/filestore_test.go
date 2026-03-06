@@ -2171,6 +2171,55 @@ func TestFileStoreConsumerEncodeDecodePendingBelowStreamAckFloor(t *testing.T) {
 	}
 }
 
+func TestConsumerStateEncodeDeterministic(t *testing.T) {
+	// Verify that encoding the same ConsumerState produces identical bytes
+	// every time, regardless of Go's non-deterministic map iteration order.
+	// Before the fix, the Pending and Redelivered maps were iterated in
+	// random order, causing the encoded output (and therefore its hash) to
+	// differ across calls even when the state hadn't changed. This caused
+	// unnecessary Raft snapshots in the consumer leader loop, where a
+	// highwayhash of the encoded state is compared to the previous snapshot
+	// to detect changes.
+	now := time.Now().Round(time.Second).Add(-10 * time.Second).UnixNano()
+
+	state := &ConsumerState{}
+	state.Delivered.Consumer = 500
+	state.Delivered.Stream = 1000
+	state.AckFloor.Consumer = 100
+	state.AckFloor.Stream = 200
+
+	// Populate Pending with enough entries to make non-deterministic
+	// iteration order very likely to produce different orderings.
+	state.Pending = make(map[uint64]*Pending)
+	for i := uint64(0); i < 100; i++ {
+		seq := state.AckFloor.Stream + 1 + i
+		state.Pending[seq] = &Pending{
+			Sequence:  state.AckFloor.Consumer + 1 + i,
+			Timestamp: now + int64(i)*int64(time.Second),
+		}
+	}
+
+	state.Redelivered = make(map[uint64]uint64)
+	for i := uint64(0); i < 50; i++ {
+		state.Redelivered[state.AckFloor.Stream+1+i] = uint64(rand.Intn(10)) + 2
+	}
+
+	// Encode once to get the reference output.
+	reference := encodeConsumerState(state)
+
+	// Encode many more times — with 100+ map keys, Go's randomized
+	// iteration makes it near-certain that at least one call would
+	// produce a different order (and thus different bytes) without
+	// the sorting fix.
+	for i := 0; i < 100; i++ {
+		got := encodeConsumerState(state)
+		if !bytes.Equal(reference, got) {
+			t.Fatalf("Encoding attempt %d produced different output: "+
+				"reference len=%d, got len=%d", i, len(reference), len(got))
+		}
+	}
+}
+
 func TestFileStoreWriteFailures(t *testing.T) {
 	// This test should be run inside an environment where this directory
 	// has a limited size.
