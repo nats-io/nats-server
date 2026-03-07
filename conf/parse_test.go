@@ -364,6 +364,83 @@ func TestIncludes(t *testing.T) {
 	}
 }
 
+func TestOptionalIncludeMissingFile(t *testing.T) {
+	sdir := t.TempDir()
+	cfg := `
+listen: 127.0.0.1:4222
+include? ./nats-cluster.conf
+`
+	fp := filepath.Join(sdir, "nats.conf")
+	if err := os.WriteFile(fp, []byte(cfg), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseFile(fp)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if got := m["listen"]; got != "127.0.0.1:4222" {
+		t.Fatalf("Expected listen to be set, got: %v", got)
+	}
+
+	m, err = ParseFileWithChecks(fp)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if got := m["listen"]; got.(*token).Value() != "127.0.0.1:4222" {
+		t.Fatalf("Expected listen to be set, got: %v", got)
+	}
+}
+
+func TestOptionalIncludeInvalidFile(t *testing.T) {
+	sdir := t.TempDir()
+	cfg := `
+listen: 127.0.0.1:4222
+include? ./nats-cluster.conf
+`
+	fp := filepath.Join(sdir, "nats.conf")
+	if err := os.WriteFile(fp, []byte(cfg), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdir, "nats-cluster.conf"), []byte("?????????????"), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ParseFile(fp); err == nil {
+		t.Fatal("expected an error")
+	}
+	if _, err := ParseFileWithChecks(fp); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestOptionalIncludeNestedRequiredIncludeMissing(t *testing.T) {
+	sdir := t.TempDir()
+	cfg := `
+listen: 127.0.0.1:4222
+include? ./optional.conf
+`
+	fp := filepath.Join(sdir, "nats.conf")
+	if err := os.WriteFile(fp, []byte(cfg), 0666); err != nil {
+		t.Fatal(err)
+	}
+	optional := `
+authorization {
+  include ./required.conf
+}
+`
+	if err := os.WriteFile(filepath.Join(sdir, "optional.conf"), []byte(optional), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ParseFile(fp); err == nil {
+		t.Fatal("expected an error")
+	}
+	if _, err := ParseFileWithChecks(fp); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 var varIncludedVariablesSample = `
 authorization {
 
