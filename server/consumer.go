@@ -86,25 +86,26 @@ type PriorityGroupState struct {
 }
 
 type ConsumerConfig struct {
-	Durable         string          `json:"durable_name,omitempty"`
-	Name            string          `json:"name,omitempty"`
-	Description     string          `json:"description,omitempty"`
-	DeliverPolicy   DeliverPolicy   `json:"deliver_policy"`
-	OptStartSeq     uint64          `json:"opt_start_seq,omitempty"`
-	OptStartTime    *time.Time      `json:"opt_start_time,omitempty"`
-	AckPolicy       AckPolicy       `json:"ack_policy"`
-	AckWait         time.Duration   `json:"ack_wait,omitempty"`
-	MaxDeliver      int             `json:"max_deliver,omitempty"`
-	BackOff         []time.Duration `json:"backoff,omitempty"`
-	FilterSubject   string          `json:"filter_subject,omitempty"`
-	FilterSubjects  []string        `json:"filter_subjects,omitempty"`
-	ReplayPolicy    ReplayPolicy    `json:"replay_policy"`
-	RateLimit       uint64          `json:"rate_limit_bps,omitempty"` // Bits per sec
-	SampleFrequency string          `json:"sample_freq,omitempty"`
-	MaxWaiting      int             `json:"max_waiting,omitempty"`
-	MaxAckPending   int             `json:"max_ack_pending,omitempty"`
-	FlowControl     bool            `json:"flow_control,omitempty"`
-	HeadersOnly     bool            `json:"headers_only,omitempty"`
+	Durable                 string          `json:"durable_name,omitempty"`
+	Name                    string          `json:"name,omitempty"`
+	Description             string          `json:"description,omitempty"`
+	DeliverPolicy           DeliverPolicy   `json:"deliver_policy"`
+	OptStartSeq             uint64          `json:"opt_start_seq,omitempty"`
+	OptStartTime            *time.Time      `json:"opt_start_time,omitempty"`
+	AckPolicy               AckPolicy       `json:"ack_policy"`
+	AckWait                 time.Duration   `json:"ack_wait,omitempty"`
+	MaxDeliver              int             `json:"max_deliver,omitempty"`
+	BackOff                 []time.Duration `json:"backoff,omitempty"`
+	FilterSubject           string          `json:"filter_subject,omitempty"`
+	FilterSubjects          []string        `json:"filter_subjects,omitempty"`
+	ReplayPolicy            ReplayPolicy    `json:"replay_policy"`
+	RateLimit               uint64          `json:"rate_limit_bps,omitempty"` // Bits per sec
+	SampleFrequency         string          `json:"sample_freq,omitempty"`
+	MaxWaiting              int             `json:"max_waiting,omitempty"`
+	MaxAckPending           int             `json:"max_ack_pending,omitempty"`
+	MaxAckPendingPerSubject int             `json:"max_ack_pending_per_subject,omitempty"`
+	FlowControl             bool            `json:"flow_control,omitempty"`
+	HeadersOnly             bool            `json:"headers_only,omitempty"`
 
 	// Pull based options.
 	MaxRequestBatch    int           `json:"max_batch,omitempty"`
@@ -444,6 +445,7 @@ type consumer struct {
 	nextMsgReqs       *ipQueue[*nextMsgReq]
 	resetSubj         string
 	maxp              int
+	ptc               map[string]int
 	pblimit           int
 	maxpb             int
 	pbytes            int
@@ -2230,7 +2232,7 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 		// Make sure to remove from pending.
 		if p, ok := o.pending[seq]; ok && p != nil {
 			delete(o.pending, seq)
-			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp, p.Subject)
 		}
 		// Ensure redelivered state is set, if not already.
 		if o.rdc == nil {
@@ -2652,7 +2654,7 @@ func (o *consumer) progressUpdate(seq uint64) {
 	if p, ok := o.pending[seq]; ok {
 		p.Timestamp = time.Now().UnixNano()
 		// Update store system.
-		o.updateDelivered(p.Sequence, seq, 1, p.Timestamp)
+		o.updateDelivered(p.Sequence, seq, 1, p.Timestamp, p.Subject)
 	}
 }
 
@@ -2819,7 +2821,7 @@ func (o *consumer) propose(entry []byte) {
 }
 
 // Lock should be held.
-func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
+func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64, subj string) {
 	// Clustered mode and R>1.
 	if o.node != nil {
 		// Inline for now, use variable compression.
@@ -2830,9 +2832,14 @@ func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 		n += binary.PutUvarint(b[n:], sseq)
 		n += binary.PutUvarint(b[n:], dc)
 		n += binary.PutVarint(b[n:], ts)
-		o.propose(b[:n])
+		if len(subj) > 0 {
+			buf := append(b[:n], subj...)
+			o.propose(buf)
+		} else {
+			o.propose(b[:n])
+		}
 	} else if o.store != nil {
-		o.store.UpdateDelivered(dseq, sseq, dc, ts)
+		o.store.UpdateDelivered(dseq, sseq, dc, ts, subj)
 	}
 	// Update activity.
 	o.ldt = time.Now()
@@ -3046,7 +3053,7 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 					// now - ackWait is expired now, so offset from there.
 					p.Timestamp = time.Now().Add(-o.cfg.AckWait).Add(d).UnixNano()
 					// Update store system which will update followers as well.
-					o.updateDelivered(p.Sequence, sseq, dc, p.Timestamp)
+					o.updateDelivered(p.Sequence, sseq, dc, p.Timestamp, p.Subject)
 					if o.ptmr != nil {
 						// Want checkPending to run and figure out the next timer ttl.
 						// TODO(dlc) - We could optimize this maybe a bit more and track when we expect the timer to fire.
@@ -3478,9 +3485,11 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 			if o.maxp > 0 && len(o.pending) >= o.maxp {
 				needSignal = true
 			}
-			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
+			if o.removeFromPending(sseq) {
+				needSignal = true
+			}
 
 			// Only move floors if we matched an existing pending.
 			if len(o.pending) == 0 {
@@ -3515,7 +3524,9 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		o.adflr, o.asflr = dseq, sseq
 
 		remove := func(seq uint64) {
-			delete(o.pending, seq)
+			if o.removeFromPending(seq) {
+				needSignal = true
+			}
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
 			if seq < floor {
@@ -4603,7 +4614,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				// Make sure to remove from pending.
 				if p, ok := o.pending[seq]; ok && p != nil {
 					delete(o.pending, seq)
-					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp, p.Subject)
 				}
 				continue
 			}
@@ -4614,6 +4625,17 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				pmsg, dc = nil, 0
 				// Adjust back deliver count.
 				o.decDeliveryCount(seq)
+			}
+			if sm != nil {
+				if sm != &pmsg.StoreMsg {
+					sm.copy(&pmsg.StoreMsg)
+				}
+				if _, alreadyPending := o.pending[seq]; !alreadyPending && o.pendingSubjectHitLimit(pmsg.subj) {
+					pmsg.returnToPool()
+					dc = 0
+					o.decDeliveryCount(seq)
+					continue
+				}
 			}
 			// Message was scheduled for redelivery but was removed in the meantime.
 			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
@@ -4652,6 +4674,15 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			pmsg.returnToPool()
 			pmsg = nil
 		}
+		if sm != nil {
+			if sm != &pmsg.StoreMsg {
+				sm.copy(&pmsg.StoreMsg)
+			}
+			if o.pendingSubjectHitLimit(pmsg.subj) {
+				pmsg.returnToPool()
+				return nil, 0, errMaxAckPending
+			}
+		}
 		o.sseq++
 		return pmsg, 1, err
 	}
@@ -4676,6 +4707,14 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	if sm == nil {
 		pmsg.returnToPool()
 		pmsg = nil
+	} else {
+		if sm != &pmsg.StoreMsg {
+			sm.copy(&pmsg.StoreMsg)
+		}
+		if o.pendingSubjectHitLimit(pmsg.subj) {
+			pmsg.returnToPool()
+			return nil, 0, errMaxAckPending
+		}
 	}
 	// Check if we should move our o.sseq.
 	if sseq >= o.sseq {
@@ -5433,10 +5472,10 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	seq, ts := pmsg.seq, pmsg.ts
 
 	// Update delivered first.
-	o.updateDelivered(dseq, seq, dc, ts)
+	o.updateDelivered(dseq, seq, dc, ts, pmsg.subj)
 
 	if ap == AckExplicit || ap == AckAll {
-		o.trackPending(seq, dseq)
+		o.trackPending(seq, dseq, pmsg.subj)
 	} else if ap == AckNone {
 		o.adflr = dseq
 		o.asflr = seq
@@ -5551,9 +5590,52 @@ func (o *consumer) sendFlowControl() {
 	o.outq.send(newJSPubMsg(subj, _EMPTY_, rply, hdr, nil, nil, 0))
 }
 
+func (o *consumer) pendingSubjectHitLimit(subj string) bool {
+	if o.cfg.MaxAckPendingPerSubject <= 0 || subj == _EMPTY_ {
+		return false
+	}
+	return o.ptc[subj] >= o.cfg.MaxAckPendingPerSubject
+}
+
+func (o *consumer) incPendingSubject(subj string) {
+	if o.cfg.MaxAckPendingPerSubject <= 0 || subj == _EMPTY_ {
+		return
+	}
+	if o.ptc == nil {
+		o.ptc = make(map[string]int)
+	}
+	o.ptc[subj]++
+}
+
+func (o *consumer) decPendingSubject(subj string) bool {
+	if o.cfg.MaxAckPendingPerSubject <= 0 || subj == _EMPTY_ || o.ptc == nil {
+		return false
+	}
+	var needSignal bool
+	if o.ptc[subj] >= o.cfg.MaxAckPendingPerSubject {
+		needSignal = true
+	}
+	if o.ptc[subj] > 0 {
+		o.ptc[subj]--
+		if o.ptc[subj] == 0 {
+			delete(o.ptc, subj)
+		}
+	}
+	return needSignal
+}
+
+func (o *consumer) removeFromPending(seq uint64) bool {
+	var needSignal bool
+	if p, ok := o.pending[seq]; ok && p != nil {
+		needSignal = o.decPendingSubject(p.Subject)
+		delete(o.pending, seq)
+	}
+	return needSignal
+}
+
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
 // Lock should be held.
-func (o *consumer) trackPending(sseq, dseq uint64) {
+func (o *consumer) trackPending(sseq, dseq uint64, subj string) {
 	if o.pending == nil {
 		o.pending = make(map[uint64]*Pending)
 	}
@@ -5564,7 +5646,8 @@ func (o *consumer) trackPending(sseq, dseq uint64) {
 		// So do not update p.Sequence.
 		p.Timestamp = now.UnixNano()
 	} else {
-		o.pending[sseq] = &Pending{dseq, now.UnixNano()}
+		o.pending[sseq] = &Pending{dseq, now.UnixNano(), subj}
+		o.incPendingSubject(subj)
 	}
 
 	// We could have a backoff that set a timer higher than what we need for this message.
@@ -5733,7 +5816,7 @@ func (o *consumer) checkPending() {
 		}
 		// Check if these are no longer valid.
 		if seq < fseq || seq <= o.asflr {
-			delete(o.pending, seq)
+			o.removeFromPending(seq)
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
 			shouldUpdateState = true

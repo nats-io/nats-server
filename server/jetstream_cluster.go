@@ -6480,7 +6480,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
-				dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
+				dseq, sseq, dc, ts, subj, err := decodeDeliveredUpdate(buf[1:])
 				if err != nil {
 					if mset, node := o.streamAndNode(); mset != nil && node != nil {
 						s := js.srv
@@ -6491,7 +6491,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 				// Make sure to update delivered under the lock.
 				o.mu.Lock()
-				err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
+				err = o.store.UpdateDelivered(dseq, sseq, dc, ts, subj)
 				o.ldt = time.Now()
 				// Need to send message to the client, since we have quorum to do so now.
 				if pmsg, ok := o.pendingDeliveries[sseq]; ok {
@@ -6665,24 +6665,28 @@ func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
 	return dseq, sseq, nil
 }
 
-func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err error) {
+func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, subj string, err error) {
 	var bi, n int
 	if dseq, n = binary.Uvarint(buf); n < 0 {
-		return 0, 0, 0, 0, errBadDeliveredUpdate
+		return 0, 0, 0, 0, "", errBadDeliveredUpdate
 	}
 	bi += n
 	if sseq, n = binary.Uvarint(buf[bi:]); n < 0 {
-		return 0, 0, 0, 0, errBadDeliveredUpdate
+		return 0, 0, 0, 0, "", errBadDeliveredUpdate
 	}
 	bi += n
 	if dc, n = binary.Uvarint(buf[bi:]); n < 0 {
-		return 0, 0, 0, 0, errBadDeliveredUpdate
+		return 0, 0, 0, 0, "", errBadDeliveredUpdate
 	}
 	bi += n
 	if ts, n = binary.Varint(buf[bi:]); n < 0 {
-		return 0, 0, 0, 0, errBadDeliveredUpdate
+		return 0, 0, 0, 0, "", errBadDeliveredUpdate
 	}
-	return dseq, sseq, dc, ts, nil
+	bi += n
+	if bi < len(buf) {
+		subj = string(buf[bi:])
+	}
+	return dseq, sseq, dc, ts, subj, nil
 }
 
 func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) error {
