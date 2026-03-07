@@ -4690,6 +4690,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	// Save our starting sequence. If all remaining messages are on blocked
 	// subjects, we restore sseq so we don't permanently skip them.
 	savedSseq := o.sseq
+	var skipped bool
 
 	for {
 		var sseq uint64
@@ -4711,9 +4712,19 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		}
 		if sm == nil {
 			pmsg.returnToPool()
+
+			// If we are at the end of the stream, check if our sequence was behind a purge/compact.
+			if err == ErrStoreEOF || err == ErrStoreClosed {
+				var ss StreamState
+				o.mset.store.FastState(&ss)
+				if o.sseq < ss.FirstSeq {
+					o.sseq = ss.FirstSeq
+				}
+			}
+
 			// No more messages available. If we skipped any blocked subjects,
 			// restore o.sseq so those messages aren't permanently lost.
-			if o.sseq != savedSseq {
+			if skipped && o.sseq != savedSseq {
 				o.sseq = savedSseq
 			}
 			return nil, 0, err
@@ -4729,13 +4740,16 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			if sseq >= o.sseq {
 				o.sseq = sseq + 1
 			}
+			skipped = true
 			continue
 		}
 
 		// Found an unblocked message. Restore o.sseq to the saved position
 		// so blocked messages earlier in the stream aren't permanently skipped.
 		// Only the delivered message's sequence will be tracked via pending.
-		o.sseq = savedSseq
+		if skipped {
+			o.sseq = savedSseq
+		}
 		// Check if we should move our o.sseq.
 		if sseq >= o.sseq {
 			// If we are moving step by step then sseq == o.sseq.
