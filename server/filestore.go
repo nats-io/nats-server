@@ -12475,7 +12475,7 @@ func (o *consumerFileStore) HasState() bool {
 }
 
 // UpdateDelivered is called whenever a new message has been delivered.
-func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
+func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64, subj string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -12503,7 +12503,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 			}
 		} else {
 			// Add to pending.
-			o.state.Pending[sseq] = &Pending{dseq, ts}
+			o.state.Pending[sseq] = &Pending{dseq, ts, subj}
 		}
 		// Update delivered as needed.
 		if dseq > o.state.Delivered.Consumer {
@@ -12665,7 +12665,7 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	if len(state.Pending) > 0 {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
-			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			pending[seq] = &Pending{p.Sequence, p.Timestamp, p.Subject}
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -12714,7 +12714,7 @@ func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
 	if len(state.Pending) > 0 {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
-			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			pending[seq] = &Pending{p.Sequence, p.Timestamp, p.Subject}
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -12896,7 +12896,7 @@ func checkConsumerHeader(hdr []byte) (uint8, error) {
 func (o *consumerFileStore) copyPending() map[uint64]*Pending {
 	pending := make(map[uint64]*Pending, len(o.state.Pending))
 	for seq, p := range o.state.Pending {
-		pending[seq] = &Pending{p.Sequence, p.Timestamp}
+		pending[seq] = &Pending{p.Sequence, p.Timestamp, p.Subject}
 	}
 	return pending
 }
@@ -12993,7 +12993,7 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 		if doCopy {
 			o.state.Pending = make(map[uint64]*Pending, len(state.Pending))
 			for seq, p := range state.Pending {
-				o.state.Pending[seq] = &Pending{p.Sequence, p.Timestamp}
+				o.state.Pending[seq] = &Pending{p.Sequence, p.Timestamp, p.Subject}
 			}
 		} else {
 			o.state.Pending = state.Pending
@@ -13119,7 +13119,7 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 				ts = (mints - ts) * int64(time.Second)
 			}
 			// Store in pending.
-			state.Pending[sseq] = &Pending{dseq, ts}
+			state.Pending[sseq] = &Pending{dseq, ts, _EMPTY_}
 		}
 	}
 
