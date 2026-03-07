@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -21,8 +22,10 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -279,6 +282,8 @@ func (s *Server) configureAuthorization() {
 		s.nkeys, s.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
 		s.info.AuthRequired = true
 	} else if opts.Username != _EMPTY_ || opts.Authorization != _EMPTY_ {
+		s.info.AuthRequired = true
+	} else if opts.AuthHTTP != nil {
 		s.info.AuthRequired = true
 	} else {
 		s.users = nil
@@ -1123,6 +1128,23 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		return ok
 	}
 
+	// Check for HTTP-based authentication when auth_http is configured.
+	if opts.AuthHTTP != nil && c.opts.Username != _EMPTY_ && c.opts.Password != _EMPTY_ {
+		if proxyRequired = opts.ProxyRequired; proxyRequired && !trustedProxy {
+			return setProxyAuthError(ErrAuthProxyRequired)
+		}
+		if s.checkAuthHTTP(opts.AuthHTTP, c.opts.Username, c.opts.Password) {
+			authUser := &User{
+				Username: c.opts.Username,
+				Account:  nil, // global account
+			}
+			c.RegisterUser(authUser)
+			return true
+		}
+		c.Debugf("HTTP authentication failed for user %q", c.opts.Username)
+		return false
+	}
+
 	// Check for the use of simple auth.
 	if c.kind == CLIENT || c.kind == LEAF {
 		if proxyRequired = opts.ProxyRequired; proxyRequired && !trustedProxy {
@@ -1590,6 +1612,43 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 		}
 	}
 	return true
+}
+
+// checkAuthHTTP validates username and password against an external HTTP endpoint.
+// The server POSTs JSON {"username": "...", "password": "..."} to the URL.
+// A 2xx response indicates success; 4xx/5xx or network errors indicate failure.
+func (s *Server) checkAuthHTTP(ah *AuthHTTP, username, password string) bool {
+	timeout := ah.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+
+	body, err := json.Marshal(map[string]string{
+		"username": username,
+		"password": password,
+	})
+	if err != nil {
+		s.Debugf("HTTP auth: failed to marshal request: %v", err)
+		return false
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ah.URL, bytes.NewReader(body))
+	if err != nil {
+		s.Debugf("HTTP auth: failed to create request: %v", err)
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		s.Debugf("HTTP auth: request failed: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	// 2xx status codes indicate successful authentication
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
 func validateAuth(o *Options) error {
