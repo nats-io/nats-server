@@ -158,62 +158,33 @@ func BenchmarkMaxAckPendingPerSubjectFetch(b *testing.B) {
 		Config: ConsumerConfig{
 			Durable:                 "CONS",
 			AckPolicy:               AckExplicit,
-			MaxAckPendingPerSubject: 50,
+			MaxAckPendingPerSubject: 100,
 		},
 	})
 	nc.Request(fmt.Sprintf(JSApiDurableCreateT, "BENCH_FETCH", "CONS"), req, time.Second)
 
-	// Pre-publish more to avoid constant restarts
-	for i := 0; i < 5000; i++ {
-		js.Publish("test.1", []byte("data"))
+	// Pre-publish 100k messages to a few subjects
+	subjects := []string{"test.1", "test.2", "test.3", "test.4", "test.5"}
+	for i := 0; i < 100000; i++ {
+		js.Publish(subjects[i%len(subjects)], []byte("data"))
 	}
 
 	sub, _ := js.PullSubscribe("", "CONS", nats.BindStream("BENCH_FETCH"))
 
-	groups := []string{"test.group_1", "test.group_2", "test.group_3"}
-	unacked := make(map[string]int)
-	maxUnacked := make(map[string]int)
-	for _, g := range groups {
-		unacked[g] = 0
-		maxUnacked[g] = 0
-	}
-
 	b.ResetTimer()
 	for i := 0; i < b.N; {
 		batch := 100
-		if i+batch > b.N {
-			batch = b.N - i
-		}
-		msgs, err := sub.Fetch(batch, nats.MaxWait(500*time.Millisecond))
+		msgs, err := sub.Fetch(batch, nats.MaxWait(time.Second))
 		if err == nil && len(msgs) > 0 {
 			for _, m := range msgs {
-				subj := m.Subject
-				unacked[subj]++
-				if unacked[subj] > maxUnacked[subj] {
-					maxUnacked[subj] = unacked[subj]
-				}
-			}
-			for _, m := range msgs {
 				m.Ack()
-				unacked[m.Subject]--
 			}
 			i += len(msgs)
-		} else {
-			i++ // avoid infinite loop if no msgs
-		}
-
-		if i > 0 && i%5000 == 0 {
-			fmt.Printf("Fetch progress: %d/%d (Max Pending: group_1=%d, group_2=%d, group_3=%d)\n",
-				i, b.N, maxUnacked["test.group_1"], maxUnacked["test.group_2"], maxUnacked["test.group_3"])
-			b.StopTimer()
-			for _, g := range groups {
-				for j := 0; j < 2000; j++ {
-					js.Publish(g, []byte("data"))
-				}
-			}
-			b.StartTimer()
+		} else if err != nil {
+			break
 		}
 	}
+	b.StopTimer()
 }
 
 func BenchmarkMaxAckPendingPerSubjectCallback(b *testing.B) {
@@ -367,4 +338,91 @@ func TestJetStreamMaxAckPendingPerSubjectVisual(t *testing.T) {
 		}
 	}
 	fmt.Printf("---------------------------------------------------\n")
+}
+
+func TestJetStreamMaxAckPendingPerSubjectConfigUpdate(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create stream
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "CONFIG_UPDATE",
+		Subjects: []string{"test.*"},
+	})
+	if err != nil {
+		t.Fatalf("Error adding stream: %v", err)
+	}
+
+	// Create consumer WITHOUT limit (0)
+	req, _ := json.Marshal(&CreateConsumerRequest{
+		Stream: "CONFIG_UPDATE",
+		Config: ConsumerConfig{
+			Durable:   "CONS",
+			AckPolicy: AckExplicit,
+		},
+	})
+	nc.Request(fmt.Sprintf(JSApiDurableCreateT, "CONFIG_UPDATE", "CONS"), req, time.Second)
+
+	// Publish 3 messages to same subject
+	js.Publish("test.1", []byte("msg 1"))
+	js.Publish("test.1", []byte("msg 2"))
+	js.Publish("test.1", []byte("msg 3"))
+
+	sub, err := js.PullSubscribe("", "CONS", nats.BindStream("CONFIG_UPDATE"))
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+
+	// 1. Get 2 messages (limit is disabled, so both should come)
+	msgs, err := sub.Fetch(2, nats.MaxWait(time.Second))
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("Expected 2 messages, got %v (err: %v)", len(msgs), err)
+	}
+
+	// 2. Update consumer config to enable limit = 1
+	req, _ = json.Marshal(&CreateConsumerRequest{
+		Stream: "CONFIG_UPDATE",
+		Config: ConsumerConfig{
+			Durable:                 "CONS",
+			AckPolicy:               AckExplicit,
+			MaxAckPendingPerSubject: 1,
+		},
+	})
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "CONFIG_UPDATE", "CONS"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Error updating consumer: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	json.Unmarshal(resp.Data, &ccResp)
+	if ccResp.Error != nil {
+		t.Fatalf("Consumer update error: %v", ccResp.Error)
+	}
+
+	// 3. Try to get third message - should timeout because current pending on test.1 is 2, and limit is 1
+	// If backfill worked, o.ptc["test.1"] should be 2.
+	msgs2, err := sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	if err == nil && len(msgs2) > 0 {
+		t.Fatalf("Expected timeout because of NEW limit, but got a message. Backfill failed?")
+	}
+
+	// 4. Ack 1 message. Pending becomes 1. Limit is 1. Still blocked?
+	// JetStream logic uses >= limit for blocking.
+	msgs[0].Ack()
+
+	msgs3, err := sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	if err == nil && len(msgs3) > 0 {
+		t.Fatalf("Expected timeout because pending is 1 and limit is 1. Got a message.")
+	}
+
+	// 5. Ack 2nd message. Pending becomes 0.
+	msgs[1].Ack()
+
+	// 6. Now third message should arrive
+	msgs4, err := sub.Fetch(1, nats.MaxWait(time.Second))
+	if err != nil || len(msgs4) != 1 {
+		t.Fatalf("Expected third message after acks, but got %v (err: %v)", len(msgs4), err)
+	}
 }

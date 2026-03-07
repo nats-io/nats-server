@@ -2504,9 +2504,21 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		}
 	}
 
+	// MaxAckPendingPerSubject
+	if cfg.MaxAckPendingPerSubject != o.cfg.MaxAckPendingPerSubject {
+		if cfg.MaxAckPendingPerSubject <= 0 {
+			o.ptc = nil
+		}
+	}
+
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
+	oldMaxAckPendingPerSubject := o.cfg.MaxAckPendingPerSubject
 	o.cfg = *cfg
+
+	if o.cfg.MaxAckPendingPerSubject > 0 && oldMaxAckPendingPerSubject <= 0 {
+		o.rebuildPerSubjectTracking()
+	}
 
 	if updatedFilters {
 		// Cleanup messages that lost interest.
