@@ -2231,7 +2231,7 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 		}
 		// Make sure to remove from pending.
 		if p, ok := o.pending[seq]; ok && p != nil {
-			delete(o.pending, seq)
+			o.removeFromPending(seq)
 			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp, p.Subject)
 		}
 		// Ensure redelivered state is set, if not already.
@@ -4613,7 +4613,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				}
 				// Make sure to remove from pending.
 				if p, ok := o.pending[seq]; ok && p != nil {
-					delete(o.pending, seq)
+					o.removeFromPending(seq)
 					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp, p.Subject)
 				}
 				continue
@@ -4632,7 +4632,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				}
 				if _, alreadyPending := o.pending[seq]; !alreadyPending && o.pendingSubjectHitLimit(pmsg.subj) {
 					pmsg.returnToPool()
-					dc = 0
 					o.decDeliveryCount(seq)
 					continue
 				}
@@ -4658,7 +4657,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		return nil, 0, errMaxAckPending
 	}
 
-	if o.hasSkipListPending() {
+	for o.hasSkipListPending() {
 		seq := o.lss.seqs[0]
 		if len(o.lss.seqs) == 1 {
 			o.sseq = o.lss.resume
@@ -4680,52 +4679,74 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			}
 			if o.pendingSubjectHitLimit(pmsg.subj) {
 				pmsg.returnToPool()
-				return nil, 0, errMaxAckPending
+				o.sseq++
+				continue
 			}
 		}
 		o.sseq++
 		return pmsg, 1, err
 	}
 
-	var sseq uint64
-	var err error
-	var sm *StoreMsg
-	var pmsg = getJSPubMsgFromPool()
+	// Save our starting sequence. If all remaining messages are on blocked
+	// subjects, we restore sseq so we don't permanently skip them.
+	savedSseq := o.sseq
 
-	// Grab next message applicable to us.
-	filters, subjf, fseq := o.filters, o.subjf, o.sseq
-	// Check if we are multi-filtered or not.
-	if filters != nil {
-		sm, sseq, err = o.mset.store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
-	} else if len(subjf) > 0 { // Means single filtered subject since o.filters means > 1.
-		filter, wc := subjf[0].subject, subjf[0].hasWildcard
-		sm, sseq, err = o.mset.store.LoadNextMsg(filter, wc, fseq, &pmsg.StoreMsg)
-	} else {
-		// No filter here.
-		sm, sseq, err = o.mset.store.LoadNextMsg(_EMPTY_, false, fseq, &pmsg.StoreMsg)
-	}
-	if sm == nil {
-		pmsg.returnToPool()
-		pmsg = nil
-	} else {
+	for {
+		var sseq uint64
+		var err error
+		var sm *StoreMsg
+		var pmsg = getJSPubMsgFromPool()
+
+		// Grab next message applicable to us.
+		filters, subjf, fseq := o.filters, o.subjf, o.sseq
+		// Check if we are multi-filtered or not.
+		if filters != nil {
+			sm, sseq, err = o.mset.store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
+		} else if len(subjf) > 0 { // Means single filtered subject since o.filters means > 1.
+			filter, wc := subjf[0].subject, subjf[0].hasWildcard
+			sm, sseq, err = o.mset.store.LoadNextMsg(filter, wc, fseq, &pmsg.StoreMsg)
+		} else {
+			// No filter here.
+			sm, sseq, err = o.mset.store.LoadNextMsg(_EMPTY_, false, fseq, &pmsg.StoreMsg)
+		}
+		if sm == nil {
+			pmsg.returnToPool()
+			// No more messages available. If we skipped any blocked subjects,
+			// restore o.sseq so those messages aren't permanently lost.
+			if o.sseq != savedSseq {
+				o.sseq = savedSseq
+			}
+			return nil, 0, err
+		}
+
 		if sm != &pmsg.StoreMsg {
 			sm.copy(&pmsg.StoreMsg)
 		}
 		if o.pendingSubjectHitLimit(pmsg.subj) {
+			// Skip this message and try the next one so we don't
+			// head-of-line block other subjects.
 			pmsg.returnToPool()
-			return nil, 0, errMaxAckPending
+			if sseq >= o.sseq {
+				o.sseq = sseq + 1
+			}
+			continue
 		}
-	}
-	// Check if we should move our o.sseq.
-	if sseq >= o.sseq {
-		// If we are moving step by step then sseq == o.sseq.
-		// If we have jumped we should update skipped for other replicas.
-		if sseq != o.sseq && err == ErrStoreEOF {
-			o.updateSkipped(sseq + 1)
+
+		// Found an unblocked message. Restore o.sseq to the saved position
+		// so blocked messages earlier in the stream aren't permanently skipped.
+		// Only the delivered message's sequence will be tracked via pending.
+		o.sseq = savedSseq
+		// Check if we should move our o.sseq.
+		if sseq >= o.sseq {
+			// If we are moving step by step then sseq == o.sseq.
+			// If we have jumped we should update skipped for other replicas.
+			if sseq != o.sseq && err == ErrStoreEOF {
+				o.updateSkipped(sseq + 1)
+			}
+			o.sseq = sseq + 1
 		}
-		o.sseq = sseq + 1
+		return pmsg, 1, err
 	}
-	return pmsg, 1, err
 }
 
 // Will check for expiration and lack of interest on waiting requests.
@@ -6012,7 +6033,7 @@ func (o *consumer) reconcileStateWithStream(streamLastSeq uint64) {
 	if len(o.pending) > 0 {
 		for seq := range o.pending {
 			if seq > streamLastSeq {
-				delete(o.pending, seq)
+				o.removeFromPending(seq)
 			}
 		}
 	}
@@ -6275,7 +6296,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 						o.dseq = o.adflr
 					}
 				}
-				delete(o.pending, seq)
+				o.removeFromPending(seq)
 				delete(o.rdc, seq)
 				// rdq handled below.
 			}
@@ -6290,7 +6311,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 							o.dseq = o.adflr
 						}
 					}
-					delete(o.pending, seq)
+					o.removeFromPending(seq)
 					delete(o.rdc, seq)
 				}
 			}

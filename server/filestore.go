@@ -12501,6 +12501,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64, sub
 				// Do not update p.Sequence, that should be the original delivery sequence.
 				p.Timestamp = ts
 			}
+		} else {
 			// Add to pending.
 			o.state.Pending[sseq] = &Pending{dseq, ts, subj}
 		}
