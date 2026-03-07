@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
@@ -759,4 +761,99 @@ func TestAuthProxyRequired(t *testing.T) {
 
 	s.Shutdown()
 	drainLog()
+}
+
+func TestAuthHTTPWithPermissions(t *testing.T) {
+	// Mock auth endpoint that validates user/pass and returns permissions
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.Username != "alice" || req.Password != "secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Return permissions: allow publish/subscribe to "allowed.>", deny "denied.>"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"permissions": map[string]any{
+				"publish":   map[string]any{"allow": []string{"allowed.>"}, "deny": []string{"denied.>"}},
+				"subscribe": map[string]any{"allow": []string{"allowed.>"}, "deny": []string{"denied.>"}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		authorization {
+			auth_http {
+				url: "%s"
+				timeout: 5
+			}
+		}
+	`, ts.URL)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	errChan := make(chan error, 1)
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("alice", "secret"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			if err != nil {
+				select {
+				case errChan <- err:
+				default:
+				}
+			}
+		}))
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc.Close()
+
+	// Publish to allowed subject should succeed
+	if err := nc.Publish("allowed.foo", []byte("ok")); err != nil {
+		t.Fatalf("Expected publish to allowed.foo to succeed, got %v", err)
+	}
+	nc.Flush()
+
+	// Publish to denied subject should fail with permission violation (error arrives async)
+	if err := nc.Publish("denied.foo", []byte("nope")); err != nil {
+		t.Fatalf("Publish buffers, should not return error: %v", err)
+	}
+	nc.Flush()
+	select {
+	case err := <-errChan:
+		if !strings.Contains(err.Error(), "Permissions Violation") {
+			t.Fatalf("Expected permission violation error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected permission violation error for publish to denied.foo")
+	}
+
+	// Subscribe to allowed subject should succeed
+	sub, err := nc.SubscribeSync("allowed.bar")
+	if err != nil {
+		t.Fatalf("Expected subscribe to allowed.bar to succeed, got %v", err)
+	}
+	sub.Unsubscribe()
+
+	// Subscribe to denied subject should fail
+	_, err = nc.SubscribeSync("denied.bar")
+	if err != nil {
+		t.Fatalf("SubscribeSync may not return error immediately: %v", err)
+	}
+	nc.Flush()
+	if err := nc.LastError(); err == nil || !strings.Contains(err.Error(), "Permissions Violation") {
+		t.Fatalf("Expected permission violation for subscribe to denied.bar, got %v", err)
+	}
 }

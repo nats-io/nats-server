@@ -571,6 +571,30 @@ func TestMultipleUsersConfig(t *testing.T) {
 	setBaselineOptions(opts)
 }
 
+func TestAuthHTTPConfig(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		authorization {
+			auth_http {
+				url: "http://auth-service:8080/verify"
+				timeout: 5
+			}
+		}
+	`))
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	if opts.AuthHTTP == nil {
+		t.Fatal("Expected AuthHTTP to be configured")
+	}
+	if opts.AuthHTTP.URL != "http://auth-service:8080/verify" {
+		t.Fatalf("Expected AuthHTTP URL %q, got %q", "http://auth-service:8080/verify", opts.AuthHTTP.URL)
+	}
+	if opts.AuthHTTP.Timeout != 5*time.Second {
+		t.Fatalf("Expected AuthHTTP timeout 5s, got %v", opts.AuthHTTP.Timeout)
+	}
+}
+
 // Test highly depends on contents of the config file listed below. Any changes to that file
 // may very well break this test.
 func TestAuthorizationConfig(t *testing.T) {
