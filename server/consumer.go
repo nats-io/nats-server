@@ -2231,7 +2231,9 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 		}
 		// Make sure to remove from pending.
 		if p, ok := o.pending[seq]; ok && p != nil {
-			o.removeFromPending(seq)
+			if o.removeFromPending(seq) {
+				o.signalNewMessages()
+			}
 			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp, p.Subject)
 		}
 		// Ensure redelivered state is set, if not already.
@@ -3166,6 +3168,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 	o.asflr = state.AckFloor.Stream
 	o.pending = state.Pending
 	o.rdc = state.Redelivered
+	o.rebuildPerSubjectTracking()
 
 	// Setup tracking timer if we have restored pending.
 	if o.isLeader() && len(o.pending) > 0 {
@@ -4613,7 +4616,9 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				}
 				// Make sure to remove from pending.
 				if p, ok := o.pending[seq]; ok && p != nil {
-					o.removeFromPending(seq)
+					if o.removeFromPending(seq) {
+						o.signalNewMessages()
+					}
 					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp, p.Subject)
 				}
 				continue
@@ -5659,6 +5664,25 @@ func (o *consumer) decPendingSubject(subj string) bool {
 	return needSignal
 }
 
+func (o *consumer) rebuildPerSubjectTracking() {
+	if o.cfg.MaxAckPendingPerSubject <= 0 || len(o.pending) == 0 {
+		return
+	}
+	if o.ptc == nil {
+		o.ptc = make(map[string]int)
+	}
+	for seq, p := range o.pending {
+		if p.Subject == _EMPTY_ && o.mset != nil && o.mset.store != nil {
+			if subj, err := o.mset.store.SubjectForSeq(seq); err == nil {
+				p.Subject = subj
+			}
+		}
+		if p.Subject != _EMPTY_ {
+			o.ptc[p.Subject]++
+		}
+	}
+}
+
 func (o *consumer) removeFromPending(seq uint64) bool {
 	var needSignal bool
 	if p, ok := o.pending[seq]; ok && p != nil {
@@ -5851,7 +5875,9 @@ func (o *consumer) checkPending() {
 		}
 		// Check if these are no longer valid.
 		if seq < fseq || seq <= o.asflr {
-			o.removeFromPending(seq)
+			if o.removeFromPending(seq) {
+				o.signalNewMessages()
+			}
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
 			shouldUpdateState = true
@@ -6045,10 +6071,16 @@ func (o *consumer) reconcileStateWithStream(streamLastSeq uint64) {
 
 	// Remove pending entries that are beyond the stream's last sequence
 	if len(o.pending) > 0 {
+		var needSignal bool
 		for seq := range o.pending {
 			if seq > streamLastSeq {
-				o.removeFromPending(seq)
+				if o.removeFromPending(seq) {
+					needSignal = true
+				}
 			}
+		}
+		if needSignal {
+			o.signalNewMessages()
 		}
 	}
 
@@ -6302,6 +6334,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
 		// We need to remove those no longer relevant from pending.
+		var needSignal bool
 		for seq, p := range o.pending {
 			if seq <= o.asflr {
 				if p.Sequence > o.adflr {
@@ -6310,11 +6343,12 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 						o.dseq = o.adflr
 					}
 				}
-				o.removeFromPending(seq)
+				if o.removeFromPending(seq) {
+					needSignal = true
+				}
 				delete(o.rdc, seq)
 				// rdq handled below.
-			}
-			if isWider && store != nil {
+			} else if isWider && store != nil {
 				// Our filtered subject, which could be all, is wider than the underlying purge.
 				// We need to check if the pending items left are still valid.
 				var smv StoreMsg
@@ -6325,10 +6359,15 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 							o.dseq = o.adflr
 						}
 					}
-					o.removeFromPending(seq)
+					if o.removeFromPending(seq) {
+						needSignal = true
+					}
 					delete(o.rdc, seq)
 				}
 			}
+		}
+		if needSignal {
+			o.signalNewMessages()
 		}
 	}
 
