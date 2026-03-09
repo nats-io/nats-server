@@ -1,0 +1,33 @@
+name: Vulnerability Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  govulncheck:
+    runs-on: ${{ vars.GHA_WORKER_SMALL || 'ubuntu-latest' }}
+
+    steps:
+      - name: Run govulncheck
+        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
+        # Commit b625fbe08f3bccbe446d94fbf87fcc875a4f50ee = tag v1.0.4
+        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee
+        with:
+          go-package: ./...
+          output-format: sarif
+          output-file: govulncheck.sarif
+
+      - name: Upload SARIF results
+        if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: govulncheck.sarif
