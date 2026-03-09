@@ -1,8 +1,8 @@
 module github.com/nats-io/nats-server/v2
 
-go 1.24.0
+go 1.25.0
 
-toolchain go1.24.13
+toolchain go1.25.8
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.5.0-default-no-op
@@ -13,9 +13,9 @@ require (
 	github.com/nats-io/nkeys v0.4.12
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.6.0
-	golang.org/x/crypto v0.47.0
-	golang.org/x/sys v0.40.0
-	golang.org/x/time v0.14.0
+	golang.org/x/crypto v0.48.0
+	golang.org/x/sys v0.42.0
+	golang.org/x/time v0.15.0
 )
 
 // We don't usually pin non-tagged commits but so far no release has
