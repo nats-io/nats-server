@@ -13371,6 +13371,10 @@ func writeFileWithSync(name string, data []byte, perm fs.FileMode) error {
 	return writeAtomically(name, data, perm, true)
 }
 
+// Windows does not support fsyncing directory metadata, it results in a panic, so
+// we need to skip doing this there.
+const canFsyncDirectories = runtime.GOOS != "windows"
+
 func writeAtomically(name string, data []byte, perm fs.FileMode, sync bool) error {
 	tmp := name + ".tmp"
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
@@ -13399,7 +13403,7 @@ func writeAtomically(name string, data []byte, perm fs.FileMode, sync bool) erro
 		_ = os.Remove(tmp)
 		return err
 	}
-	if sync {
+	if sync && canFsyncDirectories {
 		// To ensure that the file rename was persisted on all filesystems,
 		// also try to flush the directory metadata.
 		var d *os.File
