@@ -869,6 +869,11 @@ func (c *client) registerWithAccount(acc *Account) error {
 	}
 
 	c.mu.Lock()
+	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
+	if c.isClosed() && !isInternalClient(c.kind) {
+		c.mu.Unlock()
+		return ErrConnectionClosed
+	}
 	kind := c.kind
 	srv := c.srv
 	c.acc = acc
