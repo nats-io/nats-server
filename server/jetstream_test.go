@@ -22887,3 +22887,85 @@ func TestJetStreamStreamCheckSourcesWithExternal(t *testing.T) {
 		require_Error(t, err, NewJSSourceOverlappingSubjectFiltersError())
 	}
 }
+
+func TestJetStreamMirrorProcessMsgsNilQuitChannel(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:   "MIRROR",
+		Mirror: &nats.StreamSource{Name: "TEST"},
+	})
+	require_NoError(t, err)
+
+	// Verify the mirror works.
+	_, err = js.Publish("foo", []byte("hello"))
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("MIRROR")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("expected 1 msg, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	mset, err := s.globalAccount().lookupStream("MIRROR")
+	require_NoError(t, err)
+
+	// Cancel the current mirror consumer and wait for its processMirrorMsgs
+	// goroutine to fully exit.
+	mset.mu.Lock()
+	mset.cancelMirrorConsumer()
+	mirror := mset.mirror
+	mset.mu.Unlock()
+	mirror.wg.Wait()
+
+	// Now reproduce the race condition: start processMirrorMsgs while
+	// mirror.qch is nil. This simulates what happens when cancelSourceInfo
+	// runs between the goroutine being launched and acquiring mset.mu.
+	//
+	// We hold mset.mu while starting the goroutine so that it blocks on
+	// mset.mu.Lock() inside processMirrorMsgs. When we release the lock,
+	// it captures siqch = mirror.qch which is nil (left nil by cancelSourceInfo).
+	mset.mu.Lock()
+	mirror = mset.mirror
+	mirror.msgs = newIPQueue[*inMsg](s, "stream mirror")
+	mirror.wg.Add(1)
+	ready := sync.WaitGroup{}
+	ready.Add(1)
+	if !s.startGoRoutine(func() { mset.processMirrorMsgs(mirror, &ready) }) {
+		mirror.wg.Done()
+		ready.Done()
+		mset.mu.Unlock()
+		t.Fatal("Failed to start goroutine")
+	}
+	mset.mu.Unlock()
+	ready.Wait()
+
+	// Verify the goroutine exits promptly. With the bug, mirror.wg.Wait()
+	// blocks forever because <-siqch on a nil channel never fires.
+	done := make(chan struct{})
+	go func() {
+		mirror.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Expected goroutine to exit properly after cancel.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Mirror goroutine did not exit after cancel: stuck on nil quit channel")
+	}
+}
