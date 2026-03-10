@@ -775,9 +775,6 @@ func (c *client) mqttParse(buf []byte) error {
 
 		// Packet type
 		pt := b & mqttPacketMask
-		if err = mqttCheckFixedHeaderFlags(pt, b&mqttPacketFlagMask); err != nil {
-			break
-		}
 
 		// If client was not connected yet, the first packet must be
 		// a mqttPacketConnect otherwise we fail the connection.
@@ -792,9 +789,15 @@ func (c *client) mqttParse(buf []byte) error {
 			}
 			break
 		}
+		if err = mqttCheckFixedHeaderFlags(pt, b&mqttPacketFlagMask); err != nil {
+			break
+		}
 
 		pl, complete, err = r.readPacketLen()
 		if err != nil || !complete {
+			break
+		}
+		if err = mqttCheckRemainingLength(pt, pl); err != nil {
 			break
 		}
 
@@ -976,6 +979,24 @@ func mqttCheckFixedHeaderFlags(packetType, flags byte) error {
 	}
 	if flags != expected {
 		return fmt.Errorf("invalid fixed header flags %x for packet type %x", flags, packetType)
+	}
+	return nil
+}
+
+func mqttCheckRemainingLength(packetType byte, pl int) error {
+	var expected int
+	switch packetType {
+	case mqttPacketConnect, mqttPacketPub, mqttPacketSub, mqttPacketUnsub:
+		return nil
+	case mqttPacketPubAck, mqttPacketPubRec, mqttPacketPubRel, mqttPacketPubComp:
+		expected = 2
+	case mqttPacketPing, mqttPacketDisconnect:
+		expected = 0
+	default:
+		return nil
+	}
+	if pl != expected {
+		return fmt.Errorf("invalid remaining length %d for packet type %x", pl, packetType)
 	}
 	return nil
 }
