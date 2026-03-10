@@ -3418,6 +3418,7 @@ func (mset *stream) setupMirrorConsumer() error {
 						"consumer": mirror.cname,
 					},
 				) {
+					mirror.wg.Done()
 					ready.Done()
 				}
 			}

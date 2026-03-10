@@ -22969,3 +22969,78 @@ func TestJetStreamMirrorProcessMsgsNilQuitChannel(t *testing.T) {
 		t.Fatal("Mirror goroutine did not exit after cancel: stuck on nil quit channel")
 	}
 }
+
+func TestJetStreamMirrorSetupStartGoRoutineFailMissingWgDone(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:   "MIRROR",
+		Mirror: &nats.StreamSource{Name: "TEST"},
+	})
+	require_NoError(t, err)
+
+	// Verify the mirror works.
+	_, err = js.Publish("foo", []byte("hello"))
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("MIRROR")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("expected 1 msg, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	mset, err := s.globalAccount().lookupStream("MIRROR")
+	require_NoError(t, err)
+
+	// Cancel the current mirror consumer and wait for its goroutine to exit.
+	mset.mu.Lock()
+	mset.cancelMirrorConsumer()
+	mirror := mset.mirror
+	mset.mu.Unlock()
+	mirror.wg.Wait()
+
+	// Simulate shutting down and not able to schedule more goroutines.
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
+
+	// Set up the mirror consumer which should not allow a new goroutine to be scheduled.
+	mset.mu.Lock()
+	mirror.lreq = time.Time{}
+	err = mset.setupMirrorConsumer()
+	mset.mu.Unlock()
+	require_NoError(t, err)
+
+	// Give the above setup enough time to start the mirror goroutine.
+	time.Sleep(500 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		mirror.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Expected goroutine to exit properly.
+	case <-time.After(2 * time.Second):
+		// wg is stuck because Done() was never called.
+		// Clean up the orphaned wg to prevent leaking the waiter goroutine.
+		mirror.wg.Done()
+		t.Fatal("mirror.wg.Wait() blocked indefinitely: missing wg.Done() in startGoRoutine failure path")
+	}
+}
