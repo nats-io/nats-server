@@ -7631,3 +7631,52 @@ func TestJetStreamClusterDontEncodeConsumerStateInMetaSnapshot(t *testing.T) {
 	require_NotNil(t, consumer)
 	require_True(t, consumer.State == nil)
 }
+
+func TestJetStreamClusteredStreamCreateIdempotentWithSources(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{"source.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	cfg := &nats.StreamConfig{
+		Name:     "SOURCED",
+		Subjects: []string{"sourced.>"},
+		Replicas: 3,
+		Sources: []*nats.StreamSource{
+			{
+				Name:          "SOURCE",
+				FilterSubject: "source.>",
+			},
+		},
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Step down the stream leader until it lands on the meta leader.
+	// This ensures the meta leader's stored assignment has iname populated
+	// via the shared StreamSource pointer.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	sl := c.streamLeader(globalAccountName, "SOURCED")
+	require_NotNil(t, sl)
+	if sl != ml {
+		mset, err := sl.globalAccount().lookupStream("SOURCED")
+		require_NoError(t, err)
+		require_NoError(t, mset.raftNode().StepDown(ml.Node()))
+		c.waitOnStreamLeader(globalAccountName, "SOURCED")
+		sl = c.streamLeader(globalAccountName, "SOURCED")
+	}
+	require_Equal(t, ml, sl)
+
+	// The second create should be idempotent, and succeed even though iname was set.
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+}

@@ -7646,6 +7646,13 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	// Capture if we have existing/inflight assignment first.
 	if osa := js.streamAssignmentOrInflight(acc.Name, cfg.Name); osa != nil {
 		copyStreamMetadata(cfg, osa.Config)
+		// Set the index name on both to ensure the DeepEqual works
+		for _, s := range cfg.Sources {
+			s.setIndexName()
+		}
+		for _, s := range osa.Config.Sources {
+			s.setIndexName()
+		}
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
