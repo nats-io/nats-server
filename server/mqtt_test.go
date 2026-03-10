@@ -1763,6 +1763,95 @@ func TestMQTTConnKeepAlive(t *testing.T) {
 	testMQTTExpectDisconnect(t, mc)
 }
 
+func TestMQTTMalformedFixedHeaderFlagsCauseDisconnect(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	expectDisconnectSoon := func(t *testing.T, c net.Conn) {
+		t.Helper()
+		var buf [16]byte
+		c.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		n, err := c.Read(buf[:])
+		c.SetReadDeadline(time.Time{})
+		if err == nil {
+			t.Fatalf("Expected connection to be disconnected, got %v", buf[:n])
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("Expected a disconnect but got a timeout error")
+		}
+	}
+
+	for _, test := range []struct {
+		name   string
+		packet func(t *testing.T) (net.Conn, []byte)
+	}{
+		{
+			name: "connect",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				addr := net.JoinHostPort(o.MQTT.Host, fmt.Sprintf("%d", o.MQTT.Port))
+				c, err := net.Dial("tcp", addr)
+				if err != nil {
+					t.Fatalf("Error creating mqtt connection: %v", err)
+				}
+				proto := mqttCreateConnectProto(&mqttConnInfo{cleanSess: true})
+				proto[0] |= 0x1
+				return c, proto
+			},
+		},
+		{
+			name: "pingreq",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				return mc, []byte{mqttPacketPing | 0x1, 0}
+			},
+		},
+		{
+			name: "puback",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				return mc, []byte{mqttPacketPubAck | 0x1, 2, 0, 1}
+			},
+		},
+		{
+			name: "pubrec",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				return mc, []byte{mqttPacketPubRec | 0x1, 2, 0, 1}
+			},
+		},
+		{
+			name: "pubrel",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				return mc, []byte{mqttPacketPubRel | 0x1, 2, 0, 1}
+			},
+		},
+		{
+			name: "pubcomp",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				return mc, []byte{mqttPacketPubComp | 0x1, 2, 0, 1}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, packet := test.packet(t)
+			defer c.Close()
+
+			if _, err := testMQTTWrite(c, packet); err != nil {
+				t.Fatalf("Error writing malformed %s packet: %v", test.name, err)
+			}
+			expectDisconnectSoon(t, c)
+		})
+	}
+}
+
 func TestMQTTDontSetPinger(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.PingInterval = 15 * time.Millisecond
