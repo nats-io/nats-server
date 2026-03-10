@@ -403,7 +403,6 @@ type StreamSourceInfo struct {
 	Error             *ApiError                `json:"error,omitempty"`
 	FilterSubject     string                   `json:"filter_subject,omitempty"`
 	SubjectTransforms []SubjectTransformConfig `json:"subject_transforms,omitempty"`
-	SkipDiscardNew    bool                     `json:"skip_discard_new,omitempty"`
 }
 
 // StreamSource dictates how streams can source from other streams.
@@ -414,7 +413,6 @@ type StreamSource struct {
 	FilterSubject     string                   `json:"filter_subject,omitempty"`
 	SubjectTransforms []SubjectTransformConfig `json:"subject_transforms,omitempty"`
 	External          *ExternalStream          `json:"external,omitempty"`
-	SkipDiscardNew    bool                     `json:"skip_discard_new,omitempty"` // Skip messages that were discarded by the sourcing stream when the discard policy is 'new'
 
 	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
@@ -603,7 +601,6 @@ type sourceInfo struct {
 	sf    string              // The subject filter.
 	sfs   []string            // The subject filters.
 	trs   []*subjectTransform // The subject transforms.
-	sdn   bool                // Skip discarded messages when in discard new
 }
 
 // For mirrors and direct get
@@ -1913,7 +1910,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
-	// check sources for duplicates and SkipDiscardNew being set without discard new policy on stream
+	// check sources for duplicates
 	var iNames = make(map[string]struct{})
 	for _, src := range cfg.Sources {
 		if src == nil || !isValidName(src.Name) {
@@ -1923,10 +1920,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 			iNames[src.composeIName()] = struct{}{}
 		} else {
 			return StreamConfig{}, NewJSSourceDuplicateDetectedError()
-		}
-
-		if src.SkipDiscardNew && config.Discard != DiscardNew {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("setting skip discard new on a source requires discard new policy to be set on stream"))
 		}
 
 		if src.FilterSubject != _EMPTY_ && len(src.SubjectTransforms) != 0 {
@@ -2452,9 +2445,9 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 					var si *sourceInfo
 
 					if len(s.SubjectTransforms) == 0 {
-						si = &sourceInfo{name: s.Name, iname: s.iname, sf: s.FilterSubject, sdn: s.SkipDiscardNew}
+						si = &sourceInfo{name: s.Name, iname: s.iname, sf: s.FilterSubject}
 					} else {
-						si = &sourceInfo{name: s.Name, iname: s.iname, sdn: s.SkipDiscardNew}
+						si = &sourceInfo{name: s.Name, iname: s.iname}
 						si.trs = make([]*subjectTransform, len(s.SubjectTransforms))
 						si.sfs = make([]string, len(s.SubjectTransforms))
 						for i := range s.SubjectTransforms {
@@ -2802,7 +2795,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 		return nil
 	}
 
-	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf, SkipDiscardNew: si.sdn}
+	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
 
 	trConfigs := make([]SubjectTransformConfig, len(si.sfs))
 	for i := range si.sfs {
@@ -4081,9 +4074,9 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			accName, sname, iName := mset.acc.Name, mset.cfg.Name, si.iname
 			mset.mu.RUnlock()
 			// Can happen temporarily all the time during normal operations when the sourcing stream is discard new
-			// and skip discarded is not set (example use case is for sourcing into a work queue)
-			// TODO - Improve sourcing to WQ with limit and new to use flow control rather than re-creating the consumer.
-			if !si.sdn && (errors.Is(err, ErrMaxMsgs) || errors.Is(err, ErrMaxBytes) || errors.Is(err, ErrMaxMsgsPerSubject)) {
+			// (example use case is for sourcing into a work queue)
+			// TODO - Maybe improve sourcing to WQ with limit and new to use flow control rather than re-creating the consumer.
+			if errors.Is(err, ErrMaxMsgs) || errors.Is(err, ErrMaxBytes) || errors.Is(err, ErrMaxMsgsPerSubject) {
 				// Do not need to do a full retry that includes finding the last sequence in the stream
 				// for that source. Just re-create starting with the seq we couldn't store instead.
 				mset.mu.Lock()
@@ -4091,12 +4084,12 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				mset.mu.Unlock()
 			} else {
 				// Log some warning for errors other than errLastSeqMismatch.
-				if !errors.Is(err, errLastSeqMismatch) && !errors.Is(err, errMsgIdDuplicate) && !errors.Is(err, ErrMaxMsgsPerSubject) && !errors.Is(err, ErrMaxMsgs) && !errors.Is(err, ErrMaxBytes) {
+				if !errors.Is(err, errLastSeqMismatch) && !errors.Is(err, errMsgIdDuplicate) {
 					s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
 						iName, accName, sname, err)
 				}
 				// Retry in all type of errors we do not want to skip if we are still leader.
-				if mset.isLeader() && !errors.Is(err, errMsgIdDuplicate) && (!si.sdn || !errors.Is(err, ErrMaxMsgsPerSubject) && !errors.Is(err, ErrMaxMsgs) && !errors.Is(err, ErrMaxBytes)) {
+				if mset.isLeader() && !errors.Is(err, errMsgIdDuplicate) {
 					// This will make sure the source is still in mset.sources map,
 					// find the last sequence and then call setupSourceConsumer.
 					iNameMap := map[string]struct{}{iName: {}}
@@ -4292,7 +4285,7 @@ func (mset *stream) resetSourceInfo() {
 		var si *sourceInfo
 
 		if len(ssi.SubjectTransforms) == 0 {
-			si = &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject, sdn: ssi.SkipDiscardNew}
+			si = &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject}
 		} else {
 			sfs := make([]string, len(ssi.SubjectTransforms))
 			trs := make([]*subjectTransform, len(ssi.SubjectTransforms))
@@ -4304,7 +4297,7 @@ func (mset *stream) resetSourceInfo() {
 				sfs[i] = str.Source
 				trs[i] = tr
 			}
-			si = &sourceInfo{name: ssi.Name, iname: ssi.iname, sfs: sfs, trs: trs, sdn: ssi.SkipDiscardNew}
+			si = &sourceInfo{name: ssi.Name, iname: ssi.iname, sfs: sfs, trs: trs}
 		}
 		mset.sources[ssi.iname] = si
 	}

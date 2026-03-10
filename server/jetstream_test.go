@@ -22995,7 +22995,7 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 	sConfig := StreamConfig{
 		Name:          "B",
 		Storage:       MemoryStorage,
-		Sources:       []*StreamSource{{Name: "A", SkipDiscardNew: true}},
+		Sources:       []*StreamSource{{Name: "A"}},
 		MaxMsgsPer:    1,
 		Discard:       DiscardNew,
 		DiscardNewPer: true,
@@ -23016,7 +23016,7 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 	_, err = js.Publish("foo.1", ([]byte)("1"))
 	require_NoError(t, err)
 
-	// this will be discarded as duplicate per subject
+	// this will not be sourced as discard new per subject
 	_, err = js.Publish("foo.1", ([]byte)("2"))
 	require_NoError(t, err)
 
@@ -23032,6 +23032,32 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Check the message
+	msgp, err := js.GetMsg("B", uint64(1))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.1")
+	require_Equal(t, string(msgp.Data), "1")
+
+	// now purge the stream so sourcing can continue
+	require_NoError(t, js.PurgeStream("B"))
+
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err = js.StreamInfo("B")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("expected 1 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// check the message
+	msgp, err = js.GetMsg("B", uint64(2))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.1")
+	require_Equal(t, string(msgp.Data), "2")
 
 	msg := nats.NewMsg("foo.2")
 	msg.Data = []byte("1")
@@ -23051,6 +23077,12 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 		}
 		return nil
 	})
+
+	// check the message
+	msgp, err = js.GetMsg("B", uint64(3))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.2")
+	require_Equal(t, string(msgp.Data), "1")
 
 	time.Sleep(200 * time.Millisecond)
 
@@ -23089,62 +23121,9 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 		return nil
 	})
 
-	msgp, err := js.GetMsg("B", uint64(1))
-	require_NoError(t, err)
-	require_Equal(t, msgp.Subject, "foo.1")
-	require_Equal(t, string(msgp.Data), "1")
-
-	msgp, err = js.GetMsg("B", uint64(2))
-	require_NoError(t, err)
-	require_Equal(t, msgp.Subject, "foo.2")
-	require_Equal(t, string(msgp.Data), "1")
-
-	msgp, err = js.GetMsg("B", uint64(3))
+	msgp, err = js.GetMsg("B", uint64(4))
 	require_NoError(t, err)
 	require_Equal(t, msgp.Subject, "foo.4")
 	require_Equal(t, string(msgp.Data), "1")
 
-	// now test with skip on discard new not set
-	sConfig = StreamConfig{
-		Name:       "C",
-		Storage:    MemoryStorage,
-		Sources:    []*StreamSource{{Name: "A", SkipDiscardNew: false}},
-		MaxMsgs:    3,
-		MaxMsgsPer: 1,
-		Duplicates: 100 * time.Millisecond,
-		Discard:    DiscardNew,
-	}
-
-	req, err = json.Marshal(&sConfig)
-	require_NoError(t, err)
-
-	_, err = nc.Request("$JS.API.STREAM.CREATE.C", req, 5*time.Second)
-	require_NoError(t, err)
-
-	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
-		si, err = js.StreamInfo("C")
-		if err != nil {
-			return err
-		}
-		if si.State.Msgs != 3 {
-			return fmt.Errorf("expected 3 messages, got %d", si.State.Msgs)
-		}
-		return nil
-	})
-
-	// check the sourced messages are exactly as expected
-	msgp, err = js.GetMsg("C", uint64(2))
-	require_NoError(t, err)
-	require_Equal(t, msgp.Subject, "foo.1")
-	require_Equal(t, string(msgp.Data), "2")
-
-	msgp, err = js.GetMsg("C", uint64(3))
-	require_NoError(t, err)
-	require_Equal(t, msgp.Subject, "foo.2")
-	require_Equal(t, string(msgp.Data), "1")
-
-	msgp, err = js.GetMsg("C", uint64(4))
-	require_NoError(t, err)
-	require_Equal(t, msgp.Subject, "foo.4")
-	require_Equal(t, string(msgp.Data), "1")
 }
