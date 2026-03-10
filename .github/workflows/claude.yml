@@ -1,0 +1,33 @@
+name: Claude Code
+
+# GITHUB_TOKEN is neutered — all GitHub API access uses the App token instead.
+permissions: {}
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, reopened]
+
+jobs:
+  claude:
+    name: Claude Review
+    uses: synadia-io/ai-workflows/.github/workflows/claude.yml@v2
+    if: contains(
+      fromJson('["OWNER","MEMBER","COLLABORATOR"]'),
+      github.event.comment.author_association || github.event.pull_request.author_association
+      )
+    with:
+      gh_app_id: ${{ vars.CLAUDE_GH_APP_ID }}
+      checkout_mode: "base"
+      review_focus: |
+        Additionally focus on:
+        - Performance implications (hot paths, allocations, lock contention)
+        - Concurrency safety (goroutine leaks, race conditions, deadlocks)
+        - Raft consensus and JetStream clustering correctness
+        - Security boundaries (authentication, authorization, TLS handling)
+    secrets:
+      claude_oauth_token: ${{ secrets.CLAUDE_OAUTH_TOKEN }}
+      gh_app_private_key: ${{ secrets.CLAUDE_GH_APP_PRIVATE_KEY }}
