@@ -4089,17 +4089,19 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 						iName, accName, sname, err)
 				}
 				// Retry in all type of errors we do not want to skip if we are still leader.
-				if mset.isLeader() && !errors.Is(err, errMsgIdDuplicate) {
-					// This will make sure the source is still in mset.sources map,
-					// find the last sequence and then call setupSourceConsumer.
-					iNameMap := map[string]struct{}{iName: {}}
-					mset.setStartingSequenceForSources(iNameMap)
-					mset.mu.Lock()
-					mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
-					mset.mu.Unlock()
-				} else {
-					// skipping the message but keep processing the rest of the batch
-					return true
+				if mset.isLeader() {
+					if !errors.Is(err, errMsgIdDuplicate) {
+						// This will make sure the source is still in mset.sources map,
+						// find the last sequence and then call setupSourceConsumer.
+						iNameMap := map[string]struct{}{iName: {}}
+						mset.setStartingSequenceForSources(iNameMap)
+						mset.mu.Lock()
+						mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
+						mset.mu.Unlock()
+					} else {
+						// skipping the message but keep processing the rest of the batch
+						return true
+					}
 				}
 			}
 		}
