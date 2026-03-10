@@ -2890,6 +2890,12 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 	// Grab stream quit channel.
 	mset.mu.Lock()
 	msgs, qch, siqch := mirror.msgs, mset.qch, mirror.qch
+	// If the mirror was already canceled before we got here, exit early.
+	if siqch == nil {
+		mset.mu.Unlock()
+		ready.Done()
+		return
+	}
 	// Set the last seen as now so that we don't fail at the first check.
 	mirror.last.Store(time.Now().UnixNano())
 	mset.mu.Unlock()
