@@ -1392,13 +1392,13 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	case si == nil:
 		// Create the stream for retained messages.
 		cfg := &StreamConfig{
-			Name:       mqttRetainedMsgsStreamName,
-			Subjects:   []string{mqttRetainedMsgsStreamSubject + ">"},
-			Storage:    FileStorage,
-			Retention:  LimitsPolicy,
-			Replicas:   replicas,
-			MaxMsgsPer: 1,
-			AllowDirect: true
+			Name:        mqttRetainedMsgsStreamName,
+			Subjects:    []string{mqttRetainedMsgsStreamSubject + ">"},
+			Storage:     FileStorage,
+			Retention:   LimitsPolicy,
+			Replicas:    replicas,
+			MaxMsgsPer:  1,
+			AllowDirect: true,
 		}
 		// We will need "si" outside of this block.
 		si, _, err = jsa.createStream(cfg)
