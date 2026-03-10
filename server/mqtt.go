@@ -775,6 +775,9 @@ func (c *client) mqttParse(buf []byte) error {
 
 		// Packet type
 		pt := b & mqttPacketMask
+		if err = mqttCheckFixedHeaderFlags(pt, b&mqttPacketFlagMask); err != nil {
+			break
+		}
 
 		// If client was not connected yet, the first packet must be
 		// a mqttPacketConnect otherwise we fail the connection.
@@ -956,6 +959,25 @@ func (c *client) mqttParse(buf []byte) error {
 		r.reader.SetReadDeadline(time.Now().Add(rd))
 	}
 	return err
+}
+
+func mqttCheckFixedHeaderFlags(packetType, flags byte) error {
+	var expected byte
+	switch packetType {
+	case mqttPacketConnect, mqttPacketPubAck, mqttPacketPubRec, mqttPacketPubComp,
+		mqttPacketPing, mqttPacketDisconnect:
+		expected = 0
+	case mqttPacketPubRel, mqttPacketSub, mqttPacketUnsub:
+		expected = 0x2
+	case mqttPacketPub:
+		return nil
+	default:
+		return nil
+	}
+	if flags != expected {
+		return fmt.Errorf("invalid fixed header flags %x for packet type %x", flags, packetType)
+	}
+	return nil
 }
 
 func (c *client) mqttTraceMsg(msg []byte) {
