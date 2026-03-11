@@ -733,6 +733,13 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 		return
 	}
+
+	// In case the migrate timer was created but we broke out of the loop
+	// because the configuration was removed, cancel it now. Note that
+	// the timer would not be created if `jetstreamMigrateDelay == 0`.
+	if jetstreamMigrateDelay > 0 {
+		remote.cancelMigrateTimer()
+	}
 }
 
 func (cfg *leafNodeCfg) cancelMigrateTimer() {
