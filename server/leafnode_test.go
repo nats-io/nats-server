@@ -10983,6 +10983,53 @@ func TestLeafNodeNoAccPanicOnLeafUnsubBeforeConnect(t *testing.T) {
 	}
 }
 
+func TestLeafNodeNoAccPanicOnLeafErrLoopDetectedBeforeConnect(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", opts.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	// Read the INFO.
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	if !strings.HasPrefix(string(l), "INFO") {
+		t.Fatalf("Expected INFO, got %q", l)
+	}
+
+	// Send the loop-detected error before CONNECT. This should not panic the server.
+	_, err = c.Write([]byte("-ERR 'Loop detected'\r\n"))
+	require_NoError(t, err)
+
+	// The server should close the connection.
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 256)
+	for {
+		_, err = c.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+
+	// Make sure the server is still running.
+	s.mu.Lock()
+	shutdown := s.isShuttingDown()
+	s.mu.Unlock()
+	if shutdown {
+		t.Fatal("Server should not have shutdown")
+	}
+}
+
 func TestLeafNodeLeafSubBeforeConnectCompressionEffect(t *testing.T) {
 	for _, test := range []struct {
 		name        string
