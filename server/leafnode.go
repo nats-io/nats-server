@@ -27,7 +27,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -152,7 +151,10 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 		remote := newLeafNodeCfg(r)
 		creds := remote.Credentials
 		accName := remote.LocalAccount
-		s.leafRemoteCfgs = append(s.leafRemoteCfgs, remote)
+		if s.leafRemoteCfgs == nil {
+			s.leafRemoteCfgs = make(map[*leafNodeCfg]struct{})
+		}
+		s.leafRemoteCfgs[remote] = struct{}{}
 		// Print notice if
 		if isSysAccRemote {
 			if len(remote.DenyExports) > 0 {
@@ -202,8 +204,10 @@ func (s *Server) remoteLeafNodeStillValid(remote *leafNodeCfg) bool {
 		return false
 	}
 	for _, ri := range s.getOpts().LeafNode.Remotes {
-		// FIXME(dlc) - What about auth changes?
-		if reflect.DeepEqual(ri.URLs, remote.URLs) {
+		remote.RLock()
+		matches := remote.RemoteLeafOpts.matches(ri)
+		remote.RUnlock()
+		if matches {
 			return true
 		}
 	}
@@ -426,33 +430,6 @@ func validateLeafNodeProxyOptions(remote *RemoteLeafOpts) ([]string, error) {
 	}
 
 	return warnings, nil
-}
-
-// Update remote LeafNode TLS configurations after a config reload.
-func (s *Server) updateRemoteLeafNodesTLSConfig(opts *Options) {
-	max := len(opts.LeafNode.Remotes)
-	if max == 0 {
-		return
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Changes in the list of remote leaf nodes is not supported.
-	// However, make sure that we don't go over the arrays.
-	if len(s.leafRemoteCfgs) < max {
-		max = len(s.leafRemoteCfgs)
-	}
-	for i := 0; i < max; i++ {
-		ro := opts.LeafNode.Remotes[i]
-		cfg := s.leafRemoteCfgs[i]
-		if ro.TLSConfig != nil {
-			cfg.Lock()
-			cfg.TLSConfig = ro.TLSConfig.Clone()
-			cfg.TLSHandshakeFirst = ro.TLSHandshakeFirst
-			cfg.Unlock()
-		}
-	}
 }
 
 func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
