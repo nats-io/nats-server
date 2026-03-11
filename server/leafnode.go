@@ -3006,7 +3006,10 @@ func (c *client) setLeafConnectDelayIfSoliciting(delay time.Duration) (string, t
 		}
 		c.leaf.remote.setConnectDelay(delay)
 	}
-	accName := c.acc.Name
+	var accName string
+	if c.acc != nil {
+		accName = c.acc.Name
+	}
 	c.mu.Unlock()
 	return accName, delay
 }
