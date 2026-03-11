@@ -1805,7 +1805,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 		if req.Subject != _EMPTY_ {
 			filter = req.Subject
 		}
@@ -1935,7 +1935,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 		if req.Subject != _EMPTY_ {
 			filter = req.Subject
 		}
@@ -2125,7 +2125,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			return
 		}
 		details, subjects = req.DeletedDetails, req.SubjectsFilter
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -4602,7 +4602,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	streamName := streamNameFromSubject(subject)
@@ -4724,7 +4724,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	streamName := streamNameFromSubject(subject)
