@@ -27,6 +27,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -106,6 +107,34 @@ type CompressionOpts struct {
 	// as CompressionS2Better. Anything above 20ms will result in picking
 	// the CompressionS2Best compression level.
 	RTTThresholds []time.Duration
+}
+
+func (c1 *CompressionOpts) equals(c2 *CompressionOpts) bool {
+	if c1 == c2 {
+		return true
+	}
+	if (c1 == nil && c2 != nil) || (c1 != nil && c2 == nil) {
+		return false
+	}
+	if c1.Mode != c2.Mode {
+		return false
+	}
+	// For s2_auto, if one has an empty RTTThresholds, it is equivalent
+	// to the defaultCompressionS2AutoRTTThresholds array, so compare with that.
+	if c1.Mode == CompressionS2Auto {
+		rtts1 := c1.RTTThresholds
+		if len(rtts1) == 0 {
+			rtts1 = defaultCompressionS2AutoRTTThresholds
+		}
+		rtts2 := c2.RTTThresholds
+		if len(rtts2) == 0 {
+			rtts2 = defaultCompressionS2AutoRTTThresholds
+		}
+		if !reflect.DeepEqual(rtts1, rtts2) {
+			return false
+		}
+	}
+	return true
 }
 
 // GatewayOpts are options for gateways.
@@ -283,6 +312,35 @@ type RemoteLeafOpts struct {
 	// existing connection will be closed and not solicited again (until it is changed
 	// to `false` again.
 	Disabled bool `json:"-"`
+
+	// Internal fields
+
+	// This is a string representation of the remote, containing the URLs (with
+	// password redacted in case it is used in logging), the account (or "$G" if
+	// LocalAccount is empty) and possibly the Credentials file name.
+	// This should not be accessed directly and instead through name() since
+	// the value will originally be empty and be set the first time name()
+	// is invoked. Also, if in the future we add a public `Name` field, that field
+	// could be returned instead of the internal representation.
+	iname string
+}
+
+// Returns a string representation of this `RemoteLeafOpts` object, containing
+// the URLs (redacted), the account (or "$G" if none is specified) and, if present,
+// the credentials filename.
+func (r *RemoteLeafOpts) name() string {
+	if r.iname == _EMPTY_ {
+		acc := r.LocalAccount
+		if acc == _EMPTY_ {
+			acc = globalAccountName
+		}
+		var creds string
+		if c := r.Credentials; c != _EMPTY_ {
+			creds = fmt.Sprintf(", credentials=%q", c)
+		}
+		r.iname = fmt.Sprintf("urls=%q, account=%q%s", redactURLList(r.URLs), acc, creds)
+	}
+	return r.iname
 }
 
 // JSLimitOpts are active limits for the meta cluster
@@ -2943,6 +3001,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf("Expected remotes field to be an array, got %T", v)}
 	}
+	names := make(map[string]struct{})
 	remotes := make([]*RemoteLeafOpts, 0, len(ra))
 	for _, r := range ra {
 		tk, r = unwrapValue(r, &lt)
@@ -3135,6 +3194,12 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				*warnings = append(*warnings, &configErr{proxyToken, warn})
 			}
 		}
+		rn := remote.name()
+		if _, dup := names[rn]; dup {
+			*errors = append(*errors, &configErr{tk, fmt.Sprintf("duplicate remote %s", rn)})
+			continue
+		}
+		names[rn] = struct{}{}
 		remotes = append(remotes, remote)
 	}
 	return remotes, nil

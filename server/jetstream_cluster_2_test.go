@@ -6141,8 +6141,11 @@ func TestJetStreamClusterLeafNodeSPOFMigrateLeadersWithMigrateDelay(t *testing.T
 	// Now make sure once leafnode is back we can have leaders on this server.
 	cl.reEnableLeafnodes()
 	checkLeafNodeConnectedCount(t, cl, 2)
-	for _, ln := range cl.leafRemoteCfgs {
-		require_True(t, ln.jsMigrateTimer == nil)
+	for ln := range cl.leafRemoteCfgs {
+		ln.RLock()
+		ok := ln.jsMigrateTimer == nil
+		ln.RUnlock()
+		require_True(t, ok)
 	}
 
 	// Make sure we can migrate back to this server now that we are connected.
