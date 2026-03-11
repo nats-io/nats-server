@@ -8062,6 +8062,8 @@ func TestMQTTSparkbDeathHandling(t *testing.T) {
 		{"replace at the end", append(protoMetrics, proto0Timestamp...), len(protoMetrics), false},
 		{"replace at the start", append(protoDeadbeefTimestamp, protoMetrics...), 0, false},
 		{"invalid", []byte{0xde, 0xad, 0xbe, 0xef}, 0, true}, // invalid payload
+		{"invalid fixed32", []byte{0x0d, 0x01}, 0, true},
+		{"invalid fixed64", []byte{0x09, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}, 0, true},
 	} {
 		var sendPI uint16
 		for _, topic := range []string{"NDEATH/nnn", "DDEATH/nnn/ddd"} {
