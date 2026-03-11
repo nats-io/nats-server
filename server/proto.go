@@ -63,8 +63,14 @@ func protoScanFieldValue(typ int, b []byte) (size int, err error) {
 	case 0:
 		_, size, err = protoScanVarint(b)
 	case 5: // fixed32
+		if len(b) < 4 {
+			return 0, errProtoInsufficient
+		}
 		size = 4
 	case 1: // fixed64
+		if len(b) < 8 {
+			return 0, errProtoInsufficient
+		}
 		size = 8
 	case 2: // length-delimited
 		size, err = protoScanBytes(b)
