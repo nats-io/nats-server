@@ -6528,6 +6528,9 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 		LocalAccount: "A",
 	}
 
+	acc1 := &Account{Name: "A1"}
+	acc2 := &Account{Name: "A2"}
+
 	for _, test := range []struct {
 		name   string
 		genCfg func() (*Server, *LeafNodeOpts, *LeafNodeOpts)
@@ -6539,12 +6542,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
 				ts := &Server{}
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
@@ -6559,14 +6562,14 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				ts := &Server{}
 				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 					Remotes:           []*RemoteLeafOpts{remote},
 				}
 				r := *remote
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 					Remotes:           []*RemoteLeafOpts{&r},
@@ -6577,19 +6580,82 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 			_EMPTY_,
 		},
 		{
-			"users different length",
+			"users order changed but equivalent",
 			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
 				ts := &Server{}
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users: []*User{
+						{Username: "a", Password: "pwd"},
+						{Username: "b", Password: "pwd"},
+					},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
 				new := &LeafNodeOpts{
 					Users: []*User{
-						&User{Username: "a", Password: "pwd"},
-						&User{Username: "b", Password: "pwd"},
+						{Username: "b", Password: "pwd"},
+						{Username: "a", Password: "pwd"},
 					},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			_EMPTY_,
+		},
+		{
+			"users different length",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users: []*User{
+						{Username: "a", Password: "pwd"},
+						{Username: "b", Password: "pwd"},
+					},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			"field \"Users\" was",
+		},
+		{
+			"users different pwd",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "changedpwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			"field \"Users\" was",
+		},
+		{
+			"users different account",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd", Account: acc1}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd", Account: acc2}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
@@ -6603,12 +6669,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
 				ts := &Server{}
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "b", Password: "pwd"}},
+					Users:             []*User{{Username: "b", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
@@ -6622,13 +6688,13 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
 				ts := &Server{}
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 					Port:              1234,
 				}
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 					// Pick some field that is not Compression or TLSHandshakeFirst
@@ -6644,12 +6710,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
 				ts := &Server{}
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: false,
 				}
@@ -6663,12 +6729,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
 				ts := &Server{}
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Best},
 					TLSHandshakeFirst: true,
 				}
@@ -6682,12 +6748,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
 				ts := &Server{}
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 				}
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Best},
 					TLSHandshakeFirst: false,
 				}
@@ -6702,7 +6768,7 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				ts := &Server{}
 				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
 				old := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Fast},
 					TLSHandshakeFirst: true,
 					Remotes:           []*RemoteLeafOpts{remote},
@@ -6711,7 +6777,7 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				// Set something that cannot be changed.
 				r.Hub = true
 				new := &LeafNodeOpts{
-					Users:             []*User{&User{Username: "a", Password: "pwd"}},
+					Users:             []*User{{Username: "a", Password: "pwd"}},
 					Compression:       CompressionOpts{Mode: CompressionS2Best},
 					TLSHandshakeFirst: false,
 					Remotes:           []*RemoteLeafOpts{&r},
@@ -6727,12 +6793,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				ts := &Server{}
 				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
 				old := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					Remotes:     []*RemoteLeafOpts{remote},
 				}
 				new := &LeafNodeOpts{
-					Users: []*User{&User{Username: "a", Password: "pwd"}},
+					Users: []*User{{Username: "a", Password: "pwd"}},
 					// At the same time, change compression for the LeafNodeOpts block.
 					Compression: CompressionOpts{Mode: CompressionS2Best},
 					Remotes:     []*RemoteLeafOpts{&tlsFirstRemote},
@@ -6751,12 +6817,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				ts := &Server{}
 				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
 				old := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					Remotes:     []*RemoteLeafOpts{remote},
 				}
 				new := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					// At the same time, change tls first for the LeafNodeOpts block.
 					TLSHandshakeFirst: true,
@@ -6776,12 +6842,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				ts := &Server{}
 				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
 				old := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					Remotes:     []*RemoteLeafOpts{remote},
 				}
 				new := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					// At the same time, change tls first for the LeafNodeOpts block.
 					TLSHandshakeFirst: true,
@@ -6801,12 +6867,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				ts := &Server{}
 				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
 				old := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					Remotes:     []*RemoteLeafOpts{remote},
 				}
 				new := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					// At the same time, change tls first for the LeafNodeOpts block.
 					TLSHandshakeFirst: true,
@@ -6822,12 +6888,12 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				ts := &Server{}
 				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
 				old := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					Remotes:     []*RemoteLeafOpts{remote},
 				}
 				new := &LeafNodeOpts{
-					Users:       []*User{&User{Username: "a", Password: "pwd"}},
+					Users:       []*User{{Username: "a", Password: "pwd"}},
 					Compression: CompressionOpts{Mode: CompressionS2Fast},
 					// At the same time, change tls first for the LeafNodeOpts block.
 					TLSHandshakeFirst: true,
@@ -7028,6 +7094,11 @@ func TestConfigReloadAddRemoveRemoteLeafNodes(t *testing.T) {
 
 	checkLeafNodeConnectedCount(t, s2, 1)
 	checkLeafs([]string{"B"})
+
+	// Remove all now
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, _EMPTY_, _EMPTY_))
+	checkLeafNodeConnectedCount(t, s2, 0)
+	checkLeafs(nil)
 }
 
 func TestConfigReloadNoPanicOnShutdown(t *testing.T) {

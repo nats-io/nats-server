@@ -913,12 +913,14 @@ func getLeafNodeOptionsChanges(s *Server, old, new *LeafNodeOpts) (*leafNodeOpti
 	nlo := &leafNodeOption{
 		tlsFirstChanged:    (old.TLSHandshakeFirst != new.TLSHandshakeFirst || old.TLSHandshakeFirstFallback != new.TLSHandshakeFirstFallback),
 		compressionChanged: !old.Compression.equals(&new.Compression),
-		// Start with all, will update when processing exsisting ones.
+		// Start with all, will update when processing existing ones.
 		// Since the list will be modified, we need to clone it.
 		added: slices.Clone(new.Remotes),
 	}
 
 	s.mu.RLock()
+	// Track whether any existing remote was not found (i.e. removed).
+	var removed bool
 	// Go through the list of existing remote configurations.
 	for lrc := range s.leafRemoteCfgs {
 		var rlo *RemoteLeafOpts
@@ -929,6 +931,7 @@ func getLeafNodeOptionsChanges(s *Server, old, new *LeafNodeOpts) (*leafNodeOpti
 		rlo, nlo.added = getRemoteLeafOpts(lrc.RemoteLeafOpts, nlo.added)
 		if rlo == nil {
 			// Not found, will be removed in leafNodeOption.Apply().
+			removed = true
 			lrc.RUnlock()
 			continue
 		}
@@ -942,8 +945,8 @@ func getLeafNodeOptionsChanges(s *Server, old, new *LeafNodeOpts) (*leafNodeOpti
 			"TLSHandshakeFirst",
 			"TLSConfig",
 		})
-		lrc.RUnlock()
 		if err != nil {
+			lrc.RUnlock()
 			s.mu.RUnlock()
 			return nil, fmt.Errorf("remote %s: %v", getLeafNodeRemoteName(rlo), err)
 		}
@@ -953,7 +956,6 @@ func getLeafNodeOptionsChanges(s *Server, old, new *LeafNodeOpts) (*leafNodeOpti
 		if nlo.changed == nil {
 			nlo.changed = make(map[*leafNodeCfg]*remoteLeafOption)
 		}
-		lrc.RLock()
 		lnro := &remoteLeafOption{
 			tlsFirstChanged:    lrc.TLSHandshakeFirst != rlo.TLSHandshakeFirst,
 			compressionChanged: !lrc.Compression.equals(&rlo.Compression),
@@ -966,8 +968,9 @@ func getLeafNodeOptionsChanges(s *Server, old, new *LeafNodeOpts) (*leafNodeOpti
 	s.mu.RUnlock()
 
 	// Now we want to make sure that there were actual changes, so that we don't
-	// cause a reload of leafnodes for nothing.
-	if !nlo.tlsFirstChanged && !nlo.compressionChanged && len(nlo.added) == 0 && len(nlo.changed) == 0 {
+	// cause a reload of leafnodes for nothing. However, if one has (or all have)
+	// been removed we still need to invoke leafNodeOption.Apply().
+	if !nlo.tlsFirstChanged && !nlo.compressionChanged && !removed && len(nlo.added) == 0 && len(nlo.changed) == 0 {
 		return nil, nil
 	}
 
@@ -978,10 +981,24 @@ func usersHaveChanged(ousers, nusers []*User) bool {
 	if len(ousers) != len(nusers) {
 		return true
 	}
-	for i := range len(ousers) {
-		ou := ousers[i]
-		nu := nusers[i]
-		if ou.Username != nu.Username || ou.Password != nu.Password || ou.Account.GetName() != nu.Account.GetName() {
+	// We did not do a strict list order check in the past, so maintain this to
+	// avoid possible breaking changes.
+	oua := make(map[string]*User, len(ousers))
+	nua := make(map[string]*User, len(nusers))
+	for _, u := range ousers {
+		oua[u.Username] = u
+	}
+	for _, u := range nusers {
+		nua[u.Username] = u
+	}
+	for uname, u := range oua {
+		// If we can not find new one with same name, consider that they have changed.
+		nu, ok := nua[uname]
+		if !ok {
+			return true
+		}
+		// Same if password or account has changed.
+		if u.Password != nu.Password || u.Account.GetName() != nu.Account.GetName() {
 			return true
 		}
 	}
@@ -1067,7 +1084,7 @@ func (l *leafNodeOption) Apply(s *Server) {
 				enable = append(enable, lrc)
 			}
 			lrc.Disabled = rlo.opts.Disabled
-			s.Noticef("Reloaded: LeafNode Remote %s TLS Disabled value is: %v",
+			s.Noticef("Reloaded: LeafNode Remote %s Disabled value is: %v",
 				getLeafNodeRemoteName(lrc.RemoteLeafOpts), rlo.opts.Disabled)
 		}
 		lrc.Unlock()
