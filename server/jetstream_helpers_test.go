@@ -1176,7 +1176,7 @@ func (s *Server) reEnableLeafnodes() {
 // Helper to set the remote migrate feature.
 func (s *Server) setJetStreamMigrateOnRemoteLeaf() {
 	s.mu.Lock()
-	for _, cfg := range s.leafRemoteCfgs {
+	for cfg := range s.leafRemoteCfgs {
 		cfg.JetStreamClusterMigrate = true
 	}
 	s.mu.Unlock()
@@ -1185,7 +1185,7 @@ func (s *Server) setJetStreamMigrateOnRemoteLeaf() {
 // Helper to set the remote migrate feature.
 func (s *Server) setJetStreamMigrateOnRemoteLeafWithDelay(delay time.Duration) {
 	s.mu.Lock()
-	for _, cfg := range s.leafRemoteCfgs {
+	for cfg := range s.leafRemoteCfgs {
 		cfg.JetStreamClusterMigrate = true
 		cfg.JetStreamClusterMigrateDelay = delay
 	}
