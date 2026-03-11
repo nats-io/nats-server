@@ -12448,6 +12448,7 @@ func TestJetStreamRestoreBadStream(t *testing.T) {
 	}
 
 	var chunk [1024]byte
+	gotChunkErr := false
 	for {
 		n, err := data.Read(chunk[:])
 		if err == io.EOF {
@@ -12457,16 +12458,24 @@ func TestJetStreamRestoreBadStream(t *testing.T) {
 
 		msg, err = nc.Request(rresp.DeliverSubject, chunk[:n], 5*time.Second)
 		require_NoError(t, err)
+		if len(msg.Data) == 0 {
+			continue
+		}
+		require_False(t, bytes.Equal(msg.Data, []byte("-ERR 'restore stalled'")))
 		json.Unmarshal(msg.Data, &rresp)
 		if rresp.Error != nil {
-			t.Fatalf("Error on restore: %+v", rresp.Error)
+			require_Contains(t, rresp.Error.Description, "unexpected")
+			gotChunkErr = true
+			break
 		}
 	}
-	msg, err = nc.Request(rresp.DeliverSubject, nil, 5*time.Second)
-	require_NoError(t, err)
-	json.Unmarshal(msg.Data, &rresp)
-	if rresp.Error == nil || !strings.Contains(rresp.Error.Description, "unexpected") {
-		t.Fatalf("Expected error about unexpected content, got: %+v", rresp.Error)
+	if !gotChunkErr {
+		msg, err = nc.Request(rresp.DeliverSubject, nil, 5*time.Second)
+		require_NoError(t, err)
+		require_False(t, bytes.Equal(msg.Data, []byte("-ERR 'restore stalled'")))
+		json.Unmarshal(msg.Data, &rresp)
+		require_True(t, rresp.Error != nil)
+		require_Contains(t, rresp.Error.Description, "unexpected")
 	}
 
 	dir := filepath.Join(s.JetStreamConfig().StoreDir, globalAccountName)
