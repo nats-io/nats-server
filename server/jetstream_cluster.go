@@ -8380,6 +8380,9 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	}
 
 	scnt := len(streams)
+	if offset < 0 {
+		offset = 0
+	}
 	if offset > scnt {
 		offset = scnt
 	}
@@ -8530,6 +8533,9 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 
 	ocnt := len(consumers)
+	if offset < 0 {
+		offset = 0
+	}
 	if offset > ocnt {
 		offset = ocnt
 	}

@@ -8471,3 +8471,97 @@ func TestJetStreamClusterConsumerAssignmentsOrInflightSeqWithInflightStream(t *t
 		t.Fatalf("Unexpected consumers: %+v", got)
 	}
 }
+
+func TestJetStreamClusterApiPagedRequestOffsetValidation(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "JSC", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "CONSUMER", Replicas: replicas})
+		require_NoError(t, err)
+
+		paged := ApiPagedRequest{Offset: -1}
+
+		t.Run("StreamNames", func(t *testing.T) {
+			req := JSApiStreamNamesRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(JSApiStreams, b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamNamesResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Streams), 1)
+		})
+
+		t.Run("StreamList", func(t *testing.T) {
+			req := JSApiStreamListRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(JSApiStreamList, b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamListResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Streams), 1)
+		})
+
+		t.Run("StreamInfo", func(t *testing.T) {
+			req := JSApiStreamInfoRequest{ApiPagedRequest: paged, SubjectsFilter: ">"}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamInfoResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.StreamInfo.State.Subjects), 1)
+		})
+
+		t.Run("ConsumerNames", func(t *testing.T) {
+			req := JSApiConsumersRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiConsumersT, "TEST"), b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiConsumerNamesResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Consumers), 1)
+		})
+
+		t.Run("ConsumerList", func(t *testing.T) {
+			req := JSApiConsumersRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiConsumerListT, "TEST"), b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiConsumerListResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Consumers), 1)
+		})
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
