@@ -122,15 +122,15 @@ func (c1 *CompressionOpts) equals(c2 *CompressionOpts) bool {
 	// For s2_auto, if one has an empty RTTThresholds, it is equivalent
 	// to the defaultCompressionS2AutoRTTThresholds array, so compare with that.
 	if c1.Mode == CompressionS2Auto {
-		if len(c1.RTTThresholds) == 0 {
-			if !reflect.DeepEqual(c2.RTTThresholds, defaultCompressionS2AutoRTTThresholds) {
-				return false
-			}
-		} else if len(c2.RTTThresholds) == 0 {
-			if !reflect.DeepEqual(c1.RTTThresholds, defaultCompressionS2AutoRTTThresholds) {
-				return false
-			}
-		} else if !reflect.DeepEqual(c1.RTTThresholds, c2.RTTThresholds) {
+		rtts1 := c1.RTTThresholds
+		if len(rtts1) == 0 {
+			rtts1 = defaultCompressionS2AutoRTTThresholds
+		}
+		rtts2 := c2.RTTThresholds
+		if len(rtts2) == 0 {
+			rtts2 = defaultCompressionS2AutoRTTThresholds
+		}
+		if !reflect.DeepEqual(rtts1, rtts2) {
 			return false
 		}
 	}

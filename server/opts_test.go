@@ -4442,6 +4442,22 @@ func TestOptionsCompressionEqual(t *testing.T) {
 					Mode: CompressionS2Auto,
 				}
 		}, false},
+		{"s2 auto both rtt thresholds empty", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{},
+				}, &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{},
+				}
+		}, true},
+		{"s2 auto both rtt thresholds nil", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}, &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}
+		}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c1, c2 := test.genOpts()
