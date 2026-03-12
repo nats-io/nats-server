@@ -3165,10 +3165,12 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 		queue = optQueue[0]
 	}
 
-	// For CLIENT connections that are MQTT, or other types of connections, we will
-	// implicitly allow anything that starts with the "$MQTT." prefix. However,
+	// For CLIENT connections that are MQTT we will implicitly allow anything that starts with
+	// the "$MQTT.sub." or "$MQTT.deliver.pubrel." prefix. For other types of connections, we
+	// will implicitly allow anything that starts with the full "$MQTT." prefix. However,
 	// we don't just return here, we skip the check for "allow" but will check "deny".
-	if (c.isMqtt() || (c.kind != CLIENT)) && strings.HasPrefix(subject, mqttPrefix) {
+	if (c.isMqtt() && (strings.HasPrefix(subject, mqttSubPrefix) || strings.HasPrefix(subject, mqttPubRelDeliverySubjectPrefix))) ||
+		(c.kind != CLIENT && strings.HasPrefix(subject, mqttPrefix)) {
 		checkAllow = false
 	}
 	// Check allow list. If no allow list that means all are allowed. Deny can overrule.
@@ -3982,10 +3984,10 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 		return v.(bool)
 	}
 	allowed, checkAllow := true, true
-	// For CLIENT connections that are MQTT, or other types of connections, we will
-	// implicitly allow anything that starts with the "$MQTT." prefix. However,
-	// we don't just return here, we skip the check for "allow" but will check "deny".
-	if (c.isMqtt() || c.kind != CLIENT) && strings.HasPrefix(subject, mqttPrefix) {
+	// For any connections, other than CLIENT, we will implicitly allow anything that
+	// starts with the "$MQTT." prefix. However, we don't just return here,
+	// we skip the check for "allow" but will check "deny".
+	if c.kind != CLIENT && strings.HasPrefix(subject, mqttPrefix) {
 		checkAllow = false
 	}
 	// Cache miss, check allow then deny as needed.
