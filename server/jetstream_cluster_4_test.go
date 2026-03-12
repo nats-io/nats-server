@@ -4602,7 +4602,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	validateConsumerState(snap)
 
 	// Simulate a message being delivered, but not calling Applied yet.
-	err = o.store.UpdateDelivered(2, 2, 1, time.Now().UnixNano())
+	err = o.store.UpdateDelivered(2, 2, 1, time.Now().UnixNano(), _EMPTY_)
 	require_NoError(t, err)
 
 	// Simulate the consumer being stopped before we're able to call Applied.
