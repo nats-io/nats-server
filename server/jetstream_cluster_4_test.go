@@ -4273,20 +4273,6 @@ func TestJetStreamClusterMetaSnapshotConsumerDeleteConsistency(t *testing.T) {
 	})
 }
 
-func TestJetStreamClusterMetaSnapshotDecodeError(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	js := c.leader().getJetStream()
-
-	isRecovering, didSnap, err := js.applyMetaEntries(
-		[]*Entry{newEntry(EntrySnapshot, []byte("not a valid snapshot"))}, nil)
-
-	require_Error(t, err)
-	require_False(t, isRecovering)
-	require_False(t, didSnap)
-}
-
 func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

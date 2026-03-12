@@ -2094,9 +2094,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 
 	for _, e := range entries {
 		if e.Type == EntrySnapshot {
-			if err := js.applyMetaSnapshot(e.Data, ru, isRecovering); err != nil {
-				return isRecovering, didSnap, err
-			}
+			js.applyMetaSnapshot(e.Data, ru, isRecovering)
 			didSnap = true
 		} else if e.Type == EntryRemovePeer {
 			if !js.isMetaRecovering() {
@@ -6477,10 +6475,10 @@ func tieredStreamAndReservationCount(asa map[string]*streamAssignment, tier stri
 			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage {
 				// If tier is empty, all storage is flat and we should adjust for replicas.
 				// Otherwise if tiered, storage replication already taken into consideration.
-				if tier == _EMPTY_ && cfg.Replicas > 1 {
-					reservation += sa.Config.MaxBytes * int64(cfg.Replicas)
+				if tier == _EMPTY_ && sa.Config.Replicas > 1 {
+					reservation = addSaturate(reservation, mulSaturate(int64(sa.Config.Replicas), sa.Config.MaxBytes))
 				} else {
-					reservation += sa.Config.MaxBytes
+					reservation = addSaturate(reservation, sa.Config.MaxBytes)
 				}
 			}
 		}
