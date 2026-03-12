@@ -1075,7 +1075,7 @@ func (l *leafNodeOption) Apply(s *Server) {
 		}
 		if rlo.compressionChanged {
 			lrc.Compression = rlo.opts.Compression
-			s.Noticef("Reloaded: LeafNode Remote %s TLS Compression value is: %v",
+			s.Noticef("Reloaded: LeafNode Remote %s Compression value is: %v",
 				getLeafNodeRemoteName(lrc.RemoteLeafOpts), rlo.opts.Compression)
 		}
 		if rlo.disabledChanged {
