@@ -241,6 +241,7 @@ var (
 	errMQTTUnsupportedCharacters      = errors.New("character ' ' not supported for MQTT topics")
 	errMQTTInvalidSession             = errors.New("invalid MQTT session")
 	errMQTTInvalidRetainFlags         = errors.New("invalid retained message flags")
+	errMQTTSessionCollision           = errors.New("stored session does not match client ID")
 )
 
 type srvMQTT struct {
@@ -3014,16 +3015,12 @@ func mqttDecodeRetainedMessage(subject string, h, m []byte) (*mqttRetainedMsg, e
 // Lock not held on entry, but session is in the locked map.
 func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opts *Options) (*mqttSession, bool, error) {
 	jsa := &as.jsa
-	formatError := func(errTxt string, err error) (*mqttSession, bool, error) {
-		accName := jsa.c.acc.GetName()
-		return nil, false, fmt.Errorf("%s for account %q, session %q: %v", errTxt, accName, clientID, err)
-	}
 
 	hash := getHash(clientID)
 	smsg, err := jsa.loadSessionMsg(as.domainTk, hash)
 	if err != nil {
 		if isErrorOtherThan(err, JSNoMessageFoundErr) {
-			return formatError("loading session record", err)
+			return nil, false, fmt.Errorf("loading session record: %w", err)
 		}
 		// Message not found, so reate the session...
 		// Create a session and indicate that this session did not exist.
@@ -3034,7 +3031,10 @@ func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opt
 	// We need to recover the existing record now.
 	ps := &mqttPersistedSession{}
 	if err := json.Unmarshal(smsg.Data, ps); err != nil {
-		return formatError(fmt.Sprintf("unmarshal of session record at sequence %v", smsg.Sequence), err)
+		return nil, false, fmt.Errorf("unmarshal of session record at sequence %v: %w", smsg.Sequence, err)
+	}
+	if ps.ID != clientID {
+		return nil, false, errMQTTSessionCollision
 	}
 
 	// Restore this session (even if we don't own it), the caller will do the right thing.
@@ -3926,13 +3926,19 @@ CHECK:
 	// Do we have an existing session for this client ID
 	es, exists := asm.sessions[cid]
 	asm.mu.Unlock()
+	formatError := func(err error) error {
+		return fmt.Errorf("%v for account %q, session %q", err, c.acc.GetName(), cid)
+	}
 
 	// The session is not in the map, but may be on disk, so try to recover
 	// or create the stream if not.
 	if !exists {
 		es, exists, err = asm.createOrRestoreSession(cid, s.getOpts())
 		if err != nil {
-			return err
+			if err == errMQTTSessionCollision {
+				sendConnAck(mqttConnAckRCIdentifierRejected, false)
+			}
+			return formatError(err)
 		}
 	}
 	if exists {

@@ -5176,6 +5176,41 @@ func TestMQTTPersistedSession(t *testing.T) {
 	}
 }
 
+func TestMQTTRejectsHashCollidingClientID(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// These IDs were found to collide under getHash()
+	victimID := "cid-03579431"
+	attackerID := "cid-09191235"
+	require_True(t, getHash(victimID) == getHash(attackerID))
+
+	c, r := testMQTTConnect(t, &mqttConnInfo{clientID: victimID, cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, c, nil, r)
+	testMQTTDisconnect(t, c, nil)
+	c.Close()
+
+	attacker, r := testMQTTConnect(t, &mqttConnInfo{clientID: attackerID, cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	defer attacker.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCIdentifierRejected, false)
+	testMQTTExpectDisconnect(t, attacker)
+	attacker.Close()
+
+	c, r = testMQTTConnect(t, &mqttConnInfo{clientID: victimID, cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	testMQTTFlush(t, c, nil, r)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	natsPub(t, nc, "foo", []byte("msg"))
+	testMQTTCheckPubMsg(t, c, r, "foo", 0, []byte("msg"))
+}
+
 func TestMQTTRecoverSessionAndAddNewSub(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
