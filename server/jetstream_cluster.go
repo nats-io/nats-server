@@ -2981,11 +2981,45 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// fully recovered from disk.
 	isRecovering := true
 
-	var failedSnapshots int
+	var (
+		snapMu           sync.Mutex
+		snapshotting     bool
+		fallbackSnapshot bool
+		failedSnapshots  int
+	)
+
 	doSnapshot := func(force bool) {
 		// Suppress during recovery.
+		if mset == nil || isRecovering || isRestore {
+			return
+		}
+		snapMu.Lock()
+		defer snapMu.Unlock()
 		// If snapshots have failed, and we're not forced to, we'll wait for the timer since it'll now be forced.
-		if mset == nil || isRecovering || isRestore || (!force && failedSnapshots > 0) {
+		if !force && failedSnapshots > 0 {
+			return
+		}
+		// Suppress if an async snapshot is already in progress.
+		if snapshotting {
+			return
+		}
+
+		// If we had a significant number of failed snapshots, start relaxing Raft-layer checks
+		// to force it through. We might have been catching up a peer for a long period, and this
+		// protects our log size from growing indefinitely.
+		forceSnapshot := failedSnapshots > 4
+		c, err := n.CreateSnapshotCheckpoint(forceSnapshot)
+		if err != nil {
+			if err != errNoSnapAvailable && err != errNodeClosed {
+				s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v",
+					mset.acc.Name, mset.name(), n.Group(), err)
+				// If this is the first failure, reduce the interval of the snapshot timer.
+				// This ensures we're not waiting too long for snapshotting to eventually become forced.
+				if failedSnapshots == 0 {
+					t.Reset(compactMinInterval)
+				}
+				failedSnapshots++
+			}
 			return
 		}
 
@@ -2999,30 +3033,61 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				"group":   n.Group(),
 				"err":     err,
 			})
+			c.Abort()
 			mset.setWriteErr(err)
 			n.Stop()
 			return
 		}
 
-		// If we had a significant number of failed snapshots, start relaxing Raft-layer checks
-		// to force it through. We might have been catching up a peer for a long period, and this
-		// protects our log size from growing indefinitely.
-		forceSnapshot := failedSnapshots > 4
-		if err := n.InstallSnapshot(mset.stateSnapshot(), forceSnapshot); err == nil {
-			// If there was a failed snapshot before, we reduced the timer's interval.
-			// Reset it back to the original interval now.
-			if failedSnapshots > 0 {
-				t.Reset(compactInterval + rci)
+		snap := mset.stateSnapshot()
+
+		handleInstallResult := func(err error) {
+			snapshotting = false
+			if err == nil {
+				// If there was a failed snapshot before, we reduced the timer's interval.
+				// Reset it back to the original interval now.
+				if failedSnapshots > 0 {
+					t.Reset(compactInterval + rci)
+				}
+				failedSnapshots = 0
+				fallbackSnapshot = false
+			} else {
+				c.Abort()
+
+				if err == errNoSnapAvailable || err == errNodeClosed || err == errCatchupsRunning || err == errSnapAborted {
+					return
+				}
+
+				s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v, will fall back to blocking snapshot",
+					mset.acc.Name, mset.name(), n.Group(), err)
+				fallbackSnapshot = true
+				// If this is the first failure, reduce the interval of the snapshot timer.
+				// This ensures we're not waiting too long for snapshotting to eventually become forced.
+				if failedSnapshots == 0 {
+					t.Reset(compactMinInterval)
+				}
+				failedSnapshots++
 			}
-			failedSnapshots = 0
-		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
-			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
-			// If this is the first failure, reduce the interval of the snapshot timer.
-			// This ensures we're not waiting too long for snapshotting to eventually become forced.
-			if failedSnapshots == 0 {
-				t.Reset(compactMinInterval)
+		}
+
+		snapshotting = true
+		if fallbackSnapshot {
+			_, err = c.InstallSnapshot(snap)
+			handleInstallResult(err)
+		} else {
+			started := s.startGoRoutine(func() {
+				defer s.grWG.Done()
+
+				_, err := c.InstallSnapshot(snap)
+
+				snapMu.Lock()
+				defer snapMu.Unlock()
+				handleInstallResult(err)
+			})
+			if !started {
+				snapshotting = false
+				c.Abort()
 			}
-			failedSnapshots++
 		}
 	}
 
@@ -3099,6 +3164,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
+			snapMu.Lock()
+			fallbackSnapshot = true
+			snapMu.Unlock()
 			doSnapshot(false)
 			return
 		case <-mqch:
@@ -3106,6 +3174,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Don't snapshot if not shutting down, monitor goroutine could be going away
 			// on a scale down or a remove for example.
 			if s.isShuttingDown() {
+				snapMu.Lock()
+				fallbackSnapshot = true
+				snapMu.Unlock()
 				doSnapshot(false)
 			}
 			return
@@ -3305,7 +3376,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case <-t.C:
 			// Start forcing snapshots if they failed previously.
+			snapMu.Lock()
 			forceIfFailed := failedSnapshots > 0
+			snapMu.Unlock()
 			doSnapshot(forceIfFailed)
 
 		case <-uch:
