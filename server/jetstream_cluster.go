@@ -7681,11 +7681,15 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	if osa := js.streamAssignmentOrInflight(acc.Name, cfg.Name); osa != nil {
 		copyStreamMetadata(cfg, osa.Config)
 		// Set the index name on both to ensure the DeepEqual works
+		currentIName := make(map[string]struct{})
+		for _, s := range osa.Config.Sources {
+			currentIName[s.iname] = struct{}{}
+		}
 		for _, s := range cfg.Sources {
 			s.setIndexName()
-		}
-		for _, s := range osa.Config.Sources {
-			s.setIndexName()
+			if _, ok := currentIName[s.iname]; !ok {
+				s.iname = _EMPTY_
+			}
 		}
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
