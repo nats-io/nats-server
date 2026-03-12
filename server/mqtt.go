@@ -3788,7 +3788,6 @@ func (c *client) mqttParseConnect(r *mqttReader, hasMappings bool) (byte, *mqttC
 			return 0, nil, err
 		}
 		c.opts.Token = c.opts.Password
-		c.opts.JWT = c.opts.Password
 	}
 	return 0, cp, nil
 }
