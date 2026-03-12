@@ -7625,3 +7625,328 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdateRestart(t *testing.T) {
 		require_NoError(t, err)
 	}
 }
+
+func TestJetStreamClusterHealthzConsumerNotFoundR1(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Create a healthy R=1 consumer first.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "HEALTHY",
+		Replicas:  1,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Block consumer store creation on all servers by placing a regular file
+	// at the path where the consumer directory would be created. This causes
+	// os.MkdirAll to fail, simulating an i/o error.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		fs := mset.store.(*fileStore)
+		consumerPath := filepath.Join(fs.fcfg.StoreDir, consumerDir, "R1CONSUMER")
+		// Create the consumer dir if it doesn't exist, then place a file where
+		// the consumer subdir would go, so MkdirAll fails.
+		require_NoError(t, os.MkdirAll(filepath.Dir(consumerPath), defaultDirPerms))
+		require_NoError(t, os.WriteFile(consumerPath, []byte("BLOCKED"), 0644))
+		defer os.Remove(consumerPath)
+	}
+
+	// Attempt to create an R=1 consumer. This will fail because the store
+	// directory is unwritable, but the assignment will persist in the meta layer.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "R1CONSUMER",
+		Replicas:  1,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_Error(t, err)
+
+	// Find the member server that has the consumer assignment. Only the
+	// member runs processClusterCreateConsumer, which sets ca.err on failure.
+	var srv *Server
+	var mset *stream
+	for _, s := range c.servers {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		ca := sjs.consumerAssignment(globalAccountName, "TEST", "R1CONSUMER")
+		isMember := ca != nil && ca.Group.isMember(sjs.cluster.meta.ID())
+		sjs.mu.RUnlock()
+		if isMember {
+			acc, err := s.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			m, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			srv = s
+			mset = m
+			break
+		}
+	}
+	require_True(t, srv != nil)
+
+	// Verify the consumer does not exist but the assignment does.
+	require_True(t, mset.lookupConsumer("R1CONSUMER") == nil)
+	sjs := srv.getJetStream()
+	sjs.mu.RLock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "R1CONSUMER")
+	sjs.mu.RUnlock()
+	require_True(t, ca != nil)
+
+	// The failed consumer creation should have recorded an error.
+	sjs.mu.RLock()
+	require_True(t, ca.err != nil)
+	sjs.mu.RUnlock()
+
+	// Set Created far in the past so the 5-second grace period is expired.
+	sjs.mu.Lock()
+	ca.Created = time.Time{}
+	sjs.mu.Unlock()
+
+	// isConsumerHealthy should NOT report an error for this orphaned assignment
+	// because ca.err is set, indicating a failed creation attempt.
+	err = sjs.isConsumerHealthy(mset, "R1CONSUMER", ca)
+	require_NoError(t, err)
+
+	// The healthy consumer should still be reported as healthy.
+	sjs.mu.RLock()
+	healthyCA := sjs.consumerAssignment(globalAccountName, "TEST", "HEALTHY")
+	sjs.mu.RUnlock()
+	if healthyCA != nil {
+		err = sjs.isConsumerHealthy(mset, "HEALTHY", healthyCA)
+		require_NoError(t, err)
+	}
+
+	// Restart all servers. The meta Raft log will replay the consumer
+	// assignment, but since the blocking files are still in place the
+	// consumer creation will fail again during recovery. The orphaned
+	// assignment should persist and healthz should still report the error.
+	nc.Close()
+
+	// Re-place blocking files on all servers to ensure they survive the
+	// error cleanup path that may remove them during consumer creation failure.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		fs := mset.store.(*fileStore)
+		consumerPath := filepath.Join(fs.fcfg.StoreDir, consumerDir, "R1CONSUMER")
+		os.RemoveAll(consumerPath)
+		require_NoError(t, os.MkdirAll(filepath.Dir(consumerPath), defaultDirPerms))
+		require_NoError(t, os.WriteFile(consumerPath, []byte("blocked"), 0644))
+	}
+
+	c.stopAll()
+	c.restartAllSamePorts()
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Find the member server that still has the orphaned consumer assignment
+	// after restart.
+	srv = nil
+	mset = nil
+	for _, s := range c.servers {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		ca := sjs.consumerAssignment(globalAccountName, "TEST", "R1CONSUMER")
+		isMember := ca != nil && ca.Group.isMember(sjs.cluster.meta.ID())
+		sjs.mu.RUnlock()
+		if isMember {
+			acc, err := s.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			m, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			srv = s
+			mset = m
+			break
+		}
+	}
+	require_True(t, srv != nil)
+
+	// The consumer should still not exist after restart.
+	require_True(t, mset.lookupConsumer("R1CONSUMER") == nil)
+
+	sjs = srv.getJetStream()
+	sjs.mu.RLock()
+	ca = sjs.consumerAssignment(globalAccountName, "TEST", "R1CONSUMER")
+	sjs.mu.RUnlock()
+	require_True(t, ca != nil)
+
+	// ca.err should still be set after restart since the consumer
+	// creation fails again during meta recovery.
+	sjs.mu.RLock()
+	require_True(t, ca.err != nil)
+	sjs.mu.RUnlock()
+
+	// Set Created far in the past again since the assignment was
+	// re-created during meta recovery.
+	sjs.mu.Lock()
+	ca.Created = time.Time{}
+	sjs.mu.Unlock()
+
+	// After restart, the orphaned assignment should still not cause a healthz error.
+	err = sjs.isConsumerHealthy(mset, "R1CONSUMER", ca)
+	require_NoError(t, err)
+
+	// Now delete the consumer via the API to clean up the orphaned assignment.
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	err = js.DeleteConsumer("TEST", "R1CONSUMER")
+	require_NoError(t, err)
+
+	// After deletion, the consumer assignment should be gone from all servers.
+	for _, s := range c.servers {
+		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "R1CONSUMER")
+			sjs.mu.RUnlock()
+			if ca != nil {
+				return fmt.Errorf("consumer assignment still exists on %s", s.Name())
+			}
+			return nil
+		})
+	}
+}
+
+func TestJetStreamClusterHealthzOrphanedConsumerAssignmentR3(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Create a real consumer first, then simulate the orphan state.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// All servers should be healthy.
+	for _, s := range c.servers {
+		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+			hs := s.healthz(&HealthzOptions{})
+			if hs.Error != _EMPTY_ {
+				return fmt.Errorf("server %s not healthy: %s", s.Name(), hs.Error)
+			}
+			return nil
+		})
+	}
+
+	// Simulate the orphaned consumer state that occurs when processClusterCreateConsumer fails.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		if o == nil {
+			continue // Consumer not on this server (shouldn't happen with R3).
+		}
+
+		// Stop the consumer's Raft node and delete the consumer, simulating
+		// what processClusterCreateConsumer does on failure.
+		if node := o.raftNode(); node != nil {
+			node.Delete()
+		}
+		o.stop()
+
+		// Simulate the failure state from processClusterCreateConsumer:
+		// clear the Raft node and set ca.err.
+		sjs := s.getJetStream()
+		sjs.mu.Lock()
+		ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+		require_True(t, ca != nil)
+		ca.Group.node = nil
+		ca.err = errConsumerStoreFailed
+
+		// Set Created far in the past so the 5-second grace period is expired.
+		ca.Created = time.Time{}
+		sjs.mu.Unlock()
+
+		// Delete the actual consumer from the stream without going through
+		// the meta layer, leaving the assignment orphaned.
+		o.deleteWithoutAdvisory()
+	}
+
+	// Verify the actual consumer no longer exists on any server.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		require_True(t, mset.lookupConsumer("CONSUMER") == nil)
+	}
+
+	// Verify the consumer assignment still exists in the meta layer, meaning
+	// that it is orphaned.
+	for _, s := range c.servers {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+		sjs.mu.RUnlock()
+		require_True(t, ca != nil)
+	}
+
+	// Healthz should not report a permanent error for the orphaned consumer.
+	// Before the fix, this would permanently fail with:
+	//   "JetStream consumer '$G > TEST > CONSUMER' is not current: consumer not found"
+	for _, s := range c.servers {
+		hs := s.healthz(&HealthzOptions{})
+		if hs.Error != _EMPTY_ {
+			t.Fatalf("Server %s should be healthy with orphaned consumer, got: %s", s.Name(), hs.Error)
+		}
+	}
+
+	// Also test with details mode.
+	for _, s := range c.servers {
+		hs := s.healthz(&HealthzOptions{Details: true})
+		for _, e := range hs.Errors {
+			if e.Type == HealthzErrorConsumer && e.Consumer == "CONSUMER" {
+				t.Fatalf("Server %s should not report orphaned consumer as error in details mode, got: %s", s.Name(), e.Error)
+			}
+		}
+	}
+
+	// Deleting the consumer via the API should clean up the orphaned
+	// assignment from all servers. The consumer's Raft group was manually
+	// destroyed so no consumer leader will respond, but the meta proposal
+	// still gets processed and removes the assignment.
+	deleteSubj := fmt.Sprintf(JSApiConsumerDeleteT, "TEST", "CONSUMER")
+	nc.Request(deleteSubj, nil, 2*time.Second)
+
+	for _, s := range c.servers {
+		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+			sjs.mu.RUnlock()
+			if ca != nil {
+				return fmt.Errorf("consumer assignment still exists on %s", s.Name())
+			}
+			return nil
+		})
+	}
+}
