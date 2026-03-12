@@ -3086,6 +3086,13 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 
 	var resp = JSApiAccountPurgeResponse{ApiResponse: ApiResponse{Type: JSApiAccountPurgeResponseType}}
 
+	// Check for path like separators in the name.
+	if strings.ContainsAny(accName, `\/`) {
+		resp.Error = NewJSStreamGeneralError(errors.New("account name can not contain path separators"))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	if !s.JetStreamIsClustered() {
 		var streams []*stream
 		var ac *Account
