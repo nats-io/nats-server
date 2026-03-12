@@ -8402,3 +8402,24 @@ func TestJetStreamClusterMetaSnapshotPreservesConsumersOnStreamUpdate(t *testing
 	require_NotNil(t, stream)
 	require_NotNil(t, stream.consumers["CONSUMER"])
 }
+
+func TestJetStreamClusterConsumerAssignmentsOrInflightSeqWithInflightStream(t *testing.T) {
+	const acc, stream, consumer = "A", "S", "C"
+	js := &jetStream{cluster: &jetStreamCluster{
+		streams: map[string]map[string]*streamAssignment{},
+		inflightStreams: map[string]map[string]*inflightStreamInfo{
+			acc: {stream: {streamAssignment: &streamAssignment{Config: &StreamConfig{Name: stream}}}},
+		},
+		inflightConsumers: map[string]map[string]map[string]*inflightConsumerInfo{
+			acc: {stream: {consumer: {consumerAssignment: &consumerAssignment{Name: consumer}}}},
+		},
+	}}
+
+	var got []string
+	for ca := range js.consumerAssignmentsOrInflightSeq(acc, stream) {
+		got = append(got, ca.Name)
+	}
+	if len(got) != 1 || got[0] != consumer {
+		t.Fatalf("Unexpected consumers: %+v", got)
+	}
+}
