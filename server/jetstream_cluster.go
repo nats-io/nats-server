@@ -6012,6 +6012,9 @@ func (js *jetStream) consumerAssignmentsOrInflightSeq(account, stream string) it
 			}
 		}
 		sa := js.streamAssignment(account, stream)
+		if sa == nil {
+			return
+		}
 		for _, ca := range sa.consumers {
 			// Skip if we already iterated over it as inflight.
 			if _, ok := inflight[ca.Name]; ok {
