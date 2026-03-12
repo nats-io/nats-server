@@ -10888,7 +10888,7 @@ func TestLeafNodesBasicTokenAuth(t *testing.T) {
 		listen: "127.0.0.1:-1"
 		leafnodes {
 			remotes: [
-				{ url: "nats://secret@localhost:%d" }
+				{ url: "nats://secret@127.0.0.1:%d" }
 			]
 		}
 	`
