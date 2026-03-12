@@ -8337,3 +8337,68 @@ func TestJetStreamClusteredStreamCreateIdempotentWithSources(t *testing.T) {
 	_, err = js.AddStream(cfg)
 	require_NoError(t, err)
 }
+
+func TestJetStreamClusterMetaSnapshotPreservesConsumersOnStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "CONSUMER", Replicas: 3})
+	require_NoError(t, err)
+
+	triggerMetaSnapshot := func(t *testing.T, c *cluster) {
+		t.Helper()
+		ml := c.leader()
+		require_NotNil(t, ml)
+		meta := ml.getJetStream().getMetaGroup().(*raft)
+		meta.RLock()
+		papplied := meta.papplied
+		meta.RUnlock()
+		require_NoError(t, meta.ProposeAddPeer(meta.ID()))
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			meta.RLock()
+			defer meta.RUnlock()
+			if papplied == meta.papplied {
+				return errors.New("no snapshot yet")
+			}
+			return nil
+		})
+	}
+
+	loadSnapshotStreams := func(t *testing.T, c *cluster) map[string]map[string]*streamAssignment {
+		t.Helper()
+		ml := c.leader()
+		require_NotNil(t, ml)
+		meta := ml.getJetStream().getMetaGroup().(*raft)
+		snap, err := meta.loadLastSnapshot()
+		require_NoError(t, err)
+		sjs := ml.getJetStream()
+		accStreams, err := sjs.decodeMetaSnapshot(snap.data)
+		require_NoError(t, err)
+		return accStreams
+	}
+
+	// Create a baseline snapshot that includes consumers.
+	triggerMetaSnapshot(t, c)
+	accStreams := loadSnapshotStreams(t, c)
+	stream := accStreams[globalAccountName]["TEST"]
+	require_NotNil(t, stream)
+	require_NotNil(t, stream.consumers["CONSUMER"])
+
+	// Update stream config, then create a new snapshot from the previous checkpoint.
+	cfg.Description = "updated"
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	triggerMetaSnapshot(t, c)
+
+	// Updated snapshots must preserve existing stream consumers.
+	accStreams = loadSnapshotStreams(t, c)
+	stream = accStreams[globalAccountName]["TEST"]
+	require_NotNil(t, stream)
+	require_NotNil(t, stream.consumers["CONSUMER"])
+}
