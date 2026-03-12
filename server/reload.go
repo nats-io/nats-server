@@ -1060,6 +1060,7 @@ func (l *leafNodeOption) Apply(s *Server) {
 		rlo := l.changed[lrc]
 		if rlo == nil {
 			delete(s.leafRemoteCfgs, lrc)
+			lrc.markAsRemoved()
 			s.Noticef("Reloaded: LeafNode Remote %s removed", getLeafNodeRemoteName(lrc.RemoteLeafOpts))
 			// We will close the existing connection in the next for-loop.
 			continue
@@ -1082,6 +1083,9 @@ func (l *leafNodeOption) Apply(s *Server) {
 			// If it was disabled, then we need to enable it.
 			if lrc.Disabled {
 				enable = append(enable, lrc)
+			} else {
+				// Proactively cancel the JS migrate timer if one is active.
+				stopAndClearTimer(&lrc.jsMigrateTimer)
 			}
 			lrc.Disabled = rlo.opts.Disabled
 			s.Noticef("Reloaded: LeafNode Remote %s Disabled value is: %v",

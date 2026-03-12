@@ -114,6 +114,8 @@ type leafNodeCfg struct {
 	perms          *Permissions
 	connDelay      time.Duration // Delay before a connect, could be used while detecting loop condition, etc..
 	jsMigrateTimer *time.Timer
+	removedCh      chan struct{}
+	removed        bool
 }
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
@@ -197,21 +199,6 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 			s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
 		}
 	}
-}
-
-func (s *Server) remoteLeafNodeStillValid(remote *leafNodeCfg) bool {
-	if remote.Disabled {
-		return false
-	}
-	for _, ri := range s.getOpts().LeafNode.Remotes {
-		remote.RLock()
-		matches := remote.RemoteLeafOpts.matches(ri)
-		remote.RUnlock()
-		if matches {
-			return true
-		}
-	}
-	return false
 }
 
 // Ensure that leafnode is properly configured.
@@ -448,6 +435,7 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 	cfg := &leafNodeCfg{
 		RemoteLeafOpts: remote,
 		urls:           make([]*url.URL, 0, len(remote.URLs)),
+		removedCh:      make(chan struct{}),
 	}
 	if len(remote.DenyExports) > 0 || len(remote.DenyImports) > 0 {
 		perms := &Permissions{}
@@ -481,6 +469,26 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 		}
 	}
 	return cfg
+}
+
+// Mark this remote has removed from the configuration.
+func (cfg *leafNodeCfg) markAsRemoved() {
+	cfg.Lock()
+	defer cfg.Unlock()
+	// This function should be invoked only once, but protect.
+	if cfg.removed {
+		return
+	}
+	cfg.removed = true
+	close(cfg.removedCh)
+	stopAndClearTimer(&cfg.jsMigrateTimer)
+}
+
+// Returns false if it has been disabled or removed.
+func (cfg *leafNodeCfg) stillValid() bool {
+	cfg.RLock()
+	defer cfg.RUnlock()
+	return !cfg.Disabled && !cfg.removed
 }
 
 // Will pick an URL from the list of available URLs.
@@ -653,7 +661,14 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 	attempts := 0
 
-	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
+	// In case the migrate timer was created but not canceled, do it when
+	// this function exits. Note that the timer would not be created if
+	// `jetstreamMigrateDelay == 0`.
+	if jetstreamMigrateDelay > 0 {
+		defer remote.cancelMigrateTimer()
+	}
+
+	for s.isRunning() && remote.stillValid() {
 		rURL := remote.pickNextURL()
 		url, err := s.getRandomIP(resolver, rURL.Host, nil)
 		if err == nil {
@@ -707,7 +722,8 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			remote.Unlock()
 			select {
 			case <-s.quitCh:
-				remote.cancelMigrateTimer()
+				return
+			case <-remote.removedCh:
 				return
 			case <-time.After(delay):
 				// Check if we should migrate any JetStream assets immediately while this remote is down.
@@ -719,7 +735,9 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			}
 		}
 		remote.cancelMigrateTimer()
-		if !s.remoteLeafNodeStillValid(remote) {
+		// We can check here, but really we will have to check again when the server
+		// is about to add to the s.leafs map later in the process.
+		if !remote.stillValid() {
 			conn.Close()
 			return
 		}
@@ -732,13 +750,6 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		s.clearObserverState(remote)
 
 		return
-	}
-
-	// In case the migrate timer was created but we broke out of the loop
-	// because the configuration was removed, cancel it now. Note that
-	// the timer would not be created if `jetstreamMigrateDelay == 0`.
-	if jetstreamMigrateDelay > 0 {
-		remote.cancelMigrateTimer()
 	}
 }
 
@@ -1792,7 +1803,7 @@ func (s *Server) setLeafNodeInfoHostPortAndIP() error {
 // (this solves the stale connection situation). An error is returned to help the
 // remote detect the misconfiguration when the duplicate is the result of that
 // misconfiguration.
-func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, checkForDup bool) {
+func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, checkForDup bool) bool {
 	var accName string
 	c.mu.Lock()
 	cid := c.cid
@@ -1804,7 +1815,8 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	mySrvName := c.leaf.remoteServer
 	remoteAccName := c.leaf.remoteAccName
 	myClustName := c.leaf.remoteCluster
-	solicited := c.leaf.remote != nil
+	remote := c.leaf.remote
+	solicited := remote != nil
 	c.mu.Unlock()
 
 	var old *client
@@ -1827,6 +1839,14 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 				break
 			}
 		}
+	}
+	// Now that we are under server lock and before adding it to the map, for a
+	// solicited leaf, we need to make sure that it has not been removed from
+	// the config or disabled.
+	if solicited && !remote.stillValid() {
+		s.mu.Unlock()
+		s.removeFromTempClients(cid)
+		return false
 	}
 	// Store new connection in the map
 	s.leafs[cid] = c
@@ -1876,7 +1896,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		} else if domain, ok := opts.JsAccDefaultDomain[accName]; ok && domain == _EMPTY_ {
 			// for backwards compatibility with old setups that do not have a domain name set
 			c.Debugf("Skipping deny %q for account %q due to default domain", jsAllAPI, accName)
-			return
+			return true
 		}
 	}
 
@@ -1954,6 +1974,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 			c.Debugf("Adding deny %q for outgoing messages to account %q", src, accName)
 		}
 	}
+	return true
 }
 
 func (s *Server) removeLeafNodeConnection(c *client) {
@@ -3440,7 +3461,11 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 		c.closeConnection(ProtocolViolation)
 		return
 	}
-	s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
+	if !s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false) {
+		// Was not added, could be because the remote configuration has been removed.
+		c.closeConnection(ClientClosed)
+		return
+	}
 	s.initLeafNodeSmapAndSendSubs(c)
 	if sendSysConnectEvent {
 		s.sendLeafNodeConnect(acc)
