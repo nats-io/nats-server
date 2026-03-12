@@ -7543,9 +7543,9 @@ func (js *jetStream) tieredStreamAndReservationCount(accName, tier string, cfg *
 				// If tier is empty, all storage is flat and we should adjust for replicas.
 				// Otherwise if tiered, storage replication already taken into consideration.
 				if tier == _EMPTY_ && sa.Config.Replicas > 1 {
-					reservation += sa.Config.MaxBytes * int64(sa.Config.Replicas)
+					reservation = addSaturate(reservation, mulSaturate(int64(sa.Config.Replicas), sa.Config.MaxBytes))
 				} else {
-					reservation += sa.Config.MaxBytes
+					reservation = addSaturate(reservation, sa.Config.MaxBytes)
 				}
 			}
 		}
