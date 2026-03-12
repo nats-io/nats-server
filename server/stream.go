@@ -6439,10 +6439,6 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	} else {
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
-		// Check for preAcks and the need to clear it.
-		if mset.hasAllPreAcks(seq, subject) {
-			mset.clearAllPreAcks(seq)
-		}
 		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl, canConsistencyCheck)
 	}
 
@@ -6477,6 +6473,18 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			outq.sendMsg(reply, response)
 		}
 		return err
+	}
+
+	// Check for preAcks and the need to clear it.
+	if mset.hasAllPreAcks(seq, subject) {
+		mset.clearAllPreAcks(seq)
+		// If we're clustered and the stream leader, we can now propose deleting this message.
+		// We still store it below, so we remain properly synchronized with our followers.
+		// If this proposal fails, we retry out-of-band.
+		if isClustered && isLeader {
+			md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
+			_ = mset.node.Propose(encodeMsgDelete(&md))
+		}
 	}
 
 	// If here we succeeded in storing the message.
@@ -8285,9 +8293,13 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 		return true
 	}
 
-	// Only propose message deletion to the stream if we're consumer leader, otherwise all followers would also propose.
-	// We must be the consumer leader, since we know for sure we've stored the message and don't register as pre-ack.
-	if o != nil && !o.IsLeader() {
+	// Only propose message deletion to the stream if we're the leader, otherwise followers would also propose.
+	// We must be the stream leader, since we are the only one that can guarantee message ordering and ack handling.
+	// Either we've stored the message, and we know for sure all consumers have acked the message.
+	// Or, we've not stored the message yet (rare), and all consumers have registered as pre-acks,
+	// then we do the message delete proposal after we've stored the message instead.
+	// Except for a Direct AckNone consumer, as that has a nil consumer here, we still forward the delete proposal.
+	if o != nil && !mset.isLeader() {
 		// Currently, interest-based streams can race on "no interest" because consumer creates/updates go over
 		// the meta layer and published messages go over the stream layer. Some servers could then either store
 		// or not store some initial set of messages that gained new interest. To get the stream back in sync,
@@ -8306,6 +8318,7 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 	}
 
 	md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
+	// Directly proposes if stream leader, otherwise forwards it.
 	mset.node.ForwardProposal(encodeMsgDelete(&md))
 	mset.mu.Unlock()
 	return true
