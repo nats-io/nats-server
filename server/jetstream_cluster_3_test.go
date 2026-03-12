@@ -7631,3 +7631,232 @@ func TestJetStreamClusterDontEncodeConsumerStateInMetaSnapshot(t *testing.T) {
 	require_NotNil(t, consumer)
 	require_True(t, consumer.State == nil)
 }
+
+func TestJetStreamClusteredStreamCreateIdempotentWithSources(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{"source.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	cfg := &nats.StreamConfig{
+		Name:     "SOURCED",
+		Subjects: []string{"sourced.>"},
+		Replicas: 3,
+		Sources: []*nats.StreamSource{
+			{
+				Name:          "SOURCE",
+				FilterSubject: "source.>",
+			},
+		},
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Step down the stream leader until it lands on the meta leader.
+	// This ensures the meta leader's stored assignment has iname populated
+	// via the shared StreamSource pointer.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	sl := c.streamLeader(globalAccountName, "SOURCED")
+	require_NotNil(t, sl)
+	if sl != ml {
+		mset, err := sl.globalAccount().lookupStream("SOURCED")
+		require_NoError(t, err)
+		require_NoError(t, mset.raftNode().StepDown(ml.Node()))
+		c.waitOnStreamLeader(globalAccountName, "SOURCED")
+		sl = c.streamLeader(globalAccountName, "SOURCED")
+	}
+	require_Equal(t, ml, sl)
+
+	// The second create should be idempotent, and succeed even though iname was set.
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterMetaSnapshotPreservesConsumersOnStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "CONSUMER", Replicas: 3})
+	require_NoError(t, err)
+
+	triggerMetaSnapshot := func(t *testing.T, c *cluster) {
+		t.Helper()
+		ml := c.leader()
+		require_NotNil(t, ml)
+		meta := ml.getJetStream().getMetaGroup().(*raft)
+		meta.RLock()
+		papplied := meta.papplied
+		meta.RUnlock()
+		require_NoError(t, meta.ProposeAddPeer(meta.ID()))
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			meta.RLock()
+			defer meta.RUnlock()
+			if papplied == meta.papplied {
+				return errors.New("no snapshot yet")
+			}
+			return nil
+		})
+	}
+
+	loadSnapshotStreams := func(t *testing.T, c *cluster) map[string]map[string]*streamAssignment {
+		t.Helper()
+		ml := c.leader()
+		require_NotNil(t, ml)
+		meta := ml.getJetStream().getMetaGroup().(*raft)
+		snap, err := meta.loadLastSnapshot()
+		require_NoError(t, err)
+		sjs := ml.getJetStream()
+		accStreams, err := sjs.decodeMetaSnapshot(snap.data)
+		require_NoError(t, err)
+		return accStreams
+	}
+
+	// Create a baseline snapshot that includes consumers.
+	triggerMetaSnapshot(t, c)
+	accStreams := loadSnapshotStreams(t, c)
+	stream := accStreams[globalAccountName]["TEST"]
+	require_NotNil(t, stream)
+	require_NotNil(t, stream.consumers["CONSUMER"])
+
+	// Update stream config, then create a new snapshot from the previous checkpoint.
+	cfg.Description = "updated"
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	triggerMetaSnapshot(t, c)
+
+	// Updated snapshots must preserve existing stream consumers.
+	accStreams = loadSnapshotStreams(t, c)
+	stream = accStreams[globalAccountName]["TEST"]
+	require_NotNil(t, stream)
+	require_NotNil(t, stream.consumers["CONSUMER"])
+}
+
+func TestJetStreamClusterConsumerAssignmentsOrInflightSeqWithInflightStream(t *testing.T) {
+	const acc, stream, consumer = "A", "S", "C"
+	js := &jetStream{cluster: &jetStreamCluster{
+		streams: map[string]map[string]*streamAssignment{},
+		inflightStreams: map[string]map[string]*inflightStreamInfo{
+			acc: {stream: {streamAssignment: &streamAssignment{Config: &StreamConfig{Name: stream}}}},
+		},
+		inflightConsumers: map[string]map[string]map[string]*inflightConsumerInfo{
+			acc: {stream: {consumer: {consumerAssignment: &consumerAssignment{Name: consumer}}}},
+		},
+	}}
+
+	var got []string
+	for ca := range js.consumerAssignmentsOrInflightSeq(acc, stream) {
+		got = append(got, ca.Name)
+	}
+	if len(got) != 1 || got[0] != consumer {
+		t.Fatalf("Unexpected consumers: %+v", got)
+	}
+}
+
+func TestJetStreamClusterApiPagedRequestOffsetValidation(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "JSC", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "CONSUMER", Replicas: replicas})
+		require_NoError(t, err)
+
+		paged := ApiPagedRequest{Offset: -1}
+
+		t.Run("StreamNames", func(t *testing.T) {
+			req := JSApiStreamNamesRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(JSApiStreams, b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamNamesResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Streams), 1)
+		})
+
+		t.Run("StreamList", func(t *testing.T) {
+			req := JSApiStreamListRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(JSApiStreamList, b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamListResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Streams), 1)
+		})
+
+		t.Run("StreamInfo", func(t *testing.T) {
+			req := JSApiStreamInfoRequest{ApiPagedRequest: paged, SubjectsFilter: ">"}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamInfoResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.StreamInfo.State.Subjects), 1)
+		})
+
+		t.Run("ConsumerNames", func(t *testing.T) {
+			req := JSApiConsumersRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiConsumersT, "TEST"), b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiConsumerNamesResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Consumers), 1)
+		})
+
+		t.Run("ConsumerList", func(t *testing.T) {
+			req := JSApiConsumersRequest{ApiPagedRequest: paged}
+			b, err := json.Marshal(req)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiConsumerListT, "TEST"), b, time.Second)
+			require_NoError(t, err)
+			var resp JSApiConsumerListResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_Equal(t, resp.Offset, 0)
+			require_Equal(t, resp.Total, 1)
+			require_Len(t, len(resp.Consumers), 1)
+		})
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}

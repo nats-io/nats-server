@@ -2676,3 +2676,158 @@ func TestAuthCalloutLeafNodeOperatorModeMismatchedCreds(t *testing.T) {
 	// Verify the hub server is still running and healthy.
 	checkLeafNodeConnectedCount(t, at.srv, 1)
 }
+
+func TestAuthCalloutRegisterWithAccountAfterClose(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			timeout: 1
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	// Track whether the auth callout handler was called and collect the
+	// client pointer for manual registration later.
+	type calloutInfo struct {
+		user      string
+		serverID  string
+		processed chan struct{}
+	}
+	var ci calloutInfo
+	ci.processed = make(chan struct{})
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Username == "zombie" && opts.Password == "pwd" {
+			ci.user = user
+			ci.serverID = si.ID
+			close(ci.processed)
+			// Do NOT respond. Let the auth callout timeout.
+			// This simulates the case where the response arrives late.
+		} else {
+			m.Respond(nil)
+		}
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+	s := at.srv
+
+	fooAcc, err := s.lookupAccount("FOO")
+	require_NoError(t, err)
+	require_Equal(t, fooAcc.NumLocalConnections(), 0)
+	baseServerClients := s.NumClients()
+
+	// Connect a client that will go through auth callout. The handler will
+	// NOT respond, so the callout will timeout and the client will be closed.
+	var connectErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, connectErr = nats.Connect(s.ClientURL(),
+			nats.UserInfo("zombie", "pwd"),
+			nats.Timeout(5*time.Second),
+			nats.MaxReconnects(0),
+		)
+	}()
+
+	// Wait for the auth handler to be invoked (request received).
+	<-ci.processed
+
+	// Wait for auth timeout (1s) + closeConnection to complete.
+	<-done
+	require_Error(t, connectErr)
+	require_Equal(t, fooAcc.NumLocalConnections(), 0)
+	require_Equal(t, s.NumClients(), baseServerClients)
+
+	// Manually create a client, like auth callout would, so we have a reference to it and can close it.
+	globalAcc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	c := &client{srv: s, kind: CLIENT, acc: globalAcc}
+	c.initClient()
+	globalAcc.addClient(c)
+	c.setNoReconnect()
+	c.closeConnection(ClientClosed)
+
+	// Simulate what processReply does after the auth callout response arrives:
+	// It calls c.RegisterNkeyUser which calls registerWithAccount(targetAcc).
+	// registerWithAccount should not add the client as we've closed it above.
+	require_Error(t, c.registerWithAccount(fooAcc), ErrConnectionClosed)
+	require_Equal(t, fooAcc.NumLocalConnections(), 0)
+}
+
+func TestAuthCalloutZombieInflatesAccountConnections(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO { limits { max_conn: 5 } }
+		}
+		authorization {
+			timeout: 1
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Username == "legit" && opts.Password == "pwd" {
+			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+	s := at.srv
+
+	globalAcc := s.globalAccount()
+	fooAcc, err := s.lookupAccount("FOO")
+	require_NoError(t, err)
+
+	fooAcc.mu.RLock()
+	mconns := fooAcc.mconns
+	fooAcc.mu.RUnlock()
+	require_Equal(t, mconns, 5)
+
+	// Step 1: Inject zombie connections into FOO account.
+	// This simulates what happens when processReply calls registerWithAccount
+	// on a client that has already been through closeConnection.
+	for range 3 {
+		c := &client{srv: s, kind: CLIENT, acc: globalAcc}
+		c.initClient()
+		globalAcc.addClient(c)
+		c.closeConnection(ClientClosed)
+		require_Error(t, c.registerWithAccount(fooAcc), ErrConnectionClosed)
+	}
+	require_Equal(t, fooAcc.NumLocalConnections(), 0)
+
+	// Step 2: Connect legitimate clients. FOO has max_connections: 5.
+	// With 3 zombies, we should only be able to connect 2 real clients
+	// before hitting the limit, even though there are 0 real connections.
+	for range 5 {
+		nc, err := nats.Connect(s.ClientURL(),
+			nats.UserInfo("legit", "pwd"),
+			nats.MaxReconnects(0),
+		)
+		require_NoError(t, err)
+		//goland:noinspection GoDeferInLoop
+		defer nc.Close()
+	}
+	require_Equal(t, fooAcc.NumLocalConnections(), 5)
+}

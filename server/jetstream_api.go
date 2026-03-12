@@ -1880,7 +1880,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 		if req.Subject != _EMPTY_ {
 			filter = req.Subject
 		}
@@ -2016,7 +2016,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 		if req.Subject != _EMPTY_ {
 			filter = req.Subject
 		}
@@ -2212,7 +2212,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			return
 		}
 		details, subjects = req.DeletedDetails, req.SubjectsFilter
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -3085,6 +3085,13 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	accName := tokenAt(subject, 5)
 
 	var resp = JSApiAccountPurgeResponse{ApiResponse: ApiResponse{Type: JSApiAccountPurgeResponseType}}
+
+	// Check for path like separators in the name.
+	if strings.ContainsAny(accName, `\/`) {
+		resp.Error = NewJSStreamGeneralError(errors.New("account name can not contain path separators"))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 
 	if !s.JetStreamIsClustered() {
 		var streams []*stream
@@ -4794,7 +4801,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	streamName := streamNameFromSubject(subject)
@@ -4922,7 +4929,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	streamName := streamNameFromSubject(subject)

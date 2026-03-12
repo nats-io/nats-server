@@ -2216,6 +2216,10 @@ func (js *jetStream) collectStreamAndConsumerChanges(c RaftNodeCheckpoint, strea
 			as = make(map[string]*streamAssignment)
 			streams[sa.Client.serviceAccount()] = as
 		}
+		// Preserve consumers from the previous assignment.
+		if osa := as[sa.Config.Name]; osa != nil {
+			sa.consumers = osa.consumers
+		}
 		as[sa.Config.Name] = sa
 	}
 	for _, cas := range ru.updateConsumers {
@@ -6008,6 +6012,9 @@ func (js *jetStream) consumerAssignmentsOrInflightSeq(account, stream string) it
 			}
 		}
 		sa := js.streamAssignment(account, stream)
+		if sa == nil {
+			return
+		}
 		for _, ca := range sa.consumers {
 			// Skip if we already iterated over it as inflight.
 			if _, ok := inflight[ca.Name]; ok {
@@ -7646,6 +7653,17 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	// Capture if we have existing/inflight assignment first.
 	if osa := js.streamAssignmentOrInflight(acc.Name, cfg.Name); osa != nil {
 		copyStreamMetadata(cfg, osa.Config)
+		// Set the index name on both to ensure the DeepEqual works
+		currentIName := make(map[string]struct{})
+		for _, s := range osa.Config.Sources {
+			currentIName[s.iname] = struct{}{}
+		}
+		for _, s := range cfg.Sources {
+			s.setIndexName()
+			if _, ok := currentIName[s.iname]; !ok {
+				s.iname = _EMPTY_
+			}
+		}
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -8308,6 +8326,9 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	}
 
 	scnt := len(streams)
+	if offset < 0 {
+		offset = 0
+	}
 	if offset > scnt {
 		offset = scnt
 	}
@@ -8458,6 +8479,9 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 
 	ocnt := len(consumers)
+	if offset < 0 {
+		offset = 0
+	}
 	if offset > ocnt {
 		offset = ocnt
 	}

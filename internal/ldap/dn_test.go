@@ -212,3 +212,14 @@ func TestDNAncestor(t *testing.T) {
 		}
 	}
 }
+
+func TestDNReverseMatchDuplicates(t *testing.T) {
+	// A has two CN=Alice RDNs and one O=NATS.
+	// B has one CN=Alice, one O=NATS, and one OU=Users.
+	// They have the same length (3).
+	dnA, _ := ParseDN("CN=Alice,CN=Alice,O=NATS")
+	dnB, _ := ParseDN("CN=Alice,O=NATS,OU=Users")
+	if dnA.RDNsMatch(dnB) {
+		t.Fatal("Expected RDNsMatch to return false for different RDN sets, but it returned true")
+	}
+}

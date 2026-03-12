@@ -7564,14 +7564,15 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdateRestart(t *testing.T) {
 	cc := mljs.cluster
 	ca := mljs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
 	require_NotNil(t, ca)
-	mljs.mu.RUnlock()
 
 	cca := ca.copyGroup()
 	cca.State = &ConsumerState{
 		Delivered: SequencePair{Consumer: 5, Stream: 5},
 		AckFloor:  SequencePair{Consumer: 5, Stream: 5},
 	}
-	require_NoError(t, cc.meta.Propose(encodeAddConsumerAssignment(cca)))
+	consumerAdd := encodeAddConsumerAssignment(cca)
+	mljs.mu.RUnlock()
+	require_NoError(t, cc.meta.Propose(consumerAdd))
 
 	// Wait for the meta leader to apply the entry.
 	time.Sleep(500 * time.Millisecond)
