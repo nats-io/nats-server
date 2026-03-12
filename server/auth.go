@@ -604,6 +604,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (authorized bool) {
 	var (
 		nkey *NkeyUser
+		ujwt string
 		juc  *jwt.UserClaims
 		acc  *Account
 		user *User
@@ -798,16 +799,23 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 
 	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
 	if s.trustedKeys != nil {
-		if c.opts.JWT == _EMPTY_ && opts.DefaultSentinel != _EMPTY_ {
-			c.opts.JWT = opts.DefaultSentinel
+		ujwt = c.opts.JWT
+		if ujwt == _EMPTY_ && c.isMqtt() {
+			// For MQTT, we pass the password as the JWT too, but do so here so it's not
+			// publicly exposed in the client options if it isn't a JWT.
+			ujwt = c.opts.Password
 		}
-		if c.opts.JWT == _EMPTY_ {
+		if ujwt == _EMPTY_ && opts.DefaultSentinel != _EMPTY_ {
+			c.opts.JWT = opts.DefaultSentinel
+			ujwt = c.opts.JWT
+		}
+		if ujwt == _EMPTY_ {
 			s.mu.Unlock()
 			c.Debugf("Authentication requires a user JWT")
 			return false
 		}
 		// So we have a valid user jwt here.
-		juc, err = jwt.DecodeUserClaims(c.opts.JWT)
+		juc, err = jwt.DecodeUserClaims(ujwt)
 		if err != nil {
 			s.mu.Unlock()
 			c.Debugf("User JWT not valid: %v", err)
@@ -1077,6 +1085,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		// Hold onto the user's public key.
 		c.mu.Lock()
 		c.pubKey = juc.Subject
+		// If this is a MQTT client, we purposefully didn't populate the JWT as it could contain
+		// a password or token. Now we know it's a valid JWT, we can populate it.
+		if c.isMqtt() {
+			c.opts.JWT = ujwt
+		}
 		c.tags = juc.Tags
 		c.nameTag = juc.Name
 		c.mu.Unlock()
