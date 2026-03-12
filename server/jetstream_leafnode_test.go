@@ -1279,7 +1279,10 @@ func TestJetStreamLeafNodeJSClusterMigrateRecovery(t *testing.T) {
 	// supposed to have and then take them down.
 	remotes := map[*Server]int{}
 	for _, s := range lnc.servers {
-		remotes[s] += len(s.leafRemoteCfgs)
+		s.mu.RLock()
+		count := len(s.leafRemoteCfgs)
+		s.mu.RUnlock()
+		remotes[s] += count
 		s.closeAndDisableLeafnodes()
 		checkLeafNodeConnectedCount(t, s, 0)
 	}
@@ -1362,7 +1365,10 @@ func TestJetStreamLeafNodeJSClusterMigrateRecoveryWithDelay(t *testing.T) {
 	// supposed to have and then take them down.
 	remotes := map[*Server]int{}
 	for _, s := range lnc.servers {
-		remotes[s] += len(s.leafRemoteCfgs)
+		s.mu.RLock()
+		count := len(s.leafRemoteCfgs)
+		s.mu.RUnlock()
+		remotes[s] += count
 		s.closeAndDisableLeafnodes()
 		checkLeafNodeConnectedCount(t, s, 0)
 	}
@@ -1418,8 +1424,11 @@ func TestJetStreamLeafNodeJSClusterMigrateRecoveryWithDelay(t *testing.T) {
 
 	// Make sure all delay timers in remotes are disabled
 	for _, s := range lnc.servers {
-		for _, r := range s.leafRemoteCfgs {
-			require_True(t, r.jsMigrateTimer == nil)
+		for r := range s.leafRemoteCfgs {
+			r.RLock()
+			ok := r.jsMigrateTimer == nil
+			r.RUnlock()
+			require_True(t, ok)
 		}
 	}
 

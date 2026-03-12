@@ -118,10 +118,19 @@ func TestLeafNodeRandomRemotes(t *testing.T) {
 	s := RunServer(o)
 	defer s.Shutdown()
 
-	s.mu.Lock()
-	r1 := s.leafRemoteCfgs[0]
-	r2 := s.leafRemoteCfgs[1]
-	s.mu.Unlock()
+	var r1, r2 *leafNodeCfg
+	s.mu.RLock()
+	for r := range s.leafRemoteCfgs {
+		// Verify that the order of urls in the options have not been changed.
+		require_True(t, reflect.DeepEqual(r.URLs, orderedURLs))
+		// Capture the `leafNodeCfg` based on the NoRandomize option.
+		if r.NoRandomize {
+			r1 = r
+		} else {
+			r2 = r
+		}
+	}
+	s.mu.RUnlock()
 
 	r1.RLock()
 	gotOrdered := r1.urls
@@ -10879,7 +10888,7 @@ func TestLeafNodesBasicTokenAuth(t *testing.T) {
 		listen: "127.0.0.1:-1"
 		leafnodes {
 			remotes: [
-				{ url: "nats://secret@localhost:%d" }
+				{ url: "nats://secret@127.0.0.1:%d" }
 			]
 		}
 	`

@@ -2496,10 +2496,16 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		s, _ := RunServerWithConfig(conf)
 		defer s.Shutdown()
 
-		s.mu.Lock()
-		r1 := s.leafRemoteCfgs[0]
-		r2 := s.leafRemoteCfgs[1]
-		s.mu.Unlock()
+		var r1, r2 *leafNodeCfg
+		s.mu.RLock()
+		for r := range s.leafRemoteCfgs {
+			if r.NoRandomize {
+				r1 = r
+			} else {
+				r2 = r
+			}
+		}
+		s.mu.RUnlock()
 
 		r1.RLock()
 		gotOrdered := r1.urls
@@ -4356,5 +4362,172 @@ func TestEnvVarFromIncludedFile(t *testing.T) {
 	}
 	if opts.Port != 7890 {
 		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+func TestOptionsCompressionEqual(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		genOpts func() (*CompressionOpts, *CompressionOpts)
+		equal   bool
+	}{
+		{"same pointer", func() (*CompressionOpts, *CompressionOpts) {
+			c := &CompressionOpts{}
+			return c, c
+		}, true},
+		{"first nil", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{}, nil
+		}, false},
+		{"second nil", func() (*CompressionOpts, *CompressionOpts) {
+			return nil, &CompressionOpts{}
+		}, false},
+		{"both nil", func() (*CompressionOpts, *CompressionOpts) {
+			return nil, nil
+		}, true},
+		{"different mode", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{Mode: CompressionS2Fast},
+				&CompressionOpts{Mode: CompressionS2Best}
+		}, false},
+		{"same mode", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{Mode: CompressionS2Best},
+				&CompressionOpts{Mode: CompressionS2Best}
+		}, true},
+		{"s2 auto c1 default rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: defaultCompressionS2AutoRTTThresholds,
+				}, &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}
+		}, true},
+		{"s2 auto c2 default rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}, &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: defaultCompressionS2AutoRTTThresholds,
+				}
+		}, true},
+		{"s2 auto same rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+				}, &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+				}
+		}, true},
+		{"s2 auto different rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+				}, &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+				}
+		}, false},
+		{"s2 auto different rtt thresholds c1 not set", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}, &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+				}
+		}, false},
+		{"s2 auto different rtt thresholds c2 not set", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+				}, &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}
+		}, false},
+		{"s2 auto both rtt thresholds empty", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{},
+				}, &CompressionOpts{
+					Mode:          CompressionS2Auto,
+					RTTThresholds: []time.Duration{},
+				}
+		}, true},
+		{"s2 auto both rtt thresholds nil", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}, &CompressionOpts{
+					Mode: CompressionS2Auto,
+				}
+		}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c1, c2 := test.genOpts()
+			res := c1.equals(c2)
+			require_Equal(t, test.equal, res)
+		})
+	}
+}
+
+func TestOptionsRemoteLeafNodeMatch(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		genOpts func() (*RemoteLeafOpts, *RemoteLeafOpts)
+		matches bool
+	}{
+		{"URLs match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}}, &RemoteLeafOpts{URLs: []*url.URL{u}}
+		}, true},
+		{"URLs/Creds match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile"},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile"}
+		}, true},
+		{"URLs/Creds/Acc match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: "A"},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: "A"}
+		}, true},
+		{"URLs/Creds/Acc_empty_global match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile"},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: globalAccountName}
+		}, true},
+		{"URLs/Creds/Acc_global_empty match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: globalAccountName},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile"}
+		}, true},
+
+		{"URLs don't match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u1, _ := url.Parse("nats://127.0.0.1:7222")
+			u2, _ := url.Parse("nats://127.0.0.1:7223")
+			return &RemoteLeafOpts{URLs: []*url.URL{u1}}, &RemoteLeafOpts{URLs: []*url.URL{u2}}
+		}, false},
+		{"URLs/Creds don't match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile1"},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile2"}
+		}, false},
+		{"URLs/Creds/Acc don't match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: "A"},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: "B"}
+		}, false},
+		{"URLs/Creds/Acc_empty_set don't match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile"},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: "B"}
+		}, false},
+		{"URLs/Creds/Acc_set_empty match", func() (*RemoteLeafOpts, *RemoteLeafOpts) {
+			u, _ := url.Parse("nats://127.0.0.1:7222")
+			return &RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile", LocalAccount: "A"},
+				&RemoteLeafOpts{URLs: []*url.URL{u}, Credentials: "credsfile"}
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o1, o2 := test.genOpts()
+			match := o1.matches(o2)
+			require_Equal(t, test.matches, match)
+		})
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -106,6 +107,34 @@ type CompressionOpts struct {
 	// as CompressionS2Better. Anything above 20ms will result in picking
 	// the CompressionS2Best compression level.
 	RTTThresholds []time.Duration
+}
+
+func (c1 *CompressionOpts) equals(c2 *CompressionOpts) bool {
+	if c1 == c2 {
+		return true
+	}
+	if (c1 == nil && c2 != nil) || (c1 != nil && c2 == nil) {
+		return false
+	}
+	if c1.Mode != c2.Mode {
+		return false
+	}
+	// For s2_auto, if one has an empty RTTThresholds, it is equivalent
+	// to the defaultCompressionS2AutoRTTThresholds array, so compare with that.
+	if c1.Mode == CompressionS2Auto {
+		rtts1 := c1.RTTThresholds
+		if len(rtts1) == 0 {
+			rtts1 = defaultCompressionS2AutoRTTThresholds
+		}
+		rtts2 := c2.RTTThresholds
+		if len(rtts2) == 0 {
+			rtts2 = defaultCompressionS2AutoRTTThresholds
+		}
+		if !reflect.DeepEqual(rtts1, rtts2) {
+			return false
+		}
+	}
+	return true
 }
 
 // GatewayOpts are options for gateways.
@@ -283,6 +312,22 @@ type RemoteLeafOpts struct {
 	// existing connection will be closed and not solicited again (until it is changed
 	// to `false` again.
 	Disabled bool `json:"-"`
+}
+
+// Returns true if `r`'s `LocalAccount`, `Credentials` and `URLs` are equal to
+// the `other`'s ones.
+// Note that for `LocalAccount`, having one empty and the other being the global
+// account name means that the `LocalAccount`'s are the same.
+func (r *RemoteLeafOpts) matches(other *RemoteLeafOpts) bool {
+	acc1 := r.LocalAccount
+	if acc1 == _EMPTY_ {
+		acc1 = globalAccountName
+	}
+	acc2 := other.LocalAccount
+	if acc2 == _EMPTY_ {
+		acc2 = globalAccountName
+	}
+	return acc1 == acc2 && r.Credentials == other.Credentials && reflect.DeepEqual(r.URLs, other.URLs)
 }
 
 // JSLimitOpts are active limits for the meta cluster

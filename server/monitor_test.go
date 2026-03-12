@@ -4105,6 +4105,9 @@ func TestMonitorLeafz(t *testing.T) {
 	natsSub(t, nc2B, "foo", func(_ *nats.Msg) {})
 	natsFlush(t, nc2B)
 
+	checkSubInterest(t, sa, acc1.GetName(), "foo", time.Second)
+	checkSubInterest(t, sa, acc2.GetName(), "bar", time.Second)
+
 	nc1A := natsConnect(t, fmt.Sprintf("nats://user1:pwd@127.0.0.1:%d", oa.Port))
 	defer nc1A.Close()
 	natsPub(t, nc1A, "foo", []byte("hello"))
