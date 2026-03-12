@@ -2216,6 +2216,10 @@ func (js *jetStream) collectStreamAndConsumerChanges(c RaftNodeCheckpoint, strea
 			as = make(map[string]*streamAssignment)
 			streams[sa.Client.serviceAccount()] = as
 		}
+		// Preserve consumers from the previous assignment.
+		if osa := as[sa.Config.Name]; osa != nil {
+			sa.consumers = osa.consumers
+		}
 		as[sa.Config.Name] = sa
 	}
 	for _, cas := range ru.updateConsumers {
