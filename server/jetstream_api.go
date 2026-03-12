@@ -1357,9 +1357,9 @@ func (jsa *jsAccount) tieredReservation(tier string, cfg *StreamConfig) int64 {
 			// If tier is empty, all storage is flat and we should adjust for replicas.
 			// Otherwise if tiered, storage replication already taken into consideration.
 			if tier == _EMPTY_ && sa.cfg.Replicas > 1 {
-				reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
+				reservation = addSaturate(reservation, mulSaturate(int64(sa.cfg.Replicas), sa.cfg.MaxBytes))
 			} else {
-				reservation += sa.cfg.MaxBytes
+				reservation = addSaturate(reservation, sa.cfg.MaxBytes)
 			}
 		}
 	}
