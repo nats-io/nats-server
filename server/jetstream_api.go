@@ -772,6 +772,7 @@ type JSApiConsumerResetRequest struct {
 	Seq uint64 `json:"seq,omitempty"`
 }
 
+// JSApiConsumerResetResponse is a superset of JSApiConsumerCreateResponse, but including an explicit ResetSeq.
 type JSApiConsumerResetResponse struct {
 	ApiResponse
 	*ConsumerInfo
@@ -4300,11 +4301,49 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	isClustered := s.JetStreamIsClustered()
 
 	// Determine if we should proceed here when we are in clustered mode.
+	direct := req.Config.Direct
 	if isClustered {
-		if req.Config.Direct {
-			// Check to see if we have this stream and are the stream leader.
-			if !acc.JetStreamIsStreamLeader(streamNameFromSubject(subject)) {
-				return
+		if direct {
+			// If it's just a direct consumer, check for stream leader.
+			if !req.Config.Sourcing {
+				// Check to see if we have this stream and are the stream leader.
+				if !acc.JetStreamIsStreamLeader(streamNameFromSubject(subject)) {
+					return
+				}
+			} else {
+				// Otherwise, we either need this to be answered by the stream or meta leader.
+				var cc *jetStreamCluster
+				js, cc = s.getJetStreamCluster()
+				if js == nil || cc == nil {
+					return
+				}
+				js.mu.RLock()
+				sa := js.streamAssignmentOrInflight(acc.Name, streamNameFromSubject(subject))
+				if sa == nil {
+					js.mu.RUnlock()
+					return
+				}
+				// If the stream is WQ or Interest, we need the meta leader to answer.
+				if sa.Config.Retention != LimitsPolicy {
+					direct = false
+				}
+				js.mu.RUnlock()
+				if direct {
+					// Check to see if we have this stream and are the stream leader.
+					if !acc.JetStreamIsStreamLeader(streamNameFromSubject(subject)) {
+						return
+					}
+				} else {
+					if js.isLeaderless() {
+						resp.Error = NewJSClusterNotAvailError()
+						s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+						return
+					}
+					// Make sure we are meta leader.
+					if !s.JetStreamIsLeader() {
+						return
+					}
+				}
 			}
 		} else {
 			var cc *jetStreamCluster
@@ -4348,6 +4387,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		// Legacy ephemeral.
 		rt = ccLegacyEphemeral
 		streamName = streamNameFromSubject(subject)
+		consumerName = req.Config.Name
 	} else {
 		// New style and durable legacy.
 		if tokenAt(subject, 4) == "DURABLE" {
@@ -4439,7 +4479,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
-	if isClustered && !req.Config.Direct {
+	if isClustered && !direct {
 		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config, req.Action, req.Pedantic)
 		return
 	}
@@ -4463,6 +4503,23 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
+	// If the consumer is a direct sourcing consumer, we need to "upgrade"
+	// it to be durable without AckNone if not a Limits-based stream.
+	if req.Config.Direct && req.Config.Sourcing && req.Config.Name != _EMPTY_ {
+		if !isClustered && stream.isInterestRetention() {
+			req.Config.Direct = false
+			req.Config.Durable = req.Config.Name
+			req.Config.AckPolicy = AckFlowControl
+			req.Config.AckWait = 0
+			req.Config.MaxDeliver = 0
+			req.Config.InactiveThreshold = 0
+		} else {
+			// Otherwise, need to append a randomized suffix since the source uses a stable name.
+			req.Config.Name = fmt.Sprintf("%s-%s", req.Config.Name, createConsumerName())
+			consumerName = req.Config.Name
+		}
+	}
+
 	if o := stream.lookupConsumer(consumerName); o != nil {
 		if o.offlineReason != _EMPTY_ {
 			resp.Error = NewJSConsumerOfflineReasonError(errors.New(o.offlineReason))
@@ -4473,6 +4530,12 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		// it back to whatever the current configured value is.
 		o.mu.RLock()
 		req.Config.PauseUntil = o.cfg.PauseUntil
+		// If a durable sourcing consumer is used, we need to reset the deliver policy.
+		if req.Config.Sourcing && req.Config.Durable != _EMPTY_ {
+			req.Config.DeliverPolicy = o.cfg.DeliverPolicy
+			req.Config.OptStartSeq = o.cfg.OptStartSeq
+			req.Config.OptStartTime = o.cfg.OptStartTime
+		}
 		o.mu.RUnlock()
 	}
 

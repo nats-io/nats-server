@@ -125,7 +125,8 @@ type ConsumerConfig struct {
 	MemoryStorage bool `json:"mem_storage,omitempty"`
 
 	// Don't add to general clients.
-	Direct bool `json:"direct,omitempty"`
+	Direct   bool `json:"direct,omitempty"`
+	Sourcing bool `json:"sourcing,omitempty"`
 
 	// Metadata is additional metadata for the Consumer.
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -336,6 +337,8 @@ const (
 	AckAll
 	// AckExplicit requires ack or nack for all messages.
 	AckExplicit
+	// AckFlowControl functions like AckAll, but acks based on responses to flow control.
+	AckFlowControl
 )
 
 func (a AckPolicy) String() string {
@@ -344,6 +347,8 @@ func (a AckPolicy) String() string {
 		return "none"
 	case AckAll:
 		return "all"
+	case AckFlowControl:
+		return "flow_control"
 	default:
 		return "explicit"
 	}
@@ -491,6 +496,7 @@ type consumer struct {
 	infoSub   *subscription
 	lqsent    time.Time
 	prm       map[string]struct{}
+	rsm       map[string]struct{} // Reset requests that need to be responded to on the internal sys account.
 	prOk      bool
 	uch       chan struct{}
 	retention RetentionPolicy
@@ -651,7 +657,7 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 		config.InactiveThreshold = streamCfg.ConsumerLimits.InactiveThreshold
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
-	if (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) && config.MaxAckPending == 0 {
+	if config.MaxAckPending == 0 && config.AckPolicy != AckNone {
 		ackPending := JsDefaultMaxAckPending
 		if lim.MaxAckPending > 0 && lim.MaxAckPending < ackPending {
 			ackPending = lim.MaxAckPending
@@ -672,6 +678,12 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	// set the default value only if pinned policy is used.
 	if config.PriorityPolicy == PriorityPinnedClient && config.PinnedTTL == 0 {
 		config.PinnedTTL = JsDefaultPinnedTTL
+	}
+
+	// Set default values for flow control policy.
+	if config.AckPolicy == AckFlowControl && !pedantic {
+		config.FlowControl = true
+		config.Heartbeat = sourceHealthHB
 	}
 	return nil
 }
@@ -720,6 +732,31 @@ func checkConsumerCfg(
 	}
 	if config.AckWait < 0 {
 		return NewJSConsumerAckWaitNegativeError()
+	}
+
+	// Ack Flow Control policy requires push-based flow-controlled consumer.
+	if config.AckPolicy == AckFlowControl {
+		if config.DeliverSubject == _EMPTY_ {
+			return NewJSConsumerAckFCRequiresPushError()
+		}
+		if !config.FlowControl {
+			return NewJSConsumerAckFCRequiresFCError()
+		}
+		// We currently limit using heartbeat of 1s, since those are used for ephemeral sourcing consumers as well.
+		// We could decide to relax this in the future, but need to be careful to not allow a heartbeat larger
+		// than the stalled source timeout.
+		if config.Heartbeat != sourceHealthHB {
+			return NewJSStreamInvalidConfigError(fmt.Errorf("flow control ack policy heartbeat needs to be 1s"))
+		}
+		if config.MaxAckPending <= 0 {
+			return NewJSConsumerAckFCRequiresMaxAckPendingError()
+		}
+		if config.AckWait != 0 || len(config.BackOff) > 0 {
+			return NewJSConsumerAckFCRequiresNoAckWaitError()
+		}
+		if config.MaxDeliver > 0 {
+			return NewJSConsumerAckFCRequiresNoMaxDeliverError()
+		}
 	}
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
@@ -1079,14 +1116,14 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// Check on stream type conflicts with WorkQueues.
-	if cfg.Retention == WorkQueuePolicy && !config.Direct {
+	if cfg.Retention == WorkQueuePolicy && !config.Direct && !config.Sourcing {
 		// Force explicit acks here.
-		if config.AckPolicy != AckExplicit {
+		if config.AckPolicy != AckExplicit && config.AckPolicy != AckFlowControl {
 			mset.mu.Unlock()
 			return nil, NewJSConsumerWQRequiresExplicitAckError()
 		}
 
-		if len(mset.consumers) > 0 {
+		if mset.numPublicConsumers() > 0 {
 			subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 			if len(subjects) == 0 {
 				mset.mu.Unlock()
@@ -1351,7 +1388,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	mset.setConsumer(o)
 	mset.mu.Unlock()
 
-	if config.Direct || (!s.JetStreamIsClustered() && s.standAloneMode()) {
+	standalone := !s.JetStreamIsClustered() && s.standAloneMode()
+	if config.Sourcing && standalone {
+		o.resetStartingSeq(0, _EMPTY_, false)
+	}
+	if config.Direct || standalone {
 		o.setLeader(true)
 	}
 
@@ -1595,7 +1636,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		}
 
 		var err error
-		if o.cfg.AckPolicy != AckNone {
+		if o.cfg.AckPolicy != AckNone && o.cfg.AckPolicy != AckFlowControl {
 			if o.ackSub, err = o.subscribeInternal(o.ackSubj, o.pushAck); err != nil {
 				o.mu.Unlock()
 				return
@@ -1727,6 +1768,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
+		o.rsm = nil
 		o.resetPendingDeliveries()
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSub)
@@ -2504,6 +2546,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
 
+	if cfg.Sourcing && (!o.srv.JetStreamIsClustered() && o.srv.standAloneMode()) {
+		o.resetStartingSeqLocked(0, _EMPTY_, false)
+	}
 	if updatedFilters {
 		// Cleanup messages that lost interest.
 		if o.retention == InterestPolicy {
@@ -2669,10 +2714,14 @@ func (o *consumer) updateSkipped(seq uint64) {
 	o.propose(b[:])
 }
 
-func (o *consumer) resetStartingSeq(seq uint64, reply string) (uint64, bool, error) {
+func (o *consumer) resetStartingSeq(seq uint64, reply string, internal bool) (uint64, bool, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.resetStartingSeqLocked(seq, reply, internal)
+}
 
+// Lock should be held.
+func (o *consumer) resetStartingSeqLocked(seq uint64, reply string, internal bool) (uint64, bool, error) {
 	// Reset to a specific sequence, or back to the ack floor.
 	if seq == 0 {
 		seq = o.asflr + 1
@@ -2710,6 +2759,12 @@ VALID:
 		le.PutUint64(b[1:], seq)
 		copy(b[1+8:], reply)
 		o.propose(b[:])
+		if internal {
+			if o.rsm == nil {
+				o.rsm = make(map[string]struct{}, 1)
+			}
+			o.rsm[reply] = struct{}{}
+		}
 		return seq, false, nil
 	} else if o.store != nil {
 		o.store.Reset(seq - 1)
@@ -3442,7 +3497,9 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	}
 
 	// Check if this ack is above the current pointer to our next to deliver.
-	if sseq >= o.sseq {
+	// Ignore if it's a flow-controlled consumer, its state could end up further ahead
+	// since its state is not replicated before delivery.
+	if sseq >= o.sseq && !o.cfg.FlowControl {
 		// Let's make sure this is valid.
 		// This is only received on the consumer leader, so should never be higher
 		// than the last stream sequence. But could happen if we've just become
@@ -3500,7 +3557,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		}
 		delete(o.rdc, sseq)
 		o.removeFromRedeliverQueue(sseq)
-	case AckAll:
+	case AckAll, AckFlowControl:
 		// no-op
 		if dseq <= o.adflr || sseq <= o.asflr {
 			o.mu.Unlock()
@@ -3660,7 +3717,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	}
 
 	switch o.cfg.AckPolicy {
-	case AckNone, AckAll:
+	case AckNone, AckAll, AckFlowControl:
 		needAck = sseq > asflr
 	case AckExplicit:
 		if sseq > asflr {
@@ -4311,7 +4368,7 @@ func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, re
 			return
 		}
 	}
-	resetSeq, canRespond, err := o.resetStartingSeq(req.Seq, reply)
+	resetSeq, canRespond, err := o.resetStartingSeq(req.Seq, reply, false)
 	if err != nil {
 		resp.Error = NewJSConsumerInvalidResetError(err)
 		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
@@ -5259,7 +5316,15 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			if o.isActive() {
 				o.mu.RLock()
 				o.sendIdleHeartbeat(odsubj)
+				flowControl := o.cfg.AckPolicy == AckFlowControl && len(o.pending) > 0
 				o.mu.RUnlock()
+
+				// Send flow control on EOS if it's used for acknowledgements.
+				if flowControl {
+					o.mu.Lock()
+					o.sendFlowControl()
+					o.mu.Unlock()
+				}
 			}
 			// Reset our idle heartbeat timer.
 			hb.Reset(hbd)
@@ -5435,11 +5500,11 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	// Update delivered first.
 	o.updateDelivered(dseq, seq, dc, ts)
 
-	if ap == AckExplicit || ap == AckAll {
-		o.trackPending(seq, dseq)
-	} else if ap == AckNone {
+	if ap == AckNone {
 		o.adflr = dseq
 		o.asflr = seq
+	} else {
+		o.trackPending(seq, dseq)
 	}
 
 	// Send message.
@@ -5487,6 +5552,10 @@ func (o *consumer) needFlowControl(sz int) bool {
 	if o.fcid == _EMPTY_ && o.pbytes > o.maxpb/2 {
 		return true
 	}
+	// Or, when acking based on flow control, we need to send it if we've hit the max pending limit earlier.
+	if o.fcid == _EMPTY_ && o.cfg.AckPolicy == AckFlowControl && o.maxp > 0 && len(o.pending) >= o.maxp {
+		return true
+	}
 	// If we have an existing outstanding FC, check to see if we need to expand the o.fcsz
 	if o.fcid != _EMPTY_ && (o.pbytes-o.fcsz) >= o.maxpb {
 		o.fcsz += sz
@@ -5494,12 +5563,12 @@ func (o *consumer) needFlowControl(sz int) bool {
 	return false
 }
 
-func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, subj, _ string, _ []byte) {
+func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, subj, _ string, rmsg []byte) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 
 	// Ignore if not the latest we have sent out.
 	if subj != o.fcid {
+		o.mu.Unlock()
 		return
 	}
 
@@ -5519,6 +5588,21 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, su
 	o.fcid, o.fcsz = _EMPTY_, 0
 
 	o.signalNewMessages()
+	o.mu.Unlock()
+
+	hdr, _ := c.msgParts(rmsg)
+	if len(hdr) > 0 {
+		ldseq := parseInt64(sliceHeader(JSLastConsumerSeq, hdr))
+		lsseq := parseInt64(sliceHeader(JSLastStreamSeq, hdr))
+		if lsseq > 0 {
+			// Delivered sequence is allowed to be zero as a response
+			// to flow control without any deliveries.
+			if ldseq <= 0 {
+				ldseq = 0
+			}
+			o.processAckMsg(uint64(lsseq), uint64(ldseq), 1, _EMPTY_, false)
+		}
+	}
 }
 
 // Lock should be held.
@@ -5702,8 +5786,9 @@ func (o *consumer) checkPending() {
 	defer o.mu.Unlock()
 
 	mset := o.mset
+	ttl := int64(o.cfg.AckWait)
 	// On stop, mset and timer will be nil.
-	if o.closed || mset == nil || o.ptmr == nil {
+	if o.closed || mset == nil || o.ptmr == nil || ttl == 0 {
 		o.stopAndClearPtmr()
 		return
 	}
@@ -5714,7 +5799,6 @@ func (o *consumer) checkPending() {
 	fseq := state.FirstSeq
 
 	now := time.Now().UnixNano()
-	ttl := int64(o.cfg.AckWait)
 	next := int64(o.ackWait(0))
 	// However, if there is backoff, initializes with the largest backoff.
 	// It will be adjusted as needed.
@@ -6112,6 +6196,41 @@ func (o *consumer) String() string {
 
 func createConsumerName() string {
 	return getHash(nuid.Next())
+}
+
+// Lock should be held.
+func (mset *stream) createStableConsumerHash() string {
+	id := fmt.Sprintf("%s %s", mset.cfg.Name, mset.acc.Name)
+	if domain := mset.srv.getOpts().JetStreamDomain; domain != _EMPTY_ {
+		id = fmt.Sprintf("%s %s", id, domain)
+	}
+	return getHash(id)
+}
+
+// Lock should be held.
+func (mset *stream) createSourcingConsumerHash(ssi *StreamSource, sources []*StreamSource) string {
+	id := mset.createStableConsumerHash()
+
+	// If the stream sources contain the same stream at least twice, we use a more strict hash of
+	// an ID that also contains filter subjects etc. If the stream name is only used once, we can
+	// support the stable identifier above.
+	var once bool
+	for _, src := range sources {
+		if src.Name == ssi.Name {
+			if once {
+				if ssi.iname == _EMPTY_ {
+					ssi.setIndexName()
+				}
+				// Append identifying information of the filter subjects, etc. to make it unique
+				id = fmt.Sprintf("%s %s", id, ssi.iname)
+				break
+			} else {
+				once = true
+			}
+		}
+	}
+
+	return getHash(id)
 }
 
 // deleteConsumer will delete the consumer from this stream.
@@ -6809,6 +6928,12 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 }
 
 func (o *consumer) resetPtmr(delay time.Duration) {
+	// A delay of zero means it should be stopped.
+	if delay == 0 {
+		o.stopAndClearPtmr()
+		return
+	}
+
 	if o.ptmr == nil {
 		o.ptmr = time.AfterFunc(delay, o.checkPending)
 	} else {
@@ -6818,6 +6943,10 @@ func (o *consumer) resetPtmr(delay time.Duration) {
 }
 
 func (o *consumer) stopAndClearPtmr() {
+	// If the end time is unset, short-circuit since the timer will already be stopped.
+	if o.ptmrEnd.IsZero() {
+		return
+	}
 	stopAndClearTimer(&o.ptmr)
 	o.ptmrEnd = time.Time{}
 }

@@ -4100,7 +4100,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			if needLock {
 				mset.mu.RLock()
 			}
-			mset.sendFlowControlReply(reply)
+			mset.sendFlowControlReply(reply, hdr)
 			if needLock {
 				mset.mu.RUnlock()
 			}
@@ -5893,12 +5893,26 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 				if o.IsLeader() || (!didCreate && needsLocalResponse) {
 					// Process if existing as an update. Double check that this is not recovered.
 					js.mu.RLock()
-					client, subject, reply, recovering := ca.Client, ca.Subject, ca.Reply, ca.recovering
+					client, subject, reply, recovering, sourcing := ca.Client, ca.Subject, ca.Reply, ca.recovering, ca.Config.Sourcing
 					js.mu.RUnlock()
 					if !recovering {
-						var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-						resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
-						s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+						// If it's a sourcing consumer, we need to respond after the consumer has been reset instead.
+						if sourcing {
+							var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
+							resetSeq, canRespond, err := o.resetStartingSeq(0, reply, true)
+							if err != nil {
+								resp.Error = NewJSConsumerInvalidResetError(err)
+								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							} else if canRespond {
+								resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+								resp.ResetSeq = resetSeq
+								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							}
+						} else {
+							var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+							resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+						}
 					}
 				}
 			}
@@ -6529,7 +6543,14 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 						var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
 						resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 						resp.ResetSeq = sseq
-						s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+						// Check if the reset request needs to be answered on the system account.
+						// This will happen for replicated sourcing consumers that get reset as part of a create/update.
+						if _, ok := o.rsm[reply]; ok {
+							delete(o.rsm, reply)
+							s.sendInternalAccountMsg(nil, reply, s.jsonResponse(&resp))
+						} else {
+							s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+						}
 					}
 				}
 			case addPendingRequest:
@@ -6565,7 +6586,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	o.lat = time.Now()
 
 	var sagap uint64
-	if o.cfg.AckPolicy == AckAll {
+	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
 		// Always use the store state, as o.asflr is skipped ahead already.
 		// Capture before updating store.
 		state, err := o.store.BorrowState()
@@ -6670,7 +6691,7 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 	}
 	js.mu.Lock()
 	s, account, err := js.srv, ca.Client.serviceAccount(), ca.err
-	client, subject, reply, streamName, consumerName := ca.Client, ca.Subject, ca.Reply, ca.Stream, ca.Name
+	client, subject, reply, streamName, consumerName, sourcing := ca.Client, ca.Subject, ca.Reply, ca.Stream, ca.Name, ca.Config.Sourcing
 	hasResponded := ca.responded
 	ca.responded = true
 	js.mu.Unlock()
@@ -6713,8 +6734,22 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 		resp.Error = NewJSConsumerCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
-		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+		// If it's a sourcing consumer, we need to respond after the consumer has been reset instead.
+		if sourcing {
+			var rresp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
+			resetSeq, canRespond, err := o.resetStartingSeq(0, reply, true)
+			if err != nil {
+				rresp.Error = NewJSConsumerInvalidResetError(err)
+				s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&rresp))
+			} else if canRespond {
+				rresp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+				rresp.ResetSeq = resetSeq
+				s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&rresp))
+			}
+		} else {
+			resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
+			s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+		}
 		o.sendCreateAdvisory()
 	}
 
@@ -8874,6 +8909,17 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		return
 	}
 
+	// If the consumer is a direct sourcing consumer, we need to "upgrade" it to be durable without AckNone.
+	// We only get here if the stream is not Limits-based.
+	if cfg.Direct && cfg.Sourcing && cfg.Name != _EMPTY_ {
+		cfg.Direct = false
+		cfg.Durable = cfg.Name
+		cfg.AckPolicy = AckFlowControl
+		cfg.AckWait = 0
+		cfg.MaxDeliver = 0
+		cfg.InactiveThreshold = 0
+	}
+
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 
 	streamCfg, ok := js.clusterStreamConfig(acc.Name, stream)
@@ -8940,13 +8986,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			// we're likely updating an existing consumer, so don't count it. Otherwise
 			// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
 			if oname == _EMPTY_ || js.consumerAssignmentOrInflight(acc.Name, stream, oname) == nil {
-				// Don't count DIRECTS.
+				// Don't count direct/sourcing consumers.
 				total := 0
 				for ca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
 					if ca.unsupported != nil {
 						continue
 					}
-					if ca.Config != nil && !ca.Config.Direct {
+					if ca.Config != nil && !ca.Config.Direct && !ca.Config.Sourcing {
 						total++
 					}
 				}
@@ -8992,6 +9038,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		if ca = js.consumerAssignmentOrInflight(acc.Name, stream, oname); ca != nil {
 			// Provided config might miss metadata, copy from existing config.
 			copyConsumerMetadata(cfg, ca.Config)
+
+			// If a durable sourcing consumer is used, we need to reset the deliver policy.
+			if cfg.Sourcing && cfg.Durable != _EMPTY_ {
+				cfg.DeliverPolicy = ca.Config.DeliverPolicy
+				cfg.OptStartSeq = ca.Config.OptStartSeq
+				cfg.OptStartTime = ca.Config.OptStartTime
+			}
 
 			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
@@ -9078,21 +9131,21 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 		// Check if we are work queue policy.
 		// We will do pre-checks here to avoid thrashing meta layer.
-		if sa.Config.Retention == WorkQueuePolicy && !cfg.Direct {
-			if cfg.AckPolicy != AckExplicit {
+		if sa.Config.Retention == WorkQueuePolicy && !cfg.Direct && !cfg.Sourcing {
+			if cfg.AckPolicy != AckExplicit && cfg.AckPolicy != AckFlowControl {
 				resp.Error = NewJSConsumerWQRequiresExplicitAckError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
 			subjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
-			if len(subjects) == 0 && len(sa.consumers) > 0 {
-				resp.Error = NewJSConsumerWQMultipleUnfilteredError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-				return
-			}
 			for oca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
-				if oca.Name == oname {
+				if oca.Name == oname || oca.Config.Direct || oca.Config.Sourcing {
 					continue
+				}
+				if len(subjects) == 0 {
+					resp.Error = NewJSConsumerWQMultipleUnfilteredError()
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+					return
 				}
 				for _, psubj := range gatherSubjectFilters(oca.Config.FilterSubject, oca.Config.FilterSubjects) {
 					for _, subj := range subjects {

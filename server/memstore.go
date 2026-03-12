@@ -2593,8 +2593,8 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 		return ErrStoreMsgNotFound
 	}
 
-	// Check for AckAll here.
-	if o.cfg.AckPolicy == AckAll {
+	// Check for AckAll here (or AckFlowControl which functions like AckAll).
+	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
