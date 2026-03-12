@@ -14727,6 +14727,17 @@ func TestJetStreamAccountPurge(t *testing.T) {
 	createTestData()
 	inspectDirs(t, 1)
 
+	// A request with path separators should be rejected.
+	var resp JSApiAccountPurgeResponse
+	ncsys := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
+	defer ncsys.Close()
+	m, err := ncsys.Request(fmt.Sprintf(JSApiAccountPurgeT, "foo/hello"), nil, 5*time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(m.Data, &resp)
+	require_NoError(t, err)
+	require_True(t, resp.Error != nil)
+	require_Error(t, resp.Error, NewJSStreamGeneralError(errors.New("account name can not contain path separators")))
+
 	s.Shutdown()
 	require_NoError(t, os.Remove(storeDir+"/jwt/"+accpub+".jwt"))
 
