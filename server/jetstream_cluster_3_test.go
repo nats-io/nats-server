@@ -7360,7 +7360,14 @@ func TestJetStreamClusterConsumerScaleDownChangesRaftGroup(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		n = mset.lookupConsumer("CONSUMER").raftNode()
+		o := mset.lookupConsumer("CONSUMER")
+		if o == nil {
+			return fmt.Errorf("consumer not found")
+		}
+		n = o.raftNode()
+		if n == nil {
+			return fmt.Errorf("raft node not found")
+		}
 		if ng := n.Group(); old == ng {
 			return fmt.Errorf("expected new group but got %q", ng)
 		}
