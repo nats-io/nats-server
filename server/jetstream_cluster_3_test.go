@@ -7005,3 +7005,42 @@ func TestJetStreamClusterApiPagedRequestOffsetValidation(t *testing.T) {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
 	}
 }
+
+func TestJetStreamClusterStreamRestoreNameMismatch(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "EXISTS", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+
+		b := []byte(`{"config":{}}`)
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "EXISTS"), b, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamRestoreResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Error(t, resp.Error, NewJSStreamNameExistRestoreFailedError())
+
+		b = []byte(`{"config":{"name":"RANDOM"}}`)
+		rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), b, time.Second)
+		require_NoError(t, err)
+		resp = JSApiStreamRestoreResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Error(t, resp.Error, NewJSStreamMismatchError())
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}

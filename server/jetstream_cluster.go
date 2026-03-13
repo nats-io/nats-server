@@ -7193,6 +7193,16 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 		return
 	}
 
+	resp := JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
+
+	// check stream config at the start of the restore process, not at the end
+	cfg, apiErr := s.checkStreamCfg(&req.Config, acc, false)
+	if apiErr != nil {
+		resp.Error = apiErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
@@ -7200,10 +7210,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 		return
 	}
 
-	cfg := &req.Config
-	resp := JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
-
-	if err := js.jsClusteredStreamLimitsCheck(acc, cfg); err != nil {
+	if err := js.jsClusteredStreamLimitsCheck(acc, &cfg); err != nil {
 		resp.Error = err
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -7216,7 +7223,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	}
 
 	// Raft group selection and placement.
-	rg, err := js.createGroupForStream(ci, cfg)
+	rg, err := js.createGroupForStream(ci, &cfg)
 	if err != nil {
 		resp.Error = NewJSClusterNoPeersError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -7224,7 +7231,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	}
 	// Pick a preferred leader.
 	rg.setPreferred()
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: &cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
