@@ -113,6 +113,9 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Redact secret arguments before expvar reads them.
+	server.RedactArgs(os.Args)
+
 	// Create the server with appropriate options.
 	s, err := server.NewServer(opts)
 	if err != nil {

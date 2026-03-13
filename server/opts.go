@@ -6435,3 +6435,18 @@ func expandPath(p string) (string, error) {
 
 	return filepath.Join(home, p[1:]), nil
 }
+
+// RedactArgs redacts sensitive arguments from the command line.
+// For example, turns '--pass=secret' into '--pass=[REDACTED]'.
+func RedactArgs(args []string) {
+	secret := regexp.MustCompile("^-{1,2}(user|pass|auth)(=.*)?$")
+	for i, arg := range args {
+		if secret.MatchString(arg) {
+			if idx := strings.Index(arg, "="); idx != -1 {
+				args[i] = arg[:idx] + "=[REDACTED]"
+			} else if i+1 < len(args) {
+				args[i+1] = "[REDACTED]"
+			}
+		}
+	}
+}
