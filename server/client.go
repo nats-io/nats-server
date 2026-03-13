@@ -1358,6 +1358,13 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 	return last
 }
 
+func (c *client) resetReadLoopStallTime() {
+	if c.in.tst >= stallClientMaxDuration {
+		c.rateLimitFormatWarnf("Producer was stalled for a total of %v", c.in.tst.Round(time.Millisecond))
+	}
+	c.in.tst = 0
+}
+
 // readLoop is the main socket read functionality.
 // Runs in its own Go routine.
 func (c *client) readLoop(pre []byte) {
@@ -1435,21 +1442,6 @@ func (c *client) readLoop(pre []byte) {
 				return
 			}
 		}
-		if ws {
-			bufs, err = c.wsRead(wsr, reader, b[:n])
-			if bufs == nil && err != nil {
-				if err != io.EOF {
-					c.Errorf("read error: %v", err)
-				}
-				c.closeConnection(closedStateForErr(err))
-				return
-			} else if bufs == nil {
-				continue
-			}
-		} else {
-			bufs[0] = b[:n]
-		}
-
 		// Check if the account has mappings and if so set the local readcache flag.
 		// We check here to make sure any changes such as config reload are reflected here.
 		if c.kind == CLIENT || c.kind == LEAF {
@@ -1466,6 +1458,24 @@ func (c *client) readLoop(pre []byte) {
 		c.in.msgs = 0
 		c.in.bytes = 0
 		c.in.subs = 0
+
+		if ws {
+			err = c.wsReadAndParse(wsr, reader, b[:n])
+			if err != nil {
+				// Match the normal parse path: any already-buffered deliveries
+				// need their pending flush signals drained before we close.
+				c.flushClients(0)
+				if err != io.EOF {
+					c.Errorf("read error: %v", err)
+				}
+				c.closeConnection(closedStateForErr(err))
+				return
+			}
+			c.resetReadLoopStallTime()
+			goto postParse
+		} else {
+			bufs[0] = b[:n]
+		}
 
 		// Main call into parser for inbound data. This will generate callouts
 		// to process messages, etc.
@@ -1494,13 +1504,10 @@ func (c *client) readLoop(pre []byte) {
 				}
 				return
 			}
-			// Clear total stalled time here.
-			if c.in.tst >= stallClientMaxDuration {
-				c.rateLimitFormatWarnf("Producer was stalled for a total of %v", c.in.tst.Round(time.Millisecond))
-			}
-			c.in.tst = 0
+			c.resetReadLoopStallTime()
 		}
 
+	postParse:
 		// If we are a ROUTER/LEAF and have processed an INFO, it is possible that
 		// we are asked to switch to compression now.
 		if checkCompress && c.in.flags.isSet(switchToCompression) {
