@@ -3718,6 +3718,10 @@ func (c *client) mqttParseConnect(r *mqttReader, hasMappings bool) (byte, *mqttC
 	// Spec [MQTT-3.1.3-4] and [MQTT-3.1.3-9]
 	if err := mqttValidateString(c.mqtt.cid, "client ID"); err != nil {
 		return mqttConnAckRCIdentifierRejected, nil, err
+	} else if !isValidName(c.mqtt.cid) {
+		// Should not contain characters that make it an invalid name for NATS subjects, etc.
+		err = fmt.Errorf("invalid character in %s %q", "client ID", c.mqtt.cid)
+		return mqttConnAckRCIdentifierRejected, nil, err
 	}
 
 	if hasWill {
