@@ -440,17 +440,25 @@ const (
 
 // For managing stream batches.
 const (
-	streamDefaultMaxBatchInflightPerStream = 50
-	streamDefaultMaxBatchInflightTotal     = 1000
-	streamDefaultMaxBatchSize              = 1000
-	streamDefaultMaxBatchTimeout           = 10 * time.Second
+	streamDefaultMaxBatchTimeout = 10 * time.Second
+	// Atomic batches.
+	streamDefaultMaxAtomicBatchInflightPerStream = 50
+	streamDefaultMaxAtomicBatchInflightTotal     = 1000
+	streamDefaultMaxAtomicBatchSize              = 1000
+	// Fast batches.
+	streamDefaultMaxFastBatchInflightPerStream = 1000
+	streamDefaultMaxFastBatchInflightTotal     = 50_000
 )
 
 var (
-	streamMaxBatchInflightPerStream = streamDefaultMaxBatchInflightPerStream
-	streamMaxBatchInflightTotal     = streamDefaultMaxBatchInflightTotal
-	streamMaxBatchSize              = streamDefaultMaxBatchSize
-	streamMaxBatchTimeout           = streamDefaultMaxBatchTimeout
+	streamMaxBatchTimeout = streamDefaultMaxBatchTimeout
+	// Atomic batches.
+	streamMaxAtomicBatchInflightPerStream = streamDefaultMaxAtomicBatchInflightPerStream
+	streamMaxAtomicBatchInflightTotal     = streamDefaultMaxAtomicBatchInflightTotal
+	streamMaxAtomicBatchSize              = streamDefaultMaxAtomicBatchSize
+	// Fast batches.
+	streamMaxFastBatchInflightPerStream = streamDefaultMaxFastBatchInflightPerStream
+	streamMaxFastBatchInflightTotal     = streamDefaultMaxFastBatchInflightTotal
 )
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined
@@ -6700,7 +6708,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 	if !ok {
 		if batchSeq != 1 {
 			batches.mu.Unlock()
-			maxBatchSize := streamMaxBatchSize
+			maxBatchSize := streamMaxAtomicBatchSize
 			opts := s.getOpts()
 			if opts.JetStreamLimits.MaxBatchSize > 0 {
 				maxBatchSize = opts.JetStreamLimits.MaxBatchSize
@@ -6713,8 +6721,8 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		}
 
 		// Limits.
-		maxInflightPerStream := streamMaxBatchInflightPerStream
-		maxInflightTotal := streamMaxBatchInflightTotal
+		maxInflightPerStream := streamMaxAtomicBatchInflightPerStream
+		maxInflightTotal := streamMaxAtomicBatchInflightTotal
 		opts := s.getOpts()
 		if opts.JetStreamLimits.MaxBatchInflightPerStream > 0 {
 			maxInflightPerStream = opts.JetStreamLimits.MaxBatchInflightPerStream
@@ -6726,20 +6734,20 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		// Confirm we can facilitate an additional batch.
 		if len(batches.atomic)+1 > maxInflightPerStream {
 			batches.mu.Unlock()
-			return respondIncompleteBatch()
+			return respondError(NewJSAtomicPublishTooManyInflightError())
 		}
 
 		// Confirm we'll not exceed the server limit.
-		if globalInflightBatches.Add(1) > int32(maxInflightTotal) {
-			globalInflightBatches.Add(-1)
+		if globalInflightAtomicBatches.Add(1) > int64(maxInflightTotal) {
+			globalInflightAtomicBatches.Add(-1)
 			batches.mu.Unlock()
-			return respondIncompleteBatch()
+			return respondError(NewJSAtomicPublishTooManyInflightError())
 		}
 
 		var err error
 		b, err = batches.newAtomicBatch(mset, batchId)
 		if err != nil {
-			globalInflightBatches.Add(-1)
+			globalInflightAtomicBatches.Add(-1)
 			batches.mu.Unlock()
 			return respondIncompleteBatch()
 		}
@@ -6786,7 +6794,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 	}
 
 	// Confirm the batch doesn't exceed the allowed size.
-	maxSize := streamMaxBatchSize
+	maxSize := streamMaxAtomicBatchSize
 	if maxBatchSize := s.getOpts().JetStreamLimits.MaxBatchSize; maxBatchSize > 0 {
 		maxSize = maxBatchSize
 	}
@@ -7072,6 +7080,31 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 			batches.mu.Unlock()
 			return respondError(NewJSBatchPublishUnknownBatchIDError())
 		}
+
+		// Limits.
+		maxInflightPerStream := streamMaxFastBatchInflightPerStream
+		maxInflightTotal := streamMaxFastBatchInflightTotal
+		opts := s.getOpts()
+		if opts.JetStreamLimits.MaxBatchInflightPerStream > 0 {
+			maxInflightPerStream = opts.JetStreamLimits.MaxBatchInflightPerStream
+		}
+		if opts.JetStreamLimits.MaxBatchInflightTotal > 0 {
+			maxInflightTotal = opts.JetStreamLimits.MaxBatchInflightTotal
+		}
+
+		// Confirm we can facilitate an additional batch.
+		if len(batches.fast)+1 > maxInflightPerStream {
+			batches.mu.Unlock()
+			return respondError(NewJSBatchPublishTooManyInflightError())
+		}
+
+		// Confirm we'll not exceed the server limit.
+		if globalInflightFastBatches.Add(1) > int64(maxInflightTotal) {
+			globalInflightFastBatches.Add(-1)
+			batches.mu.Unlock()
+			return respondError(NewJSBatchPublishTooManyInflightError())
+		}
+
 		// We'll need a copy as we'll use it as a key and later for cleanup.
 		batchId := copyString(batch.id)
 		b = batches.newFastBatch(mset, batchId, batch.gapOk, batch.flow)
@@ -7086,8 +7119,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		if errorOnRequiredApiLevel(hdr) {
 			b.cleanupLocked(batch.id, batches)
 			batches.mu.Unlock()
-			err := NewJSRequiredApiLevelError()
-			return respondError(err)
+			return respondError(NewJSRequiredApiLevelError())
 		}
 		hdr = removeHeaderIfPresent(hdr, JSRequiredApiLevel)
 	}

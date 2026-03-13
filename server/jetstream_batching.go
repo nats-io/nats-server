@@ -30,7 +30,8 @@ import (
 
 var (
 	// Tracks the total inflight batches, across all streams and accounts that enable batching.
-	globalInflightBatches atomic.Int32
+	globalInflightAtomicBatches atomic.Int64
+	globalInflightFastBatches   atomic.Int64
 )
 
 type batching struct {
@@ -97,17 +98,27 @@ func (b *atomicBatch) cleanup(batchId string, batches *batching) {
 
 // Lock should be held.
 func (b *atomicBatch) cleanupLocked(batchId string, batches *batching) {
-	globalInflightBatches.Add(-1)
+	if b.timer == nil {
+		return
+	}
+	globalInflightAtomicBatches.Add(-1)
 	b.timer.Stop()
 	b.store.Delete(true)
 	delete(batches.atomic, batchId)
+	// Reset so that another invocation doesn't double-account.
+	b.timer = nil
 }
 
 // Lock should be held.
 func (b *atomicBatch) stopLocked() {
-	globalInflightBatches.Add(-1)
+	if b.timer == nil {
+		return
+	}
+	globalInflightAtomicBatches.Add(-1)
 	b.timer.Stop()
 	b.store.Stop()
+	// Reset so that another invocation doesn't double-account.
+	b.timer = nil
 }
 
 func getBatchStoreDir(mset *stream, batchId string) (string, string) {
@@ -218,6 +229,10 @@ func (batches *batching) fastBatchRegisterSequences(mset *stream, reply string, 
 				// waiting to acquire the lock. We reset the timer here so it doesn't clean up
 				// this batch that we're about to overwrite.
 				b.timer = nil
+			} else {
+				// If this is a new batch for us, even though we're a follower, we still need
+				// to account toward the global inflight limit.
+				globalInflightFastBatches.Add(1)
 			}
 			// We'll need a copy as we'll use it as a key and later for cleanup.
 			batchId := copyString(batch.id)
@@ -391,8 +406,11 @@ func (b *fastBatch) cleanupLocked(batchId string, batches *batching) {
 	if b.timer == nil {
 		return
 	}
+	globalInflightFastBatches.Add(-1)
 	b.timer.Stop()
 	delete(batches.fast, batchId)
+	// Reset so that another invocation doesn't double-account.
+	b.timer = nil
 }
 
 // getCleanupTimeout returns the timeout for the batch, taking into account the server's limits.

@@ -29,6 +29,9 @@ const (
 	// JSAtomicPublishTooLargeBatchErrF atomic publish batch is too large: {size}
 	JSAtomicPublishTooLargeBatchErrF ErrorIdentifier = 10199
 
+	// JSAtomicPublishTooManyInflight atomic publish too many inflight
+	JSAtomicPublishTooManyInflight ErrorIdentifier = 10210
+
 	// JSAtomicPublishUnsupportedHeaderBatchErr atomic publish unsupported header used: {header}
 	JSAtomicPublishUnsupportedHeaderBatchErr ErrorIdentifier = 10177
 
@@ -43,6 +46,9 @@ const (
 
 	// JSBatchPublishInvalidPatternErr batch publish pattern is invalid
 	JSBatchPublishInvalidPatternErr ErrorIdentifier = 10206
+
+	// JSBatchPublishTooManyInflight batch publish too many inflight
+	JSBatchPublishTooManyInflight ErrorIdentifier = 10211
 
 	// JSBatchPublishUnknownBatchIDErr batch publish ID unknown
 	JSBatchPublishUnknownBatchIDErr ErrorIdentifier = 10208
@@ -640,11 +646,13 @@ var (
 		JSAtomicPublishInvalidBatchIDErr:             {Code: 400, ErrCode: 10179, Description: "atomic publish batch ID is invalid"},
 		JSAtomicPublishMissingSeqErr:                 {Code: 400, ErrCode: 10175, Description: "atomic publish sequence is missing"},
 		JSAtomicPublishTooLargeBatchErrF:             {Code: 400, ErrCode: 10199, Description: "atomic publish batch is too large: {size}"},
+		JSAtomicPublishTooManyInflight:               {Code: 429, ErrCode: 10210, Description: "atomic publish too many inflight"},
 		JSAtomicPublishUnsupportedHeaderBatchErr:     {Code: 400, ErrCode: 10177, Description: "atomic publish unsupported header used: {header}"},
 		JSBadRequestErr:                              {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSBatchPublishDisabledErr:                    {Code: 400, ErrCode: 10205, Description: "batch publish is disabled"},
 		JSBatchPublishInvalidBatchIDErr:              {Code: 400, ErrCode: 10207, Description: "batch publish ID is invalid"},
 		JSBatchPublishInvalidPatternErr:              {Code: 400, ErrCode: 10206, Description: "batch publish pattern is invalid"},
+		JSBatchPublishTooManyInflight:                {Code: 429, ErrCode: 10211, Description: "batch publish too many inflight"},
 		JSBatchPublishUnknownBatchIDErr:              {Code: 400, ErrCode: 10208, Description: "batch publish ID unknown"},
 		JSClusterIncompleteErr:                       {Code: 503, ErrCode: 10004, Description: "incomplete results"},
 		JSClusterNoPeersErrF:                         {Code: 400, ErrCode: 10005, Description: "{err}"},
@@ -951,6 +959,16 @@ func NewJSAtomicPublishTooLargeBatchError(size interface{}, opts ...ErrorOption)
 	}
 }
 
+// NewJSAtomicPublishTooManyInflightError creates a new JSAtomicPublishTooManyInflight error: "atomic publish too many inflight"
+func NewJSAtomicPublishTooManyInflightError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAtomicPublishTooManyInflight]
+}
+
 // NewJSAtomicPublishUnsupportedHeaderBatchError creates a new JSAtomicPublishUnsupportedHeaderBatchErr error: "atomic publish unsupported header used: {header}"
 func NewJSAtomicPublishUnsupportedHeaderBatchError(header interface{}, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -1005,6 +1023,16 @@ func NewJSBatchPublishInvalidPatternError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSBatchPublishInvalidPatternErr]
+}
+
+// NewJSBatchPublishTooManyInflightError creates a new JSBatchPublishTooManyInflight error: "batch publish too many inflight"
+func NewJSBatchPublishTooManyInflightError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSBatchPublishTooManyInflight]
 }
 
 // NewJSBatchPublishUnknownBatchIDError creates a new JSBatchPublishUnknownBatchIDErr error: "batch publish ID unknown"
