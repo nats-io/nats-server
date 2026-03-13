@@ -2487,7 +2487,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 		}
 
 		if e.Type == EntrySnapshot {
-			js.applyMetaSnapshot(e.Data, ru, isRecovering)
+			if err := js.applyMetaSnapshot(e.Data, ru, isRecovering); err != nil {
+				return isRecovering, didSnap, err
+			}
 			didSnap = true
 		} else if e.Type == EntryRemovePeer {
 			if !js.isMetaRecovering() {
