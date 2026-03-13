@@ -82,7 +82,7 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 		requires(2)
 	}
 
-	// Fast batch publishing was added in v2.14 and requires API level 3.
+	// Fast batch publishing was added in v2.14 and requires API level 4.
 	if cfg.AllowBatchPublish {
 		requires(4)
 	}
