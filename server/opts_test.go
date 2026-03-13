@@ -4358,3 +4358,28 @@ func TestEnvVarFromIncludedFile(t *testing.T) {
 		t.Fatalf("Expected port 7890, found %d", opts.Port)
 	}
 }
+
+func TestRedactArgs(t *testing.T) {
+	var input []string
+	var expected []string
+
+	for _, dash := range []string{"-", "--"} {
+		for _, tag := range []string{"user", "pass", "auth"} {
+			for _, delim := range []string{" ", "="} {
+				for _, value := range []string{"hello", "hello world"} {
+					if delim == " " {
+						input = append(input, dash+tag, value)
+						expected = append(expected, dash+tag, "[REDACTED]")
+					} else {
+						input = append(input, dash+tag+delim+value)
+						expected = append(expected, dash+tag+delim+"[REDACTED]")
+					}
+				}
+			}
+		}
+	}
+	RedactArgs(input)
+	if !reflect.DeepEqual(input, expected) {
+		t.Fatalf("A %v\nB %v", expected, input)
+	}
+}
