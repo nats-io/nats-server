@@ -697,6 +697,8 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 	if connDelay := remote.getConnectDelay(); connDelay > 0 {
 		select {
 		case <-time.After(connDelay):
+		case <-remote.quitCh:
+			return false
 		case <-s.quitCh:
 			return false
 		}
