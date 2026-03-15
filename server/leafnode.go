@@ -1915,6 +1915,8 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		// calls closeConnection(), cleanup (including clearing the connect-
 		// in-progress flag) will occur at the appropriate time.
 		if !remote.stillValid() {
+			// Prevent reconnect in case it was not yet done.
+			c.setNoReconnect()
 			s.mu.Unlock()
 			s.removeFromTempClients(cid)
 			return false
