@@ -331,9 +331,16 @@ func generateRemoteLeafOptsName(r *RemoteLeafOpts, redacted bool) string {
 	if acc == _EMPTY_ {
 		acc = globalAccountName
 	}
-	var creds string
+	var optional string
+	// There could be Credentials or NKey, not both (would be caught as a misconfig)
 	if c := r.Credentials; c != _EMPTY_ {
-		creds = fmt.Sprintf(", credentials=%q", c)
+		optional = fmt.Sprintf(", credentials=%q", c)
+	} else if nk := r.Nkey; nk != _EMPTY_ {
+		if redacted {
+			optional = ", nkey=\"[REDACTED]\""
+		} else {
+			optional = fmt.Sprintf(", nkey=%q", nk)
+		}
 	}
 	var urls []*url.URL
 	if redacted {
@@ -341,7 +348,7 @@ func generateRemoteLeafOptsName(r *RemoteLeafOpts, redacted bool) string {
 	} else {
 		urls = r.URLs
 	}
-	return fmt.Sprintf("urls=%q, account=%q%s", urls, acc, creds)
+	return fmt.Sprintf("urls=%q, account=%q%s", urls, acc, optional)
 }
 
 // JSLimitOpts are active limits for the meta cluster
