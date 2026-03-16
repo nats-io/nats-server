@@ -4398,6 +4398,20 @@ func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tra
 	return rsi
 }
 
+// Will remove a status and description from the header if present.
+func removeHeaderStatusIfPresent(hdr []byte) []byte {
+	k := []byte("NATS/1.0")
+	kl, i := len(k), bytes.IndexByte(hdr, '\r')
+	if !bytes.HasPrefix(hdr, k) || i <= kl {
+		return hdr
+	}
+	hdr = append(hdr[:kl], hdr[i:]...)
+	if len(hdr) == len(emptyHdrLine) {
+		return nil
+	}
+	return hdr
+}
+
 // Will remove a header if present.
 func removeHeaderIfPresent(hdr []byte, key string) []byte {
 	for {

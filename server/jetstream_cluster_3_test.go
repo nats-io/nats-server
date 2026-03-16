@@ -8640,3 +8640,45 @@ func TestJetStreamClusterStreamRestoreNameMismatch(t *testing.T) {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
 	}
 }
+
+func TestJetStreamClusterRemoveStatusHeaderOnStreamInbound(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+
+		hdr := []byte("NATS/1.0 100 Description\r\n\r\n")
+		a := s.globalAccount()
+		err = s.sendInternalAccountMsgWithReply(a, "foo", "reply", hdr, nil, false)
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset, err := a.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			sm, err := mset.store.LoadMsg(1, nil)
+			if err != nil {
+				return err
+			} else if len(sm.hdr) != 0 {
+				return fmt.Errorf("expected empty header, got %d bytes", len(sm.hdr))
+			}
+			return nil
+		})
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
