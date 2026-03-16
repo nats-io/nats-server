@@ -960,7 +960,6 @@ forLoop:
 			err := checkConfigsEqual(lrc.RemoteLeafOpts, rlo, []string{
 				"Compression",
 				"Disabled",
-				"LocalAccount",
 				"TLS",
 				"TLSHandshakeFirst",
 				"TLSConfig",

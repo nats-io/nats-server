@@ -4481,6 +4481,8 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 	// With unredacted versions of the URLs
 	urls := []*url.URL{u1, u2}
 	safeURLs := redactURLList(urls)
+	// Some Nkey
+	nkey := "SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4"
 	for _, test := range []struct {
 		name       string
 		input      *RemoteLeafOpts
@@ -4511,6 +4513,14 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 			fmt.Sprintf("urls=%q, account=%q, credentials=%q", safeURLs, globalAccountName, "credsfile"),
 		},
 		{
+			"url with nkey", &RemoteLeafOpts{
+				URLs: []*url.URL{u1, u2},
+				Nkey: nkey,
+			},
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", urls, globalAccountName, nkey),
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", safeURLs, globalAccountName, "[REDACTED]"),
+		},
+		{
 			"url with account and credentials", &RemoteLeafOpts{
 				URLs:         []*url.URL{u1, u2},
 				LocalAccount: "A",
@@ -4518,6 +4528,15 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 			},
 			fmt.Sprintf("urls=%q, account=%q, credentials=%q", urls, "A", "credsfile"),
 			fmt.Sprintf("urls=%q, account=%q, credentials=%q", safeURLs, "A", "credsfile"),
+		},
+		{
+			"url with account and nkey", &RemoteLeafOpts{
+				URLs:         []*url.URL{u1, u2},
+				LocalAccount: "A",
+				Nkey:         nkey,
+			},
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", urls, "A", nkey),
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", safeURLs, "A", "[REDACTED]"),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
