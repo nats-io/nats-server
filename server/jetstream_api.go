@@ -607,7 +607,7 @@ const JSApiStreamRestoreResponseType = "io.nats.jetstream.api.v1.stream_restore_
 
 // JSApiStreamRemovePeerRequest is the required remove peer request.
 type JSApiStreamRemovePeerRequest struct {
-	// Server name of the peer to be removed.
+	// Server name or peer ID of the peer to be removed.
 	Peer string `json:"peer"`
 }
 
@@ -1595,9 +1595,9 @@ func (jsa *jsAccount) tieredReservation(tier string, cfg *StreamConfig) int64 {
 			// If tier is empty, all storage is flat and we should adjust for replicas.
 			// Otherwise if tiered, storage replication already taken into consideration.
 			if tier == _EMPTY_ && sa.cfg.Replicas > 1 {
-				reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
+				reservation = addSaturate(reservation, mulSaturate(int64(sa.cfg.Replicas), sa.cfg.MaxBytes))
 			} else {
-				reservation += sa.cfg.MaxBytes
+				reservation = addSaturate(reservation, sa.cfg.MaxBytes)
 			}
 		}
 	}
@@ -2625,13 +2625,17 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, _ *Acco
 		return
 	}
 
-	// Check to see if we are a member of the group and if the group has no leader.
-	// Peers here is a server name, convert to node name.
-	nodeName := getHash(req.Peer)
-
 	js.mu.RLock()
 	rg := sa.Group
+
+	// Check to see if we are a member of the group.
+	// Peer here is either a peer ID or a server name, convert to node name.
+	nodeName := getHash(req.Peer)
 	isMember := rg.isMember(nodeName)
+	if !isMember {
+		nodeName = req.Peer
+		isMember = rg.isMember(nodeName)
+	}
 	js.mu.RUnlock()
 
 	// Make sure we are a member.
@@ -4038,17 +4042,22 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 	if stream != req.Config.Name && req.Config.Name == _EMPTY_ {
 		req.Config.Name = stream
 	}
-
-	// check stream config at the start of the restore process, not at the end
-	cfg, apiErr := s.checkStreamCfg(&req.Config, acc, false)
-	if apiErr != nil {
-		resp.Error = apiErr
+	if stream != req.Config.Name {
+		resp.Error = NewJSStreamMismatchError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRestoreRequest(ci, acc, &req, subject, reply, rmsg)
+		return
+	}
+
+	// check stream config at the start of the restore process, not at the end
+	cfg, apiErr := s.checkStreamCfg(&req.Config, acc, false)
+	if apiErr != nil {
+		resp.Error = apiErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -4072,7 +4081,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
-	s.processStreamRestore(ci, acc, &req.Config, subject, reply, string(msg))
+	s.processStreamRestore(ci, acc, &cfg, subject, reply, string(msg))
 }
 
 func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamConfig, subject, reply, msg string) <-chan error {

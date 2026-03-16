@@ -3521,8 +3521,15 @@ func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 		indexUpdateQ.push(ar.index)
 	}
 
-	// Ignore items already committed.
-	if ar.index <= n.commit {
+	// Ignore items already committed, or skip if this is not about an entry that matches our current term.
+	if ar.index <= n.commit || ar.term != n.term {
+		assert.AlwaysOrUnreachable(ar.term <= n.term, "Raft response term mismatch", map[string]any{
+			"n.accName": n.accName,
+			"n.group":   n.group,
+			"n.id":      n.id,
+			"n.term":    n.term,
+			"ar.term":   ar.term,
+		})
 		return false
 	}
 
@@ -4306,7 +4313,8 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 	if ar.success {
 		// The remote node successfully committed the append entry.
 		// They agree with our leadership and are happy with the state of the log.
-		// In this case ar.term doesn't matter.
+		// In this case ar.term was populated with the remote's pterm. If this matches
+		// our term, we can use it to check for quorum and up our commit.
 		var err error
 		var committed bool
 
@@ -5024,6 +5032,7 @@ func (n *raft) switchToCandidate() {
 	}
 	// Increment the term.
 	n.term++
+	n.vote = noVote
 	// Clear current Leader.
 	n.updateLeader(noLeader)
 	n.switchState(Candidate)

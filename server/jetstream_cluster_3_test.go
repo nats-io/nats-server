@@ -6504,6 +6504,42 @@ func TestJetStreamClusterTieredReservationConsistency(t *testing.T) {
 	require_Equal(t, reservation, 10)
 }
 
+func TestJetStreamClusterTieredReservationOverflow(t *testing.T) {
+	tmpl := strings.Replace(jsClusterMaxBytesAccountLimitTempl, "max_file_store: 4GB", "max_file_store: 9223372036854775807", 1)
+	tmpl = strings.Replace(tmpl, "max_file:  3GB", "max_file:  5000000000000000000", 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create a stream with R=3 and MaxBytes large enough that
+	// Replicas * MaxBytes overflows int64:
+	//   3 * 4e18 = 12e18 > MaxInt64 (9.22e18)
+	// The first stream passes the limit check because there are no
+	// existing reservations: 0 + 4e18 < 5e18 (account limit).
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "S1",
+		Subjects: []string{"s1"},
+		MaxBytes: 4_000_000_000_000_000_000, // 4e18
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// The true reservation for S1 is 3 * 4e18 = 12e18, which already
+	// exceeds the account limit of 5e18. Creating any additional stream
+	// should be rejected. With the overflow bug, the reservation
+	// computation wraps to a negative value, making the account appear
+	// to have plenty of room.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "S2",
+		Subjects: []string{"s2"},
+		MaxBytes: 1,
+		Replicas: 3,
+	})
+	require_Error(t, err, errors.New("nats: insufficient storage resources available"))
+}
+
 func TestJetStreamClusterProcessSnapshotPanicAfterStreamDelete(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -7746,6 +7782,34 @@ func TestJetStreamClusterMetaSnapshotPreservesConsumersOnStreamUpdate(t *testing
 	require_NotNil(t, stream.consumers["CONSUMER"])
 }
 
+func TestJetStreamClusterCheckForOrphansDoesntDeleteDirectConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "MIRROR", Mirror: &nats.StreamSource{Name: "TEST"}})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if c := mset.numDirectConsumers(); c != 1 {
+			return fmt.Errorf("expected 1 consumer, got %d", c)
+		}
+		return nil
+	})
+
+	require_Equal(t, mset.numDirectConsumers(), 1)
+	sl.getJetStream().checkForOrphans()
+	require_Equal(t, mset.numDirectConsumers(), 1)
+}
+
 func TestJetStreamClusterConsumerAssignmentsOrInflightSeqWithInflightStream(t *testing.T) {
 	const acc, stream, consumer = "A", "S", "C"
 	js := &jetStream{cluster: &jetStreamCluster{
@@ -7854,6 +7918,87 @@ func TestJetStreamClusterApiPagedRequestOffsetValidation(t *testing.T) {
 			require_Equal(t, resp.Offset, 0)
 			require_Equal(t, resp.Total, 1)
 			require_Len(t, len(resp.Consumers), 1)
+		})
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamClusterStreamRestoreNameMismatch(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "EXISTS", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+
+		b := []byte(`{"config":{}}`)
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "EXISTS"), b, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamRestoreResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Error(t, resp.Error, NewJSStreamNameExistRestoreFailedError())
+
+		b = []byte(`{"config":{"name":"RANDOM"}}`)
+		rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), b, time.Second)
+		require_NoError(t, err)
+		resp = JSApiStreamRestoreResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Error(t, resp.Error, NewJSStreamMismatchError())
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamClusterRemoveStatusHeaderOnStreamInbound(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+
+		hdr := []byte("NATS/1.0 100 Description\r\n\r\n")
+		a := s.globalAccount()
+		err = s.sendInternalAccountMsgWithReply(a, "foo", "reply", hdr, nil, false)
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset, err := a.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			sm, err := mset.store.LoadMsg(1, nil)
+			if err != nil {
+				return err
+			} else if len(sm.hdr) != 0 {
+				return fmt.Errorf("expected empty header, got %d bytes", len(sm.hdr))
+			}
+			return nil
 		})
 	}
 	for _, replicas := range []int{1, 3} {

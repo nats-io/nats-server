@@ -1682,6 +1682,7 @@ func TestMQTTParseConnect(t *testing.T) {
 		{"empty client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 0}, errMQTTCIDEmptyNeedsCleanFlag.Error(), false},
 		{"invalid utf8 client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, 241}, "invalid utf8 for client ID", false},
 		{"client ID with null byte", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 3, 'a', 0, 'b'}, "", true},
+		{"client ID with invalid character", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, '.'}, "", true},
 		{"missing will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, "Will topic", false},
 		{"empty will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, errMQTTEmptyWillTopic.Error(), false},
 		{"invalid utf8 will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, "invalid utf8 for Will topic", false},
@@ -2124,10 +2125,19 @@ func testMQTTSub(t testing.TB, pi uint16, c net.Conn, r *mqttReader, filters []*
 
 func TestMQTTSubAck(t *testing.T) {
 	o := testMQTTDefaultOptions()
+	o.Users = []*User{
+		{
+			Username: "user",
+			Password: "pass",
+			Permissions: &Permissions{
+				Subscribe: &SubjectPermission{Allow: []string{"foo", "bar", "baz", "foo.>"}},
+			},
+		},
+	}
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, user: "user", pass: "pass"}, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
@@ -4882,6 +4892,10 @@ func TestMQTTPermissionsViolation(t *testing.T) {
 				Subscribe: &SubjectPermission{Allow: []string{"foo"}, Deny: []string{"$MQTT.sub.>"}},
 			},
 		},
+		{
+			Username: "observer",
+			Password: "pass",
+		},
 	}
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
@@ -4910,6 +4924,19 @@ func TestMQTTPermissionsViolation(t *testing.T) {
 	testMQTTCheckPubMsg(t, mc, rc, "foo/bar", 0, []byte("msg1"))
 	testMQTTPublish(t, mp, rp, 1, false, false, "foo/bar", 1, []byte("msg2"))
 	testMQTTCheckPubMsg(t, mc, rc, "foo/bar", mqttPubQos1, []byte("msg2"))
+
+	// MQTT clients should not be able to access internal "$MQTT.msgs.*" subjects
+	// unless explicitly granted by allow permissions.
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "$MQTT/msgs/#", qos: 1}}, []byte{mqttSubAckFailure})
+
+	onc := natsConnect(t, s.ClientURL(), nats.UserInfo("observer", "pass"))
+	defer onc.Close()
+	osub := natsSubSync(t, onc, "$MQTT.msgs.>")
+	natsFlush(t, onc)
+	testMQTTPublish(t, mp, rp, 0, false, false, "$MQTT/msgs/injected", 0, []byte("internal"))
+	if m, err := osub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Expected no internal MQTT message to be published, got subject=%q", m.Subject)
+	}
 
 	// But these should not be cause pub has no permission to publish on foo.baz
 	testMQTTPublish(t, mp, rp, 0, false, false, "foo/baz", 0, []byte("msg3"))
