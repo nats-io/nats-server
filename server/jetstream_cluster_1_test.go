@@ -4920,6 +4920,19 @@ func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 			t.Fatalf("Expected no replicas for ephemeral, got %d", len(ci.Cluster.Replicas))
 		}
 	}
+
+	// Confirm we can peer-remove by the peer ID instead of the server name too.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	nodeName := rs.Node()
+	require_Equal(t, nodeName, getHash(rs.Name()))
+	req = &JSApiStreamRemovePeerRequest{Peer: nodeName}
+	jsreq, err = json.Marshal(req)
+	require_NoError(t, err)
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), jsreq, time.Second)
+	require_NoError(t, err)
+	rpResp = JSApiStreamRemovePeerResponse{}
+	require_NoError(t, json.Unmarshal(resp.Data, &rpResp))
+	require_True(t, rpResp.Success)
 }
 
 func TestJetStreamClusterStreamLeaderStepDown(t *testing.T) {
