@@ -1530,6 +1530,11 @@ func (c *client) readLoop(pre []byte) {
 				acc.stats.Unlock()
 			}
 
+			if c.kind == CLIENT {
+				atomic.AddInt64(&s.inClientMsgs, inMsgs)
+				atomic.AddInt64(&s.inClientBytes, inBytes)
+			}
+
 			atomic.AddInt64(&s.inMsgs, inMsgs)
 			atomic.AddInt64(&s.inBytes, inBytes)
 		}
@@ -5006,6 +5011,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	var dlvExtraSize int64
 	var dlvRouteMsgs int64
 	var dlvLeafMsgs int64
+	var dlvClientMsgs int64
 
 	// We need to know if this is a MQTT producer because they send messages
 	// without CR_LF (we otherwise remove the size of CR_LF from message size).
@@ -5019,12 +5025,15 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		totalBytes := dlvMsgs*int64(len(msg)) + dlvExtraSize
 		routeBytes := dlvRouteMsgs*int64(len(msg)) + dlvExtraSize
 		leafBytes := dlvLeafMsgs*int64(len(msg)) + dlvExtraSize
+		// dlvExtraSize applies to route/leaf header overhead, not client deliveries
+		clientBytes := dlvClientMsgs * int64(len(msg))
 
 		// For non MQTT producers, remove the CR_LF * number of messages
 		if !prodIsMQTT {
 			totalBytes -= dlvMsgs * int64(LEN_CR_LF)
 			routeBytes -= dlvRouteMsgs * int64(LEN_CR_LF)
 			leafBytes -= dlvLeafMsgs * int64(LEN_CR_LF)
+			clientBytes -= dlvClientMsgs * int64(LEN_CR_LF)
 		}
 
 		if acc != nil {
@@ -5045,6 +5054,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		if srv := c.srv; srv != nil {
 			atomic.AddInt64(&srv.outMsgs, dlvMsgs)
 			atomic.AddInt64(&srv.outBytes, totalBytes)
+
+			atomic.AddInt64(&srv.outClientMsgs, dlvClientMsgs)
+			atomic.AddInt64(&srv.outClientBytes, clientBytes)
 		}
 	}
 
@@ -5140,6 +5152,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// We don't count internal deliveries, so do only when sub.icb is nil.
 			if sub.icb == nil {
 				dlvMsgs++
+				if sub.client.kind == CLIENT {
+					dlvClientMsgs++
+				}
 			}
 			didDeliver = true
 		}
@@ -5367,6 +5382,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 						dlvRouteMsgs++
 					case LEAF:
 						dlvLeafMsgs++
+					case CLIENT:
+						dlvClientMsgs++
 					}
 				}
 				// Do the rest even when message delivery was skipped.
