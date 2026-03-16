@@ -2427,8 +2427,6 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		}
 		u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
 		expected.URLs = append(expected.URLs, u)
-		// Force creation of the name for `expected`
-		expected.name()
 		if !reflect.DeepEqual(opts.LeafNode.Remotes[0], expected) {
 			t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes[0])
 		}
@@ -2465,8 +2463,6 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		}
 		u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
 		expected.URLs = append(expected.URLs, u)
-		// Force creation of the name for `expected`
-		expected.name()
 		if !reflect.DeepEqual(opts.LeafNode.Remotes[0], expected) {
 			t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes[0])
 		}
@@ -2609,10 +2605,6 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 				Credentials:             "./my.creds",
 				JetStreamClusterMigrate: false,
 			},
-		}
-		// Force creation of the name for `expected`
-		for _, e := range expected {
-			e.name()
 		}
 		if !reflect.DeepEqual(opts.LeafNode.Remotes, expected) {
 			t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes)
@@ -4513,18 +4505,21 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 	require_NoError(t, err)
 	u2, err := url.Parse("nats://user2:secretpwd@127.0.0.1:7222")
 	require_NoError(t, err)
-	// We expect redacted versions of the URLs
-	urls := []string{"nats://user1:xxxxx@127.0.0.1:7222", "nats://user2:xxxxx@127.0.0.1:7222"}
+	// With unredacted versions of the URLs
+	urls := []*url.URL{u1, u2}
+	safeURLs := redactURLList(urls)
 	for _, test := range []struct {
-		name   string
-		input  *RemoteLeafOpts
-		output string
+		name       string
+		input      *RemoteLeafOpts
+		output     string
+		safeOutput string
 	}{
 		{
 			"url only", &RemoteLeafOpts{
 				URLs: []*url.URL{u1, u2},
 			},
 			fmt.Sprintf("urls=%q, account=%q", urls, globalAccountName),
+			fmt.Sprintf("urls=%q, account=%q", safeURLs, globalAccountName),
 		},
 		{
 			"url with account", &RemoteLeafOpts{
@@ -4532,6 +4527,7 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 				LocalAccount: "A",
 			},
 			fmt.Sprintf("urls=%q, account=%q", urls, "A"),
+			fmt.Sprintf("urls=%q, account=%q", safeURLs, "A"),
 		},
 		{
 			"url with credentials", &RemoteLeafOpts{
@@ -4539,6 +4535,7 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 				Credentials: "credsfile",
 			},
 			fmt.Sprintf("urls=%q, account=%q, credentials=%q", urls, globalAccountName, "credsfile"),
+			fmt.Sprintf("urls=%q, account=%q, credentials=%q", safeURLs, globalAccountName, "credsfile"),
 		},
 		{
 			"url with account and credentials", &RemoteLeafOpts{
@@ -4547,18 +4544,21 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 				Credentials:  "credsfile",
 			},
 			fmt.Sprintf("urls=%q, account=%q, credentials=%q", urls, "A", "credsfile"),
+			fmt.Sprintf("urls=%q, account=%q, credentials=%q", safeURLs, "A", "credsfile"),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			name := test.input.name()
 			require_Equal(t, name, test.output)
+			name = test.input.safeName()
+			require_Equal(t, name, test.safeOutput)
 		})
 	}
 
 	// Because we use `%q` when building the name, those two will have different
 	// names:
-	// r1=urls=["nats://user1:xxxxx@127.0.0.1:7222"], account="A", credentials="creds"
-	// r2=urls=["nats://user1:xxxxx@127.0.0.1:7222"], account="A\", credentials=\"creds"
+	// r1=urls=["nats://user1:secretpwd@127.0.0.1:7222"], account="A", credentials="creds"
+	// r2=urls=["nats://user1:secretpwd@127.0.0.1:7222"], account="A\", credentials=\"creds"
 	r1 := &RemoteLeafOpts{URLs: []*url.URL{u1}, LocalAccount: "A", Credentials: "creds"}
 	r2 := &RemoteLeafOpts{URLs: []*url.URL{u1}, LocalAccount: `A", credentials="creds`}
 	require_False(t, r1.name() == r2.name())

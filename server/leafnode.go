@@ -218,7 +218,7 @@ func validateLeafNode(o *Options) error {
 			}
 			rn := r.name()
 			if _, dup := names[rn]; dup {
-				return fmt.Errorf("duplicate remote %s", rn)
+				return fmt.Errorf("duplicate remote %s", r.safeName())
 			}
 			names[rn] = struct{}{}
 		}
