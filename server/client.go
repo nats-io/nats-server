@@ -2808,9 +2808,10 @@ func (c *client) processHeaderPub(arg, remaining []byte) error {
 		// look for the tracing header and if found, we will generate a
 		// trace event with the max payload ingress error.
 		// Do this only for CLIENT connections.
-		if c.kind == CLIENT && len(remaining) > 0 {
-			if td := getHeader(MsgTraceDest, remaining); len(td) > 0 {
-				c.initAndSendIngressErrEvent(remaining, string(td), ErrMaxPayload)
+		if c.kind == CLIENT && c.pa.hdr > 0 && len(remaining) > 0 {
+			hdr := remaining[:min(len(remaining), c.pa.hdr)]
+			if td := getHeader(MsgTraceDest, hdr); len(td) > 0 {
+				c.initAndSendIngressErrEvent(hdr, string(td), ErrMaxPayload)
 			}
 		}
 		c.maxPayloadViolation(c.pa.size, maxPayload)
