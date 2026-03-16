@@ -5024,6 +5024,7 @@ func (n *raft) switchToCandidate() {
 	}
 	// Increment the term.
 	n.term++
+	n.vote = noVote
 	// Clear current Leader.
 	n.updateLeader(noLeader)
 	n.switchState(Candidate)

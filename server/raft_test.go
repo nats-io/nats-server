@@ -5033,6 +5033,27 @@ func TestNRGInstallSnapshotFromCheckpointAfterTruncateToSnapshot(t *testing.T) {
 	require_Equal(t, count, 1)
 }
 
+func TestNRGSwitchToCandidateResetsVote(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	require_Equal(t, n.term, 0)
+	n.vote = nats0
+	n.switchToCandidate()
+
+	// Confirm the term was incremented and the vote reset.
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, _EMPTY_)
+
+	// Confirm this was written to disk.
+	term, voted, err := n.readTermVote()
+	require_NoError(t, err)
+	require_Equal(t, term, 1)
+	require_Equal(t, voted, _EMPTY_)
+}
+
 func TestNRGInitSingleMemRaftNodeDefaults(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
