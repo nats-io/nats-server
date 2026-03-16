@@ -8403,6 +8403,34 @@ func TestJetStreamClusterMetaSnapshotPreservesConsumersOnStreamUpdate(t *testing
 	require_NotNil(t, stream.consumers["CONSUMER"])
 }
 
+func TestJetStreamClusterCheckForOrphansDoesntDeleteDirectConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "MIRROR", Mirror: &nats.StreamSource{Name: "TEST"}})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if c := mset.numDirectConsumers(); c != 1 {
+			return fmt.Errorf("expected 1 consumer, got %d", c)
+		}
+		return nil
+	})
+
+	require_Equal(t, mset.numDirectConsumers(), 1)
+	sl.getJetStream().checkForOrphans()
+	require_Equal(t, mset.numDirectConsumers(), 1)
+}
+
 func TestJetStreamClusterConsumerAssignmentsOrInflightSeqWithInflightStream(t *testing.T) {
 	const acc, stream, consumer = "A", "S", "C"
 	js := &jetStream{cluster: &jetStreamCluster{
