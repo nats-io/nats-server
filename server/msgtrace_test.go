@@ -371,6 +371,42 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 	}
 }
 
+func TestMsgTraceIngressMaxPayloadErrorDoesNotScanPayloadForTraceDest(t *testing.T) {
+	o := DefaultOptions()
+	o.MaxPayload = 1024
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	natsFlush(t, nc)
+
+	checkSubInterest(t, s, globalAccountName, "my.trace.subj", time.Second)
+
+	nc2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+	require_NoError(t, err)
+	defer nc2.Close()
+
+	_, err = nc2.Write([]byte("CONNECT {\"protocol\":1,\"headers\":true,\"no_responders\":true}\r\n"))
+	require_NoError(t, err)
+
+	// Payload contains a valid header, but the server should
+	// not interpret it as such.
+	payload := fmt.Sprintf("AA\r\n%s:%s\r\n", MsgTraceDest, traceSub.Subject)
+
+	hPub := fmt.Sprintf("HPUB foo %d 2048\r\n%s%s", len(hdrLine), hdrLine, payload)
+	_, err = nc2.Write([]byte(hPub))
+	require_NoError(t, err)
+
+	// If bug is present: we receive a trace msg, even though
+	// no trace header was set.
+	if traceMsg, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received trace message: %s", traceMsg.Data)
+	}
+}
+
 func TestMsgTraceIngressErrors(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
