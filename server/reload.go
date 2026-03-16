@@ -914,103 +914,109 @@ func getLeafNodeOptionsChanges(s *Server, old, new *LeafNodeOpts) (*leafNodeOpti
 		remoteErrFormat = "remote %s: %s"
 		maxAttempts     = 20
 	)
-	var failed int
+	var (
+		nlo *leafNodeOption
+		// Track whether any existing remote was not found (i.e. removed).
+		removed bool
+	)
 
-DO_REMOTES:
-	if failed > 0 {
-		// If we failed once, we will wait a bit before trying again the remotes.
-		// This could give enough time for connections that were in progress to complete.
-		select {
-		case <-time.After(50 * time.Millisecond):
-		case <-s.quitCh:
-			return nil, ErrServerNotRunning
-		}
-	}
-	nlo := &leafNodeOption{
-		tlsFirstChanged:    (old.TLSHandshakeFirst != new.TLSHandshakeFirst || old.TLSHandshakeFirstFallback != new.TLSHandshakeFirstFallback),
-		compressionChanged: !old.Compression.equals(&new.Compression),
-		// Start with all, will update when processing existing ones.
-		// Since the list will be modified, we need to clone it.
-		added: slices.Clone(new.Remotes),
-	}
-
-	s.mu.RLock()
-	// Track whether any existing remote was not found (i.e. removed).
-	var removed bool
-	// Go through the list of existing remote configurations.
-	for lrc := range s.leafRemoteCfgs {
-		var rlo *RemoteLeafOpts
-		// Look for the corresponding `*RemoteLeafOpts` in the `nlo.added`
-		// list. If it is found, that function returns an updated list
-		// with the element removed from it.
-		lrc.RLock()
-		rlo, nlo.added = getRemoteLeafOpts(lrc.RemoteLeafOpts.name(), nlo.added)
-		if rlo == nil {
-			// Not found, will be removed in leafNodeOption.Apply().
-			removed = true
-			lrc.RUnlock()
-			continue
-		}
-		// Now we need to make sure that there are no changes that we don't
-		// support for a RemoteLeafOpts.
-		err := checkConfigsEqual(lrc.RemoteLeafOpts, rlo, []string{
-			"Compression",
-			"Disabled",
-			"LocalAccount",
-			"TLS",
-			"TLSHandshakeFirst",
-			"TLSConfig",
-		})
-		if err != nil {
-			lrc.RUnlock()
-			s.mu.RUnlock()
-			return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(), err)
-		}
-		disabledChanged := lrc.Disabled != rlo.Disabled
-		// If this remote was disabled and is now enabled, we need to make sure
-		// that there is no connect in progress. If that is the case, either
-		// try again (if it is the first failure) or return an error.
-		if disabledChanged && lrc.Disabled && lrc.connInProgress {
-			lrc.RUnlock()
-			s.mu.RUnlock()
-			if failed++; failed < maxAttempts {
-				goto DO_REMOTES
+forLoop:
+	for failed := range maxAttempts {
+		removed = false
+		if failed > 0 {
+			// If we failed once, we will wait a bit before trying again the remotes.
+			// This could give enough time for connections that were in progress to complete.
+			select {
+			case <-time.After(50 * time.Millisecond):
+			case <-s.quitCh:
+				return nil, ErrServerNotRunning
 			}
-			return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(),
-				"cannot be enabled at the moment, try again")
 		}
-		// Since we will use the new `rlo.TLSConfig` later on, consider all
-		// existing remote configs as "changed" and store them in the
-		// `nlo.changed` map.
-		if nlo.changed == nil {
-			nlo.changed = make(map[*leafNodeCfg]*remoteLeafOption)
+		nlo = &leafNodeOption{
+			tlsFirstChanged:    (old.TLSHandshakeFirst != new.TLSHandshakeFirst || old.TLSHandshakeFirstFallback != new.TLSHandshakeFirstFallback),
+			compressionChanged: !old.Compression.equals(&new.Compression),
+			// Start with all, will update when processing existing ones.
+			// Since the list will be modified, we need to clone it.
+			added: slices.Clone(new.Remotes),
 		}
-		lnro := &remoteLeafOption{
-			tlsFirstChanged:    lrc.TLSHandshakeFirst != rlo.TLSHandshakeFirst,
-			compressionChanged: !lrc.Compression.equals(&rlo.Compression),
-			disabledChanged:    disabledChanged,
-			opts:               rlo,
-		}
-		lrc.RUnlock()
-		nlo.changed[lrc] = lnro
-	}
-	if len(nlo.added) > 0 {
-		// Go through the added list and check if an added was recently removed and,
-		// if that is the case, is it still in the `s.rmLeafRemoteCfgs` map, which
-		// may mean that there was a connect-in-progress that did not complete yet.
-		// Either try again (if it is the first failure) or return an error.
-		for _, rlo := range nlo.added {
-			if _, cip := s.rmLeafRemoteCfgs[rlo.name()]; cip {
+
+		s.mu.RLock()
+		// Go through the list of existing remote configurations.
+		for lrc := range s.leafRemoteCfgs {
+			var rlo *RemoteLeafOpts
+			// Look for the corresponding `*RemoteLeafOpts` in the `nlo.added`
+			// list. If it is found, that function returns an updated list
+			// with the element removed from it.
+			lrc.RLock()
+			rlo, nlo.added = getRemoteLeafOpts(lrc.name(), nlo.added)
+			if rlo == nil {
+				// Not found, will be removed in leafNodeOption.Apply().
+				removed = true
+				lrc.RUnlock()
+				continue
+			}
+			// Now we need to make sure that there are no changes that we don't
+			// support for a RemoteLeafOpts.
+			err := checkConfigsEqual(lrc.RemoteLeafOpts, rlo, []string{
+				"Compression",
+				"Disabled",
+				"LocalAccount",
+				"TLS",
+				"TLSHandshakeFirst",
+				"TLSConfig",
+			})
+			if err != nil {
+				lrc.RUnlock()
 				s.mu.RUnlock()
-				if failed++; failed < maxAttempts {
-					goto DO_REMOTES
+				return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(), err)
+			}
+			disabledChanged := lrc.Disabled != rlo.Disabled
+			// If this remote was disabled and is now enabled, we need to make sure
+			// that there is no connect in progress. If that is the case, either
+			// try again (if it is the first failure) or return an error.
+			if disabledChanged && lrc.Disabled && lrc.connInProgress {
+				lrc.RUnlock()
+				s.mu.RUnlock()
+				if failed < maxAttempts-1 {
+					continue forLoop
 				}
 				return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(),
-					"cannot be added at the moment, try again")
+					"cannot be enabled at the moment, try again")
+			}
+			// Since we will use the new `rlo.TLSConfig` later on, consider all
+			// existing remote configs as "changed" and store them in the
+			// `nlo.changed` map.
+			if nlo.changed == nil {
+				nlo.changed = make(map[*leafNodeCfg]*remoteLeafOption)
+			}
+			lnro := &remoteLeafOption{
+				tlsFirstChanged:    lrc.TLSHandshakeFirst != rlo.TLSHandshakeFirst,
+				compressionChanged: !lrc.Compression.equals(&rlo.Compression),
+				disabledChanged:    disabledChanged,
+				opts:               rlo,
+			}
+			lrc.RUnlock()
+			nlo.changed[lrc] = lnro
+		}
+		if len(nlo.added) > 0 {
+			// Go through the added list and check if an added was recently removed and,
+			// if that is the case, is it still in the `s.rmLeafRemoteCfgs` map, which
+			// may mean that there was a connect-in-progress that did not complete yet.
+			// Either try again (if it is the first failure) or return an error.
+			for _, rlo := range nlo.added {
+				if _, cip := s.rmLeafRemoteCfgs[rlo.name()]; cip {
+					s.mu.RUnlock()
+					if failed < maxAttempts-1 {
+						continue forLoop
+					}
+					return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(),
+						"cannot be added at the moment, try again")
+				}
 			}
 		}
+		s.mu.RUnlock()
+		break
 	}
-	s.mu.RUnlock()
 
 	// Now we want to make sure that there were actual changes, so that we don't
 	// cause a reload of leafnodes for nothing. However, if one has (or all have)

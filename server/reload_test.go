@@ -7156,7 +7156,7 @@ func TestConfigReloadAddRemoveRemoteLeafNodes(t *testing.T) {
 	checkLeafNodeConnectedCount(t, s2, 3)
 	checkLeafs([]string{"A", "B", "C"})
 
-	// Remote remote with local account "A" and "C"
+	// Remove remote with local account "A" and "C"
 	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, _EMPTY_, accB, _EMPTY_))
 
 	checkLeafNodeConnectedCount(t, s2, 1)
