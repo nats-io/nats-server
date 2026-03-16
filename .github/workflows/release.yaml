@@ -33,18 +33,18 @@ jobs:
 
       - name: Install cosign
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit faadad0cce49287aee09b3a48701e75088a2c6ad = tag v4.0.0
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+        # Commit ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 = tag v4.1.0
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22
 
       - name: Install syft
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 28d71544de8eaf1b958d335707167c5f783590ad = tag v0.22.2
-        uses: anchore/sbom-action/download-syft@28d71544de8eaf1b958d335707167c5f783590ad
+        # Commit 57aae528053a48a3f6235f2d9461b05fbcb7366d = tag v0.23.1
+        uses: anchore/sbom-action/download-syft@57aae528053a48a3f6235f2d9461b05fbcb7366d
         with:
-          syft-version: "v1.41.2"
+          syft-version: "v1.42.2"
 
       - name: Create release
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
