@@ -1603,6 +1603,7 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 
 	// Send heartbeat, which commits the second message.
 	n.switchToLeader()
+	n.term = aeHeartbeat1.term
 	n.processAppendEntryResponse(&appendEntryResponse{
 		term:    aeHeartbeat1.term,
 		index:   aeHeartbeat1.pindex,
@@ -2292,6 +2293,7 @@ func TestNRGQuorumAccounting(t *testing.T) {
 
 	// Switch this node to leader which sends an entry.
 	n.switchToLeader()
+	n.term = 1
 	require_Equal(t, n.pindex, 1)
 
 	// The first response MUST NOT indicate quorum has been reached.
@@ -2317,7 +2319,7 @@ func TestNRGRevalidateQuorumAfterLeaderChange(t *testing.T) {
 
 	// Timeline
 	aeHeartbeat1Response := &appendEntryResponse{term: 1, index: 1, peer: nats1, success: true}
-	aeHeartbeat2Response := &appendEntryResponse{term: 1, index: 1, peer: nats2, success: true}
+	aeHeartbeat2Response := &appendEntryResponse{term: 6, index: 2, peer: nats2, success: true}
 
 	// Adjust cluster size, so we need at least 2 responses from other servers to establish quorum.
 	require_NoError(t, n.AdjustBootClusterSize(5))
@@ -5439,4 +5441,50 @@ func TestNRGPeersResponse(t *testing.T) {
 			require_True(t, ps.Current)
 		}
 	}
+}
+
+func TestNRGOnlyCommitIfCurrentTerm(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	s1 := getHash("S-1")
+	s2 := getHash("S-2")
+	s3 := getHash("S-3")
+
+	n.addPeer(s2)
+	n.addPeer(s3)
+	require_Len(t, len(n.Peers()), 3)
+
+	// The below timeline describes a test ensuring a leader doesn't commit entries from previous terms.
+
+	// This server became leader twice and stored two entries.
+	aeMsg1 := encode(t, &appendEntry{leader: s1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	require_NoError(t, n.storeToWAL(aeMsg1))
+	aeMsg2 := encode(t, &appendEntry{leader: s1, term: 2, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	require_NoError(t, n.storeToWAL(aeMsg2))
+
+	// Another server became leader for term 3 without us knowing and stored a different entry at index 2.
+	// We now become leader again and store a new entry at index 3, but unaware of the above term 3 entry.
+	aeMsg3 := encode(t, &appendEntry{leader: s1, term: 4, commit: 0, pterm: 2, pindex: 2, entries: entries})
+	require_NoError(t, n.storeToWAL(aeMsg3))
+
+	// Set up leader state for below response handling.
+	n.switchToLeader()
+	n.term = 4
+	require_Equal(t, n.commit, 0)
+
+	// When we get quorum on the first two entries this doesn't count toward upping the commit yet.
+	n.processAppendEntryResponse(&appendEntryResponse{term: 1, index: 1, peer: s2, success: true})
+	require_Equal(t, n.commit, 0)
+	n.processAppendEntryResponse(&appendEntryResponse{term: 2, index: 2, peer: s2, success: true})
+	require_Equal(t, n.commit, 0)
+	// Only once we receive quorum on an entry of our current term do we count this toward upping the commit.
+	// If we wouldn't have waited to up our commit until now, the server that was leader during term 3
+	// could still have overwritten the entry at index 2, resulting in a desync.
+	n.processAppendEntryResponse(&appendEntryResponse{term: 4, index: 3, peer: s2, success: true})
+	require_Equal(t, n.commit, 3)
 }
