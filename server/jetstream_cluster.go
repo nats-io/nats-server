@@ -1437,7 +1437,7 @@ func (js *jetStream) getOrphans() (streams []*stream, consumers []*consumer) {
 				streams = append(streams, mset)
 			} else {
 				// This one is good, check consumers now.
-				for _, o := range mset.getConsumers() {
+				for _, o := range mset.getPublicConsumers() {
 					if sa.consumers[o.String()] == nil {
 						consumers = append(consumers, o)
 					}
