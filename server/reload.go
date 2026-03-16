@@ -944,7 +944,7 @@ DO_REMOTES:
 		// list. If it is found, that function returns an updated list
 		// with the element removed from it.
 		lrc.RLock()
-		rlo, nlo.added = getRemoteLeafOpts(lrc.RemoteLeafOpts, nlo.added)
+		rlo, nlo.added = getRemoteLeafOpts(lrc.RemoteLeafOpts.name(), nlo.added)
 		if rlo == nil {
 			// Not found, will be removed in leafNodeOption.Apply().
 			removed = true
@@ -964,7 +964,7 @@ DO_REMOTES:
 		if err != nil {
 			lrc.RUnlock()
 			s.mu.RUnlock()
-			return nil, fmt.Errorf(remoteErrFormat, rlo.name(), err)
+			return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(), err)
 		}
 		disabledChanged := lrc.Disabled != rlo.Disabled
 		// If this remote was disabled and is now enabled, we need to make sure
@@ -976,7 +976,7 @@ DO_REMOTES:
 			if failed++; failed < maxAttempts {
 				goto DO_REMOTES
 			}
-			return nil, fmt.Errorf(remoteErrFormat, rlo.name(),
+			return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(),
 				"cannot be enabled at the moment, try again")
 		}
 		// Since we will use the new `rlo.TLSConfig` later on, consider all
@@ -1005,7 +1005,7 @@ DO_REMOTES:
 				if failed++; failed < maxAttempts {
 					goto DO_REMOTES
 				}
-				return nil, fmt.Errorf(remoteErrFormat, rlo.name(),
+				return nil, fmt.Errorf(remoteErrFormat, rlo.safeName(),
 					"cannot be added at the moment, try again")
 			}
 		}
@@ -1050,12 +1050,12 @@ func usersHaveChanged(ousers, nusers []*User) bool {
 	return false
 }
 
-// Given the `search` remote leafnode options, search for a match in the `list`.
+// Given the `search` remote leafnode options name, searches for a match in the `list`.
 // If found, returns the `*RemoteLeafOpts` from the list, and the updated list
 // without the element in it. If not found, returns `nil` and the unmodified list.
-func getRemoteLeafOpts(search *RemoteLeafOpts, list []*RemoteLeafOpts) (*RemoteLeafOpts, []*RemoteLeafOpts) {
+func getRemoteLeafOpts(search string, list []*RemoteLeafOpts) (*RemoteLeafOpts, []*RemoteLeafOpts) {
 	for i, rlo := range list {
-		if search.name() == rlo.name() {
+		if search == rlo.name() {
 			lastIdx := len(list) - 1
 			if lastIdx == 0 {
 				return rlo, nil
@@ -1098,7 +1098,7 @@ func (l *leafNodeOption) Apply(s *Server) {
 			}
 			s.rmLeafRemoteCfgs[lrc.name()] = lrc
 			lrc.markAsRemoved()
-			s.Noticef("Reloaded: LeafNode Remote %s removed", lrc.RemoteLeafOpts.name())
+			s.Noticef("Reloaded: LeafNode Remote %s removed", lrc.RemoteLeafOpts.safeName())
 			// We will close the existing connection in the next for-loop.
 			continue
 		}
@@ -1109,12 +1109,12 @@ func (l *leafNodeOption) Apply(s *Server) {
 		if rlo.tlsFirstChanged {
 			lrc.TLSHandshakeFirst = rlo.opts.TLSHandshakeFirst
 			s.Noticef("Reloaded: LeafNode Remote %s TLS HandshakeFirst value is: %v",
-				lrc.RemoteLeafOpts.name(), rlo.opts.TLSHandshakeFirst)
+				lrc.RemoteLeafOpts.safeName(), rlo.opts.TLSHandshakeFirst)
 		}
 		if rlo.compressionChanged {
 			lrc.Compression = rlo.opts.Compression
 			s.Noticef("Reloaded: LeafNode Remote %s Compression value is: %v",
-				lrc.RemoteLeafOpts.name(), rlo.opts.Compression)
+				lrc.RemoteLeafOpts.safeName(), rlo.opts.Compression)
 		}
 		if rlo.disabledChanged {
 			// Change to new value.
@@ -1125,7 +1125,7 @@ func (l *leafNodeOption) Apply(s *Server) {
 				enable = append(enable, lrc)
 			}
 			s.Noticef("Reloaded: LeafNode Remote %s Disabled value is: %v",
-				lrc.RemoteLeafOpts.name(), rlo.opts.Disabled)
+				lrc.RemoteLeafOpts.safeName(), rlo.opts.Disabled)
 		}
 		lrc.Unlock()
 	}

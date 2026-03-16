@@ -312,35 +312,36 @@ type RemoteLeafOpts struct {
 	// existing connection will be closed and not solicited again (until it is changed
 	// to `false` again.
 	Disabled bool `json:"-"`
-
-	// Internal fields
-
-	// This is a string representation of the remote, containing the URLs (with
-	// password redacted in case it is used in logging), the account (or "$G" if
-	// LocalAccount is empty) and possibly the Credentials file name.
-	// This should not be accessed directly and instead through name() since
-	// the value will originally be empty and be set the first time name()
-	// is invoked. Also, if in the future we add a public `Name` field, that field
-	// could be returned instead of the internal representation.
-	iname string
 }
 
 // Returns a string representation of this `RemoteLeafOpts` object, containing
-// the URLs (redacted), the account (or "$G" if none is specified) and, if present,
+// the URLs (unredacted), the account (or "$G" if none is specified) and, if present,
 // the credentials filename.
 func (r *RemoteLeafOpts) name() string {
-	if r.iname == _EMPTY_ {
-		acc := r.LocalAccount
-		if acc == _EMPTY_ {
-			acc = globalAccountName
-		}
-		var creds string
-		if c := r.Credentials; c != _EMPTY_ {
-			creds = fmt.Sprintf(", credentials=%q", c)
-		}
-		r.iname = fmt.Sprintf("urls=%q, account=%q%s", redactURLList(r.URLs), acc, creds)
+	return generateRemoteLeafOptsName(r, false)
+}
+
+// Same than RemoteLeafOpts.name() but uses redacted URLs. This is to be used for logging.
+func (r *RemoteLeafOpts) safeName() string {
+	return generateRemoteLeafOptsName(r, true)
+}
+
+func generateRemoteLeafOptsName(r *RemoteLeafOpts, redacted bool) string {
+	acc := r.LocalAccount
+	if acc == _EMPTY_ {
+		acc = globalAccountName
 	}
-	return r.iname
+	var creds string
+	if c := r.Credentials; c != _EMPTY_ {
+		creds = fmt.Sprintf(", credentials=%q", c)
+	}
+	var urls []*url.URL
+	if redacted {
+		urls = redactURLList(r.URLs)
+	} else {
+		urls = r.URLs
+	}
+	return fmt.Sprintf("urls=%q, account=%q%s", urls, acc, creds)
 }
 
 // JSLimitOpts are active limits for the meta cluster
@@ -3196,7 +3197,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 		}
 		rn := remote.name()
 		if _, dup := names[rn]; dup {
-			*errors = append(*errors, &configErr{tk, fmt.Sprintf("duplicate remote %s", rn)})
+			*errors = append(*errors, &configErr{tk, fmt.Sprintf("duplicate remote %s", remote.safeName())})
 			continue
 		}
 		names[rn] = struct{}{}

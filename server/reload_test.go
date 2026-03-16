@@ -6494,7 +6494,7 @@ func TestConfigReloadGetRemoteLeafOpts(t *testing.T) {
 		{"list of three and found at pos 3", rlo3, []*RemoteLeafOpts{rlo1, rlo2, rlo3}, rlo3, []*RemoteLeafOpts{rlo1, rlo2}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			rlo, list := getRemoteLeafOpts(test.search, test.listIn)
+			rlo, list := getRemoteLeafOpts(test.search.name(), test.listIn)
 			require_True(t, reflect.DeepEqual(list, test.listOut))
 			require_Equal(t, rlo, test.result)
 		})
@@ -6796,7 +6796,7 @@ func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
 				return ts, old, new
 			},
 			nil,
-			fmt.Sprintf("remote %s: field %q: old=false, new=true", remote.name(), "Hub"),
+			fmt.Sprintf("remote %s: field %q: old=false, new=true", remote.safeName(), "Hub"),
 		},
 		{
 			"remote tlsfirst changed",
@@ -6967,7 +6967,7 @@ func TestConfigReloadLeafNodeUnsupportedChangesFail(t *testing.T) {
 
 	remote := o2.LeafNode.Remotes[0]
 	require_NotNil(t, remote)
-	remoteName := remote.name()
+	remoteName := remote.safeName()
 	require_NotEqual(t, remoteName, _EMPTY_)
 
 	checkConfigReload := func(content []byte, errTxt string) {
