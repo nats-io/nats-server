@@ -2120,41 +2120,37 @@ func (c *client) processErr(errStr string) {
 	}
 }
 
-// Password pattern matcher.
-var passPat = regexp.MustCompile(`"?\s*pass\S*?"?\s*[:=]\s*"?(([^",\r\n}])*)`)
-var tokenPat = regexp.MustCompile(`"?\s*auth_token\S*?"?\s*[:=]\s*"?(([^",\r\n}])*)`)
+// Matcher for pass/password and auth_token fields.
+var prefixAuthPat = regexp.MustCompile(`"?\s*(?:auth_token\S*?|pass\S*?)"?\s*[:=]\s*"?([^",\r\n}]*)`)
+
+// Exact matcher for fields sig, proxy_sig and nkey.
+// Overlapping field "sig" does not match inside "proxy_sig".
+var exactAuthPat = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])"?\s*(?:proxy_sig|nkey|sig)"?\s*[:=]\s*"?([^",\r\n}]*)`)
 
 // removeSecretsFromTrace removes any notion of passwords/tokens from trace
 // messages for logging.
 func removeSecretsFromTrace(arg []byte) []byte {
-	buf := redact("pass", passPat, arg)
-	return redact("auth_token", tokenPat, buf)
+	buf := redact(prefixAuthPat, arg)
+	return redact(exactAuthPat, buf)
 }
 
-func redact(name string, pat *regexp.Regexp, proto []byte) []byte {
-	if !bytes.Contains(proto, []byte(name)) {
+func redact(pat *regexp.Regexp, proto []byte) []byte {
+	m := pat.FindAllSubmatchIndex(proto, -1)
+	if len(m) == 0 {
 		return proto
 	}
 	// Take a copy of the connect proto just for the trace message.
 	var _arg [4096]byte
 	buf := append(_arg[:0], proto...)
-
-	m := pat.FindAllSubmatchIndex(buf, -1)
-	if len(m) == 0 {
-		return proto
-	}
-
 	redactedPass := []byte("[REDACTED]")
-	for _, i := range m {
-		if len(i) < 4 {
+	for i := len(m) - 1; i >= 0; i-- {
+		match := m[i]
+		if len(match) < 4 {
 			continue
 		}
-		start := i[2]
-		end := i[3]
-
+		start, end := match[2], match[3]
 		// Replace value substring.
 		buf = append(buf[:start], append(redactedPass, buf[end:]...)...)
-		break
 	}
 	return buf
 }
