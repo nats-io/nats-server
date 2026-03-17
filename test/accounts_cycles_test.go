@@ -563,6 +563,84 @@ func TestAccountCycleFalsePositiveSubjectMapping(t *testing.T) {
 	}
 }
 
+// TestAccountCycleServiceMissedDueToFromMutation reproduces a bug where
+// checkServiceImportsForCycles mutates the `from` loop variable via
+// `from = si.from`, affecting subsequent map iterations non-deterministically.
+//
+// Cycle: E -> A -> D -> E
+// A also has a non-cyclic import from C. When C's map key is iterated first,
+// `from` is narrowed from "*" to "narrow", causing D's import to be skipped
+// (SubjectsCollide("narrow","other") is false), and the cycle is missed.
+func TestAccountCycleServiceMissedDueToFromMutation(t *testing.T) {
+	// Run multiple times because Go map iteration order is non-deterministic.
+	// The bug only manifests when the non-cyclic import is visited first.
+	for i := 0; i < 100; i++ {
+		conf := createConfFile(t, []byte(`
+			accounts {
+			  A {
+			    exports [ { service: * } ]
+			    imports [
+			      { service { subject: narrow, account: C } }
+			      { service { subject: other, account: D } }
+			    ]
+			  }
+			  C {
+			    exports [ { service: narrow } ]
+			  }
+			  D {
+			    exports [ { service: other } ]
+			    imports [ { service { subject: other, account: E } } ]
+			  }
+			  E {
+			    exports [ { service: * } ]
+			    imports [ { service { subject: *, account: A } } ]
+			  }
+			}
+		`))
+		_, err := server.ProcessConfigFile(conf)
+		if err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
+			t.Fatalf("Iteration %d: Expected cycle detection error for E->A->D->E, got: %v", i, err)
+		}
+	}
+}
+
+// TestAccountCycleStreamMissedDueToToMutation reproduces a bug where the `to`
+// parameter is mutated inside the loop in checkStreamImportsForCycles.
+// Stream imports use a slice (deterministic order), so listing the narrowing
+// import first guarantees the bug triggers every time.
+//
+// Cycle: E → A → D → E (via subject "other")
+// A also imports "narrow" from C (leaf, no cycle) declared first.
+// After processing the first import, `to` is narrowed from "*" to "narrow",
+// causing SubjectsCollide("narrow","other") to return false and miss the cycle.
+func TestAccountCycleStreamMissedDueToToMutation(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    exports [ { stream: * } ]
+		    imports [
+		      { stream { subject: narrow, account: C }, to: narrow }
+		      { stream { subject: other, account: D }, to: other }
+		    ]
+		  }
+		  C {
+		    exports [ { stream: narrow } ]
+		  }
+		  D {
+		    exports [ { stream: other } ]
+		    imports [ { stream { subject: other, account: E }, to: other } ]
+		  }
+		  E {
+		    exports [ { stream: * } ]
+		    imports [ { stream { subject: *, account: A } } ]
+		  }
+		}
+	`))
+	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
+		t.Fatalf("Expected cycle detection error for E->A->D->E, got: %v", err)
+	}
+}
+
 func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(),
