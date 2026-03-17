@@ -18,7 +18,6 @@ package server
 import (
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -37,49 +36,110 @@ func TestWinServiceWrapper(t *testing.T) {
 		- that no other signal is sent to the windows service API(mockC)
 	*/
 	var (
-		wsw     = &winServiceWrapper{New(DefaultOptions())}
-		args    = make([]string, 0)
-		serverC = make(chan error, 1)
-		mockC   = make(chan error, 1)
+		wsw  = &winServiceWrapper{New(DefaultOptions())}
+		args = make([]string, 0)
+		// Size of 1 should be enough but don't want to block if the test fails.
+		serverC = make(chan error, 10)
+		mockC   = make(chan error, 10)
 		changes = make(chan svc.ChangeRequest)
 		status  = make(chan svc.Status)
 	)
-	time.Sleep(time.Millisecond)
-	os.Setenv("NATS_STARTUP_DELAY", "1ms") // purposefly small
+	t.Setenv("NATS_STARTUP_DELAY", "1ns") // purposely small
 	// prepare mock expectations
 	wsm := &winSvcMock{status: status}
 	wsm.Expect(svc.StartPending)
+
 	go func() {
-		mockC <- wsm.Listen(50*time.Millisecond, t)
-		close(mockC)
+		mockC <- wsm.Listen(250 * time.Millisecond)
 	}()
 
-	go func() { // ensure failure with these conditions
+	go func() {
+		var err error
 		_, exitCode := wsw.Execute(args, changes, status)
-		if exitCode == 0 { // expect error
-			serverC <- errors.New("Should have exitCode != 0")
+		// We expect an error...
+		if exitCode == 0 {
+			err = errors.New("Should have exitCode != 0")
 		}
-		wsw.server.Shutdown()
-		close(serverC)
+		serverC <- err
 	}()
 
-	for expectedErrs := 2; expectedErrs >= 0; {
+	checkErr := func(c chan error, txt string) {
 		select {
-		case err := <-mockC:
+		case err := <-c:
 			if err != nil {
-				t.Fatalf("windows.svc mock: %v", err)
-			} else {
-				expectedErrs--
-			}
-		case err := <-serverC:
-			if err != nil {
-				t.Fatalf("Server behavior: %v", err)
-			} else {
-				expectedErrs--
+				t.Fatalf("%s: %v", txt, err)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("Test timed out")
 		}
+	}
+	checkErr(mockC, "windows.svc mock")
+	checkErr(serverC, "server behavior")
+
+	wsw.server.Shutdown()
+}
+
+func TestWinServiceLDMExit(t *testing.T) {
+	var (
+		wsw  = &winServiceWrapper{New(DefaultOptions())}
+		args = make([]string, 0)
+		// Size of 1 should be enough but don't want to block if the test fails.
+		serverC = make(chan error, 10)
+		mockC   = make(chan error, 10)
+		changes = make(chan svc.ChangeRequest, 1)
+		status  = make(chan svc.Status)
+	)
+	// prepare mock expectations
+	wsm := &winSvcMock{status: status}
+	wsm.Expect(svc.StartPending)
+	// Expect that we will be running
+	wsm.Expect(svc.Running)
+	// Sending the LDM signal
+	changes <- svc.ChangeRequest{Cmd: svc.Cmd(ldmCode)}
+	// Expect to be stopping
+	wsm.Expect(svc.StopPending)
+
+	go func() {
+		// Duration long enough for the test to complete, but not too long
+		// to wait for nothing.
+		mockC <- wsm.Listen(time.Second)
+	}()
+
+	go func() {
+		var err error
+		if _, exitCode := wsw.Execute(args, changes, status); exitCode != 0 {
+			err = fmt.Errorf("exited with %v", exitCode)
+		}
+		serverC <- err
+	}()
+
+	checkErr := func(c chan error, txt string) {
+		select {
+		case err := <-c:
+			if err != nil {
+				t.Fatalf("%s: %v", txt, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Test timed out")
+		}
+	}
+	checkErr(mockC, "windows.svc mock")
+	checkErr(serverC, "server behavior")
+
+	// At this point, we have proven already that the LDM signal did
+	// end the NATS server's Execute() loop because we received the
+	// svc.StopPending status. Still, we will verify that we get
+	// notified that the server has shutdown.
+	ch := make(chan struct{}, 1)
+	go func() {
+		wsw.server.WaitForShutdown()
+		ch <- struct{}{}
+	}()
+	select {
+	case <-ch:
+		// OK
+	case <-time.After(time.Second):
+		t.Fatal("Did not finish shutdown")
 	}
 }
 
@@ -96,17 +156,13 @@ func (w *winSvcMock) Expect(st svc.State) {
 }
 
 // Listen is the mock's mainloop, expects messages to comply with previous Expect().
-func (w *winSvcMock) Listen(dur time.Duration, t *testing.T) error {
-	t.Helper()
+func (w *winSvcMock) Listen(dur time.Duration) error {
 	timeout := time.NewTimer(dur)
 	defer timeout.Stop()
-	for idx, state := range w.expectedSt {
+	for _, state := range w.expectedSt {
 		select {
 		case status := <-w.status:
-			if status.State == state {
-				t.Logf("message %d on status, OK\n", idx)
-				continue
-			} else {
+			if status.State != state {
 				return fmt.Errorf("message to winsock: expected %v, got %v", state, status.State)
 			}
 		case <-timeout.C:
