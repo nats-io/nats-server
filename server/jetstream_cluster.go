@@ -710,6 +710,7 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	}
 	created := ca.Created
 	node := ca.Group.node
+	caErr := ca.err
 	js.mu.RUnlock()
 
 	// Check if not running at all.
@@ -718,6 +719,14 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		if time.Since(created) < 5*time.Second {
 			// No further checks, consumer is not available yet but should be soon.
 			// We'll start erroring once we're sure this consumer is actually broken.
+			return nil
+		}
+		if caErr != nil {
+			// The consumer assignment has a recorded error from a failed creation attempt.
+			// This is an orphaned assignment that will not recover on its own.
+			// Don't report it as a health error since there's nothing running to be unhealthy.
+			// These consumers can be detected via consumer list (shows the error)
+			// and cleaned up via consumer delete.
 			return nil
 		}
 		return errors.New("consumer not found")

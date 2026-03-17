@@ -7858,9 +7858,12 @@ func TestJetStreamClusterConsumerHealthCheckDeleted(t *testing.T) {
 	sjs.mu.Unlock()
 
 	// The health check gathers all assignments and does checking after.
-	// If the consumer was deleted in the meantime, it should not report an error.
+	// If the consumer was deleted in the meantime, it should report "consumer not found"
+	// because ca.err is nil (the consumer was successfully created before deletion).
 	require_NoError(t, js.DeleteConsumer("TEST", "CONSUMER"))
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
+	err = sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "consumer not found")
 
 	// The health check could run earlier than we're able to create the consumer.
 	// In that case, wait before erroring.
@@ -7868,6 +7871,42 @@ func TestJetStreamClusterConsumerHealthCheckDeleted(t *testing.T) {
 	ca.Created = time.Now()
 	sjs.mu.Unlock()
 	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+
+	// Same behavior for R=3 consumers: after deletion the stale assignment
+	// has ca.err == nil, so "consumer not found" is reported.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST3",
+		Subjects: []string{"bar"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST3", &nats.ConsumerConfig{
+		Durable:  "CONSUMER3",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	cl3 := c.consumerLeader(globalAccountName, "TEST3", "CONSUMER3")
+	require_NotNil(t, cl3)
+	mset3, err := cl3.globalAccount().lookupStream("TEST3")
+	require_NoError(t, err)
+
+	sjs3 := cl3.getJetStream()
+	sjs3.mu.Lock()
+	ca3 := sjs3.consumerAssignment(globalAccountName, "TEST3", "CONSUMER3")
+	if ca3 == nil {
+		sjs3.mu.Unlock()
+		t.Fatal("ca3 not found")
+	}
+	ca3.Created = time.Time{}
+	sjs3.mu.Unlock()
+
+	require_NoError(t, js.DeleteConsumer("TEST3", "CONSUMER3"))
+
+	// R=3 consumer with ca.err == nil: "consumer not found" is reported.
+	err = sjs3.isConsumerHealthy(mset3, "CONSUMER3", ca3)
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "consumer not found")
 }
 
 func TestJetStreamClusterRespectConsumerStartSeq(t *testing.T) {
