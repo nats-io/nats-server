@@ -1386,7 +1386,6 @@ func (c *client) readLoop(pre []byte) {
 	if ws {
 		masking = c.ws.maskread
 	}
-	checkCompress := c.kind == ROUTER || c.kind == LEAF
 	c.mu.Unlock()
 
 	defer func() {
@@ -1480,6 +1479,31 @@ func (c *client) readLoop(pre []byte) {
 					// We don't need to do any of the things below, simply return.
 					return
 				}
+				if err == ErrCompressionSwitchPending {
+					// If we are a ROUTER/LEAF and have processed an INFO, it is possible that
+					// we are asked to switch to compression now.
+					c.in.flags.clear(switchToCompression)
+					// c.as points past the INFO line. Any remaining bytes in the
+					// buffer are compressed and must be fed into the s2 reader
+					// before subsequent network reads.
+					var readers []io.Reader
+					if remaining := bufs[i][c.as:]; len(remaining) > 0 {
+						readers = append(readers, bytes.NewReader(remaining))
+					}
+					// Also add any remaining buffers
+					for j := i + 1; j < len(bufs); j++ {
+						readers = append(readers, bytes.NewReader(bufs[j]))
+					}
+					// For now we support only s2 compression...
+					if len(readers) == 0 {
+						reader = s2.NewReader(nc)
+					} else {
+						readers = append(readers, nc)
+						reader = s2.NewReader(io.MultiReader(readers...))
+					}
+					decompress = true
+					break
+				}
 				if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
 					c.Warnf("Readloop processing time: %v", dur)
 				}
@@ -1499,15 +1523,6 @@ func (c *client) readLoop(pre []byte) {
 				c.rateLimitFormatWarnf("Producer was stalled for a total of %v", c.in.tst.Round(time.Millisecond))
 			}
 			c.in.tst = 0
-		}
-
-		// If we are a ROUTER/LEAF and have processed an INFO, it is possible that
-		// we are asked to switch to compression now.
-		if checkCompress && c.in.flags.isSet(switchToCompression) {
-			c.in.flags.clear(switchToCompression)
-			// For now we support only s2 compression...
-			reader = s2.NewReader(nc)
-			decompress = true
 		}
 
 		// Updates stats for client and server that were collected
