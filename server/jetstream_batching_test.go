@@ -292,14 +292,14 @@ func TestJetStreamAtomicBatchPublishCommitEob(t *testing.T) {
 }
 
 func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
-	streamMaxBatchInflightPerStream = 1
-	streamMaxBatchInflightTotal = 1
-	streamMaxBatchSize = 2
+	streamMaxAtomicBatchInflightPerStream = 1
+	streamMaxAtomicBatchInflightTotal = 1
+	streamMaxAtomicBatchSize = 2
 	streamMaxBatchTimeout = 500 * time.Millisecond
 	defer func() {
-		streamMaxBatchInflightPerStream = streamDefaultMaxBatchInflightPerStream
-		streamMaxBatchInflightTotal = streamDefaultMaxBatchInflightTotal
-		streamMaxBatchSize = streamDefaultMaxBatchSize
+		streamMaxAtomicBatchInflightPerStream = streamDefaultMaxAtomicBatchInflightPerStream
+		streamMaxAtomicBatchInflightTotal = streamDefaultMaxAtomicBatchInflightTotal
+		streamMaxAtomicBatchSize = streamDefaultMaxAtomicBatchSize
 		streamMaxBatchTimeout = streamDefaultMaxBatchTimeout
 	}()
 
@@ -369,7 +369,7 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 		require_NoError(t, err)
 		pubAck = JSPubAckResponse{}
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
-		require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+		require_Error(t, pubAck.Error, NewJSAtomicPublishTooManyInflightError())
 
 		// Another batch on a different stream moves over the server-wide threshold and batch is denied.
 		m = nats.NewMsg("bar")
@@ -380,7 +380,7 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 		require_NoError(t, err)
 		pubAck = JSPubAckResponse{}
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
-		require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+		require_Error(t, pubAck.Error, NewJSAtomicPublishTooManyInflightError())
 
 		// The first batch should now time out.
 		sl := c.streamLeader(globalAccountName, "FOO")
@@ -414,7 +414,7 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 		require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
 
 		// Batch should be rejected if going over the max batch size.
-		for _, size := range []int{streamMaxBatchSize, streamMaxBatchSize + 1} {
+		for _, size := range []int{streamMaxAtomicBatchSize, streamMaxAtomicBatchSize + 1} {
 			for i := range size {
 				seq := i + 1
 				m = nats.NewMsg("foo")
@@ -431,11 +431,11 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 				require_NoError(t, err)
 				pubAck = JSPubAckResponse{}
 				require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
-				if size <= streamMaxBatchSize {
+				if size <= streamMaxAtomicBatchSize {
 					require_True(t, pubAck.Error == nil)
 					require_Equal(t, pubAck.BatchSize, size)
 				} else {
-					require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError(streamMaxBatchSize))
+					require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError(streamMaxAtomicBatchSize))
 				}
 			}
 		}
@@ -758,10 +758,12 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 
 func TestJetStreamAtomicBatchPublishConfigOpts(t *testing.T) {
 	// Defaults.
-	require_Equal(t, streamMaxBatchInflightPerStream, 50)
-	require_Equal(t, streamMaxBatchInflightTotal, 1000)
-	require_Equal(t, streamMaxBatchSize, 1000)
 	require_Equal(t, streamMaxBatchTimeout, 10*time.Second)
+	require_Equal(t, streamMaxAtomicBatchInflightPerStream, 50)
+	require_Equal(t, streamMaxAtomicBatchInflightTotal, 1000)
+	require_Equal(t, streamMaxAtomicBatchSize, 1000)
+	require_Equal(t, streamMaxFastBatchInflightPerStream, 1000)
+	require_Equal(t, streamMaxFastBatchInflightTotal, 50_000)
 
 	batchingConf := `
 	listen: 127.0.0.1:-1
@@ -2563,7 +2565,7 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 			require_NoError(t, err)
 			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 			require_NotNil(t, pubAck.Error)
-			require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError(streamDefaultMaxBatchSize))
+			require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError(streamDefaultMaxAtomicBatchSize))
 		}
 
 		msg, err = sub.NextMsg(time.Second)
@@ -4218,4 +4220,139 @@ func TestJetStreamFastBatchPublishFlowControlOnLeaderChangeAfterFailedCommitProp
 		}
 		return nil
 	})
+}
+
+func TestJetStreamFastBatchPublishLimits(t *testing.T) {
+	streamMaxFastBatchInflightPerStream = 1
+	streamMaxFastBatchInflightTotal = 1
+	streamMaxBatchTimeout = 500 * time.Millisecond
+	defer func() {
+		streamMaxFastBatchInflightPerStream = streamDefaultMaxFastBatchInflightPerStream
+		streamMaxFastBatchInflightTotal = streamDefaultMaxFastBatchInflightTotal
+		streamMaxBatchTimeout = streamDefaultMaxBatchTimeout
+	}()
+
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		var batchFlowAck BatchFlowAck
+		var pubAck JSPubAckResponse
+
+		cfg := &StreamConfig{
+			Name:              "FOO",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Retention:         LimitsPolicy,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		}
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		// For testing total server-wide maximum inflight batches.
+		cfg = &StreamConfig{
+			Name:              "BAR",
+			Subjects:          []string{"bar"},
+			Storage:           FileStorage,
+			Retention:         LimitsPolicy,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		}
+		_, err = jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// A batch ID must not exceed the maximum length.
+		for _, length := range []int{64, 65} {
+			longBatchId := strings.Repeat("A", length)
+			m := nats.NewMsg("foo")
+			m.Reply = generateFastBatchReply(inbox, longBatchId, 1, 0, FastBatchGapFail, FastBatchOpCommit)
+			require_NoError(t, nc.PublishMsg(m))
+
+			rmsg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			pubAck = JSPubAckResponse{}
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			if length <= 64 {
+				require_True(t, pubAck.Error == nil)
+			} else {
+				require_NotNil(t, pubAck.Error)
+				require_Error(t, pubAck.Error, NewJSBatchPublishInvalidBatchIDError())
+			}
+		}
+
+		// One batch is inflight.
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 10)
+		require_Equal(t, batchFlowAck.Sequence, 0)
+
+		// Another batch moves over the threshold and batch is denied.
+		m = nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "exceeds_threshold", 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishTooManyInflightError())
+
+		// Another batch on a different stream moves over the server-wide threshold and batch is denied.
+		m = nats.NewMsg("bar")
+		m.Reply = generateFastBatchReply(inbox, "bar", 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishTooManyInflightError())
+
+		// The first batch should now time out.
+		sl := c.streamLeader(globalAccountName, "FOO")
+		mset, err := sl.globalAccount().lookupStream("FOO")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			mset.mu.RLock()
+			batches := mset.batches
+			mset.mu.RUnlock()
+			if batches == nil {
+				return errors.New("batches not found")
+			}
+			batches.mu.Lock()
+			groups := len(batches.fast)
+			batches.mu.Unlock()
+			if groups != 0 {
+				return fmt.Errorf("expected 0 groups, got %d", groups)
+			}
+			return nil
+		})
+
+		// Publishing to the batch should also error since it timed out.
+		m = nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 2, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishUnknownBatchIDError())
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }

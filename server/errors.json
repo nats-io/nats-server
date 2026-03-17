@@ -2078,5 +2078,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSAtomicPublishTooManyInflight",
+    "code": 429,
+    "error_code": 10210,
+    "description": "atomic publish too many inflight",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSBatchPublishTooManyInflight",
+    "code": 429,
+    "error_code": 10211,
+    "description": "batch publish too many inflight",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
