@@ -4769,16 +4769,39 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	if !isResponse {
 		isSysImport := siAcc == c.srv.SystemAccount()
 		var ci *ClientInfo
-		if hadPrevSi && c.pa.hdr >= 0 {
-			var cis ClientInfo
-			if err := json.Unmarshal(sliceHeader(ClientInfoHdr, msg[:c.pa.hdr]), &cis); err == nil {
-				ci = &cis
+		var cis *ClientInfo
+		if c.pa.hdr >= 0 {
+			var hci ClientInfo
+			if err := json.Unmarshal(sliceHeader(ClientInfoHdr, msg[:c.pa.hdr]), &hci); err == nil {
+				cis = &hci
+			}
+		}
+		if c.kind == LEAF && c.pa.hdr >= 0 && len(sliceHeader(ClientInfoHdr, msg[:c.pa.hdr])) > 0 {
+			// Leaf nodes may forward a Nats-Request-Info from a remote domain,
+			// but the local server must replace it with the identity of the
+			// authenticated leaf connection instead of trusting forwarded values.
+			ci = c.getClientInfo(share)
+			if hadPrevSi && cis != nil && cis.Reply != _EMPTY_ {
+				ci.Reply = cis.Reply
+			} else if bytes.HasSuffix(c.pa.reply, []byte(FastBatchSuffix)) {
+				// Fast batch requires knowledge of the original reply subject.
+				ci.Reply = bytesToString(c.pa.reply)
+			}
+			if hadPrevSi {
 				ci.Service = acc.Name
-				// Check if we are moving into a share details account from a non-shared
-				// and add in server and cluster details.
 				if !share && (si.share || isSysImport) {
 					c.addServerAndClusterInfo(ci)
 				}
+			} else if !share && isSysImport {
+				c.addServerAndClusterInfo(ci)
+			}
+		} else if hadPrevSi && cis != nil {
+			ci = cis
+			ci.Service = acc.Name
+			// Check if we are moving into a share details account from a non-shared
+			// and add in server and cluster details.
+			if !share && (si.share || isSysImport) {
+				c.addServerAndClusterInfo(ci)
 			}
 		} else if c.kind != LEAF || c.pa.hdr < 0 || len(sliceHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
 			ci = c.getClientInfo(share)
@@ -4788,12 +4811,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			}
 			// If we did not share but the imports destination is the system account add in the server and cluster info.
 			if !share && isSysImport {
-				c.addServerAndClusterInfo(ci)
-			}
-		} else if c.kind == LEAF && (si.share || isSysImport) {
-			// We have a leaf header here for ci, augment as above.
-			ci = c.getClientInfo(si.share)
-			if !si.share && isSysImport {
 				c.addServerAndClusterInfo(ci)
 			}
 		}
