@@ -8,7 +8,7 @@ require (
 	github.com/antithesishq/antithesis-sdk-go v0.6.0-default-no-op
 	github.com/google/go-tpm v0.9.8
 	github.com/klauspost/compress v1.18.4
-	github.com/nats-io/jwt/v2 v2.8.0
+	github.com/nats-io/jwt/v2 v2.8.1
 	github.com/nats-io/nats.go v1.49.0
 	github.com/nats-io/nkeys v0.4.15
 	github.com/nats-io/nuid v1.0.1
