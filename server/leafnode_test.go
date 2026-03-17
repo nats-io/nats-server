@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
@@ -10386,6 +10387,85 @@ func TestLeafNodeConfigureWriteTimeoutPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeafNodeServiceImportRebuildsRequestInfoHeader(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", pass: "a" }, { user: "leaf", pass: "pwd" } ]
+				imports = [ { service: { account: B, subject: "svc" } } ]
+			}
+			B {
+				users = [ { user: "b", pass: "b" } ]
+				exports = [ { service: "svc", accounts: [A] } ]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				account: A
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", pass: "a" } ]
+			}
+		}
+		leafnodes {
+			remotes = [
+				{
+					url: "nats-leaf://leaf:pwd@127.0.0.1:%d"
+					account: A
+				}
+			]
+		}
+	`, ohub.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncSvc := natsConnect(t, hub.ClientURL(), nats.UserInfo("b", "b"))
+	defer ncSvc.Close()
+
+	rcvCh := make(chan *nats.Msg, 1)
+	_, err := ncSvc.Subscribe("svc", func(m *nats.Msg) {
+		rcvCh <- m
+		require_NoError(t, m.Respond([]byte("ok")))
+	})
+	require_NoError(t, err)
+	require_NoError(t, ncSvc.Flush())
+
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncLeaf.Close()
+
+	req := nats.NewMsg("svc")
+	req.Header = nats.Header{}
+	req.Header.Set(ClientInfoHdr, `{"acc":"EVIL","user":"mallory","host":"badhost"}`)
+
+	_, err = ncLeaf.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+
+	msg := require_ChanRead(t, rcvCh, time.Second)
+	hdr := msg.Header.Get(ClientInfoHdr)
+	require_NotEqual(t, hdr, _EMPTY_)
+
+	var ci ClientInfo
+	require_NoError(t, json.Unmarshal([]byte(hdr), &ci))
+	require_Equal(t, ci.Account, "A")
+	require_Equal(t, ci.User, _EMPTY_)
+	require_Equal(t, ci.Host, _EMPTY_)
 }
 
 func TestLeafNodeNoAccPanicOnLeafSubBeforeConnect(t *testing.T) {
