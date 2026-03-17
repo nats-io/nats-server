@@ -3452,7 +3452,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 			pre = pre[:n]
 		}
 		conn = &tlsMixConn{conn, bytes.NewBuffer(pre)}
-		addr, err := readProxyProtoHeader(conn)
+		addr, proxyPre, err := readProxyProtoHeader(conn)
 		if err != nil && err != errProxyProtoUnrecognized {
 			// err != errProxyProtoUnrecognized implies that we detected a proxy
 			// protocol header but we failed to parse it, so don't continue.
@@ -3480,7 +3480,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		// that it's a non-proxied connection and we want the pre-read to remain
 		// for the next step.
 		if err == nil {
-			pre = nil
+			pre = proxyPre
 		}
 		// Because we have ProxyProtocol enabled, our earlier INFO message didn't
 		// include the client_ip. If we need to send it again then we will include
