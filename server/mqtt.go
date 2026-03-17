@@ -261,7 +261,7 @@ type mqttAccountSessionManager struct {
 	sessions   map[string]*mqttSession        // key is MQTT client ID
 	sessByHash map[string]*mqttSession        // key is MQTT client ID hash
 	sessLocked map[string]struct{}            // key is MQTT client ID and indicate that a session can not be taken by a new client at this time
-	flappers   map[string]int64               // When connection connects with client ID already in use
+	flappers   map[string]time.Time           // When connection connects with client ID already in use
 	flapTimer  *time.Timer                    // Timer to perform some cleanup of the flappers map
 	sl         *Sublist                       // sublist allowing to find retained messages for given subscription
 	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
@@ -1218,7 +1218,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		sessions:   make(map[string]*mqttSession),
 		sessByHash: make(map[string]*mqttSession),
 		sessLocked: make(map[string]struct{}),
-		flappers:   make(map[string]int64),
+		flappers:   make(map[string]time.Time),
 		jsa: mqttJSA{
 			id:      id,
 			c:       c,
@@ -2134,7 +2134,7 @@ func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *
 //
 // Lock held on entry.
 func (as *mqttAccountSessionManager) addSessToFlappers(clientID string) {
-	as.flappers[clientID] = time.Now().UnixNano()
+	as.flappers[clientID] = time.Now()
 	if as.flapTimer == nil {
 		as.flapTimer = time.AfterFunc(mqttFlapCleanItvl, func() {
 			as.mu.Lock()
@@ -2143,9 +2143,9 @@ func (as *mqttAccountSessionManager) addSessToFlappers(clientID string) {
 			if as.flapTimer == nil {
 				return
 			}
-			now := time.Now().UnixNano()
+			now := time.Now()
 			for cID, tm := range as.flappers {
-				if now-tm > int64(mqttSessJailDur) {
+				if now.Sub(tm) > mqttSessJailDur {
 					delete(as.flappers, cID)
 				}
 			}
@@ -3881,7 +3881,7 @@ CHECK:
 	if tm, ok := asm.flappers[cid]; ok {
 		// If the last time it tried to connect was more than 1 sec ago,
 		// then accept and remove from flappers map.
-		if time.Now().UnixNano()-tm > int64(mqttSessJailDur) {
+		if time.Since(tm) > mqttSessJailDur {
 			asm.removeSessFromFlappers(cid)
 		} else {
 			// Will hold this client for a second and then close it. We
