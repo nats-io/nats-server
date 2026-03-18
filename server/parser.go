@@ -1084,13 +1084,6 @@ func (c *client) parse(buf []byte) error {
 					return err
 				}
 				c.drop, c.as, c.state = 0, i+1, OP_START
-				// If processInfo negotiated compression, any remaining bytes
-				// in this buffer are compressed. Stop parsing and let readLoop
-				// switch to the decompression reader. c.as already points to
-				// the first byte after the INFO line.
-				if c.in.flags.isSet(switchToCompression) {
-					return ErrCompressionSwitchPending
-				}
 			default:
 				if c.argBuf != nil {
 					c.argBuf = append(c.argBuf, b)

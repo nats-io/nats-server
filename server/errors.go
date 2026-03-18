@@ -216,11 +216,6 @@ var (
 	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
 	ErrMinimumVersionRequired = errors.New("minimum version required")
 
-	// ErrCompressionSwitchPending is returned by the parser when an INFO triggered
-	// a switch to compression. Remaining bytes in the buffer are compressed and
-	// must be fed into a new decompression reader.
-	ErrCompressionSwitchPending = errors.New("compression switch pending")
-
 	// ErrInvalidMappingDestination is used for all subject mapping destination errors
 	ErrInvalidMappingDestination = errors.New("invalid mapping destination")
 

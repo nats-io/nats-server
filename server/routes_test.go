@@ -35,7 +35,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -4078,102 +4077,6 @@ func TestRouteCompression(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestRouteCompressionBufferCoalescing(t *testing.T) {
-	// 1. Start a single server with compression enabled and pool_size: -1
-	//    (no pooling simplifies the handshake — no pool index negotiation).
-	opts := DefaultOptions()
-	opts.ServerName = "S1"
-	opts.Cluster.Name = "local"
-	opts.Cluster.Host = "127.0.0.1"
-	opts.Cluster.Port = -1
-	opts.Cluster.PoolSize = -1
-	opts.Cluster.Compression = CompressionOpts{Mode: CompressionS2Fast}
-	s := RunServer(opts)
-	defer s.Shutdown()
-
-	// 2. Dial the cluster port directly via raw TCP.
-	addr := fmt.Sprintf("127.0.0.1:%d", opts.Cluster.Port)
-	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-	require_NoError(t, err)
-	defer conn.Close()
-
-	// 3. Read the server's initial INFO (plain text).
-	//    The server sends INFO immediately on accept since didSolicit=false
-	//    and compression doesn't delay INFO for non-solicited routes.
-	br := bufio.NewReader(conn)
-	infoLine, err := br.ReadString('\n')
-	require_NoError(t, err)
-	// Parse server's INFO to extract its ID (needed so we don't trigger
-	// "route to self" detection).
-	var srvInfo serverInfo
-	require_NoError(t, json.Unmarshal([]byte(infoLine[5:]), &srvInfo))
-
-	// 4. Build the CONNECT protocol (plain text).
-	connectOp := "CONNECT {\"verbose\":false,\"name\":\"fake-route\",\"cluster\":\"local\"}\r\n"
-
-	// 5. Build the INFO protocol that triggers compression negotiation.
-	//    The Compression field tells the server we want s2_fast.
-	routeInfo := Info{
-		ID:            "FAKE_REMOTE_ID",
-		Name:          "fake-route",
-		Cluster:       "local",
-		Compression:   CompressionS2Fast,
-		RoutePoolSize: -1,
-	}
-	infoJSON, err := json.Marshal(routeInfo)
-	require_NoError(t, err)
-	infoOp := fmt.Sprintf("INFO %s\r\n", infoJSON)
-
-	// 6. Compress a PING using s2 — this simulates compressed data that
-	//    arrives in the same TCP read buffer as the INFO above.
-	var compBuf bytes.Buffer
-	sw := s2.NewWriter(&compBuf, s2.WriterConcurrency(1))
-	_, err = sw.Write([]byte("PING\r\n"))
-	require_NoError(t, err)
-	require_NoError(t, sw.Close())
-	compressedPing := compBuf.Bytes()
-
-	// 7. Write CONNECT + INFO + compressed PING in a SINGLE TCP write.
-	//    The CONNECT is processed first (sets up route metadata).
-	//    The INFO triggers compression negotiation (sets switchToCompression).
-	//    The compressed PING is the leftover bytes that the readLoop must
-	//    correctly feed into the s2 reader instead of parsing as plain text.
-	var combined bytes.Buffer
-	combined.WriteString(connectOp)
-	combined.WriteString(infoOp)
-	combined.Write(compressedPing)
-	_, err = conn.Write(combined.Bytes())
-	require_NoError(t, err)
-
-	// 8. Read the server's response using an s2 reader.
-	//    After the server processes our INFO and negotiates compression, it:
-	//    (a) Switches its write side to s2 (c.out.cw = s2.NewWriter)
-	//    (b) Sends a compressed INFO back to us
-	//    (c) Switches its read side to s2 (switchToCompression flag)
-	//    (d) Decompresses our compressed PING, responds with compressed PONG
-	//
-	//    So we need to read compressed data from the connection.
-	//    Note: there may be leftover plain-text bytes in br's buffer from
-	//    the initial read, but after the server switches, all new data is
-	//    compressed. We wrap the connection in an s2 reader.
-	require_NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
-	sr := s2.NewReader(br)
-	buf := make([]byte, 1024)
-	var received string
-	// Read until we see PONG in the decompressed output.
-	for i := 0; i < 10; i++ {
-		n, err := sr.Read(buf)
-		if err != nil {
-			t.Fatalf("Error reading compressed response: %v (received so far: %q)", err, received)
-		}
-		received += string(buf[:n])
-		if strings.Contains(received, "PONG\r\n") {
-			break
-		}
-	}
-	require_Contains(t, received, "PONG\r\n")
 }
 
 func TestRouteCompressionMatrixModes(t *testing.T) {
