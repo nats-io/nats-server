@@ -42,7 +42,6 @@ type winServiceWrapper struct {
 }
 
 var dockerized = false
-var startupDelay = 10 * time.Second
 
 func init() {
 	if v, exists := os.LookupEnv("NATS_DOCKERIZED"); exists && v == "1" {
@@ -67,6 +66,7 @@ func (w *winServiceWrapper) Execute(args []string, changes <-chan svc.ChangeRequ
 	status <- svc.Status{State: svc.StartPending}
 	go w.server.Start()
 
+	var startupDelay = 10 * time.Second
 	if v, exists := os.LookupEnv("NATS_STARTUP_DELAY"); exists {
 		if delay, err := time.ParseDuration(v); err == nil {
 			startupDelay = delay
@@ -86,24 +86,32 @@ func (w *winServiceWrapper) Execute(args []string, changes <-chan svc.ChangeRequ
 	}
 
 loop:
-	for change := range changes {
-		switch change.Cmd {
-		case svc.Interrogate:
-			status <- change.CurrentStatus
-		case svc.Stop, svc.Shutdown:
-			w.server.Shutdown()
-			break loop
-		case reopenLogCmd:
-			// File log re-open for rotating file logs.
-			w.server.ReOpenLogFile()
-		case ldmCmd:
-			go w.server.lameDuckMode()
-		case svc.ParamChange:
-			if err := w.server.Reload(); err != nil {
-				w.server.Errorf("Failed to reload server configuration: %s", err)
+	for {
+		select {
+		case change, ok := <-changes:
+			if !ok {
+				break loop
 			}
-		default:
-			w.server.Debugf("Unexpected control request: %v", change.Cmd)
+			switch change.Cmd {
+			case svc.Interrogate:
+				status <- change.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				w.server.Shutdown()
+				break loop
+			case reopenLogCmd:
+				// File log re-open for rotating file logs.
+				w.server.ReOpenLogFile()
+			case ldmCmd:
+				go w.server.lameDuckMode()
+			case svc.ParamChange:
+				if err := w.server.Reload(); err != nil {
+					w.server.Errorf("Failed to reload server configuration: %s", err)
+				}
+			default:
+				w.server.Debugf("Unexpected control request: %v", change.Cmd)
+			}
+		case <-w.server.quitCh:
+			break loop
 		}
 	}
 

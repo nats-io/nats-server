@@ -25,9 +25,9 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 
 	"github.com/nats-io/nuid"
 )
@@ -4085,25 +4085,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 }
 
 func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamConfig, subject, reply, msg string) <-chan error {
-	js := s.getJetStream()
-
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
-
-	snapDir := filepath.Join(js.config.StoreDir, snapStagingDir)
-	if _, err := os.Stat(snapDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(snapDir, defaultDirPerms); err != nil {
-			resp.Error = &ApiError{Code: 503, Description: "JetStream unable to create temp storage for restore"}
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return nil
-		}
-	}
-
-	tfile, err := os.CreateTemp(snapDir, "js-restore-")
-	if err != nil {
-		resp.Error = NewJSTempStorageFailedError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, msg, s.jsonResponse(&resp))
-		return nil
-	}
 
 	streamName := cfg.Name
 	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, streamName)
@@ -4130,29 +4112,59 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	}
 
 	// For signaling to upper layers.
+	var resultOnce sync.Once
+	var closeOnce sync.Once
 	resultCh := make(chan result, 1)
-	activeQ := newIPQueue[int](s, fmt.Sprintf("[ACC:%s] stream '%s' restore", acc.Name, streamName)) // of int
+	pr, pw := io.Pipe()
 
-	var total int
+	setResult := func(err error, reply string) {
+		resultOnce.Do(func() {
+			resultCh <- result{err, reply}
+		})
+	}
+	activeQ := newIPQueue[int](s, fmt.Sprintf("[ACC:%s] stream '%s' restore", acc.Name, streamName))
+	restoreCh := make(chan struct {
+		mset *stream
+		err  error
+	}, 1)
+	closeWithError := func(err error) {
+		closeOnce.Do(func() {
+			if err != nil {
+				pw.CloseWithError(err)
+			} else {
+				pw.Close()
+			}
+		})
+	}
 
-	// FIXME(dlc) - Probably take out of network path eventually due to disk I/O?
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+		mset, err := acc.RestoreStream(cfg, pr)
+		if err != nil {
+			pr.CloseWithError(err)
+		} else {
+			pr.Close()
+		}
+		restoreCh <- struct {
+			mset *stream
+			err  error
+		}{
+			mset: mset,
+			err:  err,
+		}
+	})
+
 	processChunk := func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
 		if reply == _EMPTY_ {
 			sub.client.processUnsub(sub.sid)
-			resultCh <- result{
-				fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, streamName),
-				reply,
-			}
+			setResult(fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, streamName), reply)
 			return
 		}
 		// Account client messages have \r\n on end. This is an error.
 		if len(msg) < LEN_CR_LF {
 			sub.client.processUnsub(sub.sid)
-			resultCh <- result{
-				fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, streamName),
-				reply,
-			}
+			setResult(fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, streamName), reply)
 			return
 		}
 		// Adjust.
@@ -4160,26 +4172,32 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 		// This means we are complete with our transfer from the client.
 		if len(msg) == 0 {
-			s.Debugf("Finished staging restore for stream '%s > %s'", acc.Name, streamName)
-			resultCh <- result{err, reply}
+			s.Debugf("Finished streaming restore for stream '%s > %s'", acc.Name, streamName)
+			closeWithError(nil)
+			setResult(nil, reply)
 			return
 		}
 
-		// We track total and check on server limits.
-		// TODO(dlc) - We could check apriori and cancel initial request if we know it won't fit.
-		total += len(msg)
-		if js.wouldExceedLimits(FileStorage, total) {
-			s.resourcesExceededError(FileStorage)
-			resultCh <- result{NewJSInsufficientResourcesError(), reply}
-			return
-		}
+		// Signal activity before and after the blocking write.
+		// The pre-write signal refreshes the stall watchdog when the
+		// chunk arrives; the post-write signal refreshes it again once
+		// RestoreStream has consumed the data. This keeps the idle
+		// window between chunks anchored to the end of the previous
+		// write instead of its start.
+		activeQ.push(0)
 
-		// Append chunk to temp file. Mark as issue if we encounter an error.
-		if n, err := tfile.Write(msg); n != len(msg) || err != nil {
-			resultCh <- result{err, reply}
-			if reply != _EMPTY_ {
-				s.sendInternalAccountMsg(acc, reply, "-ERR 'storage failure during restore'")
+		if _, err := pw.Write(msg); err != nil {
+			closeWithError(err)
+			sub.client.processUnsub(sub.sid)
+			var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+			if IsNatsErr(err, JSStorageResourcesExceededErr, JSMemoryResourcesExceededErr) {
+				s.resourcesExceededError(cfg.Storage)
 			}
+			resp.Error = NewJSStreamRestoreError(err, Unless(err))
+			if s.sendInternalAccountMsg(acc, reply, s.jsonResponse(&resp)) == nil {
+				reply = _EMPTY_
+			}
+			setResult(err, reply)
 			return
 		}
 
@@ -4190,8 +4208,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	sub, err := acc.subscribeInternal(restoreSubj, processChunk)
 	if err != nil {
-		tfile.Close()
-		os.Remove(tfile.Name())
+		closeWithError(err)
 		resp.Error = NewJSRestoreSubscribeFailedError(err, restoreSubj)
 		s.sendAPIErrResponse(ci, acc, subject, reply, msg, s.jsonResponse(&resp))
 		return nil
@@ -4201,14 +4218,14 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	resp.DeliverSubject = restoreSubj
 	s.sendAPIResponse(ci, acc, subject, reply, msg, s.jsonResponse(resp))
 
+	// Returned to the caller to wait for completion.
 	doneCh := make(chan error, 1)
 
 	// Monitor the progress from another Go routine.
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
 		defer func() {
-			tfile.Close()
-			os.Remove(tfile.Name())
+			closeWithError(ErrConnectionClosed)
 			sub.client.processUnsub(sub.sid)
 			activeQ.unregister()
 		}()
@@ -4218,71 +4235,97 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		defer notActive.Stop()
 
 		total := 0
+		var inputDone bool
+		var replySubj string
+		var inputErr error
+		var restoreDone bool
+		var restoreResult struct {
+			mset *stream
+			err  error
+		}
+
+		finish := func(reply string, err error, mset *stream) {
+			end := time.Now().UTC()
+
+			s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+streamName, &JSRestoreCompleteAdvisory{
+				TypedEvent: TypedEvent{
+					Type: JSRestoreCompleteAdvisoryType,
+					ID:   nuid.Next(),
+					Time: end,
+				},
+				Stream: streamName,
+				Start:  start,
+				End:    end,
+				Bytes:  int64(total),
+				Client: ci.forAdvisory(),
+				Domain: domain,
+			})
+
+			var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+			if err != nil {
+				if IsNatsErr(err, JSStorageResourcesExceededErr, JSMemoryResourcesExceededErr) {
+					s.resourcesExceededError(cfg.Storage)
+				}
+				resp.Error = NewJSStreamRestoreError(err, Unless(err))
+				s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
+					friendlyBytes(int64(total)), acc.Name, streamName, end.Sub(start))
+			} else {
+				msetCfg := mset.config()
+				resp.StreamInfo = &StreamInfo{
+					Created:   mset.createdTime(),
+					State:     mset.state(),
+					Config:    *setDynamicStreamMetadata(&msetCfg),
+					TimeStamp: time.Now().UTC(),
+				}
+				s.Noticef("Completed restore of %s for stream '%s > %s' in %v",
+					friendlyBytes(int64(total)), acc.Name, streamName, end.Sub(start).Round(time.Millisecond))
+			}
+			if reply != _EMPTY_ {
+				s.sendInternalAccountMsg(acc, reply, s.jsonResponse(&resp))
+			}
+			doneCh <- err
+		}
+
 		for {
 			select {
 			case result := <-resultCh:
-				err := result.err
-				var mset *stream
-
-				// If we staged properly go ahead and do restore now.
-				if err == nil {
-					s.Debugf("Finalizing restore for stream '%s > %s'", acc.Name, streamName)
-					tfile.Seek(0, 0)
-					mset, err = acc.RestoreStream(cfg, tfile)
-				} else {
-					errStr := err.Error()
-					tmp := []rune(errStr)
-					tmp[0] = unicode.ToUpper(tmp[0])
-					s.Warnf(errStr)
+				replySubj = result.reply
+				inputDone = true
+				inputErr = result.err
+				notActive.Stop()
+				if result.err != nil {
+					closeWithError(result.err)
+					s.Warnf(result.err.Error())
 				}
-
-				end := time.Now().UTC()
-
-				// TODO(rip) - Should this have the error code in it??
-				s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+streamName, &JSRestoreCompleteAdvisory{
-					TypedEvent: TypedEvent{
-						Type: JSRestoreCompleteAdvisoryType,
-						ID:   nuid.Next(),
-						Time: end,
-					},
-					Stream: streamName,
-					Start:  start,
-					End:    end,
-					Bytes:  int64(total),
-					Client: ci.forAdvisory(),
-					Domain: domain,
-				})
-
-				var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
-
-				if err != nil {
-					resp.Error = NewJSStreamRestoreError(err, Unless(err))
-					s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
-						friendlyBytes(int64(total)), acc.Name, streamName, end.Sub(start))
-				} else {
-					msetCfg := mset.config()
-					resp.StreamInfo = &StreamInfo{
-						Created:   mset.createdTime(),
-						State:     mset.state(),
-						Config:    *setDynamicStreamMetadata(&msetCfg),
-						TimeStamp: time.Now().UTC(),
+				if restoreDone {
+					err := inputErr
+					if err == nil {
+						err = restoreResult.err
 					}
-					s.Noticef("Completed restore of %s for stream '%s > %s' in %v",
-						friendlyBytes(int64(total)), acc.Name, streamName, end.Sub(start).Round(time.Millisecond))
+					finish(replySubj, err, restoreResult.mset)
+					return
 				}
-
-				// On the last EOF, send back the stream info or error status.
-				s.sendInternalAccountMsg(acc, result.reply, s.jsonResponse(&resp))
-				// Signal to the upper layers.
-				doneCh <- err
-				return
+			case rr := <-restoreCh:
+				restoreDone = true
+				restoreResult = rr
+				if inputDone {
+					err := inputErr
+					if err == nil {
+						err = rr.err
+					}
+					finish(replySubj, err, rr.mset)
+					return
+				}
 			case <-activeQ.ch:
 				if n, ok := activeQ.popOne(); ok {
 					total += n
-					notActive.Reset(activityInterval)
+					if !inputDone {
+						notActive.Reset(activityInterval)
+					}
 				}
 			case <-notActive.C:
-				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc, streamName)
+				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc.Name, streamName)
+				closeWithError(err)
 				doneCh <- err
 				return
 			}

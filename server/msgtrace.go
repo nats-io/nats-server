@@ -367,6 +367,13 @@ func (c *client) initMsgTrace() *msgTrace {
 			}
 		}
 		dest = getHdrVal(MsgTraceDest)
+		if c.kind == CLIENT {
+			if td, ok := c.allowedMsgTraceDest(hdr, false); !ok {
+				return nil
+			} else if td != _EMPTY_ {
+				dest = td
+			}
+		}
 		// Check the destination to see if this is a valid public subject.
 		if !IsValidPublishSubject(dest) {
 			// We still have to return a msgTrace object (if traceOnly is set)

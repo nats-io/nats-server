@@ -81,9 +81,6 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 		xkp, xkey = s.xkp, s.info.XKey
 	}
 
-	// FIXME: so things like the server ID that get assigned, are used as a sort of nonce - but
-	//  reality is that the keypair here, is generated, so the response generated a JWT has to be
-	//  this user - no replay possible
 	// Create a keypair for the user. We will expect this public user to be in the signed response.
 	// This prevents replay attacks.
 	ukp, _ := nkeys.CreateUser()
