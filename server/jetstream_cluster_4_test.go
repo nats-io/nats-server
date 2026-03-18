@@ -7639,3 +7639,156 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdateRestart(t *testing.T) {
 		require_NoError(t, err)
 	}
 }
+
+func TestJetStreamClusterSourcingIntoDiscardNewPerSubject(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "A",
+		Subjects:   []string{"foo.*"},
+		Duplicates: 100 * time.Millisecond,
+		Replicas:   3,
+	})
+	require_NoError(t, err)
+
+	sConfig := StreamConfig{
+		Name:          "B",
+		Storage:       MemoryStorage,
+		Sources:       []*StreamSource{{Name: "A"}},
+		MaxMsgsPer:    1,
+		Discard:       DiscardNew,
+		DiscardNewPer: true,
+		Duplicates:    10 * time.Second,
+		Replicas:      3,
+	}
+
+	req, err := json.Marshal(&sConfig)
+	require_NoError(t, err)
+
+	r, err := nc.Request("$JS.API.STREAM.CREATE.B", req, 5*time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiStreamCreateResponse
+	err = json.Unmarshal(r.Data, &resp)
+	require_NoError(t, err)
+	require_Equal(t, resp.Error, nil)
+
+	_, err = js.Publish("foo.1", []byte("1"))
+	require_NoError(t, err)
+
+	// This second publish to the same subject should not be sourced
+	// due to discard new per subject with MaxMsgsPer=1.
+	_, err = js.Publish("foo.1", []byte("2"))
+	require_NoError(t, err)
+
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("B")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("expected 1 message, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Check the message content.
+	msgp, err := js.GetMsg("B", uint64(1))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.1")
+	require_Equal(t, string(msgp.Data), "1")
+
+	// Purge stream B so sourcing can continue past the per-subject limit.
+	require_NoError(t, js.PurgeStream("B"))
+
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("B")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("expected 1 message, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// After purge, the second message should now be sourced.
+	msgp, err = js.GetMsg("B", uint64(2))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.1")
+	require_Equal(t, string(msgp.Data), "2")
+
+	// Test duplicate message ID handling: publish with explicit Nats-Msg-Id.
+	msg := nats.NewMsg("foo.2")
+	msg.Data = []byte("1")
+	msg.Header.Set("Nats-Msg-Id", "dup1")
+
+	_, err = js.PublishMsg(msg)
+	require_NoError(t, err)
+
+	// Must be able to source the message after the duplicate.
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("B")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("expected 2 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	msgp, err = js.GetMsg("B", uint64(3))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.2")
+	require_Equal(t, string(msgp.Data), "1")
+
+	// Wait for the dedup window on stream A (100ms) to expire.
+	time.Sleep(200 * time.Millisecond)
+
+	// Publish a message with the same Nats-Msg-Id but to a different subject.
+	// Stream A's dedup window has expired, so A will accept it.
+	// Stream B has a 10s dedup window, so it should detect this as a duplicate and skip it.
+	msg = nats.NewMsg("foo.3")
+	msg.Data = []byte("1")
+	msg.Header.Set("Nats-Msg-Id", "dup1")
+
+	_, err = js.PublishMsg(msg)
+	require_NoError(t, err)
+
+	// The duplicate should be skipped by B; message count should stay at 2.
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("B")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("expected 2 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Sourcing must continue processing after the skipped duplicate.
+	_, err = js.Publish("foo.4", []byte("1"))
+	require_NoError(t, err)
+
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("B")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 3 {
+			return fmt.Errorf("expected 3 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	msgp, err = js.GetMsg("B", uint64(4))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.4")
+	require_Equal(t, string(msgp.Data), "1")
+}
