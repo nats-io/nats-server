@@ -918,9 +918,7 @@ func (c *client) mqttParse(buf []byte) error {
 			// Add the client id to the client's string, regardless of error.
 			// We may still get the client_id if the call above fails somewhere
 			// after parsing the client ID itself.
-			if c.mqtt.cid != _EMPTY_ {
-				c.ncs.Store(fmt.Sprintf("%s - %s", c, mqttClientIDForLogs(c.mqtt.cid)))
-			}
+			c.ncs.Store(fmt.Sprintf("%s - %q", c, c.mqtt.cid))
 			if trace && cp != nil {
 				c.traceInOp("CONNECT", errOrTrace(err, c.mqttConnectTrace(cp)))
 			}
@@ -2119,7 +2117,7 @@ func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *
 	sess.mu.Lock()
 	if ec := sess.c; ec != nil {
 		as.addSessToFlappers(sess.id)
-		ec.Warnf("Closing because a remote connection has started with the same client ID hash %q", mqttClientIDForLogs(sess.id))
+		ec.Warnf("Closing because a remote connection has started with the same client ID: %q", sess.id)
 		// Disassociate the client from the session so that on client close,
 		// nothing will be done with regards to cleaning up the session,
 		// such as deleting stream, etc..
@@ -2378,7 +2376,7 @@ func (as *mqttAccountSessionManager) lockSession(sess *mqttSession, c *client) e
 		sess.mu.Unlock()
 	}
 	if fail {
-		return fmt.Errorf("another session is in use with client ID hash %q", mqttClientIDForLogs(sess.id))
+		return fmt.Errorf("another session is in use with client ID %q", sess.id)
 	}
 	as.sessLocked[sess.id] = struct{}{}
 	return nil
@@ -3018,7 +3016,7 @@ func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opt
 	jsa := &as.jsa
 	formatError := func(errTxt string, err error) (*mqttSession, bool, error) {
 		accName := jsa.c.acc.GetName()
-		return nil, false, fmt.Errorf("%s for account %q, session hash %q: %v", errTxt, accName, mqttClientIDForLogs(clientID), err)
+		return nil, false, fmt.Errorf("%s for account %q, session %q: %v", errTxt, accName, clientID, err)
 	}
 
 	hash := getHash(clientID)
@@ -3289,7 +3287,7 @@ func (sess *mqttSession) save() error {
 
 	resp, err := sess.jsa.storeSessionMsg(domainTk, cidHash, hdr, b)
 	if err != nil {
-		return fmt.Errorf("unable to persist session hash %q (seq=%v): %v", mqttClientIDForLogs(ps.ID), seq, err)
+		return fmt.Errorf("unable to persist session %q (seq=%v): %v", ps.ID, seq, err)
 	}
 	sess.mu.Lock()
 	sess.seq = resp.Sequence
@@ -3330,13 +3328,13 @@ func (sess *mqttSession) clear(noWait bool) error {
 
 	for _, dur := range durs {
 		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur, noWait); isErrorOtherThan(err, JSConsumerNotFoundErr) {
-			return fmt.Errorf("unable to delete consumer %q for session hash %q: %v", dur, mqttClientIDForLogs(sess.id), err)
+			return fmt.Errorf("unable to delete consumer %q for session %q: %v", dur, sess.id, err)
 		}
 	}
 	if pubRelDur != _EMPTY_ {
 		_, err := sess.jsa.deleteConsumer(mqttOutStreamName, pubRelDur, noWait)
 		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
-			return fmt.Errorf("unable to delete consumer %q for session hash %q: %v", pubRelDur, mqttClientIDForLogs(sess.id), err)
+			return fmt.Errorf("unable to delete consumer %q for session %q: %v", pubRelDur, sess.id, err)
 		}
 	}
 
@@ -3346,7 +3344,7 @@ func (sess *mqttSession) clear(noWait bool) error {
 		// is already deleted, can happen in a cluster.
 		if isErrorOtherThan(err, JSSequenceNotFoundErrF) {
 			if isErrorOtherThan(err, JSStreamMsgDeleteFailedF) || !strings.Contains(err.Error(), ErrStoreMsgNotFound.Error()) {
-				return fmt.Errorf("unable to delete session hash %q record at sequence %v: %v", mqttClientIDForLogs(id), seq, err)
+				return fmt.Errorf("unable to delete session %q record at sequence %v: %v", id, seq, err)
 			}
 		}
 	}
@@ -3718,7 +3716,7 @@ func (c *client) mqttParseConnect(r *mqttReader, hasMappings bool) (byte, *mqttC
 		c.mqtt.cid = nuid.Next()
 	}
 	// Spec [MQTT-3.1.3-4] and [MQTT-3.1.3-9]
-	if err := mqttValidateClientID(c.mqtt.cid); err != nil {
+	if err := mqttValidateString(c.mqtt.cid, "client ID"); err != nil {
 		return mqttConnAckRCIdentifierRejected, nil, err
 	}
 
@@ -3796,10 +3794,7 @@ func (c *client) mqttParseConnect(r *mqttReader, hasMappings bool) (byte, *mqttC
 }
 
 func (c *client) mqttConnectTrace(cp *mqttConnectProto) string {
-	var trace string
-	if c.mqtt.cid != _EMPTY_ {
-		trace = fmt.Sprintf("clientIDHash=%s", mqttClientIDForLogs(c.mqtt.cid))
-	}
+	trace := fmt.Sprintf("clientID=%s", c.mqtt.cid)
 	if cp.rd > 0 {
 		trace += fmt.Sprintf(" keepAlive=%v", cp.rd)
 	}
@@ -3909,7 +3904,7 @@ CHECK:
 	if _, ok := asm.sessLocked[cid]; ok {
 		asm.mu.Unlock()
 		if locked++; locked == 10 {
-			return fmt.Errorf("other session with client ID hash %q is in the process of connecting", mqttClientIDForLogs(cid))
+			return fmt.Errorf("other session with client ID %q is in the process of connecting", cid)
 		}
 		time.Sleep(100 * time.Millisecond)
 		goto CHECK
@@ -3978,7 +3973,7 @@ CHECK:
 			asm.mu.Lock()
 			asm.addSessToFlappers(cid)
 			asm.mu.Unlock()
-			c.Warnf("Replacing old client %q since both have the same client ID hash %q", ec, mqttClientIDForLogs(cid))
+			c.Warnf("Replacing old client %q since both have the same client ID %q", ec, cid)
 			// Close old client in separate go routine
 			go ec.closeConnection(DuplicateClientID)
 		}
@@ -4160,25 +4155,6 @@ func mqttValidateString(value string, field string) error {
 	}
 	if strings.IndexByte(value, 0) >= 0 {
 		return fmt.Errorf("invalid null character in %s %q", field, value)
-	}
-	return nil
-}
-
-// Use a stable hash in logs to correlate duplicate-client activity without
-// exposing the raw MQTT client ID.
-func mqttClientIDForLogs(clientID string) string {
-	if clientID == _EMPTY_ {
-		return _EMPTY_
-	}
-	return getHash(clientID)
-}
-
-func mqttValidateClientID(clientID string) error {
-	if !utf8.ValidString(clientID) {
-		return fmt.Errorf("invalid utf8 for client ID %q", mqttClientIDForLogs(clientID))
-	}
-	if strings.IndexByte(clientID, 0) >= 0 {
-		return fmt.Errorf("invalid null character in client ID %q", mqttClientIDForLogs(clientID))
 	}
 	return nil
 }
@@ -5391,7 +5367,7 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 		ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 	}
 	if _, err := sess.jsa.createDurableConsumer(ccr); err != nil {
-		c.Errorf("Unable to add JetStream consumer for PUBREL for client ID hash %q: err=%v", mqttClientIDForLogs(id), err)
+		c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", id, err)
 		return err
 	}
 	pubRelConsumer = &ccr.Config
