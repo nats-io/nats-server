@@ -2739,8 +2739,8 @@ func (c *client) processHeaderPub(arg, remaining []byte) error {
 		// Do this only for CLIENT connections.
 		if c.kind == CLIENT && c.pa.hdr > 0 && len(remaining) > 0 {
 			hdr := remaining[:min(len(remaining), c.pa.hdr)]
-			if td := getHeader(MsgTraceDest, hdr); len(td) > 0 {
-				c.initAndSendIngressErrEvent(hdr, string(td), ErrMaxPayload)
+			if td, ok := c.allowedMsgTraceDest(hdr, false); ok && td != _EMPTY_ {
+				c.initAndSendIngressErrEvent(hdr, td, ErrMaxPayload)
 			}
 		}
 		c.maxPayloadViolation(c.pa.size, maxPayload)
@@ -3980,6 +3980,41 @@ func (c *client) pubAllowed(subject string) bool {
 	return c.pubAllowedFullCheck(subject, true, false)
 }
 
+// allowedMsgTraceDest returns the trace destination if present and authorized.
+// It only considers static publish permissions and does not consume dynamic
+// reply permissions because the client is not publishing the trace event itself.
+func (c *client) allowedMsgTraceDest(hdr []byte, hasLock bool) (string, bool) {
+	if len(hdr) == 0 {
+		return _EMPTY_, true
+	}
+	td := sliceHeader(MsgTraceDest, hdr)
+	if len(td) == 0 {
+		return _EMPTY_, true
+	}
+	dest := bytesToString(td)
+	if c.kind == CLIENT {
+		if hasGWRoutedReplyPrefix(td) {
+			return dest, false
+		}
+		var acc *Account
+		var srv *Server
+		if !hasLock {
+			c.mu.Lock()
+		}
+		acc, srv = c.acc, c.srv
+		if !hasLock {
+			c.mu.Unlock()
+		}
+		if bytes.HasPrefix(td, clientNRGPrefix) && srv != nil && acc != srv.SystemAccount() {
+			return dest, false
+		}
+	}
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowedFullCheck(dest, false, hasLock) {
+		return dest, false
+	}
+	return dest, true
+}
+
 // pubAllowedFullCheck checks on all publish permissioning depending
 // on the flag for dynamic reply permissions.
 func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bool {
@@ -4115,10 +4150,19 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	genidAddr := &acc.sl.genid
 
 	// Check pub permissions
-	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowedFullCheck(string(c.pa.subject), true, true) {
-		c.mu.Unlock()
-		c.pubPermissionViolation(c.pa.subject)
-		return false, true
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) {
+		if !c.pubAllowedFullCheck(string(c.pa.subject), true, true) {
+			c.mu.Unlock()
+			c.pubPermissionViolation(c.pa.subject)
+			return false, true
+		}
+	}
+	if c.pa.hdr > 0 {
+		if td, ok := c.allowedMsgTraceDest(msg[:c.pa.hdr], true); !ok {
+			c.mu.Unlock()
+			c.pubPermissionViolation(stringToBytes(td))
+			return false, true
+		}
 	}
 	c.mu.Unlock()
 
