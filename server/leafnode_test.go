@@ -7652,6 +7652,55 @@ func TestLeafNodeCompressionWithOlderServer(t *testing.T) {
 	}
 }
 
+func TestLeafNodeNoCompressionWithWebsocket(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		websocket {
+			listen: "127.0.0.1:-1"
+			no_tls: true
+		}
+		leafnodes {
+			port: -1
+			compression: "s2_fast"
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: "B"
+		leafnodes {
+			remotes [
+				{url: "ws://127.0.0.1:%d"}
+			]
+		}
+	`, o1.Websocket.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+
+	getLeafCompMode := func(s *Server) string {
+		var cm string
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, l := range s.leafs {
+			l.mu.Lock()
+			cm = l.leaf.compression
+			l.mu.Unlock()
+			return cm
+		}
+		return _EMPTY_
+	}
+	for _, s := range []*Server{s1, s2} {
+		if cm := getLeafCompMode(s); cm != CompressionOff {
+			t.Fatalf("Expected websocket leaf compression to be %q, got %q", CompressionOff, cm)
+		}
+	}
+}
+
 func TestLeafNodeCompressionAuto(t *testing.T) {
 	for _, test := range []struct {
 		name          string

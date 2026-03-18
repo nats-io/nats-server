@@ -1646,6 +1646,14 @@ func (c *client) processLeafnodeInfo(info *Info) {
 }
 
 func (s *Server) negotiateLeafCompression(c *client, didSolicit bool, infoCompression string, co *CompressionOpts) (bool, error) {
+	// WebSockets already have compression available so shouldn't negotiate
+	// a second layer of it.
+	if c.isWebsocket() {
+		c.mu.Lock()
+		c.leaf.compression = CompressionOff
+		c.mu.Unlock()
+		return false, nil
+	}
 	// Negotiate the appropriate compression mode (or no compression)
 	cm, err := selectCompressionMode(co.Mode, infoCompression)
 	if err != nil {
