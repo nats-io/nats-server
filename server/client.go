@@ -1483,11 +1483,8 @@ func (c *client) readLoop(pre []byte) {
 			if err := c.parse(bufs[i]); err != nil {
 				if err == ErrMinimumVersionRequired {
 					// Special case here, currently only for leaf node connections.
-					// When process the CONNECT protocol, if the minimum version
-					// required was not met, an error was printed and sent back to
-					// the remote, and connection was closed after a certain delay
-					// (to avoid "rapid" reconnection from the remote).
-					// We don't need to do any of the things below, simply return.
+					// processLeafConnect() already sent the rejection and closed
+					// the connection, so there is nothing else to do here.
 					return
 				}
 				if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
