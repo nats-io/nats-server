@@ -6971,7 +6971,9 @@ func TestMQTTClientIDInLogStatements(t *testing.T) {
 	l := &captureDebugLogger{dbgCh: make(chan string, 10)}
 	s.SetLogger(l, true, false)
 
-	cisub := &mqttConnInfo{clientID: "my_client_id", cleanSess: false}
+	clientID := "my_client_id"
+	clientIDHash := getHash(clientID)
+	cisub := &mqttConnInfo{clientID: clientID, cleanSess: false}
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
@@ -6984,7 +6986,10 @@ func TestMQTTClientIDInLogStatements(t *testing.T) {
 	for {
 		select {
 		case dl := <-l.dbgCh:
-			if strings.Contains(dl, "my_client_id") {
+			if strings.Contains(dl, clientID) {
+				t.Fatalf("debug statement leaked raw client ID: %q", dl)
+			}
+			if strings.Contains(dl, clientIDHash) {
 				if strings.Contains(dl, "Client connected") {
 					connected = true
 				} else if strings.Contains(dl, "Client connection closed") {
@@ -6996,7 +7001,7 @@ func TestMQTTClientIDInLogStatements(t *testing.T) {
 				}
 			}
 		case <-tm.C:
-			t.Fatal("Did not get the debug statements or client_id in them")
+			t.Fatal("Did not get the debug statements or client ID hash in them")
 		}
 	}
 }
