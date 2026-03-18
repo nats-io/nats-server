@@ -1243,7 +1243,10 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		info = s.copyLeafNodeInfo()
 		// For tests that want to simulate old servers, do not set the compression
 		// on the INFO protocol if configured with CompressionNotSupported.
-		if cm := opts.LeafNode.Compression.Mode; cm != CompressionNotSupported {
+		// Also suppress it if WebSocket compression is already in use, otherwise
+		// an old soliciting peer would honor the advertised mode, switch to S2,
+		// and then wait forever for a compressed INFO response from us.
+		if cm := opts.LeafNode.Compression.Mode; cm != CompressionNotSupported && (ws == nil || !ws.compress) {
 			info.Compression = cm
 		}
 		// We always send a nonce for LEAF connections. Do not change that without
@@ -1662,6 +1665,15 @@ func (c *client) processLeafnodeInfo(info *Info) {
 }
 
 func (s *Server) negotiateLeafCompression(c *client, didSolicit bool, infoCompression string, co *CompressionOpts) (bool, error) {
+	// If WebSocket compression is already negotiated on this connection then
+	// we shouldn't layer S2 compression on top of it.
+	c.mu.Lock()
+	if c.ws != nil && c.ws.compress {
+		c.leaf.compression = CompressionOff
+		c.mu.Unlock()
+		return false, nil
+	}
+	c.mu.Unlock()
 	// Negotiate the appropriate compression mode (or no compression)
 	cm, err := selectCompressionMode(co.Mode, infoCompression)
 	if err != nil {

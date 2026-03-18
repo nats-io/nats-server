@@ -16,10 +16,12 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -7754,6 +7756,195 @@ func TestLeafNodeCompressionWithOlderServer(t *testing.T) {
 		if cm := getLeafCompMode(s); cm != CompressionNotSupported {
 			t.Fatalf("Expected compression not supported, got %q", cm)
 		}
+	}
+}
+
+func TestLeafNodeNoCompressionWithWebsocket(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		acceptWSComp bool
+		remoteWSComp bool
+		expectS2     bool
+	}{
+		{"both ws compression", true, true, false},
+		{"only accept ws compression", true, false, true},
+		{"only remote ws compression", false, true, true},
+		{"neither ws compression", false, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				server_name: "A"
+				websocket {
+					listen: "127.0.0.1:-1"
+					no_tls: true
+					compression: %v
+				}
+				leafnodes {
+					port: -1
+					compression: "s2_fast"
+				}
+			`, test.acceptWSComp)))
+			s1, o1 := RunServerWithConfig(conf1)
+			defer s1.Shutdown()
+
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				server_name: "B"
+				leafnodes {
+					remotes [
+						{url: "ws://127.0.0.1:%d", ws_compression: %v, compression: "s2_fast"}
+					]
+				}
+			`, o1.Websocket.Port, test.remoteWSComp)))
+			s2, _ := RunServerWithConfig(conf2)
+			defer s2.Shutdown()
+
+			checkLeafNodeConnected(t, s2)
+
+			getLeafState := func(s *Server) (string, bool) {
+				var cm string
+				var wsComp bool
+				s.mu.RLock()
+				defer s.mu.RUnlock()
+				for _, l := range s.leafs {
+					l.mu.Lock()
+					cm = l.leaf.compression
+					if l.ws != nil {
+						wsComp = l.ws.compress
+					}
+					l.mu.Unlock()
+					return cm, wsComp
+				}
+				return _EMPTY_, false
+			}
+			expected := CompressionOff
+			if test.expectS2 {
+				expected = CompressionS2Fast
+			}
+			// WS compression is only actually used when both sides opted in.
+			wantWSComp := test.acceptWSComp && test.remoteWSComp
+			for _, s := range []*Server{s1, s2} {
+				cm, wsComp := getLeafState(s)
+				if cm != expected {
+					t.Fatalf("Expected leaf compression to be %q, got %q", expected, cm)
+				}
+				if wsComp != wantWSComp {
+					t.Fatalf("Expected ws.compress to be %v, got %v", wantWSComp, wsComp)
+				}
+			}
+		})
+	}
+}
+
+// Verifies that the initial INFO sent by the accept side over a WS leaf
+// connection does not advertise leafnode compression when WS compression is
+// negotiated. An older soliciting peer (without the WS-aware patch) would
+// honor an advertised mode, switch to S2, and then deadlock waiting for a
+// compressed INFO response that we never send.
+func TestLeafNodeWSAcceptInitialInfoSuppressesCompression(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		negotiatePMC bool
+		expectedComp string
+	}{
+		{"ws compression negotiated", true, _EMPTY_},
+		{"ws compression not negotiated", false, CompressionS2Fast},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(`
+				port: -1
+				server_name: "A"
+				websocket {
+					listen: "127.0.0.1:-1"
+					no_tls: true
+					compression: true
+				}
+				leafnodes {
+					port: -1
+					compression: "s2_fast"
+				}
+			`))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			addr := fmt.Sprintf("127.0.0.1:%d", o.Websocket.Port)
+			c, err := net.Dial("tcp", addr)
+			require_NoError(t, err)
+			defer c.Close()
+
+			wsKey, err := wsMakeChallengeKey()
+			require_NoError(t, err)
+
+			var reqBuf bytes.Buffer
+			fmt.Fprintf(&reqBuf, "GET %s HTTP/1.1\r\n", leafNodeWSPath)
+			fmt.Fprintf(&reqBuf, "Host: %s\r\n", addr)
+			reqBuf.WriteString("Upgrade: websocket\r\n")
+			reqBuf.WriteString("Connection: Upgrade\r\n")
+			fmt.Fprintf(&reqBuf, "Sec-WebSocket-Key: %s\r\n", wsKey)
+			reqBuf.WriteString("Sec-WebSocket-Version: 13\r\n")
+			if test.negotiatePMC {
+				fmt.Fprintf(&reqBuf, "Sec-WebSocket-Extensions: %s\r\n", wsPMCReqHeaderValue)
+			}
+			reqBuf.WriteString("\r\n")
+
+			require_NoError(t, c.SetDeadline(time.Now().Add(2*time.Second)))
+			_, err = c.Write(reqBuf.Bytes())
+			require_NoError(t, err)
+
+			br := bufio.NewReader(c)
+			resp, err := http.ReadResponse(br, nil)
+			require_NoError(t, err)
+			resp.Body.Close()
+			require_True(t, resp.StatusCode == http.StatusSwitchingProtocols)
+
+			pmcAccepted := strings.Contains(resp.Header.Get("Sec-WebSocket-Extensions"), wsPMCExtension)
+			if test.negotiatePMC != pmcAccepted {
+				t.Fatalf("Expected PMC negotiated=%v, got %v", test.negotiatePMC, pmcAccepted)
+			}
+
+			// Read the first WS frame header (binary, possibly compressed).
+			b0, err := br.ReadByte()
+			require_NoError(t, err)
+			require_True(t, b0&wsFinalBit != 0)
+			require_True(t, wsOpCode(b0&0xF) == wsBinaryMessage)
+			require_True(t, (b0&wsRsv1Bit != 0) == pmcAccepted)
+
+			b1, err := br.ReadByte()
+			require_NoError(t, err)
+			require_True(t, b1&wsMaskBit == 0)
+			plen := int(b1 & 0x7F)
+			switch plen {
+			case 126:
+				var b [2]byte
+				_, err = io.ReadFull(br, b[:])
+				require_NoError(t, err)
+				plen = int(b[0])<<8 | int(b[1])
+			case 127:
+				t.Fatalf("Frame too large")
+			}
+			payload := make([]byte, plen)
+			_, err = io.ReadFull(br, payload)
+			require_NoError(t, err)
+
+			if pmcAccepted {
+				// Append the 4-byte trailer stripped by permessage-deflate plus
+				// a final empty block so flate.NewReader sees end-of-stream.
+				payload = append(payload, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00, 0x00, 0xff, 0xff)
+				fr := flate.NewReader(bytes.NewReader(payload))
+				payload, err = io.ReadAll(fr)
+				require_NoError(t, err)
+				fr.Close()
+			}
+
+			require_True(t, bytes.HasPrefix(payload, []byte("INFO ")))
+			payload = bytes.TrimSuffix(payload, []byte(_CRLF_))
+			var info Info
+			require_NoError(t, json.Unmarshal(payload[5:], &info))
+			if info.Compression != test.expectedComp {
+				t.Fatalf("Expected info.Compression=%q, got %q", test.expectedComp, info.Compression)
+			}
+		})
 	}
 }
 
