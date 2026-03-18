@@ -8938,6 +8938,75 @@ func TestMQTTCrossAccountRetain(t *testing.T) {
 	}
 }
 
+// TestMQTTSessionPersistSpoofPrevented verifies that an MQTT client cannot
+// publish to internal $MQTT.JSA.* subjects to spoof session-persist messages
+// and evict other sessions.
+func TestMQTTSessionPersistSpoofPrevented(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.Users = []*User{
+		{
+			Username: "victim",
+			Password: "pass",
+			Permissions: &Permissions{
+				Publish:   &SubjectPermission{Allow: []string{"foo.>"}},
+				Subscribe: &SubjectPermission{Allow: []string{"foo.>"}},
+			},
+		},
+		{
+			Username: "attacker",
+			Password: "pass",
+			Permissions: &Permissions{
+				Publish:   &SubjectPermission{Allow: []string{"foo.>"}},
+				Subscribe: &SubjectPermission{Allow: []string{"foo.>"}},
+			},
+		},
+	}
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// Connect the victim MQTT client with a persistent session.
+	vc, vr := testMQTTConnect(t, &mqttConnInfo{
+		clientID:  "victim",
+		user:      "victim",
+		pass:      "pass",
+		cleanSess: true,
+	}, o.MQTT.Host, o.MQTT.Port)
+	defer vc.Close()
+	testMQTTCheckConnAck(t, vr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, vc, vr, []*mqttFilter{{filter: "foo/+", qos: 1}}, []byte{1})
+	testMQTTFlush(t, vc, nil, vr)
+
+	// Connect the attacker MQTT client.
+	ac, ar := testMQTTConnect(t, &mqttConnInfo{
+		clientID:  "attacker",
+		user:      "attacker",
+		pass:      "pass",
+		cleanSess: true,
+	}, o.MQTT.Host, o.MQTT.Port)
+	defer ac.Close()
+	testMQTTCheckConnAck(t, ar, mqttConnAckRCConnectionAccepted, false)
+
+	// Craft a forged session-persist message targeting the victim's session.
+	// MQTT topic "/" maps to NATS ".", so this becomes:
+	//   $MQTT.JSA.fakenode.SP.<victimHash>.fakeuuid
+	victimHash := getHash("victim")
+	spoofTopic := fmt.Sprintf("$MQTT/JSA/fakenode/%s/%s/fakeuuid", mqttJSASessPersist, victimHash)
+	forgedPayload := []byte(`{"stream":"` + mqttSessStreamName + `","seq":999}`)
+
+	// Attempt the spoofed publish. With the fix, the implicit allow bypass
+	// for MQTT clients on $MQTT.* subjects is removed, so this publish is
+	// denied by the permission check (attacker only has "foo.>" allow).
+	testMQTTPublish(t, ac, ar, 0, false, false, spoofTopic, 0, forgedPayload)
+	testMQTTFlush(t, ac, nil, ar)
+
+	// Give the server time to process if the message leaked through.
+	time.Sleep(250 * time.Millisecond)
+
+	// Verify the victim session was NOT evicted by round-tripping a message.
+	testMQTTPublish(t, ac, ar, 0, false, false, "foo/bar", 0, []byte("still-alive"))
+	testMQTTCheckPubMsg(t, vc, vr, "foo/bar", 0, []byte("still-alive"))
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks
