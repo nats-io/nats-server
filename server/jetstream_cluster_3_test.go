@@ -8471,3 +8471,86 @@ func TestJetStreamClusterConsumerAssignmentsOrInflightSeqWithInflightStream(t *t
 		t.Fatalf("Unexpected consumers: %+v", got)
 	}
 }
+
+func TestJetStreamClusterRollupWithDiscardNewPerSubject(t *testing.T) {
+	test := func(t *testing.T, replicas int, storage nats.StorageType) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:                 "TEST",
+			Subjects:             []string{"kv.>"},
+			Replicas:             replicas,
+			Storage:              storage,
+			Discard:              nats.DiscardNew,
+			DiscardNewPerSubject: true,
+			MaxMsgsPerSubject:    1,
+			AllowRollup:          true,
+		})
+		require_NoError(t, err)
+
+		// Populate two subjects at their per-subject limit.
+		sendStreamMsg(t, nc, "kv.A", "value-A")
+		sendStreamMsg(t, nc, "kv.B", "value-B")
+
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, 2)
+		require_Equal(t, si.State.FirstSeq, 1)
+		require_Equal(t, si.State.LastSeq, 2)
+
+		// Rollup on subject should succeed despite per-subject limit.
+		m := nats.NewMsg("kv.A")
+		m.Data = []byte("rolled-up-A")
+		m.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+
+		// Should still have 2 messages: the rollup replaced kv.A, kv.B untouched.
+		si, err = js.StreamInfo("TEST")
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, 2)
+		require_Equal(t, si.State.FirstSeq, 2)
+		require_Equal(t, si.State.LastSeq, 3)
+
+		// Verify the rollup message is what we stored.
+		sub, err := js.SubscribeSync("kv.A")
+		require_NoError(t, err)
+		defer sub.Drain()
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_Equal(t, string(msg.Data), "rolled-up-A")
+
+		// Rollup all should also succeed.
+		m = nats.NewMsg("kv.A")
+		m.Data = []byte("rolled-up-all")
+		m.Header.Set(JSMsgRollup, JSMsgRollupAll)
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+
+		// Only the rollup message should remain.
+		si, err = js.StreamInfo("TEST")
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, 1)
+		require_Equal(t, si.State.FirstSeq, 4)
+		require_Equal(t, si.State.LastSeq, 4)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				test(t, replicas, storage)
+			})
+		}
+	}
+}
