@@ -153,7 +153,6 @@ const (
 	compressionNegotiated                         // Marks if this connection has negotiated compression level with remote.
 	didTLSFirst                                   // Marks if this connection requested and was accepted doing the TLS handshake first (prior to INFO).
 	isSlowConsumer                                // Marks connection as a slow consumer.
-	firstPong                                     // Marks if this is the first PONG received
 )
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -1483,11 +1482,8 @@ func (c *client) readLoop(pre []byte) {
 			if err := c.parse(bufs[i]); err != nil {
 				if err == ErrMinimumVersionRequired {
 					// Special case here, currently only for leaf node connections.
-					// When process the CONNECT protocol, if the minimum version
-					// required was not met, an error was printed and sent back to
-					// the remote, and connection was closed after a certain delay
-					// (to avoid "rapid" reconnection from the remote).
-					// We don't need to do any of the things below, simply return.
+					// processLeafConnect() already sent the rejection and closed
+					// the connection, so there is nothing else to do here.
 					return
 				}
 				if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
@@ -2693,11 +2689,9 @@ func (c *client) processPong() {
 	c.rtt = computeRTT(c.rttStart)
 	srv := c.srv
 	reorderGWs := c.kind == GATEWAY && c.gw.outbound
-	firstPong := c.flags.setIfNotSet(firstPong)
 	var ri *routeInfo
-	// When receiving the first PONG, for a route with pooling, we may be
-	// instructed to start a new route.
-	if firstPong && c.kind == ROUTER && c.route != nil {
+	// For a route with pooling, we may be instructed to start a new route.
+	if c.kind == ROUTER && c.route != nil && c.route.startNewRoute != nil {
 		ri = c.route.startNewRoute
 		c.route.startNewRoute = nil
 	}

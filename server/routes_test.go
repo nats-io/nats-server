@@ -5040,6 +5040,141 @@ func TestRouteConfigureWriteTimeoutPolicy(t *testing.T) {
 	}
 }
 
+func TestRoutePoolFirstPongBlocksChain(t *testing.T) {
+	// Use a very short ping interval so the timer fires quickly, before we (the mock server) send our INFO.
+	orgMaxPing := routeMaxPingInterval
+	routeMaxPingInterval = 200 * time.Millisecond
+	defer func() { routeMaxPingInterval = orgMaxPing }()
+
+	// Start a TCP listener acting as a mock route server. S2 will solicit a connection to this listener.
+	mockListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require_NoError(t, err)
+	defer mockListener.Close()
+
+	mockPort := mockListener.Addr().(*net.TCPAddr).Port
+
+	o2 := DefaultOptions()
+	o2.ServerName = "S2"
+	o2.Cluster.Name = "local"
+	o2.Cluster.PoolSize = 3
+	o2.Cluster.Compression.Mode = CompressionOff
+	o2.Cluster.MaxPingsOut = 10
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", mockPort))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	var ready sync.WaitGroup
+	var keepAlive sync.WaitGroup
+	mockListener.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
+	handleConnection := func() {
+		conn, err := mockListener.Accept()
+		if err != nil {
+			ready.Done()
+			require_NoError(t, err)
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+
+		// Ensure we call these before conn.Close() above.
+		// We have to wait for both connections to be ready and then wait for the test to finish.
+		defer keepAlive.Wait()
+		defer ready.Done()
+
+		// S2 sends CONNECT immediately (solicited route).
+		// Read it but do NOT send our INFO yet — we want S2's timer to fire first.
+		require_NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+
+		// Read S2's CONNECT line.
+		line, err := br.ReadString('\n')
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(line, "CONNECT"))
+
+		// Wait for S2's timer PING to arrive.
+		// The readLoop on S2 is blocked waiting for our INFO, so the
+		// timer goroutine enqueues the PING on S2's outbound buffer.
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			if _, err = conn.Write([]byte("PING\r\n")); err != nil {
+				return err
+			}
+			if line, err = br.ReadString('\n'); err != nil {
+				return err
+			}
+			t.Logf("S2 received: %q", line)
+			if !strings.HasPrefix(line, "PING") {
+				return fmt.Errorf("expected PING, got %q", line)
+			}
+			return nil
+		})
+
+		// Respond with PONG — this sets firstPong on S2's route connection
+		// BEFORE addRoute has run (since we haven't sent INFO yet).
+		_, err = conn.Write([]byte("PONG\r\n"))
+		require_NoError(t, err)
+
+		// NOW send our INFO. This triggers S2's processRouteInfo → addRoute,
+		// which sets startNewRoute and sends another PING.
+		mockInfo := Info{
+			ID:            "MOCK_SERVER_ID",
+			Name:          "mock-server",
+			Host:          "127.0.0.1",
+			Port:          mockPort,
+			Cluster:       "local",
+			Headers:       true,
+			Proto:         1,
+			RoutePoolSize: 3,
+		}
+		infoJSON, err := json.Marshal(mockInfo)
+		require_NoError(t, err)
+		_, err = fmt.Fprintf(conn, "INFO %s\r\n", infoJSON)
+		require_NoError(t, err)
+
+		// Read S2's delayed INFO (sent during addRoute) + subscription data + PING.
+		// We need to consume everything up to and including the PING.
+		for {
+			line, err = br.ReadString('\n')
+			require_NoError(t, err)
+			if strings.HasPrefix(line, "PING") {
+				break
+			}
+		}
+
+		// Respond to addRoute's PING with PONG.
+		_, err = conn.Write([]byte("PONG\r\n"))
+		require_NoError(t, err)
+	}
+
+	// Keep the below connections alive until the test is done.
+	// This allows us to check that S2 creates the next pool connection.
+	keepAlive.Add(1)
+	defer keepAlive.Done()
+
+	ready.Add(2)
+	for range 2 {
+		go handleConnection()
+	}
+	ready.Wait()
+
+	// Check if S2 attempts to create a second pool connection by
+	// trying to accept another connection on our mock listener.
+	secondConnCh := make(chan struct{}, 1)
+	go func() {
+		mockListener.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+		if c2, err := mockListener.Accept(); err == nil {
+			c2.Close()
+			secondConnCh <- struct{}{}
+		}
+	}()
+
+	select {
+	case <-secondConnCh:
+		// Good — S2 tried to create the next pool connection.
+		// The fix works: startNewRoute was consumed despite firstPong.
+	case <-time.After(2 * time.Second):
+		t.Fatalf("S2 did not attempt to create next pool connection; " +
+			"firstPong blocked startNewRoute consumption, pool chain is broken")
+	}
+}
+
 // Benchmarks for message arg processing functions to measure heap allocations.
 // These functions parse incoming protocol messages and split arguments.
 
