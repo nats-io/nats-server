@@ -934,7 +934,8 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 
 		// Similarly, check DiscardNew per-subject threshold to not need to bump CLFS.
-		if discardNewPer && maxMsgsPer > 0 {
+		// Allow rollup messages through since they will purge after storing.
+		if discardNewPer && maxMsgsPer > 0 && len(sliceHeader(JSMsgRollup, hdr)) == 0 {
 			// Get the current total for this subject.
 			totalMsgsForSubject := mset.store.SubjectsTotals(subject)[subject]
 			// Add inflight count in this batch and for this stream.
