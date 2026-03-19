@@ -2770,8 +2770,9 @@ func TestClientUserInfoReq(t *testing.T) {
 	userInfo := response.Data.(*UserInfo)
 
 	dlc := &UserInfo{
-		UserID:  "dlc",
-		Account: "A",
+		UserID:      "dlc",
+		Account:     "A",
+		AccountName: "A",
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Allow: []string{"$SYS.REQ.>"},
@@ -2805,8 +2806,9 @@ func TestClientUserInfoReq(t *testing.T) {
 	userInfo = response.Data.(*UserInfo)
 
 	admin := &UserInfo{
-		UserID:  "admin",
-		Account: "$SYS",
+		UserID:      "admin",
+		Account:     "$SYS",
+		AccountName: "$SYS",
 	}
 	if !reflect.DeepEqual(admin, userInfo) {
 		t.Fatalf("User info for %q did not match", "admin")

@@ -278,8 +278,9 @@ func TestAuthCalloutBasics(t *testing.T) {
 	userInfo := response.Data.(*UserInfo)
 
 	dlc := &UserInfo{
-		UserID:  "dlc",
-		Account: globalAccountName,
+		UserID:      "dlc",
+		Account:     globalAccountName,
+		AccountName: globalAccountName,
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Allow: []string{"$SYS.>"},
@@ -311,8 +312,9 @@ func TestAuthCalloutBasics(t *testing.T) {
 	userInfo = response.Data.(*UserInfo)
 	dlc = &UserInfo{
 		// Token MUST NOT be exposed in user info.
-		UserID:  "[REDACTED]",
-		Account: globalAccountName,
+		UserID:      "[REDACTED]",
+		Account:     globalAccountName,
+		AccountName: globalAccountName,
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Allow: []string{"$SYS.>"},
@@ -590,8 +592,9 @@ func TestAuthCalloutVerifiedUserCalloutsWithSig(t *testing.T) {
 	userInfo := response.Data.(*UserInfo)
 
 	dlc := &UserInfo{
-		UserID:  "UBO2MQV67TQTVIRV3XFTEZOACM4WLOCMCDMAWN5QVN5PI2N6JHTVDRON",
-		Account: globalAccountName,
+		UserID:      "UBO2MQV67TQTVIRV3XFTEZOACM4WLOCMCDMAWN5QVN5PI2N6JHTVDRON",
+		Account:     globalAccountName,
+		AccountName: globalAccountName,
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Deny: []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
@@ -807,8 +810,10 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 
 	userInfo := response.Data.(*UserInfo)
 	expected := &UserInfo{
-		UserID:  upub,
-		Account: apub,
+		UserID:      upub,
+		Account:     apub,
+		AccountName: "AUTH",
+		UserName:    "auth-service",
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Deny: []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
@@ -991,8 +996,10 @@ func testAuthCalloutScopedUser(t *testing.T, allowAnyAccount bool) {
 
 	userInfo := response.Data.(*UserInfo)
 	expected := &UserInfo{
-		UserID:  upub,
-		Account: apub,
+		UserID:      upub,
+		Account:     apub,
+		AccountName: "AUTH",
+		UserName:    "auth-service",
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Deny: []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
