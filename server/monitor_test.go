@@ -1,4 +1,4 @@
-// Copyright 2013-2025 The NATS Authors
+// Copyright 2013-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -56,6 +56,7 @@ func DefaultMonitorOptions() *Options {
 		NoSigs:       true,
 		Tags:         []string{"tag"},
 		Metadata:     map[string]string{"key1": "value1", "key2": "value2"},
+		FeatureFlags: map[string]bool{"feature": false, "fix": true, "revert_fix": true},
 	}
 }
 
@@ -6556,6 +6557,18 @@ func TestMonitorVarzMetadata(t *testing.T) {
 	expected := map[string]string{"key1": "value1", "key2": "value2"}
 	if !reflect.DeepEqual(expected, v.Metadata) {
 		t.Fatalf("expected: %v, got: %v", expected, v.Metadata)
+	}
+}
+
+func TestMonitorVarzFeatureFlags(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	v, err := s.Varz(nil)
+	require_NoError(t, err)
+
+	if !reflect.DeepEqual(featureFlags, v.FeatureFlags) {
+		t.Fatalf("expected: %v, got: %v", featureFlags, v.FeatureFlags)
 	}
 }
 
