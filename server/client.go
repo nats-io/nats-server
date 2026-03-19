@@ -30,12 +30,14 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
@@ -2583,6 +2585,9 @@ func (c *client) sendPing() {
 	if c.trace {
 		c.traceOutOp("PING", nil)
 	}
+	if c.kind == ROUTER {
+		c.srv.Warnf("DEBUG: sendPing: %s", debug.Stack())
+	}
 	c.enqueueProto([]byte(pingProto))
 }
 
@@ -2690,6 +2695,7 @@ func (c *client) processPong() {
 	var ri *routeInfo
 	// When receiving the first PONG, for a route with pooling, we may be
 	// instructed to start a new route.
+	assert.Sometimes(c.kind == ROUTER && c.route != nil && c.route.startNewRoute != nil, "startNewRoute initialized", nil)
 	if firstPong && c.kind == ROUTER && c.route != nil {
 		ri = c.route.startNewRoute
 		c.route.startNewRoute = nil

@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 )
 
@@ -2405,6 +2406,11 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		// that we have proper authentication.
 		if pool && didSolicit && sz != effectivePoolSize {
 			c.mu.Lock()
+			assert.AlwaysOrUnreachable(!c.flags.isSet(firstPong), "firstPong should not be set", map[string]any{
+				"url":        url.String(),
+				"rtype":      rtype,
+				"gossipMode": gossipMode,
+			})
 			c.route.startNewRoute = &routeInfo{
 				url:        url,
 				rtype:      rtype,
