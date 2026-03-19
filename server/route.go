@@ -88,7 +88,7 @@ type route struct {
 	// an implicit route and sending to the remote.
 	gossipMode byte
 	// This will be set in case of pooling so that a route can trigger
-	// the creation of the next after receiving the first PONG, ensuring
+	// the creation of the next after receiving a PONG, ensuring
 	// that authentication did not fail.
 	startNewRoute *routeInfo
 }
