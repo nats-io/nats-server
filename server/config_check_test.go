@@ -2026,6 +2026,22 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  8,
 		},
 		{
+			name: "duplicate remote leafnode",
+			config: `
+				leafnodes {
+					port: -1
+					remotes [
+						{ url: "nats://user1:pwd@127.0.0.1:1234" }
+						{ url: "nats://user2:pwd@127.0.0.1:1235" }
+						{ url: "nats://user1:pwd@127.0.0.1:1234" }
+					]
+				}
+			`,
+			err:       fmt.Errorf("duplicate remote"),
+			errorLine: 7,
+			errorPos:  9,
+		},
+		{
 			name:       "show warnings on empty configs without values",
 			config:     ``,
 			warningErr: errors.New(`config has no values or is empty`),
