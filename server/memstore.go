@@ -211,7 +211,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 	// If we are clustered, we do the enforcement above and should not disqualify
 	// the message here since it could cause replicas to drift.
 	if discardNewCheck && ms.cfg.Discard == DiscardNew {
-		if asl && ms.cfg.DiscardNewPer {
+		// Allow rollup messages through since they will purge old
+		// messages for the subject after storing, restoring the limit.
+		if asl && ms.cfg.DiscardNewPer && len(sliceHeader(JSMsgRollup, hdr)) == 0 {
 			return ErrMaxMsgsPerSubject
 		}
 		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {

@@ -4835,7 +4835,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		var asl bool
 		if psmax && psmc >= mmp {
 			// If we are instructed to discard new per subject, this is an error.
-			if fs.cfg.DiscardNewPer {
+			// However, allow rollup messages through since they will purge old
+			// messages for the subject after storing, restoring the limit.
+			if fs.cfg.DiscardNewPer && len(sliceHeader(JSMsgRollup, hdr)) == 0 {
 				return ErrMaxMsgsPerSubject
 			}
 			if fseq, err = fs.firstSeqForSubj(subj); err != nil {
