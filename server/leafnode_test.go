@@ -6040,15 +6040,15 @@ leafnodes:{
 
 type checkLeafMinVersionLogger struct {
 	DummyLogger
-	errCh  chan string
-	connCh chan string
+	errCh  chan time.Time
+	connCh chan time.Time
 }
 
 func (l *checkLeafMinVersionLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "minimum version") {
 		select {
-		case l.errCh <- msg:
+		case l.errCh <- time.Now():
 		default:
 		}
 	}
@@ -6058,7 +6058,7 @@ func (l *checkLeafMinVersionLogger) Noticef(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "Leafnode connection created") {
 		select {
-		case l.connCh <- msg:
+		case l.connCh <- time.Now():
 		default:
 		}
 	}
@@ -6133,7 +6133,7 @@ func TestLeafNodeMinVersion(t *testing.T) {
 	s, o = RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	l := &checkLeafMinVersionLogger{errCh: make(chan string, 1), connCh: make(chan string, 1)}
+	l := &checkLeafMinVersionLogger{errCh: make(chan time.Time, 1), connCh: make(chan time.Time, 1)}
 	s.SetLogger(l, false, false)
 
 	rconf = createConfFile(t, []byte(fmt.Sprintf(`
@@ -6155,21 +6155,23 @@ func TestLeafNodeMinVersion(t *testing.T) {
 		t.Fatal("Remote did not try to connect")
 	}
 
+	var rejectAt time.Time
 	select {
-	case <-l.errCh:
+	case rejectAt = <-l.errCh:
 	case <-time.After(time.Second):
 		t.Fatal("Did not get the minimum version required error")
 	}
 
-	// Since we have a very small reconnect interval, if the connection was
-	// closed "right away", then we should have had a reconnect attempt with
-	// another failure. This should not be the case because the server will
-	// wait 5s before closing the connection.
+	// Since we have a very small reconnect interval, the next attempt should be
+	// delayed by the dedicated minimum version reconnect delay on the soliciting
+	// side, not by the normal reconnect interval.
 	select {
-	case <-l.connCh:
-		t.Fatal("Should not have tried to reconnect")
-	case <-time.After(250 * time.Millisecond):
-		// OK
+	case secondAttemptAt := <-l.connCh:
+		if elapsed := secondAttemptAt.Sub(rejectAt); elapsed < leafNodeMinVersionReconnectDelay {
+			t.Fatalf("Expected reconnect attempt after at least %v, got %v", leafNodeMinVersionReconnectDelay, elapsed)
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("Did not get the reconnect attempt")
 	}
 }
 
