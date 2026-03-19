@@ -280,6 +280,7 @@ func TestAuthCalloutBasics(t *testing.T) {
 	dlc := &UserInfo{
 		UserID:  "dlc",
 		Account: globalAccountName,
+		NameTag: globalAccountName,
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Allow: []string{"$SYS.>"},
@@ -313,6 +314,7 @@ func TestAuthCalloutBasics(t *testing.T) {
 		// Token MUST NOT be exposed in user info.
 		UserID:  "[REDACTED]",
 		Account: globalAccountName,
+		NameTag: globalAccountName,
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Allow: []string{"$SYS.>"},

@@ -1508,6 +1508,7 @@ func (s *Server) initEventTracking() {
 type UserInfo struct {
 	UserID      string        `json:"user"`
 	Account     string        `json:"account"`
+	NameTag     string        `json:"name_tag,omitempty"`
 	Permissions *Permissions  `json:"permissions,omitempty"`
 	Expires     time.Duration `json:"expires,omitempty"`
 }
@@ -1520,7 +1521,7 @@ func (s *Server) userInfoReq(sub *subscription, c *client, _ *Account, subject, 
 
 	response := &ServerAPIResponse{Server: &ServerInfo{}}
 
-	ci, _, _, _, err := s.getRequestInfo(c, msg)
+	ci, acc, _, _, err := s.getRequestInfo(c, msg)
 	if err != nil {
 		response.Error = &ApiError{Code: http.StatusBadRequest}
 		s.sendInternalResponse(reply, response)
@@ -1530,6 +1531,7 @@ func (s *Server) userInfoReq(sub *subscription, c *client, _ *Account, subject, 
 	response.Data = &UserInfo{
 		UserID:      ci.User,
 		Account:     ci.Account,
+		NameTag:     acc.getNameTag(),
 		Permissions: c.publicPermissions(),
 		Expires:     c.claimExpiration(),
 	}
