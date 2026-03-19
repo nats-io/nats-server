@@ -314,3 +314,35 @@ func TestUserAuthorizationAllowResponses(t *testing.T) {
 	sendProto(t, c, "PUB resp.bar.11 2\r\nok\r\n")
 	expectResult(t, c, errRe)
 }
+
+func TestUserAuthorizationNoWildcardSubscriptions(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/authorization.conf")
+	defer srv.Shutdown()
+
+	// no-wc user has no_wildcards: true on subscribe permissions.
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+	expectAuthRequired(t, c)
+	doAuthConnect(t, c, "", "no-wc", DefaultPass)
+	expectResult(t, c, okRe)
+
+	// Literal subscriptions should be allowed.
+	sendProto(t, c, "SUB client.69f3-432f-s234 1\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "SUB foo.bar.baz 2\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "SUB a.b.c.d 3\r\n")
+	expectResult(t, c, okRe)
+
+	// Wildcard subscriptions should be denied.
+	sendProto(t, c, "SUB client.* 4\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB > 5\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.> 6\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB * 7\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.*.bar 8\r\n")
+	expectResult(t, c, permErrRe)
+}
