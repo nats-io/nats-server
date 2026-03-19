@@ -1508,6 +1508,8 @@ func (s *Server) initEventTracking() {
 type UserInfo struct {
 	UserID      string        `json:"user"`
 	Account     string        `json:"account"`
+	AccountName string        `json:"account_name,omitempty"`
+	UserName    string        `json:"user_name,omitempty"`
 	Permissions *Permissions  `json:"permissions,omitempty"`
 	Expires     time.Duration `json:"expires,omitempty"`
 }
@@ -1527,9 +1529,22 @@ func (s *Server) userInfoReq(sub *subscription, c *client, _ *Account, subject, 
 		return
 	}
 
+	// Look up the requester's account directly from ci.Account rather than
+	// using the acc returned by getRequestInfo, which may resolve to the
+	// service account (ci.Service) when the request arrives via a chained
+	// service import.
+	var accountName string
+	if ci.Account != _EMPTY_ {
+		if reqAcc, _ := s.LookupAccount(ci.Account); reqAcc != nil {
+			accountName = reqAcc.getNameTag()
+		}
+	}
+
 	response.Data = &UserInfo{
 		UserID:      ci.User,
 		Account:     ci.Account,
+		AccountName: accountName,
+		UserName:    ci.NameTag,
 		Permissions: c.publicPermissions(),
 		Expires:     c.claimExpiration(),
 	}
