@@ -2328,6 +2328,15 @@ func (ca *consumerAssignment) copyGroup() *consumerAssignment {
 	return &cca
 }
 
+// Just copies over and changes out the group so it can be encoded.
+// Lock should be held.
+func (desired *desiredGroupPlacement) copyGroup() *desiredGroupPlacement {
+	cd, cg := *desired, *desired.Group
+	cd.Group = &cg
+	cd.Group.Peers = copyStrings(desired.Group.Peers)
+	return &cd
+}
+
 // Lock should be held.
 func (sa *streamAssignment) missingPeers() bool {
 	return len(sa.Group.Peers) < sa.Config.Replicas
@@ -3380,6 +3389,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Check if we're working with desired state.
 			js.mu.RLock()
 			if sa != nil && sa.DesiredPlacement != nil {
+				// If a membership change is in progress, we just wait for it to clear.
+				if n.MembershipChangeInProgress() {
+					js.mu.RUnlock()
+					continue
+				}
+
 				//isMoveRequest := sa.DesiredPlacement.Placement != nil
 				actual := n.PeerNames()
 				desired := sa.DesiredPlacement.Group.Peers
@@ -3402,16 +3417,26 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					}
 				}
 				if len(remaining) > 0 {
-					fmt.Println("Should remove peers one-by-one")
-					js.mu.RUnlock()
-					continue
+					current := copyStrings(sa.Group.Peers)
+					slices.Sort(current)
+					slices.Sort(actual)
+					// If the peer sets are an exact match, we can remove a peer.
+					if slices.Equal(current, actual) {
+						js.mu.RUnlock()
+						// TODO(mvv): removes a random peer, should instead remove non-current first
+						//  to increase chances we're not bricking ourselves.
+						n.ProposeRemovePeer(remaining[0])
+						continue
+					}
 				}
+
+				// Update what the meta layer knows to be equal to our actual state.
 				update := &streamAssignmentUpdate{
 					Account: sa.Client.serviceAccount(),
 					Stream:  sa.Config.Name,
-					DesiredPlacement: &streamAssignmentUpdateDesiredPlacement{
-						ID:          sa.DesiredPlacement.ID,
-						ActualPeers: actual,
+					ActualPlacement: &streamAssignmentUpdateActualPlacement{
+						ID:    sa.DesiredPlacement.ID,
+						Peers: actual,
 					},
 				}
 				js.mu.RUnlock()
@@ -7027,15 +7052,15 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 }
 
 type streamAssignmentUpdate struct {
-	Account          string                                  `json:"account"`
-	Stream           string                                  `json:"stream"`
-	DesiredPlacement *streamAssignmentUpdateDesiredPlacement `json:"desired_placement,omitempty"`
+	Account         string                                 `json:"account"`
+	Stream          string                                 `json:"stream"`
+	ActualPlacement *streamAssignmentUpdateActualPlacement `json:"actual_placement,omitempty"`
 }
 
-type streamAssignmentUpdateDesiredPlacement struct {
-	ID          string     `json:"id"`
-	Placement   *Placement `json:"placement,omitempty"`
-	ActualPeers []string   `json:"actual_peers,omitempty"`
+type streamAssignmentUpdateActualPlacement struct {
+	ID        string     `json:"id"`
+	Placement *Placement `json:"placement,omitempty"`
+	Peers     []string   `json:"peers,omitempty"`
 }
 
 // TODO(mvv): docs
@@ -7058,11 +7083,29 @@ func (js *jetStream) processStreamAssignmentUpdates(sub *subscription, c *client
 	}
 
 	osa := js.streamAssignmentOrInflight(update.Account, update.Stream)
-	if osa == nil || osa.DesiredPlacement == nil || update.DesiredPlacement == nil || osa.DesiredPlacement.ID != update.DesiredPlacement.ID {
+	if osa == nil || osa.DesiredPlacement == nil || update.ActualPlacement == nil || osa.DesiredPlacement.ID != update.ActualPlacement.ID {
 		return
 	}
+	desired := copyStrings(osa.DesiredPlacement.Group.Peers)
+	slices.Sort(desired)
+	slices.Sort(update.ActualPlacement.Peers)
+	exactMatch := slices.Equal(desired, update.ActualPlacement.Peers)
+
+	sa := osa.copyGroup()
 	// Remove the original update reply, since this change is internal.
-	sa := &streamAssignment{Group: osa.DesiredPlacement.Group, Sync: osa.Sync, Created: osa.Created, Config: osa.Config, Subject: osa.Subject, Reply: _EMPTY_, Client: osa.Client}
+	sa.Reply = _EMPTY_
+	if exactMatch {
+		// If it's an exact match, we set the group to the desired state, and we unset it.
+		sa.Group = osa.DesiredPlacement.Group
+		sa.DesiredPlacement = nil
+	} else {
+		// If it doesn't match, we still update the actual peer set, but we update the desired state ID too.
+		// Updating the ID makes sure it can only be "consumed" once to perform an update.
+		sa.Group.Peers = update.ActualPlacement.Peers
+		sa.DesiredPlacement = osa.DesiredPlacement.copyGroup()
+		sa.DesiredPlacement.ID = nuid.Next()
+	}
+
 	if err := cc.meta.Propose(encodeUpdateStreamAssignment(sa)); err == nil {
 		fmt.Printf("Stream update to peers: %v\n", sa.Group.Peers)
 		cc.trackInflightStreamProposal(acc.Name, sa, false)
@@ -8122,6 +8165,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 					continue
 				}
 				if si, ok := s.nodeToInfo.Load(peer); ok && si != nil {
+					// FIXME(mvv): scale down if all nodes are offline except for stream leader
 					if si.(nodeInfo).offline {
 						continue
 					}
