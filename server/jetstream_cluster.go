@@ -7058,7 +7058,7 @@ func (js *jetStream) processStreamAssignmentUpdates(sub *subscription, c *client
 	}
 
 	osa := js.streamAssignmentOrInflight(update.Account, update.Stream)
-	if osa == nil || osa.DesiredPlacement == nil || update.DesiredPlacement == nil || osa.DesiredPlacement.ID != update.DesiredPlacement.ID{
+	if osa == nil || osa.DesiredPlacement == nil || update.DesiredPlacement == nil || osa.DesiredPlacement.ID != update.DesiredPlacement.ID {
 		return
 	}
 	// Remove the original update reply, since this change is internal.
