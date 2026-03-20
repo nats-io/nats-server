@@ -66,6 +66,7 @@ type RaftNode interface {
 	CampaignImmediately() error
 	ID() string
 	Group() string
+	PeerNames() []string
 	Peers() []*Peer
 	ProposeKnownPeers(knownPeers []string)
 	UpdateKnownPeers(knownPeers []string)
@@ -2054,6 +2055,12 @@ func (n *raft) ID() string {
 func (n *raft) Group() string {
 	// Lock not needed as n.group is never changed after creation.
 	return n.group
+}
+
+func (n *raft) PeerNames() []string {
+	n.RLock()
+	defer n.RUnlock()
+	return n.peerNames()
 }
 
 func (n *raft) Peers() []*Peer {

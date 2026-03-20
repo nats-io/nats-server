@@ -65,6 +65,8 @@ type jetStreamCluster struct {
 	// Processing assignment results.
 	streamResults   *subscription
 	consumerResults *subscription
+	// Processing assignment updates.
+	streamUpdates *subscription
 	// System level request to have the leader stepdown.
 	stepdown *subscription
 	// System level requests to remove a peer.
@@ -164,6 +166,7 @@ type raftGroup struct {
 // desiredGroupPlacement specifies the desired peer set.
 // A streamAssignment or consumerAssignment can be scaled or moved safely based on this desired state.
 type desiredGroupPlacement struct {
+	ID        string     `json:"id"`
 	Placement *Placement `json:"placement,omitempty"`
 	Group     *raftGroup `json:"group,omitempty"`
 }
@@ -3370,6 +3373,54 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Check to see where we are..
 			rg := mset.raftGroup()
 
+			// Make sure we have correct cluster information on the other peers.
+			ci := js.clusterInfo(rg)
+			mset.checkClusterInfo(ci)
+
+			// Check if we're working with desired state.
+			js.mu.RLock()
+			if sa != nil && sa.DesiredPlacement != nil {
+				//isMoveRequest := sa.DesiredPlacement.Placement != nil
+				actual := n.PeerNames()
+				desired := sa.DesiredPlacement.Group.Peers
+				foundAll := true
+				for _, peer := range desired {
+					if !slices.Contains(actual, peer) {
+						foundAll = false
+						break
+					}
+				}
+				if !foundAll {
+					fmt.Println("Waiting for group to expand")
+					js.mu.RUnlock()
+					continue
+				}
+				var remaining []string
+				for _, peer := range actual {
+					if !slices.Contains(desired, peer) {
+						remaining = append(remaining, peer)
+					}
+				}
+				if len(remaining) > 0 {
+					fmt.Println("Should remove peers one-by-one")
+					js.mu.RUnlock()
+					continue
+				}
+				update := &streamAssignmentUpdate{
+					Account: sa.Client.serviceAccount(),
+					Stream:  sa.Config.Name,
+					DesiredPlacement: &streamAssignmentUpdateDesiredPlacement{
+						ID:          sa.DesiredPlacement.ID,
+						ActualPeers: actual,
+					},
+				}
+				js.mu.RUnlock()
+				s.sendInternalMsgLocked(streamAssignmentUpdateSubj, _EMPTY_, nil, update)
+				continue
+			}
+			// We're not working with desired state, fall back to previous behavior.
+			js.mu.RUnlock()
+
 			// Track the new peers and check the ones that are current.
 			mset.mu.RLock()
 			replicas := mset.cfg.Replicas
@@ -3379,10 +3430,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				stopMigrationMonitoring()
 				continue
 			}
-
-			// Make sure we have correct cluster information on the other peers.
-			ci := js.clusterInfo(rg)
-			mset.checkClusterInfo(ci)
 
 			newPeers, _, newPeerSet, oldPeerSet := genPeerInfo(rg.Peers, len(rg.Peers)-replicas)
 
@@ -3570,11 +3617,14 @@ func (mset *stream) isMigrating() bool {
 	if sa == nil || sa.Group == nil || sa.Group.node == nil {
 		return false
 	}
-	// The sign of migration is if our group peer count != configured replica count.
-	if sa.Config.Replicas == len(sa.Group.Peers) {
-		return false
+	if sa.DesiredPlacement != nil {
+		return true
 	}
-	return true
+	// The sign of migration is if our group peer count != configured replica count.
+	if sa.Config.Replicas != len(sa.Group.Peers) {
+		return true
+	}
+	return false
 }
 
 // resetClusteredState is called when a clustered stream had an error (e.g sequence mismatch, bad snapshot) and needs to be reset.
@@ -4861,7 +4911,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	mset, err := acc.lookupStream(cfg.Name)
 	if err == nil && mset != nil {
 		// Make sure we have not had a new group assigned to us.
-		if osa.Group.Name != sa.Group.Name {
+		// We confirm the group name changed, and we weren't yet migrating to it either.
+		if osa.Group.Name != sa.Group.Name && (rg.node == nil || rg.node.Group() != sa.Group.Name) {
 			s.Warnf("JetStream cluster detected stream remapping for '%s > %s' from %q to %q",
 				acc, cfg.Name, osa.Group.Name, sa.Group.Name)
 			mset.removeNode()
@@ -6975,9 +7026,53 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 	}
 }
 
+type streamAssignmentUpdate struct {
+	Account          string                                  `json:"account"`
+	Stream           string                                  `json:"stream"`
+	DesiredPlacement *streamAssignmentUpdateDesiredPlacement `json:"desired_placement,omitempty"`
+}
+
+type streamAssignmentUpdateDesiredPlacement struct {
+	ID          string     `json:"id"`
+	Placement   *Placement `json:"placement,omitempty"`
+	ActualPeers []string   `json:"actual_peers,omitempty"`
+}
+
+// TODO(mvv): docs
+func (js *jetStream) processStreamAssignmentUpdates(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+	var update streamAssignmentUpdate
+	if err := json.Unmarshal(msg, &update); err != nil {
+		return
+	}
+	acc, _ := js.srv.LookupAccount(update.Account)
+	if acc == nil {
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	cc := js.cluster
+	if cc == nil || cc.meta == nil {
+		return
+	}
+
+	osa := js.streamAssignmentOrInflight(update.Account, update.Stream)
+	if osa == nil || osa.DesiredPlacement == nil || update.DesiredPlacement == nil || osa.DesiredPlacement.ID != update.DesiredPlacement.ID{
+		return
+	}
+	// Remove the original update reply, since this change is internal.
+	sa := &streamAssignment{Group: osa.DesiredPlacement.Group, Sync: osa.Sync, Created: osa.Created, Config: osa.Config, Subject: osa.Subject, Reply: _EMPTY_, Client: osa.Client}
+	if err := cc.meta.Propose(encodeUpdateStreamAssignment(sa)); err == nil {
+		fmt.Printf("Stream update to peers: %v\n", sa.Group.Peers)
+		cc.trackInflightStreamProposal(acc.Name, sa, false)
+	}
+}
+
 const (
-	streamAssignmentSubj   = "$SYS.JSC.STREAM.ASSIGNMENT.RESULT"
-	consumerAssignmentSubj = "$SYS.JSC.CONSUMER.ASSIGNMENT.RESULT"
+	streamAssignmentSubj       = "$SYS.JSC.STREAM.ASSIGNMENT.RESULT"
+	streamAssignmentUpdateSubj = "$SYS.JSC.STREAM.ASSIGNMENT.UPDATE"
+	consumerAssignmentSubj     = "$SYS.JSC.CONSUMER.ASSIGNMENT.RESULT"
 )
 
 // Lock should be held.
@@ -6988,6 +7083,9 @@ func (js *jetStream) startUpdatesSub() {
 	}
 	if cc.consumerResults == nil {
 		cc.consumerResults, _ = s.systemSubscribe(consumerAssignmentSubj, _EMPTY_, false, c, js.processConsumerAssignmentResults)
+	}
+	if cc.streamUpdates == nil {
+		cc.streamUpdates, _ = s.systemSubscribe(streamAssignmentUpdateSubj, _EMPTY_, false, c, js.processStreamAssignmentUpdates)
 	}
 	if cc.stepdown == nil {
 		cc.stepdown, _ = s.systemSubscribe(JSApiLeaderStepDown, _EMPTY_, false, c, s.jsLeaderStepDownRequest)
@@ -7016,6 +7114,10 @@ func (js *jetStream) stopUpdatesSub() {
 	if cc.consumerResults != nil {
 		cc.s.sysUnsubscribe(cc.consumerResults)
 		cc.consumerResults = nil
+	}
+	if cc.streamUpdates != nil {
+		cc.s.sysUnsubscribe(cc.streamUpdates)
+		cc.streamUpdates = nil
 	}
 	if cc.stepdown != nil {
 		cc.s.sysUnsubscribe(cc.stepdown)
@@ -8194,7 +8296,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		// FIXME(mvv): should this still be done when scaling down to R1?
 		//sa.Group = osa.copyGroup().Group
 		//sa.Group.Name = rg.Name
-		sa.DesiredPlacement = &desiredGroupPlacement{Placement: newCfg.Placement, Group: rg}
+		sa.DesiredPlacement = &desiredGroupPlacement{
+			ID:        nuid.Next(),
+			Placement: newCfg.Placement,
+			Group:     rg,
+		}
 		// TODO(mvv): docs, reset placement
 		newCfg.Placement = osa.Config.Placement
 	}
