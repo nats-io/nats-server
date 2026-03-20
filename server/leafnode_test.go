@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
@@ -6040,15 +6041,15 @@ leafnodes:{
 
 type checkLeafMinVersionLogger struct {
 	DummyLogger
-	errCh  chan string
-	connCh chan string
+	errCh  chan time.Time
+	connCh chan time.Time
 }
 
 func (l *checkLeafMinVersionLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "minimum version") {
 		select {
-		case l.errCh <- msg:
+		case l.errCh <- time.Now():
 		default:
 		}
 	}
@@ -6058,7 +6059,7 @@ func (l *checkLeafMinVersionLogger) Noticef(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "Leafnode connection created") {
 		select {
-		case l.connCh <- msg:
+		case l.connCh <- time.Now():
 		default:
 		}
 	}
@@ -6133,7 +6134,7 @@ func TestLeafNodeMinVersion(t *testing.T) {
 	s, o = RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	l := &checkLeafMinVersionLogger{errCh: make(chan string, 1), connCh: make(chan string, 1)}
+	l := &checkLeafMinVersionLogger{errCh: make(chan time.Time, 1), connCh: make(chan time.Time, 1)}
 	s.SetLogger(l, false, false)
 
 	rconf = createConfFile(t, []byte(fmt.Sprintf(`
@@ -6155,21 +6156,23 @@ func TestLeafNodeMinVersion(t *testing.T) {
 		t.Fatal("Remote did not try to connect")
 	}
 
+	var rejectAt time.Time
 	select {
-	case <-l.errCh:
+	case rejectAt = <-l.errCh:
 	case <-time.After(time.Second):
 		t.Fatal("Did not get the minimum version required error")
 	}
 
-	// Since we have a very small reconnect interval, if the connection was
-	// closed "right away", then we should have had a reconnect attempt with
-	// another failure. This should not be the case because the server will
-	// wait 5s before closing the connection.
+	// Since we have a very small reconnect interval, the next attempt should be
+	// delayed by the dedicated minimum version reconnect delay on the soliciting
+	// side, not by the normal reconnect interval.
 	select {
-	case <-l.connCh:
-		t.Fatal("Should not have tried to reconnect")
-	case <-time.After(250 * time.Millisecond):
-		// OK
+	case secondAttemptAt := <-l.connCh:
+		if elapsed := secondAttemptAt.Sub(rejectAt); elapsed < leafNodeMinVersionReconnectDelay {
+			t.Fatalf("Expected reconnect attempt after at least %v, got %v", leafNodeMinVersionReconnectDelay, elapsed)
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("Did not get the reconnect attempt")
 	}
 }
 
@@ -10388,6 +10391,85 @@ func TestLeafNodeConfigureWriteTimeoutPolicy(t *testing.T) {
 	}
 }
 
+func TestLeafNodeServiceImportRebuildsRequestInfoHeader(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", pass: "a" }, { user: "leaf", pass: "pwd" } ]
+				imports = [ { service: { account: B, subject: "svc" } } ]
+			}
+			B {
+				users = [ { user: "b", pass: "b" } ]
+				exports = [ { service: "svc", accounts: [A] } ]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				account: A
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", pass: "a" } ]
+			}
+		}
+		leafnodes {
+			remotes = [
+				{
+					url: "nats-leaf://leaf:pwd@127.0.0.1:%d"
+					account: A
+				}
+			]
+		}
+	`, ohub.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncSvc := natsConnect(t, hub.ClientURL(), nats.UserInfo("b", "b"))
+	defer ncSvc.Close()
+
+	rcvCh := make(chan *nats.Msg, 1)
+	_, err := ncSvc.Subscribe("svc", func(m *nats.Msg) {
+		rcvCh <- m
+		require_NoError(t, m.Respond([]byte("ok")))
+	})
+	require_NoError(t, err)
+	require_NoError(t, ncSvc.Flush())
+
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncLeaf.Close()
+
+	req := nats.NewMsg("svc")
+	req.Header = nats.Header{}
+	req.Header.Set(ClientInfoHdr, `{"acc":"EVIL","user":"mallory","host":"badhost"}`)
+
+	_, err = ncLeaf.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+
+	msg := require_ChanRead(t, rcvCh, time.Second)
+	hdr := msg.Header.Get(ClientInfoHdr)
+	require_NotEqual(t, hdr, _EMPTY_)
+
+	var ci ClientInfo
+	require_NoError(t, json.Unmarshal([]byte(hdr), &ci))
+	require_Equal(t, ci.Account, "A")
+	require_Equal(t, ci.User, _EMPTY_)
+	require_Equal(t, ci.Host, _EMPTY_)
+}
+
 func TestLeafNodeNoAccPanicOnLeafSubBeforeConnect(t *testing.T) {
 	o := DefaultOptions()
 	o.LeafNode.Port = -1
@@ -10456,6 +10538,53 @@ func TestLeafNodeNoAccPanicOnLeafUnsubBeforeConnect(t *testing.T) {
 
 	// Send LS- without CONNECT first. This should not panic the server.
 	_, err = c.Write([]byte("LS- test\r\n"))
+	require_NoError(t, err)
+
+	// The server should close the connection.
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 256)
+	for {
+		_, err = c.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+
+	// Make sure the server is still running.
+	s.mu.Lock()
+	shutdown := s.isShuttingDown()
+	s.mu.Unlock()
+	if shutdown {
+		t.Fatal("Server should not have shutdown")
+	}
+}
+
+func TestLeafNodeNoAccPanicOnLeafErrLoopDetectedBeforeConnect(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", opts.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	// Read the INFO.
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	if !strings.HasPrefix(string(l), "INFO") {
+		t.Fatalf("Expected INFO, got %q", l)
+	}
+
+	// Send the loop-detected error before CONNECT. This should not panic the server.
+	_, err = c.Write([]byte("-ERR 'Loop detected'\r\n"))
 	require_NoError(t, err)
 
 	// The server should close the connection.

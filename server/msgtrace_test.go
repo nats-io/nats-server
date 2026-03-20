@@ -359,6 +359,94 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 	}
 }
 
+func TestMsgTraceIngressMaxPayloadErrorDoesNotScanPayloadForTraceDest(t *testing.T) {
+	o := DefaultOptions()
+	o.MaxPayload = 1024
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	natsFlush(t, nc)
+
+	checkSubInterest(t, s, globalAccountName, "my.trace.subj", time.Second)
+
+	nc2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+	require_NoError(t, err)
+	defer nc2.Close()
+
+	_, err = nc2.Write([]byte("CONNECT {\"protocol\":1,\"headers\":true,\"no_responders\":true}\r\n"))
+	require_NoError(t, err)
+
+	// Payload contains a valid header, but the server should
+	// not interpret it as such.
+	payload := fmt.Sprintf("AA\r\n%s:%s\r\n", MsgTraceDest, traceSub.Subject)
+
+	hPub := fmt.Sprintf("HPUB foo %d 2048\r\n%s%s", len(hdrLine), hdrLine, payload)
+	_, err = nc2.Write([]byte(hPub))
+	require_NoError(t, err)
+
+	// If bug is present: we receive a trace msg, even though
+	// no trace header was set.
+	if traceMsg, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received trace message: %s", traceMsg.Data)
+	}
+}
+
+func TestMsgTraceIngressMaxPayloadErrorRequiresPublishPermissionForTraceDest(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		max_payload: 1024
+		accounts {
+			A {
+				users: [
+					{
+						user: tracer
+						password: pwd
+						permissions {
+							subscribe: ["my.trace.subj"]
+							publish: ["my.trace.subj"]
+						}
+					},
+					{
+						user: pub
+						password: pwd
+						permissions {
+							publish: ["foo"]
+						}
+					}
+				]
+			}
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nct := natsConnect(t, s.ClientURL(), nats.UserInfo("tracer", "pwd"))
+	defer nct.Close()
+	traceSub := natsSubSync(t, nct, "my.trace.subj")
+	natsFlush(t, nct)
+	checkSubInterest(t, s, "A", "my.trace.subj", time.Second)
+
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+	require_NoError(t, err)
+	defer c.Close()
+
+	_, err = c.Write([]byte("CONNECT {\"user\":\"pub\",\"pass\":\"pwd\",\"protocol\":1,\"headers\":true,\"no_responders\":true}\r\n"))
+	require_NoError(t, err)
+
+	hdr := fmt.Sprintf("%s%s:%s\r\n\r\n", hdrLine, MsgTraceDest, traceSub.Subject)
+	hPub := fmt.Sprintf("HPUB foo %d 2048\r\n%sAAAAAAAAAAAAAAAAAA...", len(hdr), hdr)
+	_, err = c.Write([]byte(hPub))
+	require_NoError(t, err)
+
+	if traceMsg, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received trace message: %s", traceMsg.Data)
+	}
+}
+
 func TestMsgTraceIngressErrors(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
@@ -371,7 +459,7 @@ func TestMsgTraceIngressErrors(t *testing.T) {
 						permissions {
 							subscribe: ["my.trace.subj", "foo"]
 							publish {
-								allow: ["foo", "bar.>"]
+								allow: ["foo", "bar.>", "my.trace.subj"]
 								deny: ["bar.baz"]
 							}
 						}
@@ -451,7 +539,7 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 								deny: "bar.bat"
 							}
 							publish {
-								allow: ["foo", "bar.>"]
+								allow: ["foo", "bar.>", "my.trace.subj"]
 								deny: ["bar.baz"]
 							}
 						}
@@ -594,6 +682,132 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 				nc2.Close()
 			}
 		})
+	}
+}
+
+func TestMsgTraceIngressRequiresPublishPermissionForTraceDest(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		accounts {
+			A {
+				users: [
+					{
+						user: tracer
+						password: pwd
+						permissions {
+							subscribe: ["my.trace.subj", "foo"]
+							publish: ["my.trace.subj"]
+						}
+					},
+					{
+						user: pub
+						password: pwd
+						permissions {
+							publish: ["foo"]
+						}
+					}
+				]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("tracer", "pwd"))
+	defer nc.Close()
+
+	tsub := natsSubSync(t, nc, "my.trace.subj")
+	asub := natsSubSync(t, nc, "foo")
+	natsFlush(t, nc)
+
+	ncp, err := nats.Connect(
+		s.ClientURL(),
+		nats.UserInfo("pub", "pwd"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, _ error) {}),
+	)
+	require_NoError(t, err)
+	defer ncp.Close()
+
+	msg := nats.NewMsg("foo")
+	msg.Header.Set(MsgTraceDest, tsub.Subject)
+	msg.Data = []byte("hello")
+
+	require_NoError(t, ncp.PublishMsg(msg))
+	natsFlush(t, ncp)
+
+	err = ncp.LastError()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), fmt.Sprintf("Permissions Violation for Publish to %q", tsub.Subject))
+
+	if m, err := asub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Did not expect application message, got %v / %v", m, err)
+	}
+	if tm, err := tsub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Did not expect trace message, got %v / %v", tm, err)
+	}
+}
+
+func TestMsgTraceIngressRejectsReservedTraceDest(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		accounts {
+			A {
+				users: [
+					{
+						user: sub
+						password: pwd
+						permissions {
+							subscribe: ["foo"]
+						}
+					},
+					{
+						user: pub
+						password: pwd
+						permissions {
+							publish: [">"]
+						}
+					},
+					{
+						user: pub2
+						password: pwd
+					}
+				]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncs := natsConnect(t, s.ClientURL(), nats.UserInfo("sub", "pwd"))
+	defer ncs.Close()
+	asub := natsSubSync(t, ncs, "foo")
+	natsFlush(t, ncs)
+
+	for _, user := range []string{"pub", "pub2"} {
+		ncp, err := nats.Connect(
+			s.ClientURL(),
+			nats.UserInfo(user, "pwd"),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, _ error) {}),
+		)
+		require_NoError(t, err)
+		defer ncp.Close()
+
+		for _, traceDest := range []string{gwReplyPrefix + "trace", "$NRG.trace"} {
+			msg := nats.NewMsg("foo")
+			msg.Header.Set(MsgTraceDest, traceDest)
+			msg.Data = []byte("hello")
+
+			require_NoError(t, ncp.PublishMsg(msg))
+			natsFlush(t, ncp)
+
+			err = ncp.LastError()
+			require_Error(t, err)
+			require_Contains(t, err.Error(), fmt.Sprintf("Permissions Violation for Publish to %q", traceDest))
+
+			if m, err := asub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+				t.Fatalf("Did not expect application message, got %v / %v", m, err)
+			}
+		}
 	}
 }
 

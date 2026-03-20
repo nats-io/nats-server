@@ -1972,10 +1972,12 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[acc.Name], tier, &cfg)
 	}
 	// reservation does not account for this stream, hence add the old value
-	if tier == _EMPTY_ && old.Replicas > 1 {
-		reserved += old.MaxBytes * int64(old.Replicas)
-	} else {
-		reserved += old.MaxBytes
+	if old.MaxBytes > 0 {
+		if tier == _EMPTY_ && old.Replicas > 1 {
+			reserved = addSaturate(reserved, mulSaturate(int64(old.Replicas), old.MaxBytes))
+		} else {
+			reserved = addSaturate(reserved, old.MaxBytes)
+		}
 	}
 	if err := js.checkAllLimits(&selected, &cfg, reserved, maxBytesOffset); err != nil {
 		return nil, err
@@ -4953,6 +4955,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
+	hdr = removeHeaderStatusIfPresent(hdr)
 	if mt, traceOnly := c.isMsgTraceEnabled(); mt != nil {
 		// If message is delivered, we need to disable the message trace headers
 		// to prevent a trace event to be generated when a stored message

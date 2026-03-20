@@ -335,7 +335,7 @@ func testWSSetupForRead() (*client, *wsReadInfo, *testReader) {
 	opts := DefaultOptions()
 	opts.MaxPending = MAX_PENDING_SIZE
 	s := &Server{opts: opts}
-	c := &client{srv: s, ws: &websocket{}}
+	c := &client{srv: s, acc: s.gacc, ws: &websocket{}}
 	c.initClient()
 	return c, ri, tr
 }
@@ -405,90 +405,6 @@ func TestWSReadUncompressedFrames(t *testing.T) {
 	}
 	if string(bufs[0]) != "message" {
 		t.Fatalf("Unexpected content: %q", bufs[0])
-	}
-}
-
-func TestWSReadCompressedFrames(t *testing.T) {
-	c, ri, tr := testWSSetupForRead()
-	c.ws.compress = true
-	uncompressed := []byte("this is the uncompress data")
-	wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, uncompressed)
-	rb := append([]byte(nil), wsmsg1...)
-	// Call with some but not all of the payload
-	bufs, err := c.wsRead(ri, tr, rb[:10])
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if n := len(bufs); n != 0 {
-		t.Fatalf("Unexpected buffer returned: %v", n)
-	}
-	// Call with the rest, only then should we get the uncompressed data.
-	bufs, err = c.wsRead(ri, tr, rb[10:])
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if n := len(bufs); n != 1 {
-		t.Fatalf("Unexpected buffer returned: %v", n)
-	}
-	if !bytes.Equal(bufs[0], uncompressed) {
-		t.Fatalf("Unexpected content: %s", bufs[0])
-	}
-	// Stress the fact that we use a pool and want to make sure
-	// that if we get a decompressor from the pool, it is properly reset
-	// with the buffer to decompress.
-	// Since we unmask the read buffer, reset it now and fill it
-	// with 10 compressed frames.
-	rb = nil
-	for i := 0; i < 10; i++ {
-		rb = append(rb, wsmsg1...)
-	}
-	bufs, err = c.wsRead(ri, tr, rb)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if n := len(bufs); n != 10 {
-		t.Fatalf("Unexpected buffer returned: %v", n)
-	}
-
-	// Compress a message and send it in several frames.
-	buf := &bytes.Buffer{}
-	compressor, _ := flate.NewWriter(buf, 1)
-	compressor.Write(uncompressed)
-	compressor.Flush()
-	compressed := buf.Bytes()
-	// The last 4 bytes are dropped
-	compressed = compressed[:len(compressed)-4]
-	ncomp := 10
-	frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, compressed[:ncomp])
-	frag1[0] |= wsRsv1Bit
-	frag2 := testWSCreateClientMsg(wsBinaryMessage, 2, true, false, compressed[ncomp:])
-	rb = append([]byte(nil), frag1...)
-	rb = append(rb, frag2...)
-	bufs, err = c.wsRead(ri, tr, rb)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if n := len(bufs); n != 1 {
-		t.Fatalf("Unexpected buffer returned: %v", n)
-	}
-	if !bytes.Equal(bufs[0], uncompressed) {
-		t.Fatalf("Unexpected content: %s", bufs[0])
-	}
-}
-
-func TestWSReadCompressedFrameCorrupted(t *testing.T) {
-	c, ri, tr := testWSSetupForRead()
-	c.ws.compress = true
-	uncompressed := []byte("this is the uncompress data")
-	wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, uncompressed)
-	copy(wsmsg1[10:], []byte{1, 2, 3, 4})
-	rb := append([]byte(nil), wsmsg1...)
-	bufs, err := c.wsRead(ri, tr, rb)
-	if err == nil || !strings.Contains(err.Error(), "corrupt") {
-		t.Fatalf("Expected error about corrupted data, got %v", err)
-	}
-	if n := len(bufs); n != 0 {
-		t.Fatalf("Expected no buffer, got %v", n)
 	}
 }
 
@@ -1017,18 +933,6 @@ func TestWSReadErrors(t *testing.T) {
 			},
 			err: "compressed frame received without negotiated permessage-deflate", nbufs: 1,
 		},
-		{
-			cframe: func() []byte {
-				frame := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, make([]byte, 32))
-				frame[0] |= wsRsv1Bit
-				return frame
-			},
-			err: ErrMaxPayload.Error(), nbufs: 1,
-			setup: func(c *client) {
-				atomic.StoreInt32(&c.mpay, 16)
-				c.ws.compress = true
-			},
-		},
 	} {
 		t.Run(test.err, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
@@ -1075,7 +979,7 @@ func TestWSReadByteWithEmptyCompressedBufferDoesNotPanic(t *testing.T) {
 	defer require_NoPanic(t)
 
 	_, err := r.ReadByte()
-	require_Error(t, err, io.EOF)
+	require_Error(t, err, io.EOF) // An empty compressed queue should now behave like EOF because decompression starts only after the final frame is buffered.
 }
 
 func TestWSEnqueueCloseMsg(t *testing.T) {
@@ -2390,6 +2294,188 @@ func TestWSPubSub(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWSBatchedPubInSingleFrame(t *testing.T) {
+	o := testWSOptions()
+	o.MaxPayload = 16
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+	checkExpectedSubs(t, 1, s)
+
+	wsc, br := testWSCreateClient(t, false, false, o.Websocket.Host, o.Websocket.Port)
+	defer wsc.Close()
+
+	framePayload := []byte("PUB foo 8\r\n12345678\r\nPUB foo 8\r\nabcdefgh\r\nPING\r\n")
+	require_True(t, len(framePayload) > int(o.MaxPayload)) // The WS frame should be larger than a single allowed PUB payload.
+	_, err := wsc.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, false, framePayload))
+	require_NoError(t, err) // Batched valid PUB commands should be accepted in a single uncompressed WS frame.
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, string(msg.Data), "12345678") // The first PUB payload should be delivered.
+	msg = natsNexMsg(t, sub, time.Second)
+	require_Equal(t, string(msg.Data), "abcdefgh")               // The second PUB payload should be delivered.
+	require_Equal(t, string(testWSReadFrame(t, br)), "PONG\r\n") // The connection should remain alive and answer the trailing PING.
+}
+
+func TestWSCompressedPubInSingleFrame(t *testing.T) {
+	o := testWSOptions()
+	o.MaxPayload = 64
+	o.Websocket.Compression = true
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+	checkExpectedSubs(t, 1, s)
+
+	wsc, br := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
+	defer wsc.Close()
+
+	framePayload := []byte("PUB foo 1\r\na\r\n")
+	require_True(t, len(framePayload) <= int(o.MaxPayload)) // The decompressed compressed WS message should stay within max_payload.
+
+	_, err := wsc.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, true, framePayload))
+	require_NoError(t, err) // A compressed WS message within max_payload should be accepted.
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, string(msg.Data), "a") // The compressed PUB payload should be delivered.
+	_, err = wsc.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("PING\r\n")))
+	require_NoError(t, err)                                      // A follow-up compressed PING should still be accepted on the same connection.
+	require_Equal(t, string(testWSReadFrame(t, br)), "PONG\r\n") // The connection should remain alive after the compressed frame.
+}
+
+func TestWSCompressedSequentialFramesRemainResponsive(t *testing.T) {
+	o := testWSOptions()
+	o.Websocket.Compression = true
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+	checkExpectedSubs(t, 1, s)
+
+	wsc, br := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
+	defer wsc.Close()
+
+	for range 64 {
+		_, err := wsc.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("PUB foo 1\r\na\r\n")))
+		require_NoError(t, err) // Each compressed websocket message should be accepted on the same connection.
+	}
+
+	for range 64 {
+		msg := natsNexMsg(t, sub, time.Second)
+		require_Equal(t, string(msg.Data), "a") // Each compressed PUB should still be delivered after many compressed frames.
+	}
+
+	_, err := wsc.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("PING\r\n")))
+	require_NoError(t, err)                                      // The connection should still accept another compressed websocket message after the burst.
+	require_Equal(t, string(testWSReadFrame(t, br)), "PONG\r\n") // The server should still answer PING after many compressed messages on one connection.
+}
+
+func TestWSCompressedFragmentedFrame(t *testing.T) {
+	o := testWSOptions()
+	o.Websocket.Compression = true
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+	checkExpectedSubs(t, 1, s)
+
+	wsc, br := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
+	defer wsc.Close()
+
+	payload := []byte("PUB foo 1\r\na\r\n")
+	buf := &bytes.Buffer{}
+
+	compressor, err := flate.NewWriter(buf, 1)
+	require_NoError(t, err) // The test should be able to build a fragmented compressed websocket payload.
+
+	_, err = compressor.Write(payload)
+	require_NoError(t, err)                // The compressed websocket payload should be generated successfully.
+	require_NoError(t, compressor.Flush()) // The compressed websocket payload should be finalized successfully.
+
+	compressed := buf.Bytes()
+	compressed = compressed[:len(compressed)-4]
+
+	split := len(compressed) / 2
+	if split == 0 {
+		split = 1
+	}
+	frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, compressed[:split])
+	frag1[0] |= wsRsv1Bit
+	frag2 := testWSCreateClientMsg(wsBinaryMessage, 2, true, false, compressed[split:])
+
+	_, err = wsc.Write(frag1)
+	require_NoError(t, err) // The first compressed websocket fragment should be accepted.
+
+	_, err = wsc.Write(frag2)
+	require_NoError(t, err) // The final compressed websocket fragment should be accepted.
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, string(msg.Data), "a") // The fragmented compressed websocket message should be reassembled and delivered.
+
+	_, err = wsc.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("PING\r\n")))
+	require_NoError(t, err)                                      // The websocket connection should remain usable after fragmented compressed delivery.
+	require_Equal(t, string(testWSReadFrame(t, br)), "PONG\r\n") // The server should still answer PING after the fragmented compressed message.
+}
+
+func TestWSCorruptedCompressedFrameIsRejected(t *testing.T) {
+	o := testWSOptions()
+	o.Websocket.Compression = true
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	logger := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(logger, false, false)
+
+	wsc, _ := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
+	defer wsc.Close()
+
+	frame := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("PING\r\n"))
+	frame[len(frame)-1] ^= 0xFF
+	_, err := wsc.Write(frame)
+	require_NoError(t, err) // The corrupted compressed websocket frame should still be writable to the socket.
+
+	select {
+	case msg := <-logger.errCh:
+		require_Contains(t, msg, "corrupt") // The server log should report the inflate corruption.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected corrupted compressed websocket frame to be logged")
+	}
+}
+
+func TestWSFlushesBufferedDeliveryBeforeProtocolClose(t *testing.T) {
+	o := testWSOptions()
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+	checkExpectedSubs(t, 1, s)
+
+	wsc, _ := testWSCreateClient(t, false, false, o.Websocket.Host, o.Websocket.Port)
+	defer wsc.Close()
+
+	good := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("PUB foo 1\r\na\r\n"))
+	bad := testWSCreateClientMsg(wsPingMessage, 1, true, false, nil)
+	bad[1] &= ^byte(wsMaskBit)
+	buf := append(append([]byte(nil), good...), bad...)
+
+	_, err := wsc.Write(buf)
+	require_NoError(t, err) // The client should be able to send the valid PUB and malformed frame in one write.
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, string(msg.Data), "a") // The already-buffered delivery should be flushed even though the websocket client is then closed for protocol violation.
 }
 
 func TestWSTLSConnection(t *testing.T) {
@@ -4649,10 +4735,11 @@ func TestWSDecompressLimit(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		mpayCfg string
+		mpay    int
 	}{
-		{"not explicitly configured", _EMPTY_},
-		{"explicit high", "max_payload: 2097152"},
-		{"explicit low", "max_payload: 4096"},
+		{"not explicitly configured", _EMPTY_, MAX_PAYLOAD_SIZE},
+		{"explicit high", "max_payload: 2097152", 2097152},
+		{"explicit low", "max_payload: 4096", 4096},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, fmt.Appendf(nil, `
@@ -4677,16 +4764,23 @@ func TestWSDecompressLimit(t *testing.T) {
 				port:     o.Websocket.Port,
 				noTLS:    true,
 			})
-			// We will hand-craft a frame that would use a 10MB of uncompressed zeros
-			// that should compress really small.
+			// Hand-craft a compressed oversized PUB so the streamed decompressed
+			// bytes are rejected by the regular max_payload parser checks.
 			buf := &bytes.Buffer{}
 			compressor, _ := flate.NewWriter(buf, 1)
-			chunk := make([]byte, 1024*1024)
-			// Compress the equivalent of 100MB of data. We do by chunks to limit
-			// memory usage here.
-			for range 100 {
-				compressor.Write(chunk)
+			size := test.mpay + 1
+			header := []byte(fmt.Sprintf("PUB foo %d\r\n", size))
+			_, _ = compressor.Write(header)
+			chunk := make([]byte, 32*1024)
+			for written := 0; written < size; {
+				n := len(chunk)
+				if rem := size - written; rem < n {
+					n = rem
+				}
+				_, _ = compressor.Write(chunk[:n])
+				written += n
 			}
+			_, _ = compressor.Write([]byte("\r\n"))
 			compressor.Flush()
 			payload := buf.Bytes()
 			// The last 4 bytes are dropped
@@ -4721,10 +4815,8 @@ func TestWSDecompressLimit(t *testing.T) {
 				t.Fatalf("Error sending message: %v", err)
 			}
 
-			// We should have been disconnected.
-			rbuf := make([]byte, 1024)
-			_, err := br.Read(rbuf)
-			require_Error(t, err)
+			msg := testWSReadFrame(t, br)
+			require_Contains(t, string(msg), "Maximum Payload Violation") // The streamed compressed PUB should be rejected by the regular parser limit.
 
 			select {
 			case err := <-l.errCh:

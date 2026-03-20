@@ -1525,22 +1525,14 @@ func (s *Server) jsonResponse(v any) string {
 // Read lock must be held
 func (jsa *jsAccount) tieredReservation(tier string, cfg *StreamConfig) int64 {
 	reservation := int64(0)
-	if tier == _EMPTY_ {
-		for _, sa := range jsa.streams {
-			if sa.cfg.MaxBytes > 0 {
-				if sa.cfg.Storage == cfg.Storage && sa.cfg.Name != cfg.Name {
-					reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
-				}
-			}
-		}
-	} else {
-		for _, sa := range jsa.streams {
-			if sa.cfg.Replicas == cfg.Replicas {
-				if sa.cfg.MaxBytes > 0 {
-					if isSameTier(&sa.cfg, cfg) && sa.cfg.Name != cfg.Name {
-						reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
-					}
-				}
+	for _, sa := range jsa.streams {
+		if sa.cfg.Name != cfg.Name && (tier == _EMPTY_ || isSameTier(&sa.cfg, cfg)) && sa.cfg.MaxBytes > 0 && sa.cfg.Storage == cfg.Storage {
+			// If tier is empty, all storage is flat and we should adjust for replicas.
+			// Otherwise if tiered, storage replication already taken into consideration.
+			if tier == _EMPTY_ && sa.cfg.Replicas > 1 {
+				reservation = addSaturate(reservation, mulSaturate(int64(sa.cfg.Replicas), sa.cfg.MaxBytes))
+			} else {
+				reservation = addSaturate(reservation, sa.cfg.MaxBytes)
 			}
 		}
 	}
@@ -1805,7 +1797,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 		if req.Subject != _EMPTY_ {
 			filter = req.Subject
 		}
@@ -1935,7 +1927,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 		if req.Subject != _EMPTY_ {
 			filter = req.Subject
 		}
@@ -2125,7 +2117,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			return
 		}
 		details, subjects = req.DeletedDetails, req.SubjectsFilter
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -2964,6 +2956,13 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	accName := tokenAt(subject, 5)
 
 	var resp = JSApiAccountPurgeResponse{ApiResponse: ApiResponse{Type: JSApiAccountPurgeResponseType}}
+
+	// Check for path like separators in the name.
+	if strings.ContainsAny(accName, `\/`) {
+		resp.Error = NewJSStreamGeneralError(errors.New("account name can not contain path separators"))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 
 	if !s.JetStreamIsClustered() {
 		var streams []*stream
@@ -3855,17 +3854,22 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 	if stream != req.Config.Name && req.Config.Name == _EMPTY_ {
 		req.Config.Name = stream
 	}
-
-	// check stream config at the start of the restore process, not at the end
-	cfg, apiErr := s.checkStreamCfg(&req.Config, acc, false)
-	if apiErr != nil {
-		resp.Error = apiErr
+	if stream != req.Config.Name {
+		resp.Error = NewJSStreamMismatchError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRestoreRequest(ci, acc, &req, subject, reply, rmsg)
+		return
+	}
+
+	// check stream config at the start of the restore process, not at the end
+	cfg, apiErr := s.checkStreamCfg(&req.Config, acc, false)
+	if apiErr != nil {
+		resp.Error = apiErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -3889,7 +3893,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
-	s.processStreamRestore(ci, acc, &req.Config, subject, reply, string(msg))
+	s.processStreamRestore(ci, acc, &cfg, subject, reply, string(msg))
 }
 
 func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamConfig, subject, reply, msg string) <-chan error {
@@ -4602,7 +4606,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	streamName := streamNameFromSubject(subject)
@@ -4724,7 +4728,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		offset = req.Offset
+		offset = max(req.Offset, 0)
 	}
 
 	streamName := streamNameFromSubject(subject)

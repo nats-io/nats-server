@@ -60,6 +60,8 @@ const (
 	wsMaxControlPayloadSize = 125
 	wsFrameSizeForBrowsers  = 4096 // From experiment, webrowsers behave better with limited frame size
 	wsCompressThreshold     = 64   // Don't compress for small buffer(s)
+	wsMaxMsgPayloadMultiple = 8
+	wsMaxMsgPayloadLimit    = 64 * 1024 * 1024
 	wsCloseSatusSize        = 2
 
 	// From https://tools.ietf.org/html/rfc6455#section-11.7
@@ -170,6 +172,31 @@ func (r *wsReadInfo) init() {
 	r.fs, r.ff = true, true
 }
 
+func (r *wsReadInfo) resetCompressedState() {
+	r.fs = true
+	r.ff = true
+	r.fc = false
+	r.rem = 0
+	r.cbufs = nil
+	r.coff = 0
+	r.csz = 0
+}
+
+// Compressed WebSocket messages have to be accumulated before they can be
+// decompressed and handed to the parser, so this transport limit needs to
+// allow batching several max_payload-sized NATS operations while still
+// capping resource usage on the buffered compressed path.
+func wsMaxMessageSize(mpay int) uint64 {
+	if mpay <= 0 {
+		mpay = MAX_PAYLOAD_SIZE
+	}
+	limit := uint64(mpay) * wsMaxMsgPayloadMultiple
+	if limit > wsMaxMsgPayloadLimit {
+		limit = wsMaxMsgPayloadLimit
+	}
+	return limit
+}
+
 // Returns a slice containing `needed` bytes from the given buffer `buf`
 // starting at position `pos`, and possibly read from the given reader `r`.
 // When bytes are present in `buf`, the `pos` is incremented by the number
@@ -207,17 +234,44 @@ func (c *client) isWebsocket() bool {
 //
 // Client lock MUST NOT be held on entry.
 func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, error) {
+	var bufs [][]byte
+	err := c.wsReadLoop(r, ior, buf, func(b []byte, compressed, final bool) error {
+		if compressed {
+			return errors.New("compressed websocket frames require wsReadAndParse")
+		}
+		bufs = append(bufs, b)
+		return nil
+	})
+	return bufs, err
+}
+
+func (c *client) wsReadAndParse(r *wsReadInfo, ior io.Reader, buf []byte) error {
+	mpay := int(atomic.LoadInt32(&c.mpay))
+	if mpay <= 0 {
+		mpay = MAX_PAYLOAD_SIZE
+	}
+	return c.wsReadLoop(r, ior, buf, func(b []byte, compressed, final bool) error {
+		if compressed {
+			if err := c.wsDecompressAndParse(r, b, final, mpay); err != nil {
+				r.resetCompressedState()
+				return err
+			}
+			if final {
+				r.fc = false
+			}
+			return nil
+		}
+		return c.parse(b)
+	})
+}
+
+func (c *client) wsReadLoop(r *wsReadInfo, ior io.Reader, buf []byte, handle func([]byte, bool, bool) error) error {
 	var (
-		bufs   [][]byte
 		tmpBuf []byte
 		err    error
 		pos    uint64
 		max    = uint64(len(buf))
-		mpay   = int(atomic.LoadInt32(&c.mpay))
 	)
-	if mpay <= 0 {
-		mpay = MAX_PAYLOAD_SIZE
-	}
 	for pos != max {
 		if r.fs {
 			b0 := buf[pos]
@@ -225,23 +279,23 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 			final := b0&wsFinalBit != 0
 			compressed := b0&wsRsv1Bit != 0
 			if b0&(wsRsv2Bit|wsRsv3Bit) != 0 {
-				return bufs, c.wsHandleProtocolError("RSV2 and RSV3 must be clear")
+				return c.wsHandleProtocolError("RSV2 and RSV3 must be clear")
 			}
 			if compressed && !c.ws.compress {
-				return bufs, c.wsHandleProtocolError("compressed frame received without negotiated permessage-deflate")
+				return c.wsHandleProtocolError("compressed frame received without negotiated permessage-deflate")
 			}
 			pos++
 
 			tmpBuf, pos, err = wsGet(ior, buf, pos, 1)
 			if err != nil {
-				return bufs, err
+				return err
 			}
 			b1 := tmpBuf[0]
 
 			// Clients MUST set the mask bit. If not set, reject.
 			// However, LEAF by default will not have masking, unless they are forced to, by configuration.
 			if r.mask && b1&wsMaskBit == 0 {
-				return bufs, c.wsHandleProtocolError("mask bit missing")
+				return c.wsHandleProtocolError("mask bit missing")
 			}
 
 			// Store size in case it is < 125
@@ -250,46 +304,46 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 			switch frameType {
 			case wsPingMessage, wsPongMessage, wsCloseMessage:
 				if r.rem > wsMaxControlPayloadSize {
-					return bufs, c.wsHandleProtocolError(
+					return c.wsHandleProtocolError(
 						fmt.Sprintf("control frame length bigger than maximum allowed of %v bytes",
 							wsMaxControlPayloadSize))
 				}
 				if !final {
-					return bufs, c.wsHandleProtocolError("control frame does not have final bit set")
+					return c.wsHandleProtocolError("control frame does not have final bit set")
 				}
 				if compressed {
-					return bufs, c.wsHandleProtocolError("control frame must not be compressed")
+					return c.wsHandleProtocolError("control frame must not be compressed")
 				}
 			case wsTextMessage, wsBinaryMessage:
 				if !r.ff {
-					return bufs, c.wsHandleProtocolError("new message started before final frame for previous message was received")
+					return c.wsHandleProtocolError("new message started before final frame for previous message was received")
 				}
 				r.ff = final
 				r.fc = compressed
 			case wsContinuationFrame:
 				// Compressed bit must be only set in the first frame
 				if r.ff || compressed {
-					return bufs, c.wsHandleProtocolError("invalid continuation frame")
+					return c.wsHandleProtocolError("invalid continuation frame")
 				}
 				r.ff = final
 			default:
-				return bufs, c.wsHandleProtocolError(fmt.Sprintf("unknown opcode %v", frameType))
+				return c.wsHandleProtocolError(fmt.Sprintf("unknown opcode %v", frameType))
 			}
 
 			switch r.rem {
 			case 126:
 				tmpBuf, pos, err = wsGet(ior, buf, pos, 2)
 				if err != nil {
-					return bufs, err
+					return err
 				}
 				r.rem = uint64(binary.BigEndian.Uint16(tmpBuf))
 			case 127:
 				tmpBuf, pos, err = wsGet(ior, buf, pos, 8)
 				if err != nil {
-					return bufs, err
+					return err
 				}
 				if r.rem = binary.BigEndian.Uint64(tmpBuf); r.rem&(uint64(1)<<63) != 0 {
-					return bufs, c.wsHandleProtocolError("invalid 64-bit payload length")
+					return c.wsHandleProtocolError("invalid 64-bit payload length")
 				}
 			}
 
@@ -297,7 +351,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 				// Read masking key
 				tmpBuf, pos, err = wsGet(ior, buf, pos, 4)
 				if err != nil {
-					return bufs, err
+					return err
 				}
 				copy(r.mkey[:], tmpBuf)
 				r.mkpos = 0
@@ -307,7 +361,7 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 			if wsIsControlFrame(frameType) {
 				pos, err = c.wsHandleControlFrame(r, frameType, ior, buf, pos)
 				if err != nil {
-					return bufs, err
+					return err
 				}
 				continue
 			}
@@ -316,60 +370,26 @@ func (c *client) wsRead(r *wsReadInfo, ior io.Reader, buf []byte) ([][]byte, err
 			r.fs = false
 		}
 		if pos < max {
-			var b []byte
-			var n uint64
-
-			n = r.rem
+			n := r.rem
 			if pos+n > max {
 				n = max - pos
 			}
-			b = buf[pos : pos+n]
+			b := buf[pos : pos+n]
 			pos += n
 			r.rem -= n
 			// If needed, unmask the buffer
 			if r.mask {
 				r.unmask(b)
 			}
-			addToBufs := true
-			// Handle compressed message
-			if r.fc {
-				// Assume that we may have continuation frames or not the full payload.
-				addToBufs = false
-				if r.csz+uint64(len(b)) > uint64(mpay) {
-					r.cbufs = nil
-					r.coff = 0
-					r.csz = 0
-					return bufs, ErrMaxPayload
-				}
-				// Make a copy of the buffer before adding it to the list
-				// of compressed fragments.
-				r.cbufs = append(r.cbufs, append([]byte(nil), b...))
-				r.csz += uint64(len(b))
-				// When we have the final frame and we have read the full payload,
-				// we can decompress it.
-				if r.ff && r.rem == 0 {
-					b, err = r.decompress(mpay)
-					if err != nil {
-						return bufs, err
-					}
-					r.fc = false
-					// Now we can add to `bufs`
-					addToBufs = true
-				}
+			if err := handle(b, r.fc, r.ff && r.rem == 0); err != nil {
+				return err
 			}
-			// For non compressed frames, or when we have decompressed the
-			// whole message.
-			if addToBufs {
-				bufs = append(bufs, b)
-			}
-			// If payload has been fully read, then indicate that next
-			// is the start of a frame.
 			if r.rem == 0 {
 				r.fs = true
 			}
 		}
 	}
-	return bufs, nil
+	return nil
 }
 
 func (r *wsReadInfo) Read(dst []byte) (int, error) {
@@ -425,45 +445,65 @@ func (r *wsReadInfo) ReadByte() (byte, error) {
 	return b, nil
 }
 
-// decompress decompresses the collected buffers.
-// The size of the decompressed buffer will be limited to the `mpay` value.
-// If, while decompressing, the resulting uncompressed buffer exceeds this
-// limit, the decompression stops and an empty buffer and the ErrMaxPayload
-// error are returned.
-func (r *wsReadInfo) decompress(mpay int) ([]byte, error) {
-	// If not limit is specified, use the default maximum payload size.
-	if mpay <= 0 {
-		mpay = MAX_PAYLOAD_SIZE
+func (c *client) wsDecompressAndParse(r *wsReadInfo, b []byte, final bool, mpay int) error {
+	limit := wsMaxMessageSize(mpay)
+	if len(b) > 0 {
+		if r.csz+uint64(len(b)) > limit {
+			return ErrMaxPayload
+		}
+		r.cbufs = append(r.cbufs, append([]byte(nil), b...))
+		r.csz += uint64(len(b))
 	}
-	r.coff = 0
-	// As per https://tools.ietf.org/html/rfc7692#section-7.2.2
-	// add 0x00, 0x00, 0xff, 0xff and then a final block so that flate reader
-	// does not report unexpected EOF.
+	if !final {
+		return nil
+	}
+	if r.csz+uint64(len(compressLastBlock)) > limit {
+		return ErrMaxPayload
+	}
 	r.cbufs = append(r.cbufs, compressLastBlock)
-	// Get a decompressor from the pool and bind it to this object (wsReadInfo)
-	// that provides Read() and ReadByte() APIs that will consume the compressed
-	// buffers (r.cbufs).
+	r.csz += uint64(len(compressLastBlock))
+	r.coff = 0
 	d, _ := decompressorPool.Get().(io.ReadCloser)
 	if d == nil {
 		d = flate.NewReader(r)
 	} else {
 		d.(flate.Resetter).Reset(r, nil)
 	}
-	// Use a LimitedReader to limit the decompressed size.
-	// We use "limit+1" bytes for "N" so we can detect if the limit is exceeded.
+	defer func() {
+		d.Close()
+		decompressorPool.Put(d)
+		r.cbufs = nil
+		r.coff = 0
+		r.csz = 0
+	}()
 	lr := io.LimitedReader{R: d, N: int64(mpay + 1)}
-	b, err := io.ReadAll(&lr)
-	if err == nil && len(b) > mpay {
-		// Decompressed data exceeds the maximum payload size.
-		b, err = nil, ErrMaxPayload
+	buf := make([]byte, 32*1024)
+	total := 0
+	for {
+		n, err := lr.Read(buf)
+		if n > 0 {
+			pn := n
+			if total+n > mpay {
+				pn = mpay - total
+			}
+			if pn > 0 {
+				if err := c.parse(buf[:pn]); err != nil {
+					return err
+				}
+			}
+			total += n
+			if total > mpay {
+				return ErrMaxPayload
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if err == io.EOF {
+			return nil
+		}
+		return err
 	}
-	lr.R = nil
-	decompressorPool.Put(d)
-	// Now reset the compressed buffers list.
-	r.cbufs = nil
-	r.coff = 0
-	r.csz = 0
-	return b, err
 }
 
 // Handles the PING, PONG and CLOSE websocket control frames.
