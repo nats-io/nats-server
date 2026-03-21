@@ -4417,7 +4417,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			}
 
 			// Duplicates can be skipped, continue to the next message.
-			if errors.Is(err, errMsgIdDuplicate) {
+			if errors.Is(err, errMsgIdDuplicate) || errors.Is(err, ErrMaxMsgsPerSubject) {
 				return true
 			}
 
