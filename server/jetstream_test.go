@@ -23068,6 +23068,9 @@ func TestJetStreamSourcingDeduplication(t *testing.T) {
 	_, err = js.PublishMsg(msg)
 	require_NoError(t, err)
 
+	// make sure we are past the size of the dedup window on Stream A
+	time.Sleep(100 * time.Millisecond)
+
 	// Then publish another message on a new subject but with the same message id, which should be skipped as a duplicate
 	msg = nats.NewMsg("foo.4")
 	msg.Data = []byte("1")
