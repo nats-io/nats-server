@@ -20,4 +20,4 @@ require (
 // We don't usually pin non-tagged commits but so far no release has
 // been made that includes https://github.com/minio/highwayhash/pull/29.
 // This will be updated if a new tag covers this in the future.
-require github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76
+require github.com/minio/highwayhash v1.0.4
