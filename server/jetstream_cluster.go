@@ -7515,8 +7515,13 @@ func (js *jetStream) processStreamAssignmentUpdates(sub *subscription, c *client
 	// Remove the original update reply, since this change is internal.
 	sa.Reply = _EMPTY_
 	if exactMatch {
-		// If it's an exact match, we set the group to the desired state, and we unset it.
+		// If it's an exact match, we set the group to the desired state.
 		sa.Group = osa.DesiredPlacement.Group
+		// Copy the config so we can overwrite the placement.
+		newCfg := *sa.Config
+		newCfg.Placement = osa.DesiredPlacement.Placement
+		sa.Config = &newCfg
+		// We can unset it now.
 		sa.DesiredPlacement = nil
 	} else {
 		// If it doesn't match, we still update the actual peer set, but we update the desired state ID too.
@@ -8745,16 +8750,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
-			// filter peers present in both sets
-			for _, peer := range rg.Peers {
-				if !slices.Contains(nrg.Peers, peer) {
-					peerSet = append(peerSet, peer)
-				}
-			}
-			peerSet = append(peerSet, nrg.Peers...)
+			peerSet = nrg.Peers
 		}
 		if len(rg.Peers) == 1 {
-			rg.Preferred = peerSet[0]
+			rg.Preferred = rg.Peers[0]
 		}
 		rg.Peers = peerSet
 
