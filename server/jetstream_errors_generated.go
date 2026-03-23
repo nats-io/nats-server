@@ -230,6 +230,9 @@ const (
 	// JSConsumerMetadataLengthErrF consumer metadata exceeds maximum size of {limit}
 	JSConsumerMetadataLengthErrF ErrorIdentifier = 10135
 
+	// JSConsumerMoveInProgressErr consumer move in progress
+	JSConsumerMoveInProgressErr ErrorIdentifier = 10224
+
 	// JSConsumerMultipleFiltersNotAllowed consumer with multiple subject filters cannot use subject based API
 	JSConsumerMultipleFiltersNotAllowed ErrorIdentifier = 10137
 
@@ -575,7 +578,7 @@ const (
 	// JSStreamMoveAndScaleErr can not move and scale a stream in a single update
 	JSStreamMoveAndScaleErr ErrorIdentifier = 10123
 
-	// JSStreamMoveInProgressErr stream move already in progress
+	// JSStreamMoveInProgressErr stream move in progress
 	JSStreamMoveInProgressErr ErrorIdentifier = 10124
 
 	// JSStreamMoveNotInProgress stream move not in progress
@@ -749,6 +752,7 @@ var (
 		JSConsumerMaxRequestExpiresTooSmall:          {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:              {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerMetadataLengthErrF:                 {Code: 400, ErrCode: 10135, Description: "consumer metadata exceeds maximum size of {limit}"},
+		JSConsumerMoveInProgressErr:                  {Code: 400, ErrCode: 10224, Description: "consumer move in progress"},
 		JSConsumerMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10137, Description: "consumer with multiple subject filters cannot use subject based API"},
 		JSConsumerNameContainsPathSeparatorsErr:      {Code: 400, ErrCode: 10127, Description: "Consumer name can not contain path separators"},
 		JSConsumerNameExistErr:                       {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
@@ -864,7 +868,7 @@ var (
 		JSStreamMirrorNotUpdatableErr:                {Code: 400, ErrCode: 10055, Description: "stream mirror configuration can not be updated"},
 		JSStreamMismatchErr:                          {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                      {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
-		JSStreamMoveInProgressErr:                    {Code: 400, ErrCode: 10124, Description: "stream move already in progress"},
+		JSStreamMoveInProgressErr:                    {Code: 400, ErrCode: 10124, Description: "stream move in progress"},
 		JSStreamMoveNotInProgress:                    {Code: 400, ErrCode: 10129, Description: "stream move not in progress"},
 		JSStreamMsgDeleteFailedF:                     {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameContainsPathSeparatorsErr:        {Code: 400, ErrCode: 10128, Description: "Stream name can not contain path separators"},
@@ -1741,6 +1745,16 @@ func NewJSConsumerMetadataLengthError(limit interface{}, opts ...ErrorOption) *A
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSConsumerMoveInProgressError creates a new JSConsumerMoveInProgressErr error: "consumer move in progress"
+func NewJSConsumerMoveInProgressError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerMoveInProgressErr]
 }
 
 // NewJSConsumerMultipleFiltersNotAllowedError creates a new JSConsumerMultipleFiltersNotAllowed error: "consumer with multiple subject filters cannot use subject based API"
@@ -3031,7 +3045,7 @@ func NewJSStreamMoveAndScaleError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamMoveAndScaleErr]
 }
 
-// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgressErr error: "stream move already in progress"
+// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgressErr error: "stream move in progress"
 func NewJSStreamMoveInProgressError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {

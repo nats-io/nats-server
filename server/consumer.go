@@ -3430,11 +3430,8 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		return nil
 	}
 
-	// Capture raftGroup.
-	var rg *raftGroup
-	if o.ca != nil {
-		rg = o.ca.Group
-	}
+	// Capture assignment.
+	ca := o.ca
 
 	priorityGroups := []PriorityGroupState{}
 	// TODO(jrm): when we introduce supporting many priority groups, we need to update assigning `o.currentNuid` for each group.
@@ -3538,8 +3535,8 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 	o.mu.Unlock()
 
 	// Do cluster.
-	if rg != nil {
-		info.Cluster = js.clusterInfo(rg)
+	if ca != nil {
+		info.Cluster = js.clusterInfoOfConsumerAssignment(ca)
 	}
 
 	// If we have a reply subject send the response here.
