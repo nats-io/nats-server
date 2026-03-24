@@ -3072,11 +3072,17 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 // to the client, or `false` if there was an error or the ack is replicated (in which
 // case the reply will be sent later).
 func (o *consumer) processTerm(sseq, dseq, dc uint64, reason, reply string) bool {
-	// Treat like an ack to suppress redelivery.
-	ackedInPlace := o.processAckMsg(sseq, dseq, dc, reply, false)
+	return o.processTermLocked(sseq, dseq, dc, reason, reply, true)
+}
 
-	o.mu.Lock()
-	defer o.mu.Unlock()
+func (o *consumer) processTermLocked(sseq, dseq, dc uint64, reason, reply string, needLock bool) bool {
+	// Treat like an ack to suppress redelivery.
+	ackedInPlace := o.processAckMsgLocked(sseq, dseq, dc, reply, false, needLock)
+
+	if needLock {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+	}
 
 	// Deliver an advisory
 	e := JSConsumerDeliveryTerminatedAdvisory{
@@ -3429,15 +3435,29 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 // to the client, or `false` if there was an error or the ack is replicated (in which
 // case the reply will be sent later).
 func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample bool) bool {
-	o.mu.Lock()
+	return o.processAckMsgLocked(sseq, dseq, dc, reply, doSample, true)
+}
+
+func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSample bool, needLock bool) bool {
+	lock := func() {
+		if needLock {
+			o.mu.Lock()
+		}
+	}
+	unlock := func() {
+		if needLock {
+			o.mu.Unlock()
+		}
+	}
+	lock()
 	if o.closed {
-		o.mu.Unlock()
+		unlock()
 		return false
 	}
 
 	mset := o.mset
 	if mset == nil || mset.closed.Load() {
-		o.mu.Unlock()
+		unlock()
 		return false
 	}
 
@@ -3457,14 +3477,16 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		// Even though another leader must have delivered a message with this sequence, we must not adjust
 		// the current pointer. This could otherwise result in a stuck consumer, where messages below this
 		// sequence can't be redelivered, and we'll have incorrect pending state and ack floors.
-		o.mu.Unlock()
+		unlock()
 		return false
 	}
 
 	// Let the owning stream know if we are interest or workqueue retention based.
 	// If this consumer is clustered (o.node != nil) this will be handled by
 	// processReplicatedAck after the ack has propagated.
-	ackInPlace := o.node == nil && o.retention != LimitsPolicy
+	// If we're already holding the lock we can't ack in place, since that will
+	// violate lock ordering with respect to the stream.
+	ackInPlace := o.node == nil && o.retention != LimitsPolicy && needLock
 
 	var sgap, floor uint64
 	var needSignal bool
@@ -3503,7 +3525,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	case AckAll:
 		// no-op
 		if dseq <= o.adflr || sseq <= o.asflr {
-			o.mu.Unlock()
+			unlock()
 			// Return true to let caller respond back to the client.
 			return true
 		}
@@ -3536,7 +3558,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		}
 	case AckNone:
 		// FIXME(dlc) - This is error but do we care?
-		o.mu.Unlock()
+		unlock()
 		return ackInPlace
 	}
 
@@ -3547,7 +3569,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	}
 	// Update underlying store.
 	o.updateAcks(dseq, sseq, reply)
-	o.mu.Unlock()
+	unlock()
 
 	if ackInPlace {
 		if sgap > 1 {
@@ -4611,7 +4633,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			sm, err := o.mset.store.LoadMsg(seq, &pmsg.StoreMsg)
 			if sm == nil || err != nil {
 				pmsg.returnToPool()
-				pmsg, dc = nil, 0
+				pmsg = nil
 				// Adjust back deliver count.
 				o.decDeliveryCount(seq)
 			}
@@ -4619,10 +4641,14 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
 				// This is a race condition where the message is still in o.pending and
 				// scheduled for redelivery, but it has been removed from the stream.
-				// o.processTerm is called in a goroutine so could run after we get here.
+				// o.processTerm is called in a goroutine so would normally run. However,
+				// if we get here this likely didn't fire, or we are replicated and changed leaders.
 				// That will correct the pending state and delivery/ack floors, so just skip here.
 				pmsg.returnToPool()
 				pmsg = nil
+				if p, ok := o.pending[seq]; ok {
+					o.processTermLocked(seq, p.Sequence, dc-1, ackTermUnackedLimitsReason, _EMPTY_, false)
+				}
 				continue
 			}
 			return pmsg, dc, err
