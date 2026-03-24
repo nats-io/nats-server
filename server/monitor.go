@@ -2369,6 +2369,7 @@ type LeafzOptions struct {
 type LeafInfo struct {
 	ID          uint64     `json:"id"`
 	Name        string     `json:"name"`
+	Cluster     string     `json:"cluster,omitempty"`
 	IsSpoke     bool       `json:"is_spoke"`
 	IsIsolated  bool       `json:"is_isolated,omitempty"`
 	Account     string     `json:"account"`
@@ -2414,6 +2415,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 			lni := &LeafInfo{
 				ID:          ln.cid,
 				Name:        ln.leaf.remoteServer,
+				Cluster:     ln.leaf.remoteCluster,
 				IsSpoke:     ln.isSpokeLeafNode(),
 				IsIsolated:  ln.leaf.isolated,
 				Account:     ln.acc.Name,
