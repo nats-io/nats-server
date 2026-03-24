@@ -2063,11 +2063,11 @@ func TestFileStoreConsumer(t *testing.T) {
 
 		// We should sanity check pending here as well, so will check if a pending value is below
 		// ack floor or above delivered.
-		state.Pending = map[uint64]*Pending{70: {70, tn}}
+		state.Pending = map[uint64]*Pending{70: {70, tn, _EMPTY_}}
 		shouldFail()
-		state.Pending = map[uint64]*Pending{140: {140, tn}}
+		state.Pending = map[uint64]*Pending{140: {140, tn, _EMPTY_}}
 		shouldFail()
-		state.Pending = map[uint64]*Pending{72: {72, tn}} // exact on floor should fail
+		state.Pending = map[uint64]*Pending{72: {72, tn, _EMPTY_}} // exact on floor should fail
 		shouldFail()
 
 		// Put timestamps a second apart.
@@ -2076,7 +2076,7 @@ func TestFileStoreConsumer(t *testing.T) {
 		ago := time.Now().Add(-30 * time.Second).Truncate(time.Second)
 		nt := func() *Pending {
 			ago = ago.Add(time.Second)
-			return &Pending{0, ago.UnixNano()}
+			return &Pending{0, ago.UnixNano(), _EMPTY_}
 		}
 		// Should succeed.
 		state.Pending = map[uint64]*Pending{75: nt(), 80: nt(), 83: nt(), 90: nt(), 111: nt()}
@@ -2143,9 +2143,9 @@ func TestFileStoreConsumerEncodeDecodePendingBelowStreamAckFloor(t *testing.T) {
 
 	now := time.Now().Round(time.Second).Add(-10 * time.Second).UnixNano()
 	state.Pending = map[uint64]*Pending{
-		10782: {1190, now},
-		10810: {1191, now + int64(time.Second)},
-		10815: {1192, now + int64(2*time.Second)},
+		10782: {1190, now, _EMPTY_},
+		10810: {1191, now + int64(time.Second), _EMPTY_},
+		10815: {1192, now + int64(2*time.Second), _EMPTY_},
 	}
 	buf := encodeConsumerState(state)
 
@@ -2562,16 +2562,14 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 		}
 
 		ts := time.Now().UnixNano()
-		o.UpdateDelivered(1, 1, 1, ts)
-		o.UpdateDelivered(2, 1, 2, ts)
-		o.UpdateDelivered(3, 1, 3, ts)
-		o.UpdateDelivered(4, 1, 4, ts)
-		o.UpdateDelivered(5, 2, 1, ts)
+		o.UpdateDelivered(1, 1, 1, ts, _EMPTY_)
+		o.UpdateDelivered(2, 1, 2, ts, _EMPTY_)
+		o.UpdateDelivered(3, 1, 3, ts, _EMPTY_)
+		o.UpdateDelivered(4, 1, 4, ts, _EMPTY_)
+		o.UpdateDelivered(5, 2, 1, ts, _EMPTY_)
 
-		restartConsumer()
-
-		o.UpdateDelivered(6, 2, 2, ts)
-		o.UpdateDelivered(7, 3, 1, ts)
+		o.UpdateDelivered(6, 2, 2, ts, _EMPTY_)
+		o.UpdateDelivered(7, 3, 1, ts, _EMPTY_)
 
 		restartConsumer()
 		if state, _ := o.State(); len(state.Pending) != 3 {
@@ -2641,7 +2639,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 		testDelivered := func(dseq, sseq uint64) {
 			t.Helper()
 			ts := time.Now().UnixNano()
-			if err := o.UpdateDelivered(dseq, sseq, 1, ts); err != nil {
+			if err := o.UpdateDelivered(dseq, sseq, 1, ts, _EMPTY_); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			state, err := o.State()
@@ -2673,7 +2671,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 		}
 		// Also if we do an update with a delivery count of anything but 1 here should also give same error.
 		ts := time.Now().UnixNano()
-		if err := o.UpdateDelivered(5, 130, 2, ts); err != ErrNoAckPolicy {
+		if err := o.UpdateDelivered(5, 130, 2, ts, _EMPTY_); err != ErrNoAckPolicy {
 			t.Fatalf("Expected a no ack policy error on update delivered with dc > 1, got %v", err)
 		}
 	})
@@ -2698,7 +2696,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 		testDelivered := func(dseq, sseq uint64) {
 			t.Helper()
 			ts := time.Now().Round(time.Second).UnixNano()
-			if err := o.UpdateDelivered(dseq, sseq, 1, ts); err != nil {
+			if err := o.UpdateDelivered(dseq, sseq, 1, ts, _EMPTY_); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			pending++
@@ -2913,7 +2911,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 		ts := start.UnixNano()
 
 		for i := uint64(1); i <= toStore; i++ {
-			if err := o.UpdateDelivered(i, i, 1, ts); err != nil {
+			if err := o.UpdateDelivered(i, i, 1, ts, _EMPTY_); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 		}
