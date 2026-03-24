@@ -4865,9 +4865,18 @@ func parseSubjectPermission(v any, errors *[]error) (*SubjectPermission, error) 
 				continue
 			}
 			p.Deny = subjects
+		case "no_wildcards":
+			tk, mv := unwrapValue(v, &lt)
+			noWildcards, ok := mv.(bool)
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("Expected no_wildcards to be a boolean, got %T", mv)}
+				*errors = append(*errors, err)
+				continue
+			}
+			p.NoWildcards = noWildcards
 		default:
 			if !tk.IsUsedVariable() {
-				err := &configErr{tk, fmt.Sprintf("Unknown field name %q parsing subject permissions, only 'allow' or 'deny' are permitted", k)}
+				err := &configErr{tk, fmt.Sprintf("Unknown field name %q parsing subject permissions, only 'allow', 'deny', or 'no_wildcards' are permitted", k)}
 				*errors = append(*errors, err)
 			}
 		}
