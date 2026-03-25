@@ -247,14 +247,15 @@ type ServerCapability uint64
 
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
-	Name     string            `json:"name"`
-	Host     string            `json:"host"`
-	ID       string            `json:"id"`
-	Cluster  string            `json:"cluster,omitempty"`
-	Domain   string            `json:"domain,omitempty"`
-	Version  string            `json:"ver"`
-	Tags     []string          `json:"tags,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Name         string            `json:"name"`
+	Host         string            `json:"host"`
+	ID           string            `json:"id"`
+	Cluster      string            `json:"cluster,omitempty"`
+	Domain       string            `json:"domain,omitempty"`
+	Version      string            `json:"ver"`
+	Tags         []string          `json:"tags,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	FeatureFlags map[string]bool   `json:"feature_flags,omitempty"`
 	// Whether JetStream is enabled (deprecated in favor of the `ServerCapability`).
 	JetStream bool `json:"jetstream"`
 	// Generic capability flags
@@ -519,7 +520,7 @@ RESET:
 
 	// Grab tags and metadata.
 	opts := s.getOpts()
-	tags, metadata := opts.Tags, opts.Metadata
+	tags, metadata, featureFlags := opts.Tags, opts.Metadata, opts.getMergedFeatureFlags()
 
 	for s.eventsRunning() {
 		select {
@@ -537,6 +538,7 @@ RESET:
 					si.Time = time.Now().UTC()
 					si.Tags = tags
 					si.Metadata = metadata
+					si.FeatureFlags = featureFlags
 					si.Flags = 0
 					if js {
 						// New capability based flags.
