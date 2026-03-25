@@ -12630,6 +12630,64 @@ func makeSequenceSet(seqs []uint64) *avl.SequenceSet {
 	return &set
 }
 
+func TestPruneDeleteBlock(t *testing.T) {
+	dbs := DeleteBlocks{
+		&DeleteRange{First: 5, Num: 1},
+		makeSequenceSet([]uint64{8}),
+		&DeleteRange{First: 9, Num: 2},
+		&DeleteRange{First: 47, Num: 92},
+		&DeleteRange{First: 139, Num: 22},
+		&DeleteRange{First: 200, Num: 21},
+	}
+	local := DeleteBlocks{
+		makeSequenceSet([]uint64{8}),
+		&DeleteRange{First: 9, Num: 2},
+		&DeleteRange{First: 139, Num: 22},
+		&DeleteRange{First: 170, Num: 6},
+		&DeleteRange{First: 200, Num: 11},
+	}
+
+	// New earlier block should not be pruned.
+	prune, local := pruneDeleteBlock(dbs[0], local)
+	require_False(t, prune)
+	require_Equal(t, len(local), 5)
+
+	// Exact SequenceSet match should be pruned.
+	prune, local = pruneDeleteBlock(dbs[1], local)
+	require_True(t, prune)
+	require_Equal(t, len(local), 4)
+
+	// Exact DeleteRange match should be pruned.
+	prune, local = pruneDeleteBlock(dbs[2], local)
+	require_True(t, prune)
+	require_Equal(t, len(local), 3)
+
+	// Overlap alone is not enough to prune.
+	prune, local = pruneDeleteBlock(dbs[3], local)
+	require_False(t, prune)
+	require_Equal(t, len(local), 3)
+
+	// A later exact match should still be pruned after misalignment.
+	prune, local = pruneDeleteBlock(dbs[4], local)
+	require_True(t, prune)
+	require_Equal(t, len(local), 2)
+
+	// The scan should skip earlier local blocks that cannot match.
+	prune, local = pruneDeleteBlock(dbs[5], local)
+	require_False(t, prune)
+	require_Equal(t, len(local), 1)
+
+	// If all remaining local blocks are behind, the scan should exhaust them.
+	prune, local = pruneDeleteBlock(&DeleteRange{First: 300, Num: 1}, local)
+	require_False(t, prune)
+	require_Equal(t, len(local), 0)
+
+	// An empty local slice should be handled without pruning.
+	prune, local = pruneDeleteBlock(&DeleteRange{First: 301, Num: 1}, local)
+	require_False(t, prune)
+	require_Equal(t, len(local), 0)
+}
+
 func TestFileStoreDeleteBlocks(t *testing.T) {
 	fcfg := FileStoreConfig{
 		Cipher:      NoCipher,

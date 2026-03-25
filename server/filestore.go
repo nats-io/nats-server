@@ -12076,31 +12076,23 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 	}
 
 	lseq := fs.state.LastSeq
-	var needsCheck DeleteBlocks
-
 	fs.readLockAllMsgBlocks()
 	mdbs := fs.deleteBlocks()
-	for i, db := range dbs {
-		first, last, num := db.State()
-		// If the block is same as what we have we can skip.
-		if i < len(mdbs) {
-			eFirst, eLast, eNum := mdbs[i].State()
-			if first == eFirst && last == eLast && num == eNum {
-				continue
-			}
-		} else if first > lseq {
-			// Skip blocks not applicable to our current state.
-			continue
-		}
-		// Need to insert these.
-		needsCheck = append(needsCheck, db)
-	}
 	fs.readUnlockAllMsgBlocks()
 
-	for _, db := range needsCheck {
+	for _, db := range dbs {
+		first, last, _ := db.State()
+		if first > lseq {
+			break
+		}
+
+		var prune bool
+		if prune, mdbs = pruneDeleteBlock(db, mdbs); prune {
+			continue
+		}
+
 		var err error
-		if dr, ok := db.(*DeleteRange); ok {
-			first, last, _ := dr.State()
+		if _, ok := db.(*DeleteRange); ok {
 			err = fs.removeMsgsInRange(first, last, true)
 		} else {
 			db.Range(func(dseq uint64) bool {
@@ -12117,6 +12109,34 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 		}
 	}
 	return nil
+}
+
+// pruneDeleteBlock tries to find a delete block in the ordered blocks slice
+// that matches db. It skips blocks that are already behind db and returns
+// whether the next candidate matches exactly, along with the remaining
+// suffix to use for the next comparison.
+func pruneDeleteBlock(db DeleteBlock, blocks DeleteBlocks) (bool, DeleteBlocks) {
+	if len(blocks) == 0 {
+		return false, blocks
+	}
+
+	aFirst, aLast, aNum := db.State()
+	bFirst, bLast, bNum := blocks[0].State()
+
+	// Drop blocks that end before db starts.
+	for bLast < aFirst {
+		blocks = blocks[1:]
+		if len(blocks) == 0 {
+			return false, blocks
+		}
+		bFirst, bLast, bNum = blocks[0].State()
+	}
+
+	if aFirst == bFirst && aLast == bLast && aNum == bNum {
+		return true, blocks[1:]
+	}
+
+	return false, blocks
 }
 
 ////////////////////////////////////////////////////////////////////////////////
