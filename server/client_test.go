@@ -1011,6 +1011,13 @@ func TestQueueSubscribePermissions(t *testing.T) {
 			queue:   "bar",
 			want:    "+OK\r\n",
 		},
+		{
+			name:    "plain sub deny bypassed by queue deny rules",
+			perms:   &SubjectPermission{Allow: []string{">"}, Deny: []string{"admin.>", "> restricted"}},
+			subject: "admin.secret",
+			queue:   "workers",
+			want:    "-ERR 'Permissions Violation for Subscription to \"admin.secret\" using queue \"workers\"'\r\n",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
