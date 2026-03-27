@@ -166,31 +166,32 @@ func (c *client) parse(buf []byte) error {
 						goto authErr
 					}
 					var ok bool
-					// Check here for NoAuthUser. If this is set allow non CONNECT protos as our first.
-					// E.g. telnet proto demos.
-					if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ {
-						s.mu.Lock()
-						user, exists := s.users[noAuthUser]
-						s.mu.Unlock()
-						if exists {
-							c.RegisterUser(user)
-							c.mu.Lock()
-							c.clearAuthTimer()
-							c.flags.set(connectReceived)
-							c.mu.Unlock()
-							authSet, ok = false, true
+					switch c.kind {
+					case CLIENT:
+						// Check here for NoAuthUser. If this is set allow non CONNECT protos as our first.
+						// E.g. telnet proto demos.
+						if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ {
+							s.mu.Lock()
+							user, exists := s.users[noAuthUser]
+							s.mu.Unlock()
+							if exists {
+								c.RegisterUser(user)
+								c.mu.Lock()
+								c.clearAuthTimer()
+								c.flags.set(connectReceived)
+								c.mu.Unlock()
+								authSet, ok = false, true
+							}
 						}
+					case LEAF:
+						// Compressed inbound leaf-node negotiation may require INFO
+						// before CONNECT. Without compression, leaf connections must
+						// still start with CONNECT.
+						ok = (b == 'I' || b == 'i') && needsCompression(s.getOpts().LeafNode.Compression.Mode)
 					}
 					if !ok {
 						goto authErr
 					}
-				}
-				// If the connection is a gateway connection, make sure that
-				// if this is an inbound, it starts with a CONNECT.
-				if c.kind == GATEWAY && !c.gw.outbound && !c.gw.connected {
-					// Use auth violation since no CONNECT was sent.
-					// It could be a parseErr too.
-					goto authErr
 				}
 			}
 			switch b {

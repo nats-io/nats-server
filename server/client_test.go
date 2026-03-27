@@ -1013,6 +1013,13 @@ func TestQueueSubscribePermissions(t *testing.T) {
 			queue:   "bar",
 			want:    "+OK\r\n",
 		},
+		{
+			name:    "plain sub deny bypassed by queue deny rules",
+			perms:   &SubjectPermission{Allow: []string{">"}, Deny: []string{"admin.>", "> restricted"}},
+			subject: "admin.secret",
+			queue:   "workers",
+			want:    "-ERR 'Permissions Violation for Subscription to \"admin.secret\" using queue \"workers\"'\r\n",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1037,6 +1044,64 @@ func TestQueueSubscribePermissions(t *testing.T) {
 			if got := buf.String(); got != want {
 				t.Fatalf("Expected to receive %q, but instead received %q", want, got)
 			}
+		})
+	}
+}
+
+func TestClientSubscribeDenyWildcardOverlapBlocksDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		deny    string
+		sub     string
+		blocked string
+		allowed string
+	}{
+		{name: "suffix overlap", deny: "*.secret", sub: "foo.*", blocked: "foo.secret", allowed: "foo.public"},
+		{name: "middle overlap", deny: "foo.*.bar", sub: "foo.baz.*", blocked: "foo.baz.bar", allowed: "foo.baz.qux"},
+		{name: "nested wildcard overlap", deny: "*.*.bar", sub: "foo.*.*", blocked: "foo.baz.bar", allowed: "foo.baz.qux"},
+		{name: "full wildcard overlap", deny: "a.>", sub: "*.b", blocked: "a.b", allowed: "z.b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require_True(t, SubjectsCollide(tc.deny, tc.sub))
+
+			opts := DefaultOptions()
+			opts.Users = []*User{
+				{
+					Username: "attacker",
+					Password: "pass",
+					Permissions: &Permissions{
+						Subscribe: &SubjectPermission{
+							Allow: []string{">"},
+							Deny:  []string{tc.deny},
+						},
+					},
+				},
+				{Username: "publisher", Password: "pass"},
+			}
+
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			attacker, err := nats.Connect(s.ClientURL(), nats.UserInfo("attacker", "pass"))
+			require_NoError(t, err)
+			defer attacker.Close()
+
+			publisher, err := nats.Connect(s.ClientURL(), nats.UserInfo("publisher", "pass"))
+			require_NoError(t, err)
+			defer publisher.Close()
+
+			sub, err := attacker.QueueSubscribeSync(tc.sub, "workers")
+			require_NoError(t, err)
+			require_NoError(t, attacker.Flush())
+
+			require_NoError(t, publisher.Publish(tc.blocked, []byte("blocked")))
+			require_NoError(t, publisher.Publish(tc.allowed, []byte("ok")))
+			require_NoError(t, publisher.Flush())
+
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Subject, tc.allowed)
+			require_Equal(t, string(msg.Data), "ok")
 		})
 	}
 }
@@ -3914,4 +3979,134 @@ func TestFlushOutboundS2CompressionPoolBufferRecycling(t *testing.T) {
 	if allocs > 15 {
 		t.Fatalf("Too many allocs per iteration (%.1f); pool buffers are likely being leaked", allocs)
 	}
+}
+
+func TestClientPingNoAuthUserExceptionsAndRestrictions(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts {
+			A { users [{user: "foo", password: "pwd"}] }
+		}
+		no_auth_user: "foo"
+		cluster {
+			listen: "127.0.0.1:-1"
+			authorization {
+				user: "route_user"
+				password: "route_pwd"
+				timeout: 1
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+			authorization {
+				user: "leaf_user"
+				password: "leaf_pwd"
+				timeout: 1
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	opts := s.getOpts()
+	acc, err := s.LookupAccount("A")
+	require_NoError(t, err)
+
+	readInfoLine := func(t *testing.T, conn net.Conn) {
+		t.Helper()
+		br := bufio.NewReader(conn)
+		line, _, err := br.ReadLine()
+		require_NoError(t, err)
+		require_True(t, len(line) >= 5)
+		require_Equal(t, string(line[:5]), "INFO ")
+	}
+
+	t.Run("RouteNotAllowed", func(t *testing.T) {
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.Cluster.Port))
+		require_NoError(t, err)
+		defer conn.Close()
+		readInfoLine(t, conn)
+
+		// Send PING as the first command (not CONNECT). This should NOT
+		// trigger the NoAuthUser fast-path on a route connection.
+		_, err = conn.Write([]byte("PING\r\n"))
+		require_NoError(t, err)
+
+		// The server should reject this connection.
+		require_NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		br := bufio.NewReader(conn)
+		line, _, err := br.ReadLine()
+		require_NoError(t, err)
+		require_NotEqual(t, string(line), "PONG")
+		require_Equal(t, s.NumRoutes(), 0)
+		checkAccClientsCount(t, acc, 0)
+	})
+
+	t.Run("RouteInjectionNotAllowed", func(t *testing.T) {
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.Cluster.Port))
+		require_NoError(t, err)
+		defer conn.Close()
+		readInfoLine(t, conn)
+
+		// Attempt to inject an RMSG directly without CONNECT.
+		// This simulates cross-account message injection via the route protocol.
+		_, err = conn.Write([]byte("RMSG $G foo 2\r\nok\r\n"))
+		require_NoError(t, err)
+
+		// The server must reject this — either close the connection or
+		// return an error. It must NOT process the RMSG.
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		br := bufio.NewReader(conn)
+		_, _, _ = br.ReadLine()
+		// We expect either an -ERR or a closed connection (io.EOF / read error).
+		// Either way, no routes should be registered.
+		require_Equal(t, s.NumRoutes(), 0)
+		checkAccClientsCount(t, acc, 0)
+	})
+
+	t.Run("LeafNotAllowed", func(t *testing.T) {
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.LeafNode.Port))
+		require_NoError(t, err)
+		defer conn.Close()
+		readInfoLine(t, conn)
+
+		// Send PING as the first command (not CONNECT). This should NOT
+		// trigger the NoAuthUser fast-path on a leaf connection.
+		_, err = conn.Write([]byte("PING\r\n"))
+		require_NoError(t, err)
+
+		// The server should reject this connection.
+		require_NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		br := bufio.NewReader(conn)
+		line, _, err := br.ReadLine()
+		require_NoError(t, err)
+		require_NotEqual(t, string(line), "PONG")
+		require_Equal(t, s.NumLeafNodes(), 0)
+		checkAccClientsCount(t, acc, 0)
+	})
+
+	t.Run("ClientAllowed", func(t *testing.T) {
+		// Verify that the NoAuthUser fast-path still works correctly on the
+		// client port — this is the intended use case.
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.Port))
+		require_NoError(t, err)
+		readInfoLine(t, conn)
+
+		// Send PING without CONNECT — this should succeed on the client port
+		// because NoAuthUser is configured.
+		_, err = conn.Write([]byte("PING\r\n"))
+		require_NoError(t, err)
+
+		// Should get a PONG as expected as we expect to be dropped into the
+		// no auth user.
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		br := bufio.NewReader(conn)
+		line, _, err := br.ReadLine()
+		require_NoError(t, err)
+		require_Equal(t, string(line), "PONG")
+		checkAccClientsCount(t, acc, 1)
+		require_NoError(t, conn.Close())
+		checkAccClientsCount(t, acc, 0)
+	})
 }

@@ -3273,19 +3273,20 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 		r := c.perms.sub.deny.Match(subject)
 		allowed = len(r.psubs) == 0
 
-		if queue != _EMPTY_ && len(r.qsubs) > 0 {
+		if allowed && queue != _EMPTY_ && len(r.qsubs) > 0 {
 			// If the queue appears in the deny list, then DO NOT allow.
 			allowed = !queueMatches(queue, r.qsubs)
 		}
 
 		// We use the actual subscription to signal us to spin up the deny mperms
-		// and cache. We check if the subject is a wildcard that contains any of
+		// and cache. We check if the subject is a wildcard that intersects any of
 		// the deny clauses.
 		// FIXME(dlc) - We could be smarter and track when these go away and remove.
 		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
-			// Whip through the deny array and check if this wildcard subject is within scope.
+			// Whip through the deny array and check if this wildcard subject can
+			// overlap with any denied deliveries.
 			for _, sub := range c.darray {
-				if subjectIsSubsetMatch(sub, subject) {
+				if SubjectsCollide(sub, subject) {
 					c.loadMsgDenyFilter()
 					break
 				}
@@ -5754,11 +5755,12 @@ func (c *client) clearAuthTimer() bool {
 	return stopped
 }
 
-// We may reuse atmr for expiring user jwts,
-// so check connectReceived.
+// Track whether the parser should still enforce pre-CONNECT rules.
+// This is handshake state, not timer state, since some handshakes
+// use a different timer while still expecting CONNECT.
 // Lock assume held on entry.
 func (c *client) awaitingAuth() bool {
-	return !c.flags.isSet(connectReceived) && c.atmr != nil
+	return c.flags.isSet(expectConnect) && !c.flags.isSet(connectReceived)
 }
 
 // This will set the atmr for the JWT expiration time.

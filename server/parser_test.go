@@ -16,14 +16,17 @@ package server
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func dummyClient() *client {
-	return &client{srv: New(&defaultServerOptions), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
+	opts := defaultServerOptions
+	return &client{srv: New(&opts), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
 }
 
 func dummyRouteClient() *client {
-	return &client{srv: New(&defaultServerOptions), kind: ROUTER}
+	opts := defaultServerOptions
+	return &client{srv: New(&opts), kind: ROUTER}
 }
 
 func TestParsePing(t *testing.T) {
@@ -674,6 +677,94 @@ func TestParseMsgSpace(t *testing.T) {
 	// Anything with an M from a client should parse error
 	if err := c.parse([]byte("M")); err == nil {
 		t.Fatalf("Expected parse error for M* from a client")
+	}
+}
+
+func TestParsePingNoAuthUserExceptionsAndRestrictions(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+	s.opts.NoAuthUser = "foo"
+	s.users = map[string]*User{
+		"foo": {Username: "foo"},
+	}
+
+	newAuthPendingClient := func(kind int, gw *gateway, route *route, leaf *leaf, ws *websocket) *client {
+		c := &client{
+			srv: s, kind: kind,
+			gw: gw, route: route, leaf: leaf, ws: ws,
+			atmr: time.AfterFunc(time.Minute, func() {}),
+		}
+		c.flags.set(expectConnect)
+		t.Cleanup(func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.clearAuthTimer()
+		})
+		return c
+	}
+
+	for _, test := range []struct {
+		name  string
+		kind  int
+		gw    *gateway
+		route *route
+		leaf  *leaf
+	}{
+		{name: "Leaf", kind: LEAF, leaf: &leaf{}},
+		{name: "Route", kind: ROUTER, route: &route{}},
+		{name: "Gateway", kind: GATEWAY, gw: &gateway{}},
+	} {
+		t.Run(test.name+"NotAllowed", func(t *testing.T) {
+			c := newAuthPendingClient(test.kind, test.gw, test.route, test.leaf, nil)
+			require_Error(t, c.parse([]byte("PING\r\n")), ErrAuthentication)
+			require_False(t, c.flags.isSet(connectReceived))
+		})
+	}
+
+	for _, test := range []struct {
+		name string
+		kind int
+		ws   *websocket
+	}{
+		{name: "Client", kind: CLIENT},
+		{name: "WebSocket", kind: CLIENT, ws: &websocket{}},
+	} {
+		t.Run(test.name+"Allowed", func(t *testing.T) {
+			c := newAuthPendingClient(test.kind, nil, nil, nil, test.ws)
+			require_NoError(t, c.parse([]byte("PING\r\n")))
+			require_True(t, c.flags.isSet(connectReceived))
+		})
+	}
+}
+
+func TestParsePingAllowedAfterConnectForNonClients(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		kind  int
+		gw    *gateway
+		route *route
+		leaf  *leaf
+	}{
+		{name: "Leaf", kind: LEAF, leaf: &leaf{}},
+		{name: "Route", kind: ROUTER, route: &route{}},
+		{name: "Gateway", kind: GATEWAY, gw: &gateway{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := &client{
+				srv: func() *Server {
+					opts := defaultServerOptions
+					return New(&opts)
+				}(),
+				kind:  test.kind,
+				gw:    test.gw,
+				route: test.route,
+				leaf:  test.leaf,
+			}
+			c.flags.set(connectReceived)
+
+			require_NoError(t, c.parse([]byte("PING\r\n")))
+			require_Equal(t, c.state, OP_START)
+		})
 	}
 }
 
