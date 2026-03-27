@@ -230,6 +230,21 @@ func (q *ipQueue[T]) recycle(elts *[]T) {
 	q.pool.Put(elts)
 }
 
+// Renotify will re-fill the notification channel if there are pending
+// reads. Useful if you have read the notification channel but do not
+// intend to pop/popOne/drain etc.
+func (q *ipQueue[T]) renotify() {
+	if q == nil {
+		return
+	}
+	q.Lock()
+	defer q.Unlock()
+	if len(q.elts)-q.pos == 0 {
+		return
+	}
+	q.ch <- struct{}{}
+}
+
 // Returns the current length of the queue.
 func (q *ipQueue[T]) len() int {
 	q.Lock()
