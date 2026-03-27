@@ -1467,13 +1467,13 @@ func (js *jetStream) checkForOrphans() {
 	if meta.Leaderless() {
 		js.mu.Unlock()
 		s.Debugf("JetStream cluster skipping orphan check, no meta-leader, will retry")
-		time.AfterFunc(5*time.Second, js.checkForOrphans)
+		time.AfterFunc(10*time.Second, js.checkForOrphans)
 		return
 	}
 	if !meta.Current() {
 		js.mu.Unlock()
 		s.Debugf("JetStream cluster skipping orphan check, meta not current yet will retry")
-		time.AfterFunc(5*time.Second, js.checkForOrphans)
+		time.AfterFunc(10*time.Second, js.checkForOrphans)
 		return
 	}
 	ourPeerID := meta.ID()
@@ -1487,6 +1487,9 @@ func (js *jetStream) checkForOrphans() {
 	// conflicts tracks whether any R1 stream still needs attention after this
 	// run. It is used to decide whether the PTC marker can be cleaned up.
 	conflicts := ptcConflicts > 0
+	// pendingAdoptions is set when we forward proposals this sweep and need a
+	// follow-up sweep to verify they committed and to adopt consumers.
+	var pendingAdoptions bool
 
 	for _, mset := range streams {
 		mset.mu.RLock()
@@ -1523,46 +1526,15 @@ func (js *jetStream) checkForOrphans() {
 				conflicts = true
 				continue
 			}
-			// Proposal was sent but Raft commit is async. Keep the marker so that a
-			// crash between here and the commit does not lose the resume signal. The
-			// next sweep will find no orphans once the entry is committed and will
-			// then remove the marker cleanly.
-			conflicts = true
 
-			// Propose assignments for durable consumers on this stream.
-			for _, o := range mset.getConsumers() {
-				if !o.isDurable() {
-					continue
-				}
-				oCfg := o.config()
-				oCreated := o.createdTime()
-				oStorage := cfg.Storage
-				if oCfg.MemoryStorage {
-					oStorage = MemoryStorage
-				}
-				ca := &consumerAssignment{
-					Client:  &ClientInfo{Account: accName},
-					Name:    o.String(),
-					Stream:  cfg.Name,
-					Config:  &oCfg,
-					Created: oCreated,
-					Group: &raftGroup{
-						Name:    groupNameForConsumer([]string{ourPeerID}, oStorage),
-						Peers:   []string{ourPeerID},
-						Storage: oStorage,
-					},
-				}
-				if b, err := json.Marshal(oCfg); err != nil {
-					s.Warnf("Failed to marshal config for consumer adoption '%s > %s > %s': %v", accName, cfg.Name, o.String(), err)
-					continue
-				} else {
-					ca.ConfigJSON = b
-				}
-				s.Noticef("Adopting orphaned consumer '%s > %s > %s' into cluster assignments", accName, cfg.Name, o.String())
-				if err := meta.ForwardProposal(encodeAddConsumerAssignment(ca)); err != nil {
-					s.Warnf("Failed to propose adoption of consumer '%s > %s > %s': %v", accName, cfg.Name, o.String(), err)
-				}
-			}
+			// Consumer adoption is deferred to the next sweep: once the stream
+			// assignment is committed, getOrphans will return the consumers as
+			// orphans (stream has assignment but consumers do not) and the consumer
+			// loop below will adopt them. This avoids a race where a consumer
+			// proposal could be applied before the stream proposal during a leader
+			// transition.
+			conflicts = true
+			pendingAdoptions = true
 			continue
 		}
 
@@ -1621,6 +1593,7 @@ func (js *jetStream) checkForOrphans() {
 			// Proposal is async; keep the marker until the next sweep confirms the
 			// consumer is no longer an orphan after the Raft entry is committed.
 			conflicts = true
+			pendingAdoptions = true
 			continue
 		}
 
@@ -1646,6 +1619,14 @@ func (js *jetStream) checkForOrphans() {
 		err := js.writePTCMarker()
 		if err != nil {
 			s.Warnf("Failed to write ptc marker: %v", err)
+		}
+
+		// Re-schedule only if we sent proposals this sweep. This ensures
+		// consumer adoption runs after stream assignments commit, without
+		// looping indefinitely for persistent conflicts (ptcConflicts)
+		// that require operator attention.
+		if pendingAdoptions {
+			time.AfterFunc(10*time.Second, js.checkForOrphans)
 		}
 	} else {
 		if err := js.removePTCMarker(); err != nil {
@@ -2259,7 +2240,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 			mset.mu.RLock()
 			cfg := mset.cfg
 			mset.mu.RUnlock()
-			// During active PTC promotion, preserve R1 orphans
+			// During active PTC promotion, keep R1 orphans alive
 			if cfg.Replicas == 1 && ptc {
 				continue
 			}
@@ -2273,7 +2254,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 				mset.mu.RLock()
 				replicas := mset.cfg.Replicas
 				mset.mu.RUnlock()
-				// During active PTC promotion, preserve consumers whose parent stream is R1
+				// During active PTC promotion, keep R1 orphans alive
 				if replicas == 1 && ptc {
 					continue
 				}
