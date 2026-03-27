@@ -168,7 +168,7 @@ func (c *client) parse(buf []byte) error {
 					var ok bool
 					// Check here for NoAuthUser. If this is set allow non CONNECT protos as our first.
 					// E.g. telnet proto demos.
-					if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ {
+					if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ && c.kind == CLIENT {
 						s.mu.Lock()
 						user, exists := s.users[noAuthUser]
 						s.mu.Unlock()
@@ -182,15 +182,18 @@ func (c *client) parse(buf []byte) error {
 						}
 					}
 					if !ok {
+						// Non-client connections (routes, leafnodes, gateways) must
+						// always start with a CONNECT protocol message.
+						switch c.kind {
+						case ROUTER, LEAF:
+							goto authErr
+						case GATEWAY:
+							if c.gw == nil || (!c.gw.outbound && !c.gw.connected) {
+								goto authErr
+							}
+						}
 						goto authErr
 					}
-				}
-				// If the connection is a gateway connection, make sure that
-				// if this is an inbound, it starts with a CONNECT.
-				if c.kind == GATEWAY && !c.gw.outbound && !c.gw.connected {
-					// Use auth violation since no CONNECT was sent.
-					// It could be a parseErr too.
-					goto authErr
 				}
 			}
 			switch b {
