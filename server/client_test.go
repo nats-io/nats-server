@@ -1039,6 +1039,64 @@ func TestQueueSubscribePermissions(t *testing.T) {
 	}
 }
 
+func TestClientSubscribeDenyWildcardOverlapBlocksDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		deny    string
+		sub     string
+		blocked string
+		allowed string
+	}{
+		{name: "suffix overlap", deny: "*.secret", sub: "foo.*", blocked: "foo.secret", allowed: "foo.public"},
+		{name: "middle overlap", deny: "foo.*.bar", sub: "foo.baz.*", blocked: "foo.baz.bar", allowed: "foo.baz.qux"},
+		{name: "nested wildcard overlap", deny: "*.*.bar", sub: "foo.*.*", blocked: "foo.baz.bar", allowed: "foo.baz.qux"},
+		{name: "full wildcard overlap", deny: "a.>", sub: "*.b", blocked: "a.b", allowed: "z.b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require_True(t, SubjectsCollide(tc.deny, tc.sub))
+
+			opts := DefaultOptions()
+			opts.Users = []*User{
+				{
+					Username: "attacker",
+					Password: "pass",
+					Permissions: &Permissions{
+						Subscribe: &SubjectPermission{
+							Allow: []string{">"},
+							Deny:  []string{tc.deny},
+						},
+					},
+				},
+				{Username: "publisher", Password: "pass"},
+			}
+
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			attacker, err := nats.Connect(s.ClientURL(), nats.UserInfo("attacker", "pass"))
+			require_NoError(t, err)
+			defer attacker.Close()
+
+			publisher, err := nats.Connect(s.ClientURL(), nats.UserInfo("publisher", "pass"))
+			require_NoError(t, err)
+			defer publisher.Close()
+
+			sub, err := attacker.QueueSubscribeSync(tc.sub, "workers")
+			require_NoError(t, err)
+			require_NoError(t, attacker.Flush())
+
+			require_NoError(t, publisher.Publish(tc.blocked, []byte("blocked")))
+			require_NoError(t, publisher.Publish(tc.allowed, []byte("ok")))
+			require_NoError(t, publisher.Flush())
+
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Subject, tc.allowed)
+			require_Equal(t, string(msg.Data), "ok")
+		})
+	}
+}
+
 func TestClientPubWithQueueSubNoEcho(t *testing.T) {
 	opts := DefaultOptions()
 	s := RunServer(opts)

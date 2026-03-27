@@ -3204,13 +3204,14 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 		}
 
 		// We use the actual subscription to signal us to spin up the deny mperms
-		// and cache. We check if the subject is a wildcard that contains any of
+		// and cache. We check if the subject is a wildcard that intersects any of
 		// the deny clauses.
 		// FIXME(dlc) - We could be smarter and track when these go away and remove.
 		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
-			// Whip through the deny array and check if this wildcard subject is within scope.
+			// Whip through the deny array and check if this wildcard subject can
+			// overlap with any denied deliveries.
 			for _, sub := range c.darray {
-				if subjectIsSubsetMatch(sub, subject) {
+				if SubjectsCollide(sub, subject) {
 					c.loadMsgDenyFilter()
 					break
 				}
