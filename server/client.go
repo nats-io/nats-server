@@ -3273,7 +3273,7 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 		r := c.perms.sub.deny.Match(subject)
 		allowed = len(r.psubs) == 0
 
-		if queue != _EMPTY_ && len(r.qsubs) > 0 {
+		if allowed && queue != _EMPTY_ && len(r.qsubs) > 0 {
 			// If the queue appears in the deny list, then DO NOT allow.
 			allowed = !queueMatches(queue, r.qsubs)
 		}
