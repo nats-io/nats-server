@@ -20,11 +20,13 @@ import (
 )
 
 func dummyClient() *client {
-	return &client{srv: New(&defaultServerOptions), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
+	opts := defaultServerOptions
+	return &client{srv: New(&opts), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
 }
 
 func dummyRouteClient() *client {
-	return &client{srv: New(&defaultServerOptions), kind: ROUTER}
+	opts := defaultServerOptions
+	return &client{srv: New(&opts), kind: ROUTER}
 }
 
 func TestParsePing(t *testing.T) {
@@ -679,7 +681,8 @@ func TestParseMsgSpace(t *testing.T) {
 }
 
 func TestParsePingNoAuthUserExceptionsAndRestrictions(t *testing.T) {
-	s := New(&defaultServerOptions)
+	opts := defaultServerOptions
+	s := New(&opts)
 	s.opts.NoAuthUser = "foo"
 	s.users = map[string]*User{
 		"foo": {Username: "foo"},
@@ -691,6 +694,7 @@ func TestParsePingNoAuthUserExceptionsAndRestrictions(t *testing.T) {
 			gw: gw, route: route, leaf: leaf, ws: ws,
 			atmr: time.AfterFunc(time.Minute, func() {}),
 		}
+		c.flags.set(expectConnect)
 		t.Cleanup(func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
@@ -747,7 +751,10 @@ func TestParsePingAllowedAfterConnectForNonClients(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := &client{
-				srv:   New(&defaultServerOptions),
+				srv: func() *Server {
+					opts := defaultServerOptions
+					return New(&opts)
+				}(),
 				kind:  test.kind,
 				gw:    test.gw,
 				route: test.route,

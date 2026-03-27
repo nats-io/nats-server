@@ -33,7 +33,10 @@ func dummyFuzzClient(kind int) *client {
 	}
 
 	return &client{
-		srv:   New(&defaultServerOptions),
+		srv: func() *Server {
+			opts := defaultServerOptions
+			return New(&opts)
+		}(),
 		kind:  kind,
 		msubs: -1,
 		in: readCache{

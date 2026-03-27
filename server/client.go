@@ -5673,11 +5673,12 @@ func (c *client) clearAuthTimer() bool {
 	return stopped
 }
 
-// We may reuse atmr for expiring user jwts,
-// so check connectReceived.
+// Track whether the parser should still enforce pre-CONNECT rules.
+// This is handshake state, not timer state, since some handshakes
+// use a different timer while still expecting CONNECT.
 // Lock assume held on entry.
 func (c *client) awaitingAuth() bool {
-	return !c.flags.isSet(connectReceived) && c.atmr != nil
+	return c.flags.isSet(expectConnect) && !c.flags.isSet(connectReceived)
 }
 
 // This will set the atmr for the JWT expiration time.

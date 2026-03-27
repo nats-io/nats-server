@@ -1268,6 +1268,15 @@ func (c *client) processLeafnodeInfo(info *Info) {
 
 	// Check for compression, unless already done.
 	if firstINFO && !c.flags.isSet(compressionNegotiated) {
+		// A solicited leafnode connection must first receive a leafnode INFO.
+		// Classify wrong-port connections before any leaf-specific negotiation.
+		if didSolicit && (info.CID == 0 || info.LeafNodeURLs == nil) {
+			c.mu.Unlock()
+			c.Errorf(ErrConnectedToWrongPort.Error())
+			c.closeConnection(WrongPort)
+			return
+		}
+
 		// Prevent from getting back here.
 		c.flags.set(compressionNegotiated)
 
@@ -1345,15 +1354,6 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		// **  Not if "no advertise" is enabled.
 		// *** Not if leafnode's "no advertise" is enabled.
 		//
-		// As seen from above, a solicited LeafNode connection should receive
-		// from the remote server an INFO with CID and LeafNodeURLs. Anything
-		// else should be considered an attempt to connect to a wrong port.
-		if didSolicit && (info.CID == 0 || info.LeafNodeURLs == nil) {
-			c.mu.Unlock()
-			c.Errorf(ErrConnectedToWrongPort.Error())
-			c.closeConnection(WrongPort)
-			return
-		}
 		// Reject a cluster that contains spaces.
 		if info.Cluster != _EMPTY_ && strings.Contains(info.Cluster, " ") {
 			c.mu.Unlock()
@@ -1361,8 +1361,12 @@ func (c *client) processLeafnodeInfo(info *Info) {
 			c.closeConnection(ProtocolViolation)
 			return
 		}
-		// Capture a nonce here.
-		c.nonce = []byte(info.Nonce)
+		// For solicited outbound leaf connections, capture the remote's nonce.
+		// For inbound leaf connections, keep using the server-issued nonce that
+		// was sent in our initial INFO and must be signed in CONNECT.
+		if didSolicit {
+			c.nonce = []byte(info.Nonce)
+		}
 		if info.TLSRequired && didSolicit {
 			remote.TLS = true
 		}

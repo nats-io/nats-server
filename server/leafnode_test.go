@@ -10473,9 +10473,9 @@ func TestLeafNodeServiceImportRebuildsRequestInfoHeader(t *testing.T) {
 func TestLeafNodeNoAccPanicOnLeafSubBeforeConnect(t *testing.T) {
 	o := DefaultOptions()
 	o.LeafNode.Port = -1
-	// Default compression is s2_auto, which causes the auth timer to use
-	// c.ping.tmr instead of c.atmr. This makes awaitingAuth() return false,
-	// allowing LS+ through the parser before CONNECT sets c.acc.
+	// Default compression is s2_auto. This used to bypass the parser's
+	// pre-CONNECT guard because the handshake timeout was tracked outside
+	// c.atmr, allowing LS+ through before CONNECT set c.acc.
 	s := RunServer(o)
 	defer s.Shutdown()
 
@@ -10610,13 +10610,6 @@ func TestLeafNodeLeafSubBeforeConnectCompressionEffect(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		compression string
-		// With compression off, the auth timer (c.atmr) is set, so
-		// awaitingAuth() returns true and the parser blocks LS+ with
-		// an auth violation. With compression on (default s2_auto),
-		// c.ping.tmr is used instead, awaitingAuth() returns false,
-		// and LS+ reaches processLeafSub where our nil acc guard
-		// catches it. Both paths send the same "Authorization Violation"
-		// error for consistency.
 	}{
 		{"compression off", CompressionOff},
 		{"compression s2_auto", CompressionS2Auto},
@@ -10664,6 +10657,84 @@ func TestLeafNodeLeafSubBeforeConnectCompressionEffect(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeafNodeInfoBeforeConnectStillRequiresConnect(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Port = -1
+	o.LeafNode.Compression.Mode = CompressionS2Auto
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(string(l), "INFO"))
+
+	// INFO is allowed before CONNECT for compressed leaf-node negotiation.
+	_, err = c.Write([]byte("INFO {\"compression\":\"off\"}\r\n"))
+	require_NoError(t, err)
+
+	// CONNECT is still required after INFO; other protocols must be rejected.
+	_, err = c.Write([]byte("LS+ test\r\n"))
+	require_NoError(t, err)
+
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+	l, _, err = br.ReadLine()
+	require_NoError(t, err)
+	require_True(t, strings.Contains(string(l), "Authorization Violation"))
+}
+
+func TestLeafNodeInfoBeforeConnectRejectedWhenCompressionOff(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Port = -1
+	o.LeafNode.Compression.Mode = CompressionOff
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(string(l), "INFO"))
+
+	_, err = c.Write([]byte("INFO {\"nonce\":\"attacker\"}\r\n"))
+	require_NoError(t, err)
+
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+	l, _, err = br.ReadLine()
+	require_NoError(t, err)
+	require_True(t, strings.Contains(string(l), "Authorization Violation"))
+}
+
+func TestLeafNodeInboundInfoDoesNotOverrideNonce(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Compression.Mode = CompressionS2Auto
+	s := New(o)
+
+	nonce := []byte("server-issued-nonce")
+	c := &client{
+		srv:   s,
+		kind:  LEAF,
+		leaf:  &leaf{},
+		nonce: append([]byte(nil), nonce...),
+	}
+	c.flags.set(compressionNegotiated)
+
+	c.processLeafnodeInfo(&Info{Nonce: "attacker-controlled"})
+
+	require_True(t, bytes.Equal(c.nonce, nonce))
 }
 
 func TestLeafNodeNoAccPanicOnLeafSubBeforeConnectOperatorMode(t *testing.T) {
