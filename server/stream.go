@@ -6567,7 +6567,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 				hdr = fmt.Appendf(hdr[:end:end], htho[hoff:], name, subject, seq, tsStr, tlseq, len(msg))
 			}
 		}
-		outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, hdr, rpMsg, nil, seq))
+		outq.send(newJSPubMsg(tsubj, subject, reply, hdr, rpMsg, nil, seq))
 	}
 
 	// If using fast batch publish, we occasionally send flow control messages.
