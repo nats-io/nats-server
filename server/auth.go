@@ -1031,8 +1031,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			c.Debugf("Connection type not allowed")
 			return false
 		}
-		// skip validation of nonce when presented with a bearer token
-		// FIXME: if BearerToken is only for WSS, need check for server with that port enabled
+		// Skip validation of nonce when presented with a bearer token.
+		// While support for bearer tokens was added for WebSockets, there is no
+		// security benefit in restricting their use to that client protocol: the
+		// client can just go use the other protocol.
 		if !juc.BearerToken {
 			// Verify the signature against the nonce.
 			if c.opts.Sig == _EMPTY_ {
