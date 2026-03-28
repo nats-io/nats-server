@@ -2154,6 +2154,13 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	acc := c.acc
 	c.mu.Unlock()
 
+	// If the account is not set (e.g. connection was closed due to auth
+	// timeout while still being processed), bail out to avoid a panic.
+	if acc == nil {
+		c.closeConnection(MissingAccount)
+		return ErrMissingAccount
+	}
+
 	// Register the cluster, even if empty, as long as we are acting as a hub.
 	if !proto.Hub {
 		acc.registerLeafNodeCluster(proto.Cluster)
