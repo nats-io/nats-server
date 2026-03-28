@@ -2333,6 +2333,12 @@ func (s *Server) Start() {
 		s.Noticef("Using configuration file: %s %s", opts.ConfigFile, cd)
 	}
 
+	// Log any warnings from config parsing.
+	for _, warn := range opts.configWarnings {
+		s.Warnf("Configuration warning: %v", warn)
+	}
+	opts.configWarnings = nil
+
 	hasOperators := len(opts.TrustedOperators) > 0
 	if hasOperators {
 		s.Noticef("Trusted Operators")
