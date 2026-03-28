@@ -12160,3 +12160,51 @@ func TestLeafNodeNoAccPanicOnLeafSubBeforeConnectOperatorMode(t *testing.T) {
 		t.Fatal("Server should not have shutdown")
 	}
 }
+
+func TestLeafNodeNoAccPanicOnProcessLeafNodeConnect(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Port = -1
+	o.LeafNode.AuthTimeout = 0.001 // Very short auth timeout (1ms)
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	defer c.Close()
+
+	// Read the INFO.
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	l, _, err := br.ReadLine()
+	require_NoError(t, err)
+	if !strings.HasPrefix(string(l), "INFO") {
+		t.Fatalf("Expected INFO, got %q", l)
+	}
+
+	// Wait for the auth timeout to fire, then send CONNECT with cluster.
+	// This races with the auth timeout closing the connection, which is
+	// the scenario from #7989 where c.acc ends up nil.
+	time.Sleep(5 * time.Millisecond)
+
+	connect := `CONNECT {"verbose":false,"pedantic":false,"cluster":"test-cluster"}`
+	c.Write([]byte(connect + "\r\n"))
+
+	// The server should close the connection without panicking.
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 256)
+	for {
+		_, err = c.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+
+	// Make sure the server is still running (not panicked).
+	s.mu.Lock()
+	shutdown := s.isShuttingDown()
+	s.mu.Unlock()
+	if shutdown {
+		t.Fatal("Server should not have shutdown")
+	}
+}
