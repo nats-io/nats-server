@@ -87,6 +87,9 @@ type jetStreamCluster struct {
 	// with existing cluster assignments during ptc promotion. This prevents
 	// the ptc marker from being cleaned up while unresolved conflicts remain.
 	ptcConflicts int
+	// Tracks the pending checkForOrphans timer so it can be cancelled on
+	// shutdown, preventing the function from firing on a stopped server.
+	orphanTimer *time.Timer
 }
 
 // Used to track inflight stream create/update/delete requests that have been proposed but not yet applied.
@@ -1465,15 +1468,19 @@ func (js *jetStream) checkForOrphans() {
 		return
 	}
 	if meta.Leaderless() {
+		// Track the timer in cc.orphanTimer so shutdownJetStream can cancel it.
+		stopAndClearTimer(&cc.orphanTimer)
+		cc.orphanTimer = time.AfterFunc(10*time.Second, js.checkForOrphans)
 		js.mu.Unlock()
 		s.Debugf("JetStream cluster skipping orphan check, no meta-leader, will retry")
-		time.AfterFunc(10*time.Second, js.checkForOrphans)
 		return
 	}
 	if !meta.Current() {
+		// Track the timer in cc.orphanTimer so shutdownJetStream can cancel it.
+		stopAndClearTimer(&cc.orphanTimer)
+		cc.orphanTimer = time.AfterFunc(10*time.Second, js.checkForOrphans)
 		js.mu.Unlock()
 		s.Debugf("JetStream cluster skipping orphan check, meta not current yet will retry")
-		time.AfterFunc(10*time.Second, js.checkForOrphans)
 		return
 	}
 	ourPeerID := meta.ID()
@@ -1626,7 +1633,12 @@ func (js *jetStream) checkForOrphans() {
 		// looping indefinitely for persistent conflicts (ptcConflicts)
 		// that require operator attention.
 		if pendingAdoptions {
-			time.AfterFunc(10*time.Second, js.checkForOrphans)
+			js.mu.Lock()
+			if js.cluster != nil {
+				stopAndClearTimer(&js.cluster.orphanTimer)
+				js.cluster.orphanTimer = time.AfterFunc(10*time.Second, js.checkForOrphans)
+			}
+			js.mu.Unlock()
 		}
 	} else {
 		if err := js.removePTCMarker(); err != nil {
@@ -2240,7 +2252,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 			mset.mu.RLock()
 			cfg := mset.cfg
 			mset.mu.RUnlock()
-			// During active PTC promotion, keep R1 orphans alive
+			// keep them alive, checkForOrphans() will pick them up and propose adoptions
 			if cfg.Replicas == 1 && ptc {
 				continue
 			}
@@ -2254,7 +2266,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 				mset.mu.RLock()
 				replicas := mset.cfg.Replicas
 				mset.mu.RUnlock()
-				// During active PTC promotion, keep R1 orphans alive
+				// keep them alive, checkForOrphans() will pick them up and propose adoptions
 				if replicas == 1 && ptc {
 					continue
 				}

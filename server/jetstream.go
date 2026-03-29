@@ -1030,6 +1030,9 @@ func (s *Server) shutdownJetStream() {
 			qch, stopped = cc.qch, cc.stopped
 			cc.qch, cc.stopped = nil, nil
 		}
+		// Cancel any pending checkForOrphans timer so it cannot fire on a
+		// server that is already shutting down.
+		stopAndClearTimer(&cc.orphanTimer)
 		js.stopUpdatesSub()
 		if cc.c != nil {
 			cc.c.closeConnection(ClientClosed)
