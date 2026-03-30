@@ -2942,6 +2942,16 @@ func getSubjectFromGWRoutedReply(reply []byte, isOldPrefix bool) []byte {
 	return reply[gwSubjectOffset:]
 }
 
+// Returns the subject embedded in the given routed
+// reply subject and whether the prefix was stripped.
+// If the subject is not routed, returns it unchanged.
+func getGWRoutedSubjectOrSelf(subject []byte) ([]byte, bool) {
+	if isGWPrefix, oldPrefix := isGWRoutedSubjectAndIsOldPrefix(subject); isGWPrefix {
+		return getSubjectFromGWRoutedReply(subject, oldPrefix), true
+	}
+	return subject, false
+}
+
 // This should be invoked only from processInboundGatewayMsg() or
 // processInboundRoutedMsg() and is checking if the subject
 // (c.pa.subject) has the _GR_ prefix. If so, this is processed
