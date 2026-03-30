@@ -3659,14 +3659,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		var subjectToCheck []byte
-		if subject[0] == '_' && bytes.HasPrefix(subject, []byte(gwReplyPrefix)) {
-			subjectToCheck = subject[gwSubjectOffset:]
-		} else if subject[0] == '$' && bytes.HasPrefix(subject, []byte(oldGWReplyPrefix)) {
-			subjectToCheck = subject[oldGWReplyStart:]
-		} else {
-			subjectToCheck = subject
-		}
+		subjectToCheck, _ := getGWRoutedSubjectOrSelf(subject)
 		if !client.pubAllowedFullCheck(string(subjectToCheck), true, true) {
 			mt.addEgressEvent(client, sub, errMsgTracePubViolation)
 			client.mu.Unlock()
@@ -4132,17 +4125,7 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 		if !hasLock {
 			c.mu.Lock()
 		}
-		if resp := c.replies[subject]; resp != nil {
-			resp.n++
-			// Check if we have sent too many responses.
-			if c.perms.resp.MaxMsgs > 0 && resp.n > c.perms.resp.MaxMsgs {
-				delete(c.replies, subject)
-			} else if c.perms.resp.Expires > 0 && time.Since(resp.t) > c.perms.resp.Expires {
-				delete(c.replies, subject)
-			} else {
-				allowed = true
-			}
-		}
+		allowed = c.responseAllowed(subject)
 		if !hasLock {
 			c.mu.Unlock()
 		}
@@ -4156,6 +4139,25 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 	return allowed
 }
 
+// Returns true if this subject matches a tracked dynamic reply permission.
+// Lock must be held.
+func (c *client) responseAllowed(subject string) bool {
+	if c.perms == nil || c.perms.resp == nil {
+		return false
+	}
+	if resp := c.replies[subject]; resp != nil {
+		resp.n++
+		if c.perms.resp.MaxMsgs > 0 && resp.n > c.perms.resp.MaxMsgs {
+			delete(c.replies, subject)
+		} else if c.perms.resp.Expires > 0 && time.Since(resp.t) > c.perms.resp.Expires {
+			delete(c.replies, subject)
+		} else {
+			return true
+		}
+	}
+	return false
+}
+
 // Test whether a reply subject is a service import reply.
 func isServiceReply(reply []byte) bool {
 	// This function is inlined and checking this way is actually faster
@@ -4163,16 +4165,20 @@ func isServiceReply(reply []byte) bool {
 	return len(reply) > 3 && bytesToString(reply[:4]) == replyPrefix
 }
 
+// Test whether a subject is a JetStream ACK.
+func isJSAckSubject(subject []byte) bool {
+	return len(subject) > jsAckPreLen && bytesToString(subject[:jsAckPreLen]) == jsAckPre
+}
+
 // Test whether a reply subject is a service import or a gateway routed reply.
 func isReservedReply(reply []byte) bool {
 	if isServiceReply(reply) {
 		return true
 	}
-	rLen := len(reply)
 	// Faster to check with string([:]) than byte-by-byte
-	if rLen > jsAckPreLen && bytesToString(reply[:jsAckPreLen]) == jsAckPre {
+	if isJSAckSubject(reply) {
 		return true
-	} else if rLen > gwReplyPrefixLen && bytesToString(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
+	} else if len(reply) > gwReplyPrefixLen && bytesToString(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
 		return true
 	}
 	return false
