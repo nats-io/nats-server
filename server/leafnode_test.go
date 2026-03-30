@@ -10108,6 +10108,795 @@ func TestLeafNodePermissionWithGateways(t *testing.T) {
 	}
 }
 
+// Test that the inbound LMSG path checks for subject permissions.
+// Normally, a leaf node will check for ACLs before sending LMSG messages.
+// If it doesn't we still need to perform ACL checks on the hub side.
+func TestLeafNodeLMSGHonorsPublishPermissions(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: {
+							publish: { allow: ["pub.ok"] }
+							subscribe: { allow: [">"] }
+						}
+					}
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	hlog := &captureErrorLogger{errCh: make(chan string, 4)}
+	hub.SetLogger(hlog, false, false)
+
+	leafConn, err := net.DialTimeout("tcp", net.JoinHostPort(ohub.LeafNode.Host, fmt.Sprintf("%d", ohub.LeafNode.Port)), 2*time.Second)
+	require_NoError(t, err)
+	defer leafConn.Close()
+
+	br := bufio.NewReader(leafConn)
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	connectOp := fmt.Appendf(nil, "CONNECT {\"name\":\"leaf\",\"user\":%q,\"pass\":%q}\r\n", "leaf", "pwd")
+	_, err = leafConn.Write(connectOp)
+	require_NoError(t, err)
+	_, err = leafConn.Write([]byte("PING\r\n"))
+	require_NoError(t, err)
+
+	checkLeafNodeConnected(t, hub)
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncHub.Close()
+
+	subOK := natsSubSync(t, ncHub, "pub.ok")
+	subBlocked := natsSubSync(t, ncHub, "pub.blocked")
+	natsFlush(t, ncHub)
+
+	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n", "pub.ok", len("ok"), "ok")
+	require_NoError(t, err)
+	msg := natsNexMsg(t, subOK, time.Second)
+	require_Equal(t, "ok", string(msg.Data))
+
+	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n", "pub.blocked", len("blocked"), "blocked")
+	require_NoError(t, err)
+	if msg, err := subBlocked.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received the blocked publish, got %q", msg.Data)
+	}
+
+	select {
+	case errMsg := <-hlog.errCh:
+		if !strings.Contains(errMsg, `Publish Violation on "pub.blocked"`) {
+			t.Fatalf("Expected publish violation log, got %q", errMsg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not get expected publish violation log")
+	}
+}
+
+// Test that the hub side inbound leaf check still honors tracked reply
+// permissions such as allow_responses after the hub has tracked a reply
+// subject for a request sent to the leaf.
+func TestLeafNodeHubSideLMSGHonorsAllowResponses(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: {
+							publish: { allow: ["svc.req"] }
+							subscribe: { allow: ["svc.req"] }
+							allow_responses: true
+						}
+					}
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", password: "a" } ]
+			}
+		}
+		leafnodes {
+			compression: off
+			remotes = [
+				{
+					url: "nats://leaf:pwd@127.0.0.1:%d"
+					account: A
+					compression: off
+				}
+			]
+		}
+	`, ohub.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncLeaf.Close()
+	reqCh := make(chan string, 1)
+	natsSub(t, ncLeaf, "svc.req", func(m *nats.Msg) {
+		select {
+		case reqCh <- m.Reply:
+		default:
+		}
+	})
+	natsFlush(t, ncLeaf)
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncHub.Close()
+
+	reply := ncHub.NewRespInbox()
+	sub := natsSubSync(t, ncHub, reply)
+	natsFlush(t, ncHub)
+
+	natsPubReq(t, ncHub, "svc.req", reply, []byte("request"))
+
+	var trackedReply string
+	select {
+	case trackedReply = <-reqCh:
+	case <-time.After(time.Second):
+		t.Fatal("Did not receive request on leaf side")
+	}
+	require_Equal(t, reply, trackedReply)
+
+	var leafConn *client
+	leaf.mu.Lock()
+	for _, leafConn = range leaf.leafs {
+		break
+	}
+	leaf.mu.Unlock()
+	if leafConn == nil {
+		t.Fatal("Expected a leaf connection on leaf side")
+	}
+
+	_, err := fmt.Fprintf(leafConn.nc, "LMSG %s %d\r\n%s\r\n", reply, len("ok"), "ok")
+	require_NoError(t, err)
+
+	resp := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "ok", string(resp.Data))
+}
+
+// Test that allow_responses works when the tracked reply subject has a
+// gateway routing prefix ($GNR...). deliverMsg tracks the reply under
+// the GW-routed form, so processInboundLeafMsg must also check
+// responseAllowed with the original (non-stripped) subject.
+func TestLeafNodeHubSideLMSGHonorsAllowResponsesGatewayRouted(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: {
+							publish: { allow: ["svc.req"] }
+							subscribe: { allow: ["svc.req"] }
+							allow_responses: true
+						}
+					}
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConn, err := net.DialTimeout("tcp",
+		net.JoinHostPort(ohub.LeafNode.Host, fmt.Sprintf("%d", ohub.LeafNode.Port)),
+		2*time.Second)
+	require_NoError(t, err)
+	defer leafConn.Close()
+
+	br := bufio.NewReader(leafConn)
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	connectOp := fmt.Appendf(nil,
+		"CONNECT {\"name\":\"leaf\",\"user\":%q,\"pass\":%q}\r\n", "leaf", "pwd")
+	_, err = leafConn.Write(connectOp)
+	require_NoError(t, err)
+	_, err = leafConn.Write([]byte("PING\r\n"))
+	require_NoError(t, err)
+
+	checkLeafNodeConnected(t, hub)
+
+	// Simulate the tracking that deliverMsg would perform when
+	// delivering a gateway-routed request to the leaf: it stores
+	// the reply under the full GW-routed form ($GNR...).
+	gwRoutedReply := gwReplyPrefix + "AAAAAAA1.BBBBBBB2._INBOX.test"
+
+	var hubLeaf *client
+	hub.mu.Lock()
+	for _, hubLeaf = range hub.leafs {
+		break
+	}
+	hub.mu.Unlock()
+	require_NotNil(t, hubLeaf)
+
+	hubLeaf.mu.Lock()
+	hubLeaf.replies[gwRoutedReply] = &resp{t: time.Now()}
+	hubLeaf.mu.Unlock()
+
+	// Subscribe on the hub so we can verify delivery.
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncHub.Close()
+	sub := natsSubSync(t, ncHub, gwRoutedReply)
+	natsFlush(t, ncHub)
+
+	// The leaf sends LMSG with the GW-routed reply as subject.
+	// processInboundLeafMsg strips the $GNR prefix before the
+	// permission check but must still find the tracked reply.
+	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n",
+		gwRoutedReply, len("ok"), "ok")
+	require_NoError(t, err)
+
+	resp := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "ok", string(resp.Data))
+}
+
+// A leaf user with publish: { allow: [] } and allow_responses should
+// deny arbitrary publishes but still permit tracked reply responses.
+func TestLeafNodeHubSideLMSGEmptyAllowWithAllowResponses(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: {
+							publish: { allow: [] }
+							subscribe: { allow: [">"] }
+							allow_responses: true
+						}
+					}
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConn, err := net.DialTimeout("tcp",
+		net.JoinHostPort(ohub.LeafNode.Host, fmt.Sprintf("%d", ohub.LeafNode.Port)),
+		2*time.Second)
+	require_NoError(t, err)
+	defer leafConn.Close()
+
+	br := bufio.NewReader(leafConn)
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	connectOp := fmt.Appendf(nil,
+		"CONNECT {\"name\":\"leaf\",\"user\":%q,\"pass\":%q}\r\n", "leaf", "pwd")
+	_, err = leafConn.Write(connectOp)
+	require_NoError(t, err)
+	_, err = leafConn.Write([]byte("PING\r\n"))
+	require_NoError(t, err)
+
+	checkLeafNodeConnected(t, hub)
+
+	// Simulate a tracked reply: inject a reply entry on the
+	// hub's leaf connection, then verify the leaf can respond on it.
+	reply := "_INBOX.test123"
+
+	var hubLeaf *client
+	hub.mu.Lock()
+	for _, hubLeaf = range hub.leafs {
+		break
+	}
+	hub.mu.Unlock()
+	require_NotNil(t, hubLeaf)
+
+	hubLeaf.mu.Lock()
+	hubLeaf.replies[reply] = &resp{t: time.Now()}
+	hubLeaf.mu.Unlock()
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncHub.Close()
+
+	subReply := natsSubSync(t, ncHub, reply)
+	natsFlush(t, ncHub)
+
+	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n",
+		reply, len("ok"), "ok")
+	require_NoError(t, err)
+
+	msg := natsNexMsg(t, subReply, time.Second)
+	require_Equal(t, "ok", string(msg.Data))
+
+	// Arbitrary publish should be denied (and closes the connection).
+	subBlocked := natsSubSync(t, ncHub, "not.allowed")
+	natsFlush(t, ncHub)
+
+	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n",
+		"not.allowed", len("blocked"), "blocked")
+	require_NoError(t, err)
+	if msg, err := subBlocked.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received arbitrary publish, got %q", msg.Data)
+	}
+}
+
+// Test that the hub side allows JetStream API traffic.
+// This guards the regression where the hub rejected $JS.API.*
+func TestLeafNodeHubSideLMSGAllowsJSAPI(t *testing.T) {
+	hubConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		jetstream: { store_dir: %q }
+		accounts {
+			A {
+				jetstream: enabled
+				users = [
+					{ user: "a", password: "a" }
+					{ user: "leaf", password: "pwd" }
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`, t.TempDir())))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		default_js_domain: {A:""}
+		accounts {
+			A {
+				users = [ { user: "a", password: "a" } ]
+			}
+		}
+		leafnodes {
+			compression: off
+			remotes = [
+				{
+					url: "nats://leaf:pwd@127.0.0.1:%d"
+					account: A
+					compression: off
+				}
+			]
+		}
+	`, ohub.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	var l *client
+	hub.mu.Lock()
+	for _, l = range hub.leafs {
+		break
+	}
+	hub.mu.Unlock()
+	if l == nil {
+		t.Fatal("Expected a leaf connection")
+	}
+
+	l.mu.Lock()
+	r := l.perms.sub.deny.Match(jsAllAPI)
+	hasSyntheticJSDeny := len(r.psubs)+len(r.qsubs) > 0
+	l.mu.Unlock()
+	if !hasSyntheticJSDeny {
+		t.Fatal("Expected synthetic JetStream deny on accepted leaf connection")
+	}
+
+	checkSubInterest(t, leaf, "A", JSApiAccountInfo, time.Second)
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncLeaf.Close()
+
+	msg, err := ncLeaf.Request(JSApiAccountInfo, nil, time.Second)
+	require_NoError(t, err)
+	if !bytes.Contains(msg.Data, []byte(JSApiAccountInfoResponseType)) {
+		t.Fatalf("Expected JetStream account info response, got %q", msg.Data)
+	}
+}
+
+// When the hub has a subject mapping "pub.ok" -> "internal.pub.ok",
+// a leaf allowed to publish "pub.ok" must not be rejected just because
+// "internal.pub.ok" is not in the allow list. The permission check
+// should evaluate the subject the leaf actually sent, not where the
+// hub remaps it locally.
+func TestLeafNodeLMSGPermissionsUseWireSubjectNotMapped(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: {
+							publish: { allow: ["pub.ok"] }
+							subscribe: { allow: [">"] }
+						}
+					}
+				]
+				mappings = { "pub.ok": "internal.pub.ok" }
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", password: "a" } ]
+			}
+		}
+		leafnodes {
+			compression: off
+			remotes = [
+				{
+					url: "nats://leaf:pwd@127.0.0.1:%d"
+					account: A
+					compression: off
+				}
+			]
+		}
+	`, ohub.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncHub.Close()
+
+	// Subscribe to the mapped destination.
+	sub := natsSubSync(t, ncHub, "internal.pub.ok")
+	natsFlush(t, ncHub)
+
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncLeaf.Close()
+
+	// The leaf publishes on the wire subject "pub.ok" which is in
+	// the export allow list. The hub maps it to "internal.pub.ok"
+	// for local delivery. The ACL check must use the wire subject.
+	natsPub(t, ncLeaf, "pub.ok", []byte("hello"))
+	natsFlush(t, ncLeaf)
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "internal.pub.ok", msg.Subject)
+	require_Equal(t, "hello", string(msg.Data))
+}
+
+// Test that a solicited leaf configured with hub: true still uses the
+// hub-side export ACLs on inbound LMSG.
+func TestLeafNodeSolicitedHubLMSGHonorsExportPermissions(t *testing.T) {
+	spokeConf := createConfFile(t, []byte(`
+		server_name: "SPOKE"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{ user: "leaf", password: "pwd" }
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	spoke, ospoke := RunServerWithConfig(spokeConf)
+	defer spoke.Shutdown()
+
+	hubConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", password: "a" } ]
+			}
+		}
+		leafnodes {
+			compression: off
+			remotes = [
+				{
+					url: "nats://leaf:pwd@127.0.0.1:%d"
+					account: A
+					compression: off
+					hub: true
+					deny_exports: ["pub.blocked"]
+				}
+			]
+		}
+	`, ospoke.LeafNode.Port))
+	hub, _ := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	hlog := &captureErrorLogger{errCh: make(chan string, 4)}
+	hub.SetLogger(hlog, false, false)
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, spoke)
+
+	var hubLeaf *client
+	hub.mu.Lock()
+	for _, hubLeaf = range hub.leafs {
+		break
+	}
+	hub.mu.Unlock()
+	if hubLeaf == nil {
+		t.Fatal("Expected a leaf connection on hub")
+	}
+	hubLeaf.mu.Lock()
+	require_True(t, hubLeaf.isSolicitedLeafNode())
+	require_True(t, hubLeaf.isHubLeafNode())
+	hubLeaf.mu.Unlock()
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncHub.Close()
+
+	sub := natsSubSync(t, ncHub, "pub.blocked")
+	natsFlush(t, ncHub)
+
+	var spokeLeaf *client
+	spoke.mu.Lock()
+	for _, spokeLeaf = range spoke.leafs {
+		break
+	}
+	spoke.mu.Unlock()
+	if spokeLeaf == nil {
+		t.Fatal("Expected a leaf connection on spoke")
+	}
+
+	_, err := fmt.Fprintf(spokeLeaf.nc, "LMSG %s %d\r\n%s\r\n", "pub.blocked", len("blocked"), "blocked")
+	require_NoError(t, err)
+
+	if msg, err := sub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received the blocked publish, got %q", msg.Data)
+	}
+
+	select {
+	case errMsg := <-hlog.errCh:
+		if !strings.Contains(errMsg, `Publish Violation on "pub.blocked"`) {
+			t.Fatalf("Expected publish violation log, got %q", errMsg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not get expected publish violation log")
+	}
+}
+
+// Test that when a solicited remote is configured with hub: true, direct LMSG
+// sent from that hub still respects the local leaf permissions on the accepting
+// spoke server.
+func TestLeafNodeSpokeSideLMSGHonorsLocalPermissions(t *testing.T) {
+	spokeConf := createConfFile(t, []byte(`
+		server_name: "SPOKE"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: {
+							publish: { allow: ["pub.ok"] }
+							subscribe: { allow: [">"] }
+						}
+					}
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	spoke, ospoke := RunServerWithConfig(spokeConf)
+	defer spoke.Shutdown()
+
+	hubConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", password: "a" } ]
+			}
+		}
+		leafnodes {
+			compression: off
+			remotes = [
+				{
+					url: "nats://leaf:pwd@127.0.0.1:%d"
+					account: A
+					compression: off
+					hub: true
+				}
+			]
+		}
+	`, ospoke.LeafNode.Port))
+	hub, _ := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, spoke)
+
+	var hubLeaf *client
+	hub.mu.Lock()
+	for _, hubLeaf = range hub.leafs {
+		break
+	}
+	hub.mu.Unlock()
+	if hubLeaf == nil {
+		t.Fatal("Expected a leaf connection on hub")
+	}
+	hubLeaf.mu.Lock()
+	require_True(t, hubLeaf.isSolicitedLeafNode())
+	require_True(t, hubLeaf.isHubLeafNode())
+	hubLeaf.mu.Unlock()
+
+	var spokeLeaf *client
+	spoke.mu.Lock()
+	for _, spokeLeaf = range spoke.leafs {
+		break
+	}
+	spoke.mu.Unlock()
+	if spokeLeaf == nil {
+		t.Fatal("Expected a leaf connection on spoke")
+	}
+	spokeLeaf.mu.Lock()
+	require_False(t, spokeLeaf.isSolicitedLeafNode())
+	require_True(t, spokeLeaf.isSpokeLeafNode())
+	spokeLeaf.mu.Unlock()
+
+	ncSpoke := natsConnect(t, spoke.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncSpoke.Close()
+
+	sub := natsSubSync(t, ncSpoke, "pub.*")
+	natsFlush(t, ncSpoke)
+
+	_, err := fmt.Fprintf(hubLeaf.nc, "LMSG %s %d\r\n%s\r\n", "pub.blocked", len("blocked"), "blocked")
+	require_NoError(t, err)
+	_, err = fmt.Fprintf(hubLeaf.nc, "LMSG %s %d\r\n%s\r\n", "pub.ok", len("ok"), "ok")
+	require_NoError(t, err)
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "pub.ok", msg.Subject)
+	require_Equal(t, "ok", string(msg.Data))
+}
+
+// Test that the inbound LMSG path checks for import permissions.
+// Normally, the sender side will check ACLs before sending LMSG messages.
+// If it doesn't we still need to perform ACL checks on the receiving leaf side.
+func TestLeafNodeLMSGHonorsImportPermissions(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [
+					{ user: "a", password: "a" }
+					{ user: "leaf", password: "pwd" }
+				]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			compression: off
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		accounts {
+			A {
+				users = [ { user: "a", password: "a" } ]
+			}
+		}
+		leafnodes {
+			compression: off
+			remotes = [
+				{
+					url: "nats://leaf:pwd@127.0.0.1:%d"
+					account: A
+					compression: off
+					deny_imports: ["imp.blocked"]
+				}
+			]
+		}
+	`, ohub.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncLeaf.Close()
+
+	sub := natsSubSync(t, ncLeaf, "imp.*")
+	natsFlush(t, ncLeaf)
+
+	leafConn := func() net.Conn {
+		var l *client
+		hub.mu.Lock()
+		for _, l = range hub.leafs {
+			break
+		}
+		hub.mu.Unlock()
+		return l.nc
+	}
+
+	ncHubLeaf := leafConn()
+
+	_, err := fmt.Fprintf(ncHubLeaf, "LMSG %s %d\r\n%s\r\n", "imp.blocked", len("blocked"), "blocked")
+	require_NoError(t, err)
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+	_, err = fmt.Fprintf(ncHubLeaf, "LMSG %s %d\r\n%s\r\n", "imp.ok", len("ok"), "ok")
+	require_NoError(t, err)
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "imp.ok", msg.Subject)
+	require_Equal(t, "ok", string(msg.Data))
+}
+
 func TestLeafNodesDisableRemote(t *testing.T) {
 	hubConf := createConfFile(t, []byte(`
 		server_name: "HUB"
