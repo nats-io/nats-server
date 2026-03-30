@@ -1553,8 +1553,6 @@ func (js *jetStream) checkForOrphans() {
 			s.Noticef("Adopting orphaned R1 stream '%s > %s' into cluster assignments", accName, cfg.Name)
 			if err := meta.ForwardProposal(encodeAddStreamAssignment(sa)); err != nil {
 				s.Warnf("Failed to propose adoption of R1 stream '%s > %s': %v", accName, cfg.Name, err)
-				conflicts = true
-				continue
 			}
 
 			// Consumer adoption is deferred to the next sweep: once the stream
