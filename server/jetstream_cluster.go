@@ -1056,7 +1056,7 @@ func (js *jetStream) setupMetaGroup() error {
 		if hasLocalStreams {
 			s.Noticef("JetStream standalone-to-cluster promotion detected: activating PTC mode")
 			if err := js.writePTCMarker(); err != nil {
-				s.Warnf("Failed to write PTC marker for standalone-to-cluster promotion: %v", err)
+				s.Fatalf("Failed to write PTC marker for standalone-to-cluster promotion: %v", err)
 			}
 		}
 	}
