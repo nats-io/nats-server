@@ -1034,12 +1034,30 @@ func (js *jetStream) setupMetaGroup() error {
 	// If we are bootstrapped with no state, start campaign early.
 	if bootstrap {
 		n.Campaign()
+	}
 
-		// Write the PTC marker immediately on bootstrap so that a crash before
-		// checkForOrphans runs does not lose the promotion-in-progress signal.
-		// checkForOrphans clears the marker once there is nothing left to adopt.
-		if err = os.WriteFile(filepath.Join(storeDir, ptcMarkerFile), []byte{}, defaultFilePerms); err != nil {
-			s.Fatalf("Failed to write PTC marker on bootstrap: %v", err)
+	// Conditions for a genuine standalone promotion:
+	//   1. bootstrap=true: no peer state = this node was never in a cluster
+	//      (a node recovering from cluster membership has peer state, so bootstrap=false)
+	//   2. No PTC marker yet: not resuming a prior partial adoption
+	//   3. Local JetStream accounts have streams: the server had running standalone data
+	if bootstrap && !hasPTCMarker(storeDir) {
+		js.mu.RLock()
+		var hasLocalStreams bool
+		for _, jsa := range js.accounts {
+			jsa.mu.RLock()
+			hasLocalStreams = len(jsa.streams) > 0
+			jsa.mu.RUnlock()
+			if hasLocalStreams {
+				break
+			}
+		}
+		js.mu.RUnlock()
+		if hasLocalStreams {
+			s.Noticef("JetStream standalone-to-cluster promotion detected: activating PTC mode")
+			if err := js.writePTCMarker(); err != nil {
+				s.Warnf("Failed to write PTC marker for standalone-to-cluster promotion: %v", err)
+			}
 		}
 	}
 
@@ -1054,7 +1072,12 @@ func (js *jetStream) setupMetaGroup() error {
 		c:       c,
 		qch:     make(chan struct{}),
 		stopped: make(chan struct{}),
-		ptc:     bootstrap || hasPTCMarker(storeDir),
+		// ptc is true when the PTC marker file exists. The marker is written either:
+		// - here in setupMetaGroup when standalone-to-cluster promotion is first detected
+		//   (bootstrap=true + local streams present + no prior marker), or
+		// - in checkForOrphans when conflicts are discovered.
+		// The marker is removed once all orphaned streams/consumers are adopted.
+		ptc: hasPTCMarker(storeDir),
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
