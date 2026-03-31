@@ -310,6 +310,22 @@ func TestParsePubBadSize(t *testing.T) {
 	}
 }
 
+func TestParseLeafMsgBadSize(t *testing.T) {
+	c := dummyClient()
+	c.kind = LEAF
+	c.leaf = &leaf{}
+	c.mpay = 16
+	require_Error(t, c.processLeafMsgArgs([]byte("foo 17")), ErrMaxPayload)
+}
+
+func TestParseLeafHeaderMsgBadSize(t *testing.T) {
+	c := dummyClient()
+	c.kind = LEAF
+	c.leaf = &leaf{}
+	c.mpay = 16
+	require_Error(t, c.processLeafHeaderMsgArgs([]byte("foo 4 17")), ErrMaxPayload)
+}
+
 func TestParseHeaderPub(t *testing.T) {
 	c := dummyClient()
 	c.headers = true
