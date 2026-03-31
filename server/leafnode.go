@@ -3102,6 +3102,11 @@ func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
 	if c.pa.hdr > c.pa.size {
 		return fmt.Errorf("processLeafHeaderMsgArgs Header Size larger then TotalSize: '%s'", arg)
 	}
+	maxPayload := atomic.LoadInt32(&c.mpay)
+	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
+		c.maxPayloadViolation(c.pa.size, maxPayload)
+		return ErrMaxPayload
+	}
 
 	// Common ones processed after check for arg length
 	c.pa.subject = args[0]
@@ -3170,6 +3175,11 @@ func (c *client) processLeafMsgArgs(arg []byte) error {
 	}
 	if c.pa.size < 0 {
 		return fmt.Errorf("processLeafMsgArgs Bad or Missing Size: '%s'", args)
+	}
+	maxPayload := atomic.LoadInt32(&c.mpay)
+	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
+		c.maxPayloadViolation(c.pa.size, maxPayload)
+		return ErrMaxPayload
 	}
 
 	// Common ones processed after check for arg length
