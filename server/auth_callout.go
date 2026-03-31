@@ -41,7 +41,7 @@ func titleCase(m string) string {
 }
 
 // Process a callout on this client's behalf.
-func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequired, trustedProxy bool) (authorized bool, errStr string) {
+func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequired, trustedProxy bool, ujwt string) (authorized bool, errStr string) {
 	isOperatorMode := len(opts.TrustedKeys) > 0
 
 	// this is the account the user connected in, or the one running the callout
@@ -374,7 +374,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	// Grab client info for the request.
 	c.mu.Lock()
 	c.fillClientInfo(&claim.ClientInformation)
-	c.fillConnectOpts(&claim.ConnectOptions)
+	c.fillConnectOpts(&claim.ConnectOptions, ujwt)
 	// If we have a sig in the client opts, fill in nonce.
 	if claim.ConnectOptions.SignedNonce != _EMPTY_ {
 		claim.ClientInformation.Nonce = string(c.nonce)
@@ -474,16 +474,22 @@ func (c *client) fillClientInfo(ci *jwt.ClientInformation) {
 
 // Fill in client options.
 // Lock should be held.
-func (c *client) fillConnectOpts(opts *jwt.ConnectOptions) {
+func (c *client) fillConnectOpts(opts *jwt.ConnectOptions, ujwt string) {
 	if c == nil || (c.kind != CLIENT && c.kind != LEAF && c.kind != JETSTREAM && c.kind != ACCOUNT) {
 		return
 	}
 
 	o := c.opts
+	if ujwt == _EMPTY_ {
+		// The caller may supply a reconstructed JWT that should be sent to auth
+		// callout without storing it in c.opts.JWT. If not, fall back to the client
+		// option as before.
+		ujwt = o.JWT
+	}
 
 	// Do it this way to fail to compile if fields are added to jwt.ClientInformation.
 	*opts = jwt.ConnectOptions{
-		JWT:         o.JWT,
+		JWT:         ujwt,
 		Nkey:        o.Nkey,
 		SignedNonce: o.Sig,
 		Token:       o.Token,
