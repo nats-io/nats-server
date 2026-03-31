@@ -20,6 +20,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"reflect"
 	"slices"
@@ -40,6 +42,66 @@ func decodeAuthRequest(t *testing.T, ejwt []byte) (string, *jwt.ServerID, *jwt.C
 	ac, err := jwt.DecodeAuthorizationRequestClaims(string(ejwt))
 	require_NoError(t, err)
 	return ac.UserNkey, &ac.Server, &ac.ClientInformation, &ac.ConnectOptions, ac.TLS
+}
+
+func authCalloutMQTTConnectPacket(clientID, user, pass string) []byte {
+	flags := byte(mqttConnFlagCleanSession)
+	if user != _EMPTY_ {
+		flags |= mqttConnFlagUsernameFlag
+	}
+	if pass != _EMPTY_ {
+		flags |= mqttConnFlagPasswordFlag
+	}
+
+	pkLen := 2 + len(mqttProtoName) +
+		1 +
+		1 +
+		2 +
+		2 + len(clientID)
+
+	if user != _EMPTY_ {
+		pkLen += 2 + len(user)
+	}
+	if pass != _EMPTY_ {
+		pkLen += 2 + len(pass)
+	}
+
+	w := newMQTTWriter(0)
+	w.WriteByte(mqttPacketConnect)
+	w.WriteVarInt(pkLen)
+	w.WriteString(string(mqttProtoName))
+	w.WriteByte(0x4)
+	w.WriteByte(flags)
+	w.WriteUint16(0)
+	w.WriteString(clientID)
+	if user != _EMPTY_ {
+		w.WriteString(user)
+	}
+	if pass != _EMPTY_ {
+		w.WriteBytes([]byte(pass))
+	}
+	return w.Bytes()
+}
+
+func authCalloutMQTTConnect(t testing.TB, host string, port int, clientID, user, pass string) (net.Conn, byte) {
+	t.Helper()
+
+	c, err := net.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+	require_NoError(t, err)
+
+	c.SetDeadline(time.Now().Add(2 * time.Second))
+	defer c.SetDeadline(time.Time{})
+
+	_, err = c.Write(authCalloutMQTTConnectPacket(clientID, user, pass))
+	require_NoError(t, err)
+
+	var ack [4]byte
+	_, err = io.ReadFull(c, ack[:])
+	require_NoError(t, err)
+	if ack[0] != mqttPacketConnectAck || ack[1] != 2 {
+		t.Fatalf("Expected MQTT CONNACK, got %v", ack[:])
+	}
+	return c, ack[3]
 }
 
 func TestTitleCaseEmptyString(t *testing.T) {
@@ -331,6 +393,54 @@ func TestAuthCalloutBasics(t *testing.T) {
 	if expires > 10*time.Minute || expires < (10*time.Minute-5*time.Second) {
 		t.Fatalf("Expected expires of ~%v, got %v", 10*time.Minute, expires)
 	}
+}
+
+func TestAuthCalloutMQTTJwtPassedInConnectOptions(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: A
+		jetstream: { max_mem_store: 256MB, max_file_store: 1GB, store_dir: %q }
+		mqtt { host: "127.0.0.1", port: -1 }
+		authorization {
+			timeout: 1s
+			users: [ { user: "auth", password: "pwd" } ]
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+	`, storeDir)
+
+	expectedJWT := "mqtt-jwt-token"
+	seenJWT := make(chan string, 1)
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		select {
+		case seenJWT <- opts.JWT:
+		default:
+		}
+		if opts.JWT != expectedJWT {
+			m.Respond(nil)
+			return
+		}
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	mc, rc := authCalloutMQTTConnect(t, at.srv.getOpts().MQTT.Host, at.srv.getOpts().MQTT.Port, "mqtt-auth-callout", "ignored", expectedJWT)
+	defer mc.Close()
+
+	select {
+	case got := <-seenJWT:
+		require_Equal(t, got, expectedJWT)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Did not receive auth callout request")
+	}
+	require_Equal(t, rc, mqttConnAckRCConnectionAccepted)
 }
 
 func TestAuthCalloutMultiAccounts(t *testing.T) {
