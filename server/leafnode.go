@@ -1589,8 +1589,8 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		c.updateLeafNodeURLs(info)
 	}
 
-	// Check to see if we have permissions updates here.
-	if info.Import != nil || info.Export != nil {
+	// Only solicited leafnode connections trust permission updates from INFO.
+	if didSolicit && (info.Import != nil || info.Export != nil) {
 		perms := &Permissions{
 			Publish:   info.Export,
 			Subscribe: info.Import,
