@@ -1450,6 +1450,62 @@ func TestLeafNodePermissionsConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestLeafNodeInfoPermissionUpdatesRequireSolicitedLeaf(t *testing.T) {
+	s := &Server{}
+	s.setOpts(DefaultOptions())
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	defer srv.Close()
+
+	c := &client{
+		kind: LEAF,
+		srv:  s,
+		nc:   cli,
+		leaf: &leaf{},
+	}
+	c.flags.set(infoReceived)
+	c.flags.set(compressionNegotiated)
+	c.flags.set(handshakeComplete)
+
+	c.processLeafnodeInfo(&Info{
+		Import: &SubjectPermission{Allow: []string{"import.>"}},
+		Export: &SubjectPermission{Allow: []string{"export.>"}},
+	})
+
+	require_Equal(t, c.perms, (*permissions)(nil))
+}
+
+func TestLeafNodeInfoPermissionUpdatesAllowedForSolicitedLeaf(t *testing.T) {
+	s := &Server{}
+	s.setOpts(DefaultOptions())
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	defer srv.Close()
+
+	c := &client{
+		kind: LEAF,
+		srv:  s,
+		nc:   cli,
+		leaf: &leaf{
+			remote: &leafNodeCfg{RemoteLeafOpts: &RemoteLeafOpts{}},
+		},
+	}
+	c.flags.set(infoReceived)
+	c.flags.set(compressionNegotiated)
+	c.flags.set(handshakeComplete)
+
+	c.processLeafnodeInfo(&Info{
+		Import: &SubjectPermission{Allow: []string{"import.>"}},
+		Export: &SubjectPermission{Allow: []string{"export.>"}},
+	})
+
+	require_True(t, c.perms != nil)
+	require_True(t, c.pubAllowed("export.foo"))
+	require_True(t, c.canSubscribe("import.foo"))
+	require_False(t, c.pubAllowed("other.foo"))
+	require_False(t, c.canSubscribe("other.foo"))
+}
+
 func TestLeafNodePubAllowedPruning(t *testing.T) {
 	c := &client{}
 	c.setPermissions(&Permissions{Publish: &SubjectPermission{Allow: []string{"foo"}}})
