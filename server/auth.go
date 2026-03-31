@@ -696,7 +696,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		// If we are here we have an auth callout defined and we have failed auth so far
 		// so we will callout to our auth backend for processing.
 		if !skip {
-			authorized, reason = s.processClientOrLeafCallout(c, opts, proxyRequired, trustedProxy)
+			authorized, reason = s.processClientOrLeafCallout(c, opts, proxyRequired, trustedProxy, ujwt)
 		}
 		// Check if we are authorized and in the auth callout account, and if so add in deny publish permissions for the auth subject.
 		if authorized {
@@ -797,12 +797,21 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		token = opts.Authorization
 	}
 
+	// MQTT can carry JWTs in the password field. Reconstruct it here for auth
+	// processing and auth callout, but do not populate c.opts.JWT yet or it would
+	// be exposed through monitoring and advisory paths even when the password is
+	// not actually a JWT.
+	if ujwt == _EMPTY_ && c.isMqtt() && c.opts.JWT == _EMPTY_ {
+		ujwt = c.opts.Password
+	}
+
 	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
 	if s.trustedKeys != nil {
 		ujwt = c.opts.JWT
 		if ujwt == _EMPTY_ && c.isMqtt() {
-			// For MQTT, we pass the password as the JWT too, but do so here so it's not
-			// publicly exposed in the client options if it isn't a JWT.
+			// When JWT auth is enabled, MQTT may present the JWT in the password field.
+			// Keep using the local ujwt until it has been validated so c.opts.JWT is not
+			// populated with an arbitrary password.
 			ujwt = c.opts.Password
 		}
 		if ujwt == _EMPTY_ && opts.DefaultSentinel != _EMPTY_ {
