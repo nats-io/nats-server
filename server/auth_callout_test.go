@@ -412,7 +412,11 @@ func TestAuthCalloutMQTTJwtPassedInConnectOptions(t *testing.T) {
 		}
 	`, storeDir)
 
-	expectedJWT := "mqtt-jwt-token"
+	ukp, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	upub, err := ukp.PublicKey()
+	require_NoError(t, err)
+	expectedJWT := createAuthUser(t, upub, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, nil)
 	seenJWT := make(chan string, 1)
 	handler := func(m *nats.Msg) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
@@ -2947,4 +2951,86 @@ func TestAuthCalloutZombieInflatesAccountConnections(t *testing.T) {
 		defer nc.Close()
 	}
 	require_Equal(t, fooAcc.NumLocalConnections(), 5)
+}
+
+func TestAuthCalloutOperatorModeMQTTOpaquePasswordUsesDefaultSentinel(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	tkp, tpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	accClaim.Limits.JetStreamLimits.Consumer = -1
+	accClaim.Limits.JetStreamLimits.Streams = -1
+	accClaim.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024
+	accClaim.Limits.JetStreamLimits.DiskStorage = 1024 * 1024
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	defaultSentinel := createBasicAccountBearer(t, akp)
+	storeDir := t.TempDir()
+	conf := fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: A
+		jetstream: { max_mem_store: 256MB, max_file_store: 1GB, store_dir: %q }
+		mqtt { host: "127.0.0.1", port: -1 }
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+			%s: %s
+		}
+		default_sentinel: %s
+	`, storeDir, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt, defaultSentinel)
+
+	const opaquePassword = "external-jwt-or-token"
+	type seenConnectOptions struct {
+		jwt      string
+		password string
+	}
+	seen := make(chan seenConnectOptions, 1)
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		select {
+		case seen <- seenConnectOptions{jwt: opts.JWT, password: opts.Password}:
+		default:
+		}
+		if opts.JWT != defaultSentinel || opts.Password != opaquePassword {
+			m.Respond(nil)
+			return
+		}
+		ujwt := createAuthUser(t, user, "mqtt", tpub, "", tkp, 10*time.Minute, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer at.Cleanup()
+
+	mc, rc := authCalloutMQTTConnect(t, at.srv.getOpts().MQTT.Host, at.srv.getOpts().MQTT.Port, "mqtt-auth-callout", "ignored", opaquePassword)
+	defer mc.Close()
+
+	got := require_ChanRead(t, seen, 2*time.Second)
+	require_Equal(t, got.jwt, defaultSentinel)
+	require_Equal(t, got.password, opaquePassword)
+	require_Equal(t, rc, mqttConnAckRCConnectionAccepted)
 }
