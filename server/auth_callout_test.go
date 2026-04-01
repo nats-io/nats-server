@@ -447,6 +447,55 @@ func TestAuthCalloutMQTTJwtPassedInConnectOptions(t *testing.T) {
 	require_Equal(t, rc, mqttConnAckRCConnectionAccepted)
 }
 
+func TestAuthCalloutNonOperatorMQTTOpaquePassword(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: A
+		jetstream: { max_mem_store: 256MB, max_file_store: 1GB, store_dir: %q }
+		mqtt { host: "127.0.0.1", port: -1 }
+		authorization {
+			timeout: 1s
+			users: [ { user: "auth", password: "pwd" } ]
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+	`, storeDir)
+
+	const opaquePassword = "external-jwt-or-token"
+	type seenConnectOptions struct {
+		jwt      string
+		password string
+	}
+	seen := make(chan seenConnectOptions, 1)
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		select {
+		case seen <- seenConnectOptions{jwt: opts.JWT, password: opts.Password}:
+		default:
+		}
+		if opts.JWT != _EMPTY_ || opts.Password != opaquePassword {
+			m.Respond(nil)
+			return
+		}
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	mc, rc := authCalloutMQTTConnect(t, at.srv.getOpts().MQTT.Host, at.srv.getOpts().MQTT.Port, "mqtt-auth-callout", "ignored", opaquePassword)
+	defer mc.Close()
+
+	got := require_ChanRead(t, seen, 2*time.Second)
+	require_Equal(t, got.jwt, _EMPTY_)
+	require_Equal(t, got.password, opaquePassword)
+	require_Equal(t, rc, mqttConnAckRCConnectionAccepted)
+}
+
 func TestAuthCalloutMultiAccounts(t *testing.T) {
 	conf := `
 		listen: "127.0.0.1:-1"
