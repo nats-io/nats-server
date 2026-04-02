@@ -2893,15 +2893,10 @@ func TestJetStreamConsumerMessageDeletedDuringRedelivery(t *testing.T) {
 			o.adflr, o.asflr = 0, 0
 			o.dseq, o.sseq = 11, 11
 
-			// Getting the next message should skip seq 2, as that's deleted, but must not touch state.
+			// Getting the next message should skip seq 2, as that's deleted. Should clean up the state.
 			_, _, err = o.getNextMsg()
 			o.mu.Unlock()
 			require_Error(t, err, ErrStoreEOF)
-			require_Len(t, len(o.pending), 1)
-
-			// Simulate the o.processTerm goroutine running after a call to o.getNextMsg.
-			// Pending state and delivery/ack floors should be corrected.
-			o.processTerm(2, 2, 1, ackTermUnackedLimitsReason, _EMPTY_)
 
 			o.mu.RLock()
 			defer o.mu.RUnlock()
@@ -10942,4 +10937,96 @@ func TestJetStreamConsumerSingleFilterSubjectInFilterSubjects(t *testing.T) {
 	// Should not initialize the sublist, as that will make us use LoadNextMsgMulti versus LoadNextMsg.
 	require_Len(t, len(o.subjf), 1)
 	require_True(t, o.filters == nil)
+}
+
+func TestJetStreamConsumerStuckMaxAckPendingAfterMsgDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("bar", "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.ConsumerReplicas(3),
+		nats.MaxAckPending(1),
+		nats.AckWait(500*time.Millisecond),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	for range 2 {
+		for _, subj := range []string{"foo", "bar"} {
+			_, err = js.Publish(subj, nil)
+			require_NoError(t, err)
+		}
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 2)
+	require_Equal(t, ci.AckFloor.Stream, 0)
+
+	// Consume one message that we will not acknowledge.
+	msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+
+	// Stepdown the consumer leader and ensure for a while no new leader can be elected.
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		n := o.raftNode()
+		require_NotNil(t, n)
+		n.SetObserver(true)
+		n.StepDown()
+	}
+
+	// Delete the message that is pending, instead of acknowledging it.
+	require_NoError(t, js.DeleteMsg("TEST", 2))
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Re-establish a consumer leader.
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		n := o.raftNode()
+		require_NotNil(t, n)
+		n.SetObserver(false)
+	}
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 1)
+	require_Equal(t, ci.NumAckPending, 1)
+	require_Equal(t, ci.AckFloor.Stream, 0)
+
+	// Fetching a message should get the new one, since the pending message that was blocking
+	// further deliveries due to MaxAckPending was deleted and can now be cleaned up.
+	msgs, err = sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumAckPending, 1)
+	require_Equal(t, ci.AckFloor.Stream, 2)
 }

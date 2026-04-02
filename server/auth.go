@@ -696,7 +696,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		// If we are here we have an auth callout defined and we have failed auth so far
 		// so we will callout to our auth backend for processing.
 		if !skip {
-			authorized, reason = s.processClientOrLeafCallout(c, opts, proxyRequired, trustedProxy)
+			authorized, reason = s.processClientOrLeafCallout(c, opts, proxyRequired, trustedProxy, ujwt)
 		}
 		// Check if we are authorized and in the auth callout account, and if so add in deny publish permissions for the auth subject.
 		if authorized {
@@ -797,26 +797,42 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		token = opts.Authorization
 	}
 
-	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
-	if s.trustedKeys != nil {
-		ujwt = c.opts.JWT
-		if ujwt == _EMPTY_ && c.isMqtt() {
-			// For MQTT, we pass the password as the JWT too, but do so here so it's not
-			// publicly exposed in the client options if it isn't a JWT.
+	// MQTT can carry JWTs in the password field. Reconstruct it here for auth
+	// processing and auth callout, but do not populate c.opts.JWT yet or it would
+	// be exposed through monitoring and advisory paths even when the password is
+	// not actually a JWT.
+	if ujwt == _EMPTY_ && c.isMqtt() && c.opts.JWT == _EMPTY_ {
+		// Don't set juc here, leave that to the next s.trustedKeys != nil block,
+		// so that we don't try to trust a JWT when we aren't in operator mode. We
+		// will allow it to be passed through auth callout though.
+		if _, err := jwt.DecodeUserClaims(c.opts.Password); err == nil {
 			ujwt = c.opts.Password
 		}
-		if ujwt == _EMPTY_ && opts.DefaultSentinel != _EMPTY_ {
-			c.opts.JWT = opts.DefaultSentinel
-			ujwt = c.opts.JWT
+	}
+
+	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
+	if s.trustedKeys != nil {
+		if ujwt == _EMPTY_ {
+			// Need to be sure that it's a NATS JWT, otherwise we will not correctly
+			// attempt the default sentinel below.
+			if _, err = jwt.DecodeUserClaims(c.opts.JWT); err == nil {
+				ujwt = c.opts.JWT
+			}
+		}
+		if ujwt == _EMPTY_ {
+			// Didn't fall through with a valid NATS JWT, so try the default sentinel
+			// if configured.
+			if opts.DefaultSentinel != _EMPTY_ {
+				c.opts.JWT = opts.DefaultSentinel
+				ujwt = c.opts.JWT
+			}
 		}
 		if ujwt == _EMPTY_ {
 			s.mu.Unlock()
 			c.Debugf("Authentication requires a user JWT")
 			return false
 		}
-		// So we have a valid user jwt here.
-		juc, err = jwt.DecodeUserClaims(ujwt)
-		if err != nil {
+		if juc, err = jwt.DecodeUserClaims(ujwt); err != nil {
 			s.mu.Unlock()
 			c.Debugf("User JWT not valid: %v", err)
 			return false
@@ -1015,8 +1031,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			c.Debugf("Connection type not allowed")
 			return false
 		}
-		// skip validation of nonce when presented with a bearer token
-		// FIXME: if BearerToken is only for WSS, need check for server with that port enabled
+		// Skip validation of nonce when presented with a bearer token.
+		// While support for bearer tokens was added for WebSockets, there is no
+		// security benefit in restricting their use to that client protocol: the
+		// client can just go use the other protocol.
 		if !juc.BearerToken {
 			// Verify the signature against the nonce.
 			if c.opts.Sig == _EMPTY_ {

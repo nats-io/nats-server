@@ -1589,8 +1589,8 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		c.updateLeafNodeURLs(info)
 	}
 
-	// Check to see if we have permissions updates here.
-	if info.Import != nil || info.Export != nil {
+	// Only solicited leafnode connections trust permission updates from INFO.
+	if didSolicit && (info.Import != nil || info.Export != nil) {
 		perms := &Permissions{
 			Publish:   info.Export,
 			Subscribe: info.Import,
@@ -3003,6 +3003,11 @@ func (c *client) processLeafHeaderMsgArgs(arg []byte) error {
 	if c.pa.hdr > c.pa.size {
 		return fmt.Errorf("processLeafHeaderMsgArgs Header Size larger then TotalSize: '%s'", arg)
 	}
+	maxPayload := atomic.LoadInt32(&c.mpay)
+	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
+		c.maxPayloadViolation(c.pa.size, maxPayload)
+		return ErrMaxPayload
+	}
 
 	// Common ones processed after check for arg length
 	c.pa.subject = args[0]
@@ -3072,6 +3077,11 @@ func (c *client) processLeafMsgArgs(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processLeafMsgArgs Bad or Missing Size: '%s'", args)
 	}
+	maxPayload := atomic.LoadInt32(&c.mpay)
+	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
+		c.maxPayloadViolation(c.pa.size, maxPayload)
+		return ErrMaxPayload
+	}
 
 	// Common ones processed after check for arg length
 	c.pa.subject = args[0]
@@ -3090,6 +3100,12 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 
 	// Mostly under testing scenarios.
 	if srv == nil || acc == nil {
+		return
+	}
+
+	// Check that leaf messages respect the subject permissions.
+	if c.perms != nil && !c.leafMsgAllowed() {
+		c.leafPubPermViolation(c.pa.subject)
 		return
 	}
 
@@ -3154,10 +3170,100 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	}
 }
 
+// Checks whether the inbound leaf message is allowed by the
+// connection's permissions. On the hub side this enforces what
+// the remote leaf may publish. On the spoke side this enforces
+// import restrictions such as deny_imports.
+func (c *client) leafMsgAllowed() bool {
+	wireSubject := c.pa.subject
+	if len(c.pa.mapped) > 0 {
+		// Mappings rewrite c.pa.subject to the internal
+		// destination. For leaf ACLs, need to check
+		// the original wire subject from the remote side.
+		wireSubject = c.pa.mapped
+	}
+	// Strip any gateway routing prefix for the permission check.
+	subjectToCheck, isGW := getGWRoutedSubjectOrSelf(wireSubject)
+
+	// Service-import replies (_R_), JS ack subjects ($JS.ACK.)
+	// are internal routing subjects forwarded via LS+ without
+	// permission checks.
+	if isServiceReply(subjectToCheck) || isJSAckSubject(subjectToCheck) {
+		return true
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.isSpokeLeafNode() {
+		// Gateway routed replies are forwarded without
+		// permission checks.
+		if isGW || c.leafReceiveAllowed(subjectToCheck) {
+			return true
+		}
+	} else if c.leafSendAllowed(subjectToCheck) {
+		return true
+	}
+	// Check tracked reply permissions (allow_responses).
+	// Use the pre-strip subject since deliverMsg tracks
+	// replies under the original form, which includes
+	// the GW routing prefix for routed requests.
+	return c.responseAllowed(bytesToString(wireSubject))
+}
+
+// Returns true if the leaf side ACLs allow importing this subject,
+// based on the permissions received over INFO and any local deny_imports.
+// Lock must be held.
+func (c *client) leafReceiveAllowed(subject []byte) bool {
+	return c.canSubscribe(bytesToString(subject))
+}
+
+// Returns true if the hub side ACLs allow the remote leaf to send
+// this subject.
+// Lock must be held.
+func (c *client) leafSendAllowed(bsubject []byte) bool {
+	// Use the original export ACL captured for this accepted leaf.
+	// The live perms also contain additional JetStream denies used by
+	// the normal forwarding path, and applying them here would reject
+	// legitimate inbound JS API requests.
+	subject := bytesToString(bsubject)
+	perms := c.opts.Export
+	if perms == nil || (perms.Allow == nil && perms.Deny == nil) {
+		return true
+	}
+
+	allowed := true
+	if perms.Allow != nil && !strings.HasPrefix(subject, mqttPrefix) {
+		allowed = false
+		for _, allowSubj := range perms.Allow {
+			if matchLiteral(subject, allowSubj) {
+				allowed = true
+				break
+			}
+		}
+	}
+
+	if allowed && len(perms.Deny) > 0 {
+		for _, denySubj := range perms.Deny {
+			if matchLiteral(subject, denySubj) {
+				allowed = false
+				break
+			}
+		}
+	}
+	return allowed
+}
+
 // Handles a subscription permission violation.
 // See leafPermViolation() for details.
 func (c *client) leafSubPermViolation(subj []byte) {
 	c.leafPermViolation(false, subj)
+}
+
+// Handles a publish permission violation.
+// See leafPermViolation() for details.
+func (c *client) leafPubPermViolation(subj []byte) {
+	c.leafPermViolation(true, subj)
 }
 
 // Common function to process publish or subscribe leafnode permission violation.
