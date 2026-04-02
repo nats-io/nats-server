@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -657,8 +658,8 @@ func TestOCSPReloadRotateTLSCertWithNoURL(t *testing.T) {
 		nats.RootCAs(caCert),
 		nats.ErrorHandler(noOpErrHandler),
 	)
-	if err != expectedErr {
-		t.Fatalf("Unexpected error: %s", expectedErr)
+	if err == nil || !strings.Contains(err.Error(), expectedErr.Error()) {
+		t.Fatalf("Unexpected error: %s, got %s", expectedErr, err)
 	}
 }
 

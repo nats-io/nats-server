@@ -258,7 +258,7 @@ func TestTLSMinVersionConfig(t *testing.T) {
 	// Cannot connect with client requiring a lower minimum TLS Version.
 	connect(t, &tls.Config{
 		MaxVersion: tls.VersionTLS12,
-	}, errors.New(`remote error: tls: protocol version not supported`))
+	}, errors.New(`nats: tls error: remote error: tls: protocol version not supported`))
 
 	// Should connect since matching minimum TLS version.
 	connect(t, &tls.Config{
