@@ -8005,3 +8005,34 @@ func TestJetStreamClusterRemoveStatusHeaderOnStreamInbound(t *testing.T) {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
 	}
 }
+
+func TestJetStreamClusterStreamUpdateCombinedScaleUpWithSubjectsChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"a"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	_, err = js.Publish("a", nil)
+	require_NoError(t, err)
+
+	cfg.Replicas = 3
+	cfg.Subjects = append(cfg.Subjects, "b")
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, err = js.Publish("b", nil, nats.AckWait(200*time.Millisecond))
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+}
