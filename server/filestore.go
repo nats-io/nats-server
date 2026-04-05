@@ -8977,10 +8977,45 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	var lowSeq uint64
 
 	fs.mu.Lock()
+	if len(fs.blks) == 0 || fs.lmb == nil {
+		fs.mu.Unlock()
+		return purged, nil
+	}
+
+	var start, stop uint32
+
+	// If literal subject check for presence.
+	if wc {
+		start = fs.lmb.index
+		fs.psim.Match(stringToBytes(subject), func(_ []byte, psi *psi) {
+			// Keep track of start and stop indexes for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+			if psi.lblk > stop {
+				stop = psi.lblk
+			}
+		})
+		// None matched.
+		if stop == 0 {
+			fs.mu.Unlock()
+			return purged, nil
+		}
+	} else if info, ok := fs.psim.Find(stringToBytes(subject)); ok {
+		start, stop = info.fblk, info.lblk
+	} else {
+		fs.mu.Unlock()
+		return purged, nil
+	}
+
 	// We may remove blocks as we purge, so don't range directly on fs.blks
 	// otherwise we may jump over some (see https://github.com/nats-io/nats-server/issues/3528)
 	for i := 0; i < len(fs.blks); i++ {
 		mb := fs.blks[i]
+		// Skip if not within our range for the purge subject.
+		if mb.index < start || mb.index > stop {
+			continue
+		}
 		mb.mu.Lock()
 
 		// If we do not have our fss, try to expire the cache if we have no items in this block.
