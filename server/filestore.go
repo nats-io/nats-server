@@ -1971,7 +1971,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				}
 				bi += lsubj
 				psi := psi{total: readU64(), fblk: uint32(readU64())}
-				if psi.total > 1 {
+				if psi.total > 1 || version >= 4 {
 					psi.lblk = uint32(readU64())
 				} else {
 					psi.lblk = psi.fblk
@@ -11323,7 +11323,7 @@ func (fs *fileStore) cancelSyncTimer() {
 const (
 	fullStateMagic      = uint8(11)
 	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
-	fullStateVersion    = uint8(3) // What is the current version written out to index.db?
+	fullStateVersion    = uint8(4) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -11485,9 +11485,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 			buf = append(buf, subj...)
 			buf = binary.AppendUvarint(buf, psi.total)
 			buf = binary.AppendUvarint(buf, uint64(psi.fblk))
-			if psi.total > 1 {
-				buf = binary.AppendUvarint(buf, uint64(psi.lblk))
-			}
+			buf = binary.AppendUvarint(buf, uint64(psi.lblk))
 		})
 	}
 
