@@ -5248,9 +5248,7 @@ func (fs *fileStore) removePerSubject(subj string) uint64 {
 	bsubj := stringToBytes(subj)
 	if info, ok := fs.psim.Find(bsubj); ok {
 		info.total--
-		if info.total == 1 {
-			info.fblk = info.lblk
-		} else if info.total == 0 {
+		if info.total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
 				return 0
