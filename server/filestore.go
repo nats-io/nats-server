@@ -6084,7 +6084,7 @@ func (mb *msgBlock) resetCacheExpireTimer(td time.Duration) {
 		td = mb.cexp + 100*time.Millisecond
 	}
 	if mb.ctmr == nil {
-		mb.ctmr = time.AfterFunc(td, mb.expireCache)
+		mb.ctmr = time.AfterFunc(td, mb.tryExpireCache)
 	} else {
 		mb.ctmr.Reset(td)
 	}
@@ -6132,10 +6132,10 @@ func (mb *msgBlock) clearCache() {
 }
 
 // Called to possibly expire a message block cache.
-func (mb *msgBlock) expireCache() {
+func (mb *msgBlock) tryExpireCache() {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	mb.expireCacheLocked()
+	mb.tryExpireCacheLocked()
 }
 
 func (mb *msgBlock) tryForceExpireCache() {
@@ -6146,10 +6146,10 @@ func (mb *msgBlock) tryForceExpireCache() {
 
 // We will attempt to force expire this by temporarily clearing the last load time.
 func (mb *msgBlock) tryForceExpireCacheLocked() {
-	llts, lwts := mb.llts, mb.lwts
-	mb.llts, mb.lwts = 0, 0
-	mb.expireCacheLocked()
-	mb.llts, mb.lwts = llts, lwts
+	llts := mb.llts
+	mb.llts = 0
+	mb.tryExpireCacheLocked()
+	mb.llts = llts
 }
 
 // This is for expiration of the write cache, which will be partial with fip.
@@ -6161,7 +6161,7 @@ func (mb *msgBlock) tryExpireWriteCache() []byte {
 	}
 	lwts, buf, llts, nra := mb.lwts, mb.cache.buf, mb.llts, mb.cache.nra
 	mb.lwts, mb.cache.nra = 0, true
-	mb.expireCacheLocked()
+	mb.tryExpireCacheLocked()
 	mb.lwts = lwts
 	if mb.cache != nil {
 		mb.cache.nra = nra
@@ -6176,7 +6176,7 @@ func (mb *msgBlock) tryExpireWriteCache() []byte {
 }
 
 // Lock should be held.
-func (mb *msgBlock) expireCacheLocked() {
+func (mb *msgBlock) tryExpireCacheLocked() {
 	var strengthened bool
 	if mb.cache == nil {
 		mb.cache = mb.ecache.Value()
@@ -7632,7 +7632,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// If not, we'll just drop the cache altogether & recycle the buffer.
 	mb.cache.nra = false
-	mb.expireCacheLocked()
+	mb.tryExpireCacheLocked()
 	return fsLostData, mb.werr
 }
 
@@ -8026,7 +8026,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	}
 
 	if seq != fsm.seq { // See TestFileStoreInvalidIndexesRebuilt.
-		mb.tryForceExpireCacheLocked()
+		mb.clearCacheAndOffset()
 		return nil, fmt.Errorf("sequence numbers for cache load did not match, %d vs %d", seq, fsm.seq)
 	}
 

@@ -1759,7 +1759,8 @@ func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
 
 		toSend := 5
 		for i := 0; i < toSend; i++ {
-			fs.StoreMsg("foo", nil, []byte("ok-1"), 0)
+			_, _, err = fs.StoreMsg("foo", nil, []byte("ok-1"), 0)
+			require_NoError(t, err)
 		}
 		fs.FlushAllPending()
 
@@ -5353,7 +5354,7 @@ func TestFileStoreErrPartialLoadOnSyncClose(t *testing.T) {
 	require_True(t, lmb != nil)
 
 	lmb.mu.Lock()
-	lmb.expireCacheLocked()
+	lmb.tryExpireCacheLocked()
 	lmb.dirtyCloseWithRemove(false)
 	lmb.mu.Unlock()
 
@@ -9842,7 +9843,7 @@ func TestFileStoreFirstMatchingMultiExpiry(t *testing.T) {
 
 		fs.mu.RLock()
 		mb := fs.lmb
-		mb.expireCacheLocked()
+		mb.tryExpireCacheLocked()
 		fs.mu.RUnlock()
 
 		sl := gsl.NewSublist[struct{}]()
@@ -12293,6 +12294,44 @@ func TestFileStoreCorruptionSetsHbitWithoutHeaders(t *testing.T) {
 	t.Run("msgFromBuf", func(t *testing.T) { test(t, KindMsgFromBuf) })
 	t.Run("indexCacheBuf", func(t *testing.T) { test(t, KindIndexCacheBuf) })
 	t.Run("rebuildState", func(t *testing.T) { test(t, KindRebuildState) })
+}
+
+func TestFileStoreDontExpireCacheWithRecentWrite(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	// Cache should still exist after above write.
+	fmb := fs.getFirstBlock()
+	fmb.mu.Lock()
+	cacheLoaded := fmb.cacheAlreadyLoaded()
+	fmb.llseq = 0
+	fmb.mu.Unlock()
+	require_True(t, cacheLoaded)
+
+	// The load will try to expire the cache, but shouldn't due to the recent write.
+	_, _, err = fs.LoadNextMsg(fwcs, true, 0, nil)
+	require_NoError(t, err)
+
+	fmb.mu.Lock()
+	fmb.llseq = 0
+	cacheLoaded = fmb.cacheAlreadyLoaded()
+	// We update the last write timestamp to be very old, so the next load can expire the cache.
+	fmb.lwts = 0
+	fmb.mu.Unlock()
+	require_True(t, cacheLoaded)
+	_, _, err = fs.LoadNextMsg(fwcs, true, 0, nil)
+	require_NoError(t, err)
+
+	fmb.mu.Lock()
+	cacheLoaded = fmb.cacheAlreadyLoaded()
+	fmb.mu.Unlock()
+	require_False(t, cacheLoaded)
 }
 
 func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
