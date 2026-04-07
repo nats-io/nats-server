@@ -170,6 +170,16 @@ func (s *GenericSublist[T]) NumInterest(subject string) (np int) {
 	return
 }
 
+// MatchesFullWildcard returns true if there is top-level ">" interest.
+func (s *GenericSublist[T]) MatchesFullWildcard() bool {
+	if s == nil {
+		return false
+	}
+	s.RLock()
+	defer s.RUnlock()
+	return s.root.fwc != nil
+}
+
 func (s *GenericSublist[T]) match(subject string, cb func(T), doLock bool) {
 	tsa := [32]string{}
 	tokens := tsa[:0]
