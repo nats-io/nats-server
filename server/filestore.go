@@ -1971,7 +1971,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				}
 				bi += lsubj
 				psi := psi{total: readU64(), fblk: uint32(readU64())}
-				if psi.total > 1 {
+				if psi.total > 1 || version >= 4 {
 					psi.lblk = uint32(readU64())
 				} else {
 					psi.lblk = psi.fblk
@@ -5589,9 +5589,7 @@ func (fs *fileStore) removePerSubject(subj string) uint64 {
 	bsubj := stringToBytes(subj)
 	if info, ok := fs.psim.Find(bsubj); ok {
 		info.total--
-		if info.total == 1 {
-			info.fblk = info.lblk
-		} else if info.total == 0 {
+		if info.total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
 				return 0
@@ -9564,10 +9562,45 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		fs.mu.Unlock()
 		return purged, err
 	}
+	if len(fs.blks) == 0 || fs.lmb == nil {
+		fs.mu.Unlock()
+		return purged, nil
+	}
+
+	var start, stop uint32
+
+	// If literal subject check for presence.
+	if wc {
+		start = fs.lmb.index
+		fs.psim.Match(stringToBytes(subject), func(_ []byte, psi *psi) {
+			// Keep track of start and stop indexes for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+			if psi.lblk > stop {
+				stop = psi.lblk
+			}
+		})
+		// None matched.
+		if stop == 0 {
+			fs.mu.Unlock()
+			return purged, nil
+		}
+	} else if info, ok := fs.psim.Find(stringToBytes(subject)); ok {
+		start, stop = info.fblk, info.lblk
+	} else {
+		fs.mu.Unlock()
+		return purged, nil
+	}
+
 	// We may remove blocks as we purge, so don't range directly on fs.blks
 	// otherwise we may jump over some (see https://github.com/nats-io/nats-server/issues/3528)
 	for i := 0; i < len(fs.blks); i++ {
 		mb := fs.blks[i]
+		// Skip if not within our range for the purge subject.
+		if mb.index < start || mb.index > stop {
+			continue
+		}
 		mb.mu.Lock()
 
 		// If we do not have our fss, try to expire the cache if we have no items in this block.
@@ -11290,7 +11323,7 @@ func (fs *fileStore) cancelSyncTimer() {
 const (
 	fullStateMagic      = uint8(11)
 	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
-	fullStateVersion    = uint8(3) // What is the current version written out to index.db?
+	fullStateVersion    = uint8(4) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -11452,9 +11485,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 			buf = append(buf, subj...)
 			buf = binary.AppendUvarint(buf, psi.total)
 			buf = binary.AppendUvarint(buf, uint64(psi.fblk))
-			if psi.total > 1 {
-				buf = binary.AppendUvarint(buf, uint64(psi.lblk))
-			}
+			buf = binary.AppendUvarint(buf, uint64(psi.lblk))
 		})
 	}
 

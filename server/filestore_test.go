@@ -6304,8 +6304,11 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	psi := *info
 	fs.mu.RUnlock()
 
+	// PSIM remains the same, since we'll not always know
+	// that the head was removed, instead of the tail.
 	require_Equal(t, psi.total, 1)
-	require_Equal(t, psi.fblk, psi.lblk)
+	require_Equal(t, psi.fblk, 1)
+	require_Equal(t, psi.lblk, 4)
 }
 
 func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
@@ -13573,4 +13576,99 @@ func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 		require_NoError(t, err)
 		wg.Wait()
 	}
+}
+
+func TestFileStoreDontLoadSubjectStateIfNotPurged(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	fmb := fs.getFirstBlock()
+	fmb.mu.Lock()
+	fmb.fss = nil
+	fmb.mu.Unlock()
+
+	// When purging a subject that doesn't exist, we shouldn't need to load subjects for any blocks.
+	purged, err := fs.PurgeEx("bar", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 0)
+
+	fmb.mu.RLock()
+	defer fmb.mu.RUnlock()
+	require_True(t, fmb.fss == nil)
+}
+
+func TestFileStoreOnlyLoadSubjectStateOnBlocksWithinInterestRange(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("bar", nil, nil, 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss = nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	// When purging a subject that only exists on a subset, we should only load blocks within its range.
+	purged, err := fs.PurgeEx("bar", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 1)
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	for i, mb := range fs.blks {
+		mb.mu.Lock()
+		loadedFss := mb.fss != nil
+		mb.mu.Unlock()
+		require_Equal(t, loadedFss, i == 1)
+	}
+}
+
+func TestFileStoreRemovePerSubjectWithMultipleBlocks(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Store two messages in separate blocks.
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	fs.mu.Lock()
+	seq, err := fs.firstSeqForSubj("foo")
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
+
+	// After removing the last message, we should still be able to find the first.
+	removed, err := fs.RemoveMsg(2)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	fs.mu.Lock()
+	seq, err = fs.firstSeqForSubj("foo")
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
 }
