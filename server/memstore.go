@@ -1993,7 +1993,7 @@ func (ms *memStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *S
 			return smp, nseq, nil
 		}
 	}
-	return nil, ms.state.LastSeq, ErrStoreEOF
+	return nil, ms.state.FirstSeq, ErrStoreEOF
 }
 
 // RemoveMsg will remove the message from this store.

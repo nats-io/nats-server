@@ -194,7 +194,9 @@ func singleFilter[T comparable](l *level[T], filter string) (string, bool) {
 	if l == nil {
 		return filter, filter != _EMPTY_
 	}
-
+	if len(l.nodes) > 1 {
+		return _EMPTY_, false
+	}
 	var next *node[T]
 	branches := 0
 	if l.pwc != nil {
@@ -208,7 +210,6 @@ func singleFilter[T comparable](l *level[T], filter string) (string, bool) {
 	for _, n := range l.nodes {
 		next = n
 		branches++
-		break
 	}
 	if branches != 1 {
 		return _EMPTY_, false
@@ -221,7 +222,7 @@ func singleFilter[T comparable](l *level[T], filter string) (string, bool) {
 		return filter, filter != _EMPTY_
 	}
 	if filter != _EMPTY_ {
-		if _, ok := singleFilter(next.next, _EMPTY_); ok {
+		if next.next.numNodes() > 0 {
 			return _EMPTY_, false
 		}
 		return filter, true
