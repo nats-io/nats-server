@@ -8369,6 +8369,9 @@ func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 	if sl == nil || sl.MatchesFullWildcard() {
 		return fs.LoadNextMsg(_EMPTY_, false, start, smp)
 	}
+	if filter, ok := sl.MatchesSingleFilter(); ok {
+		return fs.LoadNextMsg(filter, subjectHasWildcard(filter), start, smp)
+	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -8701,6 +8704,9 @@ func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 
 	if sl == nil || sl.MatchesFullWildcard() {
 		return fs.LoadPrevMsg(_EMPTY_, false, start, smp)
+	}
+	if filter, ok := sl.MatchesSingleFilter(); ok {
+		return fs.LoadPrevMsg(filter, subjectHasWildcard(filter), start, smp)
 	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
