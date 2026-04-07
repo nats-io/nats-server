@@ -3579,6 +3579,7 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	if sendSysConnectEvent {
 		s.sendLeafNodeConnect(acc)
 	}
+	s.accountConnectEvent(c)
 
 	// The above functions are not atomically under the client
 	// lock doing those operations. It is possible - since we
