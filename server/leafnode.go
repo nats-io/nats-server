@@ -2155,7 +2155,9 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.mu.Unlock()
 
 	// Register the cluster, even if empty, as long as we are acting as a hub.
-	if !proto.Hub {
+	// Guard against nil account which can happen if the connection was closed
+	// during authentication (e.g. authentication timeout race).
+	if !proto.Hub && acc != nil {
 		acc.registerLeafNodeCluster(proto.Cluster)
 	}
 
