@@ -18449,7 +18449,7 @@ func TestJetStreamStreamConfigClone(t *testing.T) {
 		Name:             "name",
 		Placement:        &Placement{Cluster: "placement", Tags: []string{"tag"}},
 		Mirror:           &StreamSource{Name: "mirror"},
-		Sources:          []*StreamSource{&StreamSource{Name: "source"}},
+		Sources:          []*StreamSource{{Name: "source"}},
 		SubjectTransform: &SubjectTransformConfig{Source: "source", Destination: "dest"},
 		RePublish:        &RePublish{Source: "source", Destination: "dest", HeadersOnly: false},
 		Metadata:         make(map[string]string),
