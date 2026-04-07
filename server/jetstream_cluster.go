@@ -4823,7 +4823,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	js.mu.Lock()
 	s, rg := js.srv, sa.Group
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
-	alreadyRunning, numReplicas := osa.Group.node != nil, len(rg.Peers)
+	alreadyRunning, oldNumReplicas, numReplicas := osa.Group.node != nil, len(osa.Group.Peers), len(rg.Peers)
 	needsNode := rg.node == nil
 	storage, cfg := sa.Config.Storage, sa.Config
 	hasResponded := sa.responded
@@ -4924,6 +4924,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	isLeader := mset.IsLeader()
+
+	// If the stream is scaled down, there is a chance we weren't already the leader.
+	if isLeader && numReplicas == 1 && oldNumReplicas > 1 {
+		js.processStreamLeaderChange(mset, true)
+	}
 
 	// Check for missing syncSubject bug.
 	if isLeader && osa != nil && osa.Sync == _EMPTY_ {

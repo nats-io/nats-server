@@ -2394,7 +2394,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	jsa.mu.RUnlock()
 
 	mset.mu.Lock()
-	if mset.isLeader() {
+	if mset.active {
 		// Check for mirror promotion.
 		if ocfg.Mirror != nil && cfg.Mirror == nil {
 			mset.cancelMirrorConsumer()
@@ -4626,6 +4626,7 @@ func (mset *stream) unsubscribeToStream(stopping, shuttingDown bool) error {
 
 	if len(mset.sources) > 0 {
 		mset.stopSourceConsumers()
+		mset.sources = nil
 	}
 	// Clear batching state.
 	mset.deleteAtomicBatches(shuttingDown)
