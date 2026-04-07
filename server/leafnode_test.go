@@ -11292,3 +11292,74 @@ func TestLeafNodeNoAccPanicOnProcessLeafNodeConnect(t *testing.T) {
 		t.Fatal("Server should not have shutdown")
 	}
 }
+
+func TestLeafNodeSpokeConnectAdvisory(t *testing.T) {
+	confHub := createConfFile(t, []byte(`
+        listen: 127.0.0.1:-1
+        accounts {
+            SYS: {users: [{user: sys, password: pwd}]}
+            USER: {users: [{user: user, password: pwd}]}
+        }
+        system_account: SYS
+        leafnodes {
+            listen: 127.0.0.1:-1
+            no_advertise: true
+            authorization { timeout: 0.5 }
+        }
+    `))
+	hub, hubOpts := RunServerWithConfig(confHub)
+	defer hub.Shutdown()
+	hubPort := hubOpts.Port
+	hubLeafPort := hubOpts.LeafNode.Port
+
+	confSpoke := createConfFile(t, []byte(fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        accounts {
+            SYS: {users: [{user: sys, password: pwd}]}
+            USER: {users: [{user: user, password: pwd}]}
+        }
+        system_account: SYS
+        leafnodes {
+            reconnect: "50ms"
+            remotes: [
+                {url: "nats://user:pwd@127.0.0.1:%d", account: USER},
+                {url: "nats://sys:pwd@127.0.0.1:%d", account: SYS},
+            ]
+        }
+    `, hubLeafPort, hubLeafPort)))
+	spoke, spokeOpts := RunServerWithConfig(confSpoke)
+	defer spoke.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub, 2)
+	checkLeafNodeConnectedCount(t, spoke, 2)
+
+	// Subscribe on spoke's system account for USER account events
+	nc := natsConnect(t, fmt.Sprintf("nats://sys:pwd@127.0.0.1:%d", spokeOpts.Port))
+	defer nc.Close()
+	cSub := natsSubSync(t, nc, "$SYS.ACCOUNT.USER.CONNECT")
+	dSub := natsSubSync(t, nc, "$SYS.ACCOUNT.USER.DISCONNECT")
+	nc.Flush()
+
+	// Shut down hub, spoke should emit DISCONNECT
+	hub.Shutdown()
+	checkLeafNodeConnectedCount(t, spoke, 0)
+	msg, err := dSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var dm DisconnectEventMsg
+	require_NoError(t, json.Unmarshal(msg.Data, &dm))
+	require_Equal(t, dm.Client.Kind, "Leafnode")
+
+	// Restart hub on the same ports so spoke can reconnect
+	hubOpts.Port = hubPort
+	hubOpts.LeafNode.Port = hubLeafPort
+	hub = RunServer(hubOpts)
+	defer hub.Shutdown()
+	checkLeafNodeConnectedCount(t, spoke, 2)
+
+	// Spoke should emit CONNECT advisory on reconnect
+	msg, err = cSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var cm ConnectEventMsg
+	require_NoError(t, json.Unmarshal(msg.Data, &cm))
+	require_Equal(t, cm.Client.Kind, "Leafnode")
+}
