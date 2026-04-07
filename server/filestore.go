@@ -9146,8 +9146,15 @@ func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 	}
 
 	if sl == nil || sl.MatchesFullWildcard() {
-		sm, err = fs.LoadPrevMsg(start, smp)
-		return
+		if sm, err = fs.LoadPrevMsg(start, smp); err == nil {
+			return sm, sm.seq, nil
+		}
+		if err == ErrStoreEOF {
+			fs.mu.RLock()
+			defer fs.mu.RUnlock()
+			return nil, fs.state.FirstSeq, err
+		}
+		return nil, 0, err
 	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
