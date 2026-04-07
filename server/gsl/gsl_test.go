@@ -254,6 +254,33 @@ func TestGenericSublistMatchesFullWildcard(t *testing.T) {
 	require_True(t, s.MatchesFullWildcard())
 }
 
+func TestGenericSublistSingleFilter(t *testing.T) {
+	var sn *GenericSublist[int]
+	filter, ok := sn.MatchesSingleFilter()
+	require_False(t, ok)
+	require_Equal(t, filter, _EMPTY_)
+
+	s := NewSublist[int]()
+	filter, ok = s.MatchesSingleFilter()
+	require_False(t, ok)
+	require_Equal(t, filter, _EMPTY_)
+
+	require_NoError(t, s.Insert("stream.A.child", 11))
+	filter, ok = s.MatchesSingleFilter()
+	require_True(t, ok)
+	require_Equal(t, filter, "stream.A.child")
+
+	require_NoError(t, s.Insert("stream.A.child", 22))
+	filter, ok = s.MatchesSingleFilter()
+	require_True(t, ok)
+	require_Equal(t, filter, "stream.A.child")
+
+	require_NoError(t, s.Insert("stream.*", 33))
+	filter, ok = s.MatchesSingleFilter()
+	require_False(t, ok)
+	require_Equal(t, filter, _EMPTY_)
+}
+
 // TestGenericSublistHasInterestStartingInRace tests that HasInterestStartingIn
 // is safe to call concurrently with modifications to the sublist.
 func TestGenericSublistHasInterestStartingInRace(t *testing.T) {
