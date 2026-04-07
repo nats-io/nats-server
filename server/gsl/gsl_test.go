@@ -242,6 +242,18 @@ func TestGenericSublistHasInterestOverlapping(t *testing.T) {
 	require_True(t, s.HasInterest("stream.A"))
 }
 
+func TestGenericSublistMatchesFullWildcard(t *testing.T) {
+	s := NewSublist[int]()
+	require_NoError(t, s.Insert("stream.A.child", 11))
+	require_NoError(t, s.Insert("stream.*", 11))
+	require_True(t, s.HasInterest("stream.A.child"))
+	require_True(t, s.HasInterest("stream.A"))
+	require_False(t, s.MatchesFullWildcard())
+
+	require_NoError(t, s.Insert(">", 11))
+	require_True(t, s.MatchesFullWildcard())
+}
+
 // TestGenericSublistHasInterestStartingInRace tests that HasInterestStartingIn
 // is safe to call concurrently with modifications to the sublist.
 func TestGenericSublistHasInterestStartingInRace(t *testing.T) {

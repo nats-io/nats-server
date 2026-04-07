@@ -7918,7 +7918,7 @@ func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 	if fs.isClosed() {
 		return nil, 0, ErrStoreClosed
 	}
-	if sl == nil {
+	if sl == nil || sl.MatchesFullWildcard() {
 		return fs.LoadNextMsg(_EMPTY_, false, start, smp)
 	}
 	fs.mu.RLock()
@@ -8125,7 +8125,7 @@ func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 		return nil, 0, ErrStoreClosed
 	}
 
-	if sl == nil {
+	if sl == nil || sl.MatchesFullWildcard() {
 		sm, err = fs.LoadPrevMsg(start, smp)
 		return
 	}
