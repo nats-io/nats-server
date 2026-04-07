@@ -180,6 +180,55 @@ func (s *GenericSublist[T]) MatchesFullWildcard() bool {
 	return s.root.fwc != nil
 }
 
+// MatchesSingleFilter returns the filter when the sublist contains exactly one unique subject.
+func (s *GenericSublist[T]) MatchesSingleFilter() (string, bool) {
+	if s == nil {
+		return _EMPTY_, false
+	}
+	s.RLock()
+	defer s.RUnlock()
+	return singleFilter(s.root, _EMPTY_)
+}
+
+func singleFilter[T comparable](l *level[T], filter string) (string, bool) {
+	if l == nil {
+		return filter, filter != _EMPTY_
+	}
+
+	var next *node[T]
+	branches := 0
+	if l.pwc != nil {
+		next = l.pwc
+		branches++
+	}
+	if l.fwc != nil {
+		next = l.fwc
+		branches++
+	}
+	for _, n := range l.nodes {
+		next = n
+		branches++
+		break
+	}
+	if branches != 1 {
+		return _EMPTY_, false
+	}
+	for _, subj := range next.subs {
+		filter = subj
+		break
+	}
+	if next.next == nil {
+		return filter, filter != _EMPTY_
+	}
+	if filter != _EMPTY_ {
+		if _, ok := singleFilter(next.next, _EMPTY_); ok {
+			return _EMPTY_, false
+		}
+		return filter, true
+	}
+	return singleFilter(next.next, filter)
+}
+
 func (s *GenericSublist[T]) match(subject string, cb func(T), doLock bool) {
 	tsa := [32]string{}
 	tokens := tsa[:0]
