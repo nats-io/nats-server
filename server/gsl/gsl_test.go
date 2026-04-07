@@ -275,8 +275,30 @@ func TestGenericSublistSingleFilter(t *testing.T) {
 	require_True(t, ok)
 	require_Equal(t, filter, "stream.A.child")
 
+	require_NoError(t, s.Insert("stream.A.other", 22))
+	filter, ok = s.MatchesSingleFilter()
+	require_False(t, ok)
+	require_Equal(t, filter, _EMPTY_)
+
 	require_NoError(t, s.Insert("stream.*", 33))
 	filter, ok = s.MatchesSingleFilter()
+	require_False(t, ok)
+	require_Equal(t, filter, _EMPTY_)
+
+	// Test that an ancestor with descendants correctly returns false.
+	s2 := NewSublist[int]()
+	require_NoError(t, s2.Insert("foo", 1))
+	require_NoError(t, s2.Insert("foo.bar", 2))
+	require_NoError(t, s2.Insert("foo.baz", 3))
+	filter, ok = s2.MatchesSingleFilter()
+	require_False(t, ok)
+	require_Equal(t, filter, _EMPTY_)
+
+	// Test that an ancestor with only descendants correctly returns false.
+	s3 := NewSublist[int]()
+	require_NoError(t, s3.Insert("foo.bar", 2))
+	require_NoError(t, s3.Insert("foo.baz", 3))
+	filter, ok = s3.MatchesSingleFilter()
 	require_False(t, ok)
 	require_Equal(t, filter, _EMPTY_)
 }
