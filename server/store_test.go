@@ -757,6 +757,40 @@ func TestStoreMsgLoadPrevMsgMulti(t *testing.T) {
 	)
 }
 
+func TestStoreMsgLoadPrevMsg(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*", "bar.*"}},
+		func(t *testing.T, fs StreamStore) {
+			for _, subj := range []string{"foo.1", "bar.1", "foo.2", "bar.2", "foo.3"} {
+				_, _, err := fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+				require_NoError(t, err)
+			}
+
+			var sm StoreMsg
+
+			smp, seq, err := fs.LoadPrevMsg(_EMPTY_, false, 5, &sm)
+			require_NoError(t, err)
+			require_Equal(t, smp.subj, "foo.3")
+			require_Equal(t, seq, uint64(5))
+
+			smp, seq, err = fs.LoadPrevMsg("foo.2", false, 5, &sm)
+			require_NoError(t, err)
+			require_Equal(t, smp.subj, "foo.2")
+			require_Equal(t, seq, uint64(3))
+
+			smp, seq, err = fs.LoadPrevMsg("foo.*", true, 5, &sm)
+			require_NoError(t, err)
+			require_Equal(t, smp.subj, "foo.3")
+			require_Equal(t, seq, uint64(5))
+
+			_, seq, err = fs.LoadPrevMsg("baz.*", true, 5, &sm)
+			require_Error(t, err, ErrStoreEOF)
+			require_Equal(t, seq, uint64(1))
+		},
+	)
+}
+
 func TestStoreMsgLoadPrevMsgMultiFullWildcardSkip(t *testing.T) {
 	testAllStoreAllPermutations(
 		t, false,
