@@ -6059,6 +6059,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, mset.lseq, ts})
 		}
+		if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 0); err != nil {
+			return err
+		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
 			if batchId != _EMPTY_ {
@@ -6195,16 +6198,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// No errors, this is the normal path.
-	if rollupSub {
-		mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1}, false)
-	} else if rollupAll {
-		mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: 1}, false)
-	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
-		// Purge the message schedule.
-		scheduler := getMessageScheduler(hdr)
-		if scheduler != _EMPTY_ {
-			mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false)
-		}
+	if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 1); err != nil {
+		return err
 	}
 
 	// Check for republish.
@@ -6263,7 +6258,29 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	return nil
 }
 
-// processJetStreamBatchMsg processes a JetStream message that's part of an atomic batch publish.
+// Lock should be held.
+func (mset *stream) processJetStreamMsgWithRollup(subject string, rollupSub, rollupAll bool, hdr []byte, keep uint64) error {
+	if rollupSub {
+		if _, err := mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: keep}, false); err != nil {
+			return err
+		}
+	} else if rollupAll {
+		if _, err := mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: keep}, false); err != nil {
+			return err
+		}
+	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
+		// Purge the message schedule.
+		scheduler := getMessageScheduler(hdr)
+		if scheduler != _EMPTY_ {
+			if _, err := mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// processJetStreamAtomicBatchMsg processes a JetStream message that's part of an atomic batch publish.
 // Handles constraints around the batch, storing messages, doing consistency checks, and performing the commit.
 func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
 	// For possible error response.
