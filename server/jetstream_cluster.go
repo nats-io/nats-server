@@ -3185,7 +3185,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						// If the error signals we timed out of a snapshot, we should try to replay the snapshot
 						// instead of fully resetting the state. Resetting the clustered state may result in
 						// race conditions and should only be used as a last effort attempt.
-						if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries {
+						if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries || err == errAlreadyLeader {
 							if node := mset.raftNode(); node != nil && node.DrainAndReplaySnapshot() {
 								break
 							}
@@ -3997,10 +3997,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 			}
 
-			if isRecovering || !mset.IsLeader() {
-				if err := mset.processSnapshot(ss, ce.Index); err != nil && err != errAlreadyLeader {
-					return 0, err
-				}
+			if err := mset.processSnapshot(ss, ce.Index); err != nil {
+				return 0, err
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
@@ -9925,7 +9923,14 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 
 	// Pause the apply channel for our raft group while we catch up.
 	if err := n.PauseApply(); err != nil {
-		return err
+		// The only reason PauseApply can fail is due to errAlreadyLeader.
+		// We step down to get someone else to become the leader that can catch us up.
+		// Ignore the error since we could have already stepped down before us doing so here.
+		_ = n.StepDown()
+		// Now try pausing again and continue to catchup.
+		if err = n.PauseApply(); err != nil {
+			return err
+		}
 	}
 
 	// Set our catchup state.
