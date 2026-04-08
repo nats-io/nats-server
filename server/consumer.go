@@ -475,6 +475,7 @@ type consumer struct {
 	store             ConsumerStore
 	active            bool
 	replay            bool
+	useV2Ack          bool
 	dtmr              *time.Timer
 	uptmr             *time.Timer // Unpause timer
 	gwdtmr            *time.Timer
@@ -1331,6 +1332,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		domain = "_"
 	}
 	accHash := getHash(accName)
+
+	o.useV2Ack = s.getOpts().getFeatureFlag(FeatureFlagJsAckFormatV2)
 
 	// v1 format: $JS.(ACK|FC).<stream>.<consumer>.etc.
 	o.fcPreOld = jsFlowControlPre
@@ -5343,9 +5346,10 @@ func (o *consumer) sendIdleHeartbeat(subj string) {
 }
 
 func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) string {
-	// TODO(mvv): should put the new format behind an opt-in flag
-	//return fmt.Sprintf(o.ackReplyOldT, dc, sseq, dseq, ts, pending)
-	return fmt.Sprintf(o.ackReplyT, dc, sseq, dseq, ts, pending)
+	if o.useV2Ack {
+		return fmt.Sprintf(o.ackReplyT, dc, sseq, dseq, ts, pending)
+	}
+	return fmt.Sprintf(o.ackReplyOldT, dc, sseq, dseq, ts, pending)
 }
 
 // Used mostly for testing. Sets max pending bytes for flow control setups.
@@ -5588,9 +5592,11 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, su
 // Lock should be held.
 func (o *consumer) fcReply() string {
 	var sb strings.Builder
-	// TODO(mvv): should put the new format behind an opt-in flag
-	//sb.WriteString(o.fcPreOld)
-	sb.WriteString(o.fcPre)
+	if o.useV2Ack {
+		sb.WriteString(o.fcPre)
+	} else {
+		sb.WriteString(o.fcPreOld)
+	}
 	sb.WriteString(o.stream)
 	sb.WriteByte(btsep)
 	sb.WriteString(o.name)

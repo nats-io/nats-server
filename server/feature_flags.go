@@ -19,7 +19,20 @@ import (
 	"strings"
 )
 
-var featureFlags = map[string]bool{}
+const (
+	FeatureFlagJsAckFormatV2 = "js_ack_fc_v2"
+)
+
+var featureFlags = map[string]bool{
+	// Use v2 format for `$JS.ACK.>` and `$JS.FC.>`.
+	// - Introduced: 2.14.0, both v1 and v2 supported, only using v1.
+	// - Enabled: TBD, both supported, v2 becomes the default.
+	//
+	// - v1: $JS.ACK.<stream name>.<consumer name>.<num delivered>.<stream sequence>.<consumer sequence>.<timestamp>.<num pending>
+	// - v2: $JS.ACK.<domain>.<account hash>.<stream name>.<consumer name>.<num delivered>.<stream sequence>.<consumer sequence>.<timestamp>.<num pending>
+	// See also: https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-15.md#jsack
+	FeatureFlagJsAckFormatV2: false,
+}
 
 // getFeatureFlag is used to retrieve either the default or overwritten value for a feature flag.
 // The user's value takes precedence over the system's default. However, if the flag doesn't exist, it's disabled.
