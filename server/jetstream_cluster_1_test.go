@@ -9727,6 +9727,64 @@ func TestJetStreamClusterScheduledDelayedMessageRollup(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterPurgeScheduleWithInvalidScheduler(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := &StreamConfig{
+				Name:              "SchedulesEnabled",
+				Subjects:          []string{"foo.*"},
+				Storage:           FileStorage,
+				Replicas:          replicas,
+				AllowMsgSchedules: true,
+			}
+			_, err := jsStreamCreate(t, nc, cfg)
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo.schedule", []byte("previous"))
+			require_NoError(t, err)
+
+			m := nats.NewMsg("foo.schedule")
+			m.Header.Set("Nats-Schedule-Next", "purge")
+			// Missing scheduler
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
+
+			// Scheduler must be a literal subject
+			m.Header.Set("Nats-Scheduler", "foo.*")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
+
+			// Scheduler can't equal the publish subject.
+			m.Header.Set("Nats-Scheduler", "foo.schedule")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
+
+			// We're allowed to purge a schedule, as long as the subject we're publishing to doesn't equal.
+			m.Subject = "foo.last"
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+
+			// Only the last message should exist.
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				state, err := checkStateAndErr(t, c, globalAccountName, "SchedulesEnabled")
+				if err != nil {
+					return err
+				}
+				if state.Msgs != 1 || state.FirstSeq != 2 || state.LastSeq != 2 {
+					return fmt.Errorf("expected 1 msg, got %v", state)
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestJetStreamClusterScheduledDelayedMessageReversedHeaderOrder(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		for _, storage := range []StorageType{FileStorage, MemoryStorage} {

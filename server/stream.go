@@ -6141,6 +6141,22 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 					}
 				}
 			}
+			if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 {
+				// If Nats-Schedule-Next is set, Nats-Scheduler should be set too, but:
+				// - it must NOT be empty.
+				// - it must NOT match the publish subject.
+				if scheduler := sliceHeader(JSScheduler, hdr); len(scheduler) == 0 ||
+					bytesToString(scheduler) == subject || !IsValidPublishSubject(bytesToString(scheduler)) {
+					apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				}
+			}
 		}
 
 		// Dedupe detection. This is done at the cluster level for dedupe detection above the

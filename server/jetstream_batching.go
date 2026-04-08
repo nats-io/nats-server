@@ -853,6 +853,16 @@ func checkMsgHeadersPreClusteredProposal(
 				}
 			}
 		}
+		if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 {
+			// If Nats-Schedule-Next is set, Nats-Scheduler should be set too, but:
+			// - it must NOT be empty.
+			// - it must NOT match the publish subject.
+			if scheduler := sliceHeader(JSScheduler, hdr); len(scheduler) == 0 ||
+				bytesToString(scheduler) == subject || !IsValidPublishSubject(bytesToString(scheduler)) {
+				apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
+			}
+		}
 
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {

@@ -2098,5 +2098,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSchedulesSchedulerInvalidErr",
+    "code": 400,
+    "error_code": 10212,
+    "description": "message schedules invalid scheduler",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
