@@ -1075,8 +1075,8 @@ func (n *raft) PauseApply() error {
 }
 
 func (n *raft) pauseApplyLocked() {
-	// If we are currently a candidate make sure we step down.
-	if n.State() == Candidate {
+	// If we are currently not a follower, make sure we step down.
+	if n.State() != Follower {
 		n.stepdownLocked(noLeader)
 	}
 
