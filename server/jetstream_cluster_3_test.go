@@ -8140,46 +8140,6 @@ func TestJetStreamClusterStreamUpdateCombinedScaleDownWithSourcesRemoved(t *test
 	require_Len(t, len(si.Sources), 0)
 }
 
-func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-
-	// Publish a message and ensure everyone is synced up.
-	_, err = js.Publish("foo", nil)
-	require_NoError(t, err)
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		return checkState(t, c, globalAccountName, "TEST")
-	})
-
-	// Get the current stream leader.
-	sl := c.streamLeader(globalAccountName, "TEST")
-	require_NotNil(t, sl)
-	mset, err := sl.globalAccount().lookupStream("TEST")
-	require_NoError(t, err)
-	rn := mset.raftNode()
-
-	// Grab the current state of the leader which contains the message we've published.
-	snap := mset.stateSnapshot()
-	// Truncate this leader's store to be empty, while remaining Raft leader.
-	require_NoError(t, mset.store.Truncate(0))
-	// Send the snapshot containing the message. Even though we're Raft leader, we must
-	// still check we're up-to-date and if not: step down and catch up.
-	require_NoError(t, rn.SendSnapshot(snap))
-	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
-		return checkState(t, c, globalAccountName, "TEST")
-	})
-}
-
 func TestJetStreamClusterInterestStreamMsgWithNoInterestStillAppliesRollup(t *testing.T) {
 	test := func(t *testing.T, replicas int) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -8228,4 +8188,44 @@ func TestJetStreamClusterInterestStreamMsgWithNoInterestStillAppliesRollup(t *te
 	for _, replicas := range []int{1, 3} {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
 	}
+}
+
+func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Publish a message and ensure everyone is synced up.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Get the current stream leader.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	rn := mset.raftNode()
+
+	// Grab the current state of the leader which contains the message we've published.
+	snap := mset.stateSnapshot()
+	// Truncate this leader's store to be empty, while remaining Raft leader.
+	require_NoError(t, mset.store.Truncate(0))
+	// Send the snapshot containing the message. Even though we're Raft leader, we must
+	// still check we're up-to-date and if not: step down and catch up.
+	require_NoError(t, rn.SendSnapshot(snap))
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
 }
