@@ -170,6 +170,66 @@ func (s *GenericSublist[T]) NumInterest(subject string) (np int) {
 	return
 }
 
+// MatchesFullWildcard returns true if there is top-level ">" interest.
+func (s *GenericSublist[T]) MatchesFullWildcard() bool {
+	if s == nil {
+		return false
+	}
+	s.RLock()
+	defer s.RUnlock()
+	return s.root.fwc != nil
+}
+
+// MatchesSingleFilter returns the filter when the sublist contains exactly one unique subject.
+func (s *GenericSublist[T]) MatchesSingleFilter() (string, bool) {
+	if s == nil {
+		return _EMPTY_, false
+	}
+	s.RLock()
+	defer s.RUnlock()
+	return singleFilter(s.root, _EMPTY_)
+}
+
+func singleFilter[T comparable](l *level[T], filter string) (string, bool) {
+	if l == nil {
+		return filter, filter != _EMPTY_
+	}
+	if len(l.nodes) > 1 {
+		return _EMPTY_, false
+	}
+	var next *node[T]
+	branches := 0
+	if l.pwc != nil {
+		next = l.pwc
+		branches++
+	}
+	if l.fwc != nil {
+		next = l.fwc
+		branches++
+	}
+	for _, n := range l.nodes {
+		next = n
+		branches++
+	}
+	if branches != 1 {
+		return _EMPTY_, false
+	}
+	for _, subj := range next.subs {
+		filter = subj
+		break
+	}
+	if next.next == nil {
+		return filter, filter != _EMPTY_
+	}
+	if filter != _EMPTY_ {
+		if next.next.numNodes() > 0 {
+			return _EMPTY_, false
+		}
+		return filter, true
+	}
+	return singleFilter(next.next, filter)
+}
+
 func (s *GenericSublist[T]) match(subject string, cb func(T), doLock bool) {
 	tsa := [32]string{}
 	tokens := tsa[:0]

@@ -106,9 +106,11 @@ type jetStream struct {
 	apiInflight   int64
 	apiTotal      int64
 	apiErrors     int64
-	memReserved   int64
-	storeReserved int64
+	memMax        int64
+	memReserved   int64 // Requires JS lock to be held.
 	memUsed       int64
+	storeMax      int64
+	storeReserved int64 // Requires JS lock to be held.
 	storeUsed     int64
 	queueLimit    int64
 	clustered     int32
@@ -421,6 +423,9 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.gcbOutMax = defaultMaxTotalCatchupOutBytes
 	}
 	s.gcbMu.Unlock()
+
+	atomic.StoreInt64(&js.memMax, cfg.MaxMemory)
+	atomic.StoreInt64(&js.storeMax, cfg.MaxStore)
 
 	// TODO: Not currently reloadable.
 	atomic.StoreInt64(&js.queueLimit, s.getOpts().JetStreamRequestQueueLimit)
@@ -1058,8 +1063,10 @@ func (s *Server) shutdownJetStream() {
 func (s *Server) JetStreamConfig() *JetStreamConfig {
 	var c *JetStreamConfig
 	if js := s.getJetStream(); js != nil {
+		js.mu.RLock()
 		copy := js.config
 		c = &(copy)
+		js.mu.RUnlock()
 	}
 	return c
 }
@@ -2342,14 +2349,14 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 func (js *jetStream) wouldExceedLimits(storeType StorageType, sz int) bool {
 	var (
 		total *int64
-		max   int64
+		max   *int64
 	)
 	if storeType == MemoryStorage {
-		total, max = &js.memUsed, js.config.MaxMemory
+		total, max = &js.memUsed, &js.memMax
 	} else {
-		total, max = &js.storeUsed, js.config.MaxStore
+		total, max = &js.storeUsed, &js.storeMax
 	}
-	return (atomic.LoadInt64(total) + int64(sz)) > max
+	return (atomic.LoadInt64(total) + int64(sz)) > atomic.LoadInt64(max)
 }
 
 func (js *jetStream) limitsExceeded(storeType StorageType) bool {

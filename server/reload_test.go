@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -6444,4 +6445,76 @@ func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 		require_NoError(t, err)
 		wg.Wait()
 	}
+}
+
+func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
+	tdir := t.TempDir()
+	template := `
+		listen: 127.0.0.1:-1
+		jetstream {
+			max_mem_store: %s
+			max_file_store: %s
+			store_dir = %q
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "128MB", "128MB", tdir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Verify initial config.
+	cfg := s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
+	require_Equal(t, cfg.MaxStore, 128*1024*1024)
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	scfg := &nats.StreamConfig{MaxBytes: 128 * 1024 * 1024}
+	storageTypes := []nats.StorageType{nats.FileStorage, nats.MemoryStorage}
+	for _, st := range storageTypes {
+		scfg.Name = fmt.Sprintf("TEST-%s", st)
+		scfg.Storage = st
+		_, err := js.AddStream(scfg)
+		require_NoError(t, err)
+	}
+
+	for _, st := range storageTypes {
+		scfg.Name = fmt.Sprintf("TEST2-%s", st)
+		scfg.Storage = st
+		_, err := js.AddStream(scfg)
+		if st == nats.FileStorage {
+			require_Error(t, err, NewJSStorageResourcesExceededError())
+		} else {
+			require_Error(t, err, NewJSMemoryResourcesExceededError())
+		}
+	}
+
+	// Reload with increased limits.
+	err := os.WriteFile(conf, []byte(fmt.Sprintf(template, "512MB", "512MB", tdir)), 0666)
+	require_NoError(t, err)
+	err = s.Reload()
+	require_NoError(t, err)
+	cfg = s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
+	// We should now be able to create the stream.
+	for _, st := range storageTypes {
+		scfg.Name = fmt.Sprintf("TEST2-%s", st)
+		scfg.Storage = st
+		_, err := js.AddStream(scfg)
+		require_NoError(t, err)
+	}
+
+	// Decreasing the limits should fail.
+	err = os.WriteFile(conf, []byte(fmt.Sprintf(template, "511MB", "511MB", tdir)), 0666)
+	require_NoError(t, err)
+	err = s.Reload()
+	require_Error(t, err, errors.New("config reload not supported for decreasing jetstream max memory and store"))
+
+	// Config should remain the same.
+	cfg = s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
 }

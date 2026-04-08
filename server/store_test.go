@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -781,6 +782,82 @@ func TestStoreMsgLoadPrevMsgMulti(t *testing.T) {
 			_, _, err := fs.LoadPrevMsgMulti(sl, 4, &sm)
 			require_Error(t, err, ErrStoreEOF)
 			require_Equal(t, count, 3)
+		},
+	)
+}
+
+func TestStoreMsgLoadPrevMsg(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*", "bar.*"}},
+		func(t *testing.T, fs StreamStore) {
+			for _, subj := range []string{"foo.1", "bar.1", "foo.2", "bar.2", "foo.3"} {
+				_, _, err := fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+				require_NoError(t, err)
+			}
+
+			var sm StoreMsg
+
+			smp, seq, err := fs.LoadPrevMsg(_EMPTY_, false, 5, &sm)
+			require_NoError(t, err)
+			require_Equal(t, smp.subj, "foo.3")
+			require_Equal(t, seq, uint64(5))
+
+			smp, seq, err = fs.LoadPrevMsg("foo.2", false, 5, &sm)
+			require_NoError(t, err)
+			require_Equal(t, smp.subj, "foo.2")
+			require_Equal(t, seq, uint64(3))
+
+			smp, seq, err = fs.LoadPrevMsg("foo.*", true, 5, &sm)
+			require_NoError(t, err)
+			require_Equal(t, smp.subj, "foo.3")
+			require_Equal(t, seq, uint64(5))
+
+			_, seq, err = fs.LoadPrevMsg("baz.*", true, 5, &sm)
+			require_Error(t, err, ErrStoreEOF)
+			require_Equal(t, seq, uint64(1))
+		},
+	)
+}
+
+func TestStoreMsgLoadPrevMsgMultiFullWildcardSkip(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}},
+		func(t *testing.T, fs StreamStore) {
+			for i := range 10 {
+				subj := fmt.Sprintf("foo.%d", i+1)
+				_, _, err := fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
+				require_NoError(t, err)
+			}
+
+			var sm StoreMsg
+			var state StreamState
+			fs.FastState(&state)
+
+			sl := gsl.NewSimpleSublist()
+			require_NoError(t, sl.Insert(">", struct{}{}))
+
+			var got []uint64
+			for seq := state.LastSeq; ; {
+				smp, nseq, err := fs.LoadPrevMsgMulti(sl, seq, &sm)
+				if err == ErrStoreEOF {
+					require_Equal(t, nseq, state.FirstSeq)
+					break
+				}
+				require_NoError(t, err)
+				require_Equal(t, smp.seq, nseq)
+				got = append(got, nseq)
+				if nseq == state.FirstSeq {
+					_, nseq, err = fs.LoadPrevMsgMulti(sl, nseq-1, &sm)
+					require_Error(t, err, ErrStoreEOF)
+					require_Equal(t, nseq, state.FirstSeq)
+					break
+				}
+				seq = nseq - 1
+			}
+
+			require_True(t, slices.Equal(got, []uint64{10, 9, 8, 7, 6, 5, 4, 3, 2, 1}))
 		},
 	)
 }

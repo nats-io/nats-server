@@ -8005,3 +8005,137 @@ func TestJetStreamClusterRemoveStatusHeaderOnStreamInbound(t *testing.T) {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
 	}
 }
+
+func TestJetStreamClusterStreamUpdateCombinedScaleUpWithSubjectsChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"a"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	_, err = js.Publish("a", nil)
+	require_NoError(t, err)
+
+	cfg.Replicas = 3
+	cfg.Subjects = append(cfg.Subjects, "b")
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, err = js.Publish("b", nil, nats.AckWait(200*time.Millisecond))
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterStreamUpdateCombinedScaleDownWithSubjectsChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+		Subjects: []string{"a"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	_, err = js.Publish("a", nil)
+	require_NoError(t, err)
+
+	// Make sure the current stream leader doesn't respond to cluster stream info requests.
+	// This allows the scale down to not (always) select the correct server to scale down to.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	if mset.infoSub == nil {
+		mset.mu.Unlock()
+		t.Fatal("infoSub is nil")
+	}
+	mset.srv.sysUnsubscribe(mset.infoSub)
+	mset.infoSub = nil
+	mset.mu.Unlock()
+
+	// If a different server gets picked than the current stream leader, it needs to
+	// subscribe to all subjects to be able to respond.
+	cfg.Replicas = 1
+	cfg.Subjects = append(cfg.Subjects, "b")
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		_, err = js.Publish("b", nil, nats.AckWait(200*time.Millisecond))
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterStreamUpdateCombinedScaleDownWithSourcesRemoved(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+		Subjects: []string{"a"},
+		Sources: []*nats.StreamSource{
+			{Name: "SOURCE"},
+		},
+	}
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	require_Len(t, len(si.Sources), 1)
+
+	_, err = js.Publish("a", nil)
+	require_NoError(t, err)
+
+	// Stepdown the leader a couple of times, to increase the likelihood of the leader
+	// after scaledown to have been leader once due to this.
+	for range 3 {
+		sl := c.streamLeader(globalAccountName, "TEST")
+		require_NotNil(t, sl)
+		require_NoError(t, sl.JetStreamStepdownStream(globalAccountName, "TEST"))
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+	}
+
+	// Make sure the current stream leader doesn't respond to cluster stream info requests.
+	// This allows the scale down to not (always) select the correct server to scale down to.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	if mset.infoSub == nil {
+		mset.mu.Unlock()
+		t.Fatal("infoSub is nil")
+	}
+	mset.srv.sysUnsubscribe(mset.infoSub)
+	mset.infoSub = nil
+	mset.mu.Unlock()
+
+	// After scaledown with sources removed, should not report sources in the stream info anymore.
+	cfg.Replicas = 1
+	cfg.Sources = nil
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_Len(t, len(si.Sources), 0)
+}

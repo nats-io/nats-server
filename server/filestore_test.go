@@ -1759,7 +1759,8 @@ func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
 
 		toSend := 5
 		for i := 0; i < toSend; i++ {
-			fs.StoreMsg("foo", nil, []byte("ok-1"), 0)
+			_, _, err = fs.StoreMsg("foo", nil, []byte("ok-1"), 0)
+			require_NoError(t, err)
 		}
 		fs.FlushAllPending()
 
@@ -5353,7 +5354,7 @@ func TestFileStoreErrPartialLoadOnSyncClose(t *testing.T) {
 	require_True(t, lmb != nil)
 
 	lmb.mu.Lock()
-	lmb.expireCacheLocked()
+	lmb.tryExpireCacheLocked()
 	lmb.dirtyCloseWithRemove(false)
 	lmb.mu.Unlock()
 
@@ -6281,8 +6282,11 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	psi := *info
 	fs.mu.RUnlock()
 
+	// PSIM remains the same, since we'll not always know
+	// that the head was removed, instead of the tail.
 	require_Equal(t, psi.total, 1)
-	require_Equal(t, psi.fblk, psi.lblk)
+	require_Equal(t, psi.fblk, 1)
+	require_Equal(t, psi.lblk, 4)
 }
 
 func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
@@ -9839,7 +9843,7 @@ func TestFileStoreFirstMatchingMultiExpiry(t *testing.T) {
 
 		fs.mu.RLock()
 		mb := fs.lmb
-		mb.expireCacheLocked()
+		mb.tryExpireCacheLocked()
 		fs.mu.RUnlock()
 
 		sl := gsl.NewSublist[struct{}]()
@@ -12292,6 +12296,44 @@ func TestFileStoreCorruptionSetsHbitWithoutHeaders(t *testing.T) {
 	t.Run("rebuildState", func(t *testing.T) { test(t, KindRebuildState) })
 }
 
+func TestFileStoreDontExpireCacheWithRecentWrite(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	// Cache should still exist after above write.
+	fmb := fs.getFirstBlock()
+	fmb.mu.Lock()
+	cacheLoaded := fmb.cacheAlreadyLoaded()
+	fmb.llseq = 0
+	fmb.mu.Unlock()
+	require_True(t, cacheLoaded)
+
+	// The load will try to expire the cache, but shouldn't due to the recent write.
+	_, _, err = fs.LoadNextMsg(fwcs, true, 0, nil)
+	require_NoError(t, err)
+
+	fmb.mu.Lock()
+	fmb.llseq = 0
+	cacheLoaded = fmb.cacheAlreadyLoaded()
+	// We update the last write timestamp to be very old, so the next load can expire the cache.
+	fmb.lwts = 0
+	fmb.mu.Unlock()
+	require_True(t, cacheLoaded)
+	_, _, err = fs.LoadNextMsg(fwcs, true, 0, nil)
+	require_NoError(t, err)
+
+	fmb.mu.Lock()
+	cacheLoaded = fmb.cacheAlreadyLoaded()
+	fmb.mu.Unlock()
+	require_False(t, cacheLoaded)
+}
+
 func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
 	mconfig := StreamConfig{Name: "TEST_DELETE", Storage: FileStorage, Subjects: []string{"foo"}, Replicas: 1}
@@ -12327,4 +12369,99 @@ func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 		require_NoError(t, err)
 		wg.Wait()
 	}
+}
+
+func TestFileStoreDontLoadSubjectStateIfNotPurged(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	fmb := fs.getFirstBlock()
+	fmb.mu.Lock()
+	fmb.fss = nil
+	fmb.mu.Unlock()
+
+	// When purging a subject that doesn't exist, we shouldn't need to load subjects for any blocks.
+	purged, err := fs.PurgeEx("bar", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 0)
+
+	fmb.mu.RLock()
+	defer fmb.mu.RUnlock()
+	require_True(t, fmb.fss == nil)
+}
+
+func TestFileStoreOnlyLoadSubjectStateOnBlocksWithinInterestRange(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("bar", nil, nil, 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss = nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	// When purging a subject that only exists on a subset, we should only load blocks within its range.
+	purged, err := fs.PurgeEx("bar", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 1)
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	for i, mb := range fs.blks {
+		mb.mu.Lock()
+		loadedFss := mb.fss != nil
+		mb.mu.Unlock()
+		require_Equal(t, loadedFss, i == 1)
+	}
+}
+
+func TestFileStoreRemovePerSubjectWithMultipleBlocks(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Store two messages in separate blocks.
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, err = fs.newMsgBlockForWrite()
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	fs.mu.Lock()
+	seq, err := fs.firstSeqForSubj("foo")
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
+
+	// After removing the last message, we should still be able to find the first.
+	removed, err := fs.RemoveMsg(2)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	fs.mu.Lock()
+	seq, err = fs.firstSeqForSubj("foo")
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
 }
