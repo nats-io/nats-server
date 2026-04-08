@@ -1222,7 +1222,7 @@ func (s *Server) unmarshalRequest(c *client, acc *Account, subject string, msg [
 
 			c.RateLimitWarnf("Invalid JetStream request '%s > %s': %s", acc, subject, err)
 
-			if s.JetStreamConfig().Strict {
+			if js := s.getJetStream(); js != nil && js.config.Strict {
 				return err
 			}
 

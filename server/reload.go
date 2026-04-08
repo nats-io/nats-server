@@ -740,6 +740,35 @@ func (jso jetStreamOption) IsStatszChange() bool {
 	return true
 }
 
+type jetStreamLimitsOption struct {
+	noopOption
+	newMaxMemory int64
+	newMaxStore  int64
+}
+
+func (jso *jetStreamLimitsOption) Apply(s *Server) {
+	js := s.getJetStream()
+	if js == nil {
+		return
+	}
+	js.mu.Lock()
+	if jso.newMaxMemory > 0 {
+		js.config.MaxMemory = jso.newMaxMemory
+		atomic.StoreInt64(&js.memMax, js.config.MaxMemory)
+		s.Noticef("Reloaded: JetStream max_mem_store = %s", friendlyBytes(jso.newMaxMemory))
+	}
+	if jso.newMaxStore > 0 {
+		js.config.MaxStore = jso.newMaxStore
+		atomic.StoreInt64(&js.storeMax, js.config.MaxStore)
+		s.Noticef("Reloaded: JetStream max_file_store = %s", friendlyBytes(jso.newMaxStore))
+	}
+	js.mu.Unlock()
+}
+
+func (jso *jetStreamLimitsOption) IsStatszChange() bool {
+	return true
+}
+
 type defaultSentinelOption struct {
 	noopOption
 	newValue string
@@ -1286,6 +1315,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		jsMemLimitsChanged  bool
 		jsFileLimitsChanged bool
 		jsStoreDirChanged   bool
+		jsLimitsUpdate      *jetStreamLimitsOption
 	)
 	for i := 0; i < oldConfig.NumField(); i++ {
 		field := oldConfig.Type().Field(i)
@@ -1636,26 +1666,35 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				fromSet   = !fromUnset
 				toUnset   = new == -1
 				toSet     = !toUnset
+				increased = fromSet && toSet && new > old
 			)
 			if jsEnabled && modified {
 				// Cannot change limits from dynamic storage at runtime.
 				switch {
+				case increased:
+					// Allowed to increase, but not decrease.
+					if jsLimitsUpdate == nil {
+						jsLimitsUpdate = &jetStreamLimitsOption{}
+						diffOpts = append(diffOpts, jsLimitsUpdate)
+					}
+					if optName == "jetstreammaxmemory" {
+						jsLimitsUpdate.newMaxMemory = new
+					} else {
+						jsLimitsUpdate.newMaxStore = new
+					}
 				case fromSet && toUnset:
 					// Limits changed but it may mean that JS is being disabled,
 					// keep track of the change and error in case it is not.
-					switch optName {
-					case "jetstreammaxmemory":
+					if optName == "jetstreammaxmemory" {
 						jsMemLimitsChanged = true
-					case "jetstreammaxstore":
+					} else {
 						jsFileLimitsChanged = true
-					default:
-						return nil, fmt.Errorf("config reload not supported for jetstream max memory and store")
 					}
 				case fromUnset && toSet:
 					// Prevent changing from dynamic max memory / file at runtime.
 					return nil, fmt.Errorf("config reload not supported for jetstream dynamic max memory and store")
 				default:
-					return nil, fmt.Errorf("config reload not supported for jetstream max memory and store")
+					return nil, fmt.Errorf("config reload not supported for decreasing jetstream max memory and store")
 				}
 			}
 		case "jetstreammetacompact", "jetstreammetacompactsize", "jetstreammetacompactsync":
