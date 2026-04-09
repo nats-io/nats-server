@@ -5324,3 +5324,40 @@ func TestNRGOnlyCommitIfCurrentTerm(t *testing.T) {
 	n.processAppendEntryResponse(&appendEntryResponse{term: 4, index: 3, peer: s2, success: true})
 	require_Equal(t, n.commit, 3)
 }
+
+func TestNRGProcessAppendEntryTermMismatchDoesNotRegressCommit(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2, entries: entries})
+	aeMsg4 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: entries})
+	aeMsg5 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 4, pterm: 1, pindex: 4, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 5, entries: nil})
+
+	// Store five entries and commit.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeMsg3, n.aesub)
+	n.processAppendEntry(aeMsg4, n.aesub)
+	n.processAppendEntry(aeMsg5, n.aesub)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.commit, 5)
+	require_Equal(t, n.pindex, 5)
+
+	// Send an append entry with a mismatched pterm. This will trigger
+	// the term mismatch path in processAppendEntry which calls
+	// truncateWAL. The commit must not regress below what was
+	// already committed.
+	aeBadPterm := encode(t, &appendEntry{leader: nats0, term: 2, commit: 5, pterm: 2, pindex: 5, entries: entries})
+	n.processAppendEntry(aeBadPterm, n.aesub)
+	require_Equal(t, n.commit, 5)
+}
