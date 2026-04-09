@@ -4089,6 +4089,20 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				// But only if we haven't already committed past this point.
 				if eae.pindex < n.commit {
 					success = true
+					assert.Unreachable("Truncate to earlier entry would lose commits", map[string]any{
+						"n.accName":  n.accName,
+						"n.group":    n.group,
+						"n.id":       n.id,
+						"n.term":     n.term,
+						"n.pindex":   n.pindex,
+						"n.commit":   n.commit,
+						"n.applied":  n.applied,
+						"ae.pindex":  ae.pindex,
+						"ae.pterm":   ae.pterm,
+						"ae.commit":  ae.commit,
+						"eae.pterm":  eae.pterm,
+						"eae.pindex": eae.pindex,
+					})
 				} else {
 					n.truncateWAL(eae.pterm, eae.pindex)
 				}
