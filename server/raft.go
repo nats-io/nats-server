@@ -249,6 +249,9 @@ type raft struct {
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	deleted      bool // If the node was deleted.
 	snapshotting bool // Snapshot is in progress.
+	quorumPaused bool // Pause replication and quorum participation to prevent log growth during slow applies.
+
+	overrunCount uint64 // Counter of how many times we were overrun, either as follower or as leader.
 }
 
 type proposedEntry struct {
@@ -920,6 +923,16 @@ func (n *raft) Propose(data []byte) error {
 	if werr := n.werr; werr != nil {
 		return werr
 	}
+
+	if n.isLeaderOverrun() {
+		var state StreamState
+		n.wal.FastState(&state)
+		n.warn("Leader falling behind, stepping down: pindex %d, commit %d, applied %d, WAL size %s", n.pindex, n.commit, n.applied, friendlyBytes(state.Bytes))
+		// Stepdown without leader transfer, likely all replicas will be overrun, and we need time to recover.
+		n.stepdownLocked(noLeader)
+		n.overrunCount++
+		return errNotLeader
+	}
 	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_))
 	return nil
 }
@@ -939,10 +952,37 @@ func (n *raft) ProposeMulti(entries []*Entry) error {
 	if werr := n.werr; werr != nil {
 		return werr
 	}
+
+	if n.isLeaderOverrun() {
+		var state StreamState
+		n.wal.FastState(&state)
+		n.warn("Leader falling behind, stepping down: pindex %d, commit %d, applied %d, WAL size %s", n.pindex, n.commit, n.applied, friendlyBytes(state.Bytes))
+		// Stepdown without leader transfer, likely all replicas will be overrun, and we need time to recover.
+		n.stepdownLocked(noLeader)
+		n.overrunCount++
+		return errNotLeader
+	}
 	for _, e := range entries {
 		n.prop.push(newProposedEntry(e, _EMPTY_))
 	}
 	return nil
+}
+
+// isLeaderOverrun returns whether we are overrun and should step down due to continuously increasing
+// uncommitted or unapplied entries. If triggered, this means we're being severely overrun by
+// incoming proposals or the system is degraded such that it's too slow (or unable) to process them.
+// Stepping down means the system gets to "breathe" for a bit, until a new leader can be elected.
+// Lock should be held.
+func (n *raft) isLeaderOverrun() bool {
+	applied := max(n.applied, n.papplied)
+	commit := max(n.commit, n.papplied)
+	// We only do this past a high threshold to protect ourselves.
+	// Worst-case we'll have 2x the threshold, once in uncommitted and once in unapplied entries.
+	// Either the number of uncommitted entries is over the threshold: we're not getting quorum from our followers.
+	uncommittedThreshold := n.pindex > commit && n.pindex-commit > pauseQuorumThreshold
+	// Or, the number of in-memory committed but not yet applied entries is over the threshold: we're slow to apply.
+	unappliedThreshold := commit > applied && commit-applied > pauseQuorumThreshold
+	return uncommittedThreshold || unappliedThreshold
 }
 
 // ForwardProposal will forward the proposal to the leader if known.
@@ -2877,22 +2917,29 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 	// Need to copy since this is underlying client/route buffer.
 	msg = copyBytes(msg)
 
-	n.RLock()
+	n.Lock()
+	defer n.Unlock()
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader || !n.leaderState.Load() {
 		n.debug("Ignoring forwarded proposal, not leader")
-		n.RUnlock()
 		return
 	}
-	prop, werr := n.prop, n.werr
-	n.RUnlock()
 
 	// Ignore if we have had a write error previous.
-	if werr != nil {
+	if n.werr != nil {
 		return
 	}
 
-	prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
+	if n.isLeaderOverrun() {
+		var state StreamState
+		n.wal.FastState(&state)
+		n.warn("Leader falling behind, stepping down: pindex %d, commit %d, applied %d, WAL size %s", n.pindex, n.commit, n.applied, friendlyBytes(state.Bytes))
+		// Stepdown without leader transfer, likely all replicas will be overrun, and we need time to recover.
+		n.stepdownLocked(noLeader)
+		n.overrunCount++
+		return
+	}
+	n.prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
 }
 
 // Adds peer with the given id to our membership,
@@ -4050,6 +4097,36 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
+	// If commits are outpacing our applies, temporarily stop accepting new entries to avoid falling further behind.
+	// This encourages the leader to sync us via a snapshot instead. We use max(applied, papplied) to avoid
+	// incorrectly triggering this pause immediately after receiving a snapshot.
+	applied := max(n.applied, n.papplied)
+	commit := max(n.commit, n.papplied)
+	if sub != nil && (commit > applied || n.quorumPaused) {
+		diff := commit - applied
+		if n.quorumPaused {
+			if diff > paeWarnThreshold {
+				n.Unlock()
+				return
+			}
+			// Once we're sufficiently below the threshold, we continue again. We'll likely receive a snapshot
+			// from the leader.
+			n.quorumPaused = false
+			var state StreamState
+			n.wal.FastState(&state)
+			n.warn("Quorum resumed: commit %d, applied %d, WAL size %s", commit, applied, friendlyBytes(state.Bytes))
+		} else if diff > pauseQuorumThreshold {
+			// It takes a while until we reach the pause threshold, but once we do we enter a "cooldown period".
+			n.quorumPaused = true
+			n.overrunCount++
+			var state StreamState
+			n.wal.FastState(&state)
+			n.warn("Quorum paused, falling behind: commit %d != applied %d, WAL size %s", commit, applied, friendlyBytes(state.Bytes))
+			n.Unlock()
+			return
+		}
+	}
+
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
@@ -4429,9 +4506,10 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 }
 
 const (
-	paeDropThreshold = 20_000
-	paeWarnThreshold = 10_000
-	paeWarnModulo    = 5_000
+	pauseQuorumThreshold = 100_000
+	paeDropThreshold     = 20_000
+	paeWarnThreshold     = 10_000
+	paeWarnModulo        = 5_000
 )
 
 func (n *raft) sendAppendEntry(entries []*Entry) {
@@ -5056,6 +5134,8 @@ func (n *raft) switchToCandidate() {
 	// Increment the term.
 	n.term++
 	n.vote = noVote
+	// Reset quorum paused. If it was previously set, we checked above that we've applied all committed entries.
+	n.quorumPaused = false
 	// Clear current Leader.
 	n.updateLeader(noLeader)
 	n.switchState(Candidate)
