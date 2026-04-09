@@ -839,10 +839,11 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 
 func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	type BatchItem struct {
-		subject string
-		header  nats.Header
-		msg     []byte
-		err     error
+		subject  string
+		rsubject string
+		header   nats.Header
+		msg      []byte
+		err      error
 	}
 
 	type BatchTest struct {
@@ -1384,6 +1385,23 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}, err: errors.New("batch rollup sub invalid")},
 			},
 		},
+		{
+			title: "subject-transform",
+			batch: []BatchItem{
+				{subject: "bar", rsubject: "foo"},
+				{subject: "bar"},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 1)
+					require_Equal(t, *mset.inflight["bar"], inflightSubjectRunningTotal{bytes: 38, ops: 2})
+					require_Len(t, len(mset.inflightTransform), 1)
+					require_Equal(t, mset.inflightTransform[0], "bar")
+				}
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -1435,7 +1453,12 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
+				// Potential subject transform.
+				rsubject := m.subject
+				if m.rsubject != _EMPTY_ {
+					rsubject = m.rsubject
+				}
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, rsubject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else if err != nil {

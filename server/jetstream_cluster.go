@@ -4171,19 +4171,31 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 	// Process the actual message here.
 	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
 
+	// Take into account subject transforms, if any.
+	// The untransformed subject is replicated, but the transformed subject is used for consistency checks below.
+	csubject := subject
+	if mset.inflightTransform != nil {
+		mset.clMu.Lock()
+		if subj, found := mset.inflightTransform[lseq]; found {
+			csubject = subj
+			delete(mset.inflightTransform, lseq)
+		}
+		mset.clMu.Unlock()
+	}
+
 	// If we have inflight make sure to clear after processing.
 	// TODO(dlc) - technically check on inflight != nil could cause datarace.
 	// But do not want to acquire lock since tracking this will be rare.
 	if mset.inflight != nil {
 		mset.clMu.Lock()
-		if i, found := mset.inflight[subject]; found {
+		if i, found := mset.inflight[csubject]; found {
 			// Decrement from pending operations. Once it reaches zero, it can be deleted.
 			if i.ops > 0 {
 				var sz uint64
 				if mset.store.Type() == FileStorage {
-					sz = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+					sz = fileStoreMsgSizeRaw(len(csubject), len(hdr), len(msg))
 				} else {
-					sz = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
+					sz = memStoreMsgSizeRaw(len(csubject), len(hdr), len(msg))
 				}
 				if i.bytes >= sz {
 					i.bytes -= sz
@@ -4193,7 +4205,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 				i.ops--
 			}
 			if i.ops == 0 {
-				delete(mset.inflight, subject)
+				delete(mset.inflight, csubject)
 			}
 		}
 		mset.clMu.Unlock()
@@ -4202,13 +4214,13 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 	// Update running total for counter.
 	if mset.clusteredCounterTotal != nil {
 		mset.clMu.Lock()
-		if counter, found := mset.clusteredCounterTotal[subject]; found {
+		if counter, found := mset.clusteredCounterTotal[csubject]; found {
 			// Decrement from pending operations. Once it reaches zero, it can be deleted.
 			if counter.ops > 0 {
 				counter.ops--
 			}
 			if counter.ops == 0 {
-				delete(mset.clusteredCounterTotal, subject)
+				delete(mset.clusteredCounterTotal, csubject)
 			}
 		}
 		mset.clMu.Unlock()
@@ -4311,6 +4323,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	mset.clMu.Lock()
 	// Clear inflight if we have it.
 	mset.inflight = nil
+	mset.inflightTransform = nil
 	// Clear running counter totals.
 	mset.clusteredCounterTotal = nil
 	// Clear expected per subject state.
@@ -9591,6 +9604,16 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	isLeader, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules
+
+	// Apply the input subject transform if any
+	csubject := subject
+	if mset.itr != nil {
+		ts, err := mset.itr.Match(csubject)
+		if err == nil {
+			// no filtering: if the subject doesn't map the source of the transform, don't change it
+			csubject = ts
+		}
+	}
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -9641,7 +9664,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Check here pre-emptively if we have exceeded our account limits.
-	if exceeded, err := jsa.wouldExceedLimits(st, tierName, r, subject, hdr, msg); exceeded {
+	if exceeded, err := jsa.wouldExceedLimits(st, tierName, r, csubject, hdr, msg); exceeded {
 		if err == nil {
 			err = NewJSAccountResourcesExceededError()
 		}
@@ -9675,7 +9698,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
-		lseq = recalculateClusteredSeq(mset)
+		lseq = recalculateClusteredSeq(mset, true)
 	}
 
 	var (
@@ -9684,7 +9707,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, subject, hdr, msg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubject, subject, hdr, msg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {
 			var buf [256]byte
