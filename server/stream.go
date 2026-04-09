@@ -6389,6 +6389,9 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, mset.lseq, ts})
 		}
+		if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 0); err != nil {
+			return err
+		}
 		// If using fast batch publish, we occasionally send flow control messages.
 		// And, we need to ensure a PubAck is sent if the commit happens through EOB.
 		if fastBatch != nil {
@@ -6553,22 +6556,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	}
 
 	// No errors, this is the normal path.
-	if rollupSub {
-		if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1}, false); err != nil {
-			return err
-		}
-	} else if rollupAll {
-		if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: 1}, false); err != nil {
-			return err
-		}
-	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
-		// Purge the message schedule.
-		scheduler := getMessageScheduler(hdr)
-		if scheduler != _EMPTY_ {
-			if _, err = mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false); err != nil {
-				return err
-			}
-		}
+	if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 1); err != nil {
+		return err
 	}
 
 	// Check for republish.
@@ -6640,6 +6629,28 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 	}
 
+	return nil
+}
+
+// Lock should be held.
+func (mset *stream) processJetStreamMsgWithRollup(subject string, rollupSub, rollupAll bool, hdr []byte, keep uint64) error {
+	if rollupSub {
+		if _, err := mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: subject, Keep: keep}, false); err != nil {
+			return err
+		}
+	} else if rollupAll {
+		if _, err := mset.purgeLocked(&JSApiStreamPurgeRequest{Keep: keep}, false); err != nil {
+			return err
+		}
+	} else if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && bytesToString(scheduleNext) == JSScheduleNextPurge {
+		// Purge the message schedule.
+		scheduler := getMessageScheduler(hdr)
+		if scheduler != _EMPTY_ {
+			if _, err := mset.purgeLocked(&JSApiStreamPurgeRequest{Subject: scheduler}, false); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

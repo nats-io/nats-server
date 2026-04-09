@@ -8899,3 +8899,53 @@ func TestJetStreamClusterRollupWithDiscardNewPerSubject(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterInterestStreamMsgWithNoInterestStillAppliesRollup(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:        "TEST",
+			Subjects:    []string{"foo", "bar"},
+			Replicas:    replicas,
+			Retention:   nats.InterestPolicy,
+			AllowRollup: true,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:       "CONSUMER",
+			FilterSubject: "foo",
+		})
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		// Publishing on a subject without interest should still result in the rollup being performed.
+		m := nats.NewMsg("bar")
+		m.Header.Set("Nats-Rollup", "all")
+		pubAck, err = js.PublishMsg(m)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 2)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+			if err != nil {
+				return err
+			}
+			if state.Msgs != 0 || state.FirstSeq != 3 || state.LastSeq != 2 {
+				return fmt.Errorf("invalid state, got %v", state)
+			}
+			return nil
+		})
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
