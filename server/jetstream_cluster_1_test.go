@@ -6788,8 +6788,22 @@ func TestJetStreamClusterMetaRecoveryAddAndUpdateStream(t *testing.T) {
 // Make sure if we received acks that are out of bounds, meaning past our
 // last sequence or before our first that they are ignored and errored if applicable.
 func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
+	testJetStreamClusterConsumerAckOutOfBounds(t, false)
+}
+
+func TestJetStreamClusterConsumerAckV2OutOfBounds(t *testing.T) {
+	testJetStreamClusterConsumerAckOutOfBounds(t, true)
+}
+
+func testJetStreamClusterConsumerAckOutOfBounds(t *testing.T, ackV2 bool) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
+
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		s.opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: ackV2}
+		s.optsMu.Unlock()
+	}
 
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
@@ -6816,7 +6830,21 @@ func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
 	msgs[0].AckSync()
 
 	// Now ack way past the last sequence.
-	_, err = nc.Request("$JS.ACK.TEST.C.1.10000000000.0.0.0", nil, 250*time.Millisecond)
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, cl)
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+	o.mu.RLock()
+	ackReply := o.ackReply(10000000000, 0, 1, 0, 0)
+	o.mu.RUnlock()
+	if ackV2 {
+		require_Equal(t, ackReply, "$JS.ACK._.szMpdrwD.TEST.C.1.10000000000.0.0.0")
+	} else {
+		require_Equal(t, ackReply, "$JS.ACK.TEST.C.1.10000000000.0.0.0")
+	}
+	_, err = nc.Request(ackReply, nil, 250*time.Millisecond)
 	require_Error(t, err, nats.ErrTimeout)
 
 	// Make sure that now changes happened to our state.
@@ -8011,8 +8039,22 @@ func TestJetStreamClusterPeerRemoveStreamConsumerDesync(t *testing.T) {
 }
 
 func TestJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t *testing.T) {
+	testJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t, false)
+}
+
+func TestJetStreamClusterStuckConsumerV2AfterLeaderChangeWithUnknownDeliveries(t *testing.T) {
+	testJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t, true)
+}
+
+func testJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t *testing.T, ackV2 bool) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
+
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		s.opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: ackV2}
+		s.optsMu.Unlock()
+	}
 
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
@@ -8047,13 +8089,36 @@ func TestJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t *
 	require_NoError(t, err)
 	require_Len(t, len(msgs), 1)
 
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
 	// The client could send an acknowledgement, while the new consumer leader doesn't know about it
 	// ever being delivered. It must NOT adjust any state and ignore the request to remain consistent.
-	_, err = nc.Request("$JS.ACK.TEST.CONSUMER.1.3.3.0.0", nil, time.Second)
+	o.mu.RLock()
+	ackReply := o.ackReply(3, 3, 1, 0, 0)
+	o.mu.RUnlock()
+	if ackV2 {
+		require_Equal(t, ackReply, "$JS.ACK._.szMpdrwD.TEST.CONSUMER.1.3.3.0.0")
+	} else {
+		require_Equal(t, ackReply, "$JS.ACK.TEST.CONSUMER.1.3.3.0.0")
+	}
+	_, err = nc.Request(ackReply, nil, time.Second)
 	require_Error(t, err, nats.ErrTimeout)
 
 	// Acknowledging a message that is known to be delivered is accepted still.
-	_, err = nc.Request("$JS.ACK.TEST.CONSUMER.1.1.1.0.0", nil, time.Second)
+	o.mu.RLock()
+	ackReply = o.ackReply(1, 1, 1, 0, 0)
+	o.mu.RUnlock()
+	if ackV2 {
+		require_Equal(t, ackReply, "$JS.ACK._.szMpdrwD.TEST.CONSUMER.1.1.1.0.0")
+	} else {
+		require_Equal(t, ackReply, "$JS.ACK.TEST.CONSUMER.1.1.1.0.0")
+	}
+	_, err = nc.Request(ackReply, nil, time.Second)
 	require_NoError(t, err)
 
 	// Check for consistent consumer info.
