@@ -320,6 +320,16 @@ type AuthCallout struct {
 	AllowedAccounts []string
 }
 
+// AuthHTTP option for delegating username/password authentication to an external HTTP endpoint.
+// When configured, the server will POST the client's credentials to the endpoint for validation.
+// A 2xx response indicates successful authentication; 4xx/5xx indicates failure.
+type AuthHTTP struct {
+	// URL is the HTTP endpoint to validate credentials (e.g. "http://auth-service:8080/verify").
+	URL string
+	// Timeout is the maximum time to wait for the HTTP response (default: 5s).
+	Timeout time.Duration
+}
+
 // Options block for nats-server.
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
@@ -359,6 +369,7 @@ type Options struct {
 	ProxyProtocol              bool          `json:"-"`
 	Authorization              string        `json:"-"`
 	AuthCallout                *AuthCallout  `json:"-"`
+	AuthHTTP                  *AuthHTTP     `json:"-"`
 	PingInterval               time.Duration `json:"ping_interval"`
 	MaxPingsOut                int           `json:"ping_max"`
 	HTTPHost                   string        `json:"http_host"`
@@ -787,6 +798,8 @@ type authorization struct {
 	defaultPermissions *Permissions
 	// Auth Callouts
 	callout *AuthCallout
+	// HTTP Auth - delegate username/password validation to external endpoint
+	httpAuth *AuthHTTP
 }
 
 // TLSConfigOpts holds the parsed tls config information,
@@ -1129,6 +1142,12 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.Authorization = auth.token
 		o.AuthTimeout = auth.timeout
 		o.AuthCallout = auth.callout
+		o.AuthHTTP = auth.httpAuth
+
+		if auth.callout != nil && auth.httpAuth != nil {
+			err := &configErr{tk, "Cannot have both auth_callout and auth_http in authorization block"}
+			*errors = append(*errors, err)
+		}
 
 		if (auth.user != _EMPTY_ || auth.pass != _EMPTY_) && auth.token != _EMPTY_ {
 			err := &configErr{tk, "Cannot have a user/pass and token"}
@@ -1979,6 +1998,11 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 				*errors = append(*errors, err)
 				continue
 			}
+			if auth.httpAuth != nil {
+				err := &configErr{tk, "Cluster authorization does not support auth_http"}
+				*errors = append(*errors, err)
+				continue
+			}
 
 			opts.Cluster.Username = auth.user
 			opts.Cluster.Password = auth.pass
@@ -2217,6 +2241,11 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 			}
 			if auth.callout != nil {
 				err := &configErr{tk, "Gateway authorization does not support callouts"}
+				*errors = append(*errors, err)
+				continue
+			}
+			if auth.httpAuth != nil {
+				err := &configErr{tk, "Gateway authorization does not support auth_http"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -4478,6 +4507,13 @@ func parseAuthorization(v any, errors, warnings *[]error) (*authorization, error
 				continue
 			}
 			auth.callout = ac
+		case "auth_http", "http_auth":
+			ah, err := parseAuthHTTP(tk, errors)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			auth.httpAuth = ah
 		case "proxy_required":
 			auth.proxyRequired = mv.(bool)
 		default:
@@ -4678,6 +4714,63 @@ func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 		return nil, &configErr{tk, "Authorization callouts require authorized users to be specified"}
 	}
 	return ac, nil
+}
+
+// Helper function to parse HTTP auth endpoint config.
+func parseAuthHTTP(mv any, errors *[]error) (*AuthHTTP, error) {
+	var (
+		tk token
+		lt token
+		ah = &AuthHTTP{Timeout: 5 * time.Second}
+	)
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, mv = unwrapValue(mv, &lt)
+	pm, ok := mv.(map[string]any)
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("Expected auth_http to be a map/struct, got %+v", mv)}
+	}
+	for k, v := range pm {
+		tk, mv = unwrapValue(v, &lt)
+
+		switch strings.ToLower(k) {
+		case "url", "endpoint":
+			ah.URL = mv.(string)
+			if ah.URL == _EMPTY_ {
+				return nil, &configErr{tk, "auth_http requires a non-empty url"}
+			}
+			if _, err := url.Parse(ah.URL); err != nil {
+				return nil, &configErr{tk, fmt.Sprintf("auth_http url is not valid: %v", err)}
+			}
+		case "timeout":
+			switch mv := mv.(type) {
+			case int64:
+				ah.Timeout = time.Duration(mv) * time.Second
+			case float64:
+				ah.Timeout = time.Duration(mv * float64(time.Second))
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing auth_http timeout: %s", err)}
+				}
+				ah.Timeout = d
+			default:
+				return nil, &configErr{tk, "auth_http timeout must be a number or duration string"}
+			}
+			if ah.Timeout <= 0 {
+				return nil, &configErr{tk, "auth_http timeout must be positive"}
+			}
+		default:
+			if !tk.IsUsedVariable() {
+				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing auth_http", k)}
+				*errors = append(*errors, err)
+			}
+		}
+	}
+	if ah.URL == _EMPTY_ {
+		return nil, &configErr{tk, "auth_http requires url to be specified"}
+	}
+	return ah, nil
 }
 
 // Helper function to parse user/account permissions
