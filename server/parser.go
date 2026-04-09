@@ -169,7 +169,14 @@ func (c *client) parse(buf []byte) error {
 					case CLIENT:
 						// Check here for NoAuthUser. If this is set allow non CONNECT protos as our first.
 						// E.g. telnet proto demos.
-						if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ {
+						opts := s.getOpts()
+						noAuthUser := opts.NoAuthUser
+						if c.ws != nil {
+							if noAuthUserWS := opts.Websocket.NoAuthUser; noAuthUserWS != _EMPTY_ {
+								noAuthUser = noAuthUserWS
+							}
+						}
+						if noAuthUser != _EMPTY_ {
 							s.mu.Lock()
 							user, exists := s.users[noAuthUser]
 							s.mu.Unlock()

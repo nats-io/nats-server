@@ -4830,6 +4830,67 @@ func TestWSDecompressLimit(t *testing.T) {
 	}
 }
 
+func TestWSNoAuthUserOverride(t *testing.T) {
+	o := testWSOptions()
+	// WebSocket has its own no_auth_user override pointing at the lower-
+	// privilege wsguest user. This sets s.websocket.authOverride=true.
+	o.NoAuthUser = "admin"
+	o.Websocket.NoAuthUser = "wsguest"
+
+	adminAcc := NewAccount("admin_acc")
+	wsAcc := NewAccount("ws_acc")
+	o.Accounts = []*Account{adminAcc, wsAcc}
+	o.Users = []*User{
+		{Username: "admin", Password: "adminpass", Account: adminAcc},
+		{Username: "wsguest", Password: "pwd", Account: wsAcc},
+	}
+
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	// Open a WebSocket connection and read the INFO frame.
+	wsc, br, infoLine := testWSCreateClientGetInfo(
+		t, false, false, o.Websocket.Host, o.Websocket.Port,
+	)
+	defer wsc.Close()
+
+	// INFO line format: "INFO {...}\r\n"
+	var info serverInfo
+	require_False(t, len(infoLine) < 5)
+	require_NoError(t, json.Unmarshal([]byte(infoLine[5:]), &info))
+
+	// Send PING BEFORE CONNECT. This is the attack: the WS client attempts to
+	// skip authentication by sending a non-CONNECT op as its first protocol
+	// bytes. The parser fast-path at parser.go:171 will see first byte 'P',
+	// check authSet (true, because expectConnect is set), and consult
+	// s.getOpts().NoAuthUser, which is "admin".
+	wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("PING\r\n"))
+	_, err := wsc.Write(wsmsg)
+	require_NoError(t, err)
+
+	// Read server response.
+	wsc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer wsc.SetReadDeadline(time.Time{})
+	msg := testWSReadFrame(t, br)
+
+	// If we got an -ERR or the connection closed then we didn't handle no_auth_user.
+	require_False(t, bytes.HasPrefix(msg, []byte("-ERR")))
+
+	// VULNERABLE: server accepted PING without CONNECT, meaning the
+	// parser fast-path registered the client as the global NoAuthUser.
+	c := s.getClient(info.CID)
+	require_NotNil(t, c)
+	require_NotNil(t, c.acc)
+
+	c.mu.Lock()
+	uname := c.opts.Username
+	aname := c.acc.GetName()
+	c.mu.Unlock()
+
+	require_Equal(t, aname, "ws_acc")
+	require_Equal(t, uname, "wsguest")
+}
+
 // ==================================================================
 // = Benchmark tests
 // ==================================================================
