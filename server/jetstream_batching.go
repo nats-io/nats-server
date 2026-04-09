@@ -124,6 +124,7 @@ type batchStagedDiff struct {
 	msgIds             map[string]struct{}
 	counter            map[string]*msgCounterRunningTotal
 	inflight           map[string]*inflightSubjectRunningTotal
+	inflightTransform  map[uint64]string
 	expectedPerSubject map[string]*batchExpectedPerSubject
 }
 
@@ -165,6 +166,16 @@ func (diff *batchStagedDiff) commit(mset *stream) {
 			} else {
 				mset.inflight[subj] = i
 			}
+		}
+	}
+
+	// Track inflight subject transforms.
+	if len(diff.inflightTransform) > 0 {
+		if mset.inflightTransform == nil {
+			mset.inflightTransform = make(map[uint64]string, len(diff.inflightTransform))
+		}
+		for clseq, subj := range diff.inflightTransform {
+			mset.inflightTransform[clseq] = subj
 		}
 	}
 
@@ -226,7 +237,7 @@ func (batch *batchApply) rejectBatchState(mset *stream) {
 // mset.mu lock must NOT be held or used.
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
-	diff *batchStagedDiff, mset *stream, subject string, hdr []byte, msg []byte, sourced bool, name string,
+	diff *batchStagedDiff, mset *stream, subject, rsubject string, hdr []byte, msg []byte, sourced bool, name string,
 	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules bool,
 	discard DiscardPolicy, discardNewPer bool, maxMsgSize int, maxMsgs int64, maxMsgsPer int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
@@ -599,6 +610,19 @@ func checkMsgHeadersPreClusteredProposal(
 	} else {
 		i = &inflightSubjectRunningTotal{bytes: sz, ops: 1}
 		diff.inflight[subject] = i
+	}
+
+	// Subject transform.
+	if subject != rsubject {
+		// The 'subject' is a transformed subject used for consistency checks.
+		// But since we propose the original (raw) subject to our peers, we need
+		// to store the transformed subject separately for when we apply.
+		// TODO(mvv): since subject transforms are handled by each replica individually, this has a
+		//  potential for desync given out-of-order stream subject transform updates.
+		if diff.inflightTransform == nil {
+			diff.inflightTransform = make(map[uint64]string, 1)
+		}
+		diff.inflightTransform[mset.clseq] = subject
 	}
 
 	// Check if we have discard new with max msgs or bytes.

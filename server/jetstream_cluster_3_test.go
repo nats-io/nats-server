@@ -8244,6 +8244,129 @@ func TestJetStreamClusterInterestStreamMsgWithNoInterestStillAppliesRollup(t *te
 	}
 }
 
+func TestJetStreamClusterSubjectTransformWithExpectedSubjectSequenceHeader(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo", "bar"},
+			Replicas: replicas,
+			Storage:  FileStorage,
+			SubjectTransform: &SubjectTransformConfig{
+				Source:      "foo",
+				Destination: "bar",
+			},
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		// We publish on "foo", but it gets mapped to "bar".
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+
+		// Check the subject transform worked.
+		msg, err := js.GetMsg("TEST", 1)
+		require_NoError(t, err)
+		require_Equal(t, msg.Subject, "bar")
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// Publishing to either subject should pass consistency checks under the "bar" subject after transform.
+		for _, subj := range []string{"bar", "foo"} {
+			// Normal publish.
+			m := nats.NewMsg(subj)
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "0")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSStreamWrongLastSequenceError(1))
+
+			// Atomic batch publish.
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "0")
+			m.Header.Set("Nats-Batch-Id", "uuid")
+			m.Header.Set("Nats-Batch-Sequence", "1")
+			m.Header.Set("Nats-Batch-Commit", "1")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSStreamWrongLastSequenceError(1))
+		}
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamClusterSubjectTransformDoesntCycle(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+			Storage:  FileStorage,
+			// Use a subject transform that can cycle if applied multiple times.
+			// Applying this transform on X twice would result in dst.X.X.
+			// A subject transform must only be applied once, so such a transform is invalid.
+			SubjectTransform: &SubjectTransformConfig{
+				Source:      ">",
+				Destination: "dst.>",
+			},
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// Normal publish.
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		msg, err := js.GetMsg("TEST", 1)
+		require_NoError(t, err)
+		require_Equal(t, msg.Subject, "dst.foo")
+
+		// Atomic batch publish.
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+		msg, err = js.GetMsg("TEST", 2)
+		require_NoError(t, err)
+		require_Equal(t, msg.Subject, "dst.foo")
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
 func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

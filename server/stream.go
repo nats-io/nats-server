@@ -477,6 +477,7 @@ type stream struct {
 	inMonitor bool              // True if the monitor routine has been started.
 
 	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
+	inflightTransform           map[uint64]string                       // Inflight message's optional transformed subject.
 	clusteredCounterTotal       map[string]*msgCounterRunningTotal      // Inflight counter totals.
 	expectedPerSubjectSequence  map[uint64]string                       // Inflight 'expected per subject' subjects per clseq.
 	expectedPerSubjectInProcess map[string]struct{}                     // Current 'expected per subject' subjects in process.
@@ -6417,7 +6418,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 	}
 	batches := mset.batches
-	mset.mu.Unlock()
+	// Acquire the batches lock.
+	// Can't release the stream lock now, we need to keep holding it while we hold the batches lock.
+	// Re-acquiring the stream lock with the batches lock already held would be a lock inversion.
+	batches.mu.Lock()
 
 	respondIncompleteBatch := func() error {
 		err := NewJSAtomicPublishIncompleteBatchError()
@@ -6429,11 +6433,11 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	}
 
 	// Get batch.
-	batches.mu.Lock()
 	b, ok := batches.group[batchId]
 	if !ok {
 		if batchSeq != 1 {
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			maxBatchSize := streamMaxBatchSize
 			opts := s.getOpts()
 			if opts.JetStreamLimits.MaxBatchSize > 0 {
@@ -6464,6 +6468,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		// Confirm we can facilitate an additional batch.
 		if len(batches.group)+1 > maxInflightPerStream {
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondIncompleteBatch()
 		}
 
@@ -6471,6 +6476,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if globalInflightBatches.Add(1) > int32(maxInflightTotal) {
 			globalInflightBatches.Add(-1)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondIncompleteBatch()
 		}
 
@@ -6478,6 +6484,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if b, err = batches.newBatchGroup(mset, batchId, r, stype, storeDir, name); err != nil {
 			globalInflightBatches.Add(-1)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondIncompleteBatch()
 		}
 		batches.group[batchId] = b
@@ -6489,6 +6496,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if !bytes.Equal(c, []byte("1")) {
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			err := NewJSAtomicPublishInvalidBatchCommitError()
 			if canRespond {
 				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
@@ -6504,6 +6512,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if errorOnRequiredApiLevel(hdr) {
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			err := NewJSRequiredApiLevelError()
 			if canRespond {
 				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
@@ -6519,6 +6528,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if b.lseq != batchSeq {
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
+		mset.mu.Unlock()
 		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
 		return respondIncompleteBatch()
 	}
@@ -6531,6 +6541,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if batchSeq > uint64(maxSize) {
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
+		mset.mu.Unlock()
 		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchLarge)
 		err := NewJSAtomicPublishTooLargeBatchError(maxSize)
 		if canRespond {
@@ -6547,12 +6558,14 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if err != nil || seq != batchSeq {
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchIncomplete)
 			return respondIncompleteBatch()
 		}
 	}
 	if !commit {
 		batches.mu.Unlock()
+		mset.mu.Unlock()
 		// Send empty ack to let them know we've persisted the data prior to commit.
 		if canRespond {
 			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0))
@@ -6564,6 +6577,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	if !b.readyForCommit() {
 		// Don't do cleanup, this is already done.
 		batches.mu.Unlock()
+		mset.mu.Unlock()
 		mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
 		return respondIncompleteBatch()
 	}
@@ -6584,9 +6598,8 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	// Check if we need to set initial value here
 	if isClustered && (mset.clseq == 0 || mset.clseq < lseq+mset.clfs) {
 		// Need to unlock and re-acquire the locks in the proper order.
-		mset.clMu.Unlock()
 		// Locking order is stream -> batchMu -> clMu
-		mset.mu.RLock()
+		mset.clMu.Unlock()
 		batch := mset.batchApply
 		var batchCount uint64
 		if batch != nil {
@@ -6601,7 +6614,6 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		if batch != nil {
 			batch.mu.Unlock()
 		}
-		mset.mu.RUnlock()
 	}
 
 	rollback := func(seq uint64) {
@@ -6618,6 +6630,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		rollback(seq)
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
+		mset.mu.Unlock()
 		if canRespond {
 			buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
 			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
@@ -6647,7 +6660,18 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			rollback(seq)
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondIncompleteBatch()
+		}
+
+		// Apply the input subject transform if any
+		csubj := bsubj
+		if mset.itr != nil {
+			ts, err := mset.itr.Match(csubj)
+			if err == nil {
+				// no filtering: if the subject doesn't map the source of the transform, don't change it
+				csubj = ts
+			}
 		}
 
 		// Reject unsupported headers.
@@ -6655,10 +6679,11 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			return errorOnUnsupported(seq, JSExpectedLastMsgId)
 		}
 
-		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, bsubj, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubj, bsubj, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 			rollback(seq)
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			if canRespond {
 				buf, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
 				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, buf, nil, 0))
@@ -6687,7 +6712,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 
 		// Ensure the whole batch is fully isolated, and reads
 		// can only happen after the full batch is committed.
-		mset.mu.Lock()
+		// We keep holding the stream lock.
 		for seq := uint64(1); seq <= batchSeq; seq++ {
 			if seq == batchSeq && b.store.Type() != FileStorage {
 				bsubj, bhdr, bmsg = subject, hdr, msg
@@ -6707,6 +6732,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 		mset.mu.Unlock()
 	} else {
+		mset.mu.Unlock()
 		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order
 		// and not interleaved with other proposals.
 		diff.commit(mset)
