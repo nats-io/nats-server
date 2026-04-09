@@ -4172,9 +4172,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				}
 			} else {
 				// If terms mismatched, delete that entry and all others past it.
-				// Make sure to cancel any catchups in progress.
-				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
-				n.truncateWAL(eae.pterm, eae.pindex)
+				// But only if we haven't already committed past this point.
+				if eae.pindex < n.commit {
+					success = true
+				} else {
+					n.truncateWAL(eae.pterm, eae.pindex)
+				}
 			}
 			// Cancel regardless if unsuccessful.
 			if !success {
