@@ -362,7 +362,7 @@ type ConsumerStore interface {
 	UpdateStarting(sseq uint64)
 	Reset(sseq uint64) error
 	HasState() bool
-	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
+	UpdateDelivered(dseq, sseq, dc uint64, ts int64, subj string) error
 	UpdateAcks(dseq, sseq uint64) error
 	UpdateConfig(cfg *ConsumerConfig) error
 	Update(*ConsumerState) error
@@ -464,6 +464,7 @@ func encodeConsumerState(state *ConsumerState) []byte {
 type Pending struct {
 	Sequence  uint64
 	Timestamp int64
+	Subject   string
 }
 
 const (

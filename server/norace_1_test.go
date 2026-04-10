@@ -4173,7 +4173,7 @@ func TestNoRaceJetStreamConsumerFileStoreConcurrentDiskIO(t *testing.T) {
 			defer wg.Done()
 			// Will make everyone run concurrently.
 			<-startCh
-			o.UpdateDelivered(22, 22, 1, ts)
+			o.UpdateDelivered(22, 22, 1, ts, _EMPTY_)
 			buf, _ := o.(*consumerFileStore).encodeState()
 			o.(*consumerFileStore).writeState(buf)
 			o.Delete()
