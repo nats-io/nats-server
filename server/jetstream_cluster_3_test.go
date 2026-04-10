@@ -8318,7 +8318,7 @@ func TestJetStreamClusterDontEncodeConsumerStateInMetaSnapshot(t *testing.T) {
 	meta.RLock()
 	papplied := meta.papplied
 	meta.RUnlock()
-	require_NoError(t, meta.ProposeAddPeer(meta.ID()))
+	require_NoError(t, meta.ProposeRemovePeer(strings.Repeat("x", idLen)))
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		meta.RLock()
 		defer meta.RUnlock()
@@ -8415,7 +8415,7 @@ func TestJetStreamClusterMetaSnapshotPreservesConsumersOnStreamUpdate(t *testing
 		meta.RLock()
 		papplied := meta.papplied
 		meta.RUnlock()
-		require_NoError(t, meta.ProposeAddPeer(meta.ID()))
+		require_NoError(t, meta.ProposeRemovePeer(strings.Repeat("x", idLen)))
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			meta.RLock()
 			defer meta.RUnlock()
