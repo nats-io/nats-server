@@ -1604,9 +1604,13 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	mset.mu.Lock()
 	batches := &batching{}
 	mset.batches = batches
+	jsa := mset.jsa
 	mset.mu.Unlock()
+	jsa.mu.RLock()
+	storeDir := jsa.storeDir
+	jsa.mu.RUnlock()
 	batches.mu.Lock()
-	b, err := batches.newAtomicBatch(mset, "uuid")
+	b, err := batches.newAtomicBatch(mset, "uuid", 1, FileStorage, storeDir, "TEST")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -1686,9 +1690,13 @@ func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) 
 	mset.mu.Lock()
 	batches := &batching{}
 	mset.batches = batches
+	jsa := mset.jsa
 	mset.mu.Unlock()
+	jsa.mu.RLock()
+	storeDir := jsa.storeDir
+	jsa.mu.RUnlock()
 	batches.mu.Lock()
-	b, err := batches.newAtomicBatch(mset, "uuid")
+	b, err := batches.newAtomicBatch(mset, "uuid", 1, FileStorage, storeDir, "TEST")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
