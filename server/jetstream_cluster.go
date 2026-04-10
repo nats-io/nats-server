@@ -80,6 +80,16 @@ type jetStreamCluster struct {
 	// Track last meta snapshot time and duration for monitoring.
 	lastMetaSnapTime     int64 // Unix nanoseconds
 	lastMetaSnapDuration int64 // Duration in nanoseconds
+	// Signals that this node was promoted from standalone to clustered mode
+	// with no prior meta state. Used to detect standalone-to-clustered transitions.
+	ptc bool
+	// Tracks streams that were preserved (not deleted) due to name conflicts
+	// with existing cluster assignments during ptc promotion. This prevents
+	// the ptc marker from being cleaned up while unresolved conflicts remain.
+	ptcConflicts int
+	// Tracks the pending checkForOrphans timer so it can be cancelled on
+	// shutdown, preventing the function from firing on a stopped server.
+	orphanTimer *time.Timer
 }
 
 // Used to track inflight stream create/update/delete requests that have been proposed but not yet applied.
@@ -362,6 +372,13 @@ const (
 	defaultMetaGroupName = "_meta_"
 	defaultMetaFSBlkSize = 1024 * 1024
 	jsExcludePlacement   = "!jetstream"
+
+	// ptcMarkerFile is a sentinel file written into the meta Raft group directory
+	// when a standalone server is promoted to a cluster member and has R1 streams/consumers
+	// pending adoption.
+	// Its presence tells that local R1 stream/consumer data must be preserved, not deleted,
+	// until all orphans have been successfully adopted.
+	ptcMarkerFile = "ptc"
 )
 
 // Returns information useful in mixed mode.
@@ -870,6 +887,51 @@ func (s *Server) enableJetStreamClustering() error {
 	return js.setupMetaGroup()
 }
 
+func hasPTCMarker(storeDir string) bool {
+	_, err := os.Stat(filepath.Join(storeDir, ptcMarkerFile))
+	return err == nil
+}
+
+func (js *jetStream) ptcMarkerPath() string {
+	s := js.srv
+	sysAcc := s.SystemAccount()
+	if sysAcc == nil {
+		return _EMPTY_
+	}
+	return filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName, ptcMarkerFile)
+}
+
+func (js *jetStream) writePTCMarker() error {
+	p := js.ptcMarkerPath()
+	if p != _EMPTY_ {
+		return os.WriteFile(p, []byte{}, defaultFilePerms)
+	}
+
+	return nil
+}
+
+func (js *jetStream) removePTCMarker() error {
+	var err error
+	p := js.ptcMarkerPath()
+	if p != _EMPTY_ {
+		err = os.Remove(p)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+	}
+
+	return err
+}
+
+func (js *jetStream) hasPTCMarker() bool {
+	p := js.ptcMarkerPath()
+	if p == _EMPTY_ {
+		return false
+	}
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 // isClustered returns if we are clustered.
 // Lock should not be held.
 func (js *jetStream) isClustered() bool {
@@ -974,6 +1036,31 @@ func (js *jetStream) setupMetaGroup() error {
 		n.Campaign()
 	}
 
+	// Conditions for a genuine standalone promotion:
+	//   1. bootstrap=true: no peer state = this node was never in a cluster
+	//      (a node recovering from cluster membership has peer state, so bootstrap=false)
+	//   2. No PTC marker yet: not resuming a prior partial adoption
+	//   3. Local JetStream accounts have streams: the server had running standalone data
+	if bootstrap && !hasPTCMarker(storeDir) {
+		js.mu.RLock()
+		var hasLocalStreams bool
+		for _, jsa := range js.accounts {
+			jsa.mu.RLock()
+			hasLocalStreams = len(jsa.streams) > 0
+			jsa.mu.RUnlock()
+			if hasLocalStreams {
+				break
+			}
+		}
+		js.mu.RUnlock()
+		if hasLocalStreams {
+			s.Noticef("JetStream standalone-to-cluster promotion detected: activating PTC mode")
+			if err := js.writePTCMarker(); err != nil {
+				s.Fatalf("Failed to write PTC marker for standalone-to-cluster promotion: %v", err)
+			}
+		}
+	}
+
 	c := s.createInternalJetStreamClient()
 
 	js.mu.Lock()
@@ -985,6 +1072,12 @@ func (js *jetStream) setupMetaGroup() error {
 		c:       c,
 		qch:     make(chan struct{}),
 		stopped: make(chan struct{}),
+		// ptc is true when the PTC marker file exists. The marker is written either:
+		// - here in setupMetaGroup when standalone-to-cluster promotion is first detected
+		//   (bootstrap=true + local streams present + no prior marker), or
+		// - in checkForOrphans when conflicts are discovered.
+		// The marker is removed once all orphaned streams/consumers are adopted.
+		ptc: hasPTCMarker(storeDir),
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
@@ -1390,49 +1483,197 @@ func (js *jetStream) checkForOrphans() {
 	s, cc := js.srv, js.cluster
 	s.Debugf("JetStream cluster checking for orphans")
 
-	// We only want to cleanup any orphans if we know we are current with the meta-leader.
+	// Skip if there is no leader or if this node has not yet applied all committed Raft entries;
 	meta := cc.meta
-	if meta == nil || meta.Leaderless() {
+	if meta == nil {
 		js.mu.Unlock()
-		s.Debugf("JetStream cluster skipping check for orphans, no meta-leader")
+		s.Debugf("JetStream cluster skipping orphan check, no meta group")
 		return
 	}
-	if !meta.Healthy() {
+	if meta.Leaderless() {
+		// Track the timer in cc.orphanTimer so shutdownJetStream can cancel it.
+		stopAndClearTimer(&cc.orphanTimer)
+		cc.orphanTimer = time.AfterFunc(10*time.Second, js.checkForOrphans)
 		js.mu.Unlock()
-		s.Debugf("JetStream cluster skipping check for orphans, not current with the meta-leader")
+		s.Debugf("JetStream cluster skipping orphan check, no meta-leader, will retry")
 		return
 	}
+	if !meta.Current() {
+		// Track the timer in cc.orphanTimer so shutdownJetStream can cancel it.
+		stopAndClearTimer(&cc.orphanTimer)
+		cc.orphanTimer = time.AfterFunc(10*time.Second, js.checkForOrphans)
+		js.mu.Unlock()
+		s.Debugf("JetStream cluster skipping orphan check, meta not current yet will retry")
+		return
+	}
+	ourPeerID := meta.ID()
 	streams, consumers := js.getOrphans()
+	ptc := cc.ptc
+	// the counter tells us here that they still need operator attention so we must
+	// keep the PTC marker alive.
+	ptcConflicts := cc.ptcConflicts
 	js.mu.Unlock()
+
+	// conflicts tracks whether any R1 stream still needs attention after this
+	// run. It is used to decide whether the PTC marker can be cleaned up.
+	conflicts := ptcConflicts > 0
+	// pendingAdoptions is set when we forward proposals this sweep and need a
+	// follow-up sweep to verify they committed and to adopt consumers.
+	var pendingAdoptions bool
 
 	for _, mset := range streams {
 		mset.mu.RLock()
-		accName, stream := mset.acc.Name, mset.cfg.Name
+		accName := mset.acc.Name
+		cfg := mset.cfg
+		created := mset.created
 		mset.mu.RUnlock()
-		s.Warnf("Detected orphaned stream '%s > %s', will cleanup", accName, stream)
+
+		// R1 streams on a PTC node are adopted into the cluster instead of deleted.
+		// Any other orphan (R>1, or R1 without the PTC flag) is cleaned up normally.
+		if cfg.Replicas == 1 && ptc {
+			cfgCopy := cfg
+			sa := &streamAssignment{
+				Client:  &ClientInfo{Account: accName},
+				Config:  &cfgCopy,
+				Created: created,
+				Sync:    syncSubjForStream(),
+				Group: &raftGroup{
+					Name:    groupNameForStream([]string{ourPeerID}, cfg.Storage),
+					Peers:   []string{ourPeerID},
+					Storage: cfg.Storage,
+				},
+			}
+			if b, err := json.Marshal(cfgCopy); err != nil {
+				s.Warnf("Failed to marshal config for stream adoption '%s > %s': %v", accName, cfg.Name, err)
+				conflicts = true
+				continue
+			} else {
+				sa.ConfigJSON = b
+			}
+			s.Noticef("Adopting orphaned R1 stream '%s > %s' into cluster assignments", accName, cfg.Name)
+			if err := meta.ForwardProposal(encodeAddStreamAssignment(sa)); err != nil {
+				s.Warnf("Failed to propose adoption of R1 stream '%s > %s': %v", accName, cfg.Name, err)
+			}
+
+			// Consumer adoption is deferred to the next sweep: once the stream
+			// assignment is committed, getOrphans will return the consumers as
+			// orphans (stream has assignment but consumers do not) and the consumer
+			// loop below will adopt them. This avoids a race where a consumer
+			// proposal could be applied before the stream proposal during a leader
+			// transition.
+			conflicts = true
+			pendingAdoptions = true
+			continue
+		}
+
+		// Orphaned stream with no valid adoption path: clean up locally.
+		s.Warnf("Detected orphaned stream '%s > %s', will cleanup", accName, cfg.Name)
 		if err := mset.delete(); err != nil {
 			s.Warnf("Deleting stream encountered an error: %v", err)
 		}
 	}
+
 	for _, o := range consumers {
 		o.mu.RLock()
-		accName, mset, consumer := o.acc.Name, o.mset, o.name
+		accName, mset, oName := o.acc.Name, o.mset, o.name
 		o.mu.RUnlock()
-		stream := "N/A"
+
+		streamName := "N/A"
+		var streamCfg StreamConfig
 		if mset != nil {
 			mset.mu.RLock()
-			stream = mset.cfg.Name
+			streamName = mset.cfg.Name
+			streamCfg = mset.cfg
 			mset.mu.RUnlock()
 		}
-		if o.isDurable() {
-			s.Warnf("Detected orphaned durable consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
-		} else {
-			s.Debugf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+
+		// If the parent stream is R1 and this is a PTC node, adopt the durable consumer
+		if streamCfg.Replicas == 1 && o.isDurable() && ptc {
+			oCfg := o.config()
+			oCreated := o.createdTime()
+			oStorage := streamCfg.Storage
+			if oCfg.MemoryStorage {
+				oStorage = MemoryStorage
+			}
+			ca := &consumerAssignment{
+				Client:  &ClientInfo{Account: accName},
+				Name:    oName,
+				Stream:  streamName,
+				Config:  &oCfg,
+				Created: oCreated,
+				Group: &raftGroup{
+					Name:    groupNameForConsumer([]string{ourPeerID}, oStorage),
+					Peers:   []string{ourPeerID},
+					Storage: oStorage,
+				},
+			}
+			if b, err := json.Marshal(oCfg); err != nil {
+				s.Warnf("Failed to marshal config for consumer adoption '%s > %s > %s': %v", accName, streamName, oName, err)
+				conflicts = true
+				continue
+			} else {
+				ca.ConfigJSON = b
+			}
+			s.Noticef("Adopting orphaned consumer '%s > %s > %s' into cluster assignments", accName, streamName, oName)
+			if err := meta.ForwardProposal(encodeAddConsumerAssignment(ca)); err != nil {
+				s.Warnf("Failed to propose adoption of consumer '%s > %s > %s': %v", accName, streamName, oName, err)
+			}
+			// Proposal is async; keep the marker until the next sweep confirms the
+			// consumer is no longer an orphan after the Raft entry is committed.
+			conflicts = true
+			pendingAdoptions = true
+			continue
 		}
 
+		if o.isDurable() {
+			s.Warnf("Detected orphaned durable consumer '%s > %s > %s', will cleanup", accName, streamName, oName)
+		} else {
+			s.Debugf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, streamName, oName)
+		}
 		if err := o.delete(); err != nil {
 			s.Warnf("Deleting consumer encountered an error: %v", err)
 		}
+	}
+
+	// PTC marker lifecycle:
+	//   - Keep it if there are still unresolved conflicts or remaining orphans
+	//     (they will be retried / resolved on the next orphan sweep).
+	//   - Remove it once everything has been adopted and no conflicts remain.
+	if !ptc {
+		return
+	}
+
+	if conflicts {
+		err := js.writePTCMarker()
+		if err != nil {
+			s.Warnf("Failed to write ptc marker: %v", err)
+		}
+
+		// Re-schedule only if we sent proposals this sweep. This ensures
+		// consumer adoption runs after stream assignments commit, without
+		// looping indefinitely for persistent conflicts (ptcConflicts)
+		// that require operator attention.
+		if pendingAdoptions {
+			js.mu.Lock()
+			if js.cluster != nil {
+				stopAndClearTimer(&js.cluster.orphanTimer)
+				js.cluster.orphanTimer = time.AfterFunc(10*time.Second, js.checkForOrphans)
+			}
+			js.mu.Unlock()
+		}
+	} else {
+		if err := js.removePTCMarker(); err != nil {
+			s.Warnf("Failed to remove ptc marker: %v", err)
+		}
+
+		// Clear the in-memory flag so future orphan sweeps don't re-enter
+		// the PTC adoption path unnecessarily.
+		js.mu.Lock()
+		if js.cluster != nil {
+			js.cluster.ptc = false
+			js.cluster.ptcConflicts = 0
+		}
+		js.mu.Unlock()
 	}
 }
 
@@ -2025,11 +2266,32 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		// logging and sending out advisories.
 		js.mu.RLock()
 		deleteStreams, deleteConsumers := js.getOrphans()
+		cluster := js.cluster
+		ptc := cluster != nil && cluster.ptc
 		js.mu.RUnlock()
 		for _, mset := range deleteStreams {
+			mset.mu.RLock()
+			cfg := mset.cfg
+			mset.mu.RUnlock()
+			// keep them alive, checkForOrphans() will pick them up and propose adoptions
+			if cfg.Replicas == 1 && ptc {
+				continue
+			}
 			mset.stop(true, false)
 		}
 		for _, o := range deleteConsumers {
+			o.mu.RLock()
+			mset := o.mset
+			o.mu.RUnlock()
+			if mset != nil {
+				mset.mu.RLock()
+				replicas := mset.cfg.Replicas
+				mset.mu.RUnlock()
+				// keep them alive, checkForOrphans() will pick them up and propose adoptions
+				if replicas == 1 && ptc {
+					continue
+				}
+			}
 			o.deleteWithoutAdvisory()
 		}
 	}
@@ -4569,6 +4831,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	if sa.Group != nil && ourID != _EMPTY_ {
 		isMember = sa.Group.isMember(ourID)
 	}
+	ptc := !noMeta && cc.ptc
 
 	if s == nil || noMeta {
 		js.mu.Unlock()
@@ -4652,8 +4915,21 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	if isMember {
 		js.processClusterCreateStream(acc, sa)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
-		// We have one here even though we are not a member. This can happen on re-assignment.
-		s.removeStream(mset, sa)
+		mset.mu.RLock()
+		replicas := mset.cfg.Replicas
+		mset.mu.RUnlock()
+		if ptc && replicas == 1 {
+			// On a node promoted from standalone to clustered, do not delete conflicting R1 streams.
+			s.Warnf("JetStream preserving local stream '%s > %s' data on disk: conflicts with existing cluster assignment",
+				accName, sa.Config.Name)
+			mset.stop(false, false)
+			js.mu.Lock()
+			cc.ptcConflicts++
+			js.mu.Unlock()
+		} else {
+			// We have one here even though we are not a member. This can happen on re-assignment.
+			s.removeStream(mset, sa)
+		}
 	}
 
 	// If this stream assignment does not have a sync subject (bug) set that the meta-leader should check when elected.
@@ -5397,6 +5673,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	if ca.Group != nil && ourID != _EMPTY_ {
 		isMember = ca.Group.isMember(ourID)
 	}
+	ptc := !noMeta && cc.ptc
 	js.mu.RUnlock()
 
 	if s == nil || noMeta || shuttingDown {
@@ -5504,8 +5781,20 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		js.processClusterCreateConsumer(oca, ca, state, wasExisting)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		if o := mset.lookupConsumer(ca.Name); o != nil {
-			// We have one here even though we are not a member. This can happen on re-assignment.
-			s.removeConsumer(o, ca)
+			mset.mu.RLock()
+			replicas := mset.cfg.Replicas
+			mset.mu.RUnlock()
+			if ptc && replicas == 1 {
+				// On a node promoted from standalone to clustered, stop the consumer
+				s.Debugf("JetStream preserving local consumer '%s > %s > %s' during PTC promotion", accName, stream, ca.Name)
+				o.stop()
+				js.mu.Lock()
+				cc.ptcConflicts++
+				js.mu.Unlock()
+			} else {
+				// We have one here even though we are not a member. This can happen on re-assignment.
+				s.removeConsumer(o, ca)
+			}
 		}
 	}
 }
