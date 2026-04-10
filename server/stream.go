@@ -6304,7 +6304,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype := mset.cfg.Name, mset.cfg.Storage
 	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
-	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
+	s, js, jsa, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, allowAtomicPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules, mset.cfg.AllowAtomicPublish
 	mset.mu.RUnlock()
@@ -6349,7 +6349,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 	}
 
 	// Check here pre-emptively if we have exceeded our account limits.
-	if exceeded, err := jsa.wouldExceedLimits(st, tierName, r, subject, hdr, msg); exceeded {
+	if exceeded, err := jsa.wouldExceedLimits(stype, tierName, r, subject, hdr, msg); exceeded {
 		if err == nil {
 			err = NewJSAccountResourcesExceededError()
 		}
@@ -6405,6 +6405,10 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 		return err
 	}
+
+	jsa.mu.RLock()
+	storeDir := jsa.storeDir
+	jsa.mu.RUnlock()
 
 	mset.mu.Lock()
 	if mset.batches == nil {
@@ -6471,7 +6475,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 
 		var err error
-		if b, err = batches.newBatchGroup(mset, batchId); err != nil {
+		if b, err = batches.newBatchGroup(mset, batchId, r, stype, storeDir, name); err != nil {
 			globalInflightBatches.Add(-1)
 			batches.mu.Unlock()
 			return respondIncompleteBatch()

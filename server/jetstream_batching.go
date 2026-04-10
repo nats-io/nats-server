@@ -44,8 +44,8 @@ type batchGroup struct {
 }
 
 // Lock should be held.
-func (batches *batching) newBatchGroup(mset *stream, batchId string) (*batchGroup, error) {
-	store, err := newBatchStore(mset, batchId)
+func (batches *batching) newBatchGroup(mset *stream, batchId string, replicas int, storage StorageType, storeDir, streamName string) (*batchGroup, error) {
+	store, err := newBatchStore(mset, batchId, replicas, storage, storeDir, streamName)
 	if err != nil {
 		return nil, err
 	}
@@ -63,26 +63,14 @@ func (batches *batching) newBatchGroup(mset *stream, batchId string) (*batchGrou
 	return b, nil
 }
 
-func getBatchStoreDir(mset *stream, batchId string) (string, string) {
-	mset.mu.RLock()
-	jsa, name := mset.jsa, mset.cfg.Name
-	mset.mu.RUnlock()
-
-	jsa.mu.RLock()
-	sd := jsa.storeDir
-	jsa.mu.RUnlock()
-
+func getBatchStoreDir(storeDir, streamName, batchId string) (string, string) {
 	bname := getHash(batchId)
-	return bname, filepath.Join(sd, streamsDir, name, batchesDir, bname)
+	return bname, filepath.Join(storeDir, streamsDir, streamName, batchesDir, bname)
 }
 
-func newBatchStore(mset *stream, batchId string) (StreamStore, error) {
-	mset.mu.RLock()
-	replicas, storage := mset.cfg.Replicas, mset.cfg.Storage
-	mset.mu.RUnlock()
-
+func newBatchStore(mset *stream, batchId string, replicas int, storage StorageType, storeDir, streamName string) (StreamStore, error) {
 	if replicas == 1 && storage == FileStorage {
-		bname, storeDir := getBatchStoreDir(mset, batchId)
+		bname, storeDir := getBatchStoreDir(storeDir, streamName, batchId)
 		fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir}
 		s := mset.srv
 		prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)

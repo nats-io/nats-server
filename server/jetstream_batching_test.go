@@ -1526,9 +1526,13 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	mset.mu.Lock()
 	batches := &batching{}
 	mset.batches = batches
+	jsa := mset.jsa
 	mset.mu.Unlock()
+	jsa.mu.RLock()
+	storeDir := jsa.storeDir
+	jsa.mu.RUnlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid")
+	b, err := batches.newBatchGroup(mset, "uuid", 1, FileStorage, storeDir, "TEST")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -1571,6 +1575,17 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	require_Equal(t, state.Msgs, 2)
 	require_Equal(t, state.FirstSeq, 1)
 	require_Equal(t, state.LastSeq, 2)
+
+	for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+		sm, err := mset.getMsg(seq)
+		require_NoError(t, err)
+		require_Equal(t, string(getHeader("Nats-Batch-Id", sm.Header)), "uuid")
+		require_Equal(t, string(getHeader("Nats-Batch-Sequence", sm.Header)), strconv.FormatUint(seq, 10))
+		// The last message should have the commit header set.
+		if seq == state.LastSeq {
+			require_Equal(t, string(getHeader("Nats-Batch-Commit", sm.Header)), "1")
+		}
+	}
 }
 
 func TestJetStreamAtomicBatchPublishEncode(t *testing.T) {
