@@ -6189,7 +6189,7 @@ func (c *client) reconnect() {
 			srv.Debugf("Gateway %q not in configuration, not attempting reconnect", gwName)
 		}
 	} else if leafCfg != nil {
-		// Check if this is a solicited leaf node. Start up a reconnect.
+		// This is a solicited leaf node. Start up a reconnect.
 		srv.startGoRoutine(func() { srv.reConnectToRemoteLeafNode(leafCfg) })
 	}
 }

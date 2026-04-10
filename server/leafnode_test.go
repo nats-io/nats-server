@@ -107,9 +107,10 @@ func TestLeafNodeRandomRemotes(t *testing.T) {
 	}
 
 	o := DefaultOptions()
+	o.Accounts = append(o.Accounts, NewAccount("A"), NewAccount("B"))
 	o.LeafNode.Remotes = []*RemoteLeafOpts{
-		{NoRandomize: true},
-		{NoRandomize: false},
+		{NoRandomize: true, LocalAccount: "A"},
+		{NoRandomize: false, LocalAccount: "B"},
 	}
 	o.LeafNode.Remotes[0].URLs = make([]*url.URL, cap(orderedURLs))
 	copy(o.LeafNode.Remotes[0].URLs, orderedURLs)
@@ -119,10 +120,19 @@ func TestLeafNodeRandomRemotes(t *testing.T) {
 	s := RunServer(o)
 	defer s.Shutdown()
 
-	s.mu.Lock()
-	r1 := s.leafRemoteCfgs[0]
-	r2 := s.leafRemoteCfgs[1]
-	s.mu.Unlock()
+	var r1, r2 *leafNodeCfg
+	s.mu.RLock()
+	for r := range s.leafRemoteCfgs {
+		// Verify that the order of urls in the options have not been changed.
+		require_True(t, reflect.DeepEqual(r.URLs, orderedURLs))
+		// Capture the `leafNodeCfg` based on the NoRandomize option.
+		if r.NoRandomize {
+			r1 = r
+		} else {
+			r2 = r
+		}
+	}
+	s.mu.RUnlock()
 
 	r1.RLock()
 	gotOrdered := r1.urls
@@ -2208,79 +2218,68 @@ func TestLeafNodeLoopDetectedDueToReconnect(t *testing.T) {
 	checkLeafNodeConnected(t, sl)
 }
 
-func TestLeafNodeTwoRemotesBindToSameHubAccount(t *testing.T) {
+func TestLeafNodeDetectDuplicateRemotesInOptions(t *testing.T) {
+	u, err := url.Parse("nats://user1:pwd@127.0.0.1:1234")
+	require_NoError(t, err)
+	urls := []*url.URL{u}
+	for _, test := range []struct {
+		name   string
+		remote *RemoteLeafOpts
+	}{
+		{"same urls", &RemoteLeafOpts{URLs: urls}},
+		{"same urls/acc", &RemoteLeafOpts{URLs: urls, LocalAccount: "A"}},
+		{"same urls/acc/creds", &RemoteLeafOpts{URLs: urls, LocalAccount: "A", Credentials: "credsfile"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := DefaultOptions()
+			opts.Accounts = append(opts.Accounts, NewAccount("A"))
+			opts.LeafNode.Port = -1
+			u, err := url.Parse("nats://user2:pwd@127.0.0.1:1235")
+			require_NoError(t, err)
+			rlo := &RemoteLeafOpts{URLs: []*url.URL{u}}
+			opts.LeafNode.Remotes = append(opts.LeafNode.Remotes, test.remote, rlo, test.remote)
+			_, err = NewServer(opts)
+			require_Error(t, err)
+			require_Contains(t, err.Error(), "duplicate remote")
+			// Ensure url is redacted
+			require_Contains(t, err.Error(), "user1:xxxxx")
+		})
+	}
+}
+
+func TestLeafNodeHubRejectDuplicateRemotes(t *testing.T) {
 	opts := DefaultOptions()
+	opts.ServerName = "A"
 	opts.LeafNode.Host = "127.0.0.1"
 	opts.LeafNode.Port = -1
 	s := RunServer(opts)
 	defer s.Shutdown()
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
 
-	for _, test := range []struct {
-		name    string
-		account string
-		fail    bool
-	}{
-		{"different local accounts", "b", false},
-		{"same local accounts", "a", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			conf := `
-			listen: 127.0.0.1:-1
-			cluster { name: ln22, listen: 127.0.0.1:-1 }
-			accounts {
-				a { users [ {user: a, password: a} ]}
-				b { users [ {user: b, password: b} ]}
-			}
-			leafnodes {
-				remotes = [
-					{
-						url: nats-leaf://127.0.0.1:%[1]d
-						account: a
-					}
-					{
-						url: nats-leaf://127.0.0.1:%[1]d
-						account: %s
-					}
-				]
-			}
-			`
-			lconf := createConfFile(t, []byte(fmt.Sprintf(conf, opts.LeafNode.Port, test.account)))
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: "B"
+		leafnodes {
+			remotes = [{url: nats-leaf://127.0.0.1:%d}]
+		}
+	`
+	conf := createConfFile(t, fmt.Appendf(nil, tmpl, opts.LeafNode.Port))
+	ln, lno := RunServerWithConfig(conf)
+	defer ln.Shutdown()
 
-			lopts, err := ProcessConfigFile(lconf)
-			if err != nil {
-				t.Fatalf("Error loading config file: %v", err)
-			}
-			lopts.NoLog = false
-			ln, err := NewServer(lopts)
-			if err != nil {
-				t.Fatalf("Error creating server: %v", err)
-			}
-			defer ln.Shutdown()
-			l := &captureErrorLogger{errCh: make(chan string, 10)}
-			ln.SetLogger(l, false, false)
+	// Since we correctly reject duplicate remotes, we have to manually
+	// add a duplicate and start soliciting here.
+	r := *lno.LeafNode.Remotes[0]
+	ln.solicitLeafNodeRemotes([]*RemoteLeafOpts{&r})
 
-			wg := sync.WaitGroup{}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				ln.Start()
-			}()
-
-			select {
-			case err := <-l.errCh:
-				if test.fail && !strings.Contains(err, DuplicateRemoteLeafnodeConnection.String()) {
-					t.Fatalf("Did not get expected duplicate connection error: %v", err)
-				} else if !test.fail && strings.Contains(err, DuplicateRemoteLeafnodeConnection.String()) {
-					t.Fatalf("Incorrectly detected a duplicate connection: %v", err)
-				}
-			case <-time.After(250 * time.Millisecond):
-				if test.fail {
-					t.Fatal("Did not get expected error")
-				}
-			}
-			ln.Shutdown()
-			wg.Wait()
-		})
+	select {
+	case err := <-l.errCh:
+		if !strings.Contains(err, DuplicateRemoteLeafnodeConnection.String()) {
+			t.Fatalf("Did not get expected duplicate connection error: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Did not get expected error")
 	}
 }
 
@@ -10882,7 +10881,7 @@ func TestLeafNodesBasicTokenAuth(t *testing.T) {
 		listen: "127.0.0.1:-1"
 		leafnodes {
 			remotes: [
-				{ url: "nats://secret@localhost:%d" }
+				{ url: "nats://secret@127.0.0.1:%d" }
 			]
 		}
 	`

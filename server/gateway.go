@@ -1156,9 +1156,7 @@ func (c *client) processGatewayInfo(info *Info) {
 				// defensive code above that if we did not register this connection
 				// because we already have an outbound for this name, then
 				// close this connection (and make sure it does not try to reconnect)
-				c.mu.Lock()
-				c.flags.set(noReconnect)
-				c.mu.Unlock()
+				c.setNoReconnect()
 				c.closeConnection(WrongGateway)
 				return
 			}
