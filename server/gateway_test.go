@@ -562,6 +562,38 @@ func TestGatewayHeaderInfo(t *testing.T) {
 	}
 }
 
+func TestGatewayRejectsInfoBeforeConnect(t *testing.T) {
+	o := testDefaultOptionsForGateway("A")
+	s := runGatewayServer(o)
+	defer s.Shutdown()
+
+	gwconn, err := net.Dial("tcp", net.JoinHostPort(o.Gateway.Host, strconv.Itoa(o.Gateway.Port)))
+	if err != nil {
+		t.Fatalf("Error dialing server: %v", err)
+	}
+	defer gwconn.Close()
+
+	client := bufio.NewReaderSize(gwconn, maxBufSize)
+	if _, err := client.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving initial INFO from server: %v", err)
+	}
+
+	if _, err := fmt.Fprint(gwconn, "INFO {}\r\n"); err != nil {
+		t.Fatalf("Error sending gateway INFO: %v", err)
+	}
+
+	if err := gwconn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("Error setting read deadline: %v", err)
+	}
+	l, err := client.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Expected authorization failure, got read error: %v", err)
+	}
+	if !strings.Contains(l, "Authorization Violation") {
+		t.Fatalf("Expected authorization violation, got %q", l)
+	}
+}
+
 func TestGatewayHeaderSupport(t *testing.T) {
 	o2 := testDefaultOptionsForGateway("B")
 	o2.Gateway.ConnectRetries = 0
