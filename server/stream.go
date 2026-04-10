@@ -7159,14 +7159,17 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		mset.batches = &batching{}
 	}
 	batches := mset.batches
-	mset.mu.Unlock()
+	// Acquire the batches lock.
+	// Can't release the stream lock now, we need to keep holding it while we hold the batches lock.
+	// Re-acquiring the stream lock with the batches lock already held would be a lock inversion.
+	batches.mu.Lock()
 
 	// Get batch.
-	batches.mu.Lock()
 	b, ok := batches.fast[batch.id]
 	if !ok {
 		if batch.seq != 1 {
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondError(NewJSBatchPublishUnknownBatchIDError())
 		}
 
@@ -7184,6 +7187,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		// Confirm we can facilitate an additional batch.
 		if len(batches.fast)+1 > maxInflightPerStream {
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondError(NewJSBatchPublishTooManyInflightError())
 		}
 
@@ -7191,6 +7195,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		if globalInflightFastBatches.Add(1) > int64(maxInflightTotal) {
 			globalInflightFastBatches.Add(-1)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondError(NewJSBatchPublishTooManyInflightError())
 		}
 
@@ -7208,6 +7213,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		if errorOnRequiredApiLevel(hdr) {
 			b.cleanupLocked(batch.id, batches)
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return respondError(NewJSRequiredApiLevelError())
 		}
 		hdr = removeHeaderIfPresent(hdr, JSRequiredApiLevel)
@@ -7241,6 +7247,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 			b.sendFlowControl(b.fseq, mset, reply)
 		}
 		batches.mu.Unlock()
+		mset.mu.Unlock()
 		return nil
 	}
 
@@ -7249,6 +7256,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	if b.commit {
 		// MUST NOT clean up, that will happen when the commit completes.
 		batches.mu.Unlock()
+		mset.mu.Unlock()
 		return nil
 	}
 
@@ -7268,6 +7276,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 				b.cleanupLocked(batch.id, batches)
 			}
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return nil
 		}
 	}
@@ -7290,6 +7299,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 				b.cleanupLocked(batch.id, batches)
 			}
 			batches.mu.Unlock()
+			mset.mu.Unlock()
 			return nil
 		}
 	}
@@ -7307,8 +7317,10 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
-		lseq = recalculateClusteredSeq(mset, true)
+		lseq = recalculateClusteredSeq(mset, false)
 	}
+	// We can now unlock, since we've potentially recalculated the clustered seq above.
+	mset.mu.Unlock()
 
 	var (
 		dseq   uint64
