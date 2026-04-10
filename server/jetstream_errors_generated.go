@@ -338,6 +338,9 @@ const (
 	// JSMessageSchedulesRollupInvalidErr message schedules invalid rollup
 	JSMessageSchedulesRollupInvalidErr ErrorIdentifier = 10192
 
+	// JSMessageSchedulesSchedulerInvalidErr message schedules invalid scheduler
+	JSMessageSchedulesSchedulerInvalidErr ErrorIdentifier = 10212
+
 	// JSMessageSchedulesSourceInvalidErr message schedules source is invalid
 	JSMessageSchedulesSourceInvalidErr ErrorIdentifier = 10203
 
@@ -749,6 +752,7 @@ var (
 		JSMessageSchedulesDisabledErr:                {Code: 400, ErrCode: 10188, Description: "message schedules is disabled"},
 		JSMessageSchedulesPatternInvalidErr:          {Code: 400, ErrCode: 10189, Description: "message schedules pattern is invalid"},
 		JSMessageSchedulesRollupInvalidErr:           {Code: 400, ErrCode: 10192, Description: "message schedules invalid rollup"},
+		JSMessageSchedulesSchedulerInvalidErr:        {Code: 400, ErrCode: 10212, Description: "message schedules invalid scheduler"},
 		JSMessageSchedulesSourceInvalidErr:           {Code: 400, ErrCode: 10203, Description: "message schedules source is invalid"},
 		JSMessageSchedulesTTLInvalidErr:              {Code: 400, ErrCode: 10191, Description: "message schedules invalid per-message TTL"},
 		JSMessageSchedulesTargetInvalidErr:           {Code: 400, ErrCode: 10190, Description: "message schedules target is invalid"},
@@ -2077,6 +2081,16 @@ func NewJSMessageSchedulesRollupInvalidError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMessageSchedulesRollupInvalidErr]
+}
+
+// NewJSMessageSchedulesSchedulerInvalidError creates a new JSMessageSchedulesSchedulerInvalidErr error: "message schedules invalid scheduler"
+func NewJSMessageSchedulesSchedulerInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesSchedulerInvalidErr]
 }
 
 // NewJSMessageSchedulesSourceInvalidError creates a new JSMessageSchedulesSourceInvalidErr error: "message schedules source is invalid"

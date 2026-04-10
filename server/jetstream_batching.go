@@ -819,6 +819,9 @@ func checkMsgHeadersPreClusteredProposal(
 			} else if scheduleTtl, ok := getMessageScheduleTTL(hdr); !ok {
 				apiErr := NewJSMessageSchedulesTTLInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
+			} else if scheduleRollup := getMessageScheduleRollup(hdr); scheduleRollup != _EMPTY_ && scheduleRollup != JSMsgRollupSubject {
+				apiErr := NewJSMessageSchedulesRollupInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
 			} else if scheduleTtl != _EMPTY_ && !allowTTL {
 				return hdr, msg, 0, NewJSMessageTTLDisabledError(), errMsgTTLDisabled
 			} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
@@ -848,6 +851,16 @@ func checkMsgHeadersPreClusteredProposal(
 					apiErr := NewJSMessageSchedulesRollupInvalidError()
 					return hdr, msg, 0, apiErr, apiErr
 				}
+			}
+		}
+		if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 {
+			// If Nats-Schedule-Next is set, Nats-Scheduler should be set too, but:
+			// - it must NOT be empty.
+			// - it must NOT match the publish subject.
+			if scheduler := sliceHeader(JSScheduler, hdr); len(scheduler) == 0 ||
+				bytesToString(scheduler) == subject || !IsValidPublishSubject(bytesToString(scheduler)) {
+				apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
 			}
 		}
 
