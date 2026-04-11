@@ -23050,7 +23050,7 @@ func TestJetStreamMirrorSetupStartGoRoutineFailMissingWgDone(t *testing.T) {
 	}
 }
 
-func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
+func TestJetStreamSourcingDeduplication(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -23085,15 +23085,12 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, resp.Error, nil)
 
+	// Publish a message on foo.1
 	_, err = js.Publish("foo.1", ([]byte)("1"))
 	require_NoError(t, err)
 
-	// this will not be sourced as discard new per subject
-	_, err = js.Publish("foo.1", ([]byte)("2"))
-	require_NoError(t, err)
-
+	// Wait for it to get sourced
 	var si *nats.StreamInfo
-
 	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
 		si, err = js.StreamInfo("B")
 		if err != nil {
@@ -23105,97 +23102,82 @@ func TestJetStreamSourcingIntoDiscardNewPerSubject(t *testing.T) {
 		return nil
 	})
 
-	// Check the message
+	// Publish another message that will be skipped as discard new per subject is set
+	_, err = js.Publish("foo.1", ([]byte)("2"))
+	require_NoError(t, err)
+
+	// Then publish another message that will be sourced as the previous one is a duplicate and should have been skipped
+	_, err = js.Publish("foo.2", ([]byte)("1"))
+	require_NoError(t, err)
+
+	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+		si, err = js.StreamInfo("B")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("expected 2 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Check the messages
 	msgp, err := js.GetMsg("B", uint64(1))
 	require_NoError(t, err)
 	require_Equal(t, msgp.Subject, "foo.1")
 	require_Equal(t, string(msgp.Data), "1")
 
-	// now purge the stream so sourcing can continue
-	require_NoError(t, js.PurgeStream("B"))
-
-	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
-		si, err = js.StreamInfo("B")
-		if err != nil {
-			return err
-		}
-		if si.State.Msgs != 1 {
-			return fmt.Errorf("expected 1 messages, got %d", si.State.Msgs)
-		}
-		return nil
-	})
-
-	// check the message
 	msgp, err = js.GetMsg("B", uint64(2))
-	require_NoError(t, err)
-	require_Equal(t, msgp.Subject, "foo.1")
-	require_Equal(t, string(msgp.Data), "2")
-
-	msg := nats.NewMsg("foo.2")
-	msg.Data = []byte("1")
-	msg.Header.Set("Nats-Msg-Id", "1")
-
-	_, err = js.PublishMsg(msg)
-	require_NoError(t, err)
-
-	// Must be able to move on and source the next message after the duplicate
-	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
-		si, err = js.StreamInfo("B")
-		if err != nil {
-			return err
-		}
-		if si.State.Msgs != 2 {
-			return fmt.Errorf("expected 2 messages, got %d", si.State.Msgs)
-		}
-		return nil
-	})
-
-	// check the message
-	msgp, err = js.GetMsg("B", uint64(3))
 	require_NoError(t, err)
 	require_Equal(t, msgp.Subject, "foo.2")
 	require_Equal(t, string(msgp.Data), "1")
 
-	time.Sleep(200 * time.Millisecond)
-
-	msg = nats.NewMsg("foo.3")
+	// Publish a message on a new subject with the message id set
+	msg := nats.NewMsg("foo.3")
 	msg.Data = []byte("1")
 	msg.Header.Set("Nats-Msg-Id", "1")
 
 	_, err = js.PublishMsg(msg)
 	require_NoError(t, err)
 
-	// Duplicate message id, should get skipped
-	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
-		si, err = js.StreamInfo("B")
-		if err != nil {
-			return err
-		}
-		if si.State.Msgs != 2 {
-			return fmt.Errorf("expected 2 messages, got %d", si.State.Msgs)
-		}
-		return nil
-	})
+	// make sure we are past the size of the dedup window on Stream A
+	time.Sleep(100 * time.Millisecond)
 
-	// Must be able to move on
-	_, err = js.Publish("foo.4", ([]byte)("1"))
+	// Then publish another message on a new subject but with the same message id, which should be skipped as a duplicate
+	msg = nats.NewMsg("foo.4")
+	msg.Data = []byte("1")
+	msg.Header.Set("Nats-Msg-Id", "1")
+	_, err = js.PublishMsg(msg)
 	require_NoError(t, err)
 
-	// Must be able to move on and source the next message after the duplicate
+	// Finally publish another message that should get sourced to verify the message with duplicate id was skipped
+	_, err = js.Publish("foo.5", ([]byte)("1"))
+	require_NoError(t, err)
+
+	// check expected stream size
 	checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
 		si, err = js.StreamInfo("B")
 		if err != nil {
 			return err
 		}
-		if si.State.Msgs != 3 {
-			return fmt.Errorf("expected 3 messages, got %d", si.State.Msgs)
+		if si.State.Msgs != 4 {
+			return fmt.Errorf("expected 4 messages, got %d", si.State.Msgs)
 		}
 		return nil
 	})
+
+	// check the messages
+	msgp, err = js.GetMsg("B", uint64(3))
+	require_NoError(t, err)
+	require_Equal(t, msgp.Subject, "foo.3")
+	require_Equal(t, string(msgp.Data), "1")
 
 	msgp, err = js.GetMsg("B", uint64(4))
 	require_NoError(t, err)
-	require_Equal(t, msgp.Subject, "foo.4")
+	require_Equal(t, msgp.Subject, "foo.5")
 	require_Equal(t, string(msgp.Data), "1")
 
+	// check it's really the last message
+	_, err = js.GetMsg("B", uint64(5))
+	require_Error(t, err, nats.ErrMsgNotFound)
 }
