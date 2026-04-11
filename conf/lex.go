@@ -900,6 +900,18 @@ func (lx *lexer) isVariable() bool {
 	return false
 }
 
+// Check if the unquoted string is a variable reference with braces
+func (lx *lexer) isVariableWithBraces() bool {
+	if lx.start >= len(lx.input) {
+		return false
+	}
+	if len(lx.input) > 3 && lx.input[lx.start:lx.start+2] == "${" {
+		lx.start += 2
+		return true
+	}
+	return false
+}
+
 // lexQuotedString consumes the inner contents of a string. It assumes that the
 // beginning '"' has already been consumed and ignored. It will not interpret any
 // internal contents.
@@ -964,6 +976,14 @@ func lexString(lx *lexer) stateFn {
 			lx.emitString()
 		} else if lx.isBool() {
 			lx.emit(itemBool)
+		} else if lx.isVariableWithBraces() {
+			lx.emit(itemVariable)
+
+			// consume the trailing '}'
+			if lx.pos < len(lx.input) && lx.input[lx.pos] == '}' {
+				lx.next()
+				lx.ignore()
+			}
 		} else if lx.isVariable() {
 			lx.emit(itemVariable)
 		} else {
