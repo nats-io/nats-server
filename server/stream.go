@@ -1518,8 +1518,8 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	if config == nil {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration invalid"))
 	}
-	if !isValidName(config.Name) {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream name is required and can not contain '.', '*', '>'"))
+	if !isValidAssetName(config.Name) {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream name is required and can not contain '.', '*', '>', '\\', '/'"))
 	}
 	if len(config.Name) > JSMaxNameLen {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream name is too long, maximum allowed is %d", JSMaxNameLen))
@@ -1778,7 +1778,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		// Do not perform checks if External is provided, as it could lead to
 		// checking against itself (if sourced stream name is the same on different JetStream)
 		if cfg.Mirror.External == nil {
-			if !isValidName(cfg.Mirror.Name) {
+			if !isValidAssetName(cfg.Mirror.Name) {
 				return StreamConfig{}, NewJSMirrorInvalidStreamNameError()
 			}
 			// We do not require other stream to exist anymore, but if we can see it check payloads.
@@ -1833,7 +1833,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	// check sources for duplicates
 	var iNames = make(map[string]struct{})
 	for _, src := range cfg.Sources {
-		if src == nil || !isValidName(src.Name) {
+		if src == nil || !isValidAssetName(src.Name) {
 			return StreamConfig{}, NewJSSourceInvalidStreamNameError()
 		}
 		if _, ok := iNames[src.composeIName()]; !ok {

@@ -4048,6 +4048,13 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
+	// Check for path like separators in the name.
+	if strings.ContainsAny(stream, `\/`) {
+		resp.Error = NewJSStreamNameContainsPathSeparatorsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRestoreRequest(ci, acc, &req, subject, reply, rmsg)
 		return
