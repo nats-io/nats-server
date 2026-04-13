@@ -117,17 +117,17 @@ type leafNodeCfg struct {
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
 func (c *client) isSolicitedLeafNode() bool {
-	return c.kind == LEAF && c.leaf.remote != nil
+	return c.kind == LEAF && c.leaf != nil && c.leaf.remote != nil
 }
 
 // Returns true if this is a solicited leafnode and is not configured to be treated as a hub or a receiving
 // connection leafnode where the otherside has declared itself to be the hub.
 func (c *client) isSpokeLeafNode() bool {
-	return c.kind == LEAF && c.leaf.isSpoke
+	return c.kind == LEAF && c.leaf != nil && c.leaf.isSpoke
 }
 
 func (c *client) isHubLeafNode() bool {
-	return c.kind == LEAF && !c.leaf.isSpoke
+	return c.kind == LEAF && c.leaf != nil && !c.leaf.isSpoke
 }
 
 // This will spin up go routines to solicit the remote leaf node connections.
