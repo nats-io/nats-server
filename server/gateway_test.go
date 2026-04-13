@@ -6607,6 +6607,67 @@ func TestGatewayTLSConfigReloadForImplicitRemote(t *testing.T) {
 	waitForGatewayFailedConnect(t, srvA, "B", true, time.Second)
 }
 
+func TestGatewayTLSPinnedCertsReloadDisconnectsPeers(t *testing.T) {
+	SetGatewaysSolicitDelay(5 * time.Millisecond)
+	defer ResetGatewaysSolicitDelay()
+
+	const (
+		pinnedSrvA = "[\"c5d58200425185accb67cdca400d823ef20300a1ee09e5b38c668be8bd20256e\"]"
+		pinnedSrvB = "[\"0e35d0ab7dee2683105f841c4a51953ec493ceb62503d26f38902d301111562c\"]"
+	)
+
+	template := `
+		listen: 127.0.0.1:-1
+		gateway {
+			name: "A"
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "../test/configs/certs/srva-cert.pem"
+				key_file:  "../test/configs/certs/srva-key.pem"
+				ca_file:   "../test/configs/certs/ca.pem"
+				verify: true
+				pinned_certs: %s
+				timeout: 2
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(template, pinnedSrvB)))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	optsB := testGatewayOptionsFromToWithTLS(t, "B", "A", []string{fmt.Sprintf("nats://127.0.0.1:%d", optsA.Gateway.Port)})
+	srvB := runGatewayServer(optsB)
+	defer srvB.Shutdown()
+
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+
+	// Change the pinned cert. Expect the gateway to disconnect
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, pinnedSrvA))
+	waitForInboundGateways(t, srvA, 0, time.Second)
+	waitForOutboundGateways(t, srvA, 0, time.Second)
+	waitForInboundGateways(t, srvB, 0, time.Second)
+	waitForOutboundGateways(t, srvB, 0, time.Second)
+	waitForGatewayFailedConnect(t, srvB, "A", true, time.Second)
+
+	// Reload with empty pinned cert. Expect gateway to reconnect.
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, "[]"))
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+
+	// Reset pinned cert to server B. Expect gate to remain connected.
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, pinnedSrvB))
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+
+}
+
 func TestGatewayAuthDiscovered(t *testing.T) {
 	SetGatewaysSolicitDelay(5 * time.Millisecond)
 	defer ResetGatewaysSolicitDelay()
