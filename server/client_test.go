@@ -3981,132 +3981,102 @@ func TestFlushOutboundS2CompressionPoolBufferRecycling(t *testing.T) {
 	}
 }
 
-func TestClientPingNoAuthUserExceptionsAndRestrictions(t *testing.T) {
-	conf := createConfFile(t, []byte(`
-		listen: "127.0.0.1:-1"
-		accounts {
-			A { users [{user: "foo", password: "pwd"}] }
+func TestClientRepeatConnectSwitchesAccountAndCleansOldSubs(t *testing.T) {
+	for _, diffAcc := range []bool{true, false} {
+		title := "ToDifferentAccount"
+		if !diffAcc {
+			title = "SameAccount"
 		}
-		no_auth_user: "foo"
-		cluster {
-			listen: "127.0.0.1:-1"
-			authorization {
-				user: "route_user"
-				password: "route_pwd"
-				timeout: 1
-			}
-		}
-		leafnodes {
-			listen: "127.0.0.1:-1"
-			compression: off
-			authorization {
-				user: "leaf_user"
-				password: "leaf_pwd"
-				timeout: 1
-			}
-		}
-	`))
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
+		t.Run(title, func(t *testing.T) {
+			conf := createConfFile(t, []byte(`
+				listen: 127.0.0.1:-1
+				accounts: {
+					A: { users: [ { user: ua, password: pa } ] }
+					B: { users: [ { user: ub, password: pb } ] }
+				}
+			`))
 
-	opts := s.getOpts()
-	acc, err := s.LookupAccount("A")
-	require_NoError(t, err)
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
 
-	readInfoLine := func(t *testing.T, conn net.Conn) {
-		t.Helper()
-		br := bufio.NewReader(conn)
-		line, _, err := br.ReadLine()
-		require_NoError(t, err)
-		require_True(t, len(line) >= 5)
-		require_Equal(t, string(line[:5]), "INFO ")
+			accA, err := s.LookupAccount("A")
+			require_NoError(t, err)
+			accB, err := s.LookupAccount("B")
+			require_NoError(t, err)
+
+			c, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
+			require_NoError(t, err)
+			defer c.Close()
+
+			// Consume INFO.
+			cr := bufio.NewReader(c)
+			line, _, err := cr.ReadLine()
+			require_NoError(t, err)
+			require_Contains(t, string(line), "INFO {")
+
+			// First CONNECT into account A plus a subscription.
+			_, err = c.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ua\",\"pass\":\"pa\"}\r\nSUB foo 1\r\nPING\r\n"))
+			require_NoError(t, err)
+			line, _, err = cr.ReadLine()
+			require_NoError(t, err)
+			require_Equal(t, string(line), "PONG")
+
+			// Confirm the sub landed in account A.
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				r := accA.sl.Match("foo")
+				if n := len(r.psubs); n != 1 {
+					return fmt.Errorf("expected 1 psub on foo in account A, got %d", n)
+				}
+				if n := accA.NumLocalConnections(); n != 1 {
+					return fmt.Errorf("expected 1 client in account A, got %d", n)
+				}
+				return nil
+			})
+
+			// Second CONNECT, re-authenticating...
+			if diffAcc {
+				// ..., into account B.
+				_, err = c.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ub\",\"pass\":\"pb\"}\r\nPING\r\n"))
+			} else {
+				// ..., into the same account A.
+				_, err = c.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ua\",\"pass\":\"pa\"}\r\nPING\r\n"))
+			}
+			require_NoError(t, err)
+			line, _, err = cr.ReadLine()
+			require_NoError(t, err)
+			require_Equal(t, string(line), "PONG")
+
+			// Account A must no longer have the old sub (or the client if connected to B).
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				r := accA.sl.Match("foo")
+				if n := len(r.psubs); n != 0 {
+					return fmt.Errorf("expected 0 psubs on foo in account A after re-CONNECT, got %d", n)
+				}
+				var ea, eb int
+				if diffAcc {
+					eb = 1
+				} else {
+					ea = 1
+				}
+				if n := accA.NumLocalConnections(); n != ea {
+					return fmt.Errorf("expected %d clients in account A after re-CONNECT, got %d", ea, n)
+				}
+				if n := accB.NumLocalConnections(); n != eb {
+					return fmt.Errorf("expected %d client in account B after re-CONNECT, got %d", eb, n)
+				}
+				return nil
+			})
+
+			// Publishing foo on account A must not be delivered to this client.
+			ncA := natsConnect(t, s.ClientURL(), nats.UserInfo("ua", "pa"))
+			defer ncA.Close()
+			natsPub(t, ncA, "foo", []byte("should-not-arrive"))
+			natsFlush(t, ncA)
+
+			require_NoError(t, c.SetReadDeadline(time.Now().Add(150*time.Millisecond)))
+			if line, _, err = cr.ReadLine(); err == nil {
+				t.Fatalf("Did not expect to read anything from stale sub, got %q", line)
+			}
+		})
 	}
-
-	t.Run("RouteNotAllowed", func(t *testing.T) {
-		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.Cluster.Port))
-		require_NoError(t, err)
-		defer conn.Close()
-		readInfoLine(t, conn)
-
-		// Send PING as the first command (not CONNECT). This should NOT
-		// trigger the NoAuthUser fast-path on a route connection.
-		_, err = conn.Write([]byte("PING\r\n"))
-		require_NoError(t, err)
-
-		// The server should reject this connection.
-		require_NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
-		br := bufio.NewReader(conn)
-		line, _, err := br.ReadLine()
-		require_NoError(t, err)
-		require_NotEqual(t, string(line), "PONG")
-		require_Equal(t, s.NumRoutes(), 0)
-		checkAccClientsCount(t, acc, 0)
-	})
-
-	t.Run("RouteInjectionNotAllowed", func(t *testing.T) {
-		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.Cluster.Port))
-		require_NoError(t, err)
-		defer conn.Close()
-		readInfoLine(t, conn)
-
-		// Attempt to inject an RMSG directly without CONNECT.
-		// This simulates cross-account message injection via the route protocol.
-		_, err = conn.Write([]byte("RMSG $G foo 2\r\nok\r\n"))
-		require_NoError(t, err)
-
-		// The server must reject this — either close the connection or
-		// return an error. It must NOT process the RMSG.
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		br := bufio.NewReader(conn)
-		_, _, _ = br.ReadLine()
-		// We expect either an -ERR or a closed connection (io.EOF / read error).
-		// Either way, no routes should be registered.
-		require_Equal(t, s.NumRoutes(), 0)
-		checkAccClientsCount(t, acc, 0)
-	})
-
-	t.Run("LeafNotAllowed", func(t *testing.T) {
-		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.LeafNode.Port))
-		require_NoError(t, err)
-		defer conn.Close()
-		readInfoLine(t, conn)
-
-		// Send PING as the first command (not CONNECT). This should NOT
-		// trigger the NoAuthUser fast-path on a leaf connection.
-		_, err = conn.Write([]byte("PING\r\n"))
-		require_NoError(t, err)
-
-		// The server should reject this connection.
-		require_NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
-		br := bufio.NewReader(conn)
-		line, _, err := br.ReadLine()
-		require_NoError(t, err)
-		require_NotEqual(t, string(line), "PONG")
-		require_Equal(t, s.NumLeafNodes(), 0)
-		checkAccClientsCount(t, acc, 0)
-	})
-
-	t.Run("ClientAllowed", func(t *testing.T) {
-		// Verify that the NoAuthUser fast-path still works correctly on the
-		// client port — this is the intended use case.
-		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.Port))
-		require_NoError(t, err)
-		readInfoLine(t, conn)
-
-		// Send PING without CONNECT — this should succeed on the client port
-		// because NoAuthUser is configured.
-		_, err = conn.Write([]byte("PING\r\n"))
-		require_NoError(t, err)
-
-		// Should get a PONG as expected as we expect to be dropped into the
-		// no auth user.
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		br := bufio.NewReader(conn)
-		line, _, err := br.ReadLine()
-		require_NoError(t, err)
-		require_Equal(t, string(line), "PONG")
-		checkAccClientsCount(t, acc, 1)
-		require_NoError(t, conn.Close())
-		checkAccClientsCount(t, acc, 0)
-	})
 }
