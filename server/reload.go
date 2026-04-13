@@ -991,7 +991,7 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 			}
 		})
 	}
-	if s.gateway.enabled && reflect.DeepEqual(newOpts.Gateway.TLSPinnedCerts, curOpts.Gateway.TLSPinnedCerts) {
+	if s.gateway.enabled && !reflect.DeepEqual(newOpts.Gateway.TLSPinnedCerts, curOpts.Gateway.TLSPinnedCerts) {
 		gw := s.gateway
 		gw.RLock()
 		for _, c := range gw.out {
@@ -1370,6 +1370,11 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew.TLSConfig = nil
 			tmpOld.tlsConfigOpts = nil
 			tmpNew.tlsConfigOpts = nil
+
+			// Allow TLSPinnedCerts through reload, existing connections
+			// are checked in recheckPinnedCerts
+			tmpOld.TLSPinnedCerts = nil
+			tmpNew.TLSPinnedCerts = nil
 
 			// Need to do the same for remote gateways' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
