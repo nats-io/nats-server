@@ -2142,6 +2142,7 @@ func (c *client) processConnect(arg []byte) error {
 	}
 	// Indicate that the CONNECT protocol has been received, and that the
 	// server now knows which protocol this client supports.
+	firstConnect := !c.flags.isSet(connectReceived)
 	c.flags.set(connectReceived)
 	// Capture these under lock
 	c.echo = c.opts.Echo
@@ -2211,10 +2212,18 @@ func (c *client) processConnect(arg []byte) error {
 		// least ClientProtoInfo, we need to increment the following counter.
 		// This is decremented when client is removed from the server's
 		// clients map.
-		if kind == CLIENT && proto >= ClientProtoInfo {
+		if kind == CLIENT && proto >= ClientProtoInfo && firstConnect {
 			srv.mu.Lock()
 			srv.cproto++
 			srv.mu.Unlock()
+		}
+
+		// A second CONNECT may move the client into a different account via
+		// checkAuthentication. Drop any previously-registered subscriptions
+		// from the current account first so they don't leak in that account's
+		// sublist after the client switches.
+		if !firstConnect {
+			c.clearAccountSubs(false)
 		}
 
 		// Check for Auth
@@ -5916,37 +5925,12 @@ func (c *client) closeConnection(reason ClosedState) {
 		srv         = c.srv
 		noReconnect = c.flags.isSet(noReconnect)
 		acc         = c.acc
-		spoke       bool
 	)
-
-	// Snapshot for use if we are a client connection.
-	// FIXME(dlc) - we can just stub in a new one for client
-	// and reference existing one.
-	var subs []*subscription
-	if kind == CLIENT || kind == LEAF || kind == JETSTREAM {
-		var _subs [32]*subscription
-		subs = _subs[:0]
-		// Do not set c.subs to nil or delete the sub from c.subs here because
-		// it will be needed in saveClosedClient (which has been started as a
-		// go routine in markConnAsClosed). Cleanup will be done there.
-		for _, sub := range c.subs {
-			// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
-			sub.max = 0
-			sub.close()
-			subs = append(subs, sub)
-		}
-		spoke = c.isSpokeLeafNode()
-	}
-
 	c.mu.Unlock()
 
-	// Remove client's or leaf node or jetstream subscriptions.
-	if acc != nil && (kind == CLIENT || kind == LEAF || kind == JETSTREAM) {
-		acc.sl.RemoveBatch(subs)
-	} else if kind == ROUTER {
+	if kind == ROUTER {
 		c.removeRemoteSubs()
 	}
-
 	if srv != nil {
 		// Unregister
 		srv.removeClient(c)
@@ -5954,45 +5938,11 @@ func (c *client) closeConnection(reason ClosedState) {
 		if acc != nil {
 			// Update remote subscriptions.
 			if kind == CLIENT || kind == LEAF || kind == JETSTREAM {
-				qsubs := map[string]*qsub{}
-				for _, sub := range subs {
-					// Call unsubscribe here to cleanup shadow subscriptions and such.
-					c.unsubscribe(acc, sub, true, false)
-					// Update route as normal for a normal subscriber.
-					if sub.queue == nil {
-						if !spoke {
-							srv.updateRouteSubscriptionMap(acc, sub, -1)
-							if srv.gateway.enabled {
-								srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
-							}
-						}
-						acc.updateLeafNodes(sub, -1)
-					} else {
-						// We handle queue subscribers special in case we
-						// have a bunch we can just send one update to the
-						// connected routes.
-						num := int32(1)
-						if kind == LEAF {
-							num = sub.qw
-						}
-						key := keyFromSub(sub)
-						if esub, ok := qsubs[key]; ok {
-							esub.n += num
-						} else {
-							qsubs[key] = &qsub{sub, num}
-						}
-					}
-				}
-				// Process any qsubs here.
-				for _, esub := range qsubs {
-					if !spoke {
-						srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
-						if srv.gateway.enabled {
-							srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -(esub.n))
-						}
-					}
-					acc.updateLeafNodes(esub.sub, -(esub.n))
-				}
+				// Remove client's subscriptions from the account and unregister
+				// client from that account. Keep c.subs populated because
+				// saveClosedClient (started as a goroutine in markConnAsClosed)
+				// still needs to read it.
+				c.clearAccountSubs(true)
 			}
 			// Always remove from the account, otherwise we can leak clients.
 			// Note that SYSTEM and ACCOUNT types from above cleanup their own subs.
@@ -6017,6 +5967,87 @@ func (c *client) closeConnection(reason ClosedState) {
 	}
 
 	c.reconnect()
+}
+
+// clearAccountSubs removes the client's subscriptions from its current account
+// and unregisters it from that account. If close is true, c.subs is left
+// populated for saveClosedClient; otherwise c.subs is cleared and c.acc
+// registered back to the global account.
+// Client lock MUST NOT be held on entry.
+func (c *client) clearAccountSubs(close bool) {
+	c.mu.Lock()
+	kind := c.kind
+	srv := c.srv
+	acc := c.acc
+	if acc == nil || (kind != CLIENT && kind != LEAF && kind != JETSTREAM) {
+		c.mu.Unlock()
+		return
+	}
+	var _subs [32]*subscription
+	subs := _subs[:0]
+	// Do not set c.subs to nil or delete the sub from c.subs here because
+	// it will be needed in saveClosedClient (which has been started as a
+	// go routine in markConnAsClosed). Cleanup will be done there.
+	for _, sub := range c.subs {
+		// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
+		sub.max = 0
+		sub.close()
+		subs = append(subs, sub)
+		if !close {
+			delete(c.subs, string(sub.sid))
+		}
+	}
+	spoke := c.isSpokeLeafNode()
+	c.mu.Unlock()
+
+	acc.sl.RemoveBatch(subs)
+
+	if srv != nil {
+		qsubs := map[string]*qsub{}
+		for _, sub := range subs {
+			// Call unsubscribe here to cleanup shadow subscriptions and such.
+			c.unsubscribe(acc, sub, true, false)
+			// Update route as normal for a normal subscriber.
+			if sub.queue == nil {
+				if !spoke {
+					srv.updateRouteSubscriptionMap(acc, sub, -1)
+					if srv.gateway.enabled {
+						srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+					}
+				}
+				acc.updateLeafNodes(sub, -1)
+			} else {
+				// We handle queue subscribers special in case we
+				// have a bunch we can just send one update to the
+				// connected routes.
+				num := int32(1)
+				if kind == LEAF {
+					num = sub.qw
+				}
+				key := keyFromSub(sub)
+				if esub, ok := qsubs[key]; ok {
+					esub.n += num
+				} else {
+					qsubs[key] = &qsub{sub, num}
+				}
+			}
+		}
+		// Process any qsubs here.
+		for _, esub := range qsubs {
+			if !spoke {
+				srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
+				if srv.gateway.enabled {
+					srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -(esub.n))
+				}
+			}
+			acc.updateLeafNodes(esub.sub, -(esub.n))
+		}
+	}
+
+	if !close {
+		// Register back to global account, mimicking the state after client initialization.
+		c.registerWithAccount(srv.globalAccount())
+	}
 }
 
 // Depending on the kind of connections, this may attempt to recreate a connection.
