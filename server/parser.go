@@ -1258,10 +1258,17 @@ func protoSnippet(start, max int, buf []byte) string {
 // If so, an error is sent to the client and the connection is closed.
 // The error ErrMaxControlLine is returned.
 func (c *client) overMaxControlLineLimit(arg []byte, mcl int32) error {
+	// Widen to int64 so mcl*16 cannot overflow for large configured values.
+	effective := int64(mcl)
 	if c.kind != CLIENT {
-		return nil
+		// This is the upper bound on argBuf length for LEAF, ROUTER, and GATEWAY connections.
+		// These kinds need longer arg lines than CLIENT (which is capped at mcl=4096 by default)
+		// because cluster/leaf frames encode origin, account, reply, and queue groups.
+		// By default, this is 64 KB, which matches maxBufSize so a single oversized read
+		// is caught on the very next parse call.
+		effective *= 16
 	}
-	if len(arg) > int(mcl) {
+	if int64(len(arg)) > effective {
 		err := NewErrorCtx(ErrMaxControlLine, "State %d, max_control_line %d, Buffer len %d (snip: %s...)",
 			c.state, int(mcl), len(c.argBuf), protoSnippet(0, MAX_CONTROL_LINE_SNIPPET_SIZE, arg))
 		c.sendErr(err.Error())

@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -26,7 +27,7 @@ func dummyClient() *client {
 
 func dummyRouteClient() *client {
 	opts := defaultServerOptions
-	return &client{srv: New(&opts), kind: ROUTER}
+	return &client{srv: New(&opts), kind: ROUTER, mcl: MAX_CONTROL_LINE_SIZE}
 }
 
 func TestParsePing(t *testing.T) {
@@ -976,6 +977,60 @@ func TestMaxControlLine(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Should not have failed, got %v", err)
 				}
+			}
+		})
+	}
+}
+
+func TestMaxControlLineNonClientUpperBound(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind int
+	}{
+		{"leaf", LEAF},
+		{"route", ROUTER},
+		{"gateway", GATEWAY},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			setupClient := func() *client {
+				c := dummyClient()
+				c.setNoReconnect()
+				c.flags.set(connectReceived)
+				c.kind = test.kind
+				switch test.kind {
+				case ROUTER:
+					c.route = &route{}
+				case GATEWAY:
+					c.gw = &gateway{outbound: false, connected: true, insim: make(map[string]*insie)}
+				}
+				// mcl is the CLIENT default; non-CLIENT uses 16 times that instead
+				c.mcl = MAX_CONTROL_LINE_SIZE
+				return c
+			}
+
+			for _, off := range []int{-1, 0, 1} {
+				t.Run(fmt.Sprintf("%d", off), func(t *testing.T) {
+					// Build a PUB arg that exceeds the max control line.
+					// Feed it in two chunks so argBuf accumulates across parse calls
+					// (replicates the split-buffer trickle-feed exploit path).
+					defaultMaxControlLineSize := MAX_CONTROL_LINE_SIZE * 16
+					subject := bytes.Repeat([]byte("x"), defaultMaxControlLineSize+off)
+					chunk1 := append([]byte("PUB "), subject[:defaultMaxControlLineSize/2]...)
+					chunk2 := subject[defaultMaxControlLineSize/2:]
+
+					c := setupClient()
+					// First chunk — no error expected yet (argBuf < limit)
+					if err := c.parse(chunk1); err != nil {
+						t.Fatalf("unexpected error on first chunk: %v", err)
+					}
+					// Second chunk pushes argBuf over max control line
+					err := c.parse(chunk2)
+					if off <= 0 && err != nil {
+						t.Fatalf("unexpected error on second chunk: %v", err)
+					} else if off > 0 && !ErrorIs(err, ErrMaxControlLine) {
+						t.Fatalf("expected ErrMaxControlLine after oversized accumulation, got: %v", err)
+					}
+				})
 			}
 		})
 	}
