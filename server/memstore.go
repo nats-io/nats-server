@@ -2412,7 +2412,7 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 	if len(state.Pending) > 0 {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
-			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			pending[seq] = &Pending{p.Sequence, p.Timestamp, p.Subject}
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -2457,7 +2457,7 @@ func (o *consumerMemStore) ForceUpdate(state *ConsumerState) error {
 	if len(state.Pending) > 0 {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
-			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			pending[seq] = &Pending{p.Sequence, p.Timestamp, p.Subject}
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -2521,7 +2521,7 @@ func (o *consumerMemStore) HasState() bool {
 	return o.state.Delivered.Consumer != 0 || o.state.Delivered.Stream != 0
 }
 
-func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
+func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64, subj string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -2549,7 +2549,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 			}
 		} else {
 			// Add to pending.
-			o.state.Pending[sseq] = &Pending{dseq, ts}
+			o.state.Pending[sseq] = &Pending{dseq, ts, subj}
 		}
 		// Update delivered as needed.
 		if dseq > o.state.Delivered.Consumer {
@@ -2741,7 +2741,7 @@ func (o *consumerMemStore) EncodedState() ([]byte, error) {
 func (o *consumerMemStore) copyPending() map[uint64]*Pending {
 	pending := make(map[uint64]*Pending, len(o.state.Pending))
 	for seq, p := range o.state.Pending {
-		pending[seq] = &Pending{p.Sequence, p.Timestamp}
+		pending[seq] = &Pending{p.Sequence, p.Timestamp, p.Subject}
 	}
 	return pending
 }
