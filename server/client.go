@@ -4463,7 +4463,8 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	// Write original header if present.
 	if c.pa.hdr > LEN_CR_LF {
 		omi = c.pa.hdr
-		hdr := removeHeaderIfPresent(msg[:c.pa.hdr-LEN_CR_LF], key)
+		// Need to copy since we're removing the header in place.
+		hdr := removeHeaderIfPresent(copyBytes(msg[:c.pa.hdr-LEN_CR_LF]), key)
 		if len(hdr) == 0 {
 			bb.WriteString(hdrLine)
 		} else {

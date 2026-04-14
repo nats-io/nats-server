@@ -3244,6 +3244,27 @@ func TestSetHeaderDoesNotOverwriteUnderlyingBuffer(t *testing.T) {
 	}
 }
 
+func TestClientSetHeaderDoesNotMutateInputMsg(t *testing.T) {
+	hdr := "NATS/1.0\r\nClientInfo: {old}\r\nKey2: Val2\r\n\r\n"
+	msg := "this is the message body\r\n"
+
+	buf := make([]byte, 0, len(hdr)+len(msg))
+	buf = append(buf, hdr...)
+	buf = append(buf, msg...)
+
+	c := &client{}
+	c.pa.hdr = len(hdr)
+	c.pa.size = len(buf)
+
+	// setHeader should copy to not corrupt the input message.
+	original := slices.Clone(buf)
+	out := c.setHeader("ClientInfo", "{newvalue}", buf)
+	require_Equal(t, string(buf), string(original))
+
+	expected := "NATS/1.0\r\nKey2: Val2\r\nClientInfo: {newvalue}\r\n\r\n" + msg
+	require_Equal(t, string(out), expected)
+}
+
 func TestSetHeaderOrderingPrefix(t *testing.T) {
 	for _, space := range []bool{true, false} {
 		title := "Normal"
