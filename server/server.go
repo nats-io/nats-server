@@ -3586,7 +3586,7 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, subs map[string]*subsc
 	if c.acc != nil && c.acc.Name != globalAccountName {
 		cc.acc = c.acc.Name
 	}
-	cc.JWT = c.opts.JWT
+	cc.JWT = redactBearerJWT(c.opts.JWT)
 	cc.IssuerKey = issuerForClient(c)
 	cc.Tags = c.tags
 	cc.NameTag = c.nameTag
