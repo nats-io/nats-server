@@ -9159,3 +9159,812 @@ func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testi
 		return checkState(t, c, globalAccountName, "TEST")
 	})
 }
+
+func TestJetStreamClusterDurableStreamMirror(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+			Durable:        "C",
+			DeliverSubject: "deliver-subject",
+			Replicas:       replicas,
+			AckPolicy:      AckFlowControl,
+			Heartbeat:      time.Second,
+		}, false)
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name: "M",
+			Mirror: &StreamSource{
+				Name: "O",
+				Consumer: &StreamConsumerSource{
+					Name:           "C",
+					DeliverSubject: "deliver-subject",
+				},
+			},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror == nil {
+				return errors.New("no mirror")
+			}
+			if si.Mirror.Error != nil {
+				return si.Mirror.Error
+			}
+			_, err = js.GetMsg("M", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterDurableStreamMirrorServerManaged(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("O", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "M",
+			Mirror:   &StreamSource{Name: "O"},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.Mirror == nil {
+				return errors.New("no mirror")
+			}
+			if si.Mirror.Error != nil {
+				return si.Mirror.Error
+			}
+			_, err = js.GetMsg("M", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterDurableStreamSource(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+			Durable:        "C",
+			DeliverSubject: "deliver-subject",
+			Replicas:       replicas,
+			AckPolicy:      AckFlowControl,
+			Heartbeat:      time.Second,
+		}, false)
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name: "S",
+			Sources: []*StreamSource{{
+				Name: "O",
+				Consumer: &StreamConsumerSource{
+					Name:           "C",
+					DeliverSubject: "deliver-subject",
+				},
+			}},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("S")
+			if err != nil {
+				return err
+			}
+			if len(si.Sources) != 1 {
+				return errors.New("no source")
+			}
+			if si.Sources[0].Error != nil {
+				return si.Sources[0].Error
+			}
+			_, err = js.GetMsg("S", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}
+
+func TestJetStreamClusterDurableStreamSourceServerManaged(t *testing.T) {
+	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Storage:   FileStorage,
+			Replicas:  replicas,
+			Retention: retention,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("O", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "S",
+			Sources:  []*StreamSource{{Name: "O"}},
+			Storage:  FileStorage,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("S")
+			if err != nil {
+				return err
+			}
+			if len(si.Sources) != 1 {
+				return errors.New("no source")
+			}
+			if si.Sources[0].Error != nil {
+				return si.Sources[0].Error
+			}
+			_, err = js.GetMsg("S", 1)
+			return err
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, retention), func(t *testing.T) {
+				test(t, replicas, retention)
+			})
+		}
+	}
+}
+
+func TestJetStreamDurableStreamSourcesWQFwcExclusivity(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Retention: nats.WorkQueuePolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:   "M",
+			Mirror: &nats.StreamSource{Name: "O"},
+		})
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("O")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 1 {
+				return fmt.Errorf("expected 1 consumer, got %d", c)
+			}
+			return nil
+		})
+
+		// A sourcing consumer already exists, but we should still be able to add an app consumer.
+		// Only this one counts toward WQ exclusivity.
+		_, err = js.AddConsumer("O", &nats.ConsumerConfig{Durable: "CONSUMER", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamDurableStreamSourcesWQFilterExclusivity(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"a", "b"},
+			Retention: nats.WorkQueuePolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name: "M",
+			Mirror: &nats.StreamSource{
+				Name: "O",
+				SubjectTransforms: []nats.SubjectTransformConfig{
+					{Source: "a"},
+					{Source: "b"},
+				},
+			},
+		})
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("O")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 1 {
+				return fmt.Errorf("expected 1 consumer, got %d", c)
+			}
+			return nil
+		})
+
+		// A sourcing consumer already exists, but we should still be able to add filtered app consumers.
+		// Only these count toward WQ exclusivity.
+		_, err = js.AddConsumer("O", &nats.ConsumerConfig{
+			Durable:       "CONSUMER1",
+			AckPolicy:     nats.AckExplicitPolicy,
+			FilterSubject: "a",
+		})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("O", &nats.ConsumerConfig{
+			Durable:       "CONSUMER2",
+			AckPolicy:     nats.AckExplicitPolicy,
+			FilterSubject: "b",
+		})
+		require_NoError(t, err)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamDurableStreamSourcesMaxConsumers(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:         "O",
+			Subjects:     []string{"foo"},
+			Retention:    nats.WorkQueuePolicy,
+			Replicas:     replicas,
+			MaxConsumers: 1,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:   "M",
+			Mirror: &nats.StreamSource{Name: "O"},
+		})
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("O")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 1 {
+				return fmt.Errorf("expected 1 consumer, got %d", c)
+			}
+			return nil
+		})
+
+		// A sourcing consumer already exists, but we should still be able to add an app consumer.
+		// Only this one counts toward the MaxConsumers limit.
+		_, err = js.AddConsumer("O", &nats.ConsumerConfig{Durable: "CONSUMER", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamDurableStreamMirrorDeletesConsumerAfterMirrorRemoval(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Retention: nats.WorkQueuePolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		cfg := &nats.StreamConfig{
+			Name:   "M",
+			Mirror: &nats.StreamSource{Name: "O"},
+		}
+		_, err = js.AddStream(cfg)
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("O")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 1 {
+				return fmt.Errorf("expected 1 consumer, got %d", c)
+			}
+			return nil
+		})
+
+		// Removing the mirror config should result in the sourcing consumer to be deleted.
+		cfg.Mirror = nil
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 0 {
+				return fmt.Errorf("expected 0 consumers, got %d", c)
+			}
+			return nil
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamDurableStreamMirrorDeletesConsumerAfterStreamRemoval(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Retention: nats.WorkQueuePolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		cfg := &nats.StreamConfig{
+			Name:   "M",
+			Mirror: &nats.StreamSource{Name: "O"},
+		}
+		_, err = js.AddStream(cfg)
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("O")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 1 {
+				return fmt.Errorf("expected 1 consumer, got %d", c)
+			}
+			return nil
+		})
+
+		// Deleting the stream that mirrors should result in the sourcing consumer to be deleted.
+		require_NoError(t, js.DeleteStream("M"))
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 0 {
+				return fmt.Errorf("expected 0 consumers, got %d", c)
+			}
+			return nil
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamDurableStreamSourceDeletesConsumerAfterSourceUpdate(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"a", "b"},
+			Retention: nats.WorkQueuePolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:      "T",
+			Subjects:  []string{"foo"},
+			Retention: nats.WorkQueuePolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("O")
+		require_NoError(t, err)
+		msetT, err := s.globalAccount().lookupStream("T")
+		require_NoError(t, err)
+
+		t.Run("Basic", func(t *testing.T) {
+			cfg := &nats.StreamConfig{
+				Name:    "S",
+				Sources: []*nats.StreamSource{{Name: "O"}},
+			}
+			_, err = js.AddStream(cfg)
+			require_NoError(t, err)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				if c := mset.numConsumers(); c != 1 {
+					return fmt.Errorf("expected 1 consumer, got %d", c)
+				}
+				return nil
+			})
+
+			cfg.Sources = []*nats.StreamSource{
+				{Name: "O", FilterSubject: "a"},
+				{Name: "O", FilterSubject: "b"},
+			}
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				if c := mset.numConsumers(); c != 2 {
+					return fmt.Errorf("expected 2 consumers, got %d", c)
+				}
+				return nil
+			})
+
+			// Removing the source config should result in the sourcing consumer to be deleted.
+			cfg.Sources = nil
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				if c := mset.numConsumers(); c != 0 {
+					return fmt.Errorf("expected 0 consumers, got %d", c)
+				}
+				return nil
+			})
+		})
+
+		t.Run("Multiple", func(t *testing.T) {
+			// Now test adding two separate sources that would use the same consumer name but for separate streams.
+			cfg := &nats.StreamConfig{
+				Name: "S",
+				Sources: []*nats.StreamSource{
+					{Name: "O"},
+					{Name: "T"},
+				},
+			}
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+
+			var sourceConsumerName string
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				oc := mset.getPublicConsumers()
+				tc := msetT.getPublicConsumers()
+				if len(oc) != 1 || len(tc) != 1 {
+					return fmt.Errorf("expected 1 consumer on O and 1 consumer on T, got %d and %d", len(oc), len(tc))
+				}
+				occ := oc[0].info()
+				tcc := tc[0].info()
+				if occ.Name != tcc.Name {
+					return fmt.Errorf("expected consumer names to match, got %q and %q", occ.Name, tcc.Name)
+				}
+				sourceConsumerName = tcc.Name
+				return nil
+			})
+
+			// Removing one source should still properly clean up the sourcing consumer.
+			cfg.Sources = []*nats.StreamSource{{Name: "T"}}
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				if c := mset.numConsumers(); c != 0 {
+					return fmt.Errorf("expected 0 consumers on O, got %d", c)
+				}
+				tc := msetT.getPublicConsumers()
+				if len(tc) != 1 {
+					return fmt.Errorf("expected 1 consumer on T, got %d", len(tc))
+				}
+				tcc := tc[0].info()
+				if tcc.Name != sourceConsumerName {
+					return fmt.Errorf("expected consumer names to match, got %q, expected %q", tcc.Name, sourceConsumerName)
+				}
+				return nil
+			})
+		})
+
+		t.Run("Mixed", func(t *testing.T) {
+			cfg := &StreamConfig{
+				Name:    "S",
+				Storage: FileStorage,
+				Sources: []*StreamSource{
+					{Name: "O"},
+				},
+			}
+			_, err = jsStreamUpdate(t, nc, cfg)
+			require_NoError(t, err)
+
+			// Capture the consumer name used for the sourcing.
+			var sourceConsumerName string
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				oc := mset.getPublicConsumers()
+				if len(oc) != 1 {
+					return fmt.Errorf("expected 1 consumer on O, got %d", len(oc))
+				}
+				occ := oc[0].info()
+				sourceConsumerName = occ.Name
+				return nil
+			})
+
+			checkExpectedCount := func(expected int) {
+				t.Helper()
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					if c := mset.numConsumers(); c != expected {
+						return fmt.Errorf("expected %d consumer(s) on O, got %d", expected, c)
+					}
+					return nil
+				})
+			}
+
+			// Create a consumer that will be used for the sourcing instead.
+			_, err = js.AddConsumer("O", &nats.ConsumerConfig{Durable: "CONSUMER", AckPolicy: nats.AckExplicitPolicy, DeliverSubject: "deliver"})
+			require_NoError(t, err)
+			checkExpectedCount(2)
+
+			// After the update, the previous sourcing consumer should be cleaned up.
+			cfg.Sources = []*StreamSource{
+				{Name: "O", Consumer: &StreamConsumerSource{Name: "CONSUMER", DeliverSubject: "deliver"}},
+			}
+			_, err = jsStreamUpdate(t, nc, cfg)
+			require_NoError(t, err)
+			checkExpectedCount(1)
+
+			// Recreate the sourcing consumer so we can validate it doesn't get removed if not referenced in the config.
+			_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{Durable: sourceConsumerName, AckPolicy: AckExplicit, Sourcing: true}, false)
+			require_NoError(t, err)
+			checkExpectedCount(2)
+
+			// Since we used a pre-existing consumer, the above source consumer replica that the source stream
+			// didn't create shouldn't be deleted.
+			cfg.Sources = nil
+			_, err = jsStreamUpdate(t, nc, cfg)
+			require_NoError(t, err)
+			time.Sleep(500 * time.Millisecond)
+			checkExpectedCount(2)
+
+			// Similarly, shouldn't remove the source consumer replica when deleting the source stream entirely.
+			// But need to reset it to contain sources again first.
+			cfg.Sources = []*StreamSource{
+				{Name: "O", Consumer: &StreamConsumerSource{Name: "CONSUMER", DeliverSubject: "deliver"}},
+			}
+			_, err = jsStreamUpdate(t, nc, cfg)
+			require_NoError(t, err)
+			require_NoError(t, js.DeleteStream("S"))
+			time.Sleep(500 * time.Millisecond)
+			checkExpectedCount(2)
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamDurableStreamSourceDeletesConsumerAfterStreamRemoval(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "O",
+			Subjects:  []string{"foo"},
+			Retention: nats.WorkQueuePolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		cfg := &nats.StreamConfig{
+			Name:    "S",
+			Sources: []*nats.StreamSource{{Name: "O"}},
+		}
+		_, err = js.AddStream(cfg)
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("O")
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 1 {
+				return fmt.Errorf("expected 1 consumer, got %d", c)
+			}
+			return nil
+		})
+
+		// Deleting the stream that sources should result in the sourcing consumer to be deleted.
+		require_NoError(t, js.DeleteStream("S"))
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if c := mset.numConsumers(); c != 0 {
+				return fmt.Errorf("expected 0 consumers, got %d", c)
+			}
+			return nil
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
