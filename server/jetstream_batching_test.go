@@ -3177,7 +3177,7 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"gap\","))
 		var batchFlowGap BatchFlowGap
 		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
-		require_Equal(t, batchFlowGap.ExpectedLastSequence, 1)
+		require_Equal(t, batchFlowGap.ExpectedLastSequence, 2)
 		require_Equal(t, batchFlowGap.CurrentSequence, 3)
 
 		switch gapMode {

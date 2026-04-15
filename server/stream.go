@@ -7616,7 +7616,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	if b.lseq != batch.seq || cleanup {
 		// If a forward gap is detected, we always report about it.
 		if batch.seq > b.lseq {
-			buf := BatchFlowGap{ExpectedLastSequence: b.lseq - 1, CurrentSequence: batch.seq}.MarshalJSON()
+			buf := BatchFlowGap{ExpectedLastSequence: b.lseq, CurrentSequence: batch.seq}.MarshalJSON()
 			outq.sendMsg(reply, buf)
 		}
 		// If the forward gap is okay, we can continue without rejecting.
