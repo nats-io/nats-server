@@ -860,6 +860,9 @@ func checkMsgHeadersPreClusteredProposal(
 				bytesToString(scheduler) == subject || !IsValidPublishSubject(bytesToString(scheduler)) {
 				apiErr := NewJSMessageSchedulesSchedulerInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
+			} else if bytesToString(scheduleNext) == JSScheduleNextPurge && !allowMsgSchedules {
+				apiErr := NewJSMessageSchedulesDisabledError()
+				return hdr, msg, 0, apiErr, apiErr
 			}
 		}
 
