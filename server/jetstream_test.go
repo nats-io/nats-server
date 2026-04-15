@@ -22343,6 +22343,32 @@ func TestJetStreamScheduledMessageNotTriggering(t *testing.T) {
 	}
 }
 
+func TestJetStreamScheduledPurgeHeadersRequiresSchedulingEnabled(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Storage:           FileStorage,
+		Subjects:          []string{"foo.*"},
+		AllowMsgSchedules: false,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo.victim", []byte("OK"))
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo.attacker")
+	m.Header.Set(JSScheduleNext, JSScheduleNextPurge)
+	m.Header.Set(JSScheduler, "foo.victim")
+
+	_, err = js.PublishMsg(m)
+	require_Error(t, err, NewJSMessageSchedulesDisabledError())
+}
+
 func TestJetStreamScheduledMessageNotDeactivated(t *testing.T) {
 	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(storageType.String(), func(t *testing.T) {

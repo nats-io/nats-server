@@ -5796,6 +5796,19 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					}
 				}
 			}
+
+			if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 {
+				if bytesToString(scheduleNext) == JSScheduleNextPurge && !allowMsgSchedules {
+					apiErr := NewJSMessageSchedulesDisabledError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				}
+			}
 		}
 
 		// Dedupe detection. This is done at the cluster level for dedupe detection above the

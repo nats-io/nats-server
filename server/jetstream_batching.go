@@ -555,6 +555,12 @@ func checkMsgHeadersPreClusteredProposal(
 				}
 			}
 		}
+		if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 {
+			if bytesToString(scheduleNext) == JSScheduleNextPurge && !allowMsgSchedules {
+				apiErr := NewJSMessageSchedulesDisabledError()
+				return hdr, msg, 0, apiErr, apiErr
+			}
+		}
 
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
