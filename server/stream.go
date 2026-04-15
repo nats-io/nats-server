@@ -6470,6 +6470,15 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 						outq.sendMsg(reply, b)
 					}
 					return apiErr
+				} else if bytesToString(scheduleNext) == JSScheduleNextPurge && !allowMsgSchedules {
+					apiErr := NewJSMessageSchedulesDisabledError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
 				}
 			}
 		}

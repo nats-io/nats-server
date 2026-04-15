@@ -9785,6 +9785,37 @@ func TestJetStreamClusterPurgeScheduleWithInvalidScheduler(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterScheduledPurgeHeadersRequiresSchedulingEnabled(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:              "TEST",
+				Storage:           FileStorage,
+				Subjects:          []string{"foo.*"},
+				Replicas:          replicas,
+				AllowMsgSchedules: false,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo.victim", []byte("OK"))
+			require_NoError(t, err)
+
+			m := nats.NewMsg("foo.attacker")
+			m.Header.Set(JSScheduleNext, JSScheduleNextPurge)
+			m.Header.Set(JSScheduler, "foo.victim")
+
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSMessageSchedulesDisabledError())
+		})
+	}
+}
+
 func TestJetStreamClusterScheduledDelayedMessageReversedHeaderOrder(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
