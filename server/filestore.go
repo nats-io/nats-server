@@ -11276,6 +11276,9 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			if err == errNoCache {
 				return nil
 			}
+			// Clear partially built fss so callers don't operate on incomplete state.
+			mb.fss = nil
+			mb.clearCacheAndOffset()
 			return err
 		}
 		if sm != nil && len(sm.subj) > 0 {

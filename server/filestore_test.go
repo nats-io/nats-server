@@ -13801,3 +13801,42 @@ func TestFileStoreMsgBlockWErrNotSetOnReadErrors(t *testing.T) {
 	require_Error(t, err, io.ErrShortWrite)
 	checkWerr(io.ErrShortWrite)
 }
+
+func TestFileStoreGeneratePerSubjectInfoFssNilOnError(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{"foo"}},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+	require_NoError(t, err)
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	mb := fs.lmb
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	// Load cache so cacheNotLoaded() returns false inside generatePerSubjectInfo.
+	require_NoError(t, mb.loadMsgsWithLock())
+
+	// Corrupt the cache buffer so cacheLookupNoCopy returns errBadMsg.
+	mb.cache.buf = make([]byte, len(mb.cache.buf))
+
+	// Clear fss to nil so generatePerSubjectInfo tries to rebuild.
+	mb.fss = nil
+
+	// generatePerSubjectInfo must fail due to the corrupt cache.
+	require_Error(t, mb.generatePerSubjectInfo())
+
+	// After failure, fss must be nil, so that mb.ensurePerSubjectInfoLoaded
+	// retries the rebuild on the next call instead of silently returning an
+	// incomplete fss.
+	require_True(t, mb.fss == nil)
+
+	// Cache must also be cleared so the next retry reloads from disk instead
+	// of hitting the same corrupt in-memory data indefinitely.
+	require_True(t, mb.cache == nil)
+}
