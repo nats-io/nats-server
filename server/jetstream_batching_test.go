@@ -3316,6 +3316,46 @@ func TestJetStreamFastBatchPublishFlowControl(t *testing.T) {
 	}
 }
 
+func TestJetStreamFastBatchInitAckMessages(t *testing.T) {
+	batches := &batching{}
+	mset := &stream{srv: &Server{opts: &Options{}}}
+	stopTimer := func(b *fastBatch) { b.timer.Stop() }
+
+	// First batch, alone in the map: should get full window clamped to client max.
+	b1 := batches.newFastBatch(mset, "b1", false, 1000)
+	stopTimer(b1)
+	require_Equal(t, b1.ackMessages, 500)
+
+	// Second concurrent batch: must start at 1 to coordinate with sibling.
+	b2 := batches.newFastBatch(mset, "b2", false, 1000)
+	stopTimer(b2)
+	require_Equal(t, b2.ackMessages, 1)
+
+	// Resetting b1 while b2 still exists: also throttled to 1.
+	b1.timer.Reset(time.Hour) // Need to reset, otherwise below is a noop.
+	batches.fastBatchReset(mset, "b1", b1)
+	stopTimer(b1)
+	require_Equal(t, b1.ackMessages, 1)
+
+	// Remove the sibling; a reset now returns to the full window.
+	stopTimer(b2)
+	delete(batches.fast, "b2")
+	batches.fastBatchInit(b1)
+	require_Equal(t, b1.ackMessages, 500)
+
+	// A client-specified max below 500 is respected.
+	stopTimer(b1)
+	delete(batches.fast, "b1")
+	b3 := batches.newFastBatch(mset, "b3", false, 50)
+	stopTimer(b3)
+	require_Equal(t, b3.ackMessages, 50)
+
+	// And throttled to 1 when a sibling is present.
+	b4 := batches.newFastBatch(mset, "b4", false, 50)
+	stopTimer(b4)
+	require_Equal(t, b4.ackMessages, 1)
+}
+
 func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
 	test := func(t *testing.T, replicas int) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)

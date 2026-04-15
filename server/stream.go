@@ -7557,10 +7557,6 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		// We'll need a copy as we'll use it as a key and later for cleanup.
 		batchId := copyString(batch.id)
 		b = batches.newFastBatch(mset, batchId, batch.gapOk, batch.flow)
-		if batches.fast == nil {
-			batches.fast = make(map[string]*fastBatch, 1)
-		}
-		batches.fast[batchId] = b
 	}
 
 	// The required API level can have the batch be rejected. But the header is always removed.
