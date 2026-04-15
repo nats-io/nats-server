@@ -4374,27 +4374,135 @@ func TestEnvVarFromIncludedFile(t *testing.T) {
 }
 
 func TestRedactArgs(t *testing.T) {
-	var input []string
-	var expected []string
+	var tests []struct {
+		name     string
+		input    []string
+		expected []string
+	}
 
 	for _, dash := range []string{"-", "--"} {
 		for _, tag := range []string{"user", "pass", "auth"} {
-			for _, delim := range []string{" ", "="} {
-				for _, value := range []string{"hello", "hello world"} {
-					if delim == " " {
-						input = append(input, dash+tag, value)
-						expected = append(expected, dash+tag, "[REDACTED]")
-					} else {
-						input = append(input, dash+tag+delim+value)
-						expected = append(expected, dash+tag+delim+"[REDACTED]")
-					}
-				}
+			for _, value := range []string{"hello", "hello world"} {
+				flag := dash + tag
+				tests = append(tests, struct {
+					name     string
+					input    []string
+					expected []string
+				}{
+					name:     fmt.Sprintf("%s%s-space-%q", dash, tag, value),
+					input:    []string{flag, value},
+					expected: []string{flag, "[REDACTED]"},
+				})
+				tests = append(tests, struct {
+					name     string
+					input    []string
+					expected []string
+				}{
+					name:     fmt.Sprintf("%s%s-equals-%q", dash, tag, value),
+					input:    []string{flag + "=" + value},
+					expected: []string{flag + "=[REDACTED]"},
+				})
 			}
 		}
 	}
-	RedactArgs(input)
-	if !reflect.DeepEqual(input, expected) {
-		t.Fatalf("A %v\nB %v", expected, input)
+
+	for _, dash := range []string{"-", "--"} {
+		for _, test := range []struct {
+			name     string
+			tag      string
+			input    string
+			expected string
+		}{
+			{
+				name:     "routes-single",
+				tag:      "routes",
+				input:    "nats://ruser:s3cret@127.0.0.1:6222",
+				expected: "nats://[REDACTED]@127.0.0.1:6222",
+			},
+			{
+				name:     "routes-no-creds",
+				tag:      "routes",
+				input:    "nats://127.0.0.1:6222",
+				expected: "nats://127.0.0.1:6222",
+			},
+			{
+				name:     "routes-multi",
+				tag:      "routes",
+				input:    "nats://ruser:s3cret@127.0.0.1:6222, nats://ruser2:s3cret2@127.0.0.1:6223",
+				expected: "nats://[REDACTED]@127.0.0.1:6222,nats://[REDACTED]@127.0.0.1:6223",
+			},
+			{
+				name:     "cluster",
+				tag:      "cluster",
+				input:    "nats://cuser:s3cret@127.0.0.1:6224",
+				expected: "nats://[REDACTED]@127.0.0.1:6224",
+			},
+			{
+				name:     "cluster-no-creds",
+				tag:      "cluster",
+				input:    "nats://127.0.0.1:6224",
+				expected: "nats://127.0.0.1:6224",
+			},
+			{
+				name:     "cluster-comma-user",
+				tag:      "cluster",
+				input:    "nats://cuser,extra:s3cret@127.0.0.1:6224",
+				expected: "nats://[REDACTED]@127.0.0.1:6224",
+			},
+			{
+				name:     "cluster-random-port",
+				tag:      "cluster",
+				input:    "nats://cuser:s3cret@127.0.0.1:-1",
+				expected: "nats://[REDACTED]@127.0.0.1:-1",
+			},
+			{
+				name:     "cluster-listen",
+				tag:      "cluster_listen",
+				input:    "nats://luser:s3cret@127.0.0.1:6225",
+				expected: "nats://[REDACTED]@127.0.0.1:6225",
+			},
+			{
+				name:     "cluster-listen-comma-user",
+				tag:      "cluster_listen",
+				input:    "nats://luser,extra:s3cret@127.0.0.1:6225",
+				expected: "nats://[REDACTED]@127.0.0.1:6225",
+			},
+			{
+				name:     "cluster-listen-random-port",
+				tag:      "cluster_listen",
+				input:    "nats://luser:s3cret@127.0.0.1:-1",
+				expected: "nats://[REDACTED]@127.0.0.1:-1",
+			},
+		} {
+			tests = append(tests, struct {
+				name     string
+				input    []string
+				expected []string
+			}{
+				name:     fmt.Sprintf("%s%s-space", dash, test.name),
+				input:    []string{dash + test.tag, test.input},
+				expected: []string{dash + test.tag, test.expected},
+			})
+			tests = append(tests, struct {
+				name     string
+				input    []string
+				expected []string
+			}{
+				name:     fmt.Sprintf("%s%s-equals", dash, test.name),
+				input:    []string{dash + test.tag + "=" + test.input},
+				expected: []string{dash + test.tag + "=" + test.expected},
+			})
+		}
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := append([]string(nil), test.input...)
+			RedactArgs(input)
+			if !reflect.DeepEqual(input, test.expected) {
+				t.Fatalf("A %v\nB %v", test.expected, input)
+			}
+		})
 	}
 }
 
