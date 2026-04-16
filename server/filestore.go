@@ -10137,26 +10137,40 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 
 // Lock and dios should be held.
 func (fs *fileStore) recoverPartialPurge() error {
+	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	ndir := filepath.Join(fs.fcfg.StoreDir, newMsgDir)
 	if entries, err := os.ReadDir(ndir); err != nil && !os.IsNotExist(err) {
 		return err
 	} else if err == nil {
-		// If it's empty, that means we got hard killed before moving the tombstone, and we need to remove it.
-		isEmpty := !slices.ContainsFunc(entries, func(e os.DirEntry) bool {
-			// The directory is considered empty if it's missing a block file.
+		hasBlk := slices.ContainsFunc(entries, func(e os.DirEntry) bool {
 			return strings.HasSuffix(e.Name(), blkSuffix)
 		})
-		if isEmpty {
-			_ = os.RemoveAll(ndir)
-		} else {
-			// Otherwise, it contains the tombstone after purge, and the old messages need to be purged instead.
-			mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+		if hasBlk {
+			// We have a tombstone, we can purge the old messages.
 			if err = os.RemoveAll(mdir); err != nil {
 				return err
 			}
 			if err = os.Rename(ndir, mdir); err != nil {
 				return err
 			}
+		} else {
+			// No .blk means the purge did not complete, so clear
+			// any progress made by the partial purge.
+			for _, entry := range entries {
+				var index uint32
+				if n, err := fmt.Sscanf(entry.Name(), keyScan, &index); err != nil || n != 1 {
+					continue
+				}
+				// Found a key file, remove the corresponding .blk, if any.
+				// Recovery may otherwise wrongly conclude that the .blk is
+				// is plaintext, and consider it corrupt when trying to open it.
+				err := os.Remove(filepath.Join(mdir, fmt.Sprintf(blkScan, index)))
+				if err != nil && !os.IsNotExist(err) {
+					return err
+				}
+			}
+			_ = os.RemoveAll(ndir)
+			return nil
 		}
 	}
 	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
