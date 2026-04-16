@@ -6120,6 +6120,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.cfg.Retention == InterestPolicy
 	allowMsgCounter, allowMsgSchedules := mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules
+	allowRollupPurge := mset.cfg.AllowRollup && !mset.cfg.DenyPurge
 	// Snapshot if we are the leader and if we can respond.
 	isLeader, isSealed := mset.isLeaderNodeState(), mset.cfg.Sealed
 	isClustered := mset.isClustered()
@@ -6357,7 +6358,9 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			}
 
 			// Message scheduling.
-			if schedule, ok := getMessageSchedule(hdr); !ok {
+			if sourced {
+				// noop, sourced messages were already validated by the origin stream.
+			} else if schedule, ok := getMessageSchedule(hdr); !ok {
 				apiErr := NewJSMessageSchedulesPatternInvalidError()
 				if !allowMsgSchedules {
 					apiErr = NewJSMessageSchedulesDisabledError()
@@ -6456,7 +6459,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 					}
 				}
 			}
-			if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 {
+			if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && !sourced {
 				// If Nats-Schedule-Next is set, Nats-Scheduler should be set too, but:
 				// - it must NOT be empty.
 				// - it must NOT match the publish subject.
@@ -6522,7 +6525,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
-			if canConsistencyCheck && (!mset.cfg.AllowRollup || mset.cfg.DenyPurge) {
+			if canConsistencyCheck && !allowRollupPurge && !sourced {
 				err := errors.New("rollup not permitted")
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -6744,8 +6747,10 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, mset.lseq, ts})
 		}
-		if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 0); err != nil {
-			return err
+		if allowRollupPurge {
+			if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 0); err != nil {
+				return err
+			}
 		}
 		// If using fast batch publish, we occasionally send flow control messages.
 		// And, we need to ensure a PubAck is sent if the commit happens through EOB.
@@ -6911,8 +6916,10 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	}
 
 	// No errors, this is the normal path.
-	if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 1); err != nil {
-		return err
+	if allowRollupPurge {
+		if err = mset.processJetStreamMsgWithRollup(subject, rollupSub, rollupAll, hdr, 1); err != nil {
+			return err
+		}
 	}
 
 	// Check for republish.

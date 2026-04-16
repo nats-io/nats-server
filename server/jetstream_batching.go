@@ -805,7 +805,9 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 
 		// Message scheduling.
-		if schedule, ok := getMessageSchedule(hdr); !ok {
+		if sourced {
+			// noop, sourced messages were already validated by the origin stream.
+		} else if schedule, ok := getMessageSchedule(hdr); !ok {
 			apiErr := NewJSMessageSchedulesPatternInvalidError()
 			if !allowMsgSchedules {
 				apiErr = NewJSMessageSchedulesDisabledError()
@@ -852,7 +854,7 @@ func checkMsgHeadersPreClusteredProposal(
 				}
 			}
 		}
-		if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 {
+		if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && !sourced {
 			// If Nats-Schedule-Next is set, Nats-Scheduler should be set too, but:
 			// - it must NOT be empty.
 			// - it must NOT match the publish subject.
@@ -868,7 +870,7 @@ func checkMsgHeadersPreClusteredProposal(
 
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
-			if !allowRollup || denyPurge {
+			if (!allowRollup || denyPurge) && !sourced {
 				err := errors.New("rollup not permitted")
 				return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
 			}

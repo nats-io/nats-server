@@ -21713,27 +21713,179 @@ func TestJetStreamPromoteMirrorUpdatingOrigin(t *testing.T) {
 }
 
 func TestJetStreamScheduledMirrorOrSource(t *testing.T) {
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
 
-	nc := clientConnectToServer(t, s)
-	defer nc.Close()
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
 
-	_, err := jsStreamCreate(t, nc, &StreamConfig{
-		Name:              "TEST",
-		Storage:           FileStorage,
-		Mirror:            &StreamSource{Name: "M"},
-		AllowMsgSchedules: true,
-	})
-	require_Error(t, err, NewJSMirrorWithMsgSchedulesError())
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "M",
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			Mirror:            &StreamSource{Name: "O"},
+			AllowMsgSchedules: true,
+		})
+		require_Error(t, err, NewJSMirrorWithMsgSchedulesError())
 
-	_, err = jsStreamCreate(t, nc, &StreamConfig{
-		Name:              "TEST",
-		Storage:           FileStorage,
-		Sources:           []*StreamSource{{Name: "S"}},
-		AllowMsgSchedules: true,
-	})
-	require_Error(t, err, NewJSSourceWithMsgSchedulesError())
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "S",
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			Sources:           []*StreamSource{{Name: "O"}},
+			AllowMsgSchedules: true,
+		})
+		require_Error(t, err, NewJSSourceWithMsgSchedulesError())
+
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "O",
+			Subjects:          []string{"O.>"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowMsgSchedules: true,
+		})
+		require_NoError(t, err)
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "M",
+			Storage:  FileStorage,
+			Replicas: replicas,
+			Mirror:   &StreamSource{Name: "O"},
+		})
+		require_NoError(t, err)
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "S",
+			Storage:  FileStorage,
+			Replicas: replicas,
+			Sources:  []*StreamSource{{Name: "O"}},
+		})
+		require_NoError(t, err)
+
+		m := nats.NewMsg("O.schedule")
+		pattern := fmt.Sprintf("@at %s", time.Now().Add(time.Second).Format(time.RFC3339Nano))
+		m.Header.Set("Nats-Schedule", pattern)
+		m.Header.Set("Nats-Schedule-Target", "O.target")
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+
+		check := func(streamName string) error {
+			// Request message 2 first.
+			// If a rollup was performed due to it, fetching the 1st message next will fail.
+			sm, err := js.GetMsg(streamName, 2)
+			if err != nil {
+				return err
+			}
+			if sm.Subject != "O.target" {
+				return fmt.Errorf("expected subject 'O.target', got '%s'", sm.Subject)
+			}
+			sm, err = js.GetMsg(streamName, 1)
+			if err != nil {
+				return err
+			}
+			if sm.Subject != "O.schedule" {
+				return fmt.Errorf("expected subject 'O.schedule', got '%s'", sm.Subject)
+			}
+			return nil
+		}
+
+		checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+			if err = check("M"); err != nil {
+				return fmt.Errorf("mirror: %v", err)
+			}
+			if err = check("S"); err != nil {
+				return fmt.Errorf("source: %v", err)
+			}
+			return nil
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamRollupMirrorOrSource(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:        "O",
+			Subjects:    []string{"O"},
+			Storage:     FileStorage,
+			Replicas:    replicas,
+			AllowRollup: true,
+		})
+		require_NoError(t, err)
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "M",
+			Storage:  FileStorage,
+			Replicas: replicas,
+			Mirror:   &StreamSource{Name: "O"},
+		})
+		require_NoError(t, err)
+		_, err = jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "S",
+			Storage:  FileStorage,
+			Replicas: replicas,
+			Sources:  []*StreamSource{{Name: "O"}},
+		})
+		require_NoError(t, err)
+
+		m := nats.NewMsg("O")
+		m.Header.Set("Nats-Rollup", "sub")
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+
+		checkSequence := func(seq uint64) {
+			check := func(streamName string) error {
+				si, err := js.StreamInfo(streamName)
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != seq || si.State.FirstSeq != 1 || si.State.LastSeq != seq {
+					return fmt.Errorf("expected seq %d, got %v", seq, si.State)
+				}
+				return nil
+			}
+
+			checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+				if err = check("M"); err != nil {
+					return fmt.Errorf("mirror: %v", err)
+				}
+				if err = check("S"); err != nil {
+					return fmt.Errorf("source: %v", err)
+				}
+				return nil
+			})
+		}
+		checkSequence(1)
+
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+		checkSequence(2)
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
 }
 
 func TestJetStreamOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
