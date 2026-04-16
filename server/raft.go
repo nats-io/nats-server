@@ -1691,7 +1691,7 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 		n.warn("Snapshot with last index 0 is invalid, cleaning up")
 		os.Remove(n.snapfile)
 		n.snapfile = _EMPTY_
-		return nil, errSnapshotCorrupt
+		return nil, errNoSnapAvailable
 	}
 
 	return snap, nil

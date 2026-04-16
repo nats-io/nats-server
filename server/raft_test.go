@@ -2824,6 +2824,35 @@ func TestNRGSnapshotRecovery(t *testing.T) {
 	require_Equal(t, n.applied, 0)
 }
 
+func TestNRGLoadLastSnapshotCleansLegacyZeroIndexSnapshot(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	snapDir := filepath.Join(n.sd, snapshotsDir)
+	require_NoError(t, os.MkdirAll(snapDir, defaultDirPerms))
+
+	legacy := &snapshot{
+		lastTerm:  1,
+		lastIndex: 0,
+		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+		data:      []byte("legacy"),
+	}
+	sfile := filepath.Join(snapDir, fmt.Sprintf(snapFileT, legacy.lastTerm, legacy.lastIndex))
+	require_NoError(t, writeFileWithSync(sfile, n.encodeSnapshot(legacy), defaultFilePerms))
+
+	n.Lock()
+	n.snapfile = sfile
+	snap, err := n.loadLastSnapshot()
+	snapfile := n.snapfile
+	n.Unlock()
+
+	require_Error(t, err, errNoSnapAvailable)
+	require_True(t, snap == nil)
+	require_Equal(t, snapfile, _EMPTY_)
+	_, err = os.Stat(sfile)
+	require_True(t, os.IsNotExist(err))
+}
+
 func TestNRGKeepRunningOnServerShutdown(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
