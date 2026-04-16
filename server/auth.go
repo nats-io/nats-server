@@ -125,8 +125,9 @@ func (n *NkeyUser) clone() *NkeyUser {
 // SubjectPermission is an individual allow and deny struct for publish
 // and subscribe authorizations.
 type SubjectPermission struct {
-	Allow []string `json:"allow,omitempty"`
-	Deny  []string `json:"deny,omitempty"`
+	Allow       []string `json:"allow,omitempty"`
+	Deny        []string `json:"deny,omitempty"`
+	NoWildcards bool     `json:"no_wildcards,omitempty"`
 }
 
 // ResponsePermission can be used to allow responses to any reply subject
@@ -166,6 +167,7 @@ func (p *SubjectPermission) clone() *SubjectPermission {
 		clone.Deny = make([]string, len(p.Deny))
 		copy(clone.Deny, p.Deny)
 	}
+	clone.NoWildcards = p.NoWildcards
 	return clone
 }
 
