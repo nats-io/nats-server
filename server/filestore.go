@@ -1796,6 +1796,16 @@ func (fs *fileStore) warn(format string, args ...any) {
 	fs.srv.Warnf(fmt.Sprintf("Filestore [%s] %s", fs.cfg.Name, format), args...)
 }
 
+// For doing rate-limited warn logging.
+// Lock should be held.
+func (fs *fileStore) rateLimitWarn(format string, args ...any) {
+	// No-op if no server configured.
+	if fs.srv == nil {
+		return
+	}
+	fs.srv.RateLimitWarnf(fmt.Sprintf("Filestore [%s] %s", fs.cfg.Name, format), args...)
+}
+
 // For doing error logging.
 // Lock should be held.
 func (fs *fileStore) error(format string, args ...any) {
@@ -4997,6 +5007,19 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	return nil
 }
 
+// isReadErr reports whether err originated from reading or interpreting
+// existing on-disk data rather than from a failed write. These surface through
+// cache/load paths and should not permanently disable writes.
+func isReadErr(err error) bool {
+	var badMsg errBadMsg
+	return errors.Is(err, errNoCache) ||
+		errors.Is(err, errDeletedMsg) ||
+		errors.Is(err, errPartialCache) ||
+		errors.Is(err, errCorruptState) ||
+		errors.Is(err, errPriorState) ||
+		errors.As(err, &badMsg)
+}
+
 // Lock should be held.
 func (fs *fileStore) setWriteErr(err error) {
 	if fs.werr != nil {
@@ -5009,6 +5032,17 @@ func (fs *fileStore) setWriteErr(err error) {
 	// If this is a not found report but do not disable.
 	if os.IsNotExist(err) {
 		fs.warn("Resource not found: %v", err)
+		return
+	}
+	// Read/decode errors surfaced from existing on-disk data are not write failures.
+	// Log and continue instead of disabling writes.
+	if isReadErr(err) {
+		fs.rateLimitWarn("Ignoring non-write error: %v", err)
+		assert.Unreachable("Filestore encountered read error", map[string]any{
+			"name":  fs.cfg.Name,
+			"err":   err,
+			"stack": string(debug.Stack()),
+		})
 		return
 	}
 	fs.error("Critical write error: %v", err)
@@ -7074,6 +7108,18 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	// Persist any returned errors to be used in the future.
 	defer func() {
 		if rerr != nil && mb.werr == nil {
+			// Read/decode errors surfaced from existing on-disk data are not write failures.
+			// Log and continue instead of disabling writes.
+			if isReadErr(rerr) {
+				mb.fs.rateLimitWarn("Ignoring non-write error: %v", rerr)
+				assert.Unreachable("Filestore msg block encountered read error", map[string]any{
+					"name":     mb.fs.cfg.Name,
+					"mb.index": mb.index,
+					"err":      rerr,
+					"stack":    string(debug.Stack()),
+				})
+				return
+			}
 			mb.werr = rerr
 			assert.Unreachable("Filestore msg block encountered write error", map[string]any{
 				"name":     mb.fs.cfg.Name,
@@ -11230,6 +11276,9 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			if err == errNoCache {
 				return nil
 			}
+			// Clear partially built fss so callers don't operate on incomplete state.
+			mb.fss = nil
+			mb.clearCacheAndOffset()
 			return err
 		}
 		if sm != nil && len(sm.subj) > 0 {
