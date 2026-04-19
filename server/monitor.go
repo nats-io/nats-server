@@ -714,8 +714,36 @@ func decodeSubs(w http.ResponseWriter, r *http.Request) (subs bool, subsDet bool
 	return
 }
 
+func decodeUnknownParams(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}) error {
+	for key := range r.URL.Query() {
+		if _, ok := allowed[key]; !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			err := fmt.Errorf("Unknown parameter %q", key)
+			w.Write([]byte(err.Error()))
+			return err
+		}
+	}
+	return nil
+}
+
 // HandleConnz process HTTP requests for connection information.
 func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
+	if err := decodeUnknownParams(w, r, map[string]struct{}{
+		"sort":        {},
+		"auth":        {},
+		"subs":        {},
+		"offset":      {},
+		"limit":       {},
+		"cid":         {},
+		"state":       {},
+		"user":        {},
+		"acc":         {},
+		"mqtt_client": {},
+		"callback":    {},
+	}); err != nil {
+		return
+	}
+
 	sortOpt := SortOpt(r.URL.Query().Get("sort"))
 	auth, err := decodeBool(w, r, "auth")
 	if err != nil {
