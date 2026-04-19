@@ -3930,6 +3930,41 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					return 0, err
 				}
 
+			case deleteRangeOp:
+				dr, err := decodeDeleteRange(buf[1:])
+				if err != nil {
+					if node := mset.raftNode(); node != nil {
+						s := js.srv
+						s.Errorf("JetStream cluster could not decode delete range for '%s > %s' [%s]",
+							mset.account(), mset.name(), node.Group())
+					}
+					panic(err.Error())
+				}
+				if dr.Num == 0 {
+					continue
+				}
+				mset.mu.Lock()
+				first, num := dr.First, dr.Num
+				lseq := first + num - 1
+				if mset.lseq >= lseq {
+					mset.mu.Unlock()
+					continue
+				}
+				// Trim any prefix already applied so we only skip the uncovered tail.
+				if mset.lseq >= first {
+					first = mset.lseq + 1
+					num = lseq - mset.lseq
+				}
+				if err = mset.store.SkipMsgs(first, num); err != nil {
+					mset.mu.Unlock()
+					js.srv.RateLimitWarnf("JetStream cluster failed to apply delete range [%d..%d] for '%s > %s': %v",
+						first, lseq, mset.account().Name, mset.cfg.Name, err)
+					return 0, err
+				}
+				mset.clearAllPreAcksInRange(first, lseq)
+				mset.lseq = lseq
+				mset.mu.Unlock()
+
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
 				if err != nil {
@@ -4226,7 +4261,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		if needLock {
 			mset.mu.Lock()
 		}
-		mset.setLastSeq(last)
+		mset.lseq = last
 		mset.clearAllPreAcks(last)
 		if needLock {
 			mset.mu.Unlock()
@@ -10364,17 +10399,13 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		// Handle the delete range.
 		// Make sure the sequences match up properly.
 		mset.mu.Lock()
-		if len(mset.preAcks) > 0 {
-			for seq := dr.First; seq < dr.First+dr.Num; seq++ {
-				mset.clearAllPreAcks(seq)
-			}
-		}
+		lseq := dr.First + dr.Num - 1
 		if err = mset.store.SkipMsgs(dr.First, dr.Num); err != nil {
 			mset.mu.Unlock()
 			return 0, errCatchupWrongSeqForSkip
 		}
-		mset.lseq = dr.First + dr.Num - 1
-		lseq := mset.lseq
+		mset.clearAllPreAcksInRange(dr.First, lseq)
+		mset.lseq = lseq
 		mset.mu.Unlock()
 		return lseq, nil
 	}
@@ -10425,7 +10456,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	// Update our lseq.
-	mset.setLastSeq(seq)
+	mset.lseq = seq
 
 	// Check for MsgId and if we have one here make sure to update our internal map.
 	if len(hdr) > 0 {
