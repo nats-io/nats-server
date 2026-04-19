@@ -1476,12 +1476,6 @@ func (mset *stream) lastSeq() uint64 {
 	return mset.lseq
 }
 
-// Set last seq.
-// Write lock should be held.
-func (mset *stream) setLastSeq(lseq uint64) {
-	mset.lseq = lseq
-}
-
 func (mset *stream) sendCreateAdvisory() {
 	mset.mu.RLock()
 	name := mset.cfg.Name
@@ -2864,7 +2858,7 @@ func (mset *stream) purgeLocked(preq *JSApiStreamPurgeRequest, needLock bool) (p
 
 	// Check if our last has moved past what our original last sequence was, if so reset.
 	if lseq > mlseq {
-		mset.setLastSeq(lseq)
+		mset.lseq = lseq
 	}
 
 	// Clear any pending acks below first seq.

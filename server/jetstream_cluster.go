@@ -4261,7 +4261,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		if needLock {
 			mset.mu.Lock()
 		}
-		mset.setLastSeq(last)
+		mset.lseq = last
 		mset.clearAllPreAcks(last)
 		if needLock {
 			mset.mu.Unlock()
@@ -10456,7 +10456,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	// Update our lseq.
-	mset.setLastSeq(seq)
+	mset.lseq = seq
 
 	// Check for MsgId and if we have one here make sure to update our internal map.
 	if len(hdr) > 0 {
