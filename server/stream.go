@@ -6123,7 +6123,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	allowRollupPurge := mset.cfg.AllowRollup && !mset.cfg.DenyPurge
 	// Snapshot if we are the leader and if we can respond.
 	isLeader, isSealed := mset.isLeaderNodeState(), mset.cfg.Sealed
-	isClustered := mset.isClustered()
+	isClustered, isMirror := mset.isClustered(), mset.cfg.Mirror != nil
 	canConsistencyCheck := !isClustered || traceOnly
 	canRespond := doAck && len(reply) > 0 && isLeader
 	outq := mset.outq
@@ -6184,7 +6184,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			isMisMatch := true
 			// We may be able to recover here if we have no state whatsoever, or we are a mirror.
 			// See if we have to adjust our starting sequence.
-			if mset.lseq == 0 || mset.cfg.Mirror != nil {
+			if mset.lseq == 0 || isMirror {
 				var state StreamState
 				mset.store.FastState(&state)
 				if state.FirstSeq == 0 {
@@ -6490,7 +6490,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		// lower layers. But we still need to pull out the msgId.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 			// Do real check only if not clustered or traceOnly flag is set.
-			if canConsistencyCheck {
+			// If we're mirroring we can't deduplicate on our own.
+			if canConsistencyCheck && !isMirror {
 				var seq uint64
 				mset.ddMu.Lock()
 				dde := mset.checkMsgId(msgId)
