@@ -4829,6 +4829,9 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
+				// Must run before startClusterSubs reads mset.sa.Sync.
+				mset.setStreamAssignment(sa)
+
 				// Since we are scaling up we want to make sure our sync subject
 				// is registered before we start our raft node.
 				mset.mu.Lock()
