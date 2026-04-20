@@ -7599,6 +7599,60 @@ func TestJetStreamClusterConcurrentStreamUpdate(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMetaLeaderRespectsInflight(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+
+	sjs, cc := ml.getJetStreamCluster()
+	require_NotNil(t, sjs)
+	require_NotNil(t, cc)
+
+	ci := &ClientInfo{Account: globalAccountName}
+	rg := &raftGroup{Name: "INFLIGHT_G", Peers: []string{"offline"}, Storage: MemoryStorage}
+
+	sjs.mu.Lock()
+	sa := &streamAssignment{
+		Client:  ci,
+		Created: time.Now(),
+		Config:  &StreamConfig{Name: "S"},
+		Group:   rg,
+	}
+	ca := &consumerAssignment{
+		Client:  ci,
+		Created: time.Now(),
+		Name:    "C",
+		Stream:  "S",
+		Config:  &ConsumerConfig{},
+		Group:   rg,
+	}
+	cc.trackInflightStreamProposal(globalAccountName, sa, false)
+	cc.trackInflightConsumerProposal(globalAccountName, "S", ca, false)
+
+	asa := sjs.streamAssignment(globalAccountName, "S")
+	isa := sjs.streamAssignmentOrInflight(globalAccountName, "S")
+	aca := sjs.consumerAssignment(globalAccountName, "S", "C")
+	ica := sjs.consumerAssignmentOrInflight(globalAccountName, "S", "C")
+	sjs.mu.Unlock()
+
+	require_True(t, asa == nil)
+	require_True(t, aca == nil)
+	require_NotNil(t, isa)
+	require_NotNil(t, ica)
+
+	// Meta leader should return Offline (inflight assignment with no live peers)
+	// rather than NotFound, because it sees the inflight proposal.
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.StreamInfo("S")
+	require_Error(t, err, NewJSStreamOfflineError())
+	_, err = js.ConsumerInfo("S", "C")
+	require_Error(t, err, NewJSConsumerOfflineError())
+}
+
 func TestJetStreamClusterConcurrentConsumerCreateWithMaxConsumers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
