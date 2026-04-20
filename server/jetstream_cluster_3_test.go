@@ -8233,3 +8233,64 @@ func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testi
 		return checkState(t, c, globalAccountName, "TEST")
 	})
 }
+
+func TestJetStreamClusterConsumerSelectStartingSeqDeferred(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	leader := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, leader)
+	follower := c.randomNonConsumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, follower)
+
+	getConsumer := func(s *Server) *consumer {
+		t.Helper()
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("C")
+		require_NotNil(t, o)
+		return o
+	}
+
+	// On the leader, selectStartingSeqNo ran inside setLeader(true).
+	l := getConsumer(leader)
+	l.mu.RLock()
+	ldseq, lsseq := l.dseq, l.sseq
+	l.mu.RUnlock()
+	require_Equal(t, ldseq, 1)
+	require_Equal(t, lsseq, 1)
+
+	// On the follower, meta apply must not have run selectStartingSeqNo.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		f := getConsumer(follower)
+		f.mu.RLock()
+		defer f.mu.RUnlock()
+		if f.dseq != 1 {
+			return fmt.Errorf("expected follower dseq 1, got %d", f.dseq)
+		}
+		if f.sseq != 1 {
+			return fmt.Errorf("expected follower sseq 1, got %d", f.sseq)
+		}
+		return nil
+	})
+}
