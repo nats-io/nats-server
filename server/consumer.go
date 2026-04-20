@@ -1106,10 +1106,12 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, NewJSConsumerDoesNotExistError()
 	}
 
+	standalone := !s.JetStreamIsClustered() && s.standAloneMode()
+
 	// If we're clustered we've already done this check, only do this if we're a standalone server.
 	// But if we're standalone, only enforce if we're not recovering, since the MaxConsumers could've
 	// been updated while we already had more consumers on disk.
-	if !s.JetStreamIsClustered() && s.standAloneMode() && !isRecovering {
+	if standalone && !isRecovering {
 		// Check for any limits, if the config for the consumer sets a limit we check against that
 		// but if not we use the value from account limits, if account limits is more restrictive
 		// than stream config we prefer the account limits to handle cases where account limits are
@@ -1323,8 +1325,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 				return nil, NewJSConsumerStoreFailedError(err)
 			}
 		}
-	} else {
-		// Select starting sequence number
+	} else if config.Direct || standalone {
+		// Clustered non-direct consumers defer this to setLeader so the
+		// expensive store scans don't block the meta apply goroutine.
 		if err := o.selectStartingSeqNo(); err != nil {
 			return nil, err
 		}
@@ -1418,7 +1421,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	mset.setConsumer(o)
 	mset.mu.Unlock()
 
-	standalone := !s.JetStreamIsClustered() && s.standAloneMode()
 	if config.Sourcing && standalone {
 		o.resetStartingSeq(0, _EMPTY_, false)
 	}
@@ -1590,18 +1592,39 @@ func (o *consumer) isLeader() bool {
 	return o.leader.Load()
 }
 
-func (o *consumer) setLeader(isLeader bool) {
+func (o *consumer) setLeader(isLeader bool) error {
 	o.mu.RLock()
 	mset, closed := o.mset, o.closed
 	movingToClustered := o.node != nil && o.pch == nil
 	movingToNonClustered := o.node == nil && o.pch != nil
 	wasLeader := o.leader.Swap(isLeader)
+
+	// For clustered new consumers, starting seq selection was deferred from
+	// addConsumerWithAssignment so the scan wouldn't block the meta apply
+	// goroutine, run it here on leader-elect instead.
+	needsSelect := isLeader && !wasLeader && o.dseq == 0 && (o.store == nil || !o.store.HasState())
 	o.mu.RUnlock()
 
 	// If we are here we have a change in leader status.
 	if isLeader {
 		if closed || mset == nil {
-			return
+			return nil
+		}
+
+		if needsSelect {
+			o.mu.Lock()
+			if err := o.selectStartingSeqNo(); err != nil {
+				o.srv.Errorf("JetStream consumer '%s > %s > %s' select starting seq failed: %v",
+					o.acc.Name, o.stream, o.name, err)
+				o.leader.Store(false)
+				node := o.node
+				o.mu.Unlock()
+				if node != nil {
+					_ = node.StepDown()
+				}
+				return err
+			}
+			o.mu.Unlock()
 		}
 
 		if wasLeader {
@@ -1630,7 +1653,7 @@ func (o *consumer) setLeader(isLeader bool) {
 				}
 				o.mu.Unlock()
 			}
-			return
+			return nil
 		}
 
 		mset.mu.RLock()
@@ -1669,11 +1692,11 @@ func (o *consumer) setLeader(isLeader bool) {
 		if o.cfg.AckPolicy != AckNone && o.cfg.AckPolicy != AckFlowControl {
 			if o.ackSubOld, err = o.subscribeInternal(o.ackSubjOld, o.pushAck); err != nil {
 				o.mu.Unlock()
-				return
+				return nil
 			}
 			if o.ackSub, err = o.subscribeInternal(o.ackSubj, o.pushAck); err != nil {
 				o.mu.Unlock()
-				return
+				return nil
 			}
 		}
 
@@ -1681,11 +1704,11 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Will error if wrong mode to provide feedback to users.
 		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
 			o.mu.Unlock()
-			return
+			return nil
 		}
 		if o.resetSub, err = o.subscribeInternal(o.resetSubj, o.processResetReq); err != nil {
 			o.mu.Unlock()
-			return
+			return nil
 		}
 
 		// Check on flow control settings.
@@ -1693,11 +1716,11 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.setMaxPendingBytes(JsFlowControlMaxPending)
 			if o.fcSubOld, err = o.subscribeInternal(o.fcSubjOld, o.processFlowControl); err != nil {
 				o.mu.Unlock()
-				return
+				return nil
 			}
 			if o.fcSub, err = o.subscribeInternal(o.fcSubj, o.processFlowControl); err != nil {
 				o.mu.Unlock()
-				return
+				return nil
 			}
 		}
 
@@ -1837,6 +1860,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		}
 		o.mu.Unlock()
 	}
+	return nil
 }
 
 // This is coming on the wire so do not block here.
@@ -3383,6 +3407,14 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		return nil
 	}
 
+	dseq, sseq := o.dseq, o.sseq
+	if dseq <= 0 {
+		dseq = 1
+	}
+	if sseq <= 0 {
+		sseq = 1
+	}
+
 	cfg := o.cfg
 	info := &ConsumerInfo{
 		Stream:  o.stream,
@@ -3390,8 +3422,8 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		Created: o.created,
 		Config:  &cfg,
 		Delivered: SequenceInfo{
-			Consumer: o.dseq - 1,
-			Stream:   o.sseq - 1,
+			Consumer: dseq - 1,
+			Stream:   sseq - 1,
 		},
 		AckFloor: SequenceInfo{
 			Consumer: o.adflr,
