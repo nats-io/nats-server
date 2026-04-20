@@ -6785,6 +6785,72 @@ func TestJetStreamClusterMetaRecoveryAddAndUpdateStream(t *testing.T) {
 	require_Len(t, len(sa.Config.Subjects), 1)
 }
 
+// https://github.com/nats-io/nats-server/issues/7229
+func TestJetStreamClusterProcessClusterUpdateStreamNilStreamAssignment(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	s := c.randomServer()
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Capture osa and build a sa that reflects the post-restart meta-replay
+	// conditions: a scale-up path where both the old and new raftGroup nodes
+	// are nil on this server (alreadyRunning=false, needsNode=true).
+	sjs := s.getJetStream()
+	sjs.mu.Lock()
+	realOsa := sjs.streamAssignment(globalAccountName, "TEST")
+	if realOsa == nil {
+		sjs.mu.Unlock()
+		t.Fatal("stream assignment not found")
+	}
+
+	// Intentionally omit Group.node so that in processClusterUpdateStream
+	// alreadyRunning (osa.Group.node != nil) is false and needsNode
+	// (sa.Group.node == nil) is true, taking the scale-up branch.
+	cloneGroup := func() *raftGroup {
+		return &raftGroup{
+			Name:    realOsa.Group.Name,
+			Peers:   append([]string{}, realOsa.Group.Peers...),
+			Storage: realOsa.Group.Storage,
+		}
+	}
+	osa := *realOsa
+	osa.Group = cloneGroup()
+	sa := osa
+	cfg := *realOsa.Config
+	cfg.MaxMsgs = 1_000
+	sa.Config = &cfg
+	sa.Group = cloneGroup()
+	sjs.mu.Unlock()
+
+	// Simulate the state right after recoverStream() before meta catchup:
+	// no stream assignment, no raft node, no cluster subs registered yet.
+	mset.mu.Lock()
+	mset.sa = nil
+	mset.node = nil
+	if mset.syncSub != nil {
+		mset.srv.sysUnsubscribe(mset.syncSub)
+		mset.syncSub = nil
+	}
+	mset.mu.Unlock()
+
+	sjs.processClusterUpdateStream(acc, &osa, &sa)
+
+	mset.mu.RLock()
+	got := mset.sa
+	mset.mu.RUnlock()
+	require_NotNil(t, got)
+}
+
 // Make sure if we received acks that are out of bounds, meaning past our
 // last sequence or before our first that they are ignored and errored if applicable.
 func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
