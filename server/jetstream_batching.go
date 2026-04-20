@@ -322,7 +322,7 @@ func (b *fastBatch) sendFlowControl(batchSeq uint64, mset *stream, reply string)
 	if len(reply) == 0 {
 		return
 	}
-	response := BatchFlowAck{Sequence: batchSeq, Messages: b.ackMessages}.MarshalJSON()
+	response, _ := BatchFlowAck{Sequence: batchSeq, Messages: b.ackMessages}.MarshalJSON()
 	mset.outq.sendMsg(reply, response)
 }
 
