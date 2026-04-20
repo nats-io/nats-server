@@ -157,9 +157,10 @@ func (ms *MsgScheduling) resetTimer() {
 
 func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *StoreMsg) *StoreMsg, loadLast func(subj string, smv *StoreMsg) *StoreMsg) []*inMsg {
 	var (
-		smv  StoreMsg
-		sm   *StoreMsg
-		msgs []*inMsg
+		smv    StoreMsg
+		srcSmv StoreMsg
+		sm     *StoreMsg
+		msgs   []*inMsg
 	)
 	ms.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
 		// Need to grab the message for the specified sequence, and check
@@ -197,9 +198,9 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 			rollup := getMessageScheduleRollup(sm.hdr)
 			source := getMessageScheduleSource(sm.hdr)
 			if source != _EMPTY_ {
-				if sm = loadLast(source, &smv); sm == nil {
-					ms.remove(seq)
-					return true
+				// Fall back to the scheduled message's own content if the source has no last message.
+				if srcSm := loadLast(source, &srcSmv); srcSm != nil {
+					sm = srcSm
 				}
 			}
 
