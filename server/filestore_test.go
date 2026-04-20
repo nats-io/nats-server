@@ -819,6 +819,76 @@ func TestFileStorePurge(t *testing.T) {
 	})
 }
 
+func TestFileStoreEncryptedPurgeRecoveryAfterKeyRename(t *testing.T) {
+	fcfg := FileStoreConfig{
+		StoreDir:    t.TempDir(),
+		Cipher:      AES,
+		Compression: NoCompression,
+		BlockSize:   64 * 1024,
+	}
+	created := time.Now()
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+
+	fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+	require_NoError(t, err)
+
+	subj, msg := "foo", make([]byte, 8*1024)
+	toStore := uint64(1024)
+	for i := uint64(0); i < toStore; i++ {
+		_, _, err = fs.StoreMsg(subj, nil, msg, 0)
+		require_NoError(t, err)
+	}
+	baseline := fs.State()
+
+	storeDir := fcfg.StoreDir
+	mdir := filepath.Join(storeDir, msgDir)
+	preMsgs := filepath.Join(storeDir, "msgs.pre")
+	// Snapshot the pre-purge msg directory so we can recreate the crash window.
+	require_NoError(t, copyDir(t, preMsgs, mdir))
+
+	// Run a real purge once to create a valid encrypted tombstone block + key.
+	_, err = fs.Purge()
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	tombIdx := fs.lmb.index
+	fs.mu.RUnlock()
+
+	require_NoError(t, fs.stop(false, false))
+
+	postMsgs := filepath.Join(storeDir, "msgs.post")
+	require_NoError(t, os.Rename(mdir, postMsgs))
+	require_NoError(t, copyDir(t, mdir, preMsgs))
+	// Force recovery from the block files instead of a fresh full-state snapshot.
+	require_NoError(t, os.RemoveAll(filepath.Join(mdir, streamStreamStateFile)))
+
+	tombBlk := fmt.Sprintf(blkScan, tombIdx)
+	tombKey := fmt.Sprintf(keyScan, tombIdx)
+	require_NoError(t, os.Rename(filepath.Join(postMsgs, tombBlk), filepath.Join(mdir, tombBlk)))
+
+	ndir := filepath.Join(storeDir, newMsgDir)
+	require_NoError(t, os.MkdirAll(ndir, defaultDirPerms))
+	// Simulate a crash after moving N.key into __new_msgs__ but before moving N.blk.
+	require_NoError(t, os.Rename(filepath.Join(postMsgs, tombKey), filepath.Join(ndir, tombKey)))
+
+	fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	state := fs.State()
+	require_Equal(t, state.Msgs, baseline.Msgs)
+	require_Equal(t, state.Bytes, baseline.Bytes)
+	require_Equal(t, state.FirstSeq, baseline.FirstSeq)
+	require_Equal(t, state.LastSeq, baseline.LastSeq)
+
+	if _, err := os.Stat(filepath.Join(mdir, tombBlk)); !os.IsNotExist(err) {
+		t.Fatalf("Expected rollback to remove %q, got err=%v", tombBlk, err)
+	}
+	if _, err := os.Stat(ndir); !os.IsNotExist(err) {
+		t.Fatalf("Expected rollback to remove %q, got err=%v", ndir, err)
+	}
+}
+
 func TestFileStoreCompact(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 350
