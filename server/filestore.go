@@ -4991,7 +4991,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		if schedule, ok := nextMessageSchedule(hdr, ts); ok && !schedule.IsZero() {
 			fs.scheduling.add(seq, subj, schedule.UnixNano())
 			fs.lmb.schedules++
-		} else {
+		} else if getMessageScheduler(hdr) == _EMPTY_ {
 			fs.scheduling.removeSubject(subj)
 		}
 
