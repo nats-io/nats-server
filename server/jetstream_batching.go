@@ -856,14 +856,19 @@ func checkMsgHeadersPreClusteredProposal(
 			}
 		}
 		if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && !sourced {
-			// If Nats-Schedule-Next is set, Nats-Scheduler should be set too, but:
+			// Clients may only use Nats-Schedule-Next to purge a schedule.
+			if bytesToString(scheduleNext) != JSScheduleNextPurge {
+				apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+				return hdr, msg, 0, apiErr, apiErr
+			}
+			// Nats-Scheduler must accompany the purge and:
 			// - it must NOT be empty.
 			// - it must NOT match the publish subject.
 			if scheduler := sliceHeader(JSScheduler, hdr); len(scheduler) == 0 ||
 				bytesToString(scheduler) == subject || !IsValidPublishSubject(bytesToString(scheduler)) {
 				apiErr := NewJSMessageSchedulesSchedulerInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
-			} else if bytesToString(scheduleNext) == JSScheduleNextPurge && !allowMsgSchedules {
+			} else if !allowMsgSchedules {
 				apiErr := NewJSMessageSchedulesDisabledError()
 				return hdr, msg, 0, apiErr, apiErr
 			}

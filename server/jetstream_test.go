@@ -22295,6 +22295,58 @@ func TestJetStreamScheduledMessageNotDeactivated(t *testing.T) {
 	}
 }
 
+func TestJetStreamScheduledMessageDeliveryPreservesTargetSchedule(t *testing.T) {
+	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:              "TEST",
+				Subjects:          []string{"foo.>"},
+				Storage:           storageType,
+				AllowMsgSchedules: true,
+			})
+			require_NoError(t, err)
+
+			delay := func(d time.Duration) string {
+				return fmt.Sprintf("@at %s", time.Now().Add(d).Format(time.RFC3339Nano))
+			}
+
+			// Schedule on foo.A fires quickly and delivers onto foo.B.
+			mA := nats.NewMsg("foo.A")
+			mA.Header.Set("Nats-Schedule", delay(500*time.Millisecond))
+			mA.Header.Set("Nats-Schedule-Target", "foo.B")
+			_, err = js.PublishMsg(mA)
+			require_NoError(t, err)
+
+			// Independent schedule on foo.B fires later and delivers onto foo.C.
+			// Storing the fired delivery from foo.A onto foo.B must not tear
+			// down foo.B's own schedule.
+			mB := nats.NewMsg("foo.B")
+			mB.Header.Set("Nats-Schedule", delay(2*time.Second))
+			mB.Header.Set("Nats-Schedule-Target", "foo.C")
+			_, err = js.PublishMsg(mB)
+			require_NoError(t, err)
+
+			// Wait for the foo.A schedule to fire onto foo.B.
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				_, err = js.GetLastMsg("TEST", "foo.B")
+				return err
+			})
+
+			// foo.B's schedule must still fire onto foo.C.
+			checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
+				_, err = js.GetLastMsg("TEST", "foo.C")
+				return err
+			})
+		})
+	}
+}
+
 func TestJetStreamScheduledMessageParse(t *testing.T) {
 	// @at <ts>
 	t.Run("@at", func(t *testing.T) {

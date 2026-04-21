@@ -5145,10 +5145,10 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	mset.store.RegisterProcessJetStreamMsg(func(im *inMsg) {
 		if mset.IsClustered() {
 			if mset.IsLeader() {
-				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
+				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, true)
 			}
 		} else {
-			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, true)
+			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, true, true)
 		}
 	})
 	mset.mu.Unlock()
@@ -6457,7 +6457,18 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 				}
 			}
 			if scheduleNext := sliceHeader(JSScheduleNext, hdr); len(scheduleNext) > 0 && !sourced {
-				// If Nats-Schedule-Next is set, Nats-Scheduler should be set too, but:
+				// Clients may only use Nats-Schedule-Next to purge a schedule.
+				if bytesToString(scheduleNext) != JSScheduleNextPurge {
+					apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+					if canRespond {
+						resp.PubAck = &PubAck{Stream: name}
+						resp.Error = apiErr
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
+					return apiErr
+				}
+				// Nats-Scheduler must accompany the purge and:
 				// - it must NOT be empty.
 				// - it must NOT match the publish subject.
 				if scheduler := sliceHeader(JSScheduler, hdr); len(scheduler) == 0 ||
@@ -6470,7 +6481,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 						outq.sendMsg(reply, b)
 					}
 					return apiErr
-				} else if bytesToString(scheduleNext) == JSScheduleNextPurge && !allowMsgSchedules {
+				} else if !allowMsgSchedules {
 					apiErr := NewJSMessageSchedulesDisabledError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}

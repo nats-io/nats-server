@@ -103,8 +103,7 @@ func (ms *MsgScheduling) isInflight(subj string) bool {
 
 func (ms *MsgScheduling) remove(seq uint64) {
 	if subj, ok := ms.seqToSubj[seq]; ok {
-		delete(ms.seqToSubj, seq)
-		delete(ms.schedules, subj)
+		ms.removeSubject(subj)
 	}
 }
 
@@ -113,6 +112,7 @@ func (ms *MsgScheduling) removeSubject(subj string) {
 		ms.ttls.Remove(sched.seq, sched.ts)
 		delete(ms.schedules, subj)
 		delete(ms.seqToSubj, sched.seq)
+		delete(ms.inflight, subj)
 	}
 }
 
