@@ -1030,9 +1030,13 @@ func recalculateClusteredSeq(mset *stream, needStreamLock bool) (lseq uint64) {
 func commitSingleMsg(
 	diff *batchStagedDiff, mset *stream, subject string, reply string, hdr []byte, msg []byte, name string,
 	jsa *jsAccount, mt *msgTrace, node RaftNode, replicas int, lseq uint64,
-) {
-	diff.commit(mset)
+) error {
+	// Do proposal.
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), false)
+	if err := node.Propose(esm); err != nil {
+		return err
+	}
+
 	var mtKey uint64
 	if mt != nil {
 		mtKey = mset.clseq
@@ -1042,9 +1046,7 @@ func commitSingleMsg(
 		mset.mt[mtKey] = mt
 	}
 
-	// Do proposal.
-	_ = node.Propose(esm)
-	// The proposal can fail, but we always account for trying.
+	diff.commit(mset)
 	mset.clseq++
 	mset.trackReplicationTraffic(node, len(esm), replicas)
 
@@ -1054,4 +1056,5 @@ func commitSingleMsg(
 		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
 		mset.srv.RateLimitWarnf("%s", lerr.Error())
 	}
+	return nil
 }
