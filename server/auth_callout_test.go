@@ -1603,12 +1603,22 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 			}
 		}
 	`
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	createAuthUserWithTags := func(user, account string, tags ...string) string {
+		uc := jwt.NewUserClaims(user)
+		uc.Audience = account
+		uc.Tags.Add(tags...)
+		tok, err := uc.Encode(akp)
+		require_NoError(t, err)
+		return tok
+	}
 
 	handler := func(m *nats.Msg) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		// Allow dlc user and map to the BAZ account.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, nil)
+			ujwt := createAuthUserWithTags(user, "FOO", "source:auth-callout", "role:dev")
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else if opts.Username == "rip" && opts.Password == "xxx" {
 			ujwt := createAuthUser(t, user, _EMPTY_, "BAR", "", nil, 0, nil)
@@ -1646,7 +1656,7 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 
 	snc.Flush()
 
-	checkConnectEvents := func(user, pass, acc string) {
+	checkConnectEvents := func(user, pass, acc string, tags jwt.TagList) {
 		nc := ac.Connect(nats.UserInfo(user, pass))
 		require_NoError(t, err)
 
@@ -1658,6 +1668,9 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 		require_NoError(t, err)
 		require_True(t, cm.Client.User == user)
 		require_True(t, cm.Client.Account == acc)
+		if !reflect.DeepEqual(cm.Client.Tags, tags) {
+			t.Fatalf("Expected connect event tags %v, got %v", tags, cm.Client.Tags)
+		}
 
 		// Check that we have updates, 1 each, for the connections updates.
 		m, err = acOldSub.NextMsg(time.Second)
@@ -1686,6 +1699,9 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 		var dm DisconnectEventMsg
 		err = json.Unmarshal(m.Data, &dm)
 		require_NoError(t, err)
+		if !reflect.DeepEqual(dm.Client.Tags, tags) {
+			t.Fatalf("Expected disconnect event tags %v, got %v", tags, dm.Client.Tags)
+		}
 
 		m, err = acOldSub.NextMsg(time.Second)
 		require_NoError(t, err)
@@ -1709,8 +1725,8 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 		checkSubsPending(t, acNewSub, 0)
 	}
 
-	checkConnectEvents("dlc", "zzz", "FOO")
-	checkConnectEvents("rip", "xxx", "BAR")
+	checkConnectEvents("dlc", "zzz", "FOO", jwt.TagList{"source:auth-callout", "role:dev"})
+	checkConnectEvents("rip", "xxx", "BAR", nil)
 }
 
 func TestAuthCalloutBadServer(t *testing.T) {
