@@ -13,8 +13,10 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4930,6 +4932,105 @@ func TestMonitorAuthorizedUsers(t *testing.T) {
 	defer c.Close()
 	// we should get the user's pubkey
 	checkAuthUser(upub)
+}
+
+func testMonitorConnzJWTVisibility(t *testing.T, bearer bool) {
+	t.Helper()
+
+	opts := DefaultMonitorOptions()
+	kp, _ := nkeys.FromSeed(oSeed)
+	pub, _ := kp.PublicKey()
+	opts.TrustedKeys = []string{pub}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(oKp)
+	require_NoError(t, err)
+
+	nkp, _ := nkeys.CreateUser()
+	upub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(upub)
+	nuc.BearerToken = bearer
+	userJWT, err := nuc.Encode(akp)
+	require_NoError(t, err)
+
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	conn, err := net.Dial("tcp", s.Addr().String())
+	require_NoError(t, err)
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+	require_NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	cr := bufio.NewReaderSize(conn, maxBufSize)
+	info, err := cr.ReadString('\n')
+	require_NoError(t, err)
+
+	var sigField string
+	if !bearer {
+		var ni nonceInfo
+		require_NoError(t, json.Unmarshal([]byte(info[5:]), &ni))
+		sigraw, err := nkp.Sign([]byte(ni.Nonce))
+		require_NoError(t, err)
+		sig := base64.RawURLEncoding.EncodeToString(sigraw)
+		sigField = fmt.Sprintf(",\"sig\":\"%s\"", sig)
+	}
+	cs := fmt.Sprintf("CONNECT {\"jwt\":%q,\"verbose\":true,\"pedantic\":true%s}\r\n", userJWT, sigField)
+	_, err = conn.Write([]byte(cs))
+	require_NoError(t, err)
+	l, err := cr.ReadString('\n')
+	require_NoError(t, err)
+	if !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("Expected +OK, got %q", l)
+	}
+
+	expectedJWT := userJWT
+	if bearer {
+		expectedJWT = _EMPTY_
+	}
+
+	checkConnzJWT := func(url, expectedJWT string) {
+		t.Helper()
+		var connz *Connz
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			connz = pollConnz(t, s, 0, url, nil)
+			if len(connz.Conns) != 1 {
+				return fmt.Errorf("expected 1 connection, got %d", len(connz.Conns))
+			}
+			return nil
+		})
+		ci := connz.Conns[0]
+		require_Equal(t, ci.JWT, expectedJWT)
+	}
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d/connz", s.MonitorAddr().Port)
+	checkConnzJWT(baseURL+"?auth=1", expectedJWT)
+
+	require_NoError(t, conn.Close())
+	conn = nil
+
+	checkConnzJWT(baseURL+"?state=closed", expectedJWT)
+	checkConnzJWT(baseURL+"?auth=1&state=closed", expectedJWT)
+}
+
+func TestMonitorConnzJWTVisibility(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		bearer bool
+	}{
+		{name: "bearer", bearer: true},
+		{name: "non-bearer", bearer: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testMonitorConnzJWTVisibility(t, test.bearer)
+		})
+	}
 }
 
 // Helper function to check that a JS cluster is formed

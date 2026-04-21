@@ -3120,6 +3120,13 @@ func canonicalName(name string) string {
 	return strings.ReplaceAll(name, ".", "_")
 }
 
+func isValidAssetName(name string) bool {
+	if name == _EMPTY_ {
+		return false
+	}
+	return !strings.ContainsAny(name, " \t\r\n\f.*>\\/")
+}
+
 // To throttle the out of resources errors.
 func (s *Server) resourcesExceededError(storeType StorageType) {
 	var didAlert bool

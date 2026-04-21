@@ -4829,6 +4829,9 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
+				// Must run before startClusterSubs reads mset.sa.Sync.
+				mset.setStreamAssignment(sa)
+
 				// Since we are scaling up we want to make sure our sync subject
 				// is registered before we start our raft node.
 				mset.mu.Lock()
@@ -5806,10 +5809,15 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 						func() {
 							defer s.grWG.Done()
 							defer o.clearMonitorRunning()
-							o.setLeader(true)
+							err = o.setLeader(true)
 							var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-							resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
-							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							if err != nil {
+								resp.Error = NewJSConsumerCreateError(err, Unless(err))
+								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							} else {
+								resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+								s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							}
 						},
 						pprofLabels{
 							"type":     "consumer",
@@ -6506,6 +6514,9 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				if !o.isLeader() && sseq > o.sseq {
 					o.sseq = sseq
 				}
+				if o.dseq == 0 {
+					o.dseq = 1
+				}
 				if o.store != nil {
 					o.store.UpdateStarting(sseq - 1)
 				}
@@ -6677,7 +6688,9 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 	}
 
 	// Tell consumer to switch leader status.
-	o.setLeader(isLeader)
+	if lerr := o.setLeader(isLeader); lerr != nil && err == nil {
+		err = lerr
+	}
 
 	if !isLeader || hasResponded {
 		if isLeader {

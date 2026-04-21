@@ -7038,6 +7038,60 @@ func TestJetStreamClusterConcurrentStreamUpdate(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMetaLeaderRespectsInflight(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+
+	sjs, cc := ml.getJetStreamCluster()
+	require_NotNil(t, sjs)
+	require_NotNil(t, cc)
+
+	ci := &ClientInfo{Account: globalAccountName}
+	rg := &raftGroup{Name: "INFLIGHT_G", Peers: []string{"offline"}, Storage: MemoryStorage}
+
+	sjs.mu.Lock()
+	sa := &streamAssignment{
+		Client:  ci,
+		Created: time.Now(),
+		Config:  &StreamConfig{Name: "S"},
+		Group:   rg,
+	}
+	ca := &consumerAssignment{
+		Client:  ci,
+		Created: time.Now(),
+		Name:    "C",
+		Stream:  "S",
+		Config:  &ConsumerConfig{},
+		Group:   rg,
+	}
+	cc.trackInflightStreamProposal(globalAccountName, sa, false)
+	cc.trackInflightConsumerProposal(globalAccountName, "S", ca, false)
+
+	asa := sjs.streamAssignment(globalAccountName, "S")
+	isa := sjs.streamAssignmentOrInflight(globalAccountName, "S")
+	aca := sjs.consumerAssignment(globalAccountName, "S", "C")
+	ica := sjs.consumerAssignmentOrInflight(globalAccountName, "S", "C")
+	sjs.mu.Unlock()
+
+	require_True(t, asa == nil)
+	require_True(t, aca == nil)
+	require_NotNil(t, isa)
+	require_NotNil(t, ica)
+
+	// Meta leader should return Offline (inflight assignment with no live peers)
+	// rather than NotFound, because it sees the inflight proposal.
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.StreamInfo("S")
+	require_Error(t, err, NewJSStreamOfflineError())
+	_, err = js.ConsumerInfo("S", "C")
+	require_Error(t, err, NewJSConsumerOfflineError())
+}
+
 func TestJetStreamClusterConcurrentConsumerCreateWithMaxConsumers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -8140,6 +8194,56 @@ func TestJetStreamClusterStreamUpdateCombinedScaleDownWithSourcesRemoved(t *test
 	require_Len(t, len(si.Sources), 0)
 }
 
+func TestJetStreamClusterInterestStreamMsgWithNoInterestStillAppliesRollup(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:        "TEST",
+			Subjects:    []string{"foo", "bar"},
+			Replicas:    replicas,
+			Retention:   nats.InterestPolicy,
+			AllowRollup: true,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:       "CONSUMER",
+			FilterSubject: "foo",
+		})
+		require_NoError(t, err)
+
+		pubAck, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 1)
+
+		// Publishing on a subject without interest should still result in the rollup being performed.
+		m := nats.NewMsg("bar")
+		m.Header.Set("Nats-Rollup", "all")
+		pubAck, err = js.PublishMsg(m)
+		require_NoError(t, err)
+		require_Equal(t, pubAck.Sequence, 2)
+
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+			if err != nil {
+				return err
+			}
+			if state.Msgs != 0 || state.FirstSeq != 3 || state.LastSeq != 2 {
+				return fmt.Errorf("invalid state, got %v", state)
+			}
+			return nil
+		})
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
 func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -8177,5 +8281,66 @@ func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testi
 	require_NoError(t, rn.SendSnapshot(snap))
 	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		return checkState(t, c, globalAccountName, "TEST")
+	})
+}
+
+func TestJetStreamClusterConsumerSelectStartingSeqDeferred(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	leader := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, leader)
+	follower := c.randomNonConsumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, follower)
+
+	getConsumer := func(s *Server) *consumer {
+		t.Helper()
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("C")
+		require_NotNil(t, o)
+		return o
+	}
+
+	// On the leader, selectStartingSeqNo ran inside setLeader(true).
+	l := getConsumer(leader)
+	l.mu.RLock()
+	ldseq, lsseq := l.dseq, l.sseq
+	l.mu.RUnlock()
+	require_Equal(t, ldseq, 1)
+	require_Equal(t, lsseq, 1)
+
+	// On the follower, meta apply must not have run selectStartingSeqNo.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		f := getConsumer(follower)
+		f.mu.RLock()
+		defer f.mu.RUnlock()
+		if f.dseq != 1 {
+			return fmt.Errorf("expected follower dseq 1, got %d", f.dseq)
+		}
+		if f.sseq != 1 {
+			return fmt.Errorf("expected follower sseq 1, got %d", f.sseq)
+		}
+		return nil
 	})
 }

@@ -1627,6 +1627,12 @@ func (c *client) processLeafnodeInfo(info *Info) {
 
 	// Check if we have the remote account information and if so make sure it's stored.
 	if info.RemoteAccount != _EMPTY_ {
+		if c.acc == nil {
+			c.mu.Unlock()
+			c.sendErr("Authorization Violation")
+			c.closeConnection(ProtocolViolation)
+			return
+		}
 		s.leafRemoteAccounts.Store(c.acc.Name, info.RemoteAccount)
 	}
 	c.mu.Unlock()
@@ -3550,6 +3556,12 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 		return
 	}
 	remote := c.leaf.remote
+	if remote == nil || c.acc == nil {
+		c.mu.Unlock()
+		c.sendErr("Authorization Violation")
+		c.closeConnection(ProtocolViolation)
+		return
+	}
 	// Check if we will need to send the system connect event.
 	remote.RLock()
 	sendSysConnectEvent := remote.Hub
@@ -3579,6 +3591,7 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	if sendSysConnectEvent {
 		s.sendLeafNodeConnect(acc)
 	}
+	s.accountConnectEvent(c)
 
 	// The above functions are not atomically under the client
 	// lock doing those operations. It is possible - since we

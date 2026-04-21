@@ -4050,6 +4050,100 @@ func TestJWTTimeExpiration(t *testing.T) {
 	})
 }
 
+func TestJWTValidateTimesAt(t *testing.T) {
+	at := func(h, m, s int) time.Time {
+		Y, M, D := time.Now().Date()
+		return time.Date(Y, M, D, h, m, s, 0, time.UTC)
+	}
+	for _, tc := range []struct {
+		name       string
+		now        time.Time
+		timeRanges []jwt.TimeRange
+		allowed    bool
+		remaining  time.Duration
+	}{
+		{
+			name:       "inside window",
+			now:        at(14, 30, 0),
+			timeRanges: []jwt.TimeRange{{Start: "09:00:00", End: "17:00:00"}},
+			allowed:    true,
+			remaining:  2*time.Hour + 30*time.Minute,
+		},
+		{
+			name:       "before window",
+			now:        at(8, 0, 0),
+			timeRanges: []jwt.TimeRange{{Start: "09:00:00", End: "17:00:00"}},
+			allowed:    false,
+			remaining:  time.Duration(0),
+		},
+		{
+			name:       "after window",
+			now:        at(18, 0, 0),
+			timeRanges: []jwt.TimeRange{{Start: "09:00:00", End: "17:00:00"}},
+			allowed:    false,
+			remaining:  time.Duration(0),
+		},
+		{
+			name:       "cross midnight inside window before midnight",
+			now:        at(23, 30, 0),
+			timeRanges: []jwt.TimeRange{{Start: "22:00:00", End: "06:00:00"}},
+			allowed:    true,
+			remaining:  6*time.Hour + 30*time.Minute,
+		},
+		{
+			name:       "cross midnight inside window after midnight",
+			now:        at(5, 0, 0),
+			timeRanges: []jwt.TimeRange{{Start: "22:00:00", End: "06:00:00"}},
+			allowed:    true,
+			remaining:  1 * time.Hour,
+		},
+		{
+			name:       "cross midnight before window",
+			now:        at(21, 0, 0),
+			timeRanges: []jwt.TimeRange{{Start: "22:00:00", End: "06:00:00"}},
+			allowed:    false,
+			remaining:  time.Duration(0),
+		},
+		{
+			name:       "cross midnight after window",
+			now:        at(7, 0, 0),
+			timeRanges: []jwt.TimeRange{{Start: "22:00:00", End: "06:00:00"}},
+			allowed:    false,
+			remaining:  time.Duration(0),
+		},
+		{
+			name: "overlap after midnight",
+			now:  at(1, 0, 0),
+			timeRanges: []jwt.TimeRange{
+				{Start: "22:00:00", End: "06:00:00"},
+				{Start: "00:00:00", End: "08:00:00"},
+			},
+			allowed:   true,
+			remaining: 7 * time.Hour,
+		},
+		{
+			name: "overlap after midnight reversed order",
+			now:  at(1, 0, 0),
+			timeRanges: []jwt.TimeRange{
+				{Start: "00:00:00", End: "08:00:00"},
+				{Start: "22:00:00", End: "06:00:00"},
+			},
+			allowed:   true,
+			remaining: 7 * time.Hour,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := newJWTTestUserClaims()
+			claims.Locale = "UTC"
+			claims.Times = tc.timeRanges
+			allowed, remaining := validateTimesAt(claims, tc.now)
+
+			require_Equal(t, allowed, tc.allowed)
+			require_Equal(t, remaining, tc.remaining)
+		})
+	}
+}
+
 func NewJwtAccountClaim(name string) (nkeys.KeyPair, string, *jwt.AccountClaims) {
 	sysKp, _ := nkeys.CreateAccount()
 	sysPub, _ := sysKp.PublicKey()

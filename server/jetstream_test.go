@@ -21811,6 +21811,30 @@ func TestJetStreamInvalidConfigValues(t *testing.T) {
 	require_Equal(t, ccfg.MaxAckPending, -1)
 }
 
+func TestJetStreamInvalidStreamOrConsumerName(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	invalidChars := " \t\r\n\f.*>\\/"
+	for _, c := range invalidChars {
+		name := fmt.Sprintf("%c", c)
+		scfg := &StreamConfig{Name: name}
+		_, err := s.checkStreamCfg(scfg, nil, false)
+		require_NotNil(t, err)
+		require_Contains(t, err.Description, "can not contain")
+
+		ccfg := &ConsumerConfig{Name: name}
+		err = checkConsumerCfg(ccfg, nil, nil, nil, nil, false)
+		require_NotNil(t, err)
+		require_Contains(t, err.Description, "can not contain")
+
+		ccfg = &ConsumerConfig{Durable: name}
+		err = checkConsumerCfg(ccfg, nil, nil, nil, nil, false)
+		require_NotNil(t, err)
+		require_Contains(t, err.Description, "can not contain")
+	}
+}
+
 func TestJetStreamPromoteMirrorDeletingOrigin(t *testing.T) {
 	test := func(t *testing.T, replicas int) {
 		var s *Server
@@ -22343,6 +22367,32 @@ func TestJetStreamScheduledMessageNotTriggering(t *testing.T) {
 	}
 }
 
+func TestJetStreamScheduledPurgeHeadersRequiresSchedulingEnabled(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Storage:           FileStorage,
+		Subjects:          []string{"foo.*"},
+		AllowMsgSchedules: false,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo.victim", []byte("OK"))
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo.attacker")
+	m.Header.Set(JSScheduleNext, JSScheduleNextPurge)
+	m.Header.Set(JSScheduler, "foo.victim")
+
+	_, err = js.PublishMsg(m)
+	require_Error(t, err, NewJSMessageSchedulesDisabledError())
+}
+
 func TestJetStreamScheduledMessageNotDeactivated(t *testing.T) {
 	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(storageType.String(), func(t *testing.T) {
@@ -22540,6 +22590,106 @@ func TestJetStreamImplicitRePublishAfterSubjectTransform(t *testing.T) {
 	cfg.Subjects = []string{"c.>"}
 	_, err = js.UpdateStream(cfg)
 	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish destination forms a cycle")))
+}
+
+func TestJetStreamStreamMirrorIgnoresUpstreamDuplicateMsgIds(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST",
+		Storage:    nats.FileStorage,
+		Subjects:   []string{"foo"},
+		Duplicates: 100 * time.Millisecond,
+	})
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil, nats.MsgId("X"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+	require_False(t, pubAck.Duplicate)
+
+	// Wait for upstream's dedup window to expire so the next publish lands as
+	// a fresh message at sseq=2 with the same Nats-Msg-Id.
+	time.Sleep(200 * time.Millisecond)
+
+	pubAck, err = js.Publish("foo", nil, nats.MsgId("X"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 2)
+	require_False(t, pubAck.Duplicate)
+
+	// Mirror must replicate both messages even though they share Nats-Msg-Id.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:       "M",
+		Storage:    nats.FileStorage,
+		Mirror:     &nats.StreamSource{Name: "TEST"},
+		Duplicates: 2 * time.Minute,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		mset, err := s.globalAccount().lookupStream("M")
+		if err != nil {
+			return err
+		}
+		state := mset.state()
+		if state.Msgs != 2 || state.LastSeq != 2 {
+			return fmt.Errorf("incorrect state: %v", state)
+		}
+		return nil
+	})
+
+	// Mirror must keep advancing, not be stuck.
+	pubAck, err = js.Publish("foo", nil, nats.MsgId("Y"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 3)
+
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		mset, err := s.globalAccount().lookupStream("M")
+		if err != nil {
+			return err
+		}
+		state := mset.state()
+		if state.Msgs != 3 || state.LastSeq != 3 {
+			return fmt.Errorf("incorrect state: %v", state)
+		}
+		return nil
+	})
+
+	// After restart, rebuildDedupe repopulates ddmap from stored messages,
+	// but the mirror must still ignore those entries for incoming upstream msgs.
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Wait for upstream's dedup window to expire again, then re-publish "X".
+	time.Sleep(200 * time.Millisecond)
+	pubAck, err = js.Publish("foo", nil, nats.MsgId("X"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 4)
+	require_False(t, pubAck.Duplicate)
+
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		mset, err := s.globalAccount().lookupStream("M")
+		if err != nil {
+			return err
+		}
+		state := mset.state()
+		if state.Msgs != 4 || state.LastSeq != 4 {
+			return fmt.Errorf("incorrect state: %v", state)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamServerEncryptionRecoveryWithoutStreamStateFile(t *testing.T) {

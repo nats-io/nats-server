@@ -12086,6 +12086,56 @@ func TestLeafNodeInboundInfoDoesNotOverrideNonce(t *testing.T) {
 	require_True(t, bytes.Equal(c.nonce, nonce))
 }
 
+func TestLeafNodeSecondInfoBeforeConnectDoesNotPanic(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		secondInfo string
+	}{
+		{"remote_account", `INFO {"remote_account":"attacker"}`},
+		{"connect_info", `INFO {"connect_info":true}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.LeafNode.Port = -1
+			o.LeafNode.Compression.Mode = CompressionS2Auto
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+			c, err := net.Dial("tcp", addr)
+			require_NoError(t, err)
+			defer c.Close()
+
+			br := bufio.NewReader(c)
+			require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+			l, _, err := br.ReadLine()
+			require_NoError(t, err)
+			require_True(t, strings.HasPrefix(string(l), "INFO"))
+
+			// The first INFO is accepted so inbound compression can negotiate.
+			_, err = c.Write([]byte("INFO {}\r\n"))
+			require_NoError(t, err)
+
+			// A second INFO before CONNECT used to panic the server.
+			_, err = c.Write([]byte(test.secondInfo + "\r\n"))
+			require_NoError(t, err)
+
+			// Reject the connection, but keep the server alive.
+			require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+			l, _, err = br.ReadLine()
+			require_NoError(t, err)
+			require_True(t, strings.Contains(string(l), "Authorization Violation"))
+
+			s.mu.Lock()
+			shutdown := s.isShuttingDown()
+			s.mu.Unlock()
+			if shutdown {
+				t.Fatal("Server should not have shutdown")
+			}
+		})
+	}
+}
+
 func TestLeafNodeNoAccPanicOnLeafSubBeforeConnectOperatorMode(t *testing.T) {
 	// Setup operator JWT-based server with leafnode port.
 	// This confirms that even with full operator/JWT auth configured,
@@ -12207,4 +12257,75 @@ func TestLeafNodeNoAccPanicOnProcessLeafNodeConnect(t *testing.T) {
 	if shutdown {
 		t.Fatal("Server should not have shutdown")
 	}
+}
+
+func TestLeafNodeSpokeConnectAdvisory(t *testing.T) {
+	confHub := createConfFile(t, []byte(`
+        listen: 127.0.0.1:-1
+        accounts {
+            SYS: {users: [{user: sys, password: pwd}]}
+            USER: {users: [{user: user, password: pwd}]}
+        }
+        system_account: SYS
+        leafnodes {
+            listen: 127.0.0.1:-1
+            no_advertise: true
+            authorization { timeout: 0.5 }
+        }
+    `))
+	hub, hubOpts := RunServerWithConfig(confHub)
+	defer hub.Shutdown()
+	hubPort := hubOpts.Port
+	hubLeafPort := hubOpts.LeafNode.Port
+
+	confSpoke := createConfFile(t, []byte(fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        accounts {
+            SYS: {users: [{user: sys, password: pwd}]}
+            USER: {users: [{user: user, password: pwd}]}
+        }
+        system_account: SYS
+        leafnodes {
+            reconnect: "50ms"
+            remotes: [
+                {url: "nats://user:pwd@127.0.0.1:%d", account: USER},
+                {url: "nats://sys:pwd@127.0.0.1:%d", account: SYS},
+            ]
+        }
+    `, hubLeafPort, hubLeafPort)))
+	spoke, spokeOpts := RunServerWithConfig(confSpoke)
+	defer spoke.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub, 2)
+	checkLeafNodeConnectedCount(t, spoke, 2)
+
+	// Subscribe on spoke's system account for USER account events
+	nc := natsConnect(t, fmt.Sprintf("nats://sys:pwd@127.0.0.1:%d", spokeOpts.Port))
+	defer nc.Close()
+	cSub := natsSubSync(t, nc, "$SYS.ACCOUNT.USER.CONNECT")
+	dSub := natsSubSync(t, nc, "$SYS.ACCOUNT.USER.DISCONNECT")
+	nc.Flush()
+
+	// Shut down hub, spoke should emit DISCONNECT
+	hub.Shutdown()
+	checkLeafNodeConnectedCount(t, spoke, 0)
+	msg, err := dSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var dm DisconnectEventMsg
+	require_NoError(t, json.Unmarshal(msg.Data, &dm))
+	require_Equal(t, dm.Client.Kind, "Leafnode")
+
+	// Restart hub on the same ports so spoke can reconnect
+	hubOpts.Port = hubPort
+	hubOpts.LeafNode.Port = hubLeafPort
+	hub = RunServer(hubOpts)
+	defer hub.Shutdown()
+	checkLeafNodeConnectedCount(t, spoke, 2)
+
+	// Spoke should emit CONNECT advisory on reconnect
+	msg, err = cSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var cm ConnectEventMsg
+	require_NoError(t, json.Unmarshal(msg.Data, &cm))
+	require_Equal(t, cm.Client.Kind, "Leafnode")
 }
