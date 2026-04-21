@@ -4331,15 +4331,15 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		if node := mset.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > 5*time.Second {
 			s.sendStreamLostQuorumAdvisory(mset)
 		}
-
-		// Clear clseq. If we become leader again, it will be fixed up
-		// automatically on the next mset.setLeader call.
-		mset.clMu.Lock()
-		if mset.clseq > 0 {
-			mset.clseq = 0
-		}
-		mset.clMu.Unlock()
 	}
+
+	// Clear clseq on every leader transition. recalculateClusteredSeq
+	// repopulates it on the next proposal.
+	mset.clMu.Lock()
+	if mset.clseq > 0 {
+		mset.clseq = 0
+	}
+	mset.clMu.Unlock()
 
 	// Tell stream to switch leader status.
 	mset.setLeader(isLeader)
@@ -9696,8 +9696,13 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		return err
 	}
 
-	diff.commit(mset)
-	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), sourced)
+	// Do proposal.
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), false)
+	if err = node.Propose(esm); err != nil {
+		mset.clMu.Unlock()
+		return err
+	}
+
 	var mtKey uint64
 	if mt != nil {
 		mtKey = mset.clseq
@@ -9707,9 +9712,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		mset.mt[mtKey] = mt
 	}
 
-	// Do proposal.
-	_ = node.Propose(esm)
-	// The proposal can fail, but we always account for trying.
+	diff.commit(mset)
 	mset.clseq++
 	mset.trackReplicationTraffic(node, len(esm), r)
 
@@ -9720,23 +9723,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		s.RateLimitWarnf("%s", lerr.Error())
 	}
 	mset.clMu.Unlock()
-
-	if err != nil {
-		if mt != nil {
-			mset.getAndDeleteMsgTrace(mtKey)
-		}
-		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
-			resp.Error = &ApiError{Code: 503, Description: err.Error()}
-			response, _ = json.Marshal(resp)
-			// If we errored out respond here.
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
-		}
-		if isOutOfSpaceErr(err) {
-			s.handleOutOfSpace(mset)
-		}
-	}
-
 	return err
 }
 

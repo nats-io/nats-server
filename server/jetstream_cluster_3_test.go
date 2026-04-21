@@ -8467,3 +8467,96 @@ func TestJetStreamClusterConsumerSelectStartingSeqDeferred(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterProposeFailureDoesNotDriftClseq(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Replicas:           3,
+		Storage:            FileStorage,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	// Populate the stream with some messages.
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	rn := mset.raftNode().(*raft)
+
+	// forceProposeFailure quickly switches the underlying Raft state, so any
+	// node.Propose / node.ProposeMulti call inside fn returns errNotLeader.
+	// We deliberately do NOT touch n.leaderState, the upper layer still sees
+	// the node as leader, reproducing the race window.
+	forceProposeFailure := func(fn func() error) error {
+		prevState := rn.state.Swap(int32(Follower))
+		err = fn()
+		rn.state.Store(prevState)
+		return err
+	}
+
+	readClseq := func() uint64 {
+		mset.clMu.Lock()
+		defer mset.clMu.Unlock()
+		return mset.clseq
+	}
+
+	t.Run("SingleMessage", func(t *testing.T) {
+		before := readClseq()
+		err = forceProposeFailure(func() error {
+			return mset.processClusteredInboundMsg("foo", _EMPTY_, nil, nil, nil, false)
+		})
+		require_Error(t, err, errNotLeader)
+		require_Equal(t, readClseq(), before)
+	})
+
+	t.Run("AtomicBatch", func(t *testing.T) {
+		hdr := genHeader(nil, "Nats-Batch-Id", "uuid")
+		hdr = genHeader(hdr, "Nats-Batch-Sequence", "1")
+		hdr = genHeader(hdr, "Nats-Batch-Commit", "1")
+
+		before := readClseq()
+		err = forceProposeFailure(func() error {
+			return mset.processJetStreamBatchMsg("uuid", "foo", _EMPTY_, hdr, nil, nil)
+		})
+		require_Error(t, err, errNotLeader)
+		require_Equal(t, readClseq(), before)
+	})
+
+	// Confirm we can still publish a new message.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 11 {
+			return fmt.Errorf("expected 11 messages, got %d", state.Msgs)
+		}
+		return nil
+	})
+
+	// Verify no Raft node on any replica reports itself as deleted.
+	for _, s := range c.servers {
+		mset, err = s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		rn = mset.raftNode().(*raft)
+		require_NotNil(t, rn)
+		require_False(t, rn.IsDeleted())
+	}
+}

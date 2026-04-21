@@ -6295,7 +6295,7 @@ func (mset *stream) processJetStreamMsgWithRollup(subject string, rollupSub, rol
 	return nil
 }
 
-// processJetStreamAtomicBatchMsg processes a JetStream message that's part of an atomic batch publish.
+// processJetStreamBatchMsg processes a JetStream message that's part of an atomic batch publish.
 // Handles constraints around the batch, storing messages, doing consistency checks, and performing the commit.
 func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
 	// For possible error response.
@@ -6616,18 +6616,19 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		}
 	}
 
-	rollback := func(seq uint64) {
+	oclseq := mset.clseq
+	rollback := func() {
 		if isClustered {
 			// Only need to move the clustered sequence back if the batch fails to commit.
 			// Other changes were staged but not applied, so this is the only thing we need to do.
-			mset.clseq -= seq - 1
+			mset.clseq = oclseq
 		}
 		mset.clMu.Unlock()
 	}
 
-	errorOnUnsupported := func(seq uint64, header string) *ApiError {
+	errorOnUnsupported := func(header string) *ApiError {
 		apiErr := NewJSAtomicPublishUnsupportedHeaderBatchError(header)
-		rollback(seq)
+		rollback()
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
 		mset.mu.Unlock()
@@ -6657,7 +6658,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		} else if sm, err = b.store.LoadMsg(seq, &smv); sm != nil && err == nil {
 			bsubj, bhdr, bmsg = sm.subj, sm.hdr, sm.msg
 		} else {
-			rollback(seq)
+			rollback()
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			mset.mu.Unlock()
@@ -6676,11 +6677,11 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 
 		// Reject unsupported headers.
 		if getExpectedLastMsgId(bhdr) != _EMPTY_ {
-			return errorOnUnsupported(seq, JSExpectedLastMsgId)
+			return errorOnUnsupported(JSExpectedLastMsgId)
 		}
 
 		if bhdr, bmsg, _, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubj, bsubj, bhdr, bmsg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
-			rollback(seq)
+			rollback()
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			mset.mu.Unlock()
@@ -6735,22 +6736,24 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 		mset.mu.Unlock()
 		// Do a single multi proposal. This ensures we get to push all entries to the proposal queue in-order
 		// and not interleaved with other proposals.
-		diff.commit(mset)
-		_ = node.ProposeMulti(entries)
-		// The proposal can fail, but we always account for trying.
-		mset.trackReplicationTraffic(node, sz, r)
+		if err = node.ProposeMulti(entries); err == nil {
+			diff.commit(mset)
+			mset.trackReplicationTraffic(node, sz, r)
 
-		// Check to see if we are being overrun.
-		// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
-		if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
-			lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
-			s.RateLimitWarnf("%s", lerr.Error())
+			// Check to see if we are being overrun.
+			// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
+			if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
+				lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
+				s.RateLimitWarnf("%s", lerr.Error())
+			}
+		} else {
+			mset.clseq = oclseq
 		}
 		mset.clMu.Unlock()
 	}
 	b.cleanupLocked(batchId, batches)
 	batches.mu.Unlock()
-	return nil
+	return err
 }
 
 // Used to signal inbound message to registered consumers.
