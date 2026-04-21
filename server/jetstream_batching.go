@@ -157,19 +157,24 @@ func (b *atomicBatch) readyForCommit() *BatchAbandonReason {
 	return nil
 }
 
-// newFastBatch creates a fast batch publish object.
+// newFastBatch creates a fast batch publish object and registers it in batches.fast.
 // Lock should be held.
 func (batches *batching) newFastBatch(mset *stream, batchId string, gapOk bool, maxAckMessages uint16) *fastBatch {
 	b := &fastBatch{gapOk: gapOk, maxAckMessages: maxAckMessages}
+	if batches.fast == nil {
+		batches.fast = make(map[string]*fastBatch, 1)
+	}
+	batches.fast[batchId] = b
 	batches.fastBatchInit(b)
 	b.setupCleanupTimer(mset, batchId, batches)
 	return b
 }
 
 // fastBatchInit (re)initializes the ackMessages field for a fast batch.
+// The batch must already be registered in batches.fast.
 // Lock should be held.
 func (batches *batching) fastBatchInit(b *fastBatch) {
-	// If it's the first batch, just allow what the client wants, otherwise we'll
+	// If it's the only batch, just allow what the client wants, otherwise we'll
 	// need to coordinate and slowly ramp up this publisher.
 	// TODO(mvv): fast ingest's initial flow value improvements?
 	ackMessages := min(500, b.maxAckMessages)
@@ -225,10 +230,6 @@ func (batches *batching) fastBatchRegisterSequences(mset *stream, reply string, 
 			// We'll need a copy as we'll use it as a key and later for cleanup.
 			batchId := copyString(batch.id)
 			b = batches.newFastBatch(mset, batchId, batch.gapOk, batch.flow)
-			if batches.fast == nil {
-				batches.fast = make(map[string]*fastBatch, 1)
-			}
-			batches.fast[batchId] = b
 		}
 		b.sseq = streamSeq
 		b.pseq, b.lseq = batch.seq, batch.seq
@@ -321,7 +322,7 @@ func (b *fastBatch) sendFlowControl(batchSeq uint64, mset *stream, reply string)
 	if len(reply) == 0 {
 		return
 	}
-	response := BatchFlowAck{Sequence: batchSeq, Messages: b.ackMessages}.MarshalJSON()
+	response, _ := BatchFlowAck{Sequence: batchSeq, Messages: b.ackMessages}.MarshalJSON()
 	mset.outq.sendMsg(reply, response)
 }
 

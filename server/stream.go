@@ -293,12 +293,11 @@ type BatchFlowAck struct {
 	Messages uint16 `json:"msgs"`
 }
 
-func (ack BatchFlowAck) MarshalJSON() []byte {
+func (ack BatchFlowAck) MarshalJSON() ([]byte, error) {
 	type Alias BatchFlowAck
 	a := Alias(ack)
 	a.Type = "ack"
-	buf, _ := json.Marshal(a)
-	return buf
+	return json.Marshal(a)
 }
 
 // BatchFlowGap is used for reporting gaps when fast batch publishing into a stream.
@@ -313,12 +312,11 @@ type BatchFlowGap struct {
 	CurrentSequence uint64 `json:"seq"`
 }
 
-func (gap BatchFlowGap) MarshalJSON() []byte {
+func (gap BatchFlowGap) MarshalJSON() ([]byte, error) {
 	type Alias BatchFlowGap
 	a := Alias(gap)
 	a.Type = "gap"
-	buf, _ := json.Marshal(a)
-	return buf
+	return json.Marshal(a)
 }
 
 // BatchFlowErr is used for reporting errors when fast batch publishing into a stream.
@@ -334,12 +332,11 @@ type BatchFlowErr struct {
 	Error *ApiError `json:"error"`
 }
 
-func (err BatchFlowErr) MarshalJSON() []byte {
+func (err BatchFlowErr) MarshalJSON() ([]byte, error) {
 	type Alias BatchFlowErr
 	a := Alias(err)
 	a.Type = "err"
-	buf, _ := json.Marshal(a)
-	return buf
+	return json.Marshal(a)
 }
 
 // StreamInfo shows config and current state for this stream.
@@ -7565,10 +7562,6 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		// We'll need a copy as we'll use it as a key and later for cleanup.
 		batchId := copyString(batch.id)
 		b = batches.newFastBatch(mset, batchId, batch.gapOk, batch.flow)
-		if batches.fast == nil {
-			batches.fast = make(map[string]*fastBatch, 1)
-		}
-		batches.fast[batchId] = b
 	}
 
 	// The required API level can have the batch be rejected. But the header is always removed.
@@ -7592,7 +7585,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		// Detect a gap or if the batch was cleaned up in the meantime.
 		if batch.seq > b.lseq || cleanup {
 			// If a gap is detected, we always report about it.
-			buf := BatchFlowGap{ExpectedLastSequence: b.lseq + 1, CurrentSequence: batch.seq + 1}.MarshalJSON()
+			buf, _ := BatchFlowGap{ExpectedLastSequence: b.lseq + 1, CurrentSequence: batch.seq + 1}.MarshalJSON()
 			outq.sendMsg(reply, buf)
 			// If the gap is okay, we can continue without rejecting.
 			if b.gapOk && !cleanup {
@@ -7626,13 +7619,16 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	// Detect gaps.
 	b.lseq++
 	if b.lseq != batch.seq || cleanup {
-		// If a gap is detected, we always report about it.
-		buf := BatchFlowGap{ExpectedLastSequence: b.lseq - 1, CurrentSequence: batch.seq}.MarshalJSON()
-		outq.sendMsg(reply, buf)
-		// If the gap is okay, we can continue without rejecting.
-		if b.gapOk && !cleanup {
+		// If a forward gap is detected, we always report about it.
+		if batch.seq > b.lseq {
+			buf, _ := BatchFlowGap{ExpectedLastSequence: b.lseq, CurrentSequence: batch.seq}.MarshalJSON()
+			outq.sendMsg(reply, buf)
+		}
+		// If the forward gap is okay, we can continue without rejecting.
+		if b.gapOk && !cleanup && batch.seq > b.lseq {
 			b.lseq = batch.seq
 		} else {
+			// We've reached either a backward gap, or were cleaned up already, or it's gap-fail mode.
 			// Revert, since we incremented for the gap check.
 			b.lseq--
 			if cleanup = batches.fastBatchCommit(b, batch.id, mset, reply); cleanup {
@@ -7670,7 +7666,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	// The first message in the batch responds with the settings used for flow control.
 	// If committing immediately, we only send the PubAck.
 	if batch.seq == 1 && canRespond && !batch.commit {
-		buf := BatchFlowAck{Sequence: 0, Messages: b.ackMessages}.MarshalJSON()
+		buf, _ := BatchFlowAck{Sequence: 0, Messages: b.ackMessages}.MarshalJSON()
 		outq.sendMsg(reply, buf)
 	}
 
@@ -7727,7 +7723,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 
 		// We always return the error to the client, unless it's a duplicate.
 		if err != errMsgIdDuplicate {
-			buf := BatchFlowErr{Sequence: batch.seq, Error: apiErr}.MarshalJSON()
+			buf, _ := BatchFlowErr{Sequence: batch.seq, Error: apiErr}.MarshalJSON()
 			outq.sendMsg(reply, buf)
 		}
 

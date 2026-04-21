@@ -3177,7 +3177,7 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"gap\","))
 		var batchFlowGap BatchFlowGap
 		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
-		require_Equal(t, batchFlowGap.ExpectedLastSequence, 1)
+		require_Equal(t, batchFlowGap.ExpectedLastSequence, 2)
 		require_Equal(t, batchFlowGap.CurrentSequence, 3)
 
 		switch gapMode {
@@ -3314,6 +3314,46 @@ func TestJetStreamFastBatchPublishFlowControl(t *testing.T) {
 			test(t, replicas)
 		})
 	}
+}
+
+func TestJetStreamFastBatchInitAckMessages(t *testing.T) {
+	batches := &batching{}
+	mset := &stream{srv: &Server{opts: &Options{}}}
+	stopTimer := func(b *fastBatch) { b.timer.Stop() }
+
+	// First batch, alone in the map: should get full window clamped to client max.
+	b1 := batches.newFastBatch(mset, "b1", false, 1000)
+	stopTimer(b1)
+	require_Equal(t, b1.ackMessages, 500)
+
+	// Second concurrent batch: must start at 1 to coordinate with sibling.
+	b2 := batches.newFastBatch(mset, "b2", false, 1000)
+	stopTimer(b2)
+	require_Equal(t, b2.ackMessages, 1)
+
+	// Resetting b1 while b2 still exists: also throttled to 1.
+	b1.timer.Reset(time.Hour) // Need to reset, otherwise below is a noop.
+	batches.fastBatchReset(mset, "b1", b1)
+	stopTimer(b1)
+	require_Equal(t, b1.ackMessages, 1)
+
+	// Remove the sibling; a reset now returns to the full window.
+	stopTimer(b2)
+	delete(batches.fast, "b2")
+	batches.fastBatchInit(b1)
+	require_Equal(t, b1.ackMessages, 500)
+
+	// A client-specified max below 500 is respected.
+	stopTimer(b1)
+	delete(batches.fast, "b1")
+	b3 := batches.newFastBatch(mset, "b3", false, 50)
+	stopTimer(b3)
+	require_Equal(t, b3.ackMessages, 50)
+
+	// And throttled to 1 when a sibling is present.
+	b4 := batches.newFastBatch(mset, "b4", false, 50)
+	stopTimer(b4)
+	require_Equal(t, b4.ackMessages, 1)
 }
 
 func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
@@ -3902,6 +3942,64 @@ func TestJetStreamFastBatchPublishPing(t *testing.T) {
 	require_Equal(t, pubAck.Sequence, 3)
 	require_Equal(t, pubAck.BatchId, "uuid")
 	require_Equal(t, pubAck.BatchSize, 100)
+}
+
+func TestJetStreamFastBatchPublishGapOkBackwardSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Start the batch in gapOk mode.
+	m := nats.NewMsg("foo")
+	m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapOk, FastBatchOpStart)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowAck BatchFlowAck
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+
+	// Forward-jump to seq=5; the gap is accepted.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 5, 0, FastBatchGapOk, FastBatchOpAppend)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowGap BatchFlowGap
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
+	require_Equal(t, batchFlowGap.ExpectedLastSequence, 2)
+	require_Equal(t, batchFlowGap.CurrentSequence, 5)
+
+	// A backward batch.seq must not rewind b.lseq; it aborts the batch.
+	// No BatchFlowGap should be sent, since gap notifications are only for forward gaps.
+	m.Reply = generateFastBatchReply(inbox, "uuid", 3, 0, FastBatchGapOk, FastBatchOpAppend)
+	require_NoError(t, nc.PublishMsg(m))
+
+	// The batch is committed directly and a PubAck is delivered (would never arrive if the
+	// backward seq were silently accepted and the batch kept running).
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.BatchId, "uuid")
+
+	// Ensure no stray BatchFlowGap arrived alongside the PubAck.
+	_, err = sub.NextMsg(200 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
 }
 
 func TestJetStreamFastBatchSequentialDuplicateAndErrorPubAck(t *testing.T) {
