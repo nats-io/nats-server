@@ -872,6 +872,10 @@ func checkMsgHeadersPreClusteredProposal(
 				apiErr := NewJSMessageSchedulesDisabledError()
 				return hdr, msg, 0, apiErr, apiErr
 			}
+		} else if !sourced && len(sliceHeader(JSScheduler, hdr)) > 0 {
+			// Clients may only use Nats-Scheduler alongside Nats-Schedule-Next.
+			apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+			return hdr, msg, 0, apiErr, apiErr
 		}
 
 		// Check for any rollups.

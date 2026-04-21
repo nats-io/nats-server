@@ -9955,46 +9955,52 @@ func TestJetStreamClusterScheduledPurgeHeadersRequiresSchedulingEnabled(t *testi
 
 func TestJetStreamClusterScheduledRearmHeaderRejectedFromClient(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
-		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
-			c := createJetStreamClusterExplicit(t, "R3S", 3)
-			defer c.shutdown()
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
 
-			nc, js := jsClientConnect(t, c.randomServer())
-			defer nc.Close()
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
 
-			_, err := jsStreamCreate(t, nc, &StreamConfig{
-				Name:              "TEST",
-				Storage:           FileStorage,
-				Subjects:          []string{"foo.>"},
-				Replicas:          replicas,
-				AllowMsgSchedules: true,
+				_, err := jsStreamCreate(t, nc, &StreamConfig{
+					Name:              "TEST",
+					Storage:           storage,
+					Subjects:          []string{"foo.>"},
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+				})
+				require_NoError(t, err)
+
+				// Arm a schedule that fires shortly.
+				fireIn := 500 * time.Millisecond
+				m := nats.NewMsg("foo.schedule")
+				m.Header.Set("Nats-Schedule", fmt.Sprintf("@at %s", time.Now().Add(fireIn).Format(time.RFC3339Nano)))
+				m.Header.Set("Nats-Schedule-Target", "foo.msg")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+
+				// An attacker with publish access should not be able to shift
+				// the schedule's next fire time by forging Nats-Schedule-Next.
+				attack := nats.NewMsg("foo.attacker")
+				attack.Header.Set(JSScheduleNext, time.Now().Add(100*365*24*time.Hour).Format(time.RFC3339Nano))
+				attack.Header.Set(JSScheduler, "foo.schedule")
+				_, err = js.PublishMsg(attack)
+				require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
+
+				attack.Header.Del(JSScheduleNext)
+				_, err = js.PublishMsg(attack)
+				require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
+
+				// The schedule must still fire on time.
+				checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+					if _, err = js.GetLastMsg("TEST", "foo.msg"); err != nil {
+						return err
+					}
+					return nil
+				})
 			})
-			require_NoError(t, err)
-
-			// Arm a schedule that fires shortly.
-			fireIn := 500 * time.Millisecond
-			m := nats.NewMsg("foo.schedule")
-			m.Header.Set("Nats-Schedule", fmt.Sprintf("@at %s", time.Now().Add(fireIn).Format(time.RFC3339Nano)))
-			m.Header.Set("Nats-Schedule-Target", "foo.msg")
-			_, err = js.PublishMsg(m)
-			require_NoError(t, err)
-
-			// An attacker with publish access should not be able to shift
-			// the schedule's next fire time by forging Nats-Schedule-Next.
-			attack := nats.NewMsg("foo.attacker")
-			attack.Header.Set(JSScheduleNext, time.Now().Add(100*365*24*time.Hour).Format(time.RFC3339Nano))
-			attack.Header.Set(JSScheduler, "foo.schedule")
-			_, err = js.PublishMsg(attack)
-			require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
-
-			// The schedule must still fire on time.
-			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-				if _, err = js.GetLastMsg("TEST", "foo.msg"); err != nil {
-					return err
-				}
-				return nil
-			})
-		})
+		}
 	}
 }
 
