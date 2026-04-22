@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -5232,7 +5233,10 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		}
 
 		nca := *ca
+		// We're only holding the read lock and release below,
+		// we need a copy to prevent concurrent reads/writes.
 		ncfg := *ca.Config
+		ncfg.Metadata = maps.Clone(ncfg.Metadata)
 		nca.Config = &ncfg
 		meta := cc.meta
 		js.mu.RUnlock()
@@ -5280,7 +5284,13 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
+	// We're only holding the read lock and release below,
+	// we need a copy to prevent concurrent reads/writes.
+	obs.mu.RLock()
 	ncfg := obs.cfg
+	ncfg.Metadata = maps.Clone(ncfg.Metadata)
+	obs.mu.RUnlock()
+
 	pauseUTC := req.PauseUntil.UTC()
 	if !pauseUTC.IsZero() {
 		ncfg.PauseUntil = &pauseUTC
