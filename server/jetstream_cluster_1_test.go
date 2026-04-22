@@ -6866,9 +6866,9 @@ func testJetStreamClusterConsumerAckOutOfBounds(t *testing.T, ackV2 bool) {
 	defer c.shutdown()
 
 	for _, s := range c.servers {
-		s.optsMu.Lock()
-		s.opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: ackV2}
-		s.optsMu.Unlock()
+		opts := *s.getOpts()
+		opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: ackV2}
+		s.setOpts(&opts)
 	}
 
 	nc, js := jsClientConnect(t, c.randomServer())
@@ -8117,9 +8117,9 @@ func testJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t *
 	defer c.shutdown()
 
 	for _, s := range c.servers {
-		s.optsMu.Lock()
-		s.opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: ackV2}
-		s.optsMu.Unlock()
+		opts := *s.getOpts()
+		opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: ackV2}
+		s.setOpts(&opts)
 	}
 
 	nc, js := jsClientConnect(t, c.randomServer())

@@ -36,7 +36,8 @@ var featureFlags = map[string]bool{
 
 // getFeatureFlag is used to retrieve either the default or overwritten value for a feature flag.
 // The user's value takes precedence over the system's default. However, if the flag doesn't exist, it's disabled.
-// Options read lock should be held.
+// The *Options returned by Server.getOpts() is treated as immutable, mutations go through setOpts,
+// so no lock is required on the map read here.
 func (o *Options) getFeatureFlag(k string) bool {
 	defaultValue, ok := featureFlags[k]
 	if !ok {
