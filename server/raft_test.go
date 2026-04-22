@@ -5706,6 +5706,61 @@ func TestNRGSwitchToCandidateResetsQuorumPaused(t *testing.T) {
 	require_False(t, n.quorumPaused)
 }
 
+func TestNRGPausingQuorumCancelsCatchup(t *testing.T) {
+	// If a follower is already catching up and it also falls far enough behind to
+	// hit the quorum-pause threshold, the in-flight catchup should be canceled
+	// so the leader re-sends a fresher snapshot rather than continuing to stream
+	// entries we can't absorb.
+	test := func(t *testing.T, alreadyPaused bool) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+
+		nats0 := "S1Nunr6R" // "nats-0"
+		nats1 := "yrzKKRBu" // "nats-1"
+
+		// Initial entry and heartbeat from nats0 so the follower has a committed baseline.
+		aeInitial := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+		aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+
+		n.processAppendEntry(aeInitial, n.aesub)
+		n.processAppendEntry(aeHeartbeat, n.aesub)
+		require_Equal(t, n.commit, 1)
+
+		// Leader change. The new leader references pindex=3, which the follower
+		// doesn't have, so the follower requests a catchup.
+		aeCatchupTrigger := encode(t, &appendEntry{leader: nats1, term: 2, commit: 1, pterm: 2, pindex: 3, entries: entries})
+		n.processAppendEntry(aeCatchupTrigger, n.aesub)
+		require_True(t, n.catchup != nil)
+		require_True(t, n.catchup.sub != nil)
+		catchupSub := n.catchup.sub
+
+		// Put the follower into a state where the next append entry will trip the
+		// pause logic: either already paused with a backlog above the warn threshold,
+		// or fresh but with a backlog above the pause threshold.
+		if alreadyPaused {
+			n.quorumPaused = true
+			n.commit, n.applied, n.papplied = paeWarnThreshold+1, 0, 0
+		} else {
+			n.commit, n.applied, n.papplied = pauseQuorumThreshold+1, 0, 0
+		}
+
+		// Deliver an append entry on the catchup sub. Its contents don't matter –
+		// the pause check runs before the entry is applied.
+		aeCatchup := encode(t, &appendEntry{leader: nats1, term: 2, commit: 1, pterm: 1, pindex: 1, lterm: 2, entries: entries})
+		n.processAppendEntry(aeCatchup, catchupSub)
+
+		// The catchup should have been canceled, so the leader will re-send a fresher snapshot.
+		require_True(t, n.catchup == nil)
+		require_True(t, n.quorumPaused)
+	}
+
+	t.Run("EnteringPause", func(t *testing.T) { test(t, false) })
+	t.Run("AlreadyPaused", func(t *testing.T) { test(t, true) })
+}
+
 func TestNRGProcessAppendEntryTermMismatchDoesNotRegressCommit(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
