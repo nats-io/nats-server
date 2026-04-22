@@ -5017,6 +5017,8 @@ func isReadErr(err error) bool {
 		errors.Is(err, errPartialCache) ||
 		errors.Is(err, errCorruptState) ||
 		errors.Is(err, errPriorState) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, errMsgBlkTooBig) ||
 		errors.As(err, &badMsg)
 }
 
@@ -7029,27 +7031,49 @@ func (fs *fileStore) checkAndFlushLastBlock() error {
 }
 
 // This will check all the checksums on messages and report back any sequence numbers with errors.
-func (fs *fileStore) checkMsgs() *LostStreamData {
+func (fs *fileStore) checkMsgs() (*LostStreamData, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	fs.checkAndFlushLastBlock()
+	var firstErr error
+	storeErr := func(err error) error {
+		fs.warn("checkMsgs: %v", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+		return err
+	}
+
+	if err := fs.checkAndFlushLastBlock(); err != nil {
+		return nil, storeErr(fmt.Errorf("flush of last block failed: %w", err))
+	}
 
 	// Clear any global subject state.
 	fs.psim, fs.tsl = fs.psim.Empty(), 0
 
 	for _, mb := range fs.blks {
 		// Make sure encryption loaded if needed for the block.
-		fs.loadEncryptionForMsgBlock(mb)
+		if err := fs.loadEncryptionForMsgBlock(mb); err != nil {
+			_ = storeErr(fmt.Errorf("loading encryption for block %d failed: %w", mb.index, err))
+			continue
+		}
 		// FIXME(dlc) - check tombstones here too?
-		if ld, _, _ := mb.rebuildState(); ld != nil {
+		ld, _, err := mb.rebuildState()
+		if err != nil {
+			_ = storeErr(fmt.Errorf("rebuildState for block %d failed: %w", mb.index, err))
+			continue
+		}
+		if ld != nil {
 			// Rebuild fs state too.
 			fs.rebuildStateLocked(ld)
 		}
-		fs.populateGlobalPerSubjectInfo(mb)
+		if err = fs.populateGlobalPerSubjectInfo(mb); err != nil {
+			_ = storeErr(fmt.Errorf("populating per-subject info for block %d failed: %w", mb.index, err))
+			continue
+		}
 	}
 
-	return fs.ld
+	return fs.ld, firstErr
 }
 
 // Lock should be held.
@@ -10042,7 +10066,6 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 	fs.addMsgBlock(lmb)
 
 	// Move the msgs directory out of the way, will delete out of band.
-	// FIXME(dlc) - These can error and we need to change api above to propagate?
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	ndir := filepath.Join(fs.fcfg.StoreDir, newMsgDir)
 	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
@@ -12123,8 +12146,18 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	fs.mu.Unlock()
 
 	if checkMsgs {
-		ld := fs.checkMsgs()
+		ld, err := fs.checkMsgs()
+		clearSips := func() {
+			fs.mu.Lock()
+			fs.sips--
+			fs.mu.Unlock()
+		}
+		if err != nil {
+			clearSips()
+			return nil, fmt.Errorf("snapshot check failed: %w", err)
+		}
 		if ld != nil && len(ld.Msgs) > 0 {
+			clearSips()
 			return nil, fmt.Errorf("snapshot check detected %d bad messages", len(ld.Msgs))
 		}
 	}
