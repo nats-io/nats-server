@@ -2813,21 +2813,27 @@ VALID:
 	if seq <= 0 {
 		seq = 1
 	}
-	o.resetLocalStartingSeq(seq)
-	// Clustered mode and R>1.
+	// The replicated path requires quorum first before the reset actually takes effect.
 	if o.node != nil {
+		if !o.isLeader() {
+			return 0, false, nil
+		}
 		b := make([]byte, 1+8+len(reply))
 		b[0] = byte(resetSeqOp)
 		var le = binary.LittleEndian
 		le.PutUint64(b[1:], seq)
 		copy(b[1+8:], reply)
 		o.propose(b[:])
-		if o.rsm == nil {
-			o.rsm = make(map[string]bool, 1)
+		if reply != _EMPTY_ {
+			if o.rsm == nil {
+				o.rsm = make(map[string]bool, 1)
+			}
+			o.rsm[reply] = internal
 		}
-		o.rsm[reply] = internal
 		return seq, false, nil
-	} else if o.store != nil {
+	}
+	o.resetLocalStartingSeq(seq)
+	if o.store != nil {
 		o.store.Reset(seq - 1)
 		// Cleanup messages that lost interest.
 		if o.retention == InterestPolicy {
