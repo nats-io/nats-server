@@ -1,4 +1,4 @@
-// Copyright 2019-2025 The NATS Authors
+// Copyright 2019-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12277,4 +12277,74 @@ func TestLeafNodeSpokeConnectAdvisory(t *testing.T) {
 	var cm ConnectEventMsg
 	require_NoError(t, json.Unmarshal(msg.Data, &cm))
 	require_Equal(t, cm.Client.Kind, "Leafnode")
+}
+
+func TestLeafNodeRemoteIgnoreGossip(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		accounts {
+			A { users: [{user: "a", password: "pwd"}] }
+			B { users: [{user: "b", password: "pwd"}] }
+		}
+		cluster {
+			name: "abc"
+			listen: "127.0.0.1:-1"
+			%s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	conf1 := createConfFile(t, fmt.Appendf(nil, tmpl, _EMPTY_))
+	sb1, ob1 := RunServerWithConfig(conf1)
+	defer sb1.Shutdown()
+
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl,
+		fmt.Sprintf("routes: [nats://127.0.0.1:%d]", ob1.Cluster.Port)))
+	sb2, _ := RunServerWithConfig(conf2)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+
+	nc1 := natsConnect(t, sb1.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer nc1.Close()
+	natsSubSync(t, nc1, "foo")
+	natsFlush(t, nc1)
+
+	nc2 := natsConnect(t, sb2.ClientURL(), nats.UserInfo("b", "pwd"))
+	defer nc2.Close()
+	natsSubSync(t, nc2, "bar")
+	natsFlush(t, nc2)
+
+	conf := createConfFile(t, fmt.Appendf(nil, `
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			reconnect_interval: "100ms"
+			remotes: [
+				{ url: "nats://a:pwd@127.0.0.1:%d", ignore_discovered_servers: true }
+				{ url: "nats://b:pwd@127.0.0.1:%d" }
+			]
+		}
+	`, ob1.LeafNode.Port, ob1.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(conf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, leaf, 2)
+
+	checkSubInterest(t, leaf, globalAccountName, "foo", time.Second)
+	checkSubInterest(t, leaf, globalAccountName, "bar", time.Second)
+
+	// Now shutdown server sb1. The remote that connects to account "A" should
+	// fail to reconnect (because it is asked to ignore gossip protocol), while
+	// the remote that connects to account "B" should be able to reconnect
+	// because it learned about sb2 thanks to gossip protocol (default behavior).
+	sb1.Shutdown()
+
+	// Wait a bit for the disconnect and reconnect interval to make sure there
+	// is only one connected remote.
+	time.Sleep(150 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, leaf, 1)
+
+	checkSubNoInterest(t, leaf, globalAccountName, "foo", time.Second)
+	checkSubInterest(t, leaf, globalAccountName, "bar", time.Second)
 }

@@ -1,4 +1,4 @@
-// Copyright 2019-2025 The NATS Authors
+// Copyright 2019-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1646,8 +1646,10 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	}
 
 	// For both initial INFO and async INFO protocols, Possibly
-	// update our list of remote leafnode URLs we can connect to.
-	if didSolicit && (len(info.LeafNodeURLs) > 0 || len(info.WSConnectURLs) > 0) {
+	// update our list of remote leafnode URLs we can connect to,
+	// unless we are instructed not to.
+	if didSolicit && !remote.IgnoreDiscoveredServers &&
+		(len(info.LeafNodeURLs) > 0 || len(info.WSConnectURLs) > 0) {
 		// Consider the incoming array as the most up-to-date
 		// representation of the remote cluster's list of URLs.
 		c.updateLeafNodeURLs(info)
