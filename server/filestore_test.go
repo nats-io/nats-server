@@ -1314,7 +1314,9 @@ func TestFileStoreBitRot(t *testing.T) {
 			t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 		}
 
-		if ld := fs.checkMsgs(); ld != nil && len(ld.Msgs) > 0 {
+		if ld, err := fs.checkMsgs(); err != nil {
+			t.Fatalf("Unexpected error from checkMsgs: %v", err)
+		} else if ld != nil && len(ld.Msgs) > 0 {
 			t.Fatalf("Expected to have no corrupt msgs, got %d", len(ld.Msgs))
 		}
 
@@ -1339,7 +1341,8 @@ func TestFileStoreBitRot(t *testing.T) {
 			os.WriteFile(lmb.mfn, contents, 0644)
 			fs.mu.Unlock()
 
-			ld := fs.checkMsgs()
+			ld, err := fs.checkMsgs()
+			require_NoError(t, err)
 			if len(ld.Msgs) > 0 {
 				break
 			}
@@ -1362,7 +1365,9 @@ func TestFileStoreBitRot(t *testing.T) {
 		defer fs.Stop()
 
 		// checkMsgs will repair the underlying store, so checkMsgs should be clean now.
-		if ld := fs.checkMsgs(); ld != nil {
+		if ld, err := fs.checkMsgs(); err != nil {
+			t.Fatalf("Unexpected error from checkMsgs: %v", err)
+		} else if ld != nil {
 			// If we have no msgs left this will report the head msgs as lost again.
 			if state := fs.State(); state.Msgs > 0 {
 				t.Fatalf("Expected no errors restoring checked and fixed filestore, got %+v", ld)
@@ -4904,7 +4909,9 @@ func TestFileStoreMsgBlkFailOnKernelFaultLostDataReporting(t *testing.T) {
 		defer fs.Stop()
 
 		// Need checkMsgs to catch interior one.
-		require_True(t, fs.checkMsgs() != nil)
+		ld, err := fs.checkMsgs()
+		require_NoError(t, err)
+		require_True(t, ld != nil)
 
 		state = fs.State()
 		require_Equal(t, state.FirstSeq, 94)
@@ -13796,6 +13803,15 @@ func TestFileStoreSetWriteErrIgnoresReadErrors(t *testing.T) {
 		errCorruptState,
 		errPriorState,
 		errBadMsg{fn: "block.blk", detail: "invalid checksum"},
+		// Short reads of on-disk blocks surface as io.ErrUnexpectedEOF from
+		// io.ReadFull in loadBlock. Treat like other on-disk-data read errors:
+		// log + rebuild, don't disable writes.
+		io.ErrUnexpectedEOF,
+		// A block whose size doesn't fit in an int is an on-disk-data issue too.
+		errMsgBlkTooBig,
+		// Wrapped variants should also be recognized.
+		fmt.Errorf("wrapped: %w", io.ErrUnexpectedEOF),
+		fmt.Errorf("wrapped: %w", errCorruptState),
 	}
 
 	fs.mu.Lock()
