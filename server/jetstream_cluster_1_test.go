@@ -9770,6 +9770,69 @@ func TestJetStreamClusterScheduledMessageSubjectSourcingFallback(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterScheduledMessageSubjectSourcingRepeatingNotStuck(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				cfg := &StreamConfig{
+					Name:              "SchedulesEnabled",
+					Subjects:          []string{"foo.*"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+				}
+				_, err := jsStreamCreate(t, nc, cfg)
+				require_NoError(t, err)
+
+				// Seed foo.data with a message that carries a stale Nats-Scheduler header.
+				m := nats.NewMsg("foo.data")
+				m.Header.Set("Nats-Schedule-Next", "purge")
+				m.Header.Set("Nats-Scheduler", "foo.victim")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+
+				// Repeating schedule sourcing from foo.data. If the Nats-Scheduler is not
+				// stripped from the source, the scheduled output carries two Nats-Scheduler
+				// headers and the store's schedule update path targets the wrong scheduler
+				// subject. Resulting in the scheduling getting stuck.
+				m = nats.NewMsg("foo.sb")
+				m.Header.Set("Nats-Schedule", "@every 1s")
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Schedule-Source", "foo.data")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+
+				// Wait until the schedule has fired multiple times. With the bug it fires
+				// once and then get stuck, without it it keeps firing on its @every 1s cadence.
+				checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+					mi, err := js.StreamInfo("SchedulesEnabled", &nats.StreamInfoRequest{SubjectsFilter: "foo.publish"})
+					if err != nil {
+						return err
+					}
+					if n := mi.State.Subjects["foo.publish"]; n < 3 {
+						return fmt.Errorf("expected at least 3 messages on foo.publish, got %d", n)
+					}
+					return nil
+				})
+
+				// The schedule message itself must still be present.
+				rsm, err := js.GetLastMsg("SchedulesEnabled", "foo.sb")
+				require_NoError(t, err)
+				require_Equal(t, rsm.Header.Get("Nats-Schedule"), "@every 1s")
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					return checkState(t, c, globalAccountName, "SchedulesEnabled")
+				})
+			})
+		}
+	}
+}
+
 func TestJetStreamClusterScheduledDelayedMessageRollup(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		for _, storage := range []StorageType{FileStorage, MemoryStorage} {

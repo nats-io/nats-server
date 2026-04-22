@@ -208,9 +208,10 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 			// And in the case of headers, we'll copy all of them, but make changes.
 			hdr, msg := copyBytes(sm.hdr), copyBytes(sm.msg)
 
-			// Strip headers specific to the schedule.
-			hdr = removeHeaderIfPresent(hdr, JSSchedulePattern)
-			hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Schedule-")
+			// Strip headers specific to message scheduling.
+			// Covers Nats-Schedule, Nats-Schedule-*, and Nats-Scheduler.
+			hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Schedule")
+			// Strip headers that could prevent persisting this scheduled message.
 			hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
 			hdr = removeHeaderIfPresent(hdr, JSMsgId)
 			hdr = removeHeaderIfPresent(hdr, JSMessageTTL)
