@@ -7917,6 +7917,76 @@ func TestJetStreamClusterConsumerResetStartingSequenceToAgreedState(t *testing.T
 	}
 }
 
+func TestJetStreamClusterConsumerResetDoesNotMutateLocalStateBeforeQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "CONSUMER", nats.ConsumerReplicas(3))
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	for range 3 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Deliver two messages without acking so pending/dseq/sseq advance.
+	msgs, err := sub.Fetch(2, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 2)
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Hold the consumer lock while we call resetStartingSeqLocked and then
+	// immediately inspect state. Holding the lock blocks applyConsumerEntries,
+	// so any state change we observe here must have been done synchronously
+	// by the reset path itself.
+	o.mu.Lock()
+	if !o.isLeader() {
+		o.mu.Unlock()
+		t.Fatal("consumer leader changed")
+	}
+
+	sseq, dseq, adflr, asflr, pending := o.sseq, o.dseq, o.adflr, o.asflr, len(o.pending)
+	_, _, err = o.resetStartingSeqLocked(0, _EMPTY_, false)
+	if err != nil {
+		o.mu.Unlock()
+		require_NoError(t, err)
+	}
+
+	if sseq != o.sseq || dseq != o.dseq || adflr != o.adflr || asflr != o.asflr || pending != len(o.pending) {
+		o.mu.Unlock()
+		t.Fatal("leader local state mutated before raft apply")
+	}
+	o.mu.Unlock()
+
+	// The reset should still apply once the Raft entry commits.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.sseq != 1 || o.dseq != 1 || len(o.pending) != 0 {
+			return fmt.Errorf("reset has not applied yet: sseq=%d dseq=%d pending=%d",
+				o.sseq, o.dseq, len(o.pending))
+		}
+		return nil
+	})
+}
+
 func TestJetStreamClusterSubjectDeleteMarkers(t *testing.T) {
 	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(storage.String(), func(t *testing.T) {
