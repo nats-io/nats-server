@@ -38,6 +38,18 @@ func TestGetFeatureFlag(t *testing.T) {
 	require_Equal(t, o.getFeatureFlag("test_flag"), false)
 }
 
+func TestFeatureFlagsConfigParseNonBool(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		feature_flags {
+		    opt_in_flag: "true"
+		}
+	`))
+
+	_, err := ProcessConfigFile(conf)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), `error parsing feature flag "opt_in_flag": expected bool, got string`)
+}
+
 func TestGetMergedFeatureFlags(t *testing.T) {
 	previous := featureFlags
 	featureFlags = make(map[string]bool)

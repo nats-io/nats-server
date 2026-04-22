@@ -1824,10 +1824,15 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		case map[string]any:
 			for mk, mv := range v {
 				tk, mv = unwrapValue(mv, &lt)
+				b, ok := mv.(bool)
+				if !ok {
+					err = &configErr{tk, fmt.Sprintf("error parsing feature flag %q: expected bool, got %T", mk, mv)}
+					break
+				}
 				if o.FeatureFlags == nil {
 					o.FeatureFlags = make(map[string]bool)
 				}
-				o.FeatureFlags[mk] = mv.(bool)
+				o.FeatureFlags[mk] = b
 			}
 		default:
 			err = &configErr{tk, fmt.Sprintf("error parsing feature flags: unsupported type %T", v)}
