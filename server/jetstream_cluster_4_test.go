@@ -7955,6 +7955,75 @@ func TestJetStreamClusterSourceRetryDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterSourceRetryDoesNotResetHealthy(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"src"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	for range 5 {
+		_, err = js.Publish("src", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "DST",
+		Sources:  []*nats.StreamSource{{Name: "SRC"}},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("DST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 5 {
+			return fmt.Errorf("DST has %d msgs, want %d", si.State.Msgs, 5)
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "DST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("DST")
+	require_NoError(t, err)
+
+	// Capture the original sub/client/cname for the healthy source.
+	mset.mu.RLock()
+	var origSub *subscription
+	var origCname string
+	for _, si := range mset.sources {
+		origSub, origCname = si.sub, si.cname
+		break
+	}
+	mset.mu.RUnlock()
+	require_NotNil(t, origSub)
+	require_True(t, origCname != _EMPTY_)
+
+	// Healthy state: si.sub is set, client is not closed, heartbeats are
+	// keeping si.last fresh. shouldRetry must leave the consumer alone.
+	mset.retryDisconnectedSyncConsumers()
+
+	mset.mu.RLock()
+	var sub *subscription
+	var cname string
+	for _, si := range mset.sources {
+		sub, cname = si.sub, si.cname
+		break
+	}
+	mset.mu.RUnlock()
+	require_Equal(t, sub, origSub)
+	require_Equal(t, cname, origCname)
+}
+
 func TestJetStreamClusterSourceStartingSeqIgnoresInflight(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
