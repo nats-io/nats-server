@@ -2910,9 +2910,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			mset.handleFlowControl(m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything and check if we are considered stalled.
-			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
+			if ldseq := parseInt64(sliceHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
 				needsRetry = true
-			} else if fcReply := getHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
+			} else if fcReply := sliceHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
 				// Other side thinks we are stalled, so send flow control reply.
 				mset.outq.sendMsg(string(fcReply), nil)
 			}
@@ -2933,13 +2933,17 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 
 	// Mirror info tracking.
 	olag, osseq, odseq := mset.mirror.lag, mset.mirror.sseq, mset.mirror.dseq
-	if sseq == mset.mirror.sseq+1 {
-		mset.mirror.dseq = dseq
-		mset.mirror.sseq++
-	} else if sseq <= mset.mirror.sseq {
+	if sseq <= mset.mirror.sseq {
 		// Ignore older messages.
+		// If the deliver sequence matches, we only update delivered accounting.
+		if dseq == mset.mirror.dseq+1 {
+			mset.mirror.dseq++
+		}
 		mset.mu.Unlock()
 		return true
+	} else if sseq == mset.mirror.sseq+1 {
+		mset.mirror.dseq = dseq
+		mset.mirror.sseq++
 	} else if mset.mirror.cname == _EMPTY_ {
 		mset.mirror.cname = tokenAt(m.rply, 4)
 		mset.mirror.dseq, mset.mirror.sseq = dseq, sseq
@@ -3015,10 +3019,10 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 				accName, sname, err)
 		} else {
 			// We may have missed messages, restart.
-			if sseq <= mset.lastSeq() {
+			if lseq := mset.lastSeq(); sseq <= lseq {
 				mset.mu.Lock()
 				mset.mirror.lag = olag
-				mset.mirror.sseq = osseq
+				mset.mirror.sseq = lseq
 				mset.mirror.dseq = odseq
 				mset.mu.Unlock()
 				return false
@@ -3731,8 +3735,8 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 					}
 
 					// Setup actual subscription to process messages from our source.
-					if si.sseq != ccr.ConsumerInfo.Delivered.Stream {
-						si.sseq = ccr.ConsumerInfo.Delivered.Stream + 1
+					if si.sseq < ccr.ConsumerInfo.Delivered.Stream {
+						si.sseq = ccr.ConsumerInfo.Delivered.Stream
 					}
 					// Capture consumer name.
 					si.cname = ccr.ConsumerInfo.Name
@@ -3904,10 +3908,10 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			mset.handleFlowControl(m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything.
-			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
+			if ldseq := parseInt64(sliceHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
 				needsRetry = true
 				mset.retrySourceConsumerAtSeq(si.iname, si.sseq+1)
-			} else if fcReply := getHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
+			} else if fcReply := sliceHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
 				// Other side thinks we are stalled, so send flow control reply.
 				mset.outq.sendMsg(string(fcReply), nil)
 			}
@@ -3924,7 +3928,16 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	}
 
 	// Tracking is done here.
-	if dseq == si.dseq+1 {
+	osseq, odseq := si.sseq, si.dseq
+	if sseq <= si.sseq {
+		// Ignore older messages.
+		// If the deliver sequence matches, we only update delivered accounting.
+		if dseq == si.dseq+1 {
+			si.dseq++
+		}
+		mset.mu.Unlock()
+		return true
+	} else if dseq == si.dseq+1 {
 		si.dseq++
 		si.sseq = sseq
 	} else if dseq > si.dseq {
@@ -4000,6 +4013,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				// Do not need to do a full retry that includes finding the last sequence in the stream
 				// for that source. Just re-create starting with the seq we couldn't store instead.
 				mset.mu.Lock()
+				si.dseq = odseq
+				si.sseq = osseq
 				mset.retrySourceConsumerAtSeq(iName, si.sseq)
 				mset.mu.Unlock()
 			} else {
