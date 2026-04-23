@@ -7954,3 +7954,82 @@ func TestJetStreamClusterSourceRetryDoesNotDuplicate(t *testing.T) {
 			replaySseq, len(dstSeqs), dstSeqs, origSseq)
 	}
 }
+
+func TestJetStreamClusterSourceStartingSeqIgnoresInflight(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"src"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	stored := uint64(5)
+	for range stored {
+		_, err = js.Publish("src", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "DST",
+		Sources:  []*nats.StreamSource{{Name: "SRC"}},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Wait until DST has applied all storedN sourced messages.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("DST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != stored {
+			return fmt.Errorf("DST has %d msgs, want %d", si.State.Msgs, stored)
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "DST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("DST")
+	require_NoError(t, err)
+
+	// Simulate N inflight proposals that are reflected in the source tracking state,
+	// but are not applied to the store yet. Also, seal the stream so subsequent
+	// proposals will fail.
+	inflight := uint64(4)
+	var si *sourceInfo
+	mset.mu.Lock()
+	for _, s := range mset.sources {
+		si = s
+		break
+	}
+	require_NotNil(t, si)
+	require_Equal(t, si.sseq, stored)
+	// Bump both the inflight sequence.
+	si.sseq, si.dseq = stored+inflight, stored+inflight
+	cname := si.cname
+	mset.cfg.Sealed = true
+	mset.mu.Unlock()
+
+	// Simulate the next delivery, which should fail due to the sealed stream.
+	// The sourcing consumer should reset, but not roll back in sequence.
+	nextSeq := stored + inflight + 1
+	rply := fmt.Sprintf("$JS.ACK.SRC.%s.1.%d.%d.%d.0", cname, nextSeq, nextSeq, time.Now().UnixNano())
+	mset.processInboundSourceMsg(si, &inMsg{subj: "src", rply: rply})
+
+	mset.mu.RLock()
+	got := si.sseq
+	mset.mu.RUnlock()
+	if got != stored+inflight {
+		t.Fatalf("si.sseq was rewound to %d after sealed proposal error; want %d "+
+			"(storedN=%d, inflightK=%d). A retry at si.sseq+1=%d would re-source "+
+			"%d in-flight messages, duplicating them once apply catches up.",
+			got, stored+inflight, stored, inflight, got+1, inflight)
+	}
+}
