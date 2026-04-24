@@ -4106,6 +4106,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		diff := commit - applied
 		if n.quorumPaused {
 			if diff > paeWarnThreshold {
+				if catchingUp {
+					n.cancelCatchup()
+				}
 				n.Unlock()
 				return
 			}
@@ -4122,6 +4125,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			var state StreamState
 			n.wal.FastState(&state)
 			n.warn("Quorum paused, falling behind: commit %d != applied %d, WAL size %s", commit, applied, friendlyBytes(state.Bytes))
+			if catchingUp {
+				n.cancelCatchup()
+			}
 			n.Unlock()
 			return
 		}
