@@ -312,6 +312,11 @@ type RemoteLeafOpts struct {
 	// existing connection will be closed and not solicited again (until it is changed
 	// to `false` again.
 	Disabled bool `json:"-"`
+
+	// If this is set to true, this remote will ignore any server leafnode URLs
+	// returned by the hub, allowing the user to fully manage the servers this
+	// remote can connect to.
+	IgnoreDiscoveredServers bool `json:"-"`
 }
 
 // Returns a string representation of this `RemoteLeafOpts` object, containing
@@ -3205,6 +3210,8 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 						}
 					}
 				}
+			case "ignore_discovered_servers":
+				remote.IgnoreDiscoveredServers = v.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
