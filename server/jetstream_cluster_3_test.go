@@ -8244,6 +8244,129 @@ func TestJetStreamClusterInterestStreamMsgWithNoInterestStillAppliesRollup(t *te
 	}
 }
 
+func TestJetStreamClusterSubjectTransformWithExpectedSubjectSequenceHeader(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo", "bar"},
+			Replicas: replicas,
+			Storage:  FileStorage,
+			SubjectTransform: &SubjectTransformConfig{
+				Source:      "foo",
+				Destination: "bar",
+			},
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		// We publish on "foo", but it gets mapped to "bar".
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+
+		// Check the subject transform worked.
+		msg, err := js.GetMsg("TEST", 1)
+		require_NoError(t, err)
+		require_Equal(t, msg.Subject, "bar")
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// Publishing to either subject should pass consistency checks under the "bar" subject after transform.
+		for _, subj := range []string{"bar", "foo"} {
+			// Normal publish.
+			m := nats.NewMsg(subj)
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "0")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSStreamWrongLastSequenceError(1))
+
+			// Atomic batch publish.
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "0")
+			m.Header.Set("Nats-Batch-Id", "uuid")
+			m.Header.Set("Nats-Batch-Sequence", "1")
+			m.Header.Set("Nats-Batch-Commit", "1")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSStreamWrongLastSequenceError(1))
+		}
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
+func TestJetStreamClusterSubjectTransformDoesntCycle(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+			Storage:  FileStorage,
+			// Use a subject transform that can cycle if applied multiple times.
+			// Applying this transform on X twice would result in dst.X.X.
+			// A subject transform must only be applied once, so such a transform is invalid.
+			SubjectTransform: &SubjectTransformConfig{
+				Source:      ">",
+				Destination: "dst.>",
+			},
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// Normal publish.
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		msg, err := js.GetMsg("TEST", 1)
+		require_NoError(t, err)
+		require_Equal(t, msg.Subject, "dst.foo")
+
+		// Atomic batch publish.
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Batch-Commit", "1")
+		_, err = js.PublishMsg(m)
+		require_NoError(t, err)
+		msg, err = js.GetMsg("TEST", 2)
+		require_NoError(t, err)
+		require_Equal(t, msg.Subject, "dst.foo")
+	}
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) { test(t, replicas) })
+	}
+}
+
 func TestJetStreamClusterStreamLeaderStepsDownIfSnapshotCatchupRequired(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -8343,4 +8466,97 @@ func TestJetStreamClusterConsumerSelectStartingSeqDeferred(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterProposeFailureDoesNotDriftClseq(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Replicas:           3,
+		Storage:            FileStorage,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	// Populate the stream with some messages.
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	rn := mset.raftNode().(*raft)
+
+	// forceProposeFailure quickly switches the underlying Raft state, so any
+	// node.Propose / node.ProposeMulti call inside fn returns errNotLeader.
+	// We deliberately do NOT touch n.leaderState, the upper layer still sees
+	// the node as leader, reproducing the race window.
+	forceProposeFailure := func(fn func() error) error {
+		prevState := rn.state.Swap(int32(Follower))
+		err = fn()
+		rn.state.Store(prevState)
+		return err
+	}
+
+	readClseq := func() uint64 {
+		mset.clMu.Lock()
+		defer mset.clMu.Unlock()
+		return mset.clseq
+	}
+
+	t.Run("SingleMessage", func(t *testing.T) {
+		before := readClseq()
+		err = forceProposeFailure(func() error {
+			return mset.processClusteredInboundMsg("foo", _EMPTY_, nil, nil, nil, false)
+		})
+		require_Error(t, err, errNotLeader)
+		require_Equal(t, readClseq(), before)
+	})
+
+	t.Run("AtomicBatch", func(t *testing.T) {
+		hdr := genHeader(nil, "Nats-Batch-Id", "uuid")
+		hdr = genHeader(hdr, "Nats-Batch-Sequence", "1")
+		hdr = genHeader(hdr, "Nats-Batch-Commit", "1")
+
+		before := readClseq()
+		err = forceProposeFailure(func() error {
+			return mset.processJetStreamBatchMsg("uuid", "foo", _EMPTY_, hdr, nil, nil)
+		})
+		require_Error(t, err, errNotLeader)
+		require_Equal(t, readClseq(), before)
+	})
+
+	// Confirm we can still publish a new message.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 11 {
+			return fmt.Errorf("expected 11 messages, got %d", state.Msgs)
+		}
+		return nil
+	})
+
+	// Verify no Raft node on any replica reports itself as deleted.
+	for _, s := range c.servers {
+		mset, err = s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		rn = mset.raftNode().(*raft)
+		require_NotNil(t, rn)
+		require_False(t, rn.IsDeleted())
+	}
 }

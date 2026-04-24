@@ -761,10 +761,11 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 
 func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	type BatchItem struct {
-		subject string
-		header  nats.Header
-		msg     []byte
-		err     error
+		subject  string
+		rsubject string
+		header   nats.Header
+		msg      []byte
+		err      error
 	}
 
 	type BatchTest struct {
@@ -1306,6 +1307,23 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				{subject: "foo", header: nats.Header{JSMsgRollup: {JSMsgRollupSubject}}, err: errors.New("batch rollup sub invalid")},
 			},
 		},
+		{
+			title: "subject-transform",
+			batch: []BatchItem{
+				{subject: "bar", rsubject: "foo"},
+				{subject: "bar"},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					require_Len(t, len(mset.inflight), 0)
+				} else {
+					require_Len(t, len(mset.inflight), 1)
+					require_Equal(t, *mset.inflight["bar"], inflightSubjectRunningTotal{bytes: 38, ops: 2})
+					require_Len(t, len(mset.inflightTransform), 1)
+					require_Equal(t, mset.inflightTransform[0], "bar")
+				}
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -1357,7 +1375,12 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						hdr = genHeader(hdr, key, value)
 					}
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
+				// Potential subject transform.
+				rsubject := m.subject
+				if m.rsubject != _EMPTY_ {
+					rsubject = m.rsubject
+				}
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, rsubject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else if err != nil {
@@ -1526,9 +1549,13 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	mset.mu.Lock()
 	batches := &batching{}
 	mset.batches = batches
+	jsa := mset.jsa
 	mset.mu.Unlock()
+	jsa.mu.RLock()
+	storeDir := jsa.storeDir
+	jsa.mu.RUnlock()
 	batches.mu.Lock()
-	b, err := batches.newBatchGroup(mset, "uuid")
+	b, err := batches.newBatchGroup(mset, "uuid", 1, FileStorage, storeDir, "TEST")
 	if err != nil {
 		batches.mu.Unlock()
 		require_NoError(t, err)
@@ -1571,6 +1598,17 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	require_Equal(t, state.Msgs, 2)
 	require_Equal(t, state.FirstSeq, 1)
 	require_Equal(t, state.LastSeq, 2)
+
+	for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+		sm, err := mset.getMsg(seq)
+		require_NoError(t, err)
+		require_Equal(t, string(getHeader("Nats-Batch-Id", sm.Header)), "uuid")
+		require_Equal(t, string(getHeader("Nats-Batch-Sequence", sm.Header)), strconv.FormatUint(seq, 10))
+		// The last message should have the commit header set.
+		if seq == state.LastSeq {
+			require_Equal(t, string(getHeader("Nats-Batch-Commit", sm.Header)), "1")
+		}
+	}
 }
 
 func TestJetStreamAtomicBatchPublishEncode(t *testing.T) {

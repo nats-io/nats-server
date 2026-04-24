@@ -365,7 +365,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	}
 
 	// MSG (the client has to be a ROUTE)
-	c = &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription), kind: ROUTER, route: &route{}}
+	c = &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription), kind: ROUTER, route: &route{}, mcl: MAX_CONTROL_LINE_SIZE}
 	msgop := []byte("RMSG $foo foo 5\r\nhello\r\n")
 	c.parse(msgop[:5])
 	c.parse(msgop[5:10])

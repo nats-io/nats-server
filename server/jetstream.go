@@ -1611,13 +1611,13 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			}
 			// We've observed a partial batch write. Write the remainder of the batch.
 			batchSeq++
-			_, batchStoreDir = getBatchStoreDir(mset, batchId)
+			_, batchStoreDir = getBatchStoreDir(jsa.storeDir, cfg.Name, batchId)
 			if _, err = os.Stat(batchStoreDir); err != nil {
 				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
 					mset.accName(), mset.name(), batchSeq, err)
 				goto SKIP
 			}
-			store, err = newBatchStore(mset, batchId)
+			store, err = newBatchStore(mset, batchId, cfg.Replicas, cfg.Storage, jsa.storeDir, cfg.Name)
 			if err != nil {
 				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
 					mset.accName(), mset.name(), batchSeq, err)

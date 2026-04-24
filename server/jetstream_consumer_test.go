@@ -8061,6 +8061,39 @@ func TestJetStreamConsumerPauseResumeViaEndpoint(t *testing.T) {
 	require_False(t, getConsumerInfo().Paused)
 }
 
+func TestJetStreamConsumerPauseMetadataRace(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	const concurrency = 32
+	const iterations = 50
+	deadline := time.Now().Add(time.Minute)
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				jsTestPause_PauseConsumer(t, nc, "TEST", "CONSUMER", deadline)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func TestJetStreamConsumerPauseHeartbeats(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
