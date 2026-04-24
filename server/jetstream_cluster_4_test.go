@@ -7829,3 +7829,276 @@ func TestJetStreamClusterSourcingIntoDiscardNewPerSubject(t *testing.T) {
 	require_Equal(t, msgp.Subject, "foo.4")
 	require_Equal(t, string(msgp.Data), "1")
 }
+
+func TestJetStreamClusterSourceRetryDoesNotDuplicate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"src"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err = js.Publish("src", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "DST",
+		Sources:  []*nats.StreamSource{{Name: "SRC"}},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Wait until DST has fully sourced SRC.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("DST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 5 {
+			return fmt.Errorf("DST has %d msgs, want %d", si.State.Msgs, 5)
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "DST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("DST")
+	require_NoError(t, err)
+
+	// Simulate a leaf node reconnect: close the internal client backing the source
+	// subscription so shouldRetry observes a closed client, cancels the current
+	// sourceInfo, and schedules a fresh setupSourceConsumer.
+	var srcClients []*client
+	mset.mu.Lock()
+	for _, si := range mset.sources {
+		if si.sub != nil && si.sub.client != nil {
+			srcClients = append(srcClients, si.sub.client)
+		}
+	}
+	mset.mu.Unlock()
+	for _, c := range srcClients {
+		c.closeConnection(ClientClosed)
+	}
+	mset.retryDisconnectedSyncConsumers()
+
+	// Wait for the new source consumer to be fully re-established, i.e.
+	// si.sub is set again and si.dseq has been reset to 0 by the setup
+	// callback. si.sseq is preserved across the cancel/retry.
+	var si *sourceInfo
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		for _, s := range mset.sources {
+			si = s
+			break
+		}
+		if si == nil {
+			return fmt.Errorf("no source info")
+		}
+		if si.sub == nil || si.cname == _EMPTY_ {
+			return fmt.Errorf("source consumer not yet re-established (sub=%v cname=%q)", si.sub != nil, si.cname)
+		}
+		return nil
+	})
+
+	mset.mu.RLock()
+	origSseq, dseq, cname := si.sseq, si.dseq, si.cname
+	mset.mu.RUnlock()
+	require_Equal(t, origSseq, 5)
+	require_Equal(t, dseq, 0)
+
+	// Synthesize a delivery from the (just recreated) consumer with a
+	// source sequence that is ALREADY stored in DST (sseq=3 <= origSseq=5)
+	// and dseq=1, matching si.dseq+1 for the freshly reset consumer.
+	// Reply layout: $JS.ACK.<stream>.<consumer>.<dc>.<sseq>.<dseq>.<ts>.<pending>
+	replaySseq := uint64(3)
+	rply := fmt.Sprintf("$JS.ACK.SRC.%s.1.%d.1.%d.0", cname, replaySseq, time.Now().UnixNano())
+	mset.processInboundSourceMsg(si, &inMsg{subj: "src", rply: rply})
+
+	// Allow any proposal through the raft pipeline.
+	time.Sleep(500 * time.Millisecond)
+
+	// DST must still have exactly N messages. Verify the source-sequence
+	// being replayed is stored exactly once.
+	si2, err := js.StreamInfo("DST")
+	require_NoError(t, err)
+	require_Equal(t, si2.State.Msgs, 5)
+
+	state := mset.state()
+	var dstSeqs []uint64
+	var smv StoreMsg
+	for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+		sm, err := mset.store.LoadMsg(seq, &smv)
+		if err != nil {
+			continue
+		}
+		ss := getHeader(JSStreamSource, sm.hdr)
+		if len(ss) == 0 {
+			continue
+		}
+		_, _, sseq := streamAndSeq(string(ss))
+		if sseq == replaySseq {
+			dstSeqs = append(dstSeqs, seq)
+		}
+	}
+	if len(dstSeqs) != 1 {
+		t.Fatalf("SRC sseq=%d stored %d times in DST at seqs %v (want 1; original si.sseq=%d)",
+			replaySseq, len(dstSeqs), dstSeqs, origSseq)
+	}
+}
+
+func TestJetStreamClusterSourceRetryDoesNotResetHealthy(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"src"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	for range 5 {
+		_, err = js.Publish("src", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "DST",
+		Sources:  []*nats.StreamSource{{Name: "SRC"}},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("DST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 5 {
+			return fmt.Errorf("DST has %d msgs, want %d", si.State.Msgs, 5)
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "DST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("DST")
+	require_NoError(t, err)
+
+	// Capture the original sub/client/cname for the healthy source.
+	mset.mu.RLock()
+	var origSub *subscription
+	var origCname string
+	for _, si := range mset.sources {
+		origSub, origCname = si.sub, si.cname
+		break
+	}
+	mset.mu.RUnlock()
+	require_NotNil(t, origSub)
+	require_True(t, origCname != _EMPTY_)
+
+	// Healthy state: si.sub is set, client is not closed, heartbeats are
+	// keeping si.last fresh. shouldRetry must leave the consumer alone.
+	mset.retryDisconnectedSyncConsumers()
+
+	mset.mu.RLock()
+	var sub *subscription
+	var cname string
+	for _, si := range mset.sources {
+		sub, cname = si.sub, si.cname
+		break
+	}
+	mset.mu.RUnlock()
+	require_Equal(t, sub, origSub)
+	require_Equal(t, cname, origCname)
+}
+
+func TestJetStreamClusterSourceStartingSeqIgnoresInflight(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"src"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	stored := uint64(5)
+	for range stored {
+		_, err = js.Publish("src", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "DST",
+		Sources:  []*nats.StreamSource{{Name: "SRC"}},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Wait until DST has applied all storedN sourced messages.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("DST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != stored {
+			return fmt.Errorf("DST has %d msgs, want %d", si.State.Msgs, stored)
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "DST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("DST")
+	require_NoError(t, err)
+
+	// Simulate N inflight proposals that are reflected in the source tracking state,
+	// but are not applied to the store yet. Also, seal the stream so subsequent
+	// proposals will fail.
+	inflight := uint64(4)
+	var si *sourceInfo
+	mset.mu.Lock()
+	for _, s := range mset.sources {
+		si = s
+		break
+	}
+	require_NotNil(t, si)
+	require_Equal(t, si.sseq, stored)
+	// Bump both the inflight sequence.
+	si.sseq, si.dseq = stored+inflight, stored+inflight
+	cname := si.cname
+	mset.cfg.Sealed = true
+	mset.mu.Unlock()
+
+	// Simulate the next delivery, which should fail due to the sealed stream.
+	// The sourcing consumer should reset, but not roll back in sequence.
+	nextSeq := stored + inflight + 1
+	rply := fmt.Sprintf("$JS.ACK.SRC.%s.1.%d.%d.%d.0", cname, nextSeq, nextSeq, time.Now().UnixNano())
+	mset.processInboundSourceMsg(si, &inMsg{subj: "src", rply: rply})
+
+	mset.mu.RLock()
+	got := si.sseq
+	mset.mu.RUnlock()
+	if got != stored+inflight {
+		t.Fatalf("si.sseq was rewound to %d after sealed proposal error; want %d "+
+			"(storedN=%d, inflightK=%d). A retry at si.sseq+1=%d would re-source "+
+			"%d in-flight messages, duplicating them once apply catches up.",
+			got, stored+inflight, stored, inflight, got+1, inflight)
+	}
+}

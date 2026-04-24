@@ -3020,9 +3020,17 @@ func (mset *stream) retryDisconnectedSyncConsumers() {
 		return
 	}
 
+	// Not client.isClosed(): internal account clients have nil nc, which would make isClosed always true here.
+	clientClosed := func(c *client) bool {
+		return c != nil && (c.flags.isSet(closeConnection) || c.flags.isSet(connMarkedClosed))
+	}
+	// Stale sources need to be reset: we expect a heartbeat every sourceHealthHB, so missing a couple
+	// is a strong signal the remote delivery is no longer reaching us and a retry is warranted.
+	stale := func(si *sourceInfo) bool {
+		return time.Since(time.Unix(0, si.last.Load())) > 2*sourceHealthHB
+	}
 	shouldRetry := func(si *sourceInfo) bool {
-		if si != nil && (si.sip || si.sub == nil || (si.sub.client != nil && si.sub.client.isClosed())) {
-			// Need to reset
+		if si != nil && (si.sip || si.sub == nil || clientClosed(si.sub.client) || stale(si)) {
 			si.fails, si.sip = 0, false
 			mset.cancelSourceInfo(si)
 			return true
@@ -4400,36 +4408,27 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			// Can happen temporarily all the time during normal operations when the sourcing stream is discard new
 			// (example use case is for sourcing into a work queue)
 			// TODO - Maybe improve sourcing to WQ with limit and new to use flow control rather than re-creating the consumer.
-			if errors.Is(err, ErrMaxMsgs) || errors.Is(err, ErrMaxBytes) || errors.Is(err, ErrMaxMsgsPerSubject) {
-				// Do not need to do a full retry that includes finding the last sequence in the stream
-				// for that source. Just re-create starting with the seq we couldn't store instead.
-				mset.mu.Lock()
-				si.dseq = odseq
-				si.sseq = osseq
-				mset.retrySourceConsumerAtSeq(iName, sseq)
-				mset.mu.Unlock()
-			} else {
-				// Log some warning for errors other than errLastSeqMismatch.
-				if !errors.Is(err, errLastSeqMismatch) && !errors.Is(err, errMsgIdDuplicate) {
-					s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
-						iName, accName, sname, err)
-				}
-				// Retry in all type of errors we do not want to skip if we are still leader.
-				if mset.isLeader() {
-					if !errors.Is(err, errMsgIdDuplicate) {
-						// This will make sure the source is still in mset.sources map,
-						// find the last sequence and then call setupSourceConsumer.
-						iNameMap := map[string]struct{}{iName: {}}
-						mset.setStartingSequenceForSources(iNameMap)
-						mset.mu.Lock()
-						mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
-						mset.mu.Unlock()
-					} else {
-						// skipping the message but keep processing the rest of the batch
-						return true
-					}
-				}
+			discardNew := errors.Is(err, ErrMaxMsgs) || errors.Is(err, ErrMaxBytes) || errors.Is(err, ErrMaxMsgsPerSubject)
+
+			// Log some warning for errors.
+			if !discardNew && !errors.Is(err, errLastSeqMismatch) && !errors.Is(err, errMsgIdDuplicate) {
+				s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
+					iName, accName, sname, err)
 			}
+
+			// Duplicates can be skipped, continue to the next message.
+			if errors.Is(err, errMsgIdDuplicate) {
+				return true
+			}
+
+			// Do not need to do a full retry that includes finding the last sequence in the stream
+			// for that source. Just re-create starting with the seq we couldn't store instead.
+			// Especially if we're replicated, we could have inflight proposals that will not be in our store yet.
+			mset.mu.Lock()
+			si.dseq = odseq
+			si.sseq = osseq
+			mset.retrySourceConsumerAtSeq(iName, sseq)
+			mset.mu.Unlock()
 		}
 		return false
 	}
