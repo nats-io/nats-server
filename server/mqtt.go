@@ -15,7 +15,6 @@ package server
 
 import (
 	"bytes"
-	"cmp"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -33,6 +32,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nuid"
 )
@@ -259,13 +259,13 @@ type mqttSessionManager struct {
 
 type mqttAccountSessionManager struct {
 	mu         sync.RWMutex
-	sessions   map[string]*mqttSession             // key is MQTT client ID
-	sessByHash map[string]*mqttSession             // key is MQTT client ID hash
-	sessLocked map[string]struct{}                 // key is MQTT client ID and indicate that a session can not be taken by a new client at this time
-	flappers   map[string]time.Time                // When connection connects with client ID already in use
-	flapTimer  *time.Timer                         // Timer to perform some cleanup of the flappers map
-	retmsgs    *stree.SubjectTree[mqttRetainedMsg] // retained messages
-	rmsCache   *sync.Map                           // map[subject]mqttRetainedMsg
+	sessions   map[string]*mqttSession                // key is MQTT client ID
+	sessByHash map[string]*mqttSession                // key is MQTT client ID hash
+	sessLocked map[string]struct{}                    // key is MQTT client ID and indicate that a session can not be taken by a new client at this time
+	flappers   map[string]time.Time                   // When connection connects with client ID already in use
+	flapTimer  *time.Timer                            // Timer to perform some cleanup of the flappers map
+	retmsgs    *stree.SubjectTree[mqttRetainedMsgRef] // retained message metadata
+	rmsCache   *sync.Map                              // map[subject]mqttRetainedMsg
 	jsa        mqttJSA
 	domainTk   string // Domain (with trailing "."), or possibly empty. This is added to session subject.
 }
@@ -361,8 +361,11 @@ type mqttRetainedMsg struct {
 	Flags   byte   `json:"flags,omitempty"`
 	Source  string `json:"source,omitempty"`
 
-	sseq             uint64
 	expiresFromCache time.Time
+}
+
+type mqttRetainedMsgRef struct {
+	sseq uint64
 }
 
 // mqttSub contains fields associated with a MQTT subscription, and is added to
@@ -2018,6 +2021,10 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	if err != nil {
 		return
 	}
+	if strings.IndexByte(rm.Subject, 0x7f) >= 0 {
+		c.Warnf("Skipping retained message for subject %q: unsupported character 0x7f", rm.Subject)
+		return
+	}
 	// The as.jsa.id is immutable, so no need to have a rlock here.
 	local := rm.Origin == as.jsa.id
 	// Get the stream sequence for this message.
@@ -2309,14 +2316,13 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 func (as *mqttAccountSessionManager) addRetainedMsg(key string, sseq uint64, rm *mqttRetainedMsg) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	rm.sseq = sseq
 	if as.retmsgs == nil {
-		as.retmsgs = stree.NewSubjectTree[mqttRetainedMsg]()
+		as.retmsgs = stree.NewSubjectTree[mqttRetainedMsgRef]()
 	} else {
 		// Check if we already had one retained message. If so, update the existing one.
 		if erf, exists := as.retmsgs.Find(stringToBytes(key)); exists {
 			// Update the stream sequence with the new value.
-			*erf = *rm
+			erf.sseq = sseq
 			// Update the in-memory retained message cache but only for messages
 			// that are already in the cache, i.e. have been (recently) used.
 			// If that is the case, we ask setCachedRetainedMsg() to make a copy
@@ -2325,7 +2331,7 @@ func (as *mqttAccountSessionManager) addRetainedMsg(key string, sseq uint64, rm 
 			return
 		}
 	}
-	as.retmsgs.Insert([]byte(key), *rm)
+	as.retmsgs.Insert([]byte(key), mqttRetainedMsgRef{sseq: sseq})
 }
 
 // Remove the retained message stored with the `subject` key from the map/cache.
@@ -2680,7 +2686,7 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 		return
 	}
 	toTrace := []mqttPublish{}
-	as.retmsgs.Match(sub.subject, func(subj []byte, _ *mqttRetainedMsg) {
+	as.retmsgs.Match(sub.subject, func(subj []byte, _ *mqttRetainedMsgRef) {
 		rm := rms[string(subj)]
 		if rm == nil {
 			// This should not happen since we pre-load messages into rms before
@@ -2736,7 +2742,7 @@ func (as *mqttAccountSessionManager) addRetainedSubjectsForSubject(list map[stri
 		return
 	}
 
-	as.retmsgs.Match(stringToBytes(topSubject), func(subj []byte, ret *mqttRetainedMsg) {
+	as.retmsgs.Match(stringToBytes(topSubject), func(subj []byte, ret *mqttRetainedMsgRef) {
 		subject := string(subj)
 		if _, ok := list[subject]; ok {
 			return
@@ -4549,12 +4555,8 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 	}
 	sm.mu.RUnlock()
 
-	type retainedMsg struct {
-		sseq uint64
-	}
-
 	// For each session we will obtain a list of retained messages.
-	var _rms [128]retainedMsg
+	var _rms [128]uint64
 	rms := _rms[:0]
 	for _, asm := range asms {
 		// Get all of the retained messages. Then we will sort them so
@@ -4562,17 +4564,20 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 		// store to not have to load out-of-order blocks so often.
 		asm.mu.RLock()
 		rms = rms[:0] // reuse slice
-		asm.retmsgs.IterOrdered(func(_ []byte, rm *mqttRetainedMsg) bool {
-			rms = append(rms, retainedMsg{sseq: rm.sseq})
+		// Copy the sequence out of the tree. The tree entry itself can be
+		// updated concurrently by addRetainedMsg() after we release the lock,
+		// so keeping a pointer here would race with the later sort.
+		asm.retmsgs.IterOrdered(func(_ []byte, rm *mqttRetainedMsgRef) bool {
+			rms = append(rms, rm.sseq)
 			return true
 		})
 		jsaID := asm.jsa.id
 		asm.mu.RUnlock()
-		slices.SortFunc(rms, func(i, j retainedMsg) int { return cmp.Compare(i.sseq, j.sseq) })
+		slices.Sort(rms)
 
-		perms := map[string]*perm{}
+		perms := map[string]*mqttPerm{}
 		for _, rf := range rms {
-			jsm, err := asm.jsa.loadMsg(mqttRetainedMsgsStreamName, rf.sseq)
+			jsm, err := asm.jsa.loadMsg(mqttRetainedMsgsStreamName, rf)
 			if err != nil || jsm == nil {
 				continue
 			}
@@ -4614,7 +4619,12 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 }
 
 // Helper to generate only pub permissions from a Permissions object
-func generatePubPerms(perms *Permissions) *perm {
+type mqttPerm struct {
+	allow *gsl.SimpleSublist
+	deny  *gsl.SimpleSublist
+}
+
+func generatePubPerms(perms *Permissions) *mqttPerm {
 	// If given permissions is `nil`, then it means that permissions block
 	// has been removed (so the user is now allowed to publish on everything)
 	// or was never there in the first place. Returning `nil` will let the
@@ -4622,39 +4632,38 @@ func generatePubPerms(perms *Permissions) *perm {
 	if perms == nil {
 		return nil
 	}
-	var p *perm
+	var p *mqttPerm
 	if perms.Publish.Allow != nil {
-		p = &perm{}
-		p.allow = NewSublistWithCache()
+		p = &mqttPerm{}
+		p.allow = gsl.NewSimpleSublist()
 		for _, pubSubject := range perms.Publish.Allow {
-			sub := &subscription{subject: []byte(pubSubject)}
-			p.allow.Insert(sub)
+			_ = p.allow.Insert(pubSubject, struct{}{})
 		}
 	}
 	if len(perms.Publish.Deny) > 0 {
 		if p == nil {
-			p = &perm{}
+			p = &mqttPerm{}
 		}
-		p.deny = NewSublistWithCache()
+		p.deny = gsl.NewSimpleSublist()
 		for _, pubSubject := range perms.Publish.Deny {
-			sub := &subscription{subject: []byte(pubSubject)}
-			p.deny.Insert(sub)
+			_ = p.deny.Insert(pubSubject, struct{}{})
 		}
 	}
 	return p
 }
 
 // Helper that checks if given `perms` allow to publish on the given `subject`
-func pubAllowed(perms *perm, subject string) bool {
+func pubAllowed(perms *mqttPerm, subject string) bool {
+	if perms == nil {
+		return true
+	}
 	allowed := true
 	if perms.allow != nil {
-		np, _ := perms.allow.NumInterest(subject)
-		allowed = np != 0
+		allowed = perms.allow.HasInterest(subject)
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && perms.deny != nil {
-		np, _ := perms.deny.NumInterest(subject)
-		allowed = np == 0
+		allowed = !perms.deny.HasInterest(subject)
 	}
 	return allowed
 }
@@ -5706,6 +5715,12 @@ func mqttToNATSSubjectConversion(mt []byte, wcOk bool) ([]byte, error) {
 			}
 		case ' ':
 			// As of now, we cannot support ' ' in the MQTT topic/filter.
+			return nil, errMQTTUnsupportedCharacters
+		case 0x7f:
+			// SubjectTree uses DEL as an internal pivot marker, so retained
+			// subjects containing it cannot be indexed safely, including
+			// legacy retained messages recovered from the retained-message
+			// stream.
 			return nil, errMQTTUnsupportedCharacters
 		case btsep:
 			if !cp {
