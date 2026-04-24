@@ -3562,7 +3562,7 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		as.mu.RLock()
 		defer as.mu.RUnlock()
-		if n := len(as.retmsgs); n != N {
+		if n := as.retmsgs.Size(); n != N {
 			return fmt.Errorf("Got only %v retained messages", n)
 		}
 		return nil
@@ -4849,7 +4849,7 @@ func TestMQTTPublishRetainPermViolation(t *testing.T) {
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		asm.mu.RLock()
 		defer asm.mu.RUnlock()
-		if _, ok := asm.retmsgs["foo.bar"]; ok {
+		if _, ok := asm.retmsgs.Find([]byte("foo.bar")); ok {
 			return errors.New("foo.bar subject still in map")
 		}
 		return nil
@@ -8729,9 +8729,9 @@ func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 	// Make sure it is in the cache
 	rm := asm.getCachedRetainedMsg("foo")
 	require_NotNil(t, rm)
-	// Get the mqttRetainedMsgRef from the map
+	// Get the retained message sequence from the tree.
 	asm.mu.RLock()
-	rf, ok := asm.retmsgs["foo"]
+	rf, ok := asm.retmsgs.Find([]byte("foo"))
 	asm.mu.RUnlock()
 	require_True(t, ok)
 	nc, js := jsClientConnect(t, s)
@@ -8769,7 +8769,7 @@ func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 
 	// Finally, check that the retmsgs map is empty.
 	asm.mu.RLock()
-	ok = len(asm.retmsgs) == 0
+	ok = asm.retmsgs.Size() == 0
 	asm.mu.RUnlock()
 	require_True(t, ok)
 }
