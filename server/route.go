@@ -57,6 +57,7 @@ type route struct {
 	remoteID     string
 	remoteName   string
 	remoteTags   []string
+	tagsMatch    bool
 	didSolicit   bool
 	retry        bool
 	lnoc         bool
@@ -147,6 +148,19 @@ var (
 	routeConnectMaxDelay = DEFAULT_ROUTE_CONNECT_MAX
 	routeMaxPingInterval = defaultRouteMaxPingInterval
 )
+
+// tagsOverlap reports whether a and b share at least one element.
+// Both slices must be normalized (lower-cased, trimmed) by callers.
+func tagsOverlap(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // removeReplySub is called when we trip the max on remoteReply subs.
 func (c *client) removeReplySub(sub *subscription) {
@@ -813,6 +827,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
 	c.route.remoteTags = info.Tags
+	c.route.tagsMatch = tagsOverlap(opts.Tags, info.Tags)
 	c.route.lnoc = info.LNOC
 	c.route.lnocu = info.LNOCU
 	c.route.jetstream = info.JetStream
