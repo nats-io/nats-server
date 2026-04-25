@@ -16,6 +16,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func BenchmarkJetStreamConsume(b *testing.B) {
@@ -46,17 +48,21 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		PublishBatchSize = 10000
 	)
 
-	runSyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string) (int, int, int) {
+	ctx := context.Background()
+
+	runSyncPushConsumer := func(b *testing.B, js jetstream.JetStream, streamName string) (int, int, int) {
 		const nextMsgTimeout = 3 * time.Second
 
-		subOpts := []nats.SubOpt{
-			nats.BindStream(streamName),
-		}
-		sub, err := js.SubscribeSync(_EMPTY_, subOpts...)
+		str, err := js.Stream(ctx, streamName)
 		if err != nil {
 			b.Fatalf("Failed to subscribe: %v", err)
 		}
-		defer sub.Unsubscribe()
+		cons, err := str.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+			AckPolicy: jetstream.AckExplicitPolicy,
+		})
+		if err != nil {
+			b.Fatalf("Failed to subscribe: %v", err)
+		}
 
 		bitset := NewBitset(uint64(b.N))
 		uniqueConsumed, duplicates, errors := 0, 0, 0
@@ -64,8 +70,12 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		b.ResetTimer()
 
 		for uniqueConsumed < b.N {
-			msg, err := sub.NextMsg(nextMsgTimeout)
+			batch, err := cons.Fetch(1, jetstream.FetchMaxWait(nextMsgTimeout))
 			if err != nil {
+				b.Fatalf("No more messages (received: %d/%d)", uniqueConsumed, b.N)
+			}
+			msg, ok := <-batch.Messages()
+			if !ok {
 				b.Fatalf("No more messages (received: %d/%d)", uniqueConsumed, b.N)
 			}
 
@@ -102,13 +112,15 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		return uniqueConsumed, duplicates, errors
 	}
 
-	runAsyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string, ordered, durable bool) (int, int, int) {
+	runAsyncPushConsumer := func(b *testing.B, js jetstream.JetStream, streamName string, ordered, durable bool) (int, int, int) {
 		const timeout = 3 * time.Minute
 		bitset := NewBitset(uint64(b.N))
 		doneCh := make(chan bool, 1)
 		uniqueConsumed, duplicates, errors := 0, 0, 0
 
-		handleMsg := func(msg *nats.Msg) {
+		var cc jetstream.ConsumeContext
+
+		handleMsg := func(msg jetstream.Msg) {
 			metadata, mdErr := msg.Metadata()
 			if mdErr != nil {
 				// fmt.Printf("Metadata error: %v\n", mdErr)
@@ -138,7 +150,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 			bitset.set(index, true)
 
 			if uniqueConsumed == b.N {
-				msg.Sub.Unsubscribe()
+				cc.Stop()
 				doneCh <- true
 			}
 			if verbose && uniqueConsumed%1000 == 0 {
@@ -146,23 +158,28 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 			}
 		}
 
-		subOpts := []nats.SubOpt{
-			nats.BindStream(streamName),
-		}
-
+		var cons jetstream.Consumer
+		var err error
 		if ordered {
-			subOpts = append(subOpts, nats.OrderedConsumer())
+			cons, err = js.OrderedConsumer(ctx, streamName, jetstream.OrderedConsumerConfig{})
+		} else {
+			cfg := jetstream.ConsumerConfig{
+				AckPolicy: jetstream.AckExplicitPolicy,
+			}
+			if durable {
+				cfg.Durable = "c"
+			}
+			cons, err = js.CreateOrUpdateConsumer(ctx, streamName, cfg)
 		}
-
-		if durable {
-			subOpts = append(subOpts, nats.Durable("c"))
-		}
-
-		sub, err := js.Subscribe(_EMPTY_, handleMsg, subOpts...)
 		if err != nil {
 			b.Fatalf("Failed to subscribe: %v", err)
 		}
-		defer sub.Unsubscribe()
+
+		cc, err = cons.Consume(handleMsg)
+		if err != nil {
+			b.Fatalf("Failed to subscribe: %v", err)
+		}
+		defer cc.Stop()
 
 		b.ResetTimer()
 
@@ -176,39 +193,35 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		return uniqueConsumed, duplicates, errors
 	}
 
-	runPullConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string, durable bool) (int, int, int) {
-		const fetchMaxWait = nats.MaxWait(3 * time.Second)
+	runPullConsumer := func(b *testing.B, js jetstream.JetStream, streamName string, durable bool) (int, int, int) {
+		fetchMaxWait := jetstream.FetchMaxWait(3 * time.Second)
 		const fetchMaxMessages = 1000
 
 		bitset := NewBitset(uint64(b.N))
 		uniqueConsumed, duplicates, errors := 0, 0, 0
 
-		subOpts := []nats.SubOpt{
-			nats.BindStream(streamName),
+		cfg := jetstream.ConsumerConfig{
+			AckPolicy: jetstream.AckExplicitPolicy,
 		}
-
-		consumerName := _EMPTY_ // Default ephemeral
 		if durable {
-			consumerName = "c" // Durable
+			cfg.Durable = "c" // Durable
 		}
-
-		sub, err := js.PullSubscribe("", consumerName, subOpts...)
+		cons, err := js.CreateOrUpdateConsumer(ctx, streamName, cfg)
 		if err != nil {
 			b.Fatalf("Failed to subscribe: %v", err)
 		}
-		defer sub.Unsubscribe()
 
 		b.ResetTimer()
 
 	fetchLoop:
 		for {
-			msgs, err := sub.Fetch(fetchMaxMessages, fetchMaxWait)
+			batch, err := cons.Fetch(fetchMaxMessages, fetchMaxWait)
 			if err != nil {
 				b.Fatalf("Failed to fetch: %v", err)
 			}
 
 		processMsgsLoop:
-			for _, msg := range msgs {
+			for msg := range batch.Messages() {
 				metadata, mdErr := msg.Metadata()
 				if mdErr != nil {
 					errors++
@@ -233,13 +246,15 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 				bitset.set(index, true)
 
 				if uniqueConsumed == b.N {
-					msg.Sub.Unsubscribe()
 					break fetchLoop
 				}
 
 				if verbose && uniqueConsumed%1000 == 0 {
 					b.Logf("Consumed %d/%d", uniqueConsumed, b.N)
 				}
+			}
+			if err := batch.Error(); err != nil {
+				b.Fatalf("Failed to fetch: %v", err)
 			}
 		}
 
@@ -322,12 +337,12 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 							if verbose {
 								b.Logf("Creating stream with R=%d", bc.replicas)
 							}
-							streamConfig := &nats.StreamConfig{
+							streamConfig := jetstream.StreamConfig{
 								Name:     streamName,
 								Subjects: []string{subject},
 								Replicas: bc.replicas,
 							}
-							if _, err := js.AddStream(streamConfig); err != nil {
+							if _, err := js.CreateStream(ctx, streamConfig); err != nil {
 								b.Fatalf("Error creating stream: %v", err)
 							}
 
@@ -335,7 +350,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 							if bc.replicas > 1 {
 								connectURL := cl.streamLeader("$G", streamName).ClientURL()
 								nc.Close()
-								_, js = jsClientConnectURL(b, connectURL)
+								_, js = jsClientConnectNewAPIURL(b, connectURL)
 							}
 
 							message := make([]byte, bc.messageSize)
@@ -415,20 +430,21 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 // https://github.com/nats-io/nats-server/pull/7015 and should
 // capture future regressions.
 func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
+	ctx := context.Background()
 	clusterSizeCases := []struct {
-		clusterSize int              // Single node or cluster
-		replicas    int              // Stream replicas
-		storage     nats.StorageType // Stream storage
-		filters     int              // How many subject filters?
+		clusterSize int                   // Single node or cluster
+		replicas    int                   // Stream replicas
+		storage     jetstream.StorageType // Stream storage
+		filters     int                   // How many subject filters?
 	}{
-		{1, 1, nats.MemoryStorage, 1},
-		{1, 1, nats.MemoryStorage, 2},
-		{3, 3, nats.MemoryStorage, 1},
-		{3, 3, nats.MemoryStorage, 2},
-		{1, 1, nats.FileStorage, 1},
-		{1, 1, nats.FileStorage, 2},
-		{3, 3, nats.FileStorage, 1},
-		{3, 3, nats.FileStorage, 2},
+		{1, 1, jetstream.MemoryStorage, 1},
+		{1, 1, jetstream.MemoryStorage, 2},
+		{3, 3, jetstream.MemoryStorage, 1},
+		{3, 3, jetstream.MemoryStorage, 2},
+		{1, 1, jetstream.FileStorage, 1},
+		{1, 1, jetstream.FileStorage, 2},
+		{3, 3, jetstream.FileStorage, 1},
+		{3, 3, jetstream.FileStorage, 2},
 	}
 
 	for _, cs := range clusterSizeCases {
@@ -449,26 +465,26 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 			var msgs = b.N
 			payload := make([]byte, 1024)
 
-			_, err := js.AddStream(&nats.StreamConfig{
+			str, err := js.CreateStream(ctx, jetstream.StreamConfig{
 				Name:      "test",
 				Subjects:  []string{"foo"},
-				Retention: nats.LimitsPolicy,
+				Retention: jetstream.LimitsPolicy,
 				Storage:   cs.storage,
 				Replicas:  cs.replicas,
 			})
 			require_NoError(b, err)
 
 			for range msgs {
-				_, err = js.Publish("foo", payload)
+				_, err = js.Publish(ctx, "foo", payload)
 				require_NoError(b, err)
 			}
 
 			// Subject filters deliberately vary from the stream, ensures that we hit
 			// the right paths in the filestore, rather than detecting 1:1 overlap.
-			ocfg := &nats.ConsumerConfig{
+			ocfg := jetstream.ConsumerConfig{
 				Name:          "test_consumer",
-				DeliverPolicy: nats.DeliverAllPolicy,
-				AckPolicy:     nats.AckNonePolicy,
+				DeliverPolicy: jetstream.DeliverAllPolicy,
+				AckPolicy:     jetstream.AckNonePolicy,
 				Replicas:      cs.replicas,
 				MemoryStorage: true,
 			}
@@ -478,19 +494,21 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 			case 2:
 				ocfg.FilterSubjects = []string{"foo", "bar"}
 			}
-			_, err = js.AddConsumer("test", ocfg)
-			require_NoError(b, err)
-
-			ps, err := js.PullSubscribe("foo", _EMPTY_, nats.Bind("test", "test_consumer"))
+			cons, err := str.CreateConsumer(ctx, ocfg)
 			require_NoError(b, err)
 
 			b.SetBytes(int64(len(payload)))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range msgs {
-				msgs, err := ps.Fetch(1)
+				batch, err := cons.Fetch(1)
 				require_NoError(b, err)
-				require_Len(b, len(msgs), 1)
+				count := 0
+				for range batch.Messages() {
+					count++
+				}
+				require_NoError(b, batch.Error())
+				require_Len(b, count, 1)
 			}
 			b.StopTimer()
 		})
@@ -498,6 +516,7 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 }
 
 func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
+	ctx := context.Background()
 	const (
 		verbose          = false
 		streamName       = "S"
@@ -511,14 +530,14 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 	)
 
 	clusterSizeCases := []struct {
-		clusterSize int              // Single node or cluster
-		replicas    int              // Stream replicas
-		storage     nats.StorageType // Stream storage
+		clusterSize int                   // Single node or cluster
+		replicas    int                   // Stream replicas
+		storage     jetstream.StorageType // Stream storage
 	}{
-		{1, 1, nats.MemoryStorage},
-		{3, 3, nats.MemoryStorage},
-		{1, 1, nats.FileStorage},
-		{3, 3, nats.FileStorage},
+		{1, 1, jetstream.MemoryStorage},
+		{3, 3, jetstream.MemoryStorage},
+		{1, 1, jetstream.FileStorage},
+		{3, 3, jetstream.FileStorage},
 	}
 
 	benchmarksCases := []struct {
@@ -565,14 +584,14 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 							if verbose {
 								b.Logf("Creating stream with R=%d", cs.replicas)
 							}
-							streamConfig := &nats.StreamConfig{
+							streamConfig := jetstream.StreamConfig{
 								Name:              streamName,
 								Subjects:          []string{subjectPrefix + ".>"},
 								Storage:           cs.storage,
-								Retention:         nats.LimitsPolicy,
+								Retention:         jetstream.LimitsPolicy,
 								MaxAge:            time.Hour,
 								Duplicates:        10 * time.Second,
-								Discard:           nats.DiscardOld,
+								Discard:           jetstream.DiscardOld,
 								NoAck:             false,
 								MaxMsgs:           -1,
 								MaxBytes:          -1,
@@ -580,7 +599,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 								Replicas:          1,
 								MaxMsgsPerSubject: 1,
 							}
-							if _, err := js.AddStream(streamConfig); err != nil {
+							if _, err := js.CreateStream(ctx, streamConfig); err != nil {
 								b.Fatalf("Error creating stream: %v", err)
 							}
 
@@ -589,7 +608,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 							if cs.replicas > 1 {
 								connectURL = cl.streamLeader("$G", streamName).ClientURL()
 								nc.Close()
-								_, js = jsClientConnectURL(b, connectURL)
+								_, js = jsClientConnectNewAPIURL(b, connectURL)
 							}
 
 							rng := rand.New(rand.NewSource(int64(seed)))
@@ -639,7 +658,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 							// - Create consumer / Subscribe
 							// - Consume expected number of messages
 							// - Unsubscribe
-							subscribeConsumeUnsubscribe := func(js nats.JetStreamContext, rng *rand.Rand) {
+							subscribeConsumeUnsubscribe := func(js jetstream.JetStream, rng *rand.Rand) {
 
 								// Select F unique domains to create F non-overlapping filters
 								filterDomains := make(map[string]bool, bc.filters)
@@ -662,7 +681,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 								received := 0
 								consumeWg := sync.WaitGroup{}
 								consumeWg.Add(1)
-								cb := func(msg *nats.Msg) {
+								cb := func(msg jetstream.Msg) {
 									received += 1
 									if received == messagesPerIteration {
 										consumeWg.Done()
@@ -672,28 +691,22 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 									}
 								}
 
-								// Create consumer
-								subOpts := []nats.SubOpt{
-									nats.BindStream(streamName),
-									nats.OrderedConsumer(),
-									nats.ConsumerReplicas(consumerReplicas),
-									nats.ConsumerFilterSubjects(filters...),
-									nats.ConsumerMemoryStorage(),
-								}
-
-								var sub *nats.Subscription
-
-								sub, err := js.Subscribe("", cb, subOpts...)
+								// Create ordered consumer
+								cons, err := js.OrderedConsumer(ctx, streamName, jetstream.OrderedConsumerConfig{
+									FilterSubjects: filters,
+									HeadersOnly:    false,
+								})
+								_ = consumerReplicas
 								if err != nil {
 									b.Fatalf("Failed to subscribe: %s", err)
 								}
 
-								defer func(sub *nats.Subscription) {
-									err := sub.Unsubscribe()
-									if err != nil {
-										b.Logf("Failed to unsubscribe: %s", err)
-									}
-								}(sub)
+								cc, err := cons.Consume(cb)
+								if err != nil {
+									b.Fatalf("Failed to subscribe: %s", err)
+								}
+
+								defer cc.Stop()
 
 								consumeWg.Wait()
 							}
@@ -713,7 +726,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 								go func(consumerId int) {
 
 									// Connect
-									nc, js := jsClientConnectURL(b, connectURL)
+									nc, js := jsClientConnectNewAPIURL(b, connectURL)
 									defer nc.Close()
 
 									// Signal completion of work
@@ -766,7 +779,9 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		streamName = "S"
 	)
 
-	runSyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int, subjects []string) (int, int) {
+	ctx := context.Background()
+
+	runSyncPublisher := func(b *testing.B, js jetstream.JetStream, messageSize int, subjects []string) (int, int) {
 		published, errors := 0, 0
 		message := make([]byte, messageSize)
 		rand.New(rand.NewSource(int64(seed))).Read(message)
@@ -776,7 +791,7 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		for i := 1; i <= b.N; i++ {
 			fastRandomMutation(message, 10)
 			subject := subjects[fastrand.Uint32n(uint32(len(subjects)))]
-			_, pubErr := js.Publish(subject, message)
+			_, pubErr := js.Publish(ctx, subject, message)
 			if pubErr != nil {
 				errors++
 			} else {
@@ -793,7 +808,7 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		return published, errors
 	}
 
-	runAsyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int, subjects []string, asyncWindow int) (int, int) {
+	runAsyncPublisher := func(b *testing.B, js jetstream.JetStream, messageSize int, subjects []string, asyncWindow int) (int, int) {
 		const publishCompleteMaxWait = 30 * time.Second
 		rng := rand.New(rand.NewSource(int64(seed)))
 		message := make([]byte, messageSize)
@@ -812,7 +827,7 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 				publishBatchSize = b.N - published
 			}
 
-			pending := make([]nats.PubAckFuture, 0, publishBatchSize)
+			pending := make([]jetstream.PubAckFuture, 0, publishBatchSize)
 
 			for i := 0; i < publishBatchSize; i++ {
 				fastRandomMutation(message, 10)
@@ -924,15 +939,15 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 							defer shutdown()
 							defer nc.Close()
 
-							jsOpts := []nats.JSOpt{
-								nats.MaxWait(10 * time.Second),
+							jsOpts := []jetstream.JetStreamOpt{
+								jetstream.WithDefaultTimeout(10 * time.Second),
 							}
 
 							if pc.asyncWindow > 0 && pc.pType == Async {
-								jsOpts = append(jsOpts, nats.PublishAsyncMaxPending(pc.asyncWindow))
+								jsOpts = append(jsOpts, jetstream.WithPublishAsyncMaxPending(pc.asyncWindow))
 							}
 
-							js, err := nc.JetStream(jsOpts...)
+							js, err := jetstream.New(nc, jsOpts...)
 							if err != nil {
 								b.Fatalf("Unexpected error getting JetStream context: %v", err)
 							}
@@ -959,7 +974,7 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 									b.Fatalf("Failed to create client connection to stream leader: %v", err)
 								}
 								defer nc.Close()
-								js, err = nc.JetStream(jsOpts...)
+								js, err = jetstream.New(nc, jsOpts...)
 								if err != nil {
 									b.Fatalf("Unexpected error getting JetStream context for stream leader: %v", err)
 								}
@@ -1109,7 +1124,9 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 		return string(j)
 	}
 
-	runSyncPublisher := func(b *testing.B, js nats.JetStreamContext, subjects []string, sources int) (int, int) {
+	ctxCounters := context.Background()
+
+	runSyncPublisher := func(b *testing.B, js jetstream.JetStream, subjects []string, sources int) (int, int) {
 		published, errors := 0, 0
 		msg := &nats.Msg{
 			Header: nats.Header{},
@@ -1122,7 +1139,7 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 
 		for i := 1; i <= b.N; i++ {
 			msg.Subject = subjects[fastrand.Uint32n(uint32(len(subjects)))]
-			if _, pubErr := js.PublishMsg(msg); pubErr != nil {
+			if _, pubErr := js.PublishMsg(ctxCounters, msg); pubErr != nil {
 				errors++
 			} else {
 				published++
@@ -1137,7 +1154,7 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 		return published, errors
 	}
 
-	runAsyncPublisher := func(b *testing.B, js nats.JetStreamContext, subjects []string, sources int, asyncWindow int) (int, int) {
+	runAsyncPublisher := func(b *testing.B, js jetstream.JetStream, subjects []string, sources int, asyncWindow int) (int, int) {
 		const publishCompleteMaxWait = 30 * time.Second
 		msg := &nats.Msg{
 			Header: nats.Header{},
@@ -1152,7 +1169,7 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 		for published < b.N {
 			// Normally publish a full batch (of size `asyncWindow`)
 			publishBatchSize := min(b.N-published, asyncWindow)
-			pending := make([]nats.PubAckFuture, 0, publishBatchSize)
+			pending := make([]jetstream.PubAckFuture, 0, publishBatchSize)
 
 			for range publishBatchSize {
 				msg.Subject = subjects[fastrand.Uint32n(uint32(len(subjects)))]
@@ -1268,15 +1285,15 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 					defer shutdown()
 					defer nc.Close()
 
-					jsOpts := []nats.JSOpt{
-						nats.MaxWait(10 * time.Second),
+					jsOpts := []jetstream.JetStreamOpt{
+						jetstream.WithDefaultTimeout(10 * time.Second),
 					}
 
 					if pc.asyncWindow > 0 && pc.pType == Async {
-						jsOpts = append(jsOpts, nats.PublishAsyncMaxPending(pc.asyncWindow))
+						jsOpts = append(jsOpts, jetstream.WithPublishAsyncMaxPending(pc.asyncWindow))
 					}
 
-					js, err := nc.JetStream(jsOpts...)
+					js, err := jetstream.New(nc, jsOpts...)
 					if err != nil {
 						b.Fatalf("Unexpected error getting JetStream context: %v", err)
 					}
@@ -1303,7 +1320,7 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 							b.Fatalf("Failed to create client connection to stream leader: %v", err)
 						}
 						defer nc.Close()
-						js, err = nc.JetStream(jsOpts...)
+						js, err = jetstream.New(nc, jsOpts...)
 						if err != nil {
 							b.Fatalf("Unexpected error getting JetStream context for stream leader: %v", err)
 						}
@@ -1376,29 +1393,31 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 		{3, 3}, // 3-nodes cluster, R=3
 	}
 
+	ctx := context.Background()
+
 	// Parameter: Stream storage type
-	storageTypeCases := []nats.StorageType{
-		nats.MemoryStorage,
-		nats.FileStorage,
+	storageTypeCases := []jetstream.StorageType{
+		jetstream.MemoryStorage,
+		jetstream.FileStorage,
 	}
 
 	// Parameter: Stream limit configuration
-	limitConfigCases := map[string]func(*nats.StreamConfig){
-		"unlimited": func(config *nats.StreamConfig) {
+	limitConfigCases := map[string]func(*jetstream.StreamConfig){
+		"unlimited": func(config *jetstream.StreamConfig) {
 		},
-		"MaxMsg=1000": func(config *nats.StreamConfig) {
+		"MaxMsg=1000": func(config *jetstream.StreamConfig) {
 			config.MaxMsgs = 100
 		},
-		"MaxMsg=10": func(config *nats.StreamConfig) {
+		"MaxMsg=10": func(config *jetstream.StreamConfig) {
 			config.MaxMsgs = 10
 		},
-		"MaxPerSubject=10": func(config *nats.StreamConfig) {
+		"MaxPerSubject=10": func(config *jetstream.StreamConfig) {
 			config.MaxMsgsPerSubject = 10
 		},
-		"MaxAge=1s": func(config *nats.StreamConfig) {
+		"MaxAge=1s": func(config *jetstream.StreamConfig) {
 			config.MaxAge = 1 * time.Second
 		},
-		"MaxBytes=1MB": func(config *nats.StreamConfig) {
+		"MaxBytes=1MB": func(config *jetstream.StreamConfig) {
 			config.MaxBytes = 1024 * 1024
 		},
 	}
@@ -1413,8 +1432,8 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 	}
 
 	// Helper: Publish synchronously as Goroutine
-	publish := func(publisherId int, ctx *PublishersContext, js nats.JetStreamContext) {
-		defer ctx.completedWg.Done()
+	publish := func(publisherId int, pctx *PublishersContext, js jetstream.JetStream) {
+		defer pctx.completedWg.Done()
 		errors := 0
 		messageBuf := make([]byte, messageSize)
 		rand.New(rand.NewSource(int64(seed + publisherId))).Read(messageBuf)
@@ -1425,34 +1444,34 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 			if randomData {
 				fastRandomMutation(messageBuf, 10)
 			}
-			_, err := js.Publish(subject, messageBuf)
+			_, err := js.Publish(ctx, subject, messageBuf)
 			if err != nil {
 				b.Logf("Warning: failed to publish warmup message: %s", err)
 			}
 		}
 
 		// Signal this publisher is ready
-		ctx.readyWg.Done()
+		pctx.readyWg.Done()
 
 		for {
 			// Obtain a batch of messages to publish
 			batchSize := 0
 			{
-				ctx.lock.Lock()
-				if ctx.messagesLeft >= publishBatchSize {
+				pctx.lock.Lock()
+				if pctx.messagesLeft >= publishBatchSize {
 					batchSize = publishBatchSize
-				} else if ctx.messagesLeft < publishBatchSize {
-					batchSize = ctx.messagesLeft
+				} else if pctx.messagesLeft < publishBatchSize {
+					batchSize = pctx.messagesLeft
 				}
-				ctx.messagesLeft -= batchSize
-				ctx.lock.Unlock()
+				pctx.messagesLeft -= batchSize
+				pctx.lock.Unlock()
 			}
 
 			// Nothing left to publish, terminate
 			if batchSize == 0 {
-				ctx.lock.Lock()
-				ctx.errors += errors
-				ctx.lock.Unlock()
+				pctx.lock.Lock()
+				pctx.errors += errors
+				pctx.lock.Unlock()
 				return
 			}
 
@@ -1462,7 +1481,7 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 				if randomData {
 					fastRandomMutation(messageBuf, 10)
 				}
-				_, err := js.Publish(subject, messageBuf)
+				_, err := js.Publish(ctx, subject, messageBuf)
 				if err != nil {
 					errors += 1
 				}
@@ -1506,19 +1525,19 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 										defer nc.Close()
 
 										// Common stream configuration
-										streamConfig := &nats.StreamConfig{
+										streamConfig := &jetstream.StreamConfig{
 											Name:      "S",
 											Subjects:  []string{fmt.Sprintf("%s.>", subjectPrefix)},
 											Replicas:  benchmarkCase.replicas,
 											Storage:   storageType,
-											Discard:   DiscardOld,
-											Retention: DiscardOld,
+											Discard:   jetstream.DiscardOld,
+											Retention: jetstream.LimitsPolicy,
 										}
 										// Configure stream limit
 										limitConfigFunc(streamConfig)
 
 										// Create stream
-										if _, err := js.AddStream(streamConfig); err != nil {
+										if _, err := js.CreateStream(ctx, *streamConfig); err != nil {
 											b.Fatalf("Error creating stream: %v", err)
 										}
 
@@ -1544,7 +1563,7 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 												b.Fatal(err)
 											}
 											defer nc.Close()
-											js, err := nc.JetStream()
+											js, err := jetstream.New(nc)
 											if err != nil {
 												b.Fatal(err)
 											}
@@ -1595,7 +1614,9 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		seed      = 12345
 	)
 
-	runKVGet := func(b *testing.B, kv nats.KeyValue, keys []string) int {
+	ctx := context.Background()
+
+	runKVGet := func(b *testing.B, kv jetstream.KeyValue, keys []string) int {
 		rng := rand.New(rand.NewSource(int64(seed)))
 		errors := 0
 
@@ -1603,7 +1624,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 
 		for i := 1; i <= b.N; i++ {
 			key := keys[rng.Intn(len(keys))]
-			_, err := kv.Get(key)
+			_, err := kv.Get(ctx, key)
 			if err != nil {
 				errors++
 				continue
@@ -1618,7 +1639,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		return errors
 	}
 
-	runKVPut := func(b *testing.B, kv nats.KeyValue, keys []string, valueSize int) int {
+	runKVPut := func(b *testing.B, kv jetstream.KeyValue, keys []string, valueSize int) int {
 
 		value := make([]byte, valueSize)
 		rand.New(rand.NewSource(int64(seed))).Read(value)
@@ -1629,7 +1650,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		for i := 1; i <= b.N; i++ {
 			key := keys[fastrand.Uint32n(uint32(len(keys)))]
 			fastRandomMutation(value, 10)
-			_, err := kv.Put(key, value)
+			_, err := kv.Put(ctx, key, value)
 			if err != nil {
 				errors++
 				continue
@@ -1644,7 +1665,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		return errors
 	}
 
-	runKVUpdate := func(b *testing.B, kv nats.KeyValue, keys []string, valueSize int) int {
+	runKVUpdate := func(b *testing.B, kv jetstream.KeyValue, keys []string, valueSize int) int {
 		value := make([]byte, valueSize)
 		rand.New(rand.NewSource(int64(seed))).Read(value)
 		errors := 0
@@ -1654,14 +1675,14 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		for i := 1; i <= b.N; i++ {
 			key := keys[fastrand.Uint32n(uint32(len(keys)))]
 
-			kve, getErr := kv.Get(key)
+			kve, getErr := kv.Get(ctx, key)
 			if getErr != nil {
 				errors++
 				continue
 			}
 
 			fastRandomMutation(value, 10)
-			_, updateErr := kv.Update(key, value, kve.Revision())
+			_, updateErr := kv.Update(ctx, key, value, kve.Revision())
 			if updateErr != nil {
 				errors++
 				continue
@@ -1745,11 +1766,11 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							if verbose {
 								b.Logf("Creating KV %s with R=%d", kvName, bc.replicas)
 							}
-							kvConfig := &nats.KeyValueConfig{
+							kvConfig := jetstream.KeyValueConfig{
 								Bucket:   kvName,
 								Replicas: bc.replicas,
 							}
-							kv, err := js.CreateKeyValue(kvConfig)
+							kv, err := js.CreateKeyValue(ctx, kvConfig)
 							if err != nil {
 								b.Fatalf("Error creating KV: %v", err)
 							}
@@ -1759,7 +1780,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							value := make([]byte, bc.valueSize)
 							for _, key := range keys {
 								rng.Read(value)
-								_, err := kv.Create(key, value)
+								_, err := kv.Create(ctx, key, value)
 								if err != nil {
 									b.Fatalf("Failed to initialize %s/%s: %v", kvName, key, err)
 								}
@@ -1769,11 +1790,11 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							if bc.replicas > 1 {
 								nc.Close()
 								connectURL := cl.streamLeader("$G", fmt.Sprintf("KV_%s", kvName)).ClientURL()
-								nc, js = jsClientConnectURL(b, connectURL)
+								nc, js = jsClientConnectNewAPIURL(b, connectURL)
 								defer nc.Close()
 							}
 
-							kv, err = js.KeyValue(kv.Bucket())
+							kv, err = js.KeyValue(ctx, kv.Bucket())
 							if err != nil {
 								b.Fatalf("Error binding to KV: %v", err)
 							}
@@ -1835,8 +1856,10 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 		}
 	}
 
+	ctx := context.Background()
+
 	// benchmark for object store by performing read/write operations with data of random size
-	RunObjStoreBenchmark := func(b *testing.B, objStore nats.ObjectStore, minObjSz int, maxObjSz int, numKeys int, rwRatio float64) (int, int, int) {
+	RunObjStoreBenchmark := func(b *testing.B, objStore jetstream.ObjectStore, minObjSz int, maxObjSz int, numKeys int, rwRatio float64) (int, int, int) {
 		var (
 			errors int
 			reads  int
@@ -1860,7 +1883,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 			switch {
 			case rwOp <= rwRatio:
 				// Read Op
-				_, err = objStore.GetBytes(key)
+				_, err = objStore.GetBytes(ctx, key)
 				reads++
 			case rwOp > rwRatio:
 				// Write Op
@@ -1868,7 +1891,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 				dataSz := rng.Intn(maxObjSz-minObjSz+1) + minObjSz
 				data := dataBuf[:dataSz]
 				fastRandomMutation(data, 10)
-				_, err = objStore.PutBytes(key, data)
+				_, err = objStore.PutBytes(ctx, key, data)
 				writes++
 			}
 			if err != nil {
@@ -1884,19 +1907,19 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 
 	// benchmark cases table
 	benchmarkCases := []struct {
-		storage  nats.StorageType
+		storage  jetstream.StorageType
 		numKeys  int
 		minObjSz int
 		maxObjSz int
 	}{
-		{nats.MemoryStorage, 100, 1024, 102400},     // mem storage, 100 objects sized (1KB-100KB)
-		{nats.MemoryStorage, 100, 102400, 1048576},  // mem storage, 100 objects sized (100KB-1MB)
-		{nats.MemoryStorage, 1000, 10240, 102400},   // mem storage, 1k objects of various size (10KB - 100KB)
-		{nats.FileStorage, 100, 1024, 102400},       // file storage, 100 objects sized (1KB-100KB)
-		{nats.FileStorage, 1000, 10240, 1048576},    // file storage, 1k objects of various size (10KB - 1MB)
-		{nats.FileStorage, 100, 102400, 1048576},    // file storage, 100 objects sized (100KB-1MB)
-		{nats.FileStorage, 100, 1048576, 10485760},  // file storage, 100 objects sized (1MB-10MB)
-		{nats.FileStorage, 10, 10485760, 104857600}, // file storage, 10 objects sized (10MB-100MB)
+		{jetstream.MemoryStorage, 100, 1024, 102400},     // mem storage, 100 objects sized (1KB-100KB)
+		{jetstream.MemoryStorage, 100, 102400, 1048576},  // mem storage, 100 objects sized (100KB-1MB)
+		{jetstream.MemoryStorage, 1000, 10240, 102400},   // mem storage, 1k objects of various size (10KB - 100KB)
+		{jetstream.FileStorage, 100, 1024, 102400},       // file storage, 100 objects sized (1KB-100KB)
+		{jetstream.FileStorage, 1000, 10240, 1048576},    // file storage, 1k objects of various size (10KB - 1MB)
+		{jetstream.FileStorage, 100, 102400, 1048576},    // file storage, 100 objects sized (100KB-1MB)
+		{jetstream.FileStorage, 100, 1048576, 10485760},  // file storage, 100 objects sized (1MB-10MB)
+		{jetstream.FileStorage, 10, 10485760, 104857600}, // file storage, 10 objects sized (10MB-100MB)
 	}
 
 	var (
@@ -1939,12 +1962,12 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 										if verbose {
 											b.Logf("Creating ObjectStore %s with R=%d", objStoreName, replicas)
 										}
-										objStoreConfig := &nats.ObjectStoreConfig{
+										objStoreConfig := jetstream.ObjectStoreConfig{
 											Bucket:   objStoreName,
 											Replicas: replicas,
 											Storage:  bc.storage,
 										}
-										objStore, err := js.CreateObjectStore(objStoreConfig)
+										objStore, err := js.CreateObjectStore(ctx, objStoreConfig)
 										if err != nil {
 											b.Fatalf("Error creating ObjectStore: %v", err)
 										}
@@ -1953,9 +1976,9 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 										if clusterSize > 1 {
 											nc.Close()
 											connectURL := cl.streamLeader("$G", fmt.Sprintf("OBJ_%s", objStoreName)).ClientURL()
-											nc, js := jsClientConnectURL(b, connectURL)
+											nc, js := jsClientConnectNewAPIURL(b, connectURL)
 											defer nc.Close()
-											objStore, err = js.ObjectStore(objStoreName)
+											objStore, err = js.ObjectStore(ctx, objStoreName)
 											if err != nil {
 												b.Fatalf("Error binding to ObjectStore: %v", err)
 											}
@@ -1968,7 +1991,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 												dataSz := rng.Intn(bc.maxObjSz-bc.minObjSz+1) + bc.minObjSz
 												value := make([]byte, dataSz)
 												rng.Read(value)
-												_, err := objStore.PutBytes(key, value)
+												_, err := objStore.PutBytes(ctx, key, value)
 												if err != nil {
 													b.Fatalf("Failed to initialize %s/%s: %v", objStoreName, key, err)
 												}
@@ -1997,6 +2020,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 }
 
 func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
+	ctx := context.Background()
 	const (
 		subject    = "test-subject"
 		streamName = "test-stream"
@@ -2006,7 +2030,7 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 		// nats connection for this publisher
 		conn *nats.Conn
 		// jetstream context
-		js nats.JetStreamContext
+		js jetstream.JetStream
 		// message buffer
 		messageData []byte
 		// number of publish calls
@@ -2044,7 +2068,7 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 				b.Fatal(err)
 			}
 			defer ncPub.Close()
-			jsPub, err := ncPub.JetStream()
+			jsPub, err := jetstream.New(ncPub)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2090,7 +2114,7 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 					// random bytes as payload
 					fastRandomMutation(publishers[pubId].messageData, 10)
 					// attempt to publish message
-					pubAck, err := publishers[pubId].js.Publish(subject, publishers[pubId].messageData)
+					pubAck, err := publishers[pubId].js.Publish(ctx, subject, publishers[pubId].messageData)
 					publishers[pubId].publishCalls += 1
 					if err != nil {
 						publishers[pubId].publishErrors += 1
@@ -2168,13 +2192,13 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 										if err != nil {
 											b.Fatal(err)
 										}
-										defer js.DeleteStream(streamName)
+										defer js.DeleteStream(ctx, streamName)
 
 										// If replicated resource, connect to stream leader for lower variability
 										if replicasCase.replicas > 1 {
 											nc.Close()
 											clientUrl = cl.streamLeader("$G", streamName).ClientURL()
-											nc, _ = jsClientConnectURL(b, clientUrl)
+											nc, _ = jsClientConnectNewAPIURL(b, clientUrl)
 											defer nc.Close()
 										}
 
@@ -2190,6 +2214,7 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 }
 
 func BenchmarkJetStreamParallelStartup(b *testing.B) {
+	ctx := context.Background()
 	omp := runtime.GOMAXPROCS(-1)
 	streams, msgs, cardinality := omp, 100_000, 10_000
 
@@ -2208,7 +2233,7 @@ func BenchmarkJetStreamParallelStartup(b *testing.B) {
 		})
 		for n := range msgs {
 			subj := fmt.Sprintf("%d.%d", i, n%cardinality)
-			_, err := js.Publish(subj, nil)
+			_, err := js.Publish(ctx, subj, nil)
 			require_NoError(b, err)
 		}
 	}
@@ -2245,6 +2270,7 @@ func BenchmarkJetStreamParallelStartup(b *testing.B) {
 }
 
 func BenchmarkJetStreamScanForSources(b *testing.B) {
+	ctx := context.Background()
 	_, s, shutdown, nc, js := startJSClusterAndConnect(b, 1)
 	defer shutdown()
 
@@ -2268,17 +2294,21 @@ func BenchmarkJetStreamScanForSources(b *testing.B) {
 
 	// Start by publishing some messages to the sourcing stream.
 	for range 1000 {
-		_, err := js.Publish("bar", nil)
+		_, err := js.Publish(ctx, "bar", nil)
 		require_NoError(b, err)
 	}
 
 	// Then publish a message to the origin stream.
-	_, err := js.Publish("foo", nil)
+	_, err := js.Publish(ctx, "foo", nil)
 	require_NoError(b, err)
 
 	// Wait for the sourced message from the origin stream.
 	checkFor(b, 5*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("stream")
+		str, err := js.Stream(ctx, "stream")
+		if err != nil {
+			return err
+		}
+		si, err := str.Info(ctx)
 		if err != nil {
 			return err
 		}
@@ -2292,7 +2322,7 @@ func BenchmarkJetStreamScanForSources(b *testing.B) {
 	// which previously the reverse scan would have had to scan
 	// over linearly.
 	for range 100_000 {
-		_, err := js.Publish("bar", nil)
+		_, err := js.Publish(ctx, "bar", nil)
 		require_NoError(b, err)
 	}
 
@@ -2305,7 +2335,7 @@ func BenchmarkJetStreamScanForSources(b *testing.B) {
 }
 
 // Helper function to stand up a JS-enabled single server or cluster
-func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Server, shutdown func(), nc *nats.Conn, js nats.JetStreamContext) {
+func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Server, shutdown func(), nc *nats.Conn, js jetstream.JetStream) {
 	b.Helper()
 	var err error
 
@@ -2337,7 +2367,7 @@ func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Ser
 		b.Fatalf("failed to connect: %s", err)
 	}
 
-	js, err = nc.JetStream()
+	js, err = jetstream.New(nc)
 	if err != nil {
 		b.Fatalf("failed to init jetstream: %s", err)
 	}

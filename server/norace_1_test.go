@@ -49,6 +49,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -1131,10 +1132,12 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 	defer s.Shutdown()
 
 	// Client based API
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo", "bar"},
 	})
@@ -1142,7 +1145,13 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	sub, err := js.PullSubscribe("foo", "dlc")
+	sub, err := func() (jetstream.Consumer, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "dlc", FilterSubject: "foo", AckPolicy: jetstream.AckExplicitPolicy})
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1159,10 +1168,16 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		for time.Now().Before(timeout) {
 			// This will signal the delivery of the pull messages.
-			js.Publish("foo", []byte("Hello"))
+			js.Publish(ctx, "foo", []byte("Hello"))
 			// This will swap the account because of JetStream service import.
 			// We can get an error here with the bug or not.
-			if _, err := js.StreamInfo("TEST"); err != nil {
+			if _, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "TEST")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}(); err != nil {
 				errs <- err
 				return
 			}
@@ -1173,10 +1188,13 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 	// Pull messages flow.
 	var received int
 	for time.Now().Before(timeout.Add(2 * time.Second)) {
-		if msgs, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond)); err == nil {
-			for _, m := range msgs {
+		if batch, err := sub.Fetch(1, jetstream.FetchMaxWait(200*time.Millisecond)); err == nil {
+			for m := range batch.Messages() {
 				received++
-				m.AckSync()
+				m.DoubleAck(ctx)
+			}
+			if batch.Error() != nil {
+				break
 			}
 		} else {
 			break
@@ -1187,7 +1205,13 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Double check all received.
-	si, err := js.StreamInfo("TEST")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1418,10 +1442,12 @@ func TestNoRaceJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 
 	// Client based API
 	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
@@ -1440,11 +1466,17 @@ func TestNoRaceJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 
 	// Now fill up stream.
 	for i := 0; i < toSend; i++ {
-		if _, err = js.Publish("foo", msg); err != nil {
+		if _, err = js.Publish(ctx, "foo", msg); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
 	}
-	si, err := js.StreamInfo("TEST")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1470,7 +1502,13 @@ func TestNoRaceJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 		return nil
 	})
 
-	si, err = js.StreamInfo("TEST")
+	si, err = func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1490,7 +1528,9 @@ func TestNoRaceJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 
 	// Client based API
 	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	sub, err := nc.SubscribeSync(JSAdvisoryStreamQuorumLostPre + ".*")
@@ -1498,7 +1538,7 @@ func TestNoRaceJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-LQ-START", Replicas: 3}); err != nil {
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "NO-LQ-START", Replicas: 3}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	c.waitOnStreamLeader("$G", "NO-LQ-START")
@@ -1531,38 +1571,46 @@ func TestNoRaceJetStreamSuperClusterMirrors(t *testing.T) {
 
 	// Client based API
 	s := sc.clusterForName("C2").randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Create source stream.
-	_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"foo", "bar"}, Replicas: 3, Placement: &nats.Placement{Cluster: "C2"}})
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "S1", Subjects: []string{"foo", "bar"}, Replicas: 3, Placement: &jetstream.Placement{Cluster: "C2"}})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	// Needed while Go client does not have mirror support.
-	createStream := func(cfg *nats.StreamConfig) {
+	createStream := func(cfg *jetstream.StreamConfig) {
 		t.Helper()
-		if _, err := js.AddStream(cfg); err != nil {
+		if _, err := js.CreateStream(ctx, *cfg); err != nil {
 			t.Fatalf("Unexpected error: %+v", err)
 		}
 	}
 
 	// Send 100 messages.
 	for i := 0; i < 100; i++ {
-		if _, err := js.Publish("foo", []byte("MIRRORS!")); err != nil {
+		if _, err := js.Publish(ctx, "foo", []byte("MIRRORS!")); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
 	}
 
-	createStream(&nats.StreamConfig{
+	createStream(&jetstream.StreamConfig{
 		Name:      "M1",
-		Mirror:    &nats.StreamSource{Name: "S1"},
-		Placement: &nats.Placement{Cluster: "C1"},
+		Mirror:    &jetstream.StreamSource{Name: "S1"},
+		Placement: &jetstream.Placement{Cluster: "C1"},
 	})
 
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("M1")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "M1")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1573,25 +1621,37 @@ func TestNoRaceJetStreamSuperClusterMirrors(t *testing.T) {
 	})
 
 	// Purge the source stream.
-	if err := js.PurgeStream("S1"); err != nil {
+	if err := func() error {
+		s, e := js.Stream(ctx, "S1")
+		if e != nil {
+			return e
+		}
+		return s.Purge(ctx)
+	}(); err != nil {
 		t.Fatalf("Unexpected purge error: %v", err)
 	}
 	// Send 50 more msgs now.
 	for i := 0; i < 50; i++ {
-		if _, err := js.Publish("bar", []byte("OK")); err != nil {
+		if _, err := js.Publish(ctx, "bar", []byte("OK")); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
 	}
 
-	createStream(&nats.StreamConfig{
+	createStream(&jetstream.StreamConfig{
 		Name:      "M2",
-		Mirror:    &nats.StreamSource{Name: "S1"},
+		Mirror:    &jetstream.StreamSource{Name: "S1"},
 		Replicas:  3,
-		Placement: &nats.Placement{Cluster: "C3"},
+		Placement: &jetstream.Placement{Cluster: "C3"},
 	})
 
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("M2")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "M2")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1611,7 +1671,7 @@ func TestNoRaceJetStreamSuperClusterMirrors(t *testing.T) {
 	go func() {
 		// Send 100 more messages.
 		for i := 0; i < 100; i++ {
-			if _, err := js.Publish("foo", []byte("MIRRORS!")); err != nil {
+			if _, err := js.Publish(ctx, "foo", []byte("MIRRORS!")); err != nil {
 				t.Errorf("Unexpected publish on %d error: %v", i, err)
 			}
 			time.Sleep(2 * time.Millisecond)
@@ -1626,7 +1686,13 @@ func TestNoRaceJetStreamSuperClusterMirrors(t *testing.T) {
 	sc.clusterForName("C3").waitOnStreamLeader("$G", "M2")
 
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("M2")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "M2")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1682,7 +1748,9 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 			break
 		}
 	}
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	numStreams := 10
@@ -1695,7 +1763,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			name := fmt.Sprintf("S%d", idx+1)
-			if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+			if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: name}); err != nil {
 				errCh <- fmt.Errorf("unexpected error: %v", err)
 				return
 			}
@@ -1728,9 +1796,9 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 			sname := fmt.Sprintf("S%d", rand.Intn(10)+1)
 			go func(sname string, mirrorIdx int) {
 				defer wg.Done()
-				if _, err := js.AddStream(&nats.StreamConfig{
+				if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
 					Name:     fmt.Sprintf("M%d", mirrorIdx),
-					Mirror:   &nats.StreamSource{Name: sname},
+					Mirror:   &jetstream.StreamSource{Name: sname},
 					Replicas: 3,
 				}); err != nil {
 					select {
@@ -1750,7 +1818,13 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 		for m := 0; m < mirrorsCount; m++ {
 			name := fmt.Sprintf("M%d", m+1)
 			checkFor(t, 15*time.Second, 500*time.Millisecond, func() error {
-				si, err := js.StreamInfo(name)
+				si, err := func() (*jetstream.StreamInfo, error) {
+					s, e := js.Stream(ctx, name)
+					if e != nil {
+						return nil, e
+					}
+					return s.Info(ctx)
+				}()
 				if err != nil {
 					t.Fatalf("Could not retrieve stream info")
 				}
@@ -1759,7 +1833,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 				}
 				return nil
 			})
-			err := js.DeleteStream(name)
+			err := js.DeleteStream(ctx, name)
 			require_NoError(t, err)
 		}
 	}
@@ -1775,12 +1849,14 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 
 	// Client based API
 	s := sc.clusterForName("C1").randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Create our source streams.
 	for _, sname := range []string{"foo", "bar", "baz"} {
-		if _, err := js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 1}); err != nil {
+		if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: sname, Replicas: 1}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
@@ -1788,7 +1864,7 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	sendBatch := func(subject string, n int) {
 		for i := 0; i < n; i++ {
 			msg := fmt.Sprintf("MSG-%d", i+1)
-			if _, err := js.Publish(subject, []byte(msg)); err != nil {
+			if _, err := js.Publish(ctx, subject, []byte(msg)); err != nil {
 				t.Fatalf("Unexpected publish error: %v", err)
 			}
 		}
@@ -1799,16 +1875,16 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	sendBatch("baz", 25)
 
 	// Needed while Go client does not have mirror support for creating mirror or source streams.
-	createStream := func(cfg *nats.StreamConfig) {
+	createStream := func(cfg *jetstream.StreamConfig) {
 		t.Helper()
-		if _, err := js.AddStream(cfg); err != nil {
+		if _, err := js.CreateStream(ctx, *cfg); err != nil {
 			t.Fatalf("Unexpected error: %+v", err)
 		}
 	}
 
-	cfg := &nats.StreamConfig{
+	cfg := &jetstream.StreamConfig{
 		Name: "MS",
-		Sources: []*nats.StreamSource{
+		Sources: []*jetstream.StreamSource{
 			{Name: "foo"},
 			{Name: "bar"},
 			{Name: "baz"},
@@ -1819,12 +1895,18 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	time.Sleep(time.Second)
 
 	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	js2, err := jetstream.New(nc, jetstream.WithDefaultTimeout(50*time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		si, err := js2.StreamInfo("MS")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js2.Stream(ctx, "MS")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			return err
 		}
@@ -1836,12 +1918,18 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 
 	// Purge the source streams.
 	for _, sname := range []string{"foo", "bar", "baz"} {
-		if err := js.PurgeStream(sname); err != nil {
+		if err := func() error {
+			s, e := js.Stream(ctx, sname)
+			if e != nil {
+				return e
+			}
+			return s.Purge(ctx)
+		}(); err != nil {
 			t.Fatalf("Unexpected purge error: %v", err)
 		}
 	}
 
-	if err := js.DeleteStream("MS"); err != nil {
+	if err := js.DeleteStream(ctx, "MS"); err != nil {
 		t.Fatalf("Unexpected delete error: %v", err)
 	}
 
@@ -1850,21 +1938,27 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	sendBatch("bar", 15)
 	sendBatch("baz", 25)
 
-	cfg = &nats.StreamConfig{
+	cfg = &jetstream.StreamConfig{
 		Name: "MS2",
-		Sources: []*nats.StreamSource{
+		Sources: []*jetstream.StreamSource{
 			{Name: "foo"},
 			{Name: "bar"},
 			{Name: "baz"},
 		},
 		Replicas:  3,
-		Placement: &nats.Placement{Cluster: "C3"},
+		Placement: &jetstream.Placement{Cluster: "C3"},
 	}
 
 	createStream(cfg)
 
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		si, err := js2.StreamInfo("MS2")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js2.Stream(ctx, "MS2")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1881,7 +1975,7 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	doneCh := make(chan bool)
 
 	if sl == sc.leader() {
-		snc, _ := jsClientConnect(t, sc.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+		snc, _ := jsClientConnectNewAPI(t, sc.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
 		defer snc.Close()
 		_, err := snc.Request(JSApiLeaderStepDown, nil, time.Second)
 		require_NoError(t, err)
@@ -1896,7 +1990,7 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 			for _, sname := range []string{"foo", "bar", "baz"} {
 				m := nats.NewMsg(sname)
 				m.Data = []byte(msg)
-				if _, err := js.PublishMsg(m); err != nil {
+				if _, err := js.PublishMsg(ctx, m); err != nil {
 					t.Errorf("Unexpected publish error: %v", err)
 				}
 			}
@@ -1912,7 +2006,13 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	<-doneCh
 
 	checkFor(t, 20*time.Second, time.Second, func() error {
-		si, err := js2.StreamInfo("MS2")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js2.Stream(ctx, "MS2")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			return err
 		}
@@ -1928,18 +2028,20 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 	defer c.shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Send in 10000 messages.
 	msg, toSend := make([]byte, 1024), 10000
 	crand.Read(msg)
 
-	var sources []*nats.StreamSource
+	var sources []*jetstream.StreamSource
 	// Create 10 origin streams.
 	for i := 1; i <= 10; i++ {
 		name := fmt.Sprintf("O-%d", i)
-		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+		if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: name}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		// Make sure we have a leader before publishing, especially since we use
@@ -1952,16 +2054,22 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 				t.Fatalf("Unexpected publish error: %v", err)
 			}
 		}
-		sources = append(sources, &nats.StreamSource{Name: name})
+		sources = append(sources, &jetstream.StreamSource{Name: name})
 	}
 
 	// Now create our downstream stream that sources from all of them.
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "S", Replicas: 2, Sources: sources}); err != nil {
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "S", Replicas: 2, Sources: sources}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
-		si, err := js.StreamInfo("S")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "S")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			t.Fatalf("Could not retrieve stream info")
 		}
@@ -2009,14 +2117,16 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 			break
 		}
 	}
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	numStreams := 100
 	toSend := 1000
-	var sources []*nats.StreamSource
+	var sources []*jetstream.StreamSource
 	errCh := make(chan error, numStreams)
-	srcCh := make(chan *nats.StreamSource, numStreams)
+	srcCh := make(chan *jetstream.StreamSource, numStreams)
 	wg := sync.WaitGroup{}
 	wg.Add(numStreams)
 	// Create 100 origin streams.
@@ -2025,7 +2135,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 			defer wg.Done()
 
 			name := fmt.Sprintf("O-%d", idx)
-			if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+			if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: name}); err != nil {
 				errCh <- fmt.Errorf("unexpected error: %v", err)
 				return
 			}
@@ -2040,7 +2150,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 					return
 				}
 			}
-			srcCh <- &nats.StreamSource{Name: name}
+			srcCh <- &jetstream.StreamSource{Name: name}
 		}(i)
 	}
 	wg.Wait()
@@ -2055,12 +2165,18 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		// Now create our downstream stream that sources from all of them.
-		if _, err := js.AddStream(&nats.StreamConfig{Name: "S", Replicas: 3, Sources: sources}); err != nil {
+		if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "S", Replicas: 3, Sources: sources}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 
 		checkFor(t, 15*time.Second, 1000*time.Millisecond, func() error {
-			si, err := js.StreamInfo("S")
+			si, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "S")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}()
 			if err != nil {
 				t.Fatalf("Could not retrieve stream info")
 			}
@@ -2070,7 +2186,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 			return nil
 		})
 
-		err := js.DeleteStream("S")
+		err := js.DeleteStream(ctx, "S")
 		require_NoError(t, err)
 	}
 }
@@ -2089,13 +2205,15 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	si, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "KV",
 		Subjects: []string{"kv.>"},
-		Storage:  nats.FileStorage,
+		Storage:  jetstream.FileStorage,
 	})
 	cerr(t, err)
 
@@ -2106,8 +2224,15 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 			cerr(t, err)
 		}
 	}
+	var si *jetstream.StreamInfo
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
-		if si, err = js.StreamInfo("KV"); err != nil {
+		if si, err = func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "KV")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}(); err != nil {
 			return err
 		}
 		if si.State.Msgs == 50000 {
@@ -2141,14 +2266,16 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 	defer c.shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	sendBatch := func(n int) {
 		t.Helper()
 		// Send a batch to a given subject.
 		for i := 0; i < n; i++ {
-			if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+			if _, err := js.Publish(ctx, "TEST", []byte("OK")); err != nil {
 				t.Fatalf("Unexpected publish error: %v", err)
 			}
 		}
@@ -2157,7 +2284,13 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 	checkStream := func(stream string, num uint64) {
 		t.Helper()
 		checkFor(t, 20*time.Second, 20*time.Millisecond, func() error {
-			si, err := js.StreamInfo(stream)
+			si, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, stream)
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}()
 			if err != nil {
 				return err
 			}
@@ -2172,7 +2305,7 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 	checkTest := func(num uint64) { t.Helper(); checkStream("TEST", num) }
 
 	// Origin
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:   "TEST",
 		MaxAge: 500 * time.Millisecond,
 	})
@@ -2185,9 +2318,9 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 
 	// Create mirror now.
 	for ms := ts; ms == ts || ms == ml; {
-		_, err = js.AddStream(&nats.StreamConfig{
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:     "M",
-			Mirror:   &nats.StreamSource{Name: "TEST"},
+			Mirror:   &jetstream.StreamSource{Name: "TEST"},
 			Replicas: 2,
 		})
 		if err != nil {
@@ -2196,7 +2329,7 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 		ms = c.streamLeader("$G", "M")
 		if ts == ms || ms == ml {
 			// Delete and retry.
-			js.DeleteStream("M")
+			js.DeleteStream(ctx, "M")
 		}
 	}
 
@@ -2228,12 +2361,14 @@ func TestNoRaceJetStreamClusterLargeActiveOnReplica(t *testing.T) {
 	defer c.shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	timeout := time.Now().Add(60 * time.Second)
 	for time.Now().Before(timeout) {
-		si, err := js.AddStream(&nats.StreamConfig{
+		si, err := js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:     "TEST",
 			Subjects: []string{"foo", "bar"},
 			Replicas: 3,
@@ -2241,12 +2376,12 @@ func TestNoRaceJetStreamClusterLargeActiveOnReplica(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		for _, r := range si.Cluster.Replicas {
+		for _, r := range si.CachedInfo().Cluster.Replicas {
 			if r.Active > 5*time.Second {
 				t.Fatalf("Bad Active value: %+v", r)
 			}
 		}
-		if err := js.DeleteStream("TEST"); err != nil {
+		if err := js.DeleteStream(ctx, "TEST"); err != nil {
 			t.Fatalf("Unexpected delete error: %v", err)
 		}
 	}
@@ -2261,7 +2396,9 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 
 	// Client based API
 	s := sc.clusterForName("C2").randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	scm := make(map[string][]string)
@@ -2272,10 +2409,10 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		for i := 0; i < 50; i++ {
 			sn := fmt.Sprintf("%s-S%d", cn, i+1)
 			streams = append(streams, sn)
-			_, err := js.AddStream(&nats.StreamConfig{
+			_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 				Name:      sn,
 				Replicas:  3,
-				Placement: &nats.Placement{Cluster: cn},
+				Placement: &jetstream.Placement{Cluster: cn},
 				MaxAge:    2 * time.Minute,
 				MaxMsgs:   50_000,
 			})
@@ -2286,7 +2423,7 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		scm[cn] = streams
 	}
 
-	sourceForCluster := func(cn string) []*nats.StreamSource {
+	sourceForCluster := func(cn string) []*jetstream.StreamSource {
 		var sns []string
 		switch cn {
 		case "C1":
@@ -2298,18 +2435,18 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		default:
 			t.Fatalf("Unknown cluster %q", cn)
 		}
-		var ss []*nats.StreamSource
+		var ss []*jetstream.StreamSource
 		for _, sn := range sns {
-			ss = append(ss, &nats.StreamSource{Name: sn})
+			ss = append(ss, &jetstream.StreamSource{Name: sn})
 		}
 		return ss
 	}
 
 	// Mux all 50 streams from one cluster to a single stream across a GW connection to another cluster.
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "C1-S-MUX",
 		Replicas:  2,
-		Placement: &nats.Placement{Cluster: "C1"},
+		Placement: &jetstream.Placement{Cluster: "C1"},
 		Sources:   sourceForCluster("C2"),
 		MaxAge:    time.Minute,
 		MaxMsgs:   20_000,
@@ -2318,10 +2455,10 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "C2-S-MUX",
 		Replicas:  2,
-		Placement: &nats.Placement{Cluster: "C2"},
+		Placement: &jetstream.Placement{Cluster: "C2"},
 		Sources:   sourceForCluster("C3"),
 		MaxAge:    time.Minute,
 		MaxMsgs:   20_000,
@@ -2330,10 +2467,10 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "C3-S-MUX",
 		Replicas:  2,
-		Placement: &nats.Placement{Cluster: "C3"},
+		Placement: &jetstream.Placement{Cluster: "C3"},
 		Sources:   sourceForCluster("C1"),
 		MaxAge:    time.Minute,
 		MaxMsgs:   20_000,
@@ -2343,11 +2480,11 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 	}
 
 	// Now create mirrors for our mux'd streams.
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "C1-MIRROR",
 		Replicas:  3,
-		Placement: &nats.Placement{Cluster: "C1"},
-		Mirror:    &nats.StreamSource{Name: "C3-S-MUX"},
+		Placement: &jetstream.Placement{Cluster: "C1"},
+		Mirror:    &jetstream.StreamSource{Name: "C3-S-MUX"},
 		MaxAge:    5 * time.Minute,
 		MaxMsgs:   10_000,
 	})
@@ -2355,11 +2492,11 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "C2-MIRROR",
 		Replicas:  3,
-		Placement: &nats.Placement{Cluster: "C2"},
-		Mirror:    &nats.StreamSource{Name: "C2-S-MUX"},
+		Placement: &jetstream.Placement{Cluster: "C2"},
+		Mirror:    &jetstream.StreamSource{Name: "C2-S-MUX"},
 		MaxAge:    5 * time.Minute,
 		MaxMsgs:   10_000,
 	})
@@ -2367,11 +2504,11 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "C3-MIRROR",
 		Replicas:  3,
-		Placement: &nats.Placement{Cluster: "C3"},
-		Mirror:    &nats.StreamSource{Name: "C1-S-MUX"},
+		Placement: &jetstream.Placement{Cluster: "C3"},
+		Mirror:    &jetstream.StreamSource{Name: "C1-S-MUX"},
 		MaxAge:    5 * time.Minute,
 		MaxMsgs:   10_000,
 	})
@@ -2379,14 +2516,14 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	var jsc []nats.JetStream
+	var jsc []jetstream.JetStream
 
 	// Create 64 clients.
 	for i := 0; i < 64; i++ {
 		s := sc.randomCluster().randomServer()
-		nc, _ := jsClientConnect(t, s)
+		nc, _ := jsClientConnectNewAPI(t, s)
 		defer nc.Close()
-		js, err := nc.JetStream(nats.PublishAsyncMaxPending(8 * 1024))
+		js, err := jetstream.New(nc, jetstream.WithPublishAsyncMaxPending(8*1024))
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2435,7 +2572,9 @@ func TestNoRaceJetStreamSlowFilteredInitialPendingAndFirstMsg(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	toSend := 100_000 // 500k total though.
@@ -2458,7 +2597,13 @@ func TestNoRaceJetStreamSlowFilteredInitialPendingAndFirstMsg(t *testing.T) {
 	}
 
 	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
-		si, err := js.StreamInfo("S")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "S")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			return err
 		}
@@ -2506,12 +2651,18 @@ func TestNoRaceJetStreamSlowFilteredInitialPendingAndFirstMsg(t *testing.T) {
 	testConsumerCreate("foo.10", 1, 1)
 
 	// Also test that we do not take long if the start sequence is later in the stream.
-	sub, err := js.PullSubscribe("foo.100000", "dlc")
+	sub, err := func() (jetstream.Consumer, error) {
+		st, e := js.Stream(ctx, "S")
+		if e != nil {
+			return nil, e
+		}
+		return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "dlc", FilterSubject: "foo.100000", AckPolicy: jetstream.AckExplicitPolicy})
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	start := time.Now()
-	fetchMsgs(t, sub, 1, time.Second)
+	fetchJetStreamMsgs(t, sub, 1, time.Second)
 	if delta := time.Since(start); delta > thresh {
 		t.Fatalf("Took too long for pull subscriber to fetch the message: %v", delta)
 	}
@@ -2536,7 +2687,7 @@ func TestNoRaceJetStreamSlowFilteredInitialPendingAndFirstMsg(t *testing.T) {
 		t.Fatalf("Expected NumPending of %d, got %d", expected, ci.NumPending)
 	}
 	// Send another and make sure its captured by our wide scope consumer.
-	_, err = js.Publish("foo", []byte("HELLO AGAIN"))
+	_, err = js.Publish(ctx, "foo", []byte("HELLO AGAIN"))
 	require_NoError(t, err)
 	// Due to consumer signaling it might not immediately be reflected.
 	checkFor(t, time.Second, 100*time.Millisecond, func() error {
@@ -2580,7 +2731,9 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 	}
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	toSend := 200_000
@@ -2614,13 +2767,19 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 	}
 	fmt.Printf("MEM AFTER PUBLISH is %v\n", friendlyBytes(v.Mem))
 
-	si, _ := js.StreamInfo("TEST")
+	si, _ := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	fmt.Printf("si is %+v\n", si.State)
 
 	received := 0
 	done := make(chan bool)
 
-	cb := func(m *nats.Msg) {
+	cb := func(m jetstream.Msg) {
 		received++
 		if received >= toSend {
 			done <- true
@@ -2628,11 +2787,21 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 	}
 
 	start = time.Now()
-	sub, err := js.Subscribe("*", cb, nats.EnableFlowControl(), nats.IdleHeartbeat(time.Second), nats.AckNone())
+	cons, err := func() (jetstream.Consumer, error) {
+		st, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{FilterSubject: "*", AckPolicy: jetstream.AckNonePolicy})
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	defer sub.Unsubscribe()
+	cc, err := cons.Consume(cb)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer cc.Stop()
 	<-done
 	fmt.Printf("TOOK %v to consume\n", time.Since(start))
 
@@ -2655,11 +2824,13 @@ func TestNoRaceJetStreamSlowRestartWithManyExpiredMsgs(t *testing.T) {
 	defer s.Shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	ttl := 2 * time.Second
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "ORDERS",
 		Subjects: []string{"orders.*"},
 		MaxAge:   ttl,
@@ -2670,10 +2841,10 @@ func TestNoRaceJetStreamSlowRestartWithManyExpiredMsgs(t *testing.T) {
 
 	// Attach a consumer who is filtering on a wildcard subject as well.
 	// This does not affect it like I thought originally but will keep it here.
-	_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+	_, err = js.CreateOrUpdateConsumer(ctx, "ORDERS", jetstream.ConsumerConfig{
 		Durable:       "c22",
 		FilterSubject: "orders.*",
-		AckPolicy:     nats.AckExplicitPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2704,10 +2875,16 @@ func TestNoRaceJetStreamSlowRestartWithManyExpiredMsgs(t *testing.T) {
 	}
 
 	// Check everything is correct.
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	si, err := js.StreamInfo("ORDERS")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "ORDERS")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2720,24 +2897,26 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	cfg := &nats.StreamConfig{
+	cfg := &jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo.*"},
 		Replicas: 1,
 		MaxAge:   100 * time.Millisecond,
 	}
 
-	if _, err := js.AddStream(cfg); err != nil {
+	if _, err := js.CreateStream(ctx, *cfg); err != nil {
 		t.Fatalf("Error creating stream: %v", err)
 	}
 
-	if _, err := js.AddStream(&nats.StreamConfig{
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "M",
 		Replicas: 2,
-		Mirror:   &nats.StreamSource{Name: "TEST"},
+		Mirror:   &jetstream.StreamSource{Name: "TEST"},
 	}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2759,7 +2938,7 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 
 	// Turn off expiration so we can test we did not stall.
 	cfg.MaxAge = 0
-	if _, err := js.UpdateStream(cfg); err != nil {
+	if _, err := js.UpdateStream(ctx, *cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -2767,7 +2946,13 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 
 	// Wait for mirror to be caught up.
 	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
-		si, err := js.StreamInfo("M")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "M")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -2789,7 +2974,9 @@ func TestNoRaceJetStreamSuperClusterAccountConnz(t *testing.T) {
 	// Create JetStream assets for each as well to make sure by default we do not report them.
 	num := 20
 	for i := 0; i < num; i++ {
-		nc, _ := jsClientConnect(t, sc.randomServer(), nats.UserInfo("one", "p"), nats.Name("one"))
+		nc, _ := jsClientConnectNewAPI(t, sc.randomServer(), nats.UserInfo("one", "p"), nats.Name("one"))
+		ctx := context.Background()
+		_ = ctx
 		defer nc.Close()
 
 		if i%2 == 0 {
@@ -2798,13 +2985,13 @@ func TestNoRaceJetStreamSuperClusterAccountConnz(t *testing.T) {
 			nc.SubscribeSync("bar")
 		}
 
-		nc, js := jsClientConnect(t, sc.randomServer(), nats.UserInfo("two", "p"), nats.Name("two"))
+		nc, js := jsClientConnectNewAPI(t, sc.randomServer(), nats.UserInfo("two", "p"), nats.Name("two"))
 		defer nc.Close()
 		nc.SubscribeSync("baz")
 		nc.SubscribeSync("foo.bar.*")
 		nc.SubscribeSync(fmt.Sprintf("id.%d", i+1))
 
-		js.AddStream(&nats.StreamConfig{Name: fmt.Sprintf("TEST:%d", i+1)})
+		js.CreateStream(ctx, jetstream.StreamConfig{Name: fmt.Sprintf("TEST:%d", i+1)})
 	}
 
 	type czapi struct {
@@ -2827,7 +3014,7 @@ func TestNoRaceJetStreamSuperClusterAccountConnz(t *testing.T) {
 
 	doRequest := func(reqSubj, acc, filter string, expected int) {
 		t.Helper()
-		nc, _ := jsClientConnect(t, sc.randomServer(), nats.UserInfo(acc, "p"), nats.Name(acc))
+		nc, _ := jsClientConnectNewAPI(t, sc.randomServer(), nats.UserInfo(acc, "p"), nats.Name(acc))
 		defer nc.Close()
 
 		mch := make(chan *nats.Msg, 9)
@@ -2913,7 +3100,9 @@ func TestNoRaceCompressedConnz(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, _ := jsClientConnect(t, s)
+	nc, _ := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	doRequest := func(compress string) {
@@ -2969,7 +3158,9 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "JSC", 3)
 			defer c.shutdown()
 
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnectNewAPI(t, c.randomServer())
+			ctx := context.Background()
+			_ = ctx
 			defer nc.Close()
 
 			cfg := StreamConfig{
@@ -2987,7 +3178,13 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
 			c.waitOnStreamLeader("$G", "KV")
 
-			si, err := js.StreamInfo("KV")
+			si, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "KV")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}()
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3011,7 +3208,13 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 				t.Fatalf("Did not receive completion signal")
 			}
 
-			si, err = js.StreamInfo("KV")
+			si, err = func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "KV")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}()
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3051,7 +3254,13 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 				if !pResp.Success || pResp.Error != nil {
 					t.Fatalf("Got a bad response %+v", pResp)
 				}
-				si, err = js.StreamInfo("KV")
+				si, err = func() (*jetstream.StreamInfo, error) {
+					s, e := js.Stream(ctx, "KV")
+					if e != nil {
+						return nil, e
+					}
+					return s.Info(ctx)
+				}()
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
@@ -3061,11 +3270,15 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			}
 			expectLeft := func(subject string, expected uint64) {
 				t.Helper()
-				ci, err := js.AddConsumer("KV", &nats.ConsumerConfig{Durable: "dlc", FilterSubject: subject, AckPolicy: nats.AckExplicitPolicy})
+				cons, err := js.CreateOrUpdateConsumer(ctx, "KV", jetstream.ConsumerConfig{Durable: "dlc", FilterSubject: subject, AckPolicy: jetstream.AckExplicitPolicy})
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				defer js.DeleteConsumer("KV", "dlc")
+				defer js.DeleteConsumer(ctx, "KV", "dlc")
+				ci, err := cons.Info(ctx)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
 				if ci.NumPending != expected {
 					t.Fatalf("Expected %d remaining but got %d", expected, ci.NumPending)
 				}
@@ -3083,12 +3296,18 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			purge(&JSApiStreamPurgeRequest{Subject: "kv.*"}, 0)
 
 			// RESET
-			js.DeleteStream("KV")
+			js.DeleteStream(ctx, "KV")
 			// Do manually for now.
 			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
 			c.waitOnStreamLeader("$G", "KV")
 
-			if _, err := js.StreamInfo("KV"); err != nil {
+			if _, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "KV")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}(); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Put in 100.
@@ -3105,31 +3324,43 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			expectLeft("kv.foo", 10)
 
 			// RESET AGAIN
-			js.DeleteStream("KV")
+			js.DeleteStream(ctx, "KV")
 			// Do manually for now.
 			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
 			c.waitOnStreamLeader("$G", "KV")
 
-			if _, err := js.StreamInfo("KV"); err != nil {
+			if _, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "KV")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}(); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Put in 100.
 			for i := 0; i < 100; i++ {
-				js.Publish("kv.foo", []byte("OK"))
+				js.Publish(ctx, "kv.foo", []byte("OK"))
 			}
 			purge(&JSApiStreamPurgeRequest{Keep: 10}, 10)
 			expectLeft(">", 10)
 
 			// RESET AGAIN
-			js.DeleteStream("KV")
+			js.DeleteStream(ctx, "KV")
 			// Do manually for now.
 			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-			if _, err := js.StreamInfo("KV"); err != nil {
+			if _, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "KV")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}(); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Put in 100.
 			for i := 0; i < 100; i++ {
-				js.Publish("kv.foo", []byte("OK"))
+				js.Publish(ctx, "kv.foo", []byte("OK"))
 			}
 			purge(&JSApiStreamPurgeRequest{Sequence: 90}, 11) // Up to 90 so we keep that, hence the 11.
 			expectLeft(">", 11)
@@ -3141,15 +3372,17 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	cfg := &nats.StreamConfig{
+	cfg := &jetstream.StreamConfig{
 		Name:              "KV",
 		Subjects:          []string{"KV.>"},
 		MaxMsgsPerSubject: 1,
 	}
-	if _, err := js.AddStream(cfg); err != nil {
+	if _, err := js.CreateStream(ctx, *cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -3201,17 +3434,19 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 	}
 	defer removeDir(t, config.StoreDir)
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	toSend := 10_000
 
-	cfg := &nats.StreamConfig{
+	cfg := &jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo", "bar"},
 		MaxMsgs:  int64(toSend),
 	}
-	if _, err := js.AddStream(cfg); err != nil {
+	if _, err := js.CreateStream(ctx, *cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -3228,7 +3463,7 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	_, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: "dlc", AckPolicy: jetstream.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3262,10 +3497,12 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	if _, err := js.AddStream(&nats.StreamConfig{
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "benchstream",
 		Subjects: []string{"testsubject"},
 		Replicas: 1,
@@ -3281,12 +3518,28 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 	wg.Add(numSubs)
 	errCh := make(chan error, 1)
 	for i := 0; i < numSubs; i++ {
-		nc, js := jsClientConnect(t, s)
+		nc, js := jsClientConnectNewAPI(t, s)
 		defer nc.Close()
-		go func(nc *nats.Conn, js nats.JetStreamContext) {
+		go func(nc *nats.Conn, js jetstream.JetStream) {
 			defer wg.Done()
 			received := 0
-			_, err := js.Subscribe("testsubject", func(m *nats.Msg) {
+			st, err := js.Stream(ctx, "benchstream")
+			if err != nil {
+				select {
+				case errCh <- fmt.Errorf("Error getting stream: %v", err):
+				default:
+				}
+				return
+			}
+			cons, err := st.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{FilterSubjects: []string{"testsubject"}})
+			if err != nil {
+				select {
+				case errCh <- fmt.Errorf("Error creating sub: %v", err):
+				default:
+				}
+				return
+			}
+			_, err = cons.Consume(func(m jetstream.Msg) {
 				meta, _ := m.Metadata()
 				if meta.Sequence.Consumer != meta.Sequence.Stream {
 					nc.Close()
@@ -3296,7 +3549,7 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 				if received == total {
 					ch <- struct{}{}
 				}
-			}, nats.OrderedConsumer())
+			})
 			if err != nil {
 				select {
 				case errCh <- fmt.Errorf("Error creating sub: %v", err):
@@ -3349,14 +3602,16 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 			defer c.shutdown()
 
 			// Client based API
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnectNewAPI(t, c.randomServer())
+			ctx := context.Background()
+			_ = ctx
 			defer nc.Close()
 
-			_, err := js.AddStream(&nats.StreamConfig{
+			_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 				Name:      "cluster",
 				Subjects:  []string{"cluster.*"},
-				Retention: nats.InterestPolicy,
-				Discard:   nats.DiscardOld,
+				Retention: jetstream.InterestPolicy,
+				Discard:   jetstream.DiscardOld,
 				Replicas:  3,
 			})
 			if err != nil {
@@ -3364,23 +3619,28 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 			}
 
 			var received uint32
-			mh := func(m *nats.Msg) {
+			mh := func(m jetstream.Msg) {
 				atomic.AddUint32(&received, 1)
 			}
 
-			opts := []nats.SubOpt{nats.DeliverNew(), nats.AckNone()}
+			cfg := jetstream.ConsumerConfig{FilterSubject: "cluster.created", DeliverPolicy: jetstream.DeliverNewPolicy, AckPolicy: jetstream.AckNonePolicy}
 			if test.durable != _EMPTY_ {
-				opts = append(opts, nats.Durable(test.durable))
+				cfg.Durable = test.durable
 			}
-			_, err = js.Subscribe("cluster.created", mh, opts...)
+			cons, err := js.CreateOrUpdateConsumer(ctx, "cluster", cfg)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
+			cc, err := cons.Consume(mh)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			defer cc.Stop()
 
 			msg := []byte("ACK ME")
 			const total = uint32(1_000)
 			for i := 0; i < int(total); i++ {
-				if _, err := js.Publish("cluster.created", msg); err != nil {
+				if _, err := js.Publish(ctx, "cluster.created", msg); err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 				//time.Sleep(100 * time.Microsecond)
@@ -3396,7 +3656,13 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 			})
 
 			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-				si, err := js.StreamInfo("cluster")
+				si, err := func() (*jetstream.StreamInfo, error) {
+					s, e := js.Stream(ctx, "cluster")
+					if e != nil {
+						return nil, e
+					}
+					return s.Info(ctx)
+				}()
 				if err != nil {
 					t.Fatalf("Error getting stream info: %v", err)
 				}
@@ -3416,14 +3682,16 @@ func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
 	defer s.Shutdown()
 
 	// Client based API
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:              "MQTT_sess",
 		Subjects:          []string{"MQTT.sess.>"},
-		Storage:           nats.FileStorage,
-		Retention:         nats.LimitsPolicy,
+		Storage:           jetstream.FileStorage,
+		Retention:         jetstream.LimitsPolicy,
 		Replicas:          1,
 		MaxMsgsPerSubject: 1,
 	})
@@ -3436,7 +3704,7 @@ func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
 	for iter := 0; iter < 2; iter++ {
 		for i := 0; i < 4000; i++ {
 			subj := "MQTT.sess." + getHash(fmt.Sprintf("client_%d", i))
-			pa, err := js.Publish(subj, firstPayload)
+			pa, err := js.Publish(ctx, subj, firstPayload)
 			if err != nil {
 				t.Fatalf("Error on publish: %v", err)
 			}
@@ -3444,7 +3712,7 @@ func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
 			m.Data = secondPayload
 			eseq := strconv.FormatInt(int64(pa.Sequence), 10)
 			m.Header.Set(JSExpectedLastSubjSeq, eseq)
-			if _, err := js.PublishMsg(m); err != nil {
+			if _, err := js.PublishMsg(ctx, m); err != nil {
 				t.Fatalf("Error on publish (iter=%v seq=%v): %v", iter+1, pa.Sequence, err)
 			}
 		}
@@ -3456,35 +3724,42 @@ func TestNoRaceJetStreamClusterMemoryStreamConsumerRaftGrowth(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "memory-leak",
 		Subjects:  []string{"memory-leak"},
-		Retention: nats.LimitsPolicy,
+		Retention: jetstream.LimitsPolicy,
 		MaxMsgs:   1000,
-		Discard:   nats.DiscardOld,
+		Discard:   jetstream.DiscardOld,
 		MaxAge:    time.Minute,
-		Storage:   nats.MemoryStorage,
+		Storage:   jetstream.MemoryStorage,
 		Replicas:  3,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	_, err = js.QueueSubscribe("memory-leak", "q1", func(msg *nats.Msg) {
+	cons, err := js.CreateOrUpdateConsumer(ctx, "memory-leak", jetstream.ConsumerConfig{Durable: "q1", FilterSubject: "memory-leak", AckPolicy: jetstream.AckExplicitPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		time.Sleep(1 * time.Second)
-		msg.AckSync()
+		msg.DoubleAck(ctx)
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer cc.Stop()
 
 	// Send 10k (Must be > 8192 which is compactNumMin from monitorConsumer.
 	msg := []byte("NATS is a connective technology that powers modern distributed systems.")
 	for i := 0; i < 10_000; i++ {
-		if _, err := js.Publish("memory-leak", msg); err != nil {
+		if _, err := js.Publish(ctx, "memory-leak", msg); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
@@ -3512,14 +3787,22 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}); err != nil {
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	sub, err := js.PullSubscribe("foo", "dlc")
+	sub, err := func() (jetstream.Consumer, error) {
+		st, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "dlc", FilterSubject: "foo", AckPolicy: jetstream.AckExplicitPolicy})
+	}()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3534,10 +3817,10 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	for i, m := range fetchMsgs(t, sub, 200, 5*time.Second) {
+	for i, m := range fetchJetStreamMsgs(t, sub, 200, 5*time.Second) {
 		// Ack first 50 and every other even on after that..
 		if i < 50 || i%2 == 1 {
-			m.AckSync()
+			m.DoubleAck(ctx)
 		}
 	}
 	// Make sure acks processed.
@@ -3547,11 +3830,17 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	// Check consumer consistency.
 	checkConsumerWith := func(delivered, ackFloor uint64, ackPending int) {
 		t.Helper()
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
 
 		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-			ci, err := js.ConsumerInfo("TEST", "dlc")
+			ci, err := func() (*jetstream.ConsumerInfo, error) {
+				c, e := js.Consumer(ctx, "TEST", "dlc")
+				if e != nil {
+					return nil, e
+				}
+				return c.Info(ctx)
+			}()
 			if err != nil {
 				return fmt.Errorf("Unexpected error: %v", err)
 			}
@@ -3646,7 +3935,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	// Now we will truncate out the WAL out from underneath the leader.
 	// Grab the consumer leader.
 
-	nc, js = jsClientConnect(t, c.randomServer())
+	nc, js = jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
 	cl = c.consumerLeader("$G", "TEST", "dlc")
@@ -3664,14 +3953,26 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	require_NoError(t, err)
 	state = fs.State()
 
-	sub, err = js.PullSubscribe("foo", "dlc")
+	sub, err = func() (jetstream.Consumer, error) {
+		st, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "dlc", FilterSubject: "foo", AckPolicy: jetstream.AckExplicitPolicy})
+	}()
 	require_NoError(t, err)
 
 	// This will cause us to stepdown and truncate our WAL.
 	sub.Fetch(100)
 	c.waitOnConsumerLeader("$G", "TEST", "dlc")
 	// We can't trust the results sans that we have a leader back in place and the ackFloor.
-	ci, err := js.ConsumerInfo("TEST", "dlc")
+	ci, err := func() (*jetstream.ConsumerInfo, error) {
+		c, e := js.Consumer(ctx, "TEST", "dlc")
+		if e != nil {
+			return nil, e
+		}
+		return c.Info(ctx)
+	}()
 	require_NoError(t, err)
 	if ci.AckFloor.Consumer != ci.AckFloor.Stream || ci.AckFloor.Consumer != 50 {
 		t.Fatalf("Expected %d for ack floor, got %+v", 50, ci.AckFloor)
@@ -3684,7 +3985,9 @@ func TestNoRaceJetStreamClusterInterestRetentionDeadlock(t *testing.T) {
 
 	// Client based API
 	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// This can trigger deadlock with current architecture.
@@ -3692,13 +3995,13 @@ func TestNoRaceJetStreamClusterInterestRetentionDeadlock(t *testing.T) {
 	// onto a chan for the stream to consider removing. All conditions above must hold to trigger.
 
 	// We will attempt to trigger here with a stream mirror setup which uses and R=1 DIRECT consumer to replicate msgs.
-	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Retention: nats.InterestPolicy, Storage: nats.MemoryStorage})
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "S", Retention: jetstream.InterestPolicy, Storage: jetstream.MemoryStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	// Create a mirror which will create the consumer profile to trigger.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "M", Mirror: &nats.StreamSource{Name: "S"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "M", Mirror: &jetstream.StreamSource{Name: "S"}})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3715,7 +4018,13 @@ func TestNoRaceJetStreamClusterInterestRetentionDeadlock(t *testing.T) {
 	}
 
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("S")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "S")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -3732,11 +4041,13 @@ func TestNoRaceJetStreamClusterMaxConsumersAndDirect(t *testing.T) {
 
 	// Client based API
 	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// We want to max sure max consumer limits do not affect mirrors or sources etc.
-	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Storage: nats.MemoryStorage, MaxConsumers: 1})
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "S", Storage: jetstream.MemoryStorage, MaxConsumers: 1})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3746,7 +4057,7 @@ func TestNoRaceJetStreamClusterMaxConsumersAndDirect(t *testing.T) {
 		// Create a mirror.
 		mname := fmt.Sprintf("M-%d", i+1)
 		mirrors = append(mirrors, mname)
-		_, err = js.AddStream(&nats.StreamConfig{Name: mname, Mirror: &nats.StreamSource{Name: "S"}})
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: mname, Mirror: &jetstream.StreamSource{Name: "S"}})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -3755,12 +4066,18 @@ func TestNoRaceJetStreamClusterMaxConsumersAndDirect(t *testing.T) {
 	// Queue up messages.
 	numRequests := 20
 	for i := 0; i < numRequests; i++ {
-		js.Publish("S", []byte("Q"))
+		js.Publish(ctx, "S", []byte("Q"))
 	}
 
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		for _, mname := range mirrors {
-			si, err := js.StreamInfo(mname)
+			si, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, mname)
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}()
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3790,14 +4107,16 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 
 	// Client based API
 	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"foo.*"},
 		Replicas:  2,
-		Retention: nats.WorkQueuePolicy,
+		Retention: jetstream.WorkQueuePolicy,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -3805,17 +4124,23 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 
 	numRequests := 20
 	for i := 0; i < numRequests; i++ {
-		js.Publish("foo.created", []byte("REQ"))
+		js.Publish(ctx, "foo.created", []byte("REQ"))
 	}
 
 	// Durable.
-	sub, err := js.SubscribeSync("foo.created", nats.Durable("d1"))
+	cons, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: "d1", FilterSubject: "foo.created", AckPolicy: jetstream.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	defer sub.Unsubscribe()
+	_ = cons
 
-	si, err := js.StreamInfo("TEST")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == uint64(numRequests))
 
@@ -3844,7 +4169,13 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 
 	// Make sure we can get the consumer info eventually.
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
-		_, err := js.ConsumerInfo("TEST", "d1", nats.MaxWait(250*time.Millisecond))
+		_, err := func() (*jetstream.ConsumerInfo, error) {
+			c, e := js.Consumer(ctx, "TEST", "d1")
+			if e != nil {
+				return nil, e
+			}
+			return c.Info(ctx)
+		}()
 		return err
 	})
 
@@ -3892,10 +4223,12 @@ func TestNoRaceJetStreamKeyValueCompaction(t *testing.T) {
 	defer c.shutdown()
 
 	// Client based API
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   "COMPACT",
 		Replicas: 3,
 	})
@@ -3906,7 +4239,7 @@ func TestNoRaceJetStreamKeyValueCompaction(t *testing.T) {
 	value := strings.Repeat("A", 128*1024)
 	for i := 0; i < 5_000; i++ {
 		key := fmt.Sprintf("K-%d", rand.Intn(256)+1)
-		if _, err := kv.PutString(key, value); err != nil {
+		if _, err := kv.PutString(ctx, key, value); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
@@ -3919,10 +4252,12 @@ func TestNoRaceJetStreamClusterStreamSeqMismatchIssue(t *testing.T) {
 	defer c.shutdown()
 
 	// Client based API
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   "MM",
 		Replicas: 3,
 		TTL:      500 * time.Millisecond,
@@ -3930,7 +4265,7 @@ func TestNoRaceJetStreamClusterStreamSeqMismatchIssue(t *testing.T) {
 	require_NoError(t, err)
 
 	for i := 1; i <= 10; i++ {
-		if _, err := kv.PutString("k", "1"); err != nil {
+		if _, err := kv.PutString(ctx, "k", "1"); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
@@ -3941,16 +4276,16 @@ func TestNoRaceJetStreamClusterStreamSeqMismatchIssue(t *testing.T) {
 	s := c.randomNonStreamLeader("$G", "KV_MM")
 	s.Shutdown()
 
-	nc, js = jsClientConnect(t, c.randomServer())
+	nc, js = jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
-	kv, err = js.KeyValue("MM")
+	kv, err = js.KeyValue(ctx, "MM")
 	require_NoError(t, err)
 
 	// Now change the state of the stream such that we have to do a compact upon restart
 	// of the downed server.
 	for i := 1; i <= 10; i++ {
-		if _, err := kv.PutString("k", "2"); err != nil {
+		if _, err := kv.PutString(ctx, "k", "2"); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
@@ -3987,7 +4322,7 @@ func TestNoRaceJetStreamClusterStreamSeqMismatchIssue(t *testing.T) {
 	require_NoError(t, err)
 
 	for i := 1; i <= 10; i++ {
-		if _, err := kv.PutString("k1", "X"); err != nil {
+		if _, err := kv.PutString(ctx, "k1", "X"); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
@@ -4007,25 +4342,27 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 	defer c.shutdown()
 
 	// Client based API
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   "CLFS",
 		Replicas: 3,
 	})
 	require_NoError(t, err)
 
 	// Will work
-	_, err = kv.Create("k.1", []byte("X"))
+	_, err = kv.Create(ctx, "k.1", []byte("X"))
 	require_NoError(t, err)
 	// Drive up CLFS state on leader.
 	for i := 0; i < 10; i++ {
-		_, err = kv.Create("k.1", []byte("X"))
+		_, err = kv.Create(ctx, "k.1", []byte("X"))
 		require_Error(t, err)
 	}
 	// Bookend with new key success.
-	_, err = kv.Create("k.2", []byte("Z"))
+	_, err = kv.Create(ctx, "k.2", []byte("Z"))
 	require_NoError(t, err)
 
 	// Close in case we are connected here. Will recreate.
@@ -4035,15 +4372,15 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 	s := c.randomNonStreamLeader("$G", "KV_CLFS")
 	s.Shutdown()
 
-	nc, js = jsClientConnect(t, c.randomServer())
+	nc, js = jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
-	kv, err = js.KeyValue("CLFS")
+	kv, err = js.KeyValue(ctx, "CLFS")
 	require_NoError(t, err)
 
 	// Drive up CLFS state on leader.
 	for i := 0; i < 10; i++ {
-		_, err = kv.Create("k.1", []byte("X"))
+		_, err = kv.Create(ctx, "k.1", []byte("X"))
 		require_Error(t, err)
 	}
 
@@ -4061,7 +4398,7 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 		t.Fatalf("Error installing snapshot: %v", err)
 	}
 
-	_, err = kv.Create("k.3", []byte("ZZZ"))
+	_, err = kv.Create(ctx, "k.3", []byte("ZZZ"))
 	require_NoError(t, err)
 
 	s = c.restartServer(s)
@@ -4070,7 +4407,7 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 	mset, err = s.GlobalAccount().lookupStream("KV_CLFS")
 	require_NoError(t, err)
 
-	_, err = kv.Create("k.4", []byte("YYY"))
+	_, err = kv.Create(ctx, "k.4", []byte("YYY"))
 	require_NoError(t, err)
 
 	c.waitOnStreamCurrent(s, "$G", "KV_CLFS")
@@ -4088,14 +4425,16 @@ func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 	defer s.Shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:              "TEST",
 		Subjects:          []string{"foo", "bar"},
 		MaxMsgsPerSubject: 1,
-		Storage:           nats.MemoryStorage,
+		Storage:           jetstream.MemoryStorage,
 	})
 	require_NoError(t, err)
 
@@ -4189,21 +4528,23 @@ func TestNoRaceJetStreamClusterHealthz(t *testing.T) {
 	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HZ", _EMPTY_, 3, 23033, true)
 	defer c.shutdown()
 
-	nc1, js1 := jsClientConnect(t, c.randomServer(), nats.UserInfo("one", "p"))
+	nc1, js1 := jsClientConnectNewAPI(t, c.randomServer(), nats.UserInfo("one", "p"))
+	ctx := context.Background()
+	_ = ctx
 	defer nc1.Close()
 
-	nc2, js2 := jsClientConnect(t, c.randomServer(), nats.UserInfo("two", "p"))
+	nc2, js2 := jsClientConnectNewAPI(t, c.randomServer(), nats.UserInfo("two", "p"))
 	defer nc2.Close()
 
 	var err error
 	for _, sname := range []string{"foo", "bar", "baz"} {
-		_, err = js1.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
+		_, err = js1.CreateStream(ctx, jetstream.StreamConfig{Name: sname, Replicas: 3})
 		require_NoError(t, err)
-		_, err = js2.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
+		_, err = js2.CreateStream(ctx, jetstream.StreamConfig{Name: sname, Replicas: 3})
 		require_NoError(t, err)
 	}
 	// R1
-	_, err = js1.AddStream(&nats.StreamConfig{Name: "r1", Replicas: 1})
+	_, err = js1.CreateStream(ctx, jetstream.StreamConfig{Name: "r1", Replicas: 1})
 	require_NoError(t, err)
 
 	// Now shutdown then send a bunch of data.
@@ -4285,7 +4626,9 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 	}
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s, nats.UserInfo("me", "pwd"))
+	nc, js := jsClientConnectNewAPI(t, s, nats.UserInfo("me", "pwd"))
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Make sure to flush so we process the 2nd INFO.
@@ -4299,7 +4642,7 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 	require_Error(t, err, nats.ErrMaxPayload)
 	sub.Unsubscribe()
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"*", "X.*"},
 	})
@@ -4329,7 +4672,7 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 	}
 
 	// Now add one more message to check pagination
-	_, err = js.Publish("foo", []byte("TOO MUCH"))
+	_, err = js.Publish(ctx, "foo", []byte("TOO MUCH"))
 	require_NoError(t, err)
 
 	req, err = json.Marshal(&JSApiStreamInfoRequest{ApiPagedRequest: ApiPagedRequest{Offset: n}, SubjectsFilter: nats.AllKeys})
@@ -4348,36 +4691,38 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	msg := []byte("ok")
 
 	cases := []struct {
 		name    string
-		mconfig *nats.StreamConfig
+		mconfig *jetstream.StreamConfig
 	}{
-		{"MemoryStore", &nats.StreamConfig{Name: "TEST", Storage: nats.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
+		{"MemoryStore", &jetstream.StreamConfig{Name: "TEST", Storage: jetstream.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
 			Subjects: []string{"*"}}},
-		{"FileStore", &nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage, MaxMsgsPerSubject: 25_000_000,
+		{"FileStore", &jetstream.StreamConfig{Name: "TEST", Storage: jetstream.FileStorage, MaxMsgsPerSubject: 25_000_000,
 			Subjects: []string{"*"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			js.DeleteStream("TEST")
-			_, err := js.AddStream(c.mconfig)
+			js.DeleteStream(ctx, "TEST")
+			_, err := js.CreateStream(ctx, *c.mconfig)
 			require_NoError(t, err)
 
 			// We will purposely place foo msgs near the beginning, then in middle, then at the end.
 			for n := 0; n < 2; n++ {
-				_, err = js.PublishAsync("foo", msg, nats.StallWait(800*time.Millisecond))
+				_, err = js.PublishAsync("foo", msg, jetstream.WithStallWait(800*time.Millisecond))
 				require_NoError(t, err)
 
 				for i := 0; i < 1_000_000; i++ {
-					_, err = js.PublishAsync("bar", msg, nats.StallWait(800*time.Millisecond))
+					_, err = js.PublishAsync("bar", msg, jetstream.WithStallWait(800*time.Millisecond))
 					require_NoError(t, err)
 				}
-				_, err = js.PublishAsync("foo", msg, nats.StallWait(800*time.Millisecond))
+				_, err = js.PublishAsync("foo", msg, jetstream.WithStallWait(800*time.Millisecond))
 				require_NoError(t, err)
 			}
 			select {
@@ -4387,14 +4732,14 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 			}
 
 			// Now create a consumer on foo.
-			ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{DeliverSubject: "x.x", FilterSubject: "foo", AckPolicy: nats.AckNonePolicy})
+			ci, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{DeliverSubject: "x.x", FilterSubject: "foo", AckPolicy: jetstream.AckNonePolicy})
 			require_NoError(t, err)
 
 			done, received := make(chan bool), uint64(0)
 
 			cb := func(m *nats.Msg) {
 				received++
-				if received >= ci.NumPending {
+				if received >= ci.CachedInfo().NumPending {
 					done <- true
 				}
 			}
@@ -4423,13 +4768,15 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, _ := jsClientConnect(t, s)
+	nc, _ := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	js, err := nc.JetStream(nats.PublishAsyncMaxPending(256))
+	js, err := jetstream.New(nc, jetstream.WithPublishAsyncMaxPending(256))
 	require_NoError(t, err)
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "test",
 		Subjects: []string{"test.*.subj"},
 		Replicas: 1,
@@ -4439,13 +4786,16 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 	toSend := 50_000
 	count := 0
 	ch := make(chan struct{}, 6)
-	_, err = js.Subscribe("test.*.subj", func(m *nats.Msg) {
+	cons, err := js.CreateOrUpdateConsumer(ctx, "test", jetstream.ConsumerConfig{FilterSubject: "test.*.subj", DeliverPolicy: jetstream.DeliverNewPolicy, AckPolicy: jetstream.AckExplicitPolicy})
+	require_NoError(t, err)
+	cc, err := cons.Consume(func(m jetstream.Msg) {
 		m.Ack()
 		if count++; count == toSend {
 			ch <- struct{}{}
 		}
-	}, nats.DeliverNew(), nats.ManualAck())
+	})
 	require_NoError(t, err)
+	defer cc.Stop()
 
 	msg := make([]byte, 1024)
 	sent := int32(0)
@@ -4453,7 +4803,7 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 		defer func() { ch <- struct{}{} }()
 		for i := 0; i < toSend/5; i++ {
 			msgID := atomic.AddInt32(&sent, 1)
-			_, err := js.Publish(fmt.Sprintf("test.%d.subj", msgID), msg)
+			_, err := js.Publish(ctx, fmt.Sprintf("test.%d.subj", msgID), msg)
 			if err != nil {
 				t.Error(err)
 				return
@@ -4526,10 +4876,12 @@ func TestNoRaceJetStreamMsgIdPerfDuringCatchup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.serverByName("S-1"))
+	nc, js := jsClientConnectNewAPI(t, c.serverByName("S-1"))
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Replicas: 3,
 	})
@@ -4543,10 +4895,10 @@ func TestNoRaceJetStreamMsgIdPerfDuringCatchup(t *testing.T) {
 	c.waitOnStreamLeader("$G", "TEST")
 
 	// Connect to new leader.
-	nc, _ = jsClientConnect(t, c.streamLeader("$G", "TEST"))
+	nc, _ = jsClientConnectNewAPI(t, c.streamLeader("$G", "TEST"))
 	defer nc.Close()
 
-	js, err = nc.JetStream(nats.PublishAsyncMaxPending(1024))
+	js, err = jetstream.New(nc, jetstream.WithPublishAsyncMaxPending(1024))
 	require_NoError(t, err)
 
 	n, ss, sr := 1_000_000, 250_000, 800_000
@@ -4587,7 +4939,13 @@ func TestNoRaceJetStreamMsgIdPerfDuringCatchup(t *testing.T) {
 	}
 
 	tt := time.Since(start)
-	si, err := js.StreamInfo("TEST")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	require_NoError(t, err)
 
 	fmt.Printf("Took %v to send %d msgs\n", tt, n)
@@ -4609,10 +4967,12 @@ func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{Name: "DD"})
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "DD"})
 	require_NoError(t, err)
 
 	m := nats.NewMsg("DD")
@@ -4634,7 +4994,13 @@ func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	}
 
 	tt := time.Since(start)
-	si, err := js.StreamInfo("DD")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "DD")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	require_NoError(t, err)
 
 	fmt.Printf("Took %v to send %d msgs\n", tt, n)
@@ -4661,12 +5027,16 @@ func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	// Now do an ephemeral consumer and whip through every message. Doing same calculations.
 	start = time.Now()
 	received, done := 0, make(chan bool)
-	sub, err := js.Subscribe("DD", func(m *nats.Msg) {
+	st, err := js.Stream(ctx, "DD")
+	require_NoError(t, err)
+	sub, err := st.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{FilterSubjects: []string{"DD"}})
+	require_NoError(t, err)
+	cc, err := sub.Consume(func(m jetstream.Msg) {
 		received++
 		if received >= n {
 			done <- true
 		}
-	}, nats.OrderedConsumer())
+	})
 	require_NoError(t, err)
 
 	select {
@@ -4679,7 +5049,7 @@ func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	}
 
 	fmt.Printf("TOOK %v to receive all %d msgs\n", time.Since(start), n)
-	sub.Unsubscribe()
+	cc.Stop()
 
 	v, _ = s.Varz(nil)
 	fmt.Printf("Memory: %v\n", friendlyBytes(v.Mem))
@@ -4691,15 +5061,17 @@ func TestNoRaceJetStreamMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{Name: "DD", Subjects: []string{"ORDERS.*"}, MaxMsgs: 10_000})
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "DD", Subjects: []string{"ORDERS.*"}, MaxMsgs: 10_000})
 	require_NoError(t, err)
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:    "M",
-		Mirror:  &nats.StreamSource{Name: "DD"},
+		Mirror:  &jetstream.StreamSource{Name: "DD"},
 		MaxMsgs: 10_000,
 	})
 	require_NoError(t, err)
@@ -4724,7 +5096,13 @@ func TestNoRaceJetStreamMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
 	}
 
 	tt := time.Since(start)
-	si, err := js.StreamInfo("DD")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "DD")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	require_NoError(t, err)
 
 	fmt.Printf("Took %v to send %d msgs\n", tt, n)
@@ -4741,13 +5119,15 @@ func TestNoRaceJetStreamOrderedConsumerLongRTTPerformance(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, _ := jsClientConnect(t, s)
+	nc, _ := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	js, err := nc.JetStream(nats.PublishAsyncMaxPending(1000))
+	js, err := jetstream.New(nc, jetstream.WithPublishAsyncMaxPending(1000))
 	require_NoError(t, err)
 
-	_, err = js.AddStream(&nats.StreamConfig{Name: "OCP"})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "OCP"})
 	require_NoError(t, err)
 
 	n, msg := 100_000, []byte(strings.Repeat("D", 30_000))
@@ -4763,19 +5143,29 @@ func TestNoRaceJetStreamOrderedConsumerLongRTTPerformance(t *testing.T) {
 	}
 
 	// Approximately 3GB
-	si, err := js.StreamInfo("OCP")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "OCP")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	require_NoError(t, err)
 
 	start := time.Now()
 	received, done := 0, make(chan bool)
-	sub, err := js.Subscribe("OCP", func(m *nats.Msg) {
+	st, err := js.Stream(ctx, "OCP")
+	require_NoError(t, err)
+	sub, err := st.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{FilterSubjects: []string{"OCP"}})
+	require_NoError(t, err)
+	cc, err := sub.Consume(func(m jetstream.Msg) {
 		received++
 		if received >= n {
 			done <- true
 		}
-	}, nats.OrderedConsumer())
+	})
 	require_NoError(t, err)
-	defer sub.Unsubscribe()
+	defer cc.Stop()
 
 	// Wait to receive all messages.
 	select {
@@ -4789,7 +5179,7 @@ func TestNoRaceJetStreamOrderedConsumerLongRTTPerformance(t *testing.T) {
 	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
 	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
 
-	sub.Unsubscribe()
+	cc.Stop()
 
 	rtt := 10 * time.Millisecond
 	bw := 10 * 1024 * 1024 * 1024
@@ -4799,18 +5189,22 @@ func TestNoRaceJetStreamOrderedConsumerLongRTTPerformance(t *testing.T) {
 	nc, err = nats.Connect(proxy.clientURL())
 	require_NoError(t, err)
 	defer nc.Close()
-	js, err = nc.JetStream()
+	js, err = jetstream.New(nc)
 	require_NoError(t, err)
 
 	start, received = time.Now(), 0
-	sub, err = js.Subscribe("OCP", func(m *nats.Msg) {
+	st, err = js.Stream(ctx, "OCP")
+	require_NoError(t, err)
+	sub, err = st.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{FilterSubjects: []string{"OCP"}})
+	require_NoError(t, err)
+	cc, err = sub.Consume(func(m jetstream.Msg) {
 		received++
 		if received >= n {
 			done <- true
 		}
-	}, nats.OrderedConsumer())
+	})
 	require_NoError(t, err)
-	defer sub.Unsubscribe()
+	defer cc.Stop()
 
 	// Wait to receive all messages.
 	select {
@@ -4852,7 +5246,9 @@ func TestNoRaceJetStreamClusterCatchupStallGate(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterStallCatchupTempl, "GSG", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// ~100k per message.
@@ -4867,13 +5263,13 @@ func TestNoRaceJetStreamClusterCatchupStallGate(t *testing.T) {
 			defer wg.Done()
 			for n := 1; n <= 10; n++ {
 				sn := fmt.Sprintf("S-%d", n+x)
-				_, err := js.AddStream(&nats.StreamConfig{
+				_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 					Name:     sn,
 					Replicas: 3,
 				})
 				require_NoError(t, err)
 				for i := 0; i < 100; i++ {
-					_, err := js.Publish(sn, msg)
+					_, err := js.Publish(ctx, sn, msg)
 					require_NoError(t, err)
 				}
 			}
@@ -4881,7 +5277,7 @@ func TestNoRaceJetStreamClusterCatchupStallGate(t *testing.T) {
 	}
 	wg.Wait()
 
-	info, err := js.AccountInfo()
+	info, err := js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_True(t, info.Streams == 200)
 
@@ -4916,14 +5312,16 @@ func TestNoRaceJetStreamClusterCatchupBailMidway(t *testing.T) {
 	defer c.shutdown()
 
 	ml := c.leader()
-	nc, js := jsClientConnect(t, ml)
+	nc, js := jsClientConnectNewAPI(t, ml)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	msg := []byte(strings.Repeat("A", 480))
 
 	for i := 0; i < maxConcurrentSyncRequests*2; i++ {
 		sn := fmt.Sprintf("CUP-%d", i+1)
-		_, err := js.AddStream(&nats.StreamConfig{
+		_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:     sn,
 			Replicas: 3,
 		})
@@ -4979,15 +5377,17 @@ func TestNoRaceJetStreamAccountLimitsAndRestart(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterAccountLimitsTempl, "A3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	for i := 0; i < 20_000; i++ {
-		if _, err := js.Publish("TEST", []byte("A")); err != nil {
+		if _, err := js.Publish(ctx, "TEST", []byte("A")); err != nil {
 			break
 		}
 		if i == 5_000 {
@@ -5013,16 +5413,18 @@ func TestNoRaceJetStreamAccountLimitsAndRestartForceSnapshot(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterAccountLimitsTempl, "A3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	snl := c.randomNonStreamLeader("$JS", "TEST")
 	for i := 0; i < 20_000; i++ {
-		if _, err := js.Publish("TEST", []byte("A")); err != nil {
+		if _, err := js.Publish(ctx, "TEST", []byte("A")); err != nil {
 			break
 		}
 		if i == 5_000 {
@@ -5064,25 +5466,27 @@ func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "ID", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "foo",
 		Replicas:  3,
 		MaxMsgs:   50000,
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 
 	c.waitOnStreamLeader(globalAccountName, "foo")
 
-	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
+	_, err = js.CreateOrUpdateConsumer(ctx, "foo", jetstream.ConsumerConfig{
 		Durable:       "foo",
 		FilterSubject: "foo",
 		MaxAckPending: 20000,
 		AckWait:       5 * time.Second,
-		AckPolicy:     nats.AckExplicitPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
 
@@ -5099,19 +5503,25 @@ func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			sub, err := js.PullSubscribe("foo", "foo")
+			sub, err := func() (jetstream.Consumer, error) {
+				st, e := js.Stream(ctx, "foo")
+				if e != nil {
+					return nil, e
+				}
+				return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "foo", FilterSubject: "foo", AckPolicy: jetstream.AckExplicitPolicy})
+			}()
 			if err != nil {
 				return
 			}
 			for {
-				msgs, err := sub.Fetch(200, nats.MaxWait(250*time.Millisecond))
+				msgs, err := sub.Fetch(200, jetstream.FetchMaxWait(250*time.Millisecond))
 				if err != nil {
 					if n := int(atomic.LoadInt32(&rcv)); n >= toSend {
 						return
 					}
 					continue
 				}
-				for _, m := range msgs {
+				for m := range msgs.Messages() {
 					m.Ack()
 					atomic.AddInt32(&rcv, 1)
 				}
@@ -5124,7 +5534,7 @@ func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
 			defer wg.Done()
 
 			for i := 0; i < toSend/prods; i++ {
-				js.Publish("foo", []byte("hello"))
+				js.Publish(ctx, "foo", []byte("hello"))
 			}
 		}()
 	}
@@ -5158,21 +5568,23 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	limit := uint64(1000)
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"foo"},
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 		MaxMsgs:   int64(limit),
 		Replicas:  3,
 	})
 	require_NoError(t, err)
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: "dur", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
 
 	qch := make(chan bool)
@@ -5187,7 +5599,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 			case <-qch:
 				return
 			default:
-				_, err := js.Publish("foo", []byte("BUG!"))
+				_, err := js.Publish(ctx, "foo", []byte("BUG!"))
 				require_NoError(t, err)
 				// Only sleep every so often.
 				if i%100 == 0 {
@@ -5207,12 +5619,18 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 			nc := natsConnect(t, c.randomServer().ClientURL())
 			defer nc.Close()
 
-			js, err := nc.JetStream(nats.MaxWait(time.Second))
+			js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(time.Second))
 			require_NoError(t, err)
 
-			var sub *nats.Subscription
+			var sub jetstream.Consumer
 			for j := 0; j < 5; j++ {
-				sub, err = js.PullSubscribe("foo", "dur")
+				sub, err = func() (jetstream.Consumer, error) {
+					st, e := js.Stream(ctx, "TEST")
+					if e != nil {
+						return nil, e
+					}
+					return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "dur", FilterSubject: "foo", AckPolicy: jetstream.AckExplicitPolicy})
+				}()
 				if err == nil {
 					break
 				}
@@ -5228,11 +5646,15 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 						t.Logf("Got a Fetch error: %v", err)
 						return
 					}
-					if len(msgs) > 0 {
+					var got []jetstream.Msg
+					for m := range msgs.Messages() {
+						got = append(got, m)
+					}
+					if len(got) > 0 {
 						go func() {
 							ackDelay := time.Duration(rand.Intn(375)+15) * time.Millisecond
-							m := msgs[0]
-							time.AfterFunc(ackDelay, func() { m.AckSync() })
+							m := got[0]
+							time.AfterFunc(ackDelay, func() { m.DoubleAck(ctx) })
 						}()
 					}
 				case <-qch:
@@ -5244,7 +5666,13 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 
 	// Make sure we have hit the limit for the number of messages we expected.
 	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
-		si, err := js.StreamInfo("TEST")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "TEST")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		require_NoError(t, err)
 		if si.State.Msgs < limit {
 			return fmt.Errorf("Not hit limit yet")
@@ -5256,9 +5684,21 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	wg.Wait()
 
 	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
-		si, err := js.StreamInfo("TEST")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "TEST")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		require_NoError(t, err)
-		ci, err := js.ConsumerInfo("TEST", "dur")
+		ci, err := func() (*jetstream.ConsumerInfo, error) {
+			c, e := js.Consumer(ctx, "TEST", "dur")
+			if e != nil {
+				return nil, e
+			}
+			return c.Info(ctx)
+		}()
 		require_NoError(t, err)
 
 		np := ci.NumPending + uint64(ci.NumAckPending)
@@ -5276,7 +5716,9 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Start as R1
@@ -5322,7 +5764,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnectNewAPI(t, c.randomServer())
 			defer nc.Close()
 			for {
 				select {
@@ -5334,7 +5776,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 					return
 				default:
 					// Send as fast as we can.
-					js.Publish(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
+					js.Publish(ctx, fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
 				}
 			}
 		}()
@@ -5348,7 +5790,13 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 
 	// Wait for the stream to register the new replicas and have a leader.
 	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
-		si, err := js.StreamInfo("TEST")
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "TEST")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			return err
 		}
@@ -5383,7 +5831,13 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		})
 	}
 
-	si, err := js.StreamInfo("TEST")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	require_NoError(t, err)
 
 	if si.State.Msgs == uint64(num) {
@@ -5414,12 +5868,14 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 	defer c.shutdown()
 
 	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	createStream := func(name string) {
 		t.Helper()
-		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+		if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: name}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
@@ -5484,10 +5940,12 @@ func TestNoRaceJetStreamClusterConsumerListPaging(t *testing.T) {
 	defer c.shutdown()
 
 	s := c.randomNonLeader()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
@@ -5495,17 +5953,17 @@ func TestNoRaceJetStreamClusterConsumerListPaging(t *testing.T) {
 	require_NoError(t, err)
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 
-	cfg := &nats.ConsumerConfig{
+	cfg := &jetstream.ConsumerConfig{
 		Replicas:      1,
 		MemoryStorage: true,
-		AckPolicy:     nats.AckExplicitPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
 	}
 
 	// create 3000 consumers.
 	numConsumers := 3000
 	for i := 1; i <= numConsumers; i++ {
 		cfg.Durable = fmt.Sprintf("d-%.4d", i)
-		_, err := js.AddConsumer("TEST", cfg)
+		_, err := js.CreateOrUpdateConsumer(ctx, "TEST", *cfg)
 		require_NoError(t, err)
 	}
 
@@ -5647,10 +6105,12 @@ func TestNoRaceJetStreamKVLock(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "LOCKS"})
+	_, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "LOCKS"})
 	require_NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -5666,15 +6126,15 @@ func TestNoRaceJetStreamKVLock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			nc, js := jsClientConnect(t, s)
+			nc, js := jsClientConnectNewAPI(t, s)
 			defer nc.Close()
-			kv, err := js.KeyValue("LOCKS")
+			kv, err := js.KeyValue(ctx, "LOCKS")
 			require_NoError(t, err)
 
 			<-start
 
 			for {
-				last, err := kv.Create("MY_LOCK", []byte("Z"))
+				last, err := kv.Create(ctx, "MY_LOCK", []byte("Z"))
 				if err != nil {
 					select {
 					case <-time.After(10 * time.Millisecond):
@@ -5695,7 +6155,7 @@ func TestNoRaceJetStreamKVLock(t *testing.T) {
 					cancel()
 				}
 
-				err = kv.Delete("MY_LOCK", nats.LastRevision(last))
+				err = kv.Delete(ctx, "MY_LOCK", jetstream.LastRevision(last))
 				if err != nil {
 					t.Logf("Could not unlock for last %d: %v", last, err)
 				}
@@ -5723,18 +6183,22 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 	sc := createJetStreamTaggedSuperClusterWithGWProxy(t, gwm)
 	defer sc.shutdown()
 
-	nc, js := jsClientConnect(t, sc.randomServer())
+	nc, js := jsClientConnectNewAPI(t, sc.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	cfg := &nats.StreamConfig{
+	cfg := &jetstream.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"chunk.*"},
-		Placement: &nats.Placement{Tags: []string{"cloud:aws", "country:us"}},
+		Placement: &jetstream.Placement{Tags: []string{"cloud:aws", "country:us"}},
 		Replicas:  3,
 	}
 
 	// Place a stream in C1.
-	_, err := js.AddStream(cfg, nats.MaxWait(10*time.Second))
+	c1Ctx, c1Cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer c1Cancel()
+	_, err := js.CreateStream(c1Ctx, *cfg)
 	require_NoError(t, err)
 
 	chunk := bytes.Repeat([]byte("Z"), 1000*1024) // ~1MB
@@ -5750,12 +6214,18 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 	}
 
 	// C2, slow RTT.
-	cfg.Placement = &nats.Placement{Tags: []string{"cloud:gcp", "country:uk"}}
-	_, err = js.UpdateStream(cfg)
+	cfg.Placement = &jetstream.Placement{Tags: []string{"cloud:gcp", "country:uk"}}
+	_, err = js.UpdateStream(ctx, *cfg)
 	require_NoError(t, err)
 
 	checkFor(t, 20*time.Second, time.Second, func() error {
-		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, "TEST")
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		if err != nil {
 			return err
 		}
@@ -5780,14 +6250,16 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"ORDERS.*"},
-		Storage:   nats.MemoryStorage,
-		Retention: nats.WorkQueuePolicy,
+		Storage:   jetstream.MemoryStorage,
+		Retention: jetstream.WorkQueuePolicy,
 	})
 	require_NoError(t, err)
 
@@ -5803,23 +6275,25 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 		Durable:       "PROCESSOR",
-		AckPolicy:     nats.AckExplicitPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
 		MaxAckPending: 5000,
 	})
 	require_NoError(t, err)
 
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	sub1, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("TEST", "PROCESSOR"))
+	sub1, err := js.Consumer(ctx, "TEST", "PROCESSOR")
 	require_NoError(t, err)
 
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnectNewAPI(t, s)
+	ctx = context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	sub2, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("TEST", "PROCESSOR"))
+	sub2, err := js.Consumer(ctx, "TEST", "PROCESSOR")
 	require_NoError(t, err)
 
 	startCh := make(chan bool)
@@ -5829,20 +6303,27 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	fetchSize := 1000
-	fetch := func(sub *nats.Subscription) {
+	fetch := func(sub jetstream.Consumer) {
 		<-startCh
 		defer wg.Done()
 
 		for {
-			msgs, err := sub.Fetch(fetchSize, nats.MaxWait(time.Second))
-			if atomic.AddInt32(&received, int32(len(msgs))) >= toSend {
+			msgs, err := sub.Fetch(fetchSize, jetstream.FetchMaxWait(time.Second))
+			if err != nil {
+				break
+			}
+			var got []jetstream.Msg
+			for m := range msgs.Messages() {
+				got = append(got, m)
+			}
+			if atomic.AddInt32(&received, int32(len(got))) >= toSend {
 				break
 			}
 			// We should always receive a full batch here if not last competing fetch.
-			if err != nil || len(msgs) != fetchSize {
+			if len(got) != fetchSize {
 				break
 			}
-			for _, m := range msgs {
+			for _, m := range got {
 				m.Ack()
 			}
 		}
@@ -5867,14 +6348,16 @@ func TestNoRaceJetStreamManyPullConsumersNeedAckOptimization(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "ORDERS",
 		Subjects:  []string{"ORDERS.*"},
-		Storage:   nats.MemoryStorage,
-		Retention: nats.InterestPolicy,
+		Storage:   jetstream.MemoryStorage,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 
@@ -5883,10 +6366,10 @@ func TestNoRaceJetStreamManyPullConsumersNeedAckOptimization(t *testing.T) {
 
 	// Create 500 consumers
 	for i := 1; i <= numConsumers; i++ {
-		_, err := js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+		_, err := js.CreateOrUpdateConsumer(ctx, "ORDERS", jetstream.ConsumerConfig{
 			Durable:       fmt.Sprintf("ORDERS_%d", i),
 			FilterSubject: fmt.Sprintf("ORDERS.%d", i),
-			AckPolicy:     nats.AckAllPolicy,
+			AckPolicy:     jetstream.AckAllPolicy,
 		})
 		require_NoError(t, err)
 	}
@@ -5901,15 +6384,19 @@ func TestNoRaceJetStreamManyPullConsumersNeedAckOptimization(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	sub, err := js.PullSubscribe("ORDERS.500", "ORDERS_500")
+	sub, err := js.Consumer(ctx, "ORDERS", "ORDERS_500")
 	require_NoError(t, err)
 
 	fetchSize := toSend / numConsumers
-	msgs, err := sub.Fetch(fetchSize, nats.MaxWait(time.Second))
+	msgs, err := sub.Fetch(fetchSize, jetstream.FetchMaxWait(time.Second))
 	require_NoError(t, err)
 
-	last := msgs[len(msgs)-1]
-	last.AckSync()
+	var got []jetstream.Msg
+	for m := range msgs.Messages() {
+		got = append(got, m)
+	}
+	last := got[len(got)-1]
+	last.DoubleAck(ctx)
 }
 
 // https://github.com/nats-io/nats-server/issues/3499
@@ -5918,25 +6405,27 @@ func TestNoRaceJetStreamDeleteConsumerWithInterestStreamAndHighSeqs(t *testing.T
 	defer s.Shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"log.>"},
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 		Durable:   "c",
-		AckPolicy: nats.AckExplicitPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
 
 	// Set baseline for time to delete so we can see linear increase as sequence numbers increase.
 	start := time.Now()
-	err = js.DeleteConsumer("TEST", "c")
+	err = js.DeleteConsumer(ctx, "TEST", "c")
 	require_NoError(t, err)
 	elapsed := time.Since(start)
 
@@ -5947,9 +6436,9 @@ func TestNoRaceJetStreamDeleteConsumerWithInterestStreamAndHighSeqs(t *testing.T
 	}
 	nc.Flush()
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 		Durable:   "c",
-		AckPolicy: nats.AckExplicitPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
 
@@ -5957,7 +6446,7 @@ func TestNoRaceJetStreamDeleteConsumerWithInterestStreamAndHighSeqs(t *testing.T
 	// ackfloor(0) and the last sequence for the stream. We will detect by looking for the time
 	// to delete being 100x more. Should be the same since both times no messages exist in the stream.
 	start = time.Now()
-	err = js.DeleteConsumer("TEST", "c")
+	err = js.DeleteConsumer(ctx, "TEST", "c")
 	require_NoError(t, err)
 
 	if e := time.Since(start); e > 100*elapsed {
@@ -5993,10 +6482,12 @@ func TestNoRaceJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	defer s.Shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 	})
@@ -6013,14 +6504,20 @@ func TestNoRaceJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	fmt.Printf("Base time is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
 
-	err = js.PurgeStream("TEST")
+	err = func() error {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return e
+		}
+		return s.Purge(ctx)
+	}()
 	require_NoError(t, err)
 
 	// Now add in 10 idle consumers.
 	for i := 1; i <= 10; i++ {
-		_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		_, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 			Durable:   fmt.Sprintf("d-%d", i),
-			AckPolicy: nats.AckExplicitPolicy,
+			AckPolicy: jetstream.AckExplicitPolicy,
 		})
 		require_NoError(t, err)
 	}
@@ -6034,14 +6531,20 @@ func TestNoRaceJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	fmt.Printf("\n10 consumers time is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
 
-	err = js.PurgeStream("TEST")
+	err = func() error {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return e
+		}
+		return s.Purge(ctx)
+	}()
 	require_NoError(t, err)
 
 	// Now add in 90 more idle consumers.
 	for i := 11; i <= 100; i++ {
-		_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		_, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 			Durable:   fmt.Sprintf("d-%d", i),
-			AckPolicy: nats.AckExplicitPolicy,
+			AckPolicy: jetstream.AckExplicitPolicy,
 		})
 		require_NoError(t, err)
 	}
@@ -6055,14 +6558,20 @@ func TestNoRaceJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	fmt.Printf("\n100 consumers time is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
 
-	err = js.PurgeStream("TEST")
+	err = func() error {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return e
+		}
+		return s.Purge(ctx)
+	}()
 	require_NoError(t, err)
 
 	// Now add in 900 more
 	for i := 101; i <= 1000; i++ {
-		_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		_, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 			Durable:   fmt.Sprintf("d-%d", i),
-			AckPolicy: nats.AckExplicitPolicy,
+			AckPolicy: jetstream.AckExplicitPolicy,
 		})
 		require_NoError(t, err)
 	}
@@ -6085,10 +6594,12 @@ func TestNoRaceJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
 	defer s.Shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"ID.*"},
 	})
@@ -6096,10 +6607,10 @@ func TestNoRaceJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
 
 	// Now add in ~10k consumers on different subjects.
 	for i := 3; i <= 10_000; i++ {
-		_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		_, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 			Durable:       fmt.Sprintf("d-%d", i),
 			FilterSubject: fmt.Sprintf("ID.%d", i),
-			AckPolicy:     nats.AckNonePolicy,
+			AckPolicy:     jetstream.AckNonePolicy,
 		})
 		require_NoError(t, err)
 	}
@@ -6110,25 +6621,31 @@ func TestNoRaceJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
 	var received int
 	done := make(chan bool)
 
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	mh := func(m *nats.Msg) {
+	mh := func(m jetstream.Msg) {
 		received++
 		if received >= toSend {
 			close(done)
 		}
 	}
-	_, err = js.Subscribe("ID.2", mh)
+	cons2, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{FilterSubject: "ID.2", AckPolicy: jetstream.AckNonePolicy})
 	require_NoError(t, err)
+	cc2, err := cons2.Consume(mh)
+	require_NoError(t, err)
+	defer cc2.Stop()
 
 	last := make(chan bool)
-	_, err = js.Subscribe("ID.1", func(_ *nats.Msg) { close(last) })
+	cons1, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{FilterSubject: "ID.1", AckPolicy: jetstream.AckNonePolicy})
 	require_NoError(t, err)
+	cc1, err := cons1.Consume(func(_ jetstream.Msg) { close(last) })
+	require_NoError(t, err)
+	defer cc1.Stop()
 
-	nc, _ = jsClientConnect(t, s)
+	nc, _ = jsClientConnectNewAPI(t, s)
 	defer nc.Close()
-	js, err = nc.JetStream(nats.PublishAsyncMaxPending(8 * 1024))
+	js, err = jetstream.New(nc, jetstream.WithPublishAsyncMaxPending(8*1024))
 	require_NoError(t, err)
 
 	start := time.Now()
@@ -6166,23 +6683,25 @@ func TestNoRaceJetStreamEndToEndLatency(t *testing.T) {
 	defer s.Shutdown()
 
 	// Client for API requests.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 	})
 	require_NoError(t, err)
 
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
 	var sent time.Time
 	var max time.Duration
 	next := make(chan struct{})
 
-	mh := func(m *nats.Msg) {
+	mh := func(m jetstream.Msg) {
 		received := time.Now()
 		tt := received.Sub(sent)
 		if max == 0 || tt > max {
@@ -6190,19 +6709,23 @@ func TestNoRaceJetStreamEndToEndLatency(t *testing.T) {
 		}
 		next <- struct{}{}
 	}
-	sub, err := js.Subscribe("foo", mh)
+	cons, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{FilterSubject: "foo", AckPolicy: jetstream.AckNonePolicy})
+	require_NoError(t, err)
+	cc, err := cons.Consume(mh)
 	require_NoError(t, err)
 
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnectNewAPI(t, s)
+	ctx = context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	toSend := 50_000
 	for i := 0; i < toSend; i++ {
 		sent = time.Now()
-		js.Publish("foo", []byte("ok"))
+		js.Publish(ctx, "foo", []byte("ok"))
 		<-next
 	}
-	sub.Unsubscribe()
+	cc.Stop()
 
 	if max > 250*time.Millisecond {
 		t.Fatalf("Expected max latency to be < 250ms, got %v", max)
@@ -6213,17 +6736,19 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
 	})
 	require_NoError(t, err)
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 		Durable:        "dlc",
 		DeliverSubject: "zz",
 		Replicas:       3,
@@ -6243,7 +6768,7 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 	// Now publish more than should be needed to cause an additional snapshot.
 	ns := 75_000
 	for i := 0; i <= ns; i++ {
-		_, err := js.Publish("foo", []byte("bar"))
+		_, err := js.Publish(ctx, "foo", []byte("bar"))
 		require_NoError(t, err)
 	}
 
@@ -6412,10 +6937,12 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 	c.waitOnLeader()
 	server := c.randomNonLeader()
 
-	nc, js := jsClientConnect(t, server)
+	nc, js := jsClientConnectNewAPI(t, server)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"events.>"},
 		Replicas: 3,
@@ -6426,8 +6953,15 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 	// by a terminal fwc. The consumer will have a terminal pwc.
 	// Here make all subjects unique.
 
-	sub, err := js.PullSubscribe("events.*", "DLC")
+	sub, err := func() (jetstream.Consumer, error) {
+		st, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return nil, e
+		}
+		return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "DLC", FilterSubject: "events.*", AckPolicy: jetstream.AckExplicitPolicy})
+	}()
 	require_NoError(t, err)
+	_ = sub
 
 	toSend := 250_000
 	for i := 0; i < toSend; i++ {
@@ -6444,7 +6978,13 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 		t.Helper()
 		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 			start := time.Now()
-			ci, err := js.ConsumerInfo("TEST", "DLC")
+			ci, err := func() (*jetstream.ConsumerInfo, error) {
+				c, e := js.Consumer(ctx, "TEST", "DLC")
+				if e != nil {
+					return nil, e
+				}
+				return c.Info(ctx)
+			}()
 			if err != nil {
 				return err
 			}
@@ -6464,8 +7004,8 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 
 	// Do a few acks.
 	toAck := 25
-	for _, m := range fetchMsgs(t, sub, 25, time.Second) {
-		err = m.AckSync()
+	for _, m := range fetchJetStreamMsgs(t, sub, 25, time.Second) {
+		err = m.DoubleAck(ctx)
 		require_NoError(t, err)
 	}
 	checkNumPending(toSend - toAck)
@@ -6473,7 +7013,13 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 	// Now do a purge such that we only keep so many.
 	// We want to make sure we do the right thing here and have correct calculations.
 	toKeep := 100_000
-	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Keep: uint64(toKeep)})
+	err = func() error {
+		s, e := js.Stream(ctx, "TEST")
+		if e != nil {
+			return e
+		}
+		return s.Purge(ctx, jetstream.WithPurgeKeep(uint64(toKeep)))
+	}()
 	require_NoError(t, err)
 
 	checkNumPending(toKeep)
@@ -6486,10 +7032,12 @@ func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.CreateKeyValue(&nats.KeyValueConfig{
+	_, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:   "TEST",
 		Replicas: 3,
 	})
@@ -6505,17 +7053,17 @@ func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnectNewAPI(t, c.randomServer())
 			defer nc.Close()
-			kv, err := js.KeyValue("TEST")
+			kv, err := js.KeyValue(ctx, "TEST")
 			require_NoError(t, err)
 
 			for i := 0; i < npubs; i++ {
 				subj := fmt.Sprintf("KEY-%d", rand.Intn(nsubjs))
-				if _, err := kv.PutString(subj, "hello"); err != nil {
-					nc, js := jsClientConnect(t, c.randomServer())
+				if _, err := kv.PutString(ctx, subj, "hello"); err != nil {
+					nc, js := jsClientConnectNewAPI(t, c.randomServer())
 					defer nc.Close()
-					kv, err = js.KeyValue("TEST")
+					kv, err = js.KeyValue(ctx, "TEST")
 					require_NoError(t, err)
 				}
 			}
@@ -6550,10 +7098,16 @@ func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
 	}
 	wg.Wait()
 
-	nc, js = jsClientConnect(t, c.randomServer())
+	nc, js = jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
-	si, err := js.StreamInfo("KV_TEST")
+	si, err := func() (*jetstream.StreamInfo, error) {
+		s, e := js.Stream(ctx, "KV_TEST")
+		if e != nil {
+			return nil, e
+		}
+		return s.Info(ctx)
+	}()
 	require_NoError(t, err)
 	require_True(t, si.State.NumSubjects == uint64(nsubjs))
 }
@@ -6566,10 +7120,12 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"events.>"},
 	})
@@ -6591,21 +7147,21 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 	threshold := 50 * time.Millisecond
 
 	start := time.Now()
-	_, err = js.PullSubscribe("events.*", "dlc")
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: "dlc", FilterSubject: "events.*", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
 	if elapsed := time.Since(start); elapsed > threshold {
 		t.Skipf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
 	}
 
 	start = time.Now()
-	_, err = js.PullSubscribe("events.99999", "xxx")
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: "xxx", FilterSubject: "events.99999", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
 	if elapsed := time.Since(start); elapsed > threshold {
 		t.Skipf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
 	}
 
 	start = time.Now()
-	_, err = js.PullSubscribe(">", "zzz")
+	_, err = js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: "zzz", FilterSubject: ">", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
 	if elapsed := time.Since(start); elapsed > threshold {
 		t.Skipf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
@@ -6623,10 +7179,12 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "GHOST", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"events.>"},
 		Replicas: 3,
@@ -6641,20 +7199,20 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 
 	fetch := func(id int) {
 		subject := fmt.Sprintf("events.%d.*", id)
-		subscription, err := js.PullSubscribe(subject,
-			_EMPTY_, // ephemeral consumer
-			nats.DeliverAll(),
-			nats.ReplayInstant(),
-			nats.BindStream("TEST"),
-			nats.ConsumerReplicas(1),
-			nats.ConsumerMemoryStorage(),
-		)
+		subscription, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
+			FilterSubject: subject,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+			ReplayPolicy:  jetstream.ReplayInstantPolicy,
+			Replicas:      1,
+			MemoryStorage: true,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+		})
 		if err != nil {
 			return
 		}
-		defer subscription.Unsubscribe()
+		defer js.DeleteConsumer(ctx, "TEST", subscription.CachedInfo().Name)
 
-		info, err := subscription.ConsumerInfo()
+		info, err := subscription.Info(ctx)
 		if err != nil {
 			return
 		}
@@ -6788,23 +7346,25 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 
 	// Do some quick sanity checking for latency stuff.
 	{
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
+		ctx := context.Background()
+		_ = ctx
 		defer nc.Close()
 
-		_, err := js.AddStream(&nats.StreamConfig{
+		_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:      "TEST",
 			Replicas:  3,
 			Subjects:  []string{"foo"},
-			Retention: nats.InterestPolicy,
+			Retention: jetstream.InterestPolicy,
 		})
 		require_NoError(t, err)
-		defer js.DeleteStream("TEST")
+		defer js.DeleteStream(ctx, "TEST")
 
 		sl := c.streamLeader(globalAccountName, "TEST")
-		nc, js = jsClientConnect(t, sl)
+		nc, js = jsClientConnectNewAPI(t, sl)
 		defer nc.Close()
 		start := time.Now()
-		_, err = js.Publish("foo", []byte("hello"))
+		_, err = js.Publish(ctx, "foo", []byte("hello"))
 		require_NoError(t, err)
 		// This is best case, and with client connection being close to free, this should be at least > rtt
 		if elapsed := time.Since(start); elapsed < np.rtt {
@@ -6812,10 +7372,10 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 		}
 
 		nl := c.randomNonStreamLeader(globalAccountName, "TEST")
-		nc, js = jsClientConnect(t, nl)
+		nc, js = jsClientConnectNewAPI(t, nl)
 		defer nc.Close()
 		start = time.Now()
-		_, err = js.Publish("foo", []byte("hello"))
+		_, err = js.Publish(ctx, "foo", []byte("hello"))
 		require_NoError(t, err)
 		// This is worst case, meaning message has to travel to leader, then to fastest replica, then back.
 		// So should be at 3x rtt, so check at least > 2x rtt.
@@ -6825,7 +7385,8 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 	}
 
 	// Setup source streams.
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
 	defer nc.Close()
 
 	t.Logf("Creating %d Source Streams", numSourceStreams)
@@ -6840,61 +7401,70 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 			defer wg.Done()
 			t.Logf("  %q", stream)
 			subj := fmt.Sprintf("%s.>", stream)
-			_, err := js.AddStream(&nats.StreamConfig{
+			_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 				Name:      stream,
 				Subjects:  []string{subj},
 				Replicas:  3,
-				Retention: nats.InterestPolicy,
+				Retention: jetstream.InterestPolicy,
 			})
 			require_NoError(t, err)
 			for j := 0; j < numConsumersPerSource; j++ {
 				consumer := fmt.Sprintf("C%d", j)
-				_, err := js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
-					msg.Ack()
-				}, nats.BindStream(stream), nats.Durable(consumer), nats.ManualAck())
+				cons, err := js.CreateOrUpdateConsumer(ctx, stream, jetstream.ConsumerConfig{Durable: consumer, AckPolicy: jetstream.AckExplicitPolicy})
 				require_NoError(t, err)
+				cc, err := cons.Consume(func(msg jetstream.Msg) {
+					msg.Ack()
+				})
+				require_NoError(t, err)
+				defer cc.Stop()
 			}
 		}(sname)
 	}
 	wg.Wait()
 
-	var streamSources []*nats.StreamSource
+	var streamSources []*jetstream.StreamSource
 	for _, src := range sources {
-		streamSources = append(streamSources, &nats.StreamSource{Name: src})
+		streamSources = append(streamSources, &jetstream.StreamSource{Name: src})
 
 	}
 
 	t.Log("Creating Aggregate Stream")
 
 	// Now create the aggregate stream.
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "EVENTS",
 		Replicas:  3,
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 		Sources:   streamSources,
 	})
 	require_NoError(t, err)
 
 	// Set first sequence to a high number.
 	if setHighStartSequence {
-		require_NoError(t, js.PurgeStream("EVENTS", &nats.StreamPurgeRequest{Sequence: 32_000_001}))
+		require_NoError(t, func() error {
+			s, e := js.Stream(ctx, "EVENTS")
+			if e != nil {
+				return e
+			}
+			return s.Purge(ctx, jetstream.WithPurgeSequence(32_000_001))
+		}())
 	}
 
 	// Now create 2 pull consumers.
-	_, err = js.PullSubscribe(_EMPTY_, "C1",
-		nats.BindStream("EVENTS"),
-		nats.MaxDeliver(1),
-		nats.AckWait(10*time.Second),
-		nats.ManualAck(),
-	)
+	_, err = js.CreateOrUpdateConsumer(ctx, "EVENTS", jetstream.ConsumerConfig{
+		Durable:    "C1",
+		MaxDeliver: 1,
+		AckWait:    10 * time.Second,
+		AckPolicy:  jetstream.AckExplicitPolicy,
+	})
 	require_NoError(t, err)
 
-	_, err = js.PullSubscribe(_EMPTY_, "C2",
-		nats.BindStream("EVENTS"),
-		nats.MaxDeliver(1),
-		nats.AckWait(10*time.Second),
-		nats.ManualAck(),
-	)
+	_, err = js.CreateOrUpdateConsumer(ctx, "EVENTS", jetstream.ConsumerConfig{
+		Durable:    "C2",
+		MaxDeliver: 1,
+		AckWait:    10 * time.Second,
+		AckPolicy:  jetstream.AckExplicitPolicy,
+	})
 	require_NoError(t, err)
 
 	t.Logf("Creating %d x 2 Pull Subscribers", numPullersPerConsumer)
@@ -6903,30 +7473,29 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 	for _, subName := range []string{"C1", "C2"} {
 		for i := 0; i < numPullersPerConsumer; i++ {
 			go func(subName string) {
-				nc, js := jsClientConnect(t, c.randomServer())
+				nc, js := jsClientConnectNewAPI(t, c.randomServer())
 				defer nc.Close()
 
-				sub, err := js.PullSubscribe(_EMPTY_, subName,
-					nats.BindStream("EVENTS"),
-					nats.MaxDeliver(1),
-					nats.AckWait(10*time.Second),
-					nats.ManualAck(),
-				)
+				sub, err := js.Consumer(ctx, "EVENTS", subName)
 				require_NoError(t, err)
 
 				for {
-					msgs, err := sub.Fetch(25, nats.MaxWait(2*time.Second))
+					msgs, err := sub.Fetch(25, jetstream.FetchMaxWait(2*time.Second))
 					if err != nil && err != nats.ErrTimeout {
 						t.Logf("Exiting pull subscriber %q: %v", subName, err)
 						return
 					}
+					var got []jetstream.Msg
+					for m := range msgs.Messages() {
+						got = append(got, m)
+					}
 					// Shuffle
-					rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+					rand.Shuffle(len(got), func(i, j int) { got[i], got[j] = got[j], got[i] })
 
 					// Wait for a random interval up to 100ms.
 					time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 
-					for _, m := range msgs {
+					for _, m := range got {
 						// If we want to simulate max redeliveries being hit, since not acking
 						// once will cause it due to subscriber setup.
 						// 100_000 == 0.01%
@@ -6982,7 +7551,7 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 
 	for i := 0; i < numPublishers; i++ {
 		go func() {
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnectNewAPI(t, c.randomServer())
 			defer nc.Close()
 
 			for {
@@ -6992,7 +7561,7 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 				evt := eventTypes[rand.Intn(len(eventTypes))]
 				subj := fmt.Sprintf("%s.%s", stream, evt)
 				start := time.Now()
-				_, err := js.Publish(subj, msg)
+				_, err := js.Publish(ctx, subj, msg)
 				if err != nil {
 					t.Logf("Exiting publisher: %v", err)
 					return
@@ -7015,7 +7584,7 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 
 	// Create monitoring routine.
 	go func() {
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
 
 		fseq, lseq := uint64(0), uint64(0)
@@ -7023,7 +7592,13 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 			// Grab consumers
 			var minAckFloor uint64 = math.MaxUint64
 			for _, consumer := range []string{"C1", "C2"} {
-				ci, err := js.ConsumerInfo("EVENTS", consumer)
+				ci, err := func() (*jetstream.ConsumerInfo, error) {
+					c, e := js.Consumer(ctx, "EVENTS", consumer)
+					if e != nil {
+						return nil, e
+					}
+					return c.Info(ctx)
+				}()
 				if err != nil {
 					t.Logf("Exiting Monitor: %v", err)
 					return
@@ -7037,7 +7612,13 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 				}
 			}
 			// Now grab aggregate stream state.
-			si, err := js.StreamInfo("EVENTS")
+			si, err := func() (*jetstream.StreamInfo, error) {
+				s, e := js.Stream(ctx, "EVENTS")
+				if e != nil {
+					return nil, e
+				}
+				return s.Info(ctx)
+			}()
 			if err != nil {
 				t.Logf("Exiting Monitor: %v", err)
 				return
@@ -7128,15 +7709,17 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 	defer c.shutdown()
 	defer np.stop()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Now create the stream.
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "EVENTS",
 		Subjects:  []string{"EV.>"},
 		Replicas:  3,
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 
@@ -7152,7 +7735,7 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 	})
 
 	// Now create the consumer.
-	_, err = js.PullSubscribe(_EMPTY_, "C", nats.BindStream("EVENTS"), nats.ManualAck())
+	_, err = js.CreateOrUpdateConsumer(ctx, "EVENTS", jetstream.ConsumerConfig{Durable: "C", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
 
 	// Make sure the consumer leader is on S3.
@@ -7166,18 +7749,22 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 		return nil
 	})
 
-	go func(js nats.JetStream) {
-		sub, err := js.PullSubscribe(_EMPTY_, "C", nats.BindStream("EVENTS"), nats.ManualAck())
+	go func(js jetstream.JetStream) {
+		sub, err := js.Consumer(ctx, "EVENTS", "C")
 		require_NoError(t, err)
 
 		for {
-			msgs, err := sub.Fetch(100, nats.MaxWait(2*time.Second))
+			msgs, err := sub.Fetch(100, jetstream.FetchMaxWait(2*time.Second))
 			if err != nil && err != nats.ErrTimeout {
 				return
 			}
+			var got []jetstream.Msg
+			for m := range msgs.Messages() {
+				got = append(got, m)
+			}
 			// Shuffle
-			rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
-			for _, m := range msgs {
+			rand.Shuffle(len(got), func(i, j int) { got[i], got[j] = got[j], got[i] })
+			for _, m := range got {
 				m.Ack()
 			}
 		}
@@ -7201,12 +7788,12 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 			// Connect to random, the slow ones will be connected to the slow node.
 			// But if you connect them all there it will pass.
 			s := c.randomServer()
-			nc, js := jsClientConnect(t, s)
+			nc, js := jsClientConnectNewAPI(t, s)
 			defer nc.Close()
 
 			for i := 0; i < 1_000; i++ {
 				start := time.Now()
-				_, err := js.Publish("EV.PAID", msg)
+				_, err := js.Publish(ctx, "EV.PAID", msg)
 				if err != nil {
 					errCh <- fmt.Errorf("Publish error: %v", err)
 					return
@@ -7235,32 +7822,37 @@ func TestNoRaceJetStreamInterestStreamCheckInterestRaceBug(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"foo"},
 		Replicas:  3,
-		Retention: nats.InterestPolicy,
-		Storage:   nats.MemoryStorage,
+		Retention: jetstream.InterestPolicy,
+		Storage:   jetstream.MemoryStorage,
 	})
 	require_NoError(t, err)
 
 	numConsumers := 10
 	for i := 0; i < numConsumers; i++ {
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
 
-		_, err = js.Subscribe("foo", func(m *nats.Msg) {
-			m.Ack()
-		}, nats.Durable(fmt.Sprintf("C%d", i)), nats.ManualAck())
+		cons, err := js.CreateOrUpdateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: fmt.Sprintf("C%d", i), FilterSubject: "foo", AckPolicy: jetstream.AckExplicitPolicy})
 		require_NoError(t, err)
+		cc, err := cons.Consume(func(m jetstream.Msg) {
+			m.Ack()
+		})
+		require_NoError(t, err)
+		defer cc.Stop()
 	}
 
 	numToSend := 10_000
 	for i := 0; i < numToSend; i++ {
-		_, err := js.PublishAsync("foo", nil, nats.StallWait(800*time.Millisecond))
+		_, err := js.PublishAsync("foo", nil, jetstream.WithStallWait(800*time.Millisecond))
 		require_NoError(t, err)
 	}
 	select {
@@ -7324,7 +7916,9 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 	numConsumersPer := 5
 	numPublishers := 10
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	qch := make(chan bool)
@@ -7344,14 +7938,15 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 	}
 
 	doPullSubscriber := func(stream, consumer, filter string) {
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
 
+		_ = filter
 		var err error
-		var sub *nats.Subscription
+		var sub jetstream.Consumer
 		timeout := time.Now().Add(5 * time.Second)
 		for time.Now().Before(timeout) {
-			sub, err = js.PullSubscribe(filter, consumer, nats.BindStream(stream), nats.ManualAck())
+			sub, err = js.Consumer(ctx, stream, consumer)
 			if err == nil {
 				break
 			}
@@ -7364,13 +7959,17 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 		for {
 			select {
 			case <-time.After(500 * time.Millisecond):
-				msgs, err := sub.Fetch(100, nats.MaxWait(time.Second))
+				msgs, err := sub.Fetch(100, jetstream.FetchMaxWait(time.Second))
 				if err != nil {
 					continue
 				}
+				var got []jetstream.Msg
+				for m := range msgs.Messages() {
+					got = append(got, m)
+				}
 				// Shuffle
-				rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
-				for _, m := range msgs {
+				rand.Shuffle(len(got), func(i, j int) { got[i], got[j] = got[j], got[i] })
+				for _, m := range got {
 					meta, err := m.Metadata()
 					require_NoError(t, err)
 					m.Ack()
@@ -7393,20 +7992,20 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 		go func(stream string) {
 			defer wg.Done()
 			subj := fmt.Sprintf("%s.>", stream)
-			_, err := js.AddStream(&nats.StreamConfig{
+			_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 				Name:      stream,
 				Subjects:  []string{subj},
 				Replicas:  3,
-				Retention: nats.InterestPolicy,
+				Retention: jetstream.InterestPolicy,
 			})
 			require_NoError(t, err)
 			for i := 0; i < numConsumersPer; i++ {
 				consumer := fmt.Sprintf("C%d", i)
 				filter := fmt.Sprintf("%s.%d", stream, i)
-				_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
+				_, err = js.CreateOrUpdateConsumer(ctx, stream, jetstream.ConsumerConfig{
 					Durable:       consumer,
 					FilterSubject: filter,
-					AckPolicy:     nats.AckExplicitPolicy,
+					AckPolicy:     jetstream.AckExplicitPolicy,
 					AckWait:       2 * time.Second,
 				})
 				require_NoError(t, err)
@@ -7424,7 +8023,7 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 	var pubActive atomic.Bool
 
 	doPublish := func() {
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
 
 		for {
@@ -7435,7 +8034,7 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 						for j := 0; j < numConsumersPer; j++ {
 							subj := fmt.Sprintf("A-%d.%d", i, j)
 							// Don't care about errors here for this test.
-							js.Publish(subj, msg)
+							js.Publish(ctx, subj, msg)
 						}
 					}
 				}
@@ -7476,7 +8075,7 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 	close(qch)
 	time.Sleep(20 * time.Second)
 
-	nc, js = jsClientConnect(t, c.randomServer())
+	nc, js = jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
 	minAckFloor := func(stream string) (uint64, string) {
@@ -7484,7 +8083,13 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 		var consumer string
 		for i := 0; i < numConsumersPer; i++ {
 			cname := fmt.Sprintf("C%d", i)
-			ci, err := js.ConsumerInfo(stream, cname)
+			ci, err := func() (*jetstream.ConsumerInfo, error) {
+				c, e := js.Consumer(ctx, stream, cname)
+				if e != nil {
+					return nil, e
+				}
+				return c.Info(ctx)
+			}()
 			require_NoError(t, err)
 			if ci.AckFloor.Stream < maf {
 				maf = ci.AckFloor.Stream
@@ -7517,7 +8122,13 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 	// Now check all streams such that their first sequence is equal to the minimum of all consumers.
 	for i := 0; i < numStreams; i++ {
 		stream := fmt.Sprintf("A-%d", i)
-		si, err := js.StreamInfo(stream)
+		si, err := func() (*jetstream.StreamInfo, error) {
+			s, e := js.Stream(ctx, stream)
+			if e != nil {
+				return nil, e
+			}
+			return s.Info(ctx)
+		}()
 		require_NoError(t, err)
 
 		if maf, consumer := minAckFloor(stream); maf > si.State.FirstSeq {
@@ -7687,15 +8298,17 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	defer c.shutdown()
 	defer np.stop()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Now create the stream.
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "EVENTS",
 		Subjects:  []string{"EV.>"},
 		Replicas:  3,
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 
@@ -7711,10 +8324,13 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	})
 
 	// Create a fast ack consumer.
-	_, err = js.Subscribe("EV.NEW", func(m *nats.Msg) {
-		m.Ack()
-	}, nats.Durable("C"), nats.ManualAck())
+	consC1, err := js.CreateOrUpdateConsumer(ctx, "EVENTS", jetstream.ConsumerConfig{Durable: "C", FilterSubject: "EV.NEW", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
+	ccC1, err := consC1.Consume(func(m jetstream.Msg) {
+		m.Ack()
+	})
+	require_NoError(t, err)
+	defer ccC1.Stop()
 
 	// Make sure the consumer leader is on S3.
 	cl := c.servers[2]
@@ -7728,11 +8344,17 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	})
 
 	// Connect a client directly to the stream leader.
-	nc, js = jsClientConnect(t, sl)
+	nc, js = jsClientConnectNewAPI(t, sl)
 	defer nc.Close()
 
 	// Now create a pull subscriber.
-	sub, err := js.PullSubscribe("EV.NEW", "D", nats.ManualAck())
+	sub, err := func() (jetstream.Consumer, error) {
+		st, e := js.Stream(ctx, "EVENTS")
+		if e != nil {
+			return nil, e
+		}
+		return st.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{Durable: "D", FilterSubject: "EV.NEW", AckPolicy: jetstream.AckExplicitPolicy})
+	}()
 	require_NoError(t, err)
 
 	// Make sure this consumer leader is on S1.
@@ -7760,14 +8382,24 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	// Now make sure we can pull messages since we have not acked.
 	// The bug is that the acks arrive on S1 faster then the messages but we want to
 	// make sure we do not remove prematurely.
-	msgs, err := sub.Fetch(100, nats.MaxWait(time.Second))
+	batch, err := sub.Fetch(100, jetstream.FetchMaxWait(time.Second))
 	require_NoError(t, err)
+	var msgs []jetstream.Msg
+	for m := range batch.Messages() {
+		msgs = append(msgs, m)
+	}
 	require_Len(t, len(msgs), 100)
 	for _, m := range msgs {
-		m.AckSync()
+		m.DoubleAck(ctx)
 	}
 
-	ci, err := js.ConsumerInfo("EVENTS", "D")
+	ci, err := func() (*jetstream.ConsumerInfo, error) {
+		c, e := js.Consumer(ctx, "EVENTS", "D")
+		if e != nil {
+			return nil, e
+		}
+		return c.Info(ctx)
+	}()
 	require_NoError(t, err)
 	require_Equal(t, ci.NumPending, uint64(numToSend-100))
 	require_Equal(t, ci.NumAckPending, 0)
@@ -7800,11 +8432,15 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 		return nil
 	})
 
-	msgs, err = sub.Fetch(900, nats.MaxWait(time.Second))
+	batch, err = sub.Fetch(900, jetstream.FetchMaxWait(time.Second))
 	require_NoError(t, err)
+	msgs = nil
+	for m := range batch.Messages() {
+		msgs = append(msgs, m)
+	}
 	require_Len(t, len(msgs), 900)
 	for _, m := range msgs {
-		m.AckSync()
+		m.DoubleAck(ctx)
 	}
 
 	// Let acks propagate.
@@ -7832,15 +8468,17 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *te
 	defer c.shutdown()
 	defer np.stop()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
+	ctx := context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Now create the stream.
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "EVENTS",
 		Subjects:  []string{"EV.>"},
 		Replicas:  3,
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 
@@ -7856,10 +8494,13 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *te
 	})
 
 	// Create a fast ack consumer.
-	_, err = js.Subscribe("EV.NEW", func(m *nats.Msg) {
-		m.Ack()
-	}, nats.Durable("C"), nats.ManualAck())
+	consC2, err := js.CreateOrUpdateConsumer(ctx, "EVENTS", jetstream.ConsumerConfig{Durable: "C", FilterSubject: "EV.NEW", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
+	ccC2, err := consC2.Consume(func(m jetstream.Msg) {
+		m.Ack()
+	})
+	require_NoError(t, err)
+	defer ccC2.Stop()
 
 	// Make sure the consumer leader is on S3.
 	cl := c.servers[2]
@@ -7873,14 +8514,19 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *te
 	})
 
 	// Connect a client directly to the stream leader.
-	nc, js = jsClientConnect(t, sl)
+	nc, js = jsClientConnectNewAPI(t, sl)
+	ctx = context.Background()
+	_ = ctx
 	defer nc.Close()
 
 	// Now create another fast ack consumer.
-	_, err = js.Subscribe("EV.UPDATED", func(m *nats.Msg) {
-		m.Ack()
-	}, nats.Durable("D"), nats.ManualAck())
+	consD2, err := js.CreateOrUpdateConsumer(ctx, "EVENTS", jetstream.ConsumerConfig{Durable: "D", FilterSubject: "EV.UPDATED", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
+	ccD2, err := consD2.Consume(func(m jetstream.Msg) {
+		m.Ack()
+	})
+	require_NoError(t, err)
+	defer ccD2.Stop()
 
 	// Make sure this consumer leader is on S1.
 	cl = c.servers[0]
@@ -7909,7 +8555,13 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *te
 	// Let acks propagate.
 	time.Sleep(250 * time.Millisecond)
 
-	ci, err := js.ConsumerInfo("EVENTS", "D")
+	ci, err := func() (*jetstream.ConsumerInfo, error) {
+		c, e := js.Consumer(ctx, "EVENTS", "D")
+		if e != nil {
+			return nil, e
+		}
+		return c.Info(ctx)
+	}()
 	require_NoError(t, err)
 	require_Equal(t, ci.NumPending, 0)
 	require_Equal(t, ci.NumAckPending, 0)

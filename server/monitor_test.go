@@ -14,6 +14,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
 
@@ -5014,45 +5016,46 @@ func TestMonitorJsz(t *testing.T) {
 
 	nc := natsConnect(t, "nats://usr:pwd@127.0.0.1:7500")
 	defer nc.Close()
-	js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(5*time.Second))
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{
+	ctx := context.Background()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "my-stream-replicated",
 		Subjects: []string{"foo", "bar"},
 		Replicas: 2,
 	})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "my-stream-non-replicated",
 		Subjects: []string{"baz"},
 		Replicas: 1,
 	})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "my-stream-mirror",
 		Replicas: 2,
-		Mirror: &nats.StreamSource{
+		Mirror: &jetstream.StreamSource{
 			Name: "my-stream-replicated",
 		},
 	})
 	require_NoError(t, err)
-	_, err = js.AddConsumer("my-stream-replicated", &nats.ConsumerConfig{
+	_, err = js.CreateConsumer(ctx, "my-stream-replicated", jetstream.ConsumerConfig{
 		Durable:   "my-consumer-replicated",
-		AckPolicy: nats.AckExplicitPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
-	_, err = js.AddConsumer("my-stream-non-replicated", &nats.ConsumerConfig{
+	_, err = js.CreateConsumer(ctx, "my-stream-non-replicated", jetstream.ConsumerConfig{
 		Durable:   "my-consumer-non-replicated",
-		AckPolicy: nats.AckExplicitPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
-	_, err = js.AddConsumer("my-stream-mirror", &nats.ConsumerConfig{
+	_, err = js.CreateConsumer(ctx, "my-stream-mirror", jetstream.ConsumerConfig{
 		Durable:   "my-consumer-mirror",
-		AckPolicy: nats.AckExplicitPolicy,
+		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
 	nc.Flush()
-	_, err = js.Publish("foo", nil)
+	_, err = js.Publish(ctx, "foo", nil)
 	require_NoError(t, err)
 	// Wait for mirror replication
 	time.Sleep(200 * time.Millisecond)
@@ -5465,9 +5468,9 @@ func TestMonitorJszOperatorMode(t *testing.T) {
 	defer nc.Close()
 
 	// Create a stream so the APP account shows up in Jsz.
-	js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(5*time.Second))
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(context.Background(), jetstream.StreamConfig{
 		Name:     "my-stream",
 		Subjects: []string{"foo", "bar"},
 		MaxBytes: 1024,
@@ -6633,9 +6636,9 @@ func TestMetaClusterInfoSnapshotStats(t *testing.T) {
 
 	// Create a stream to generate some meta activity.
 	s := c.randomNonLeader()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(context.Background(), jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
@@ -6676,7 +6679,7 @@ func TestMetaClusterInfoSnapshotStats(t *testing.T) {
 	})
 
 	// Check STATSZ event includes Snapshot.
-	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	snc, _ := jsClientConnectNewAPI(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
 	defer snc.Close()
 
 	ch := make(chan *nats.Msg, 1)

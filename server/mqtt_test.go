@@ -18,6 +18,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -2641,12 +2643,17 @@ func TestMQTTSubQoS2Restart(t *testing.T) {
 	c, r := createSub(false)
 	defer c.Close()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 	checkSub := func(count int) {
 		t.Helper()
 		checkFor(t, time.Second, 15*time.Millisecond, func() error {
-			for c := range js.Consumers(mqttOutStreamName) {
+			stream, err := js.Stream(ctx, mqttOutStreamName)
+			if err != nil {
+				return fmt.Errorf("Did not find a JS consumer for %q", mqttOutStreamName)
+			}
+			for c := range stream.ListConsumers(ctx).Info() {
 				acc := s.GlobalAccount()
 				res := acc.sl.Match(c.Config.DeliverSubject)
 				if n := len(res.psubs); n != count {
@@ -3517,16 +3524,17 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
 	// Create the retained messages stream to listen on the old subject first.
 	// The server will correct this when the migration takes place.
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      mqttRetainedMsgsStreamName,
 		Subjects:  []string{`$MQTT.rmsgs`},
-		Storage:   nats.FileStorage,
-		Retention: nats.LimitsPolicy,
+		Storage:   jetstream.FileStorage,
+		Retention: jetstream.LimitsPolicy,
 		Replicas:  1,
 	})
 	require_NoError(t, err)
@@ -3537,14 +3545,14 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 		msg := fmt.Sprintf(
 			`{"origin":"b5IQZNtG","subject":"test%d","topic":"test%d","msg":"YmFy","flags":1}`, i, i,
 		)
-		_, err := js.Publish(`$MQTT.rmsgs`, []byte(msg))
+		_, err := js.Publish(ctx, `$MQTT.rmsgs`, []byte(msg))
 		require_NoError(t, err)
 	}
 
 	// Check that the old subject looks right.
-	si, err := js.StreamInfo(mqttRetainedMsgsStreamName, &nats.StreamInfoRequest{
-		SubjectsFilter: `$MQTT.>`,
-	})
+	stream, err := js.Stream(ctx, mqttRetainedMsgsStreamName)
+	require_NoError(t, err)
+	si, err := stream.Info(ctx, jetstream.WithSubjectFilter(`$MQTT.>`))
 	require_NoError(t, err)
 	if si.State.NumSubjects != 1 {
 		t.Fatalf("expected 1 subject, got %d", si.State.NumSubjects)
@@ -3580,9 +3588,7 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 
 	// Now look at the stream, there should be N messages on the new
 	// divided subjects and none on the old undivided subject.
-	si, err = js.StreamInfo(mqttRetainedMsgsStreamName, &nats.StreamInfoRequest{
-		SubjectsFilter: `$MQTT.>`,
-	})
+	si, err = stream.Info(ctx, jetstream.WithSubjectFilter(`$MQTT.>`))
 	require_NoError(t, err)
 	if si.State.NumSubjects != N {
 		t.Fatalf("expected %d subjects, got %d", N, si.State.NumSubjects)
@@ -3732,17 +3738,22 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 			defer nc.Close()
 
 			// Check the replicas of all MQTT streams
-			js, err := nc.JetStream()
+			js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(10*time.Second))
 			if err != nil {
 				t.Fatalf("Error getting js: %v", err)
 			}
+			ctx := context.Background()
 			for _, sname := range []string{
 				mqttStreamName,
 				mqttRetainedMsgsStreamName,
 				mqttSessStreamName,
 			} {
 				t.Run(sname, func(t *testing.T) {
-					si, err := js.StreamInfo(sname)
+					stream, err := js.Stream(ctx, sname)
+					if err != nil {
+						t.Fatalf("Error getting stream info: %v", err)
+					}
+					si, err := stream.Info(ctx)
 					if err != nil {
 						t.Fatalf("Error getting stream info: %v", err)
 					}
@@ -3804,12 +3815,13 @@ func TestMQTTClusterPlacement(t *testing.T) {
 	// Now check that MQTT assets have been created in the LEAF node's side, not the Hub.
 	nc := natsConnect(t, lnc.servers[0].ClientURL())
 	defer nc.Close()
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(10*time.Second))
 	if err != nil {
 		t.Fatalf("Unable to get JetStream: %v", err)
 	}
+	ctx := context.Background()
 	count := 0
-	for si := range js.StreamsInfo() {
+	for si := range js.ListStreams(ctx).Info() {
 		if si.Cluster == nil || si.Cluster.Name != "SPOKE" {
 			t.Fatalf("Expected asset %q to be placed on spoke cluster, was placed on %+v", si.Config.Name, si.Cluster)
 		}
@@ -3819,7 +3831,11 @@ func TestMQTTClusterPlacement(t *testing.T) {
 			}
 		}
 		if si.State.Consumers > 0 {
-			for ci := range js.ConsumersInfo(si.Config.Name) {
+			stream, err := js.Stream(ctx, si.Config.Name)
+			if err != nil {
+				t.Fatalf("Unable to get stream: %v", err)
+			}
+			for ci := range stream.ListConsumers(ctx).Info() {
 				if ci.Cluster == nil || ci.Cluster.Name != "SPOKE" {
 					t.Fatalf("Expected asset %q to be placed on spoke cluster, was placed on %+v", ci.Name, si.Cluster)
 				}
@@ -6198,8 +6214,9 @@ func TestMQTTMaxAckPending(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownRestartedServer(&s)
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
 	dir := strings.TrimSuffix(s.JetStreamConfig().StoreDir, JetStreamStoreDir)
 
@@ -6230,7 +6247,11 @@ func TestMQTTMaxAckPending(t *testing.T) {
 
 	// Give a chance to the server to "close" the consumer
 	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		for ci := range js.ConsumersInfo("$MQTT_msgs") {
+		stream, err := js.Stream(ctx, "$MQTT_msgs")
+		if err != nil {
+			return err
+		}
+		for ci := range stream.ListConsumers(ctx).Info() {
 			if ci.PushBound {
 				return fmt.Errorf("Consumer still connected")
 			}
@@ -6730,14 +6751,15 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 3)
 	defer cl.shutdown()
 
-	nc, js := jsClientConnect(t, cl.randomServer())
+	nc, js := jsClientConnectNewAPI(t, cl.randomServer())
 	defer nc.Close()
+	ctx := context.Background()
 
 	// Create 2 streams that start with "$MQTT_sess_" to check for transfer to new
 	// mux'ed unique "$MQTT_sess" stream. One of this stream will not contain a
 	// proper session record, and we will check that the stream does not get deleted.
 	sessStreamName1 := mqttSessionsStreamNamePrefix + getHash("sub")
-	if _, err := js.AddStream(&nats.StreamConfig{
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     sessStreamName1,
 		Subjects: []string{sessStreamName1},
 		Replicas: 3,
@@ -6759,13 +6781,13 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 		}},
 	}
 	b, _ := json.Marshal(&ps)
-	if _, err := js.Publish(sessStreamName1, b); err != nil {
+	if _, err := js.Publish(ctx, sessStreamName1, b); err != nil {
 		t.Fatalf("Error on publish: %v", err)
 	}
 
 	// Create the stream that has "$MQTT_sess_" prefix, but that is not really a MQTT session stream
 	sessStreamName2 := mqttSessionsStreamNamePrefix + "ivan"
-	if _, err := js.AddStream(&nats.StreamConfig{
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     sessStreamName2,
 		Subjects: []string{sessStreamName2},
 		Replicas: 3,
@@ -6773,7 +6795,7 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Unable to add stream: %v", err)
 	}
-	if _, err := js.Publish(sessStreamName2, []byte("some content")); err != nil {
+	if _, err := js.Publish(ctx, sessStreamName2, []byte("some content")); err != nil {
 		t.Fatalf("Error on publish: %v", err)
 	}
 
@@ -6788,7 +6810,7 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 
 	// Check that old session stream is gone, but the non session stream is still present.
 	var gotIt = false
-	for info := range js.StreamsInfo() {
+	for info := range js.ListStreams(ctx).Info() {
 		if strings.HasPrefix(info.Config.Name, mqttSessionsStreamNamePrefix) {
 			if strings.HasSuffix(info.Config.Name, "_ivan") {
 				gotIt = true
@@ -6802,7 +6824,11 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 	}
 
 	// We want to check that the record was properly transferred.
-	rmsg, err := js.GetMsg(mqttSessStreamName, 2)
+	sessStream, err := js.Stream(ctx, mqttSessStreamName)
+	if err != nil {
+		t.Fatalf("Unable to get session stream: %v", err)
+	}
+	rmsg, err := sessStream.GetMsg(ctx, 2)
 	if err != nil {
 		t.Fatalf("Unable to get session message: %v", err)
 	}
@@ -7094,12 +7120,15 @@ func TestMQTTStreamReplicasOverride(t *testing.T) {
 		defer mc.Close()
 		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, restarted)
 
-		nc, js := jsClientConnect(t, cl.servers[2])
+		nc, js := jsClientConnectNewAPI(t, cl.servers[2])
 		defer nc.Close()
+		ctx := context.Background()
 
 		streams := []string{mqttStreamName, mqttRetainedMsgsStreamName, mqttSessStreamName}
 		for _, sn := range streams {
-			si, err := js.StreamInfo(sn)
+			stream, err := js.Stream(ctx, sn)
+			require_NoError(t, err)
+			si, err := stream.Info(ctx)
 			require_NoError(t, err)
 			if n := len(si.Cluster.Replicas); n != 2 {
 				t.Fatalf("Expected stream %q to have 2 replicas, got %v", sn, n)
@@ -7287,10 +7316,13 @@ func TestMQTTConsumerReplicasOverride(t *testing.T) {
 		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, restarted)
 		testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: subject, qos: 1}}, []byte{1})
 
-		nc, js := jsClientConnect(t, cl.servers[2])
+		nc, js := jsClientConnectNewAPI(t, cl.servers[2])
 		defer nc.Close()
+		ctx := context.Background()
 
-		for ci := range js.ConsumersInfo(mqttStreamName) {
+		stream, err := js.Stream(ctx, mqttStreamName)
+		require_NoError(t, err)
+		for ci := range stream.ListConsumers(ctx).Info() {
 			if ci.Config.FilterSubject == mqttStreamSubjectPrefix+subject {
 				if rf := len(ci.Cluster.Replicas) + 1; rf != 5 {
 					t.Fatalf("Expected consumer to be R5, got: %d", rf)
@@ -7386,15 +7418,18 @@ func TestMQTTConsumerInactiveThreshold(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
-	ci := <-js.ConsumersInfo("$MQTT_msgs")
+	stream, err := js.Stream(ctx, "$MQTT_msgs")
+	require_NoError(t, err)
+	ci := <-stream.ListConsumers(ctx).Info()
 
 	// Make sure we clean up this consumer.
 	mc.Close()
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-		_, err := js.ConsumerInfo(ci.Stream, ci.Name)
+		_, err := js.Consumer(ctx, ci.Stream, ci.Name)
 		if err == nil {
 			return fmt.Errorf("Consumer still present")
 		}
@@ -7429,8 +7464,9 @@ func TestMQTTSubjectMapping(t *testing.T) {
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
 	for _, qos := range []byte{0, 1} {
 		t.Run(fmt.Sprintf("qos%d", qos), func(t *testing.T) {
@@ -7500,7 +7536,9 @@ func TestMQTTSubjectMapping(t *testing.T) {
 			mcp.Close()
 			testMQTTCheckPubMsgNoAck(t, mc, r, bar, expected, []byte("willmsg2"))
 
-			si, err := js.StreamInfo("$MQTT_msgs")
+			stream, err := js.Stream(ctx, "$MQTT_msgs")
+			require_NoError(t, err)
+			si, err := stream.Info(ctx)
 			require_NoError(t, err)
 			if qos == 0 {
 				require_True(t, si.State.Msgs == 0)
@@ -7899,10 +7937,13 @@ func TestMQTTSubjectWildcardStart(t *testing.T) {
 	testMQTTExpectNothing(t, r3)
 
 	// Make sure we did not retain the messages prefixed with $.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
-	si, err := js.StreamInfo(mqttStreamName)
+	stream, err := js.Stream(ctx, mqttStreamName)
+	require_NoError(t, err)
+	si, err := stream.Info(ctx)
 	require_NoError(t, err)
 
 	require_True(t, si.State.Msgs == 0)
@@ -7964,14 +8005,15 @@ func TestMQTTJetStreamRepublishAndQoS0Subscribers(t *testing.T) {
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
 	// Setup stream with republish on it.
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
-		RePublish: &nats.RePublish{
+		RePublish: &jetstream.RePublish{
 			Source:      "foo",
 			Destination: "mqtt.foo",
 		},
@@ -7987,7 +8029,7 @@ func TestMQTTJetStreamRepublishAndQoS0Subscribers(t *testing.T) {
 	testMQTTFlush(t, mc, nil, r)
 
 	msg := []byte("HELLO WORLD")
-	_, err = js.Publish("foo", msg)
+	_, err = js.Publish(ctx, "foo", msg)
 	require_NoError(t, err)
 
 	testMQTTCheckPubMsg(t, mc, r, "mqtt/foo", 0, msg)
@@ -8024,8 +8066,9 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	mc.Close()
 
 	// Store a "legacy", JSON-encoded payload directly into the stream.
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
 	rm := mqttRetainedMsg{
 		Origin:  "test",
@@ -8035,7 +8078,7 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 		Msg:     []byte("msg2"),
 	}
 	jsonData, _ := json.Marshal(rm)
-	_, err := js.PublishMsg(&nats.Msg{
+	_, err := js.PublishMsg(ctx, &nats.Msg{
 		Subject: mqttRetainedMsgsStreamSubject + rm.Subject,
 		Data:    jsonData,
 	})
@@ -8734,9 +8777,12 @@ func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 	rf, ok := asm.retmsgs["foo"]
 	asm.mu.RUnlock()
 	require_True(t, ok)
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
-	err := js.DeleteMsg(mqttRetainedMsgsStreamName, rf.sseq)
+	ctx := context.Background()
+	stream, err := js.Stream(ctx, mqttRetainedMsgsStreamName)
+	require_NoError(t, err)
+	err = stream.DeleteMsg(ctx, rf.sseq)
 	require_NoError(t, err)
 
 	// Wait for more than the cache TTL
@@ -8848,32 +8894,35 @@ func TestMQTTCrossAccountRetain(t *testing.T) {
 
 			// Now we are going to do something unusual, which is to update
 			// the MQTT retain stream in "B" to source from "A".
-			nc, js := jsClientConnect(t, s, nats.UserInfo("b", "x"))
+			nc, js := jsClientConnectNewAPI(t, s, nats.UserInfo("b", "x"))
 			defer nc.Close()
+			ctx := context.Background()
 
-			si, err := js.StreamInfo(mqttRetainedMsgsStreamName)
+			stream, err := js.Stream(ctx, mqttRetainedMsgsStreamName)
 			require_NoError(t, err)
-			src := &nats.StreamSource{
+			si, err := stream.Info(ctx)
+			require_NoError(t, err)
+			src := &jetstream.StreamSource{
 				Name: mqttRetainedMsgsStreamName,
-				External: &nats.ExternalStream{
+				External: &jetstream.ExternalStream{
 					APIPrefix:     "A.$JS.API",
 					DeliverPrefix: "a2b",
 				},
-				SubjectTransforms: []nats.SubjectTransformConfig{
+				SubjectTransforms: []jetstream.SubjectTransformConfig{
 					{
 						Source:      mqttRetainedMsgsStreamSubject + "foo.>",
 						Destination: test.sourceDest,
 					},
 				},
 			}
-			si.Config.Sources = []*nats.StreamSource{src}
-			_, err = js.UpdateStream(&si.Config)
+			si.Config.Sources = []*jetstream.StreamSource{src}
+			_, err = js.UpdateStream(ctx, si.Config)
 			require_NoError(t, err)
 
 			// Now wait to make sure that the "B" retained messages stream
 			// contains the message with body "Retain in A"
 			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-				msg, err := js.GetLastMsg(mqttRetainedMsgsStreamName, test.getLastMsgSubj)
+				msg, err := stream.GetLastMsgForSubject(ctx, test.getLastMsgSubj)
 				if err != nil {
 					return err
 				}
@@ -8927,8 +8976,8 @@ func TestMQTTCrossAccountRetain(t *testing.T) {
 
 			// We will check that the message gets removed from the stream.
 			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-				_, err := js.GetLastMsg(mqttRetainedMsgsStreamName, test.getLastMsgSubj)
-				if err == nats.ErrMsgNotFound {
+				_, err := stream.GetLastMsgForSubject(ctx, test.getLastMsgSubj)
+				if err == jetstream.ErrMsgNotFound {
 					return nil
 				}
 				return fmt.Errorf("Message still present or unexpected error %v", err)

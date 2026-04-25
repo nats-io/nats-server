@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // TestLongKVPutWithServerRestarts overwrites values in a replicated KV bucket for a fixed amount of time.
@@ -55,11 +56,12 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 	type Parameters struct {
 		numServers int
 		replicas   int
-		storage    nats.StorageType
+		storage    jetstream.StorageType
 	}
 
 	test := func(t *testing.T, p Parameters) {
 		rng := rand.New(rand.NewSource(Seed))
+		ctx := context.Background()
 
 		// Create cluster
 		clusterName := fmt.Sprintf("C_%d-%s", p.numServers, p.storage)
@@ -67,11 +69,11 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 		defer cluster.shutdown()
 
 		// Connect to a random server but client will discover others too.
-		nc, js := jsClientConnect(t, cluster.randomServer())
+		nc, js := jsClientConnectNewAPI(t, cluster.randomServer())
 		defer nc.Close()
 
 		// Create bucket
-		kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 			Bucket:   "TEST",
 			Replicas: p.replicas,
 			Storage:  p.storage,
@@ -86,7 +88,7 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 
 		// Initialize keys in bucket with an empty value
 		for _, key := range keys {
-			_, err := kv.Put(key, []byte{})
+			_, err := kv.Put(ctx, key, []byte{})
 			require_NoError(t, err)
 		}
 
@@ -129,7 +131,7 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 			key := keys[rand.Intn(NumKeys)]
 			_, err := rng.Read(valueBuffer)
 			require_NoError(t, err)
-			_, err = kv.Put(key, valueBuffer)
+			_, err = kv.Put(ctx, key, valueBuffer)
 			return err
 		}
 
@@ -176,8 +178,8 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 	}
 
 	testCases := []Parameters{
-		{numServers: 5, replicas: 3, storage: nats.MemoryStorage},
-		{numServers: 5, replicas: 3, storage: nats.FileStorage},
+		{numServers: 5, replicas: 3, storage: jetstream.MemoryStorage},
+		{numServers: 5, replicas: 3, storage: jetstream.FileStorage},
 	}
 
 	for _, testCase := range testCases {
@@ -507,7 +509,8 @@ func TestLongClusterWorkQueueMessagesNotSkipped(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	ctx := context.Background()
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
 	iterations := 500_000
@@ -519,13 +522,13 @@ func TestLongClusterWorkQueueMessagesNotSkipped(t *testing.T) {
 		"c3": "subj.c3",
 	}
 
-	sig := make(chan *nats.Msg, 900)
+	sig := make(chan jetstream.Msg, 900)
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	s, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:       stream,
-		Storage:    nats.FileStorage,
+		Storage:    jetstream.FileStorage,
 		Subjects:   []string{subjf},
-		Retention:  nats.WorkQueuePolicy,
+		Retention:  jetstream.WorkQueuePolicy,
 		Duplicates: time.Minute * 2,
 		Replicas:   3,
 		MaxAge:     time.Hour,
@@ -533,24 +536,21 @@ func TestLongClusterWorkQueueMessagesNotSkipped(t *testing.T) {
 	require_NoError(t, err)
 
 	for name, subjf := range consumers {
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
 
-		_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
+		cons, err := js.CreateConsumer(ctx, stream, jetstream.ConsumerConfig{
 			Name:          name,
 			FilterSubject: subjf,
 			Replicas:      3,
-			AckPolicy:     nats.AckExplicitPolicy,
-			DeliverPolicy: nats.DeliverAllPolicy,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
 		})
-		require_NoError(t, err)
-
-		ps, err := js.PullSubscribe(subjf, "", nats.Bind(stream, name))
 		require_NoError(t, err)
 
 		go func() {
 			for {
-				msgs, err := ps.FetchBatch(300)
+				msgs, err := cons.Fetch(300)
 				if errors.Is(err, nats.ErrTimeout) {
 					continue
 				}
@@ -579,7 +579,7 @@ func TestLongClusterWorkQueueMessagesNotSkipped(t *testing.T) {
 				if strings.HasPrefix(subj, "*") {
 					subj = strings.Replace(subj, "*", fmt.Sprintf("%d", i), 1)
 				}
-				_, err := js.PublishMsg(&nats.Msg{
+				_, err := js.PublishMsg(ctx, &nats.Msg{
 					Subject: subj,
 					Header:  hdrs,
 				})
@@ -597,12 +597,14 @@ func TestLongClusterWorkQueueMessagesNotSkipped(t *testing.T) {
 		select {
 		case <-sig:
 		case <-time.After(time.Second * 2):
-			si, err := js.StreamInfo(stream)
+			si, err := s.Info(ctx)
 			require_NoError(t, err)
 			t.Logf("Stream info: %+v", si.State)
 
 			for name := range consumers {
-				ci, err := js.ConsumerInfo(stream, name)
+				cn, err := js.Consumer(ctx, stream, name)
+				require_NoError(t, err)
+				ci, err := cn.Info(ctx)
 				require_NoError(t, err)
 				t.Logf("Consumer %q info: %+v, %+v", name, ci.AckFloor, ci.Delivered)
 			}
@@ -623,8 +625,8 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 		s.optsMu.Unlock()
 	}
 	s := c.randomNonLeader()
-	connect := func(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
-		return jsClientConnect(t, s)
+	connect := func(t *testing.T) (*nats.Conn, jetstream.JetStream) {
+		return jsClientConnectNewAPI(t, s)
 	}
 
 	const accountName = "$G"
@@ -636,24 +638,24 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 		}
 		return b
 	}
-	getOrCreateKvStore := func(kvname string) (nats.KeyValue, error) {
+	getOrCreateKvStore := func(kvname string) (jetstream.KeyValue, error) {
 		_, js := connect(t)
 		kvExists := false
-		existingKvnames := js.KeyValueStoreNames()
-		for existingKvname := range existingKvnames {
+		existingKvnames := js.KeyValueStoreNames(context.Background())
+		for existingKvname := range existingKvnames.Name() {
 			if existingKvname == kvname {
 				kvExists = true
 				break
 			}
 		}
 		if !kvExists {
-			return js.CreateKeyValue(&nats.KeyValueConfig{
+			return js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
 				Bucket:   kvname,
 				Replicas: 3,
-				Storage:  nats.FileStorage,
+				Storage:  jetstream.FileStorage,
 			})
 		} else {
-			return js.KeyValue(kvname)
+			return js.KeyValue(context.Background(), kvname)
 		}
 	}
 	abs := func(x int64) int64 {
@@ -717,7 +719,7 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 		}
 		for i := 0; i < numKeys; i++ {
 			key := fmt.Sprintf("key-%d", i)
-			kv.Create(key, createData(160))
+			kv.Create(ctx, key, createData(160))
 		}
 		lastData := make(map[string][]byte)
 		revisions := make(map[string]uint64)
@@ -731,17 +733,17 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 			key := fmt.Sprintf("key-%d", r)
 
 			for i := 0; i < 5; i++ {
-				_, err := kv.Get(key)
+				_, err := kv.Get(ctx, key)
 				if err != nil {
 					atomic.AddInt64(&errorCounter, 1)
-					if err == nats.ErrKeyNotFound {
+					if err == jetstream.ErrKeyNotFound {
 						t.Logf("WRN: Key not found! [%s/%s] - [%s]", kvname, key, err)
 						cancel()
 					}
 				}
 			}
 
-			k, err := kv.Get(key)
+			k, err := kv.Get(ctx, key)
 			if err != nil {
 				atomic.AddInt64(&errorCounter, 1)
 			} else {
@@ -752,7 +754,7 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 					}
 				}
 				newData := createData(160)
-				revisions[key], err = kv.Update(key, newData, k.Revision())
+				revisions[key], err = kv.Update(ctx, key, newData, k.Revision())
 				if err != nil && err != nats.ErrTimeout {
 					atomic.AddInt64(&errorCounter, 1)
 				} else {
@@ -788,7 +790,7 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 	}
 
 	debug := false
-	nc2, _ := jsClientConnect(t, s)
+	nc2, _ := jsClientConnectNewAPI(t, s)
 	if debug {
 		go func() {
 			for range time.NewTicker(5 * time.Second).C {
@@ -898,18 +900,19 @@ func TestLongClusterCLFSOnDuplicates(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	bgctx := context.Background()
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
-	nc2, js2 := jsClientConnect(t, c.randomServer())
+	nc2, js2 := jsClientConnectNewAPI(t, c.randomServer())
 	defer nc2.Close()
 
 	streamName := "TESTW"
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(bgctx, jetstream.StreamConfig{
 		Name:       streamName,
 		Subjects:   []string{"foo"},
 		Replicas:   3,
-		Storage:    nats.FileStorage,
+		Storage:    jetstream.FileStorage,
 		MaxAge:     3 * time.Minute,
 		Duplicates: 2 * time.Minute,
 	})
@@ -940,7 +943,12 @@ func TestLongClusterCLFSOnDuplicates(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		go func(i int) {
 			var err error
-			sub, err := js2.PullSubscribe("foo", fmt.Sprintf("A:%d", i))
+			s2, err := js2.Stream(bgctx, streamName)
+			require_NoError(t, err)
+			sub, err := s2.CreateOrUpdateConsumer(bgctx, jetstream.ConsumerConfig{
+				Durable:   fmt.Sprintf("A:%d", i),
+				AckPolicy: jetstream.AckExplicitPolicy,
+			})
 			require_NoError(t, err)
 
 			for {
@@ -951,11 +959,11 @@ func TestLongClusterCLFSOnDuplicates(t *testing.T) {
 				default:
 				}
 
-				msgs, err := sub.Fetch(100, nats.MaxWait(200*time.Millisecond))
+				batch, err := sub.Fetch(100, jetstream.FetchMaxWait(200*time.Millisecond))
 				if err != nil {
 					continue
 				}
-				for _, msg := range msgs {
+				for msg := range batch.Messages() {
 					msg.Ack()
 				}
 			}
@@ -979,12 +987,14 @@ func TestLongClusterCLFSOnDuplicates(t *testing.T) {
 			var succeeded bool
 			var failures int
 			for n := 0; n < 10; n++ {
+				pctx, pcancel := context.WithTimeout(bgctx, 500*time.Millisecond)
 				_, err := js.Publish(
+					pctx,
 					"foo", []byte("test"),
-					nats.MsgId(fmt.Sprintf("sync:checking:%d", i)),
-					nats.RetryAttempts(30),
-					nats.AckWait(500*time.Millisecond),
+					jetstream.WithMsgID(fmt.Sprintf("sync:checking:%d", i)),
+					jetstream.WithRetryAttempts(30),
 				)
+				pcancel()
 				if err != nil {
 					failures++
 					continue
@@ -1010,8 +1020,8 @@ Loop:
 		}
 		// Cause a lot of duplicates very fast until producer stalls.
 		for i := 0; i < 128; i++ {
-			msgID := nats.MsgId(fmt.Sprintf("id.%d.%d", n, i))
-			js.PublishAsync("foo", []byte("test"), msgID, nats.RetryAttempts(10))
+			msgID := jetstream.WithMsgID(fmt.Sprintf("id.%d.%d", n, i))
+			js.PublishAsync("foo", []byte("test"), msgID, jetstream.WithRetryAttempts(10))
 		}
 	}
 	cancel()
@@ -1025,13 +1035,14 @@ func TestLongClusterJetStreamRestartThenScaleStreamReplicas(t *testing.T) {
 	defer c.shutdown()
 
 	s := c.randomNonLeader()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	nc2, producer := jsClientConnect(t, s)
+	nc2, producer := jsClientConnectNewAPI(t, s)
 	defer nc2.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	bgctx := context.Background()
+	stream, err := js.CreateStream(bgctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
@@ -1044,13 +1055,17 @@ func TestLongClusterJetStreamRestartThenScaleStreamReplicas(t *testing.T) {
 
 	end := time.Now().Add(2 * time.Second)
 	for time.Now().Before(end) {
-		producer.Publish("foo", []byte(strings.Repeat("A", 128)))
+		producer.Publish(bgctx, "foo", []byte(strings.Repeat("A", 128)))
 		time.Sleep(time.Millisecond)
 	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
-		sub, err := js.PullSubscribe("foo", fmt.Sprintf("C-%d", i))
+		sub, err := stream.CreateOrUpdateConsumer(bgctx, jetstream.ConsumerConfig{
+			Durable:       fmt.Sprintf("C-%d", i),
+			FilterSubject: "foo",
+			AckPolicy:     jetstream.AckExplicitPolicy,
+		})
 		require_NoError(t, err)
 
 		wg.Add(1)
@@ -1063,12 +1078,14 @@ func TestLongClusterJetStreamRestartThenScaleStreamReplicas(t *testing.T) {
 				default:
 				}
 
-				msgs, err := sub.Fetch(1)
+				batch, err := sub.Fetch(1)
 				if err != nil && !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrConnectionClosed) {
 					t.Logf("Pull Error: %v", err)
 				}
-				for _, msg := range msgs {
-					msg.Ack()
+				if batch != nil {
+					for msg := range batch.Messages() {
+						msg.Ack()
+					}
 				}
 			}
 		}()
@@ -1112,24 +1129,26 @@ func TestLongClusterJetStreamRestartThenScaleStreamReplicas(t *testing.T) {
 	// Start publishing again for a while.
 	end = time.Now().Add(2 * time.Second)
 	for time.Now().Before(end) {
-		producer.Publish("foo", []byte(strings.Repeat("A", 128)))
+		producer.Publish(bgctx, "foo", []byte(strings.Repeat("A", 128)))
 		time.Sleep(time.Millisecond)
 	}
 
 	// Try to do a stream edit back to R=1 after doing all the upgrade.
-	info, _ := js.StreamInfo("TEST")
+	streamHandle, _ := js.Stream(bgctx, "TEST")
+	info, _ := streamHandle.Info(bgctx)
 	sconfig := info.Config
 	sconfig.Replicas = 1
-	_, err = js.UpdateStream(&sconfig)
+	_, err = js.UpdateStream(bgctx, sconfig)
 	require_NoError(t, err)
 
 	// Leave running for some time after the update.
 	time.Sleep(2 * time.Second)
 
-	info, _ = js.StreamInfo("TEST")
+	streamHandle, _ = js.Stream(bgctx, "TEST")
+	info, _ = streamHandle.Info(bgctx)
 	sconfig = info.Config
 	sconfig.Replicas = 3
-	_, err = js.UpdateStream(&sconfig)
+	_, err = js.UpdateStream(bgctx, sconfig)
 	require_NoError(t, err)
 
 	select {

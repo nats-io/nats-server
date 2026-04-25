@@ -34,6 +34,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
 
@@ -5440,52 +5441,53 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
 	// Test tiers up to stream limits
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-2", Replicas: 1, Subjects: []string{"testR1-2"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-2", Replicas: 1, Subjects: []string{"testR1-2"}})
 	require_NoError(t, err)
 
 	// Test exceeding tiered stream limit
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
 
 	// Test tiers up to consumer limits
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur1", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur3", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
 
 	// test exceeding tiered consumer limits
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur4", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur4", AckPolicy: jetstream.AckExplicitPolicy})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur5", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur5", AckPolicy: jetstream.AckExplicitPolicy})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 
 	// test tiered storage limit
 	msg := [512]byte{}
-	_, err = js.Publish("testR1-1", msg[:])
+	_, err = js.Publish(ctx, "testR1-1", msg[:])
 	require_NoError(t, err)
-	_, err = js.Publish("testR1-2", msg[:])
+	_, err = js.Publish(ctx, "testR1-2", msg[:])
 	require_NoError(t, err)
 
-	ainfo, err := js.AccountInfo()
+	ainfo, err := js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 1100)
 
 	// test exceeding tiered storage limit
-	_, err = js.Publish("testR1-1", []byte("1"))
+	_, err = js.Publish(ctx, "testR1-1", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
 	// Check that storage has not increased after the rejected publish.
-	ainfo, err = js.AccountInfo()
+	ainfo, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 1100)
 
@@ -5496,30 +5498,30 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
 
 	// test same sequence as before, add stream, fail add stream, add consumer, fail add consumer, publish, fail publish
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-4", Replicas: 1, Subjects: []string{"testR1-4"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-4", Replicas: 1, Subjects: []string{"testR1-4"}})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
-	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur6", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-3", jetstream.ConsumerConfig{Durable: "dur6", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
-	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur7", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-3", jetstream.ConsumerConfig{Durable: "dur7", AckPolicy: jetstream.AckExplicitPolicy})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 
 	// At this point it will be exactly at the DiskStorage limit so it should not fail.
-	_, err = js.Publish("testR1-3", msg[:])
+	_, err = js.Publish(ctx, "testR1-3", msg[:])
 	require_NoError(t, err)
-	ainfo, err = js.AccountInfo()
+	ainfo, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 1650)
 
-	_, err = js.Publish("testR1-3", []byte("1"))
+	_, err = js.Publish(ctx, "testR1-3", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
 	// Should remain at the same usage.
-	ainfo, err = js.AccountInfo()
+	ainfo, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 1650)
 }
@@ -5568,24 +5570,25 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
+	require_NoError(t, err)
+	ctx := context.Background()
+
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "foo", Replicas: 1})
 	require_NoError(t, err)
 
-	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1})
-	require_NoError(t, err)
-
-	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur1", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	_, err = js.CreateConsumer(ctx, "foo", jetstream.ConsumerConfig{
+		Durable: "dur1", AckPolicy: jetstream.AckAllPolicy, MaxAckPending: 2000})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 
-	ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 500})
+	ci, err := js.CreateConsumer(ctx, "foo", jetstream.ConsumerConfig{
+		Durable: "dur2", AckPolicy: jetstream.AckAllPolicy, MaxAckPending: 500})
 	require_NoError(t, err)
-	require_True(t, ci.Config.MaxAckPending == 500)
+	require_True(t, ci.CachedInfo().Config.MaxAckPending == 500)
 
-	_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	_, err = js.UpdateConsumer(ctx, "foo", jetstream.ConsumerConfig{
+		Durable: "dur2", AckPolicy: jetstream.AckAllPolicy, MaxAckPending: 2000})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 
@@ -5596,10 +5599,10 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	accJwt2 := encodeClaim(t, accClaim, accPub)
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
 
-	ci, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	ci, err = js.UpdateConsumer(ctx, "foo", jetstream.ConsumerConfig{
+		Durable: "dur2", AckPolicy: jetstream.AckAllPolicy, MaxAckPending: 2000})
 	require_NoError(t, err)
-	require_True(t, ci.Config.MaxAckPending == 2000)
+	require_True(t, ci.CachedInfo().Config.MaxAckPending == 2000)
 }
 
 func TestJWTJetStreamMaxStore(t *testing.T) {
@@ -5647,18 +5650,19 @@ func TestJWTJetStreamMaxStore(t *testing.T) {
 	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
-	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 2048})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 2048})
 	require_Error(t, err, NewJSStorageResourcesExceededError())
-	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 1024})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 1024})
 	require_NoError(t, err)
 
 	msg := [900]byte{}
-	_, err = js.Publish("foo", msg[:])
+	_, err = js.Publish(ctx, "foo", msg[:])
 	require_NoError(t, err)
-	_, err = js.Publish("foo", msg[:]) // exceeds storage limit
+	_, err = js.Publish(ctx, "foo", msg[:]) // exceeds storage limit
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
@@ -5669,39 +5673,39 @@ func TestJWTJetStreamMaxStore(t *testing.T) {
 	accJwt2 := encodeClaim(t, accClaim, accPub)
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
 
-	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 3000})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 3000})
 	require_Error(t, err, NewJSStorageResourcesExceededError())
-	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 2048})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 2048})
 	require_NoError(t, err)
 
-	ainfo, err := js.AccountInfo()
+	ainfo, err := js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 933)
 
 	// This should be exactly at the limit of the account.
-	_, err = js.Publish("foo", []byte(strings.Repeat("A", 991)))
+	_, err = js.Publish(ctx, "foo", []byte(strings.Repeat("A", 991)))
 	require_NoError(t, err)
-	ainfo, err = js.AccountInfo()
+	ainfo, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 1024)
-	_, err = js.Publish("bar", []byte(strings.Repeat("A", 2015)))
+	_, err = js.Publish(ctx, "bar", []byte(strings.Repeat("A", 2015)))
 	require_NoError(t, err)
-	ainfo, err = js.AccountInfo()
+	ainfo, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 3072)
 
 	// Exceed storage limit.
-	_, err = js.Publish("bar", []byte("1"))
+	_, err = js.Publish(ctx, "bar", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
 	// Confirm no changes after rejected publish.
-	ainfo, err = js.AccountInfo()
+	ainfo, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_Equal(t, ainfo.Tiers["R1"].Store, 3072)
 
 	// test disabling max bytes required
-	_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Replicas: 1})
+	_, err = js.UpdateStream(ctx, jetstream.StreamConfig{Name: "bar", Replicas: 1})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: account requires a stream config to have max bytes set")
 }
@@ -7408,13 +7412,14 @@ func TestJWTJetStreamClientsExcludedForMaxConnsUpdate(t *testing.T) {
 	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
 
-	nc, js := jsClientConnectURL(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	nc, js := jsClientConnectNewAPIURL(t, s.ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
+	ctx := context.Background()
 
-	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 1, Subjects: []string{"foo"}})
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 1, Subjects: []string{"foo"}})
 	require_NoError(t, err)
 
-	_, err = js.Publish("foo", nil)
+	_, err = js.Publish(ctx, "foo", nil)
 	require_NoError(t, err)
 
 	accClaim.Limits.Conn = 1
@@ -7423,10 +7428,10 @@ func TestJWTJetStreamClientsExcludedForMaxConnsUpdate(t *testing.T) {
 
 	// Manually reconnect.
 	nc.Close()
-	nc, js = jsClientConnectURL(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	nc, js = jsClientConnectNewAPIURL(t, s.ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	_, err = js.Publish("foo", nil)
+	_, err = js.Publish(ctx, "foo", nil)
 	require_NoError(t, err)
 }
 
@@ -7470,7 +7475,7 @@ func TestJWTClusterUserInfoContainsPermissions(t *testing.T) {
 	// service import before a remote server does, we need to keep trying.
 	// In 1000 attempts it is quite easy to reproduce the problem.
 	test := func() {
-		nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+		nc, _ := jsClientConnectNewAPI(t, c.randomServer(), nats.UserCredentials(accCreds))
 		defer nc.Close()
 
 		resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)

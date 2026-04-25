@@ -246,7 +246,7 @@ func TestNRGAEFromOldLeader(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
@@ -298,7 +298,7 @@ func TestNRGSimpleElection(t *testing.T) {
 	defer c.shutdown()
 	c.waitOnLeader()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 9, newStateAdder)
@@ -378,7 +378,7 @@ func TestNRGLeaderTransfer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createMemRaftGroup("Test", 3, newStateAdder)
@@ -449,7 +449,7 @@ func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
 	defer c.shutdown()
 	c.waitOnLeader()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
@@ -517,7 +517,7 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	defer c.shutdown()
 	c.waitOnLeader()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
@@ -664,7 +664,7 @@ func TestNRGAssumeHighTermAfterCandidateIsolation(t *testing.T) {
 	defer c.shutdown()
 	c.waitOnLeader()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
@@ -832,7 +832,7 @@ func TestNRGTermDoesntRollBackToPtermOnCatchup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
@@ -913,7 +913,7 @@ func TestNRGNoResetOnAppendEntryResponse(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
@@ -981,7 +981,7 @@ func TestNRGCandidateDontStepdownDueToLeaderOfPreviousTerm(t *testing.T) {
 	defer c.shutdown()
 	c.waitOnLeader()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
@@ -1783,7 +1783,7 @@ func TestNRGRecoverPindexPtermOnlyIfLogNotEmpty(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
@@ -1966,7 +1966,7 @@ func TestNRGForwardProposalResponse(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
@@ -4559,7 +4559,7 @@ func TestNRGUncommittedMembershipChangeOnNewLeaderForwardedRemovePeerProposal(t 
 	rpsubj := n.rpsubj
 	n.RUnlock()
 
-	nc, _ := jsClientConnect(t, n.s, nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, n.s, nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	// Forward a peer-remove proposal to the new leader.
@@ -4608,7 +4608,7 @@ func TestNRGIgnoreForwardedProposalIfNotCaughtUpLeader(t *testing.T) {
 	psubj := n.psubj
 	n.RUnlock()
 
-	nc, _ := jsClientConnect(t, n.s, nats.UserInfo("admin", "s3cr3t!"))
+	nc, _ := jsClientConnectNewAPI(t, n.s, nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
 	// Forward a normal proposal to the new leader.

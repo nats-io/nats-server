@@ -18,6 +18,7 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
 
@@ -3592,21 +3594,22 @@ func TestMsgTraceJetStream(t *testing.T) {
 	s := RunServer(&opts)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	ctx := context.Background()
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	cfg := &nats.StreamConfig{
+	cfg := jetstream.StreamConfig{
 		Name:        "TEST",
-		Storage:     nats.MemoryStorage,
+		Storage:     jetstream.MemoryStorage,
 		Subjects:    []string{"foo"},
 		Replicas:    1,
 		AllowRollup: true,
-		SubjectTransform: &nats.SubjectTransformConfig{
+		SubjectTransform: &jetstream.SubjectTransformConfig{
 			Source:      "foo",
 			Destination: "bar",
 		},
 	}
-	_, err := js.AddStream(cfg)
+	_, err := js.CreateStream(ctx, cfg)
 	require_NoError(t, err)
 
 	nct := natsConnect(t, s.ClientURL(), nats.Name("Tracer"))
@@ -3618,13 +3621,17 @@ func TestMsgTraceJetStream(t *testing.T) {
 	msg := nats.NewMsg("foo")
 	msg.Header.Set(JSMsgId, "MyId")
 	msg.Data = make([]byte, 50)
-	_, err = js.PublishMsg(msg)
+	_, err = js.PublishMsg(ctx, msg)
 	require_NoError(t, err)
 
 	checkStream := func(t *testing.T, expected int) {
 		t.Helper()
 		checkFor(t, time.Second, 15*time.Millisecond, func() error {
-			si, err := js.StreamInfo("TEST")
+			s, err := js.Stream(ctx, "TEST")
+			if err != nil {
+				return err
+			}
+			si, err := s.Info(ctx)
 			if err != nil {
 				return err
 			}
@@ -3680,7 +3687,7 @@ func TestMsgTraceJetStream(t *testing.T) {
 		})
 	}
 
-	jst, err := nct.JetStream()
+	jst, err := jetstream.New(nct, jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
 
 	mset, err := s.globalAccount().lookupStream("TEST")
@@ -3727,12 +3734,12 @@ func TestMsgTraceJetStream(t *testing.T) {
 				// Update stream to prevent rollups, and set a max size.
 				cfg.AllowRollup = false
 				cfg.MaxMsgSize = 100
-				_, err = js.UpdateStream(cfg)
+				_, err = js.UpdateStream(ctx, cfg)
 				require_NoError(t, err)
 			case 2:
 				msg.Data = make([]byte, 200)
 			case 3:
-				pa, err := jst.Publish("foo", make([]byte, 100))
+				pa, err := jst.Publish(ctx, "foo", make([]byte, 100))
 				require_NoError(t, err)
 				msgCount++
 				checkStream(t, msgCount)
@@ -3740,11 +3747,11 @@ func TestMsgTraceJetStream(t *testing.T) {
 				return
 			case 4:
 				cfg.Sealed = true
-				_, err = js.UpdateStream(cfg)
+				_, err = js.UpdateStream(ctx, cfg)
 				require_NoError(t, err)
 			default:
 			}
-			jst.PublishMsg(msg)
+			jst.PublishMsg(ctx, msg)
 
 			// Message count should not have increased and stay at 2.
 			checkStream(t, msgCount)
@@ -3776,10 +3783,10 @@ func TestMsgTraceJetStream(t *testing.T) {
 	}
 
 	// Create a stream with interest retention policy
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "NO_INTEREST",
 		Subjects:  []string{"baz"},
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 	msg = nats.NewMsg("baz")
@@ -3807,15 +3814,19 @@ func TestMsgTraceJetStream(t *testing.T) {
 
 	// Create a new stream to just check that when consumer a JS message,
 	// the trace header has been disabled.
-	cfg = &nats.StreamConfig{
+	cfg = jetstream.StreamConfig{
 		Name:      "TEST_TRACE_DISABLED",
 		Subjects:  []string{"disabled"},
-		Retention: nats.LimitsPolicy,
+		Retention: jetstream.LimitsPolicy,
 	}
-	_, err = js.AddStream(cfg)
+	stream, err := js.CreateStream(ctx, cfg)
 	require_NoError(t, err)
 
-	sub, err := js.PullSubscribe("disabled", "dur")
+	sub, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "dur",
+		FilterSubject: "disabled",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	})
 	require_NoError(t, err)
 
 	msg = nats.NewMsg("disabled")
@@ -3842,15 +3853,20 @@ func TestMsgTraceJetStream(t *testing.T) {
 	require_Equal[string](t, ejs.Error, _EMPTY_)
 
 	// Now consume the message.
-	jmsgs, err := sub.Fetch(1)
+	batch, err := sub.Fetch(1)
 	require_NoError(t, err)
+	var jmsgs []jetstream.Msg
+	for m := range batch.Messages() {
+		jmsgs = append(jmsgs, m)
+	}
+	require_NoError(t, batch.Error())
 	require_Len(t, len(jmsgs), 1)
 	jmsg := jmsgs[0]
-	require_True(t, len(jmsg.Header) > 0)
-	require_Equal(t, string(jmsg.Data), "hello")
+	require_True(t, len(jmsg.Headers()) > 0)
+	require_Equal(t, string(jmsg.Data()), "hello")
 	// When consuming, the message tracing should have been disabled,
 	// so we should have the MsgTraceDest header set to MsgTraceDestDisabled
-	require_Equal(t, jmsg.Header.Get(MsgTraceDest), MsgTraceDestDisabled)
+	require_Equal(t, jmsg.Headers().Get(MsgTraceDest), MsgTraceDestDisabled)
 
 	// Verify that no trace message was generated.
 	_, err = traceSub.NextMsg(100 * time.Millisecond)
@@ -3878,15 +3894,20 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 		}
 	}
 
+	ctx := context.Background()
 	c1 := sc.clusters[0]
 	c2 := sc.clusters[1]
-	nc, js := jsClientConnect(t, c1.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c1.randomServer())
 	defer nc.Close()
 
 	checkStream := func(t *testing.T, stream string, expected int) {
 		t.Helper()
 		checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
-			si, err := js.StreamInfo(stream)
+			s, err := js.Stream(ctx, stream)
+			if err != nil {
+				return err
+			}
+			si, err := s.Info(ctx)
 			if err != nil {
 				return err
 			}
@@ -3908,12 +3929,12 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 		{"from other cluster", "TEST3"},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
-			cfg := &nats.StreamConfig{
+			cfg := jetstream.StreamConfig{
 				Name:        mainTest.stream,
 				Replicas:    3,
 				AllowRollup: true,
 			}
-			_, err := js.AddStream(cfg)
+			_, err := js.CreateStream(ctx, cfg)
 			require_NoError(t, err)
 			sc.waitOnStreamLeader(globalAccountName, mainTest.stream)
 
@@ -3922,7 +3943,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 			// Store some messages
 			for i := 0; i < 5; i++ {
-				_, err = js.Publish(mainTest.stream, payload)
+				_, err = js.Publish(ctx, mainTest.stream, payload)
 				require_NoError(t, err)
 			}
 
@@ -4078,7 +4099,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 				})
 			}
 
-			jst, err := nct.JetStream()
+			jst, err := jetstream.New(nct, jetstream.WithDefaultTimeout(10*time.Second))
 			require_NoError(t, err)
 
 			newMsg := func() *nats.Msg {
@@ -4119,12 +4140,12 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 						// Update stream to prevent rollups, and set a max size.
 						cfg.AllowRollup = false
 						cfg.MaxMsgSize = 100
-						_, err = js.UpdateStream(cfg)
+						_, err = js.UpdateStream(ctx, cfg)
 						require_NoError(t, err)
 					case 2:
 						msg.Data = make([]byte, 200)
 					case 3:
-						pa, err := jst.Publish(mainTest.stream, []byte("hello"))
+						pa, err := jst.Publish(ctx, mainTest.stream, []byte("hello"))
 						require_NoError(t, err)
 						msgCount++
 						checkStream(t, mainTest.stream, msgCount)
@@ -4132,11 +4153,11 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 						return
 					case 4:
 						cfg.Sealed = true
-						_, err = js.UpdateStream(cfg)
+						_, err = js.UpdateStream(ctx, cfg)
 						require_NoError(t, err)
 					default:
 					}
-					jst.PublishMsg(msg)
+					jst.PublishMsg(ctx, msg)
 					checkStream(t, mainTest.stream, msgCount)
 
 					var (
@@ -4234,29 +4255,36 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 	traceSub := natsSubSync(t, nct, traceDest)
 	natsFlush(t, nct)
 
-	jct, err := nct.JetStream()
+	jct, err := jetstream.New(nct, jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
 
-	sub, err := jct.SubscribeSync("TEST1")
+	jctStream, err := jct.Stream(ctx, "TEST1")
 	require_NoError(t, err)
+	oc, err := jctStream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
+		FilterSubjects: []string{"TEST1"},
+	})
+	require_NoError(t, err)
+	ocMsgs, err := oc.Messages()
+	require_NoError(t, err)
+	defer ocMsgs.Stop()
 	for i := range 7 {
-		jmsg, err := sub.NextMsg(time.Second)
+		jmsg, err := ocMsgs.Next()
 		require_NoError(t, err)
 		if i < 5 {
-			require_Len(t, len(jmsg.Header), 0)
-			require_True(t, bytes.Equal(jmsg.Data, payload))
+			require_Len(t, len(jmsg.Headers()), 0)
+			require_True(t, bytes.Equal(jmsg.Data(), payload))
 			continue
 		}
 		if i == 5 {
-			require_True(t, jmsg.Header != nil)
-			require_Equal(t, jmsg.Header.Get(JSMsgId), "MyId")
-			require_Equal(t, jmsg.Header.Get(traceParentHdr), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
-			require_Equal(t, jmsg.Header.Get(MsgTraceDest), MsgTraceDestDisabled)
-			require_True(t, bytes.Equal(jmsg.Data, payload))
+			require_True(t, jmsg.Headers() != nil)
+			require_Equal(t, jmsg.Headers().Get(JSMsgId), "MyId")
+			require_Equal(t, jmsg.Headers().Get(traceParentHdr), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			require_Equal(t, jmsg.Headers().Get(MsgTraceDest), MsgTraceDestDisabled)
+			require_True(t, bytes.Equal(jmsg.Data(), payload))
 			continue
 		}
-		require_Len(t, len(jmsg.Header), 0)
-		require_Equal(t, string(jmsg.Data), "hello")
+		require_Len(t, len(jmsg.Headers()), 0)
+		require_Equal(t, string(jmsg.Data()), "hello")
 	}
 
 	msg, err := traceSub.NextMsg(250 * time.Millisecond)

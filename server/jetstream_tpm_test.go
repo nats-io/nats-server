@@ -16,13 +16,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // The tests in this file are not complete, but are a start to test the TPM
@@ -90,30 +91,38 @@ func getTPMFileName(t *testing.T) string {
 }
 
 func checkSendMessage(t *testing.T, s *Server) {
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	ctx := context.Background()
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "tpm_test",
 		Subjects: []string{"tpm_test"},
 	})
 	require_NoError(t, err)
 
-	_, err = js.Publish("tpm_test", []byte("hello"))
+	_, err = js.Publish(ctx, "tpm_test", []byte("hello"))
 	require_NoError(t, err)
 }
 
 func checkReceiveMessage(t *testing.T, s *Server) {
 	// reconnect and get the message
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	// get the message
-	sub, err := js.PullSubscribe("tpm_test", "cls")
+	ctx := context.Background()
+	stream, err := js.Stream(ctx, "tpm_test")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	m := fetchMsgs(t, sub, 1, 5*time.Second)
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:   "cls",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	m := fetchJetStreamMsgs(t, cons, 1, 5*time.Second)
 	if m == nil {
 		t.Fatalf("Did not receive the message")
 	}
