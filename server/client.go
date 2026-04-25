@@ -5382,7 +5382,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					// When preferMatching is set, defer all remote peers so a
 					// directly-connected sub later in the walk can win. Among
 					// deferred peers, matching tags beat non-matching.
-					if preferMatching {
+					// Guard on dst == ROUTER because LEAF subs reach this branch
+					// for gateway-originated traffic (no sub.origin) and have no
+					// route struct.
+					if preferMatching && dst == ROUTER {
 						if sub.client.route.tagsMatch {
 							rsub = sub
 						} else if rsub == nil {
