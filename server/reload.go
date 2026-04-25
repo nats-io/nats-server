@@ -362,9 +362,19 @@ type tagsOption struct {
 }
 
 func (u *tagsOption) Apply(server *Server) {
-	// Refresh routeInfo.Tags so reconnecting routes advertise the new tags.
+	// Refresh routeInfo.Tags so reconnecting routes advertise the new tags,
+	// and recompute tagsMatch on existing routes so queue routing decisions
+	// on this server reflect the new tags immediately.
 	server.mu.Lock()
-	server.routeInfo.Tags = server.getOpts().Tags
+	newTags := server.getOpts().Tags
+	server.routeInfo.Tags = newTags
+	server.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		if r.route != nil {
+			r.route.tagsMatch = tagsOverlap(newTags, r.route.remoteTags)
+		}
+		r.mu.Unlock()
+	})
 	server.mu.Unlock()
 	server.Noticef("Reloaded: tags")
 }

@@ -5484,6 +5484,62 @@ func TestRouteInfoTagsReload(t *testing.T) {
 	}
 }
 
+func TestRouteTagsReloadRecomputesTagsMatch(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%s]
+		cluster {
+			name: tagaware
+			port: -1
+			%s
+		}
+	`
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
+	s1, o1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1",
+		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	routeTagsMatch := func(s *Server) bool {
+		t.Helper()
+		var match bool
+		s.mu.RLock()
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			if r.route != nil {
+				match = r.route.tagsMatch
+			}
+			r.mu.Unlock()
+		})
+		s.mu.RUnlock()
+		return match
+	}
+
+	if !routeTagsMatch(s1) {
+		t.Fatal("expected initial tagsMatch=true on S1's route")
+	}
+
+	reloadUpdateConfig(t, s1, s1Conf, `
+		port: -1
+		server_name: S1
+		server_tags: [az2]
+		cluster {
+			name: tagaware
+			port: -1
+		}
+	`)
+
+	if routeTagsMatch(s1) {
+		t.Fatal("expected tagsMatch=false on S1's route after reload to az2")
+	}
+}
+
 func TestRouteQueuePreferMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
 	// With preferMatching, a local CLIENT sub and a matching-tag peer ROUTER
 	// are equally cheap; selection should remain 50/50 random across the two
