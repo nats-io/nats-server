@@ -56,6 +56,7 @@ var (
 type route struct {
 	remoteID     string
 	remoteName   string
+	remoteTags   []string
 	didSolicit   bool
 	retry        bool
 	lnoc         bool
@@ -811,6 +812,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.tlsRequired = info.TLSRequired
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
+	c.route.remoteTags = info.Tags
 	c.route.lnoc = info.LNOC
 	c.route.lnocu = info.LNOCU
 	c.route.jetstream = info.JetStream
@@ -2745,6 +2747,7 @@ func (s *Server) startRouteAcceptLoop() {
 		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
 		LNOCU:        true,
+		Tags:         opts.Tags,
 	}
 	// For tests that want to simulate old servers, do not set the compression
 	// on the INFO protocol if configured with CompressionNotSupported.
