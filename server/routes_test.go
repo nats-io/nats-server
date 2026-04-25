@@ -5373,6 +5373,81 @@ func TestRouteQueuePreferMatchingTags(t *testing.T) {
 	})
 }
 
+func TestRouteQueuePreferMatchingTagsRouteBeatsLeaf(t *testing.T) {
+	// HubAz1 (tag az1) and HubAz2 (tag az2) form a cluster. A leaf attaches
+	// to HubAz1. Queue subs land on HubAz2 (non-matching peer, via route)
+	// and on the leaf. Publisher on HubAz1 has no local sub. We expect the
+	// non-matching ROUTER to still beat the LEAF candidate.
+	hubTmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%q]
+		leafnodes { port: -1 }
+		cluster {
+			name: tagaware
+			port: -1
+			%s
+			prefer_matching_tags: true
+		}
+	`
+	h1Conf := createConfFile(t, fmt.Appendf(nil, hubTmpl, "HubAz1", "az1", ""))
+	h1, h1Opts := RunServerWithConfig(h1Conf)
+	defer h1.Shutdown()
+
+	h2Conf := createConfFile(t, fmt.Appendf(nil, hubTmpl, "HubAz2", "az2",
+		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, h1Opts.Cluster.Port)))
+	h2, _ := RunServerWithConfig(h2Conf)
+	defer h2.Shutdown()
+
+	checkClusterFormed(t, h1, h2)
+
+	leafConf := createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		server_name: Leaf
+		leafnodes { remotes = [{ url: "nats-leaf://127.0.0.1:%d" }] }
+	`, h1Opts.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, leaf)
+
+	ncRoute := natsConnect(t, h2.ClientURL())
+	defer ncRoute.Close()
+	var routeCount atomic.Int32
+	natsQueueSub(t, ncRoute, "foo", "QG", func(*nats.Msg) { routeCount.Add(1) })
+	natsFlush(t, ncRoute)
+
+	ncLeaf := natsConnect(t, leaf.ClientURL())
+	defer ncLeaf.Close()
+	var leafCount atomic.Int32
+	natsQueueSub(t, ncLeaf, "foo", "QG", func(*nats.Msg) { leafCount.Add(1) })
+	natsFlush(t, ncLeaf)
+
+	checkSubInterest(t, h1, globalAccountName, "foo", 2*time.Second)
+
+	ncPub := natsConnect(t, h1.ClientURL())
+	defer ncPub.Close()
+	const numMsgs = 200
+	for i := 0; i < numMsgs; i++ {
+		natsPub(t, ncPub, "foo", []byte("hi"))
+	}
+	natsFlush(t, ncPub)
+
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		if total := routeCount.Load() + leafCount.Load(); total != numMsgs {
+			return fmt.Errorf("delivered %d/%d", total, numMsgs)
+		}
+		return nil
+	})
+
+	if leafCount.Load() != 0 {
+		t.Fatalf("leaf received %d messages, expected 0 (route should win)", leafCount.Load())
+	}
+	if routeCount.Load() != numMsgs {
+		t.Fatalf("route peer received %d, expected %d", routeCount.Load(), numMsgs)
+	}
+}
+
 func TestRouteInfoTagsReload(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
@@ -5409,7 +5484,10 @@ func TestRouteInfoTagsReload(t *testing.T) {
 	}
 }
 
-func TestRouteQueuePreferMatchingTagsLocalBeatsMatchingPeer(t *testing.T) {
+func TestRouteQueuePreferMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
+	// With preferMatching, a local CLIENT sub and a matching-tag peer ROUTER
+	// are equally cheap; selection should remain 50/50 random across the two
+	// to preserve queue-group load balancing within an AZ.
 	tmpl := `
 		port: -1
 		server_name: %s
@@ -5463,11 +5541,9 @@ func TestRouteQueuePreferMatchingTagsLocalBeatsMatchingPeer(t *testing.T) {
 		return nil
 	})
 
-	if peer.Load() != 0 {
-		t.Fatalf("matching peer received %d messages, expected 0 (local should win)", peer.Load())
-	}
-	if local.Load() != numMsgs {
-		t.Fatalf("local sub received %d messages, expected %d", local.Load(), numMsgs)
+	if local.Load() == 0 || peer.Load() == 0 {
+		t.Fatalf("expected both candidates to receive messages, got local=%d peer=%d",
+			local.Load(), peer.Load())
 	}
 }
 
