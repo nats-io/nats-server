@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -7408,4 +7409,196 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	cfg = s.JetStreamConfig()
 	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
 	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+}
+
+func TestConfigReloadServerTags(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		server_tags: [az1]
+		cluster {
+			name: tagaware
+			port: -1
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.mu.RLock()
+	got := append([]string(nil), s.routeInfo.Tags...)
+	s.mu.RUnlock()
+	if !reflect.DeepEqual(got, []string{"az1"}) {
+		t.Fatalf("expected initial routeInfo.Tags=[az1], got %v", got)
+	}
+
+	reloadUpdateConfig(t, s, conf, `
+		port: -1
+		server_tags: [az2]
+		cluster {
+			name: tagaware
+			port: -1
+		}
+	`)
+
+	s.mu.RLock()
+	got = append([]string(nil), s.routeInfo.Tags...)
+	s.mu.RUnlock()
+	if !reflect.DeepEqual(got, []string{"az2"}) {
+		t.Fatalf("expected reloaded routeInfo.Tags=[az2], got %v", got)
+	}
+}
+
+func TestConfigReloadServerTagsRecomputesRouteMatch(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%s]
+		cluster {
+			name: tagaware
+			port: -1
+			%s
+		}
+	`
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
+	s1, o1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1",
+		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	routeTagsMatch := func(s *Server) bool {
+		t.Helper()
+		var match bool
+		s.mu.RLock()
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			if r.route != nil {
+				match = r.route.tagsMatch
+			}
+			r.mu.Unlock()
+		})
+		s.mu.RUnlock()
+		return match
+	}
+
+	if !routeTagsMatch(s1) {
+		t.Fatal("expected initial tagsMatch=true on S1's route")
+	}
+
+	reloadUpdateConfig(t, s1, s1Conf, `
+		port: -1
+		server_name: S1
+		server_tags: [az2]
+		cluster {
+			name: tagaware
+			port: -1
+		}
+	`)
+
+	if routeTagsMatch(s1) {
+		t.Fatal("expected tagsMatch=false on S1's route after reload to az2")
+	}
+}
+
+func TestConfigReloadPreferMatchingTags(t *testing.T) {
+	// 3 nodes, S1 az1, S2 az1 (matching), S3 az2 (non-matching). Publisher on
+	// S1, queue subs on S2 and S3. With prefer_matching_tags off the cluster-
+	// wide selection delivers to both peers; after reloading S1 with the flag
+	// on, the AZ pre-scan must restrict delivery to S2.
+	s1Tmpl := `
+		port: -1
+		server_name: S1
+		server_tags: [az1]
+		cluster {
+			name: tagaware
+			port: -1
+			prefer_matching_tags: %t
+		}
+	`
+	s1Conf := createConfFile(t, fmt.Appendf(nil, s1Tmpl, false))
+	s1, o1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	peerTmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%q]
+		cluster {
+			name: tagaware
+			port: -1
+			routes: ["nats://127.0.0.1:%d"]
+		}
+	`
+	s2Conf := createConfFile(t, fmt.Appendf(nil, peerTmpl, "S2", "az1", o1.Cluster.Port))
+	s2, _ := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	s3Conf := createConfFile(t, fmt.Appendf(nil, peerTmpl, "S3", "az2", o1.Cluster.Port))
+	s3, _ := RunServerWithConfig(s3Conf)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	var s2Count, s3Count atomic.Int32
+	nc2 := natsConnect(t, s2.ClientURL())
+	defer nc2.Close()
+	_, err := nc2.QueueSubscribe("foo", "QG", func(*nats.Msg) { s2Count.Add(1) })
+	require_NoError(t, err)
+	require_NoError(t, nc2.Flush())
+
+	nc3 := natsConnect(t, s3.ClientURL())
+	defer nc3.Close()
+	_, err = nc3.QueueSubscribe("foo", "QG", func(*nats.Msg) { s3Count.Add(1) })
+	require_NoError(t, err)
+	require_NoError(t, nc3.Flush())
+
+	checkSubInterest(t, s1, globalAccountName, "foo", 2*time.Second)
+
+	publish := func(numMsgs int) {
+		t.Helper()
+		ncPub := natsConnect(t, s1.ClientURL())
+		defer ncPub.Close()
+		for i := 0; i < numMsgs; i++ {
+			require_NoError(t, ncPub.Publish("foo", []byte("hi")))
+		}
+		require_NoError(t, ncPub.Flush())
+		checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+			if total := s2Count.Load() + s3Count.Load(); total != int32(numMsgs) {
+				return fmt.Errorf("delivered %d/%d", total, numMsgs)
+			}
+			return nil
+		})
+	}
+
+	// Phase 1: flag off — both peers receive.
+	publish(200)
+	if s2Count.Load() == 0 || s3Count.Load() == 0 {
+		t.Fatalf("flag off: expected both peers to receive, got S2=%d S3=%d",
+			s2Count.Load(), s3Count.Load())
+	}
+
+	reloadUpdateConfig(t, s1, s1Conf, fmt.Sprintf(`
+		port: -1
+		server_name: S1
+		server_tags: [az1]
+		cluster {
+			name: tagaware
+			port: -1
+			prefer_matching_tags: %t
+		}
+	`, true))
+
+	// Phase 2: flag on — only the matching peer (S2) should receive.
+	s2Count.Store(0)
+	s3Count.Store(0)
+	publish(200)
+	if s3Count.Load() != 0 {
+		t.Fatalf("flag on: S3 (non-matching) received %d, expected 0", s3Count.Load())
+	}
+	if s2Count.Load() == 0 {
+		t.Fatalf("flag on: S2 (matching) received 0, expected all")
+	}
 }

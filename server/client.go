@@ -5318,6 +5318,37 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				}
 			}
 			qsubs = ql
+		} else if preferMatching && len(qsubs) > 1 {
+			// Pre-scan to a unified "AZ-local" pool: local CLIENTs plus
+			// routed CLIENTs whose remote server's tags overlap ours.
+			// When non-empty, restrict the random pick (sindex below) to
+			// this pool so traffic stays in-AZ and balances across local
+			// and matching peers. Empty pool => fall through to the
+			// original cluster-wide selection.
+			var _az [32]*subscription
+			az := _az[:0]
+			isSpokeLeaf := src == LEAF && c.isSpokeLeafNode()
+			for i := 0; i < len(qsubs); i++ {
+				s := qsubs[i]
+				if s == nil {
+					continue
+				}
+				switch s.client.kind {
+				case ROUTER:
+					if isSpokeLeaf {
+						continue
+					}
+					if len(s.origin) == 0 && s.client.route.tagsMatch {
+						az = append(az, s)
+					}
+				case LEAF:
+				default:
+					az = append(az, s)
+				}
+			}
+			if len(az) > 0 {
+				qsubs = az
+			}
 		}
 
 		sindex := 0
@@ -5378,17 +5409,6 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					// This is a qsub that is local on the remote server (or
 					// we are connected to an older server and we don't know).
 					// Pick this one and be done.
-					//
-					// With preferMatching, defer non-matching peers (overwriting
-					// weaker rsubs to preserve ROUTER > leaf priority). dst ==
-					// ROUTER guards the route deref for LEAF subs from gateway
-					// traffic.
-					if preferMatching && dst == ROUTER && !sub.client.route.tagsMatch {
-						if rsub == nil || rsub.client.kind != ROUTER || len(rsub.origin) > 0 {
-							rsub = sub
-						}
-						continue
-					}
 					rsub = sub
 					break
 				}

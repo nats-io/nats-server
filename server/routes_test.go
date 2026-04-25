@@ -5448,98 +5448,6 @@ func TestRouteQueuePreferMatchingTagsRouteBeatsLeaf(t *testing.T) {
 	}
 }
 
-func TestRouteInfoTagsReload(t *testing.T) {
-	conf := createConfFile(t, []byte(`
-		port: -1
-		server_tags: [az1]
-		cluster {
-			name: tagaware
-			port: -1
-		}
-	`))
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	s.mu.RLock()
-	got := append([]string(nil), s.routeInfo.Tags...)
-	s.mu.RUnlock()
-	if !reflect.DeepEqual(got, []string{"az1"}) {
-		t.Fatalf("expected initial routeInfo.Tags=[az1], got %v", got)
-	}
-
-	reloadUpdateConfig(t, s, conf, `
-		port: -1
-		server_tags: [az2]
-		cluster {
-			name: tagaware
-			port: -1
-		}
-	`)
-
-	s.mu.RLock()
-	got = append([]string(nil), s.routeInfo.Tags...)
-	s.mu.RUnlock()
-	if !reflect.DeepEqual(got, []string{"az2"}) {
-		t.Fatalf("expected reloaded routeInfo.Tags=[az2], got %v", got)
-	}
-}
-
-func TestRouteTagsReloadRecomputesTagsMatch(t *testing.T) {
-	tmpl := `
-		port: -1
-		server_name: %s
-		server_tags: [%s]
-		cluster {
-			name: tagaware
-			port: -1
-			%s
-		}
-	`
-	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
-	s1, o1 := RunServerWithConfig(s1Conf)
-	defer s1.Shutdown()
-
-	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1",
-		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)))
-	s2, _ := RunServerWithConfig(s2Conf)
-	defer s2.Shutdown()
-
-	checkClusterFormed(t, s1, s2)
-
-	routeTagsMatch := func(s *Server) bool {
-		t.Helper()
-		var match bool
-		s.mu.RLock()
-		s.forEachRoute(func(r *client) {
-			r.mu.Lock()
-			if r.route != nil {
-				match = r.route.tagsMatch
-			}
-			r.mu.Unlock()
-		})
-		s.mu.RUnlock()
-		return match
-	}
-
-	if !routeTagsMatch(s1) {
-		t.Fatal("expected initial tagsMatch=true on S1's route")
-	}
-
-	reloadUpdateConfig(t, s1, s1Conf, `
-		port: -1
-		server_name: S1
-		server_tags: [az2]
-		cluster {
-			name: tagaware
-			port: -1
-		}
-	`)
-
-	if routeTagsMatch(s1) {
-		t.Fatal("expected tagsMatch=false on S1's route after reload to az2")
-	}
-}
-
 func TestRouteQueuePreferMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
 	// With preferMatching, a local CLIENT sub and a matching-tag peer ROUTER
 	// are equally cheap; selection should remain 50/50 random across the two
@@ -5662,5 +5570,149 @@ func TestRouteQueuePreferMatchingTagsLocalSubWins(t *testing.T) {
 	}
 	if local.Load() != numMsgs {
 		t.Fatalf("local sub received %d messages, expected %d", local.Load(), numMsgs)
+	}
+}
+
+func TestRouteQueuePreferMatchingTagsExcludesCrossAZ(t *testing.T) {
+	// 2 servers per AZ across 2 AZs, queue subs on every node, publisher on
+	// S1a with a local sub. The pre-scan AZ pool on S1a is [LocalS1a,
+	// RouteToS2a] (matching), so traffic must split between those two and
+	// AZ2 peers must receive none.
+	tmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%q]
+		cluster {
+			name: "tagaware"
+			port: -1
+			%s
+			prefer_matching_tags: true
+		}
+	`
+	s1aConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1a", "az1", ""))
+	s1a, o1 := RunServerWithConfig(s1aConf)
+	defer s1a.Shutdown()
+
+	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
+	s2aConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2a", "az1", routes))
+	s2a, _ := RunServerWithConfig(s2aConf)
+	defer s2a.Shutdown()
+
+	s3bConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3b", "az2", routes))
+	s3b, _ := RunServerWithConfig(s3bConf)
+	defer s3b.Shutdown()
+
+	s4bConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S4b", "az2", routes))
+	s4b, _ := RunServerWithConfig(s4bConf)
+	defer s4b.Shutdown()
+
+	checkClusterFormed(t, s1a, s2a, s3b, s4b)
+
+	var s1aCount, s2aCount, s3bCount, s4bCount atomic.Int32
+	sub := func(srv *Server, c *atomic.Int32) {
+		nc := natsConnect(t, srv.ClientURL())
+		t.Cleanup(nc.Close)
+		_, err := nc.QueueSubscribe("foo", "QG", func(*nats.Msg) { c.Add(1) })
+		require_NoError(t, err)
+		require_NoError(t, nc.Flush())
+	}
+	sub(s1a, &s1aCount)
+	sub(s2a, &s2aCount)
+	sub(s3b, &s3bCount)
+	sub(s4b, &s4bCount)
+
+	checkSubInterest(t, s1a, globalAccountName, "foo", 2*time.Second)
+
+	ncPub := natsConnect(t, s1a.ClientURL())
+	defer ncPub.Close()
+	const numMsgs = 400
+	for i := 0; i < numMsgs; i++ {
+		require_NoError(t, ncPub.Publish("foo", []byte("hi")))
+	}
+	require_NoError(t, ncPub.Flush())
+
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		total := s1aCount.Load() + s2aCount.Load() + s3bCount.Load() + s4bCount.Load()
+		if total != numMsgs {
+			return fmt.Errorf("delivered %d/%d", total, numMsgs)
+		}
+		return nil
+	})
+
+	if s3bCount.Load() != 0 || s4bCount.Load() != 0 {
+		t.Fatalf("AZ2 received traffic, expected 0: S3b=%d S4b=%d",
+			s3bCount.Load(), s4bCount.Load())
+	}
+	if s1aCount.Load() == 0 || s2aCount.Load() == 0 {
+		t.Fatalf("AZ1 candidates not balanced: S1a=%d S2a=%d",
+			s1aCount.Load(), s2aCount.Load())
+	}
+}
+
+func TestRouteQueuePreferMatchingTagsNoAZLocalFallback(t *testing.T) {
+	// Publisher's server has neither a local sub nor a matching peer; the
+	// AZ pool is empty and the pre-scan must fall through to the original
+	// cluster-wide selection so messages still distribute across the
+	// non-matching peers.
+	tmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%q]
+		cluster {
+			name: "tagaware"
+			port: -1
+			%s
+			prefer_matching_tags: true
+		}
+	`
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
+	s1, o1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az2", routes))
+	s2, _ := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	s3Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3", "az3", routes))
+	s3, _ := RunServerWithConfig(s3Conf)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	nc2 := natsConnect(t, s2.ClientURL())
+	defer nc2.Close()
+	var s2Count atomic.Int32
+	_, err := nc2.QueueSubscribe("foo", "QG", func(*nats.Msg) { s2Count.Add(1) })
+	require_NoError(t, err)
+	require_NoError(t, nc2.Flush())
+
+	nc3 := natsConnect(t, s3.ClientURL())
+	defer nc3.Close()
+	var s3Count atomic.Int32
+	_, err = nc3.QueueSubscribe("foo", "QG", func(*nats.Msg) { s3Count.Add(1) })
+	require_NoError(t, err)
+	require_NoError(t, nc3.Flush())
+
+	checkSubInterest(t, s1, globalAccountName, "foo", 2*time.Second)
+
+	ncPub := natsConnect(t, s1.ClientURL())
+	defer ncPub.Close()
+	const numMsgs = 200
+	for i := 0; i < numMsgs; i++ {
+		require_NoError(t, ncPub.Publish("foo", []byte("hi")))
+	}
+	require_NoError(t, ncPub.Flush())
+
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		if total := s2Count.Load() + s3Count.Load(); total != numMsgs {
+			return fmt.Errorf("delivered %d/%d", total, numMsgs)
+		}
+		return nil
+	})
+
+	if s2Count.Load() == 0 || s3Count.Load() == 0 {
+		t.Fatalf("expected both non-matching peers to receive messages, got S2=%d S3=%d",
+			s2Count.Load(), s3Count.Load())
 	}
 }
