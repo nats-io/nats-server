@@ -5373,6 +5373,42 @@ func TestRouteQueuePreferMatchingTags(t *testing.T) {
 	})
 }
 
+func TestRouteInfoTagsReload(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		server_tags: [az1]
+		cluster {
+			name: tagaware
+			port: -1
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	s.mu.RLock()
+	got := append([]string(nil), s.routeInfo.Tags...)
+	s.mu.RUnlock()
+	if !reflect.DeepEqual(got, []string{"az1"}) {
+		t.Fatalf("expected initial routeInfo.Tags=[az1], got %v", got)
+	}
+
+	reloadUpdateConfig(t, s, conf, `
+		port: -1
+		server_tags: [az2]
+		cluster {
+			name: tagaware
+			port: -1
+		}
+	`)
+
+	s.mu.RLock()
+	got = append([]string(nil), s.routeInfo.Tags...)
+	s.mu.RUnlock()
+	if !reflect.DeepEqual(got, []string{"az2"}) {
+		t.Fatalf("expected reloaded routeInfo.Tags=[az2], got %v", got)
+	}
+}
+
 func TestRouteQueuePreferMatchingTagsLocalBeatsMatchingPeer(t *testing.T) {
 	tmpl := `
 		port: -1

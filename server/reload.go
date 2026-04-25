@@ -362,6 +362,10 @@ type tagsOption struct {
 }
 
 func (u *tagsOption) Apply(server *Server) {
+	// Refresh routeInfo.Tags so reconnecting routes advertise the new tags.
+	server.mu.Lock()
+	server.routeInfo.Tags = server.getOpts().Tags
+	server.mu.Unlock()
 	server.Noticef("Reloaded: tags")
 }
 
