@@ -5239,6 +5239,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Declared here because of goto.
 	var queues [][]byte
 
+	preferMatching := c.srv.getOpts().Cluster.PreferMatchingTags
+
 	var leafOrigin string
 	switch c.kind {
 	case ROUTER:
@@ -5376,6 +5378,18 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					// This is a qsub that is local on the remote server (or
 					// we are connected to an older server and we don't know).
 					// Pick this one and be done.
+					//
+					// When preferMatching is set, defer all remote peers so a
+					// directly-connected sub later in the walk can win. Among
+					// deferred peers, matching tags beat non-matching.
+					if preferMatching {
+						if sub.client.route.tagsMatch {
+							rsub = sub
+						} else if rsub == nil {
+							rsub = sub
+						}
+						continue
+					}
 					rsub = sub
 					break
 				}
