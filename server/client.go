@@ -5239,7 +5239,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Declared here because of goto.
 	var queues [][]byte
 
-	matchTagsEnabled := len(c.srv.getOpts().Cluster.MatchingTags) > 0
+	matchTagsEnabled := c.srv.matchTagsEnabled.Load()
 
 	var leafOrigin string
 	switch c.kind {

@@ -484,6 +484,7 @@ func (c *clusterOption) Apply(s *Server) {
 	}
 	if c.matchingTagsChanged {
 		mt := c.newValue.MatchingTags
+		s.matchTagsEnabled.Store(len(mt) > 0)
 		s.forEachRoute(func(r *client) {
 			r.mu.Lock()
 			if r.route != nil {
