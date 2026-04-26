@@ -362,12 +362,25 @@ type tagsOption struct {
 }
 
 func (u *tagsOption) Apply(server *Server) {
-	// Refresh routeInfo.Tags so routes that reconnect advertise the new
-	// tags. tagsMatch on existing routes is driven by Cluster.MatchingTags,
-	// not server_tags, so we don't recompute it here.
+	// Refresh routeInfo.Tags and broadcast async INFO so peers recompute
+	// their tagsMatch view of us. Our own routes' tagsMatch is driven by
+	// Cluster.MatchingTags, not server_tags, so we don't recompute it here.
 	server.mu.Lock()
 	server.routeInfo.Tags = server.getOpts().Tags
+	infoJSON := generateInfoJSON(&server.routeInfo)
+	var routes []*client
+	server.forEachRoute(func(r *client) {
+		routes = append(routes, r)
+	})
 	server.mu.Unlock()
+
+	for _, r := range routes {
+		r.mu.Lock()
+		if r.opts.Protocol >= RouteProtoInfo {
+			r.enqueueProto(infoJSON)
+		}
+		r.mu.Unlock()
+	}
 	server.Noticef("Reloaded: tags")
 }
 

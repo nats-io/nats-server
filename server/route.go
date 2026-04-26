@@ -736,6 +736,13 @@ func (c *client) processRouteInfo(info *Info) {
 		} else {
 			// Update only if we detect a difference
 			updateRoutePerms = !reflect.DeepEqual(c.opts.Import, info.Import) || !reflect.DeepEqual(c.opts.Export, info.Export)
+			// Refresh tags if the remote sent an updated set. tagsMatch
+			// is recomputed against this server's current matching_tags
+			// filter so locality routing converges without a reconnect.
+			if !reflect.DeepEqual(c.route.remoteTags, info.Tags) {
+				c.route.remoteTags = info.Tags
+				c.route.tagsMatch.Store(tagsContainAll(info.Tags, opts.Cluster.MatchingTags))
+			}
 		}
 		c.mu.Unlock()
 

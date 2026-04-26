@@ -7600,3 +7600,71 @@ func TestConfigReloadMatchingTags(t *testing.T) {
 		t.Fatalf("matching_tags on: S2 (matching) received 0, expected all")
 	}
 }
+
+func TestConfigReloadServerTagsPropagatesToPeers(t *testing.T) {
+	// server_tags reload on S1 must propagate via async INFO so that S2
+	// recomputes its tagsMatch view of S1 without requiring a route
+	// reconnect. Symmetric with how matching_tags reload behaves.
+	s1Tmpl := `
+		port: -1
+		server_name: S1
+		server_tags: [%q]
+		cluster {
+			name: tagaware
+			port: -1
+		}
+	`
+	s1Conf := createConfFile(t, fmt.Appendf(nil, s1Tmpl, "az1"))
+	s1, o1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	s2Conf := createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		server_name: S2
+		server_tags: [az1]
+		cluster {
+			name: tagaware
+			port: -1
+			routes: ["nats://127.0.0.1:%d"]
+			matching_tags: [az1]
+		}
+	`, o1.Cluster.Port))
+	s2, _ := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	routeToS1State := func() (remoteTags []string, match bool) {
+		t.Helper()
+		s2.mu.RLock()
+		s2.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			if r.route != nil && r.route.remoteName == "S1" {
+				remoteTags = append([]string(nil), r.route.remoteTags...)
+				match = r.route.tagsMatch.Load()
+			}
+			r.mu.Unlock()
+		})
+		s2.mu.RUnlock()
+		return
+	}
+
+	tags, match := routeToS1State()
+	if !reflect.DeepEqual(tags, []string{"az1"}) || !match {
+		t.Fatalf("initial: expected remoteTags=[az1] tagsMatch=true, got tags=%v match=%v", tags, match)
+	}
+
+	// Reload S1 with [az2]. S2 must observe the change without a reconnect.
+	reloadUpdateConfig(t, s1, s1Conf, fmt.Sprintf(s1Tmpl, "az2"))
+
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		tags, match := routeToS1State()
+		if !reflect.DeepEqual(tags, []string{"az2"}) {
+			return fmt.Errorf("remoteTags=%v, want [az2]", tags)
+		}
+		if match {
+			return fmt.Errorf("tagsMatch=true, want false ([az2] does not satisfy [az1])")
+		}
+		return nil
+	})
+}
