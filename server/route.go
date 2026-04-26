@@ -149,17 +149,25 @@ var (
 	routeMaxPingInterval = defaultRouteMaxPingInterval
 )
 
-// tagsOverlap reports whether a and b share at least one element.
-// Both slices must be normalized (lower-cased, trimmed) by callers.
-func tagsOverlap(a, b []string) bool {
-	for _, x := range a {
-		for _, y := range b {
-			if x == y {
-				return true
+// tagsContainAll reports whether every tag in required is present in have.
+// Empty required returns false: the caller treats this as "matching disabled",
+// so no peer should be classified as locality-matched.
+// Both slices must be normalized (lower-cased, trimmed) by callers; the
+// jwt.TagList.Add path used by config parsing handles that.
+func tagsContainAll(have, required []string) bool {
+	if len(required) == 0 {
+		return false
+	}
+outer:
+	for _, r := range required {
+		for _, h := range have {
+			if h == r {
+				continue outer
 			}
 		}
+		return false
 	}
-	return false
+	return true
 }
 
 // removeReplySub is called when we trip the max on remoteReply subs.
@@ -827,7 +835,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
 	c.route.remoteTags = info.Tags
-	c.route.tagsMatch = tagsOverlap(opts.Tags, info.Tags)
+	c.route.tagsMatch = tagsContainAll(info.Tags, opts.Cluster.MatchingTags)
 	c.route.lnoc = info.LNOC
 	c.route.lnocu = info.LNOCU
 	c.route.jetstream = info.JetStream

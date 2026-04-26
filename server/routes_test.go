@@ -5284,7 +5284,7 @@ func BenchmarkProcessLeafMsgArgs_Queues(b *testing.B) {
 	}
 }
 
-func TestRouteQueuePreferMatchingTags(t *testing.T) {
+func TestRouteQueueMatchingTags(t *testing.T) {
 	tmpl := `
 		port: -1
 		server_name: %s
@@ -5293,22 +5293,28 @@ func TestRouteQueuePreferMatchingTags(t *testing.T) {
 			name: "tagaware"
 			port: -1
 			%s
-			prefer_matching_tags: %t
+			%s
 		}
 	`
 
-	startCluster := func(t *testing.T, prefer bool) (s1, s2, s3 *Server) {
+	startCluster := func(t *testing.T, enable bool) (s1, s2, s3 *Server) {
 		t.Helper()
-		s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", "", prefer))
+		mt := func(tag string) string {
+			if enable {
+				return fmt.Sprintf(`matching_tags: [%q]`, tag)
+			}
+			return ""
+		}
+		s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", "", mt("az1")))
 		s1, o1 := RunServerWithConfig(s1Conf)
 		t.Cleanup(s1.Shutdown)
 
 		routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
-		s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1", routes, prefer))
+		s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1", routes, mt("az1")))
 		s2, _ = RunServerWithConfig(s2Conf)
 		t.Cleanup(s2.Shutdown)
 
-		s3Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3", "az2", routes, prefer))
+		s3Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3", "az2", routes, mt("az2")))
 		s3, _ = RunServerWithConfig(s3Conf)
 		t.Cleanup(s3.Shutdown)
 
@@ -5316,9 +5322,9 @@ func TestRouteQueuePreferMatchingTags(t *testing.T) {
 		return s1, s2, s3
 	}
 
-	runScenario := func(t *testing.T, prefer bool) (matchCount, otherCount int32) {
+	runScenario := func(t *testing.T, enable bool) (matchCount, otherCount int32) {
 		t.Helper()
-		s1, s2, s3 := startCluster(t, prefer)
+		s1, s2, s3 := startCluster(t, enable)
 
 		ncMatch := natsConnect(t, s2.ClientURL())
 		t.Cleanup(ncMatch.Close)
@@ -5373,7 +5379,7 @@ func TestRouteQueuePreferMatchingTags(t *testing.T) {
 	})
 }
 
-func TestRouteQueuePreferMatchingTagsRouteBeatsLeaf(t *testing.T) {
+func TestRouteQueueMatchingTagsRouteBeatsLeaf(t *testing.T) {
 	// HubAz1 (tag az1) and HubAz2 (tag az2) form a cluster. A leaf attaches
 	// to HubAz1. Queue subs land on HubAz2 (non-matching peer, via route)
 	// and on the leaf. Publisher on HubAz1 has no local sub. We expect the
@@ -5387,15 +5393,15 @@ func TestRouteQueuePreferMatchingTagsRouteBeatsLeaf(t *testing.T) {
 			name: tagaware
 			port: -1
 			%s
-			prefer_matching_tags: true
+			matching_tags: [%q]
 		}
 	`
-	h1Conf := createConfFile(t, fmt.Appendf(nil, hubTmpl, "HubAz1", "az1", ""))
+	h1Conf := createConfFile(t, fmt.Appendf(nil, hubTmpl, "HubAz1", "az1", "", "az1"))
 	h1, h1Opts := RunServerWithConfig(h1Conf)
 	defer h1.Shutdown()
 
 	h2Conf := createConfFile(t, fmt.Appendf(nil, hubTmpl, "HubAz2", "az2",
-		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, h1Opts.Cluster.Port)))
+		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, h1Opts.Cluster.Port), "az2"))
 	h2, _ := RunServerWithConfig(h2Conf)
 	defer h2.Shutdown()
 
@@ -5448,10 +5454,10 @@ func TestRouteQueuePreferMatchingTagsRouteBeatsLeaf(t *testing.T) {
 	}
 }
 
-func TestRouteQueuePreferMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
-	// With preferMatching, a local CLIENT sub and a matching-tag peer ROUTER
-	// are equally cheap; selection should remain 50/50 random across the two
-	// to preserve queue-group load balancing within an AZ.
+func TestRouteQueueMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
+	// With matching_tags set, a local CLIENT sub and a matching-tag peer
+	// ROUTER are equally cheap; selection should remain 50/50 random across
+	// the two to preserve queue-group load balancing within the locality.
 	tmpl := `
 		port: -1
 		server_name: %s
@@ -5460,15 +5466,15 @@ func TestRouteQueuePreferMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
 			name: "tagaware"
 			port: -1
 			%s
-			prefer_matching_tags: true
+			matching_tags: [%q]
 		}
 	`
-	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", "", "az1"))
 	s1, o1 := RunServerWithConfig(s1Conf)
 	defer s1.Shutdown()
 
 	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
-	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1", routes))
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1", routes, "az1"))
 	s2, _ := RunServerWithConfig(s2Conf)
 	defer s2.Shutdown()
 
@@ -5511,7 +5517,7 @@ func TestRouteQueuePreferMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
 	}
 }
 
-func TestRouteQueuePreferMatchingTagsLocalSubWins(t *testing.T) {
+func TestRouteQueueMatchingTagsLocalSubWins(t *testing.T) {
 	tmpl := `
 		port: -1
 		server_name: %s
@@ -5520,15 +5526,15 @@ func TestRouteQueuePreferMatchingTagsLocalSubWins(t *testing.T) {
 			name: "tagaware"
 			port: -1
 			%s
-			prefer_matching_tags: true
+			matching_tags: [%q]
 		}
 	`
-	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", "", "az1"))
 	s1, o1 := RunServerWithConfig(s1Conf)
 	defer s1.Shutdown()
 
 	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
-	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az2", routes))
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az2", routes, "az2"))
 	s2, _ := RunServerWithConfig(s2Conf)
 	defer s2.Shutdown()
 
@@ -5573,11 +5579,11 @@ func TestRouteQueuePreferMatchingTagsLocalSubWins(t *testing.T) {
 	}
 }
 
-func TestRouteQueuePreferMatchingTagsExcludesCrossAZ(t *testing.T) {
-	// 2 servers per AZ across 2 AZs, queue subs on every node, publisher on
-	// S1a with a local sub. The pre-scan AZ pool on S1a is [LocalS1a,
-	// RouteToS2a] (matching), so traffic must split between those two and
-	// AZ2 peers must receive none.
+func TestRouteQueueMatchingTagsExcludesCrossLocality(t *testing.T) {
+	// 2 servers per locality across 2 localities, queue subs on every node,
+	// publisher on S1a with a local sub. The pre-scan local pool on S1a is
+	// [LocalS1a, RouteToS2a] (matching), so traffic must split between
+	// those two and az2 peers must receive none.
 	tmpl := `
 		port: -1
 		server_name: %s
@@ -5586,23 +5592,23 @@ func TestRouteQueuePreferMatchingTagsExcludesCrossAZ(t *testing.T) {
 			name: "tagaware"
 			port: -1
 			%s
-			prefer_matching_tags: true
+			matching_tags: [%q]
 		}
 	`
-	s1aConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1a", "az1", ""))
+	s1aConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1a", "az1", "", "az1"))
 	s1a, o1 := RunServerWithConfig(s1aConf)
 	defer s1a.Shutdown()
 
 	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
-	s2aConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2a", "az1", routes))
+	s2aConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2a", "az1", routes, "az1"))
 	s2a, _ := RunServerWithConfig(s2aConf)
 	defer s2a.Shutdown()
 
-	s3bConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3b", "az2", routes))
+	s3bConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3b", "az2", routes, "az2"))
 	s3b, _ := RunServerWithConfig(s3bConf)
 	defer s3b.Shutdown()
 
-	s4bConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S4b", "az2", routes))
+	s4bConf := createConfFile(t, fmt.Appendf(nil, tmpl, "S4b", "az2", routes, "az2"))
 	s4b, _ := RunServerWithConfig(s4bConf)
 	defer s4b.Shutdown()
 
@@ -5640,20 +5646,20 @@ func TestRouteQueuePreferMatchingTagsExcludesCrossAZ(t *testing.T) {
 	})
 
 	if s3bCount.Load() != 0 || s4bCount.Load() != 0 {
-		t.Fatalf("AZ2 received traffic, expected 0: S3b=%d S4b=%d",
+		t.Fatalf("az2 received traffic, expected 0: S3b=%d S4b=%d",
 			s3bCount.Load(), s4bCount.Load())
 	}
 	if s1aCount.Load() == 0 || s2aCount.Load() == 0 {
-		t.Fatalf("AZ1 candidates not balanced: S1a=%d S2a=%d",
+		t.Fatalf("az1 candidates not balanced: S1a=%d S2a=%d",
 			s1aCount.Load(), s2aCount.Load())
 	}
 }
 
-func TestRouteQueuePreferMatchingTagsNoAZLocalFallback(t *testing.T) {
+func TestRouteQueueMatchingTagsNoLocalFallback(t *testing.T) {
 	// Publisher's server has neither a local sub nor a matching peer; the
-	// AZ pool is empty and the pre-scan must fall through to the original
-	// cluster-wide selection so messages still distribute across the
-	// non-matching peers.
+	// local pool is empty and the pre-scan must fall through to the
+	// original cluster-wide selection so messages still distribute across
+	// the non-matching peers.
 	tmpl := `
 		port: -1
 		server_name: %s
@@ -5662,19 +5668,19 @@ func TestRouteQueuePreferMatchingTagsNoAZLocalFallback(t *testing.T) {
 			name: "tagaware"
 			port: -1
 			%s
-			prefer_matching_tags: true
+			matching_tags: [%q]
 		}
 	`
-	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", "", "az1"))
 	s1, o1 := RunServerWithConfig(s1Conf)
 	defer s1.Shutdown()
 
 	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
-	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az2", routes))
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az2", routes, "az2"))
 	s2, _ := RunServerWithConfig(s2Conf)
 	defer s2.Shutdown()
 
-	s3Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3", "az3", routes))
+	s3Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3", "az3", routes, "az3"))
 	s3, _ := RunServerWithConfig(s3Conf)
 	defer s3.Shutdown()
 
@@ -5714,5 +5720,78 @@ func TestRouteQueuePreferMatchingTagsNoAZLocalFallback(t *testing.T) {
 	if s2Count.Load() == 0 || s3Count.Load() == 0 {
 		t.Fatalf("expected both non-matching peers to receive messages, got S2=%d S3=%d",
 			s2Count.Load(), s3Count.Load())
+	}
+}
+
+func TestRouteQueueMatchingTagsSubsetSemantics(t *testing.T) {
+	// Each server carries two tag axes (locality + role). matching_tags pins
+	// matching to the locality axis only. The cross-locality peer that
+	// shares the role tag must NOT be classified as matching — this is the
+	// regression guard against "any-overlap" semantics.
+	tmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%q, %q]
+		cluster {
+			name: "tagaware"
+			port: -1
+			%s
+			matching_tags: [%q]
+		}
+	`
+	// S1: az=az1, role=edge, requires az1.
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", "role-edge", "", "az1"))
+	s1, o1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
+	// S2: az=az2 (different locality) but shares role=edge.
+	// Old overlap semantics would falsely classify S2 as matching.
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az2", "role-edge", routes, "az2"))
+	s2, _ := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	// S3: az=az1 (same locality as S1).
+	s3Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S3", "az1", "role-storage", routes, "az1"))
+	s3, _ := RunServerWithConfig(s3Conf)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	var s2Count, s3Count atomic.Int32
+	nc2 := natsConnect(t, s2.ClientURL())
+	defer nc2.Close()
+	_, err := nc2.QueueSubscribe("foo", "QG", func(*nats.Msg) { s2Count.Add(1) })
+	require_NoError(t, err)
+	require_NoError(t, nc2.Flush())
+
+	nc3 := natsConnect(t, s3.ClientURL())
+	defer nc3.Close()
+	_, err = nc3.QueueSubscribe("foo", "QG", func(*nats.Msg) { s3Count.Add(1) })
+	require_NoError(t, err)
+	require_NoError(t, nc3.Flush())
+
+	checkSubInterest(t, s1, globalAccountName, "foo", 2*time.Second)
+
+	ncPub := natsConnect(t, s1.ClientURL())
+	defer ncPub.Close()
+	const numMsgs = 200
+	for i := 0; i < numMsgs; i++ {
+		require_NoError(t, ncPub.Publish("foo", []byte("hi")))
+	}
+	require_NoError(t, ncPub.Flush())
+
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		if total := s2Count.Load() + s3Count.Load(); total != numMsgs {
+			return fmt.Errorf("delivered %d/%d", total, numMsgs)
+		}
+		return nil
+	})
+
+	if s2Count.Load() != 0 {
+		t.Fatalf("cross-locality peer S2 (shares role=edge) received %d, expected 0", s2Count.Load())
+	}
+	if s3Count.Load() != numMsgs {
+		t.Fatalf("matching peer S3 received %d, expected %d", s3Count.Load(), numMsgs)
 	}
 }

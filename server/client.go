@@ -5239,7 +5239,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Declared here because of goto.
 	var queues [][]byte
 
-	preferMatching := c.srv.getOpts().Cluster.PreferMatchingTags
+	matchTagsEnabled := len(c.srv.getOpts().Cluster.MatchingTags) > 0
 
 	var leafOrigin string
 	switch c.kind {
@@ -5318,15 +5318,16 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				}
 			}
 			qsubs = ql
-		} else if preferMatching && len(qsubs) > 1 {
-			// Pre-scan to a unified "AZ-local" pool: local CLIENTs plus
-			// routed CLIENTs whose remote server's tags overlap ours.
-			// When non-empty, restrict the random pick (sindex below) to
-			// this pool so traffic stays in-AZ and balances across local
-			// and matching peers. Empty pool => fall through to the
-			// original cluster-wide selection.
-			var _az [32]*subscription
-			az := _az[:0]
+		} else if matchTagsEnabled && len(qsubs) > 1 {
+			// Pre-scan to a unified locality-local pool: local CLIENTs
+			// plus routed CLIENTs whose remote server satisfies this
+			// server's matching_tags. When non-empty, restrict the
+			// random pick (sindex below) to this pool so traffic stays
+			// local and balances across local subs and matching peers.
+			// Empty pool => fall through to the original cluster-wide
+			// selection.
+			var _local [32]*subscription
+			local := _local[:0]
 			isSpokeLeaf := src == LEAF && c.isSpokeLeafNode()
 			for i := 0; i < len(qsubs); i++ {
 				s := qsubs[i]
@@ -5339,15 +5340,16 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 						continue
 					}
 					if len(s.origin) == 0 && s.client.route.tagsMatch {
-						az = append(az, s)
+						local = append(local, s)
 					}
 				case LEAF:
+					// LEAFs are not tagged; never treat as locality-local.
 				default:
-					az = append(az, s)
+					local = append(local, s)
 				}
 			}
-			if len(az) > 0 {
-				qsubs = az
+			if len(local) > 0 {
+				qsubs = local
 			}
 		}
 

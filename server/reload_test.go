@@ -7447,23 +7447,35 @@ func TestConfigReloadServerTags(t *testing.T) {
 	}
 }
 
-func TestConfigReloadServerTagsRecomputesRouteMatch(t *testing.T) {
-	tmpl := `
+func TestConfigReloadMatchingTagsRecomputesRouteMatch(t *testing.T) {
+	// matching_tags reload must recompute tagsMatch on existing routes,
+	// since tagsMatch is driven by the local matching_tags filter against
+	// each route's cached remoteTags.
+	s1Tmpl := `
 		port: -1
-		server_name: %s
-		server_tags: [%s]
+		server_name: S1
+		server_tags: [az1]
 		cluster {
 			name: tagaware
 			port: -1
-			%s
+			matching_tags: [%q]
 		}
 	`
-	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", ""))
+	s1Conf := createConfFile(t, fmt.Appendf(nil, s1Tmpl, "az1"))
 	s1, o1 := RunServerWithConfig(s1Conf)
 	defer s1.Shutdown()
 
-	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az1",
-		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)))
+	s2Conf := createConfFile(t, fmt.Appendf(nil, `
+		port: -1
+		server_name: S2
+		server_tags: [az1]
+		cluster {
+			name: tagaware
+			port: -1
+			routes: ["nats://127.0.0.1:%d"]
+			matching_tags: [az1]
+		}
+	`, o1.Cluster.Port))
 	s2, _ := RunServerWithConfig(s2Conf)
 	defer s2.Shutdown()
 
@@ -7485,29 +7497,24 @@ func TestConfigReloadServerTagsRecomputesRouteMatch(t *testing.T) {
 	}
 
 	if !routeTagsMatch(s1) {
-		t.Fatal("expected initial tagsMatch=true on S1's route")
+		t.Fatal("expected initial tagsMatch=true on S1's route (az1 ⊆ [az1])")
 	}
 
-	reloadUpdateConfig(t, s1, s1Conf, `
-		port: -1
-		server_name: S1
-		server_tags: [az2]
-		cluster {
-			name: tagaware
-			port: -1
-		}
-	`)
+	// Reload S1 with matching_tags=[az2]. S2's remoteTags=[az1] no longer
+	// satisfy the new filter, so tagsMatch must flip to false without any
+	// route reconnect or peer change.
+	reloadUpdateConfig(t, s1, s1Conf, fmt.Sprintf(s1Tmpl, "az2"))
 
 	if routeTagsMatch(s1) {
-		t.Fatal("expected tagsMatch=false on S1's route after reload to az2")
+		t.Fatal("expected tagsMatch=false on S1's route after matching_tags reload to [az2]")
 	}
 }
 
-func TestConfigReloadPreferMatchingTags(t *testing.T) {
-	// 3 nodes, S1 az1, S2 az1 (matching), S3 az2 (non-matching). Publisher on
-	// S1, queue subs on S2 and S3. With prefer_matching_tags off the cluster-
-	// wide selection delivers to both peers; after reloading S1 with the flag
-	// on, the AZ pre-scan must restrict delivery to S2.
+func TestConfigReloadMatchingTags(t *testing.T) {
+	// 3 nodes, all with server_tags set. Publisher S1, queue subs on S2
+	// (same locality as S1) and S3 (different). Without matching_tags the
+	// cluster-wide selection delivers to both peers; after reloading S1
+	// with matching_tags=[az1], the pre-scan must restrict delivery to S2.
 	s1Tmpl := `
 		port: -1
 		server_name: S1
@@ -7515,10 +7522,10 @@ func TestConfigReloadPreferMatchingTags(t *testing.T) {
 		cluster {
 			name: tagaware
 			port: -1
-			prefer_matching_tags: %t
+			%s
 		}
 	`
-	s1Conf := createConfFile(t, fmt.Appendf(nil, s1Tmpl, false))
+	s1Conf := createConfFile(t, fmt.Appendf(nil, s1Tmpl, ""))
 	s1, o1 := RunServerWithConfig(s1Conf)
 	defer s1.Shutdown()
 
@@ -7573,32 +7580,23 @@ func TestConfigReloadPreferMatchingTags(t *testing.T) {
 		})
 	}
 
-	// Phase 1: flag off — both peers receive.
+	// Phase 1: matching_tags unset — both peers receive.
 	publish(200)
 	if s2Count.Load() == 0 || s3Count.Load() == 0 {
-		t.Fatalf("flag off: expected both peers to receive, got S2=%d S3=%d",
+		t.Fatalf("matching_tags off: expected both peers to receive, got S2=%d S3=%d",
 			s2Count.Load(), s3Count.Load())
 	}
 
-	reloadUpdateConfig(t, s1, s1Conf, fmt.Sprintf(`
-		port: -1
-		server_name: S1
-		server_tags: [az1]
-		cluster {
-			name: tagaware
-			port: -1
-			prefer_matching_tags: %t
-		}
-	`, true))
+	reloadUpdateConfig(t, s1, s1Conf, fmt.Sprintf(s1Tmpl, `matching_tags: [az1]`))
 
-	// Phase 2: flag on — only the matching peer (S2) should receive.
+	// Phase 2: matching_tags=[az1] — only the matching peer (S2) receives.
 	s2Count.Store(0)
 	s3Count.Store(0)
 	publish(200)
 	if s3Count.Load() != 0 {
-		t.Fatalf("flag on: S3 (non-matching) received %d, expected 0", s3Count.Load())
+		t.Fatalf("matching_tags on: S3 (non-matching) received %d, expected 0", s3Count.Load())
 	}
 	if s2Count.Load() == 0 {
-		t.Fatalf("flag on: S2 (matching) received 0, expected all")
+		t.Fatalf("matching_tags on: S2 (matching) received 0, expected all")
 	}
 }

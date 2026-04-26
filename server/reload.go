@@ -362,19 +362,11 @@ type tagsOption struct {
 }
 
 func (u *tagsOption) Apply(server *Server) {
-	// Refresh routeInfo.Tags so reconnecting routes advertise the new tags,
-	// and recompute tagsMatch on existing routes so queue routing decisions
-	// on this server reflect the new tags immediately.
+	// Refresh routeInfo.Tags so routes that reconnect advertise the new
+	// tags. tagsMatch on existing routes is driven by Cluster.MatchingTags,
+	// not server_tags, so we don't recompute it here.
 	server.mu.Lock()
-	newTags := server.getOpts().Tags
-	server.routeInfo.Tags = newTags
-	server.forEachRoute(func(r *client) {
-		r.mu.Lock()
-		if r.route != nil {
-			r.route.tagsMatch = tagsOverlap(newTags, r.route.remoteTags)
-		}
-		r.mu.Unlock()
-	})
+	server.routeInfo.Tags = server.getOpts().Tags
 	server.mu.Unlock()
 	server.Noticef("Reloaded: tags")
 }
@@ -419,12 +411,13 @@ func (u *nkeysOption) Apply(server *Server) {
 // clusterOption implements the option interface for the `cluster` setting.
 type clusterOption struct {
 	authOption
-	newValue        ClusterOpts
-	permsChanged    bool
-	accsAdded       []string
-	accsRemoved     []string
-	poolSizeChanged bool
-	compressChanged bool
+	newValue            ClusterOpts
+	permsChanged        bool
+	accsAdded           []string
+	accsRemoved         []string
+	poolSizeChanged     bool
+	compressChanged     bool
+	matchingTagsChanged bool
 }
 
 // Apply the cluster change.
@@ -470,6 +463,16 @@ func (c *clusterOption) Apply(s *Server) {
 				// Simply change the compression writer
 				r.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
 				r.route.compression = newMode
+			}
+			r.mu.Unlock()
+		})
+	}
+	if c.matchingTagsChanged {
+		mt := c.newValue.MatchingTags
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			if r.route != nil {
+				r.route.tagsMatch = tagsContainAll(r.route.remoteTags, mt)
 			}
 			r.mu.Unlock()
 		})
@@ -1704,9 +1707,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, err
 			}
 			co := &clusterOption{
-				newValue:        newClusterOpts,
-				permsChanged:    !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
-				compressChanged: !oldClusterOpts.Compression.equals(&newClusterOpts.Compression),
+				newValue:            newClusterOpts,
+				permsChanged:        !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
+				compressChanged:     !oldClusterOpts.Compression.equals(&newClusterOpts.Compression),
+				matchingTagsChanged: !reflect.DeepEqual(oldClusterOpts.MatchingTags, newClusterOpts.MatchingTags),
 			}
 			co.diffPoolAndAccounts(&oldClusterOpts)
 			// If there are added accounts, first make sure that we can look them up.
