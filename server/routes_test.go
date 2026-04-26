@@ -5361,10 +5361,10 @@ func TestRouteQueueMatchingTags(t *testing.T) {
 
 	t.Run("disabled gives random distribution", func(t *testing.T) {
 		match, other := runScenario(t, false)
-		// With 200 messages and uniform random selection, the chance of
-		// either side getting zero is ~2^-199; treat that as a clear failure.
-		if match == 0 || other == 0 {
-			t.Fatalf("expected both peers to receive messages, got match=%d other=%d", match, other)
+		const minPerSide = 200 / 4
+		if match < minPerSide || other < minPerSide {
+			t.Fatalf("expected balanced distribution, got match=%d other=%d (each must be >= %d)",
+				match, other, minPerSide)
 		}
 	})
 
@@ -5511,9 +5511,10 @@ func TestRouteQueueMatchingTagsBalancesWithMatchingPeer(t *testing.T) {
 		return nil
 	})
 
-	if local.Load() == 0 || peer.Load() == 0 {
-		t.Fatalf("expected both candidates to receive messages, got local=%d peer=%d",
-			local.Load(), peer.Load())
+	const minPerSide = numMsgs / 4
+	if local.Load() < minPerSide || peer.Load() < minPerSide {
+		t.Fatalf("expected balanced distribution, got local=%d peer=%d (each must be >= %d)",
+			local.Load(), peer.Load(), minPerSide)
 	}
 }
 
@@ -5649,9 +5650,10 @@ func TestRouteQueueMatchingTagsExcludesCrossLocality(t *testing.T) {
 		t.Fatalf("az2 received traffic, expected 0: S3b=%d S4b=%d",
 			s3bCount.Load(), s4bCount.Load())
 	}
-	if s1aCount.Load() == 0 || s2aCount.Load() == 0 {
-		t.Fatalf("az1 candidates not balanced: S1a=%d S2a=%d",
-			s1aCount.Load(), s2aCount.Load())
+	const minPerSide = numMsgs / 4
+	if s1aCount.Load() < minPerSide || s2aCount.Load() < minPerSide {
+		t.Fatalf("az1 candidates not balanced: S1a=%d S2a=%d (each must be >= %d)",
+			s1aCount.Load(), s2aCount.Load(), minPerSide)
 	}
 }
 
@@ -5717,9 +5719,10 @@ func TestRouteQueueMatchingTagsNoLocalFallback(t *testing.T) {
 		return nil
 	})
 
-	if s2Count.Load() == 0 || s3Count.Load() == 0 {
-		t.Fatalf("expected both non-matching peers to receive messages, got S2=%d S3=%d",
-			s2Count.Load(), s3Count.Load())
+	const minPerSide = numMsgs / 4
+	if s2Count.Load() < minPerSide || s3Count.Load() < minPerSide {
+		t.Fatalf("expected balanced distribution, got S2=%d S3=%d (each must be >= %d)",
+			s2Count.Load(), s3Count.Load(), minPerSide)
 	}
 }
 
