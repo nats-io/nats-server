@@ -7488,7 +7488,7 @@ func TestConfigReloadMatchingTagsRecomputesRouteMatch(t *testing.T) {
 		s.forEachRoute(func(r *client) {
 			r.mu.Lock()
 			if r.route != nil {
-				match = r.route.tagsMatch
+				match = r.route.tagsMatch.Load()
 			}
 			r.mu.Unlock()
 		})

@@ -472,7 +472,7 @@ func (c *clusterOption) Apply(s *Server) {
 		s.forEachRoute(func(r *client) {
 			r.mu.Lock()
 			if r.route != nil {
-				r.route.tagsMatch = tagsContainAll(r.route.remoteTags, mt)
+				r.route.tagsMatch.Store(tagsContainAll(r.route.remoteTags, mt))
 			}
 			r.mu.Unlock()
 		})

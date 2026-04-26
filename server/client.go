@@ -5339,7 +5339,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					if isSpokeLeaf {
 						continue
 					}
-					if len(s.origin) == 0 && s.client.route.tagsMatch {
+					if len(s.origin) == 0 && s.client.route.tagsMatch.Load() {
 						local = append(local, s)
 					}
 				case LEAF:

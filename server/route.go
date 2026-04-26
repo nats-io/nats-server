@@ -57,7 +57,7 @@ type route struct {
 	remoteID     string
 	remoteName   string
 	remoteTags   []string
-	tagsMatch    bool
+	tagsMatch    atomic.Bool
 	didSolicit   bool
 	retry        bool
 	lnoc         bool
@@ -835,7 +835,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
 	c.route.remoteTags = info.Tags
-	c.route.tagsMatch = tagsContainAll(info.Tags, opts.Cluster.MatchingTags)
+	c.route.tagsMatch.Store(tagsContainAll(info.Tags, opts.Cluster.MatchingTags))
 	c.route.lnoc = info.LNOC
 	c.route.lnocu = info.LNOCU
 	c.route.jetstream = info.JetStream
