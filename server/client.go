@@ -5326,8 +5326,18 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// local and balances across local subs and matching peers.
 			// Empty pool => fall through to the original cluster-wide
 			// selection.
+			//
+			// We also remember the first non-matching peer ROUTER as a
+			// fallback rsub. If every candidate in the pool fails
+			// deliverMsg (slow consumer / closed sub), the post-loop
+			// addSubToRouteTargets forwards to that peer instead of
+			// dropping the message. The delivery loop clears rsub on
+			// successful local delivery and overwrites it when it
+			// picks a matching peer, so locality and route-beats-leaf
+			// priorities are preserved.
 			var _local [32]*subscription
 			local := _local[:0]
+			var fallback *subscription
 			isSpokeLeaf := src == LEAF && c.isSpokeLeafNode()
 			for i := 0; i < len(qsubs); i++ {
 				s := qsubs[i]
@@ -5339,8 +5349,12 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					if isSpokeLeaf {
 						continue
 					}
-					if len(s.origin) == 0 && s.client.route.tagsMatch.Load() {
-						local = append(local, s)
+					if len(s.origin) == 0 {
+						if s.client.route.tagsMatch.Load() {
+							local = append(local, s)
+						} else if fallback == nil {
+							fallback = s
+						}
 					}
 				case LEAF:
 					// LEAFs are not tagged; never treat as locality-local.
@@ -5350,6 +5364,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 			if len(local) > 0 {
 				qsubs = local
+				if fallback != nil {
+					rsub = fallback
+				}
 			}
 		}
 

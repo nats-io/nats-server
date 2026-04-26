@@ -5798,3 +5798,80 @@ func TestRouteQueueMatchingTagsSubsetSemantics(t *testing.T) {
 		t.Fatalf("matching peer S3 received %d, expected %d", s3Count.Load(), numMsgs)
 	}
 }
+
+func TestRouteQueueMatchingTagsRemoteFallbackOnLocalFailure(t *testing.T) {
+	// When matching_tags is set and the locality pool consists only of local
+	// CLIENTs (no matching peer ROUTER), and every local CLIENT fails to
+	// deliver (here simulated by sub.close() leaving the sub in the
+	// sublist — the same window as a slow-consumer or mid-delivery
+	// disconnect), the message must still fall back to a non-matching peer
+	// rather than being silently dropped.
+	tmpl := `
+		port: -1
+		server_name: %s
+		server_tags: [%q]
+		cluster {
+			name: "tagaware"
+			port: -1
+			%s
+			matching_tags: [%q]
+		}
+	`
+	s1Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S1", "az1", "", "az1"))
+	s1, o1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)
+	s2Conf := createConfFile(t, fmt.Appendf(nil, tmpl, "S2", "az2", routes, "az2"))
+	s2, _ := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	ncLocal := natsConnect(t, s1.ClientURL())
+	defer ncLocal.Close()
+	_, err := ncLocal.QueueSubscribe("foo", "QG", func(*nats.Msg) {})
+	require_NoError(t, err)
+	require_NoError(t, ncLocal.Flush())
+
+	ncRemote := natsConnect(t, s2.ClientURL())
+	defer ncRemote.Close()
+	var remote atomic.Int32
+	_, err = ncRemote.QueueSubscribe("foo", "QG", func(*nats.Msg) { remote.Add(1) })
+	require_NoError(t, err)
+	require_NoError(t, ncRemote.Flush())
+
+	checkSubInterest(t, s1, globalAccountName, "foo", 2*time.Second)
+
+	// Mark the local CLIENT sub closed without removing it from S1's
+	// sublist. closeConnection would issue UNSUB and prune the sub; here
+	// we want the exact window where Match still returns the sub but
+	// deliverMsg returns false.
+	acc, err := s1.LookupAccount(globalAccountName)
+	require_NoError(t, err)
+	res := acc.sl.Match("foo")
+	require_True(t, len(res.qsubs) == 1)
+	var closed bool
+	for _, qs := range res.qsubs[0] {
+		if qs.client != nil && qs.client.kind == CLIENT {
+			qs.close()
+			closed = true
+		}
+	}
+	require_True(t, closed)
+
+	ncPub := natsConnect(t, s1.ClientURL())
+	defer ncPub.Close()
+	const numMsgs = 50
+	for i := 0; i < numMsgs; i++ {
+		require_NoError(t, ncPub.Publish("foo", []byte("hi")))
+	}
+	require_NoError(t, ncPub.Flush())
+
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		if got := remote.Load(); got != int32(numMsgs) {
+			return fmt.Errorf("non-matching peer received %d/%d (locality pool fully failed; expected fallback)", got, numMsgs)
+		}
+		return nil
+	})
+}
