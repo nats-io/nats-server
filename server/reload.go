@@ -366,6 +366,8 @@ func (u *tagsOption) Apply(server *Server) {
 	// their tagsMatch view of us. Our own routes' tagsMatch is driven by
 	// Cluster.MatchingTags, not server_tags, so we don't recompute it here.
 	server.mu.Lock()
+	// Slice-header alias is safe: reload installs a fresh *Options with a fresh
+	// Tags backing array, so this header is replaced (never mutated in place).
 	server.routeInfo.Tags = server.getOpts().Tags
 	infoJSON := generateInfoJSON(&server.routeInfo)
 	var routes []*client

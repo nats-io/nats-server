@@ -148,7 +148,7 @@ type Info struct {
 	RouteAccount  string             `json:"route_account,omitempty"`
 	RouteAccReqID string             `json:"route_acc_add_reqid,omitempty"`
 	GossipMode    byte               `json:"gossip_mode,omitempty"`
-	Tags          []string           `json:"tags,omitempty"`
+	Tags          []string           `json:"tags,omitempty"` // Route-only — must not leak to client/leaf/gateway Info.
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
