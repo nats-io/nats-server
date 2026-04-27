@@ -182,6 +182,17 @@ func newSubsList(client *client) []string {
 	return subs
 }
 
+func redactBearerJWT(userJWT string) string {
+	if userJWT == _EMPTY_ {
+		return _EMPTY_
+	}
+	uc, err := jwt.DecodeUserClaims(userJWT)
+	if err == nil && uc != nil && uc.BearerToken {
+		return _EMPTY_
+	}
+	return userJWT
+}
+
 // Connz returns a Connz struct containing information about connections.
 func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	var (
@@ -434,6 +445,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			ci.NameTag = client.acc.getNameTag()
 		}
 		client.mu.Unlock()
+		ci.JWT = redactBearerJWT(ci.JWT)
 		pconns[i] = ci
 		i++
 	}
@@ -480,6 +492,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 					cc.NameTag = acc.getNameTag()
 				}
 			}
+			cc.JWT = redactBearerJWT(cc.JWT)
 		}
 		pconns[i] = &cc.ConnInfo
 		i++

@@ -1764,31 +1764,41 @@ func (ms *memStore) loadNextMsgLocked(filter string, wc bool, start uint64, smp 
 	return nil, ms.state.LastSeq, ErrStoreEOF
 }
 
-// Will load the next non-deleted msg starting at the start sequence and walking backwards.
-func (ms *memStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err error) {
+// Will load the previous message matching the filter subject, starting at the start sequence and walking backwards.
+func (ms *memStore) LoadPrevMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
 	if ms.msgs == nil {
-		return nil, ErrStoreClosed
+		return nil, 0, ErrStoreClosed
 	}
 	if ms.state.Msgs == 0 || start < ms.state.FirstSeq {
-		return nil, ErrStoreEOF
+		return nil, ms.state.FirstSeq, ErrStoreEOF
 	}
 	if start > ms.state.LastSeq {
 		start = ms.state.LastSeq
 	}
 
+	if filter == _EMPTY_ {
+		filter = fwcs
+		wc = true
+	}
+	isAll := filter == fwcs
+	eq := subjectsEqual
+	if wc {
+		eq = matchLiteral
+	}
+
 	for seq := start; seq >= ms.state.FirstSeq; seq-- {
-		if sm, ok := ms.msgs[seq]; ok {
+		if sm, ok := ms.msgs[seq]; ok && (isAll || eq(sm.subj, filter)) {
 			if smp == nil {
 				smp = new(StoreMsg)
 			}
 			sm.copy(smp)
-			return smp, nil
+			return smp, seq, nil
 		}
 	}
-	return nil, ErrStoreEOF
+	return nil, ms.state.FirstSeq, ErrStoreEOF
 }
 
 // LoadPrevMsgMulti will find the previous message matching any entry in the sublist.
@@ -1822,7 +1832,7 @@ func (ms *memStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *S
 			return smp, nseq, nil
 		}
 	}
-	return nil, ms.state.LastSeq, ErrStoreEOF
+	return nil, ms.state.FirstSeq, ErrStoreEOF
 }
 
 // RemoveMsg will remove the message from this store.

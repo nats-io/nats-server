@@ -3244,6 +3244,27 @@ func TestSetHeaderDoesNotOverwriteUnderlyingBuffer(t *testing.T) {
 	}
 }
 
+func TestClientSetHeaderDoesNotMutateInputMsg(t *testing.T) {
+	hdr := "NATS/1.0\r\nClientInfo: {old}\r\nKey2: Val2\r\n\r\n"
+	msg := "this is the message body\r\n"
+
+	buf := make([]byte, 0, len(hdr)+len(msg))
+	buf = append(buf, hdr...)
+	buf = append(buf, msg...)
+
+	c := &client{}
+	c.pa.hdr = len(hdr)
+	c.pa.size = len(buf)
+
+	// setHeader should copy to not corrupt the input message.
+	original := slices.Clone(buf)
+	out := c.setHeader("ClientInfo", "{newvalue}", buf)
+	require_Equal(t, string(buf), string(original))
+
+	expected := "NATS/1.0\r\nKey2: Val2\r\nClientInfo: {newvalue}\r\n\r\n" + msg
+	require_Equal(t, string(out), expected)
+}
+
 func TestSetHeaderOrderingPrefix(t *testing.T) {
 	for _, space := range []bool{true, false} {
 		title := "Normal"
@@ -3747,4 +3768,104 @@ func TestClientPingNoAuthUserExceptionsAndRestrictions(t *testing.T) {
 		require_NoError(t, conn.Close())
 		checkAccClientsCount(t, acc, 0)
 	})
+}
+
+func TestClientRepeatConnectSwitchesAccountAndCleansOldSubs(t *testing.T) {
+	for _, diffAcc := range []bool{true, false} {
+		title := "ToDifferentAccount"
+		if !diffAcc {
+			title = "SameAccount"
+		}
+		t.Run(title, func(t *testing.T) {
+			conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: { users: [ { user: ua, password: pa } ] }
+			B: { users: [ { user: ub, password: pb } ] }
+		}
+	`))
+
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			accA, err := s.LookupAccount("A")
+			require_NoError(t, err)
+			accB, err := s.LookupAccount("B")
+			require_NoError(t, err)
+
+			c, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
+			require_NoError(t, err)
+			defer c.Close()
+
+			// Consume INFO.
+			cr := bufio.NewReader(c)
+			line, _, err := cr.ReadLine()
+			require_NoError(t, err)
+			require_Contains(t, string(line), "INFO {")
+
+			// First CONNECT into account A plus a subscription.
+			_, err = c.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ua\",\"pass\":\"pa\"}\r\nSUB foo 1\r\nPING\r\n"))
+			require_NoError(t, err)
+			line, _, err = cr.ReadLine()
+			require_NoError(t, err)
+			require_Equal(t, string(line), "PONG")
+
+			// Confirm the sub landed in account A.
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				r := accA.sl.Match("foo")
+				if n := len(r.psubs); n != 1 {
+					return fmt.Errorf("expected 1 psub on foo in account A, got %d", n)
+				}
+				if n := accA.NumLocalConnections(); n != 1 {
+					return fmt.Errorf("expected 1 client in account A, got %d", n)
+				}
+				return nil
+			})
+
+			// Second CONNECT, re-authenticating...
+			if diffAcc {
+				// ..., into account B.
+				_, err = c.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ub\",\"pass\":\"pb\"}\r\nPING\r\n"))
+			} else {
+				// ..., into the same account A.
+				_, err = c.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ua\",\"pass\":\"pa\"}\r\nPING\r\n"))
+			}
+			require_NoError(t, err)
+			line, _, err = cr.ReadLine()
+			require_NoError(t, err)
+			require_Equal(t, string(line), "PONG")
+
+			// Account A must no longer have the old sub (or the client if connected to B).
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				r := accA.sl.Match("foo")
+				if n := len(r.psubs); n != 0 {
+					return fmt.Errorf("expected 0 psubs on foo in account A after re-CONNECT, got %d", n)
+				}
+				var ea, eb int
+				if diffAcc {
+					eb = 1
+				} else {
+					ea = 1
+				}
+				if n := accA.NumLocalConnections(); n != ea {
+					return fmt.Errorf("expected %d clients in account A after re-CONNECT, got %d", ea, n)
+				}
+				if n := accB.NumLocalConnections(); n != eb {
+					return fmt.Errorf("expected %d client in account B after re-CONNECT, got %d", eb, n)
+				}
+				return nil
+			})
+
+			// Publishing foo on account A must not be delivered to this client.
+			ncA := natsConnect(t, s.ClientURL(), nats.UserInfo("ua", "pa"))
+			defer ncA.Close()
+			natsPub(t, ncA, "foo", []byte("should-not-arrive"))
+			natsFlush(t, ncA)
+
+			require_NoError(t, c.SetReadDeadline(time.Now().Add(150*time.Millisecond)))
+			if line, _, err = cr.ReadLine(); err == nil {
+				t.Fatalf("Did not expect to read anything from stale sub, got %q", line)
+			}
+		})
+	}
 }

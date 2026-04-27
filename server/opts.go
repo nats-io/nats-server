@@ -6134,14 +6134,56 @@ func expandPath(p string) (string, error) {
 // RedactArgs redacts sensitive arguments from the command line.
 // For example, turns '--pass=secret' into '--pass=[REDACTED]'.
 func RedactArgs(args []string) {
-	secret := regexp.MustCompile("^-{1,2}(user|pass|auth)(=.*)?$")
+	secretArg := regexp.MustCompile("^-{1,2}(user|pass|auth)(=.*)?$")
+	routeURLArg := regexp.MustCompile("^-{1,2}(routes)(=.*)?$")
+	singleURLArg := regexp.MustCompile("^-{1,2}(cluster|cluster_listen)(=.*)?$")
 	for i, arg := range args {
-		if secret.MatchString(arg) {
-			if idx := strings.Index(arg, "="); idx != -1 {
-				args[i] = arg[:idx] + "=[REDACTED]"
-			} else if i+1 < len(args) {
-				args[i+1] = "[REDACTED]"
-			}
+		switch {
+		case secretArg.MatchString(arg):
+			redactArgValue(args, i, func(_ string) string { return "[REDACTED]" })
+		case routeURLArg.MatchString(arg):
+			redactArgValue(args, i, redactURLListUser)
+		case singleURLArg.MatchString(arg):
+			redactArgValue(args, i, redactURLUser)
 		}
 	}
+}
+
+func redactArgValue(args []string, i int, redact func(string) string) {
+	if flag, value, ok := strings.Cut(args[i], "="); ok {
+		args[i] = flag + "=" + redact(value)
+	} else if i+1 < len(args) {
+		args[i+1] = redact(args[i+1])
+	}
+}
+
+func redactURLUser(raw string) string {
+	if !strings.Contains(raw, "@") {
+		return raw
+	}
+	parseValue := strings.TrimSpace(raw)
+	restoreRandom := false
+	if prefix, ok := strings.CutSuffix(parseValue, ":-1"); ok {
+		parseValue = prefix + ":0"
+		restoreRandom = true
+	}
+	u, err := url.Parse(parseValue)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	// url.String escapes brackets in userinfo, so use
+	// a placeholder here and rewrite it afterward.
+	u.User = url.User("_REDACTED_")
+	if restoreRandom {
+		u.Host = strings.TrimSuffix(u.Host, ":0") + ":-1"
+	}
+	return strings.Replace(u.String(), "_REDACTED_@", "[REDACTED]@", 1)
+}
+
+func redactURLListUser(raw string) string {
+	parts := strings.Split(raw, ",")
+	for i, part := range parts {
+		parts[i] = redactURLUser(part)
+	}
+	return strings.Join(parts, ",")
 }

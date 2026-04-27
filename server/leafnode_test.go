@@ -11582,6 +11582,56 @@ func TestLeafNodeInboundInfoDoesNotOverrideNonce(t *testing.T) {
 	require_True(t, bytes.Equal(c.nonce, nonce))
 }
 
+func TestLeafNodeSecondInfoBeforeConnectDoesNotPanic(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		secondInfo string
+	}{
+		{"remote_account", `INFO {"remote_account":"attacker"}`},
+		{"connect_info", `INFO {"connect_info":true}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.LeafNode.Port = -1
+			o.LeafNode.Compression.Mode = CompressionS2Auto
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+			c, err := net.Dial("tcp", addr)
+			require_NoError(t, err)
+			defer c.Close()
+
+			br := bufio.NewReader(c)
+			require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+			l, _, err := br.ReadLine()
+			require_NoError(t, err)
+			require_True(t, strings.HasPrefix(string(l), "INFO"))
+
+			// The first INFO is accepted so inbound compression can negotiate.
+			_, err = c.Write([]byte("INFO {}\r\n"))
+			require_NoError(t, err)
+
+			// A second INFO before CONNECT used to panic the server.
+			_, err = c.Write([]byte(test.secondInfo + "\r\n"))
+			require_NoError(t, err)
+
+			// Reject the connection, but keep the server alive.
+			require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+			l, _, err = br.ReadLine()
+			require_NoError(t, err)
+			require_True(t, strings.Contains(string(l), "Authorization Violation"))
+
+			s.mu.Lock()
+			shutdown := s.isShuttingDown()
+			s.mu.Unlock()
+			if shutdown {
+				t.Fatal("Server should not have shutdown")
+			}
+		})
+	}
+}
+
 func TestLeafNodeNoAccPanicOnLeafSubBeforeConnectOperatorMode(t *testing.T) {
 	// Setup operator JWT-based server with leafnode port.
 	// This confirms that even with full operator/JWT auth configured,
