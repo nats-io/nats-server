@@ -2917,20 +2917,34 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 	// Need to copy since this is underlying client/route buffer.
 	msg = copyBytes(msg)
 
-	n.Lock()
-	defer n.Unlock()
+	n.RLock()
+	prop := n.prop
 	// Check state under lock, we might not be leader anymore.
 	if n.State() != Leader || !n.leaderState.Load() {
 		n.debug("Ignoring forwarded proposal, not leader")
+		n.RUnlock()
 		return
 	}
 
 	// Ignore if we have had a write error previous.
 	if n.werr != nil {
+		n.RUnlock()
 		return
 	}
 
 	if n.isLeaderOverrun() {
+		n.RUnlock()
+		n.Lock()
+		defer n.Unlock()
+		// Now that we've reacquired as write lock, we need to make sure that everything we
+		// believed before is still true. Otherwise we've either stepped down already from
+		// another goroutine or we've stopped being overrun and shouldn't drop the entry.
+		if n.State() != Leader || !n.leaderState.Load() {
+			return
+		} else if !n.isLeaderOverrun() {
+			prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
+			return
+		}
 		var state StreamState
 		n.wal.FastState(&state)
 		n.warn("Leader falling behind, stepping down: pindex %d, commit %d, applied %d, WAL size %s", n.pindex, n.commit, n.applied, friendlyBytes(state.Bytes))
@@ -2939,7 +2953,10 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 		n.overrunCount++
 		return
 	}
-	n.prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
+	// Possible that we could fall through to here from multiple connections but if
+	// one does end up stepping down then the proposal queue gets drained anyway.
+	n.RUnlock()
+	prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
 }
 
 // Adds peer with the given id to our membership,
