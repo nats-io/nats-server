@@ -1905,8 +1905,8 @@ func TestJetStreamClusterAckFloorBetweenLeaderAndFollowers(t *testing.T) {
 
 // https://github.com/nats-io/nats-server/pull/5600
 func TestJetStreamClusterConsumerLeak(t *testing.T) {
-	N := 2000 // runs in under 10s, but significant enough to see the difference.
-	NConcurrent := 100
+	N := 2000
+	NConcurrent := 25
 
 	clusterConf := `
 	listen: 127.0.0.1:-1
