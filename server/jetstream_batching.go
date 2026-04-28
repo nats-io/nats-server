@@ -827,7 +827,7 @@ func checkMsgHeadersPreClusteredProposal(
 			} else if scheduleTtl != _EMPTY_ && !allowTTL {
 				return hdr, msg, 0, NewJSMessageTTLDisabledError(), errMsgTTLDisabled
 			} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
-				!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
+				!IsValidPublishSubject(scheduleTarget) || scheduleTarget == subject {
 				apiErr := NewJSMessageSchedulesTargetInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
 			} else if scheduleSource := getMessageScheduleSource(hdr); scheduleSource != _EMPTY_ &&

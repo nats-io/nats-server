@@ -6405,7 +6405,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 					}
 					return errMsgTTLDisabled
 				} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
-					!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
+					!IsValidPublishSubject(scheduleTarget) || scheduleTarget == subject {
 					apiErr := NewJSMessageSchedulesTargetInvalidError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
