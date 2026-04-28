@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	FeatureFlagJsAckFormatV2 = "js_ack_fc_v2"
+	FeatureFlagJsAckFormatV2     = "js_ack_fc_v2"
+	FeatureFlagJsRaftDeleteRange = "js_raft_delete_range"
 )
 
 var featureFlags = map[string]bool{
@@ -32,6 +33,17 @@ var featureFlags = map[string]bool{
 	// - v2: $JS.ACK.<domain>.<account hash>.<stream name>.<consumer name>.<num delivered>.<stream sequence>.<consumer sequence>.<timestamp>.<num pending>
 	// See also: https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-15.md#jsack
 	FeatureFlagJsAckFormatV2: false,
+
+	// Propose delete range gaps as a single `deleteRangeOp` Raft append entry
+	// instead of one entry per deleted sequence. Dramatically reduces Raft cost
+	// on mirrors whose origin has a large number of interior deletes.
+	// - Introduced: 2.14.0, apply-side always supports receiving `deleteRangeOp`.
+	// - Enabled: TBD, once all supported versions carry the apply-side.
+	//
+	// WARNING: Only enable once every peer in the cluster is on a version that
+	// supports receiving `deleteRangeOp`. Older peers panic on apply of an
+	// unknown stream entry operation.
+	FeatureFlagJsRaftDeleteRange: false,
 }
 
 // getFeatureFlag is used to retrieve either the default or overwritten value for a feature flag.

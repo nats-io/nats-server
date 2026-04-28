@@ -1473,12 +1473,6 @@ func (mset *stream) lastSeq() uint64 {
 	return mset.lseq
 }
 
-// Set last seq.
-// Write lock should be held.
-func (mset *stream) setLastSeq(lseq uint64) {
-	mset.lseq = lseq
-}
-
 func (mset *stream) sendCreateAdvisory() {
 	mset.mu.RLock()
 	name := mset.cfg.Name
@@ -2861,7 +2855,7 @@ func (mset *stream) purgeLocked(preq *JSApiStreamPurgeRequest, needLock bool) (p
 
 	// Check if our last has moved past what our original last sequence was, if so reset.
 	if lseq > mlseq {
-		mset.setLastSeq(lseq)
+		mset.lseq = lseq
 	}
 
 	// Clear any pending acks below first seq.
@@ -3339,8 +3333,13 @@ func (mset *stream) skipMsgs(start, end uint64) {
 		return
 	}
 
-	// FIXME (dlc) - We should allow proposals of DeleteRange, but would need to make sure all peers support.
-	// With syncRequest was easy to add bool into request.
+	// Must only be enabled once every peer in the cluster supports receiving
+	// deleteRangeOp in the normal apply path; older peers panic on unknown ops.
+	if mset.srv.getOpts().getFeatureFlag(FeatureFlagJsRaftDeleteRange) {
+		node.Propose(encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
+		return
+	}
+
 	var entries []*Entry
 	for seq := start; seq <= end; seq++ {
 		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0, false)))
@@ -8749,6 +8748,17 @@ func (mset *stream) clearAllPreAcks(seq uint64) {
 func (mset *stream) clearAllPreAcksBelowFloor(floor uint64) {
 	for seq := range mset.preAcks {
 		if seq < floor {
+			delete(mset.preAcks, seq)
+		}
+	}
+}
+
+// Clear all preAcks in [first, last]. Iterates the preAcks map, not the
+// range, so callers can pass very wide ranges cheaply.
+// Write lock should be held.
+func (mset *stream) clearAllPreAcksInRange(first, last uint64) {
+	for seq := range mset.preAcks {
+		if seq >= first && seq <= last {
 			delete(mset.preAcks, seq)
 		}
 	}
