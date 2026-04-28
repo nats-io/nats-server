@@ -361,10 +361,6 @@ func (b *fastBatch) setupCleanupTimer(mset *stream, batchId string, batches *bat
 	timeout := getCleanupTimeout(mset)
 	b.timer = time.AfterFunc(timeout, func() {
 		b.cleanup(batchId, batches)
-		// Only send the advisory if we're the leader. (Since we do the tracking on followers too)
-		if mset.IsLeader() {
-			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
-		}
 	})
 }
 
