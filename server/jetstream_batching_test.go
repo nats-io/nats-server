@@ -2630,6 +2630,20 @@ func TestJetStreamAtomicBatchPublishAdvisories(t *testing.T) {
 		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
 		require_Equal(t, advisory.BatchId, "uuid")
 		require_Equal(t, advisory.Reason, BatchTimeout)
+
+		// Should receive an advisory if the batch has an unsupported required API level.
+		m = nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+		require_NoError(t, nc.PublishMsg(m))
+
+		msg, err = sub.NextMsg(3 * time.Second)
+		require_NoError(t, err)
+		advisory = JSStreamBatchAbandonedAdvisory{}
+		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+		require_Equal(t, advisory.BatchId, "uuid")
+		require_Equal(t, advisory.Reason, BatchRequirementsNotMet)
 	}
 
 	for _, replicas := range []int{1, 3} {
