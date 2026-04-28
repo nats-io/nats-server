@@ -1974,6 +1974,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 		{"foo/+", "foo/+", "", "wildcards not allowed in publish"},
 		{"foo/#", "foo/#", "", "wildcards not allowed in publish"},
 		{"foo bar", "foo bar", "", "not supported"},
+		{"foo\x7fbar", "foo\x7fbar", "", "not supported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := mqttTopicToNATSPubSubject([]byte(test.mqttTopic))
@@ -3562,7 +3563,7 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		as.mu.RLock()
 		defer as.mu.RUnlock()
-		if n := len(as.retmsgs); n != N {
+		if n := as.retmsgs.Size(); n != N {
 			return fmt.Errorf("Got only %v retained messages", n)
 		}
 		return nil
@@ -4849,7 +4850,7 @@ func TestMQTTPublishRetainPermViolation(t *testing.T) {
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		asm.mu.RLock()
 		defer asm.mu.RUnlock()
-		if _, ok := asm.retmsgs["foo.bar"]; ok {
+		if _, ok := asm.retmsgs.Find([]byte("foo.bar")); ok {
 			return errors.New("foo.bar subject still in map")
 		}
 		return nil
@@ -8684,6 +8685,66 @@ func TestMQTTSliceHeadersAndDecodeRetainedMessage(t *testing.T) {
 	})
 }
 
+func TestMQTTRetainedMessageWithDelSubjectIsNotRestored(t *testing.T) {
+	tdir := t.TempDir()
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: mqtt
+		jetstream {
+			store_dir = %q
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			consumer_inactive_threshold: %q
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	conf := createConfFile(t, fmt.Appendf(nil, tmpl, tdir, "0.2s"))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	// Publish one normal retained message through MQTT.
+	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mc, r, 0, false, true, "foo/ok", 0, []byte("ok"))
+	mc.Close()
+
+	// Store a legacy retained message directly into JetStream using a subject
+	// that contains DEL. That subject can no longer be indexed after restore.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	rm := mqttRetainedMsg{
+		Origin:  "test",
+		Subject: "foo.\x7fbad",
+		Topic:   "foo/\x7fbad",
+		Flags:   mqttPubFlagRetain,
+		Msg:     []byte("bad"),
+	}
+	jsonData, _ := json.Marshal(rm)
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: mqttRetainedMsgsStreamSubject + rm.Subject,
+		Data:    jsonData,
+	})
+	require_NoError(t, err)
+
+	// Restart the server so retained-message recovery runs through
+	// processRetainedMsg().
+	s.Shutdown()
+	s = RunServer(o)
+	defer testMQTTShutdownServer(s)
+
+	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
+	testMQTTCheckPubMsg(t, mc, r, "foo/ok", mqttPubFlagRetain, []byte("ok"))
+	testMQTTExpectNothing(t, r)
+}
+
 func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 	mqttRetainedCacheTTL = 250 * time.Millisecond
 	defer func() { mqttRetainedCacheTTL = mqttDefaultRetainedCacheTTL }()
@@ -8729,9 +8790,9 @@ func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 	// Make sure it is in the cache
 	rm := asm.getCachedRetainedMsg("foo")
 	require_NotNil(t, rm)
-	// Get the mqttRetainedMsgRef from the map
+	// Get the retained message sequence from the tree.
 	asm.mu.RLock()
-	rf, ok := asm.retmsgs["foo"]
+	rf, ok := asm.retmsgs.Find([]byte("foo"))
 	asm.mu.RUnlock()
 	require_True(t, ok)
 	nc, js := jsClientConnect(t, s)
@@ -8769,7 +8830,7 @@ func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 
 	// Finally, check that the retmsgs map is empty.
 	asm.mu.RLock()
-	ok = len(asm.retmsgs) == 0
+	ok = asm.retmsgs.Size() == 0
 	asm.mu.RUnlock()
 	require_True(t, ok)
 }
