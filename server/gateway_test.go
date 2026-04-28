@@ -7743,6 +7743,9 @@ func TestGatewayProcessRSubNoBlockingAccountFetch(t *testing.T) {
 	// Receiving a R+ should not be blocking, since we're in the gateway's readLoop.
 	start := time.Now()
 	require_NoError(t, c.processGatewayRSub(fmt.Appendf(nil, "%s subj queue 0", accPub)))
+	ei, ok := c.gw.outsim.Load(accPub)
+	require_True(t, ok)
+	require_True(t, ei.(*outsie).sl.CacheEnabled())
 	c.mu.Lock()
 	subs := len(c.subs)
 	c.mu.Unlock()
@@ -7757,4 +7760,16 @@ func TestGatewayProcessRSubNoBlockingAccountFetch(t *testing.T) {
 	c.mu.Unlock()
 	require_Len(t, subs, 0)
 	require_LessThan(t, time.Since(start), 100*time.Millisecond)
+
+	c2 := s.createInternalAccountClient()
+	c2.mu.Lock()
+	c2.gw = &gateway{}
+	c2.gw.outsim = &sync.Map{}
+	c2.nc = &net.IPConn{}
+	c2.mu.Unlock()
+
+	require_NoError(t, c2.processGatewayRUnsub(fmt.Appendf(nil, "%s subj", accPub)))
+	ei, ok = c2.gw.outsim.Load(accPub)
+	require_True(t, ok)
+	require_True(t, ei.(*outsie).sl.CacheEnabled())
 }
