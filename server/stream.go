@@ -7230,6 +7230,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			mset.mu.Unlock()
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchRequirementsNotMet)
 			err := NewJSRequiredApiLevelError()
 			return respondError(err)
 		}

@@ -268,9 +268,10 @@ type JSStreamBatchAbandonedAdvisory struct {
 type BatchAbandonReason string
 
 var (
-	BatchTimeout    BatchAbandonReason = "timeout"
-	BatchLarge      BatchAbandonReason = "large"
-	BatchIncomplete BatchAbandonReason = "incomplete"
+	BatchTimeout            BatchAbandonReason = "timeout"
+	BatchLarge              BatchAbandonReason = "large"
+	BatchIncomplete         BatchAbandonReason = "incomplete"
+	BatchRequirementsNotMet BatchAbandonReason = "unsupported"
 )
 
 // JSConsumerLeaderElectedAdvisoryType is sent when the system elects a leader for a consumer.
