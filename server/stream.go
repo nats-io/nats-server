@@ -5543,6 +5543,8 @@ func getFastBatch(reply string, hdr []byte) (*FastBatch, bool) {
 	p = o
 	if b.seq <= 0 {
 		return nil, true
+	} else if b.seq == 1 && b.commitEob {
+		return nil, true
 	}
 	if op == FastBatchOpStart && b.seq != 1 {
 		return nil, true
@@ -7241,7 +7243,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 
 	// Detect gaps.
 	b.lseq++
-	if b.lseq != batchSeq || cleanup {
+	if b.lseq != batchSeq || cleanup || (batchSeq == 1 && commitEob) {
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
 		mset.mu.Unlock()
