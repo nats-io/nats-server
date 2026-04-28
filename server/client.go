@@ -1061,18 +1061,19 @@ func (c *client) setPermissions(perms *Permissions) {
 		return
 	}
 	c.perms = &permissions{}
+	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
 
 	// Loop over publish permissions
 	if perms.Publish != nil {
 		if perms.Publish.Allow != nil {
-			c.perms.pub.allow = NewSublistWithCache()
+			c.perms.pub.allow = NewSublist(slcache)
 		}
 		for _, pubSubject := range perms.Publish.Allow {
 			sub := &subscription{subject: []byte(pubSubject)}
 			c.perms.pub.allow.Insert(sub)
 		}
 		if len(perms.Publish.Deny) > 0 {
-			c.perms.pub.deny = NewSublistWithCache()
+			c.perms.pub.deny = NewSublist(slcache)
 		}
 		for _, pubSubject := range perms.Publish.Deny {
 			sub := &subscription{subject: []byte(pubSubject)}
@@ -1091,7 +1092,7 @@ func (c *client) setPermissions(perms *Permissions) {
 	if perms.Subscribe != nil {
 		var err error
 		if len(perms.Subscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublistWithCache()
+			c.perms.sub.allow = NewSublist(slcache)
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
 			sub := &subscription{}
@@ -1103,7 +1104,7 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.allow.Insert(sub)
 		}
 		if len(perms.Subscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublistWithCache()
+			c.perms.sub.deny = NewSublist(slcache)
 			// Also hold onto this array for later.
 			c.darray = perms.Subscribe.Deny
 		}
@@ -1200,6 +1201,7 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	if c.perms == nil {
 		c.perms = &permissions{}
 	}
+	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
 	var perms []*perm
 	switch what {
 	case pub:
@@ -1211,7 +1213,7 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	}
 	for _, p := range perms {
 		if p.deny == nil {
-			p.deny = NewSublistWithCache()
+			p.deny = NewSublist(slcache)
 		}
 	FOR_DENY:
 		for _, subj := range denyPubs {
