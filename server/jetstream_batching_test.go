@@ -247,7 +247,18 @@ func TestJetStreamAtomicBatchPublishCommitEob(t *testing.T) {
 		})
 		require_NoError(t, err)
 
+		// A batch that immediately commits through EOB is an error.
 		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", "1")
+		m.Header.Set("Nats-Batch-Commit", "eob")
+		rmsg, err := nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+
+		m = nats.NewMsg("foo")
 		m.Header.Set("Nats-Batch-Id", "uuid")
 		m.Header.Set("Nats-Batch-Sequence", "1")
 		require_NoError(t, nc.PublishMsg(m))
@@ -257,8 +268,9 @@ func TestJetStreamAtomicBatchPublishCommitEob(t *testing.T) {
 
 		m.Header.Set("Nats-Batch-Sequence", "3")
 		m.Header.Set("Nats-Batch-Commit", "eob")
-		rmsg, err := nc.RequestMsg(m, time.Second)
+		rmsg, err = nc.RequestMsg(m, time.Second)
 		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 		require_True(t, pubAck.Error == nil)
 		require_Equal(t, pubAck.Sequence, 2)
@@ -3043,6 +3055,17 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 		require_NoError(t, err)
 		pubAck = JSPubAckResponse{}
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
+		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidPatternError())
+
+		// A batch that immediately commits through EOB is an error.
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpCommitEob)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
 		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidPatternError())
 
 		// A batch ID must not exceed the maximum length.
