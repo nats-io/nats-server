@@ -6405,7 +6405,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 					}
 					return errMsgTTLDisabled
 				} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
-					!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
+					!IsValidPublishSubject(scheduleTarget) || scheduleTarget == subject {
 					apiErr := NewJSMessageSchedulesTargetInvalidError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
@@ -6437,6 +6437,21 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 							outq.sendMsg(reply, b)
 						}
 						return apiErr
+					}
+					if scheduleSource != _EMPTY_ {
+						match = slices.ContainsFunc(mset.cfg.Subjects, func(subj string) bool {
+							return SubjectsCollide(subj, scheduleSource)
+						})
+						if !match {
+							apiErr := NewJSMessageSchedulesSourceInvalidError()
+							if canRespond {
+								resp.PubAck = &PubAck{Stream: name}
+								resp.Error = apiErr
+								b, _ := json.Marshal(resp)
+								outq.sendMsg(reply, b)
+							}
+							return apiErr
+						}
 					}
 
 					// Add a rollup sub header if it doesn't already exist.

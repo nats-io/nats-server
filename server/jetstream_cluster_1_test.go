@@ -9648,7 +9648,8 @@ func TestJetStreamClusterScheduledMessageSubjectSourcing(t *testing.T) {
 				// Invalid sources include if the subject:
 				// - matches the schedule/target subject
 				// - contains wildcard/is not literal
-				for _, src := range []string{"foo.schedule", "foo.publish", "foo.*", "foo.>"} {
+				// - doesn't match the stream subjects
+				for _, src := range []string{"foo.schedule", "foo.publish", "foo.*", "foo.>", "bar"} {
 					m.Header.Set("Nats-Schedule-Source", src)
 					_, err = js.PublishMsg(m)
 					require_Error(t, err, NewJSMessageSchedulesSourceInvalidError())
