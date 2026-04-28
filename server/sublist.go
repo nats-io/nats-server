@@ -121,6 +121,18 @@ func NewSublist(enableCache bool) *Sublist {
 	return &Sublist{root: newLevel()}
 }
 
+// NewSublistForServer will create a default sublist with caching enabled determined
+// by the server options.
+func NewSublistForServer(srv *Server) *Sublist {
+	if srv == nil {
+		return NewSublistNoCache() // Probably just unit tests.
+	}
+	if opts := srv.getOpts(); opts != nil {
+		return NewSublist(!opts.NoSublistCache)
+	}
+	return NewSublistNoCache()
+}
+
 // NewSublistWithCache will create a default sublist with caching enabled.
 func NewSublistWithCache() *Sublist {
 	return NewSublist(true)
