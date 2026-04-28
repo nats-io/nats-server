@@ -6527,6 +6527,7 @@ func (mset *stream) processJetStreamBatchMsg(batchId, subject, reply string, hdr
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			mset.mu.Unlock()
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchRequirementsNotMet)
 			err := NewJSRequiredApiLevelError()
 			if canRespond {
 				b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: err})
