@@ -10487,24 +10487,29 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 		return nil
 	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-
 	s := js.srv
 	if rg == nil || rg.node == nil {
+		js.mu.RUnlock()
 		return &ClusterInfo{
 			Name:   s.cachedClusterName(),
 			Leader: s.Name(),
 		}
 	}
 
+	// Capture what we need and let go of the lock to ensure that
+	// contention on Raft locks can't happen while holding JS lock.
 	n := rg.node
+	rgName := rg.Name
+	rgPeers := slices.Clone(rg.Peers)
+	js.mu.RUnlock()
+
 	ci := &ClusterInfo{
 		Name:        s.cachedClusterName(),
 		Leader:      s.serverNameForNode(n.GroupLeader()),
 		LeaderSince: n.LeaderSince(),
 		SystemAcc:   n.IsSystemAccount(),
 		TrafficAcc:  n.GetTrafficAccountName(),
-		RaftGroup:   rg.Name,
+		RaftGroup:   rgName,
 	}
 
 	now := time.Now()
@@ -10516,7 +10521,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	}
 
 	for _, rp := range peers {
-		if rp.ID != id && rg.isMember(rp.ID) {
+		if rp.ID != id && slices.Contains(rgPeers, rp.ID) {
 			var lastSeen time.Duration
 			if now.After(rp.Last) && !rp.Last.IsZero() {
 				lastSeen = now.Sub(rp.Last)

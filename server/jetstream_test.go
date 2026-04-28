@@ -23757,3 +23757,38 @@ func TestJetStreamDurableStreamSourcesWithUniqueConsumerNames(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterInfoDoesNotBlockJSMutex(t *testing.T) {
+	// Use a real raft node with its RWMutex held to simulate a Raft
+	// runloop blocked during vote processing, e.g. by dios. clusterInfo
+	// calls GroupLeader which needs the raft RLock, so it will block.
+	n := &raft{}
+	n.Lock()
+	defer n.Unlock()
+
+	js := &jetStream{srv: &Server{}}
+	rg := &raftGroup{
+		Name:  "test",
+		Peers: []string{"a", "b"},
+		node:  n,
+	}
+
+	// clusterInfo will block inside n.GroupLeader waiting for Raft RLock.
+	go js.clusterInfo(rg)
+
+	// Give it a moment to enter GroupLeader.
+	time.Sleep(50 * time.Millisecond)
+
+	// If clusterInfo holds js.mu.RLock during Raft calls,
+	// this Lock will block and the test will time out.
+	done := make(chan struct{})
+	go func() {
+		js.mu.Lock()
+		runtime.Gosched()
+		js.mu.Unlock()
+		close(done)
+	}()
+
+	// If contending then this will error.
+	require_ChanRead(t, done, time.Second)
+}
