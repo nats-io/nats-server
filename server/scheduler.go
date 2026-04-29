@@ -179,8 +179,12 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 				ms.remove(seq)
 				return true
 			}
-			tz := bytesToString(sliceHeader(JSScheduleTimeZone, sm.hdr))
-			next, repeat, ok := parseMsgSchedule(pattern, tz, ts)
+			loc, apiErr := loadMessageScheduleLocation(sm.hdr)
+			if apiErr != nil {
+				ms.remove(seq)
+				return true
+			}
+			next, repeat, ok := parseMsgSchedule(pattern, loc, ts)
 			if !ok {
 				ms.remove(seq)
 				return true
@@ -306,14 +310,14 @@ func (ms *MsgScheduling) decode(b []byte) (uint64, error) {
 
 // parseMsgSchedule parses a message schedule pattern and returns the time
 // to fire, whether it is a repeating schedule, and whether the pattern was valid.
-func parseMsgSchedule(pattern string, tz string, ts int64) (time.Time, bool, bool) {
+func parseMsgSchedule(pattern string, loc *time.Location, ts int64) (time.Time, bool, bool) {
 	if pattern == _EMPTY_ {
 		return time.Time{}, false, true
 	}
 	// Exact time.
 	if strings.HasPrefix(pattern, "@at ") {
 		// Time zone is not supported for @at.
-		if tz != _EMPTY_ {
+		if loc != nil {
 			return time.Time{}, false, false
 		}
 		t, err := time.Parse(time.RFC3339, pattern[4:])
@@ -322,7 +326,7 @@ func parseMsgSchedule(pattern string, tz string, ts int64) (time.Time, bool, boo
 	// Repeating on a simple interval.
 	if strings.HasPrefix(pattern, "@every ") {
 		// Time zone is not supported for @every.
-		if tz != _EMPTY_ {
+		if loc != nil {
 			return time.Time{}, false, false
 		}
 		dur, err := time.ParseDuration(pattern[7:])
@@ -356,14 +360,14 @@ func parseMsgSchedule(pattern string, tz string, ts int64) (time.Time, bool, boo
 	}
 
 	// Parse the cron pattern.
-	next, err := parseCron(pattern, tz, ts)
+	next, err := parseCron(pattern, loc, ts)
 	if err != nil {
 		return time.Time{}, false, false
 	}
 	// If this schedule would trigger multiple times, for example after a restart, skip ahead and only fire once.
 	if now := time.Now().UTC(); next.Before(now) {
 		ts = now.Round(time.Second).UnixNano()
-		next, err = parseCron(pattern, tz, ts)
+		next, err = parseCron(pattern, loc, ts)
 		if err != nil {
 			return time.Time{}, false, false
 		}

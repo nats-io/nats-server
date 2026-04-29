@@ -365,6 +365,9 @@ const (
 	// JSMessageSchedulesTargetInvalidErr message schedules target is invalid
 	JSMessageSchedulesTargetInvalidErr ErrorIdentifier = 10190
 
+	// JSMessageSchedulesTimeZoneInvalidErr message schedules time zone is invalid
+	JSMessageSchedulesTimeZoneInvalidErr ErrorIdentifier = 10223
+
 	// JSMessageTTLDisabledErr per-message TTL is disabled
 	JSMessageTTLDisabledErr ErrorIdentifier = 10166
 
@@ -791,6 +794,7 @@ var (
 		JSMessageSchedulesSourceInvalidErr:           {Code: 400, ErrCode: 10203, Description: "message schedules source is invalid"},
 		JSMessageSchedulesTTLInvalidErr:              {Code: 400, ErrCode: 10191, Description: "message schedules invalid per-message TTL"},
 		JSMessageSchedulesTargetInvalidErr:           {Code: 400, ErrCode: 10190, Description: "message schedules target is invalid"},
+		JSMessageSchedulesTimeZoneInvalidErr:         {Code: 400, ErrCode: 10223, Description: "message schedules time zone is invalid"},
 		JSMessageTTLDisabledErr:                      {Code: 400, ErrCode: 10166, Description: "per-message TTL is disabled"},
 		JSMessageTTLInvalidErr:                       {Code: 400, ErrCode: 10165, Description: "invalid per-message TTL"},
 		JSMirrorConsumerRequiresAckFCErr:             {Code: 400, ErrCode: 10214, Description: "stream mirror consumer requires flow control ack policy"},
@@ -2211,6 +2215,16 @@ func NewJSMessageSchedulesTargetInvalidError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMessageSchedulesTargetInvalidErr]
+}
+
+// NewJSMessageSchedulesTimeZoneInvalidError creates a new JSMessageSchedulesTimeZoneInvalidErr error: "message schedules time zone is invalid"
+func NewJSMessageSchedulesTimeZoneInvalidError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSchedulesTimeZoneInvalidErr]
 }
 
 // NewJSMessageTTLDisabledError creates a new JSMessageTTLDisabledErr error: "per-message TTL is disabled"

@@ -2297,7 +2297,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 			if len(msg.hdr) == 0 {
 				continue
 			}
-			if schedule, ok := nextMessageSchedule(sm.hdr, sm.ts); ok && !schedule.IsZero() {
+			if schedule, apiErr := nextMessageSchedule(sm.hdr, sm.ts); apiErr == nil && !schedule.IsZero() {
 				// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
 				fs.scheduling.init(seq, copyString(sm.subj), schedule.UnixNano())
 			}
@@ -4989,7 +4989,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 
 	// Message scheduling.
 	if fs.scheduling != nil {
-		if schedule, ok := nextMessageSchedule(hdr, ts); ok && !schedule.IsZero() {
+		if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
 			fs.scheduling.add(seq, subj, schedule.UnixNano())
 			fs.lmb.schedules++
 		} else if getMessageScheduler(hdr) == _EMPTY_ {
@@ -11010,7 +11010,7 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock) error {
 			if sm == nil {
 				continue
 			}
-			if schedule, ok := getMessageSchedule(sm.hdr); ok && !schedule.IsZero() {
+			if schedule, apiErr := getMessageSchedule(sm.hdr); apiErr == nil && !schedule.IsZero() {
 				fs.scheduling.remove(seq)
 			}
 		}
