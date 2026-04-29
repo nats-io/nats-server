@@ -3300,6 +3300,29 @@ func TestSliceHeaderOrderingPrefix(t *testing.T) {
 	require_True(t, bytes.Equal(sliced, copied))
 }
 
+func TestReplyHasJSAckSuffix(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		reply string
+		want  bool
+	}{
+		{"plain JSAck no suffix", "$JS.ACK.STREAM.CONS.1.2.3.4.5", false},
+		{"single @ encoded", "$JS.ACK.STREAM.CONS.1.2.3.4.5@deliver.subject", true},
+		{"double @ encoded (already corrupted)", "$JS.ACK.STREAM.CONS.1.2.3.4.5@inner@outer", true},
+		{"non-JSAck reply with @", "_INBOX.abc@xyz", false},
+		{"@ before 8 dots", "$JS.ACK.STREAM@oops.1.2.3.4.5", false},
+		{"empty", "", false},
+		{"JSAck prefix only no fields", "$JS.ACK.", false},
+		// Cross-domain v2 token has more dots, but still 8+ before the @.
+		{"v2 token encoded", "$JS.ACK.dom.acct.STREAM.CONS.1.2.3.4.5@deliver", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := replyHasJSAckSuffix([]byte(test.reply))
+			require_Equal(t, got, test.want)
+		})
+	}
+}
+
 func TestSliceHeaderOrderingSuffix(t *testing.T) {
 	hdr := []byte("NATS/1.0\r\n\r\n")
 

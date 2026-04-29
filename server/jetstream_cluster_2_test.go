@@ -2368,6 +2368,138 @@ func TestJetStreamClusterPushConsumerQueueGroup(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterJSInternalEncodedReplyNotReEncodedOnRoute(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 2)
+	defer c.shutdown()
+
+	s1, s2 := c.servers[0], c.servers[1]
+
+	const (
+		deliverSubj = "deliver.subj"
+		streamSubj  = "stream.subj.id"
+		ackToken    = "$JS.ACK.stream.consumer.1.13266774.12547470.1708328638063395796.1"
+	)
+	encodedOnce := ackToken + "@" + streamSubj
+
+	nc2, _ := jsClientConnect(t, s2)
+	defer nc2.Close()
+	sub, err := nc2.SubscribeSync(deliverSubj)
+	require_NoError(t, err)
+	require_NoError(t, nc2.Flush())
+
+	// Wait for s2's interest to propagate to s1 via the route.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		acc, err := s1.LookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		if r := acc.sl.Match(deliverSubj); len(r.psubs)+len(r.qsubs) == 0 {
+			return fmt.Errorf("no route interest on %q at s1 yet", deliverSubj)
+		}
+		return nil
+	})
+
+	// Stand up a JETSTREAM-kind internal client on s1 and synthesize the state
+	// that internalLoop produces for a chained delivery with an already-encoded reply.
+	js := s1.createInternalJetStreamClient()
+	require_NotNil(t, js)
+	acc, err := s1.LookupAccount(globalAccountName)
+	require_NoError(t, err)
+	require_NoError(t, js.registerWithAccount(acc))
+
+	body := []byte("payload\r\n")
+	js.mu.Lock()
+	js.pa.subject = []byte(deliverSubj)
+	js.pa.deliver = []byte(streamSubj)
+	js.pa.reply = []byte(encodedOnce)
+	js.pa.hdr = -1
+	js.pa.hdb = nil
+	js.pa.size = len(body) - LEN_CR_LF
+	js.pa.szb = []byte(strconv.Itoa(js.pa.size))
+	js.mu.Unlock()
+
+	js.processInboundClientMsg(body)
+	js.flushClients(0)
+
+	received, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+
+	// s2's remap splits the encoded reply at the first `@`. If the encoding
+	// was applied twice on s1 the trailing `@<deliver>` would leak into Subject.
+	if strings.Contains(received.Subject, "@") {
+		t.Fatalf("routed reply was double-encoded: subject leaked an `@` after remap (Subject=%q, Reply=%q)",
+			received.Subject, received.Reply)
+	}
+	require_Equal(t, received.Subject, streamSubj)
+	require_Equal(t, received.Reply, ackToken)
+}
+
+func TestJetStreamClusterJSInternalEncodedReplyNotReEncodedOnGateway(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	const (
+		deliverSubj = "deliver.subj"
+		streamSubj  = "stream.subj.id"
+		ackToken    = "$JS.ACK.stream.consumer.1.13266774.12547470.1708328638063395796.1"
+	)
+	encodedOnce := ackToken + "@" + streamSubj
+
+	ncB := natsConnect(t, sb.ClientURL())
+	defer ncB.Close()
+	sub, err := ncB.SubscribeSync(deliverSubj)
+	require_NoError(t, err)
+	require_NoError(t, ncB.Flush())
+
+	// Wait for sb's interest on deliverSubj to be visible on sa's outbound
+	// gateway so the message will actually cross.
+	checkGWInterestOnlyModeInterestOn(t, sa, "B", globalAccountName, deliverSubj)
+
+	// Synthesize the JETSTREAM-kind state with an already-encoded reply,
+	// matching what internalLoop produces on a chained delivery hop.
+	js := sa.createInternalJetStreamClient()
+	require_NotNil(t, js)
+	acc, err := sa.LookupAccount(globalAccountName)
+	require_NoError(t, err)
+	require_NoError(t, js.registerWithAccount(acc))
+
+	body := []byte("payload\r\n")
+	js.mu.Lock()
+	js.pa.subject = []byte(deliverSubj)
+	js.pa.deliver = []byte(streamSubj)
+	js.pa.reply = []byte(encodedOnce)
+	js.pa.hdr = -1
+	js.pa.hdb = nil
+	js.pa.size = len(body) - LEN_CR_LF
+	js.pa.szb = []byte(strconv.Itoa(js.pa.size))
+	js.mu.Unlock()
+
+	js.processInboundClientMsg(body)
+	js.flushClients(0)
+
+	received, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+
+	// sb's remap splits the encoded reply at the first `@`. If the encoding
+	// was applied twice on sa the trailing `@<deliver>` would leak into Subject.
+	if strings.Contains(received.Subject, "@") {
+		t.Fatalf("gateway reply was double-encoded: subject leaked an `@` after remap (Subject=%q, Reply=%q)",
+			received.Subject, received.Reply)
+	}
+	require_Equal(t, received.Subject, streamSubj)
+	require_Equal(t, received.Reply, ackToken)
+}
+
 func TestJetStreamClusterConsumerLastActiveReporting(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
