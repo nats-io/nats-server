@@ -53,6 +53,10 @@ type jetStreamCluster struct {
 	// a response but they need to be same group, peers etc. and sync subjects.
 	inflightStreams   map[string]map[string]*inflightStreamInfo
 	inflightConsumers map[string]map[string]map[string]*inflightConsumerInfo
+	// Tracks raft groups currently being started by createRaftGroup, so that
+	// concurrent callers for the same group can wait without holding js.mu
+	// across the disk I/O performed during startup.
+	creatingRaftGroups map[string]chan struct{}
 	// Holds a map of a peer ID to the reply subject, to only respond after gaining
 	// quorum on the peer-remove action.
 	peerRemoveReply map[string]peerRemoveInfo
@@ -2747,9 +2751,11 @@ func (rg *raftGroup) setPreferred(s *Server) {
 
 // createRaftGroup is called to spin up this raft group if needed.
 func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering bool, storage StorageType, labels pprofLabels) (RaftNode, error) {
-	// Must hold JS lock throughout, otherwise two parallel calls for the same raft group could result
-	// in duplicate instances for the same identifier, if the current Raft node is shutting down.
-	// We can release the lock temporarily while waiting for the Raft node to shut down.
+	// js.mu protects the lookup/registration of raft groups so that two parallel
+	// calls for the same identifier can't end up creating duplicate instances.
+	// It is released around blocking work (waiting for a previous instance to
+	// shut down, and the disk I/O inside startRaftNode); concurrent callers for
+	// the same rg.Name are gated through cc.creatingRaftGroups instead.
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
@@ -2764,8 +2770,21 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering b
 		return nil, nil
 	}
 
-	// Check if we already have this assigned.
 retry:
+	// If another goroutine is mid-creation for this raft group, wait for it
+	// to finish (without holding js.mu) and then retry the lookup.
+	if ch, ok := cc.creatingRaftGroups[rg.Name]; ok {
+		js.mu.Unlock()
+		<-ch
+		js.mu.Lock()
+		// js.cluster could have been swapped out (shutdown).
+		if js.cluster == nil || js.cluster.meta == nil {
+			return nil, NewJSClusterNotActiveError()
+		}
+		cc = js.cluster
+		goto retry
+	}
+	// Check if we already have this assigned.
 	if node := s.lookupRaftNode(rg.Name); node != nil {
 		if node.State() == Closed {
 			// We're waiting for this node to finish shutting down before we replace it.
@@ -2822,7 +2841,7 @@ retry:
 
 	// Check here to see if we have a max HA Assets limit set.
 	if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets > 0 {
-		if s.numRaftNodes() > maxHaAssets {
+		if s.numRaftNodes()+len(cc.creatingRaftGroups) > maxHaAssets {
 			s.Warnf("Maximum HA Assets limit reached: %d", maxHaAssets)
 			// Since the meta leader assigned this, send a statsz update to them to get them up to date.
 			go s.sendStatszUpdate()
@@ -2830,45 +2849,70 @@ retry:
 		}
 	}
 
+	// Register an in-flight sentinel so concurrent callers for the same group
+	// will wait for us. Then drop js.mu around all the blocking work below
+	// (file store creation, peer state read, snapshot replay, fsyncs) so we
+	// don't serialize every stream/consumer assignment behind one disk fsync.
+	if cc.creatingRaftGroups == nil {
+		cc.creatingRaftGroups = make(map[string]chan struct{})
+	}
+	doneCh := make(chan struct{})
+	cc.creatingRaftGroups[rg.Name] = doneCh
+
+	// Snapshot rg fields; we drop js.mu below and rg is shared.
+	rgName, rgScaleUp := rg.Name, rg.ScaleUp
+	rgPeers := copyStrings(rg.Peers)
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
-	var store StreamStore
-	if storage == FileStorage {
-		// If the server is set to sync always, do the same for the Raft log.
-		js.srv.optsMu.RLock()
-		syncAlways := js.srv.opts.SyncAlways
-		syncInterval := js.srv.opts.SyncInterval
-		js.srv.optsMu.RUnlock()
-		fs, err := newFileStoreWithCreated(
-			FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s},
-			StreamConfig{Name: rg.Name, Storage: FileStorage, Metadata: labels},
-			time.Now().UTC(),
-			s.jsKeyGen(s.getOpts().JetStreamKey, rg.Name),
-			s.jsKeyGen(s.getOpts().JetStreamOldKey, rg.Name),
-		)
-		if err != nil {
-			s.Errorf("Error creating filestore WAL: %v", err)
+	js.mu.Unlock()
+
+	n, err := func() (RaftNode, error) {
+		var store StreamStore
+		if storage == FileStorage {
+			opts := s.getOpts()
+			fs, err := newFileStoreWithCreated(
+				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s},
+				StreamConfig{Name: rgName, Storage: FileStorage, Metadata: labels},
+				time.Now().UTC(),
+				s.jsKeyGen(opts.JetStreamKey, rgName),
+				s.jsKeyGen(opts.JetStreamOldKey, rgName),
+			)
+			if err != nil {
+				s.Errorf("Error creating filestore WAL: %v", err)
+				return nil, err
+			}
+			store = fs
+		} else {
+			ms, err := newMemStore(&StreamConfig{Name: rgName, Storage: MemoryStorage})
+			if err != nil {
+				s.Errorf("Error creating memstore WAL: %v", err)
+				return nil, err
+			}
+			store = ms
+		}
+
+		cfg := &RaftConfig{Name: rgName, Store: storeDir, Log: store, Track: true, Recovering: recovering, ScaleUp: rgScaleUp}
+
+		if _, err := readPeerState(storeDir); err != nil {
+			s.bootstrapRaftNode(cfg, rgPeers, true)
+		}
+
+		n, err := s.startRaftNode(accName, cfg, labels)
+		if err != nil || n == nil {
+			s.Debugf("Error creating raft group: %v", err)
 			return nil, err
 		}
-		store = fs
-	} else {
-		ms, err := newMemStore(&StreamConfig{Name: rg.Name, Storage: MemoryStorage})
-		if err != nil {
-			s.Errorf("Error creating memstore WAL: %v", err)
-			return nil, err
-		}
-		store = ms
-	}
+		return n, nil
+	}()
 
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store, Track: true, Recovering: recovering, ScaleUp: rg.ScaleUp}
-
-	if _, err := readPeerState(storeDir); err != nil {
-		s.bootstrapRaftNode(cfg, rg.Peers, true)
-	}
-
-	n, err := s.startRaftNode(accName, cfg, labels)
+	js.mu.Lock()
+	delete(cc.creatingRaftGroups, rg.Name)
+	close(doneCh)
 	if err != nil || n == nil {
-		s.Debugf("Error creating raft group: %v", err)
 		return nil, err
+	}
+	if js.cluster == nil || js.cluster.meta == nil {
+		// Cluster was torn down while we were creating; let n be reaped at shutdown.
+		return nil, NewJSClusterNotActiveError()
 	}
 	// Need JS lock to be held for the assignment to avoid data-race reports
 	rg.node = n
