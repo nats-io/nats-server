@@ -6823,9 +6823,9 @@ func TestJetStreamClusterProcessClusterUpdateStreamNilStreamAssignment(t *testin
 			Storage: realOsa.Group.Storage,
 		}
 	}
-	osa := *realOsa
+	osa := realOsa.clone()
 	osa.Group = cloneGroup()
-	sa := osa
+	sa := osa.clone()
 	cfg := *realOsa.Config
 	cfg.MaxMsgs = 1_000
 	sa.Config = &cfg
@@ -6843,7 +6843,7 @@ func TestJetStreamClusterProcessClusterUpdateStreamNilStreamAssignment(t *testin
 	}
 	mset.mu.Unlock()
 
-	sjs.processClusterUpdateStream(acc, &osa, &sa)
+	sjs.processClusterUpdateStream(acc, osa, sa)
 
 	mset.mu.RLock()
 	got := mset.sa

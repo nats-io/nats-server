@@ -174,12 +174,51 @@ type streamAssignment struct {
 	Restore    *StreamState    `json:"restore_state,omitempty"`
 	// Internal
 	consumers   map[string]*consumerAssignment
-	responded   bool
+	responded   atomic.Bool // copied via clone() to satisfy go vet's noCopy check
 	recovering  bool
 	reassigning bool // i.e. due to placement issues, lack of resources, etc.
 	resetting   bool // i.e. there was an error, and we're stopping and starting the stream
 	err         error
 	unsupported *unsupportedStreamAssignment
+}
+
+func (sa *streamAssignment) hasResponded() bool {
+	return sa.responded.Load()
+}
+
+// markResponded sets the responded flag and returns the prior value.
+func (sa *streamAssignment) markResponded() bool {
+	return sa.responded.Swap(true)
+}
+
+func (sa *streamAssignment) clearResponded() {
+	sa.responded.Store(false)
+}
+
+// clone returns a copy of sa. Field-explicit (rather than `*sa`) and
+// pointer-returning so the embedded atomic.Bool isn't value-copied;
+// responded is transferred via Load/Store. Concurrent callers may write
+// responded via markResponded/clearResponded without holding js.mu.
+func (sa *streamAssignment) clone() *streamAssignment {
+	csa := &streamAssignment{
+		Client:      sa.Client,
+		Created:     sa.Created,
+		ConfigJSON:  sa.ConfigJSON,
+		Config:      sa.Config,
+		Group:       sa.Group,
+		Sync:        sa.Sync,
+		Subject:     sa.Subject,
+		Reply:       sa.Reply,
+		Restore:     sa.Restore,
+		consumers:   sa.consumers,
+		recovering:  sa.recovering,
+		reassigning: sa.reassigning,
+		resetting:   sa.resetting,
+		err:         sa.err,
+		unsupported: sa.unsupported,
+	}
+	csa.responded.Store(sa.responded.Load())
+	return csa
 }
 
 type unsupportedStreamAssignment struct {
@@ -258,10 +297,47 @@ type consumerAssignment struct {
 	Reply      string          `json:"reply,omitempty"`
 	State      *ConsumerState  `json:"state,omitempty"`
 	// Internal
-	responded   bool
+	responded   atomic.Bool // copied via clone() to satisfy go vet's noCopy check
 	recovering  bool
 	err         error
 	unsupported *unsupportedConsumerAssignment
+}
+
+func (ca *consumerAssignment) hasResponded() bool {
+	return ca.responded.Load()
+}
+
+// markResponded sets the responded flag and returns the prior value.
+func (ca *consumerAssignment) markResponded() bool {
+	return ca.responded.Swap(true)
+}
+
+func (ca *consumerAssignment) clearResponded() {
+	ca.responded.Store(false)
+}
+
+// clone returns a copy of ca. Field-explicit (rather than `*ca`) and
+// pointer-returning so the embedded atomic.Bool isn't value-copied;
+// responded is transferred via Load/Store. Concurrent callers may write
+// responded via markResponded/clearResponded without holding js.mu.
+func (ca *consumerAssignment) clone() *consumerAssignment {
+	cca := &consumerAssignment{
+		Client:      ca.Client,
+		Created:     ca.Created,
+		Name:        ca.Name,
+		Stream:      ca.Stream,
+		ConfigJSON:  ca.ConfigJSON,
+		Config:      ca.Config,
+		Group:       ca.Group,
+		Subject:     ca.Subject,
+		Reply:       ca.Reply,
+		State:       ca.State,
+		recovering:  ca.recovering,
+		err:         ca.err,
+		unsupported: ca.unsupported,
+	}
+	cca.responded.Store(ca.responded.Load())
+	return cca
 }
 
 type unsupportedConsumerAssignment struct {
@@ -2253,7 +2329,7 @@ func (js *jetStream) collectStreamAndConsumerChanges(c RaftNodeCheckpoint, strea
 func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
-	sa.responded = true
+	sa.markResponded()
 	sa.recovering = true
 	sa.Restore = nil
 	if sa.Group != nil {
@@ -2266,7 +2342,7 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
-	ca.responded = true
+	ca.markResponded()
 	ca.recovering = true
 	if ca.Group != nil {
 		ca.Group.Preferred = _EMPTY_
@@ -2277,19 +2353,19 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 // Just copies over and changes out the group so it can be encoded.
 // Lock should be held.
 func (sa *streamAssignment) copyGroup() *streamAssignment {
-	csa, cg := *sa, *sa.Group
+	csa, cg := sa.clone(), *sa.Group
 	csa.Group = &cg
 	csa.Group.Peers = copyStrings(sa.Group.Peers)
-	return &csa
+	return csa
 }
 
 // Just copies over and changes out the group so it can be encoded.
 // Lock should be held.
 func (ca *consumerAssignment) copyGroup() *consumerAssignment {
-	cca, cg := *ca, *ca.Group
+	cca, cg := ca.clone(), *ca.Group
 	cca.Group = &cg
 	cca.Group.Peers = copyStrings(ca.Group.Peers)
-	return &cca
+	return cca
 }
 
 // Lock should be held.
@@ -4439,12 +4515,11 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	mset.expectedPerSubjectInProcess = nil
 	mset.clMu.Unlock()
 
-	js.mu.Lock()
+	js.mu.RLock()
 	s, account, err := js.srv, sa.Client.serviceAccount(), sa.err
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
-	hasResponded := sa.responded
-	sa.responded = true
-	js.mu.Unlock()
+	hasResponded := sa.markResponded()
+	js.mu.RUnlock()
 
 	streamName := mset.name()
 
@@ -4709,7 +4784,9 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 				sa.Group.node = osa.Group.node
 			}
 			sa.consumers = osa.consumers
-			sa.responded = osa.responded
+			if osa.hasResponded() {
+				sa.markResponded()
+			}
 			sa.err = osa.err
 		}
 		// Unsubscribe if it was previously unsupported.
@@ -4725,7 +4802,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	// Update our state.
 	accStreams[stream] = sa
 	cc.streams[accName] = accStreams
-	hasResponded := sa.responded
+	hasResponded := sa.hasResponded()
 
 	// If unsupported, we can't register any further.
 	if sa.unsupported != nil {
@@ -4843,7 +4920,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 
 	// Make sure we respond if we are a member.
 	if isMember {
-		sa.responded = false
+		sa.clearResponded()
 	} else {
 		// Make sure to clean up any old node in case this stream moves back here.
 		if sa.Group != nil {
@@ -4939,16 +5016,15 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		return
 	}
 
-	js.mu.Lock()
+	js.mu.RLock()
 	s, rg := js.srv, sa.Group
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	alreadyRunning, oldNumReplicas, numReplicas := osa.Group.node != nil, len(osa.Group.Peers), len(rg.Peers)
 	needsNode := rg.node == nil
 	storage, cfg := sa.Config.Storage, sa.Config
-	hasResponded := sa.responded
-	sa.responded = true
 	recovering := sa.recovering
-	js.mu.Unlock()
+	hasResponded := sa.markResponded()
+	js.mu.RUnlock()
 
 	mset, err := acc.lookupStream(cfg.Name)
 	if err == nil && mset != nil {
@@ -5214,7 +5290,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		js.mu.Lock()
 
 		sa.err = err
-		hasResponded := sa.responded
+		hasResponded := sa.hasResponded()
 
 		// If out of space do nothing for now.
 		if isOutOfSpaceErr(err) {
@@ -5549,7 +5625,9 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		if ca.Group != nil {
 			ca.Group.node = oca.Group.node
 		}
-		ca.responded = oca.responded
+		if oca.hasResponded() {
+			ca.markResponded()
+		}
 		ca.err = oca.err
 
 		// Unsubscribe if it was previously unsupported.
@@ -5833,13 +5911,13 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		// Check if we already had a consumer assignment and its still pending.
 		cca, oca := ca, o.consumerAssignment()
 		if oca != nil {
-			if !oca.responded {
+			if !oca.hasResponded() {
 				// We can't override info for replying here otherwise leader once elected can not respond.
 				// So copy over original client and the reply from the old ca.
-				cac := *ca
+				cac := ca.clone()
 				cac.Client = oca.Client
 				cac.Reply = oca.Reply
-				cca = &cac
+				cca = cac
 				needsLocalResponse = true
 			}
 			// If we look like we are scaling up, let's send our current state to the group.
@@ -5885,7 +5963,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		js.mu.Lock()
 
 		ca.err = err
-		hasResponded := ca.responded
+		hasResponded := ca.hasResponded()
 
 		// If out of space do nothing for now.
 		if isOutOfSpaceErr(err) {
@@ -5978,12 +6056,10 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			o.signalMonitorQuit()
 			o.monitorWg.Wait()
 			// Single replica consumer, process manually here.
-			js.mu.Lock()
 			// Force response in case we think this is an update.
-			if !js.metaRecovering && isConfigUpdate {
-				ca.responded = false
+			if !js.isMetaRecovering() && isConfigUpdate {
+				ca.clearResponded()
 			}
-			js.mu.Unlock()
 			cca := o.consumerAssignment()
 			// Perform the leader change in a goroutine, otherwise we could block meta operations.
 			if o.shouldStartMonitor() {
@@ -6837,12 +6913,11 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 	if ca == nil {
 		return stepDownIfLeader()
 	}
-	js.mu.Lock()
+	js.mu.RLock()
 	s, account, err := js.srv, ca.Client.serviceAccount(), ca.err
 	client, subject, reply, streamName, consumerName, sourcing := ca.Client, ca.Subject, ca.Reply, ca.Stream, ca.Name, ca.Config.Sourcing
-	hasResponded := ca.responded
-	ca.responded = true
-	js.mu.Unlock()
+	hasResponded := ca.markResponded()
+	js.mu.RUnlock()
 
 	acc, _ := s.LookupAccount(account)
 	if acc == nil {
@@ -7074,8 +7149,8 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		} else if result.Restore != nil {
 			resp = s.jsonResponse(result.Restore)
 		}
-		if !sa.responded || result.Update {
-			sa.responded = true
+		if !sa.hasResponded() || result.Update {
+			sa.markResponded()
 			js.srv.sendAPIErrResponse(sa.Client, acc, sa.Subject, sa.Reply, _EMPTY_, resp)
 		}
 		// Remove this assignment if possible.
@@ -7108,9 +7183,9 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 	}
 
 	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil && sa.consumers != nil {
-		if ca := sa.consumers[result.Consumer]; ca != nil && !ca.responded {
+		if ca := sa.consumers[result.Consumer]; ca != nil && !ca.hasResponded() {
 			js.srv.sendAPIErrResponse(ca.Client, acc, ca.Subject, ca.Reply, _EMPTY_, s.jsonResponse(result.Response))
-			ca.responded = true
+			ca.markResponded()
 
 			// Check if this failed.
 			// TODO(dlc) - Could have mixed results, should track per peer.
@@ -8950,7 +9025,7 @@ func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, acc *Account, mset 
 }
 
 func encodeAddStreamAssignment(sa *streamAssignment) []byte {
-	csa := *sa
+	csa := sa.clone()
 	csa.Client = csa.Client.forProposal()
 	csa.ConfigJSON, _ = json.Marshal(sa.Config)
 	var bb bytes.Buffer
@@ -8960,7 +9035,7 @@ func encodeAddStreamAssignment(sa *streamAssignment) []byte {
 }
 
 func encodeUpdateStreamAssignment(sa *streamAssignment) []byte {
-	csa := *sa
+	csa := sa.clone()
 	csa.Client = csa.Client.forProposal()
 	csa.ConfigJSON, _ = json.Marshal(sa.Config)
 	var bb bytes.Buffer
@@ -8970,7 +9045,7 @@ func encodeUpdateStreamAssignment(sa *streamAssignment) []byte {
 }
 
 func encodeDeleteStreamAssignment(sa *streamAssignment) []byte {
-	csa := *sa
+	csa := sa.clone()
 	csa.Client = csa.Client.forProposal()
 	csa.ConfigJSON, _ = json.Marshal(sa.Config)
 	var bb bytes.Buffer
@@ -9440,7 +9515,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 }
 
 func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
-	cca := *ca
+	cca := ca.clone()
 	cca.Client = cca.Client.forProposal()
 	cca.ConfigJSON, _ = json.Marshal(ca.Config)
 	var bb bytes.Buffer
@@ -9450,7 +9525,7 @@ func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
 }
 
 func encodeDeleteConsumerAssignment(ca *consumerAssignment) []byte {
-	cca := *ca
+	cca := ca.clone()
 	cca.Client = cca.Client.forProposal()
 	cca.ConfigJSON, _ = json.Marshal(ca.Config)
 	var bb bytes.Buffer
@@ -9491,7 +9566,7 @@ func decodeConsumerAssignmentConfig(ca *consumerAssignment) error {
 }
 
 func encodeAddConsumerAssignmentCompressed(ca *consumerAssignment) []byte {
-	cca := *ca
+	cca := ca.clone()
 	cca.Client = cca.Client.forProposal()
 	cca.ConfigJSON, _ = json.Marshal(ca.Config)
 	var bb bytes.Buffer
