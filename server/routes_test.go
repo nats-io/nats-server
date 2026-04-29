@@ -3943,6 +3943,13 @@ func TestRouteCompressionOptions(t *testing.T) {
 	}
 }
 
+func TestS2WriterOptionsForFastCompression(t *testing.T) {
+	opts := s2WriterOptions(CompressionS2Fast)
+	if len(opts) == 0 {
+		t.Fatal("Expected non-empty writer options for fast compression mode")
+	}
+}
+
 type testConnSentBytes struct {
 	net.Conn
 	sync.RWMutex
