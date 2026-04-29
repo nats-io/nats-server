@@ -184,7 +184,7 @@ func (ms *memStore) recoverMsgSchedulingState() {
 		if len(sm.hdr) == 0 {
 			continue
 		}
-		if schedule, ok := nextMessageSchedule(sm.hdr, sm.ts); ok && !schedule.IsZero() {
+		if schedule, apiErr := nextMessageSchedule(sm.hdr, sm.ts); apiErr == nil && !schedule.IsZero() {
 			ms.scheduling.init(seq, sm.subj, schedule.UnixNano())
 		}
 	}
@@ -309,7 +309,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 
 	// Message scheduling.
 	if ms.scheduling != nil {
-		if schedule, ok := nextMessageSchedule(hdr, ts); ok && !schedule.IsZero() {
+		if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
 			ms.scheduling.add(seq, subj, schedule.UnixNano())
 		} else if getMessageScheduler(hdr) == _EMPTY_ {
 			ms.scheduling.removeSubject(subj)

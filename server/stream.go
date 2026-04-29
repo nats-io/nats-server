@@ -5373,22 +5373,46 @@ func getMessageIncr(hdr []byte) (*big.Int, bool) {
 }
 
 // Fast lookup of message schedule.
-func getMessageSchedule(hdr []byte) (time.Time, bool) {
+func getMessageSchedule(hdr []byte) (time.Time, *ApiError) {
 	if len(hdr) == 0 {
-		return time.Time{}, true
+		return time.Time{}, nil
 	}
 	return nextMessageSchedule(hdr, time.Now().UTC().UnixNano())
 }
 
 // Fast lookup and calculation of next message schedule.
-func nextMessageSchedule(hdr []byte, ts int64) (time.Time, bool) {
+func nextMessageSchedule(hdr []byte, ts int64) (time.Time, *ApiError) {
 	if len(hdr) == 0 {
-		return time.Time{}, true
+		return time.Time{}, nil
+	}
+	loc, apiErr := loadMessageScheduleLocation(hdr)
+	if apiErr != nil {
+		return time.Time{}, apiErr
 	}
 	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
-	tz := bytesToString(sliceHeader(JSScheduleTimeZone, hdr))
-	schedule, _, ok := parseMsgSchedule(val, tz, ts)
-	return schedule, ok
+	schedule, _, ok := parseMsgSchedule(val, loc, ts)
+	if !ok {
+		return time.Time{}, NewJSMessageSchedulesPatternInvalidError()
+	}
+	return schedule, nil
+}
+
+// loadMessageScheduleLocation returns the *time.Location for the schedule's
+// time zone header. Returns nil loc when the header is absent. A header that
+// is present but empty or names an unknown zone yields a TimeZoneInvalid error.
+func loadMessageScheduleLocation(hdr []byte) (*time.Location, *ApiError) {
+	tz := sliceHeader(JSScheduleTimeZone, hdr)
+	if tz == nil {
+		return nil, nil
+	}
+	if len(tz) == 0 {
+		return nil, NewJSMessageSchedulesTimeZoneInvalidError()
+	}
+	loc, err := time.LoadLocation(bytesToString(tz))
+	if err != nil {
+		return nil, NewJSMessageSchedulesTimeZoneInvalidError()
+	}
+	return loc, nil
 }
 
 // Fast lookup of the message schedule TTL from headers.
@@ -6357,8 +6381,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			// Message scheduling.
 			if sourced {
 				// noop, sourced messages were already validated by the origin stream.
-			} else if schedule, ok := getMessageSchedule(hdr); !ok {
-				apiErr := NewJSMessageSchedulesPatternInvalidError()
+			} else if schedule, apiErr := getMessageSchedule(hdr); apiErr != nil {
 				if !allowMsgSchedules {
 					apiErr = NewJSMessageSchedulesDisabledError()
 				}

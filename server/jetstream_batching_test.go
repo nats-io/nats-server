@@ -1035,6 +1035,34 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			},
 		},
 		{
+			title:             "msg-schedules-invalid-time-zone",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern:  {"0 * * * * *"},
+						JSScheduleTimeZone: {"Not/A/Zone"},
+					},
+					err: NewJSMessageSchedulesTimeZoneInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-empty-time-zone",
+			allowMsgSchedules: true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern:  {"0 * * * * *"},
+						JSScheduleTimeZone: {""},
+					},
+					err: NewJSMessageSchedulesTimeZoneInvalidError(),
+				},
+			},
+		},
+		{
 			title:             "msg-schedules-target-mismatch",
 			allowMsgSchedules: true,
 			batch: []BatchItem{
