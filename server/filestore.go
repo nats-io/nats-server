@@ -2298,7 +2298,8 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 				continue
 			}
 			if schedule, ok := nextMessageSchedule(sm.hdr, sm.ts); ok && !schedule.IsZero() {
-				fs.scheduling.init(seq, sm.subj, schedule.UnixNano())
+				// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
+				fs.scheduling.init(seq, copyString(sm.subj), schedule.UnixNano())
 			}
 		}
 	}
