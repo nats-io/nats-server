@@ -4269,6 +4269,57 @@ func TestMonitorLeafz(t *testing.T) {
 	}
 }
 
+func TestMonitorLeafzCluster(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		server_name: "hub"
+		listen: "127.0.0.1:-1"
+		http: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	hub, hubOpts := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "leaf1"
+		listen: "127.0.0.1:-1"
+		cluster {
+			name: "leaf-cluster"
+			listen: "127.0.0.1:-1"
+		}
+		leafnodes {
+			remotes = [{
+				url: "nats-leaf://127.0.0.1:%d"
+			}]
+		}
+	`, hubOpts.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, leaf)
+
+	// Make sure the hub sees the remote cluster name of the leaf node.
+	l, err := hub.Leafz(nil)
+	require_NoError(t, err)
+	require_Equal(t, l.NumLeafs, 1)
+	require_Equal(t, len(l.Leafs), 1)
+	require_Equal(t, l.Leafs[0].Cluster, "leaf-cluster")
+	require_Equal(t, l.Leafs[0].Name, "leaf1")
+
+	// Make sure from the leaf's perspective, the hub has no cluster.
+	l, err = leaf.Leafz(nil)
+	require_NoError(t, err)
+	require_Equal(t, l.NumLeafs, 1)
+	require_Equal(t, len(l.Leafs), 1)
+	require_Equal(t, l.Leafs[0].Cluster, "")
+	require_Equal(t, l.Leafs[0].Name, "hub")
+
+	// Make sure that cluster is present in the HTTP response as well.
+	body := readBody(t, fmt.Sprintf("http://127.0.0.1:%d/leafz", hub.MonitorAddr().Port))
+	require_True(t, strings.Contains(string(body), `"cluster": "leaf-cluster"`))
+}
+
 func pollAccountz(t *testing.T, s *Server, mode int, url string, opts *AccountzOptions) *Accountz {
 	t.Helper()
 	if mode == 0 {
