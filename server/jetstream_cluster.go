@@ -84,6 +84,8 @@ type jetStreamCluster struct {
 	// Track last meta snapshot time and duration for monitoring.
 	lastMetaSnapTime     int64 // Unix nanoseconds
 	lastMetaSnapDuration int64 // Duration in nanoseconds
+	totalStreamCount     int64
+	totalConsumerCount   int64
 }
 
 // Used to track inflight stream create/update/delete requests that have been proposed but not yet applied.
@@ -2225,6 +2227,9 @@ func (js *jetStream) encodeMetaSnapshot(streams map[string]map[string]*streamAss
 	if cc := js.cluster; cc != nil {
 		atomic.StoreInt64(&cc.lastMetaSnapTime, start.UnixNano())
 		atomic.StoreInt64(&cc.lastMetaSnapDuration, int64(took))
+		atomic.StoreInt64(&cc.totalStreamCount, int64(nsa))
+		atomic.StoreInt64(&cc.totalConsumerCount, int64(nca))
+
 	}
 
 	return snap, nsa, nca, nil

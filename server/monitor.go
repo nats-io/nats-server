@@ -3022,10 +3022,12 @@ type AccountDetail struct {
 
 // MetaSnapshotStats shows information about meta snapshots.
 type MetaSnapshotStats struct {
-	PendingEntries uint64        `json:"pending_entries"`         // PendingEntries is the count of pending entries in the meta layer
-	PendingSize    uint64        `json:"pending_size"`            // PendingSize is the size in bytes of pending entries in the meta layer
-	LastTime       time.Time     `json:"last_time,omitempty"`     // LastTime is when the last meta snapshot was taken
-	LastDuration   time.Duration `json:"last_duration,omitempty"` // LastDuration is how long the last meta snapshot took
+	PendingEntries     uint64        `json:"pending_entries"`         // PendingEntries is the count of pending entries in the meta layer
+	PendingSize        uint64        `json:"pending_size"`            // PendingSize is the size in bytes of pending entries in the meta layer
+	LastTime           time.Time     `json:"last_time,omitempty"`     // LastTime is when the last meta snapshot was taken
+	LastDuration       time.Duration `json:"last_duration,omitempty"` // LastDuration is how long the last meta snapshot took
+	TotalStreamCount   uint64        `json:"total_stream_count"`
+	TotalConsumerCount uint64        `json:"total_consumer_count"`
 }
 
 // metaClusterSnapshotStats returns snapshot statistics for the meta group.
@@ -3048,7 +3050,10 @@ func (s *Server) metaClusterSnapshotStats(js *jetStream, mg RaftNode) *MetaSnaps
 		}
 		if durationNanos > 0 {
 			snap.LastDuration = time.Duration(durationNanos)
+
 		}
+		snap.TotalStreamCount = uint64(cluster.totalStreamCount)
+		snap.TotalConsumerCount = uint64(cluster.totalConsumerCount)
 	}
 
 	return snap
