@@ -1620,7 +1620,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				if hdel_set {
 					*errors = append(*errors, &configErr{tk, "CACHE does not accept hard_delete"})
 				}
-				res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
+				if o.CheckConfig {
+					res = &MemAccResolver{}
+				} else {
+					res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
+				}
 			case "FULL":
 				checkDir()
 				if ttl != 0 {
@@ -1637,7 +1641,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 						delete = RenameDeleted
 					}
 				}
-				res, err = NewDirAccResolver(dir, limit, sync, delete, opts...)
+				if o.CheckConfig {
+					res = &MemAccResolver{}
+				} else {
+					res, err = NewDirAccResolver(dir, limit, sync, delete, opts...)
+				}
 			case "MEM", "MEMORY":
 				res = &MemAccResolver{}
 			}
