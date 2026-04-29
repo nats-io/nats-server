@@ -6066,6 +6066,179 @@ func TestJetStreamClusterParallelCreateRaftGroup(t *testing.T) {
 	require_Equal(t, nodes[0], nodes[1])
 }
 
+func TestJetStreamClusterParallelCreateRaftGroupHighConcurrency(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	ml := c.leader()
+	sjs := ml.getJetStream()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	acc, err := ml.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	rg, storage := sa.Group, sa.Group.Storage
+
+	// Fully stop the existing node so it unregisters from s.raftNodes;
+	// concurrent createRaftGroup callers must therefore reach the
+	// "build a new node" path rather than the existing-node short-circuit.
+	rn := mset.raftNode()
+	rn.Stop()
+	rn.WaitForStop()
+
+	sjs.mu.Lock()
+	rg.node = nil
+	sjs.mu.Unlock()
+
+	const N = 25
+	var (
+		ready sync.WaitGroup
+		start = make(chan struct{})
+		done  sync.WaitGroup
+		mu    sync.Mutex
+		nodes []RaftNode
+		errs  []error
+	)
+
+	// Without the creatingRaftGroups gate, parallel callers each build
+	// their own RaftNode; only the last registered stays in s.raftNodes
+	// and the rest leak with goroutines + file handles, so c.shutdown()
+	// hangs. Stop every distinct node we got back so the test can exit
+	// cleanly even when the assertions below fail.
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		seen := make(map[RaftNode]struct{}, len(nodes))
+		for _, n := range nodes {
+			if n == nil {
+				continue
+			}
+			if _, ok := seen[n]; ok {
+				continue
+			}
+			seen[n] = struct{}{}
+			n.Stop()
+		}
+	}()
+
+	ready.Add(N)
+	done.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			n, rerr := sjs.createRaftGroup(acc.GetName(), rg, false, storage, pprofLabels{})
+			mu.Lock()
+			nodes = append(nodes, n)
+			errs = append(errs, rerr)
+			mu.Unlock()
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	// Every caller must have received the same RaftNode instance —
+	// without the creatingRaftGroups gate, parallel callers each build
+	// their own node and clobber each other in s.raftNodes, returning
+	// distinct pointers.
+	require_Len(t, len(nodes), N)
+	for i := range N {
+		require_NoError(t, errs[i])
+		require_NotNil(t, nodes[i])
+		require_Equal(t, nodes[0], nodes[i])
+	}
+
+	// The in-flight sentinel must be cleaned up once creation completed.
+	sjs.mu.Lock()
+	_, sentinelLeft := sjs.cluster.creatingRaftGroups[rg.Name]
+	sjs.mu.Unlock()
+	require_False(t, sentinelLeft)
+}
+
+func TestJetStreamClusterParallelCreateRaftGroupHAAssetsLimit(t *testing.T) {
+	const maxAssets = 2
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", fmt.Sprintf("limits: {max_ha_assets: %d}, store_dir:", maxAssets), 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
+	defer c.shutdown()
+
+	ml := c.leader()
+	sjs := ml.getJetStream()
+	cc := sjs.cluster
+	require_NotNil(t, cc)
+
+	acc, err := ml.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+
+	metaPeers := cc.meta.Peers()
+	require_Len(t, len(metaPeers), 3)
+	peers := make([]string, 0, len(metaPeers))
+	for _, p := range metaPeers {
+		peers = append(peers, p.ID)
+	}
+
+	const N = 8
+	var (
+		ready sync.WaitGroup
+		start = make(chan struct{})
+		done  sync.WaitGroup
+		mu    sync.Mutex
+		nodes []RaftNode
+	)
+	ready.Add(N)
+	done.Add(N)
+	for i := range N {
+		rg := &raftGroup{
+			Name:    fmt.Sprintf("RG-%d", i),
+			Storage: FileStorage,
+			Peers:   slices.Clone(peers),
+			Cluster: "R3S",
+		}
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			n, _ := sjs.createRaftGroup(acc.GetName(), rg, false, FileStorage, pprofLabels{})
+			if n != nil {
+				mu.Lock()
+				nodes = append(nodes, n)
+				mu.Unlock()
+			}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, n := range nodes {
+			n.Stop()
+		}
+	}()
+
+	mu.Lock()
+	got := len(nodes)
+	mu.Unlock()
+	require_True(t, got <= maxAssets)
+}
+
 func TestJetStreamClusterSubjectDeleteMarkersMinimumTTL(t *testing.T) {
 	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
 		for _, replicas := range []int{1, 3} {

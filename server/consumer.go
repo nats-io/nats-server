@@ -1442,7 +1442,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if !s.standAloneMode() && ca == nil {
 			suppress = true
 		} else if ca != nil {
-			suppress = ca.responded
+			suppress = ca.hasResponded()
 		}
 		if !suppress {
 			o.sendCreateAdvisory()
@@ -2238,16 +2238,15 @@ func (o *consumer) deleteNotActive() {
 	if !isDirect && s.JetStreamIsClustered() {
 		js.mu.RLock()
 		var (
-			cca         consumerAssignment
 			meta        RaftNode
 			removeEntry []byte
 		)
 		ca, cc := js.consumerAssignment(acc, stream, name), js.cluster
 		if ca != nil && cc != nil {
 			meta = cc.meta
-			cca = *ca
+			cca := ca.clone()
 			cca.Reply = _EMPTY_
-			removeEntry = encodeDeleteConsumerAssignment(&cca)
+			removeEntry = encodeDeleteConsumerAssignment(cca)
 			meta.ForwardProposal(removeEntry)
 		}
 		js.mu.RUnlock()

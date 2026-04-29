@@ -1056,7 +1056,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 				suppress = true
 			}
 		} else if sa != nil {
-			suppress = sa.responded
+			suppress = sa.hasResponded()
 		}
 		if !suppress {
 			mset.sendCreateAdvisory()
