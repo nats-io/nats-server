@@ -2015,7 +2015,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 			pingInterval = opts.Cluster.PingInterval
 		}
 		if opts.Cluster.MaxPingsOut > 0 {
-			pingMax = opts.MaxPingsOut
+			pingMax = opts.Cluster.MaxPingsOut
 		}
 		c.watchForStaleConnection(adjustPingInterval(ROUTER, pingInterval), pingMax)
 	} else {
