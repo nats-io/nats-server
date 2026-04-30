@@ -37,6 +37,8 @@ FROM --platform=$TARGETPLATFORM alpine:latest
 ARG TARGETOS
 ARG TARGETARCH
 
+RUN apk add --no-cache tzdata
+
 COPY ./nats-server/docker/nats-server.conf                     /nats/conf/nats-server.conf
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt         /etc/ssl/certs/
 COPY --from=builder /src/out/$TARGETOS/$TARGETARCH/nats-server /bin/nats-server
