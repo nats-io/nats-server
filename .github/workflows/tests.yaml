@@ -35,8 +35,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          git fetch origin "${{ github.base_ref }}" --depth=1
-          range="origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"
+          range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
 
           missing=0
           missing_list=""
