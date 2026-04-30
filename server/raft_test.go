@@ -151,6 +151,23 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 	}
 }
 
+func TestNRGAppendEntryDecodeTruncatedEntryLength(t *testing.T) {
+	ae := &appendEntry{
+		leader:  "12345678",
+		term:    1,
+		entries: []*Entry{newEntry(EntryNormal, nil)},
+	}
+
+	buf, err := ae.encode(nil)
+	require_NoError(t, err)
+
+	// Truncate the 4 byte length field of the first entry.
+	// The decoder wants to read 4 bytes, finds only 2 bytes left.
+	truncated := buf[:appendEntryBaseLen+2]
+	_, err = decodeAppendEntry(truncated, nil, _EMPTY_)
+	require_Error(t, err, errBadAppendEntry)
+}
+
 func TestNRGRecoverFromFollowingNoLeader(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
