@@ -3025,6 +3025,28 @@ func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {
 	require_Len(t, len(sliceHeader(JSRequiredApiLevel, sm.Header)), 0)
 }
 
+func TestJetStreamAtomicPublishGetBatchSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		hdr    []byte
+		seq    uint64
+		exists bool
+	}{
+		{"missing", nil, 0, false},
+		{"empty-value", genHeader(nil, JSBatchSeq, ""), 0, false},
+		{"valid", genHeader(nil, JSBatchSeq, "42"), 42, true},
+		{"non-numeric", genHeader(nil, JSBatchSeq, "abc"), 0, false},
+		{"negative", genHeader(nil, JSBatchSeq, "-1"), 0, false},
+		{"overflow", genHeader(nil, JSBatchSeq, "18446744073709551616"), 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq, exists := getBatchSequence(tc.hdr)
+			require_Equal(t, seq, tc.seq)
+			require_Equal(t, exists, tc.exists)
+		})
+	}
+}
+
 func generateFastBatchReply(inbox string, batchId string, batchSeq uint64, flow uint16, gap string, op int) string {
 	return fmt.Sprintf("%s.%s.%d.%s.%d.%d.$FI", inbox, batchId, flow, gap, batchSeq, op)
 }
