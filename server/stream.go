@@ -5612,7 +5612,7 @@ func getBatchSequence(hdr []byte) (uint64, bool) {
 	if len(bseq) == 0 {
 		return 0, false
 	}
-	return uint64(parseInt64(bseq)), true
+	return parseUint64(bseq)
 }
 
 // Signal if we are clustered. Will acquire rlock.
