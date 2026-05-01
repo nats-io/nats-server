@@ -4077,3 +4077,41 @@ func TestServerEventsConnectDisconnectForGlobalAcc(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, msg.Subject, fmt.Sprintf(disconnectEventSubj, globalAccountName))
 }
+
+func TestSendInternalAccountMsgWithReplyDoesNotMutateHeaderSlice(t *testing.T) {
+	s := RunServer(DefaultOptions())
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync("foo")
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	// Build a header slice with significant spare capacity, like callers
+	// constructing headers with append/genHeader naturally do.
+	hdr := make([]byte, 0, 256)
+	hdr = append(hdr, "NATS/1.0\r\nFoo: bar\r\n\r\n"...)
+
+	// Snapshot the entire backing array so we can detect any mutation,
+	// including writes past len(hdr) into spare capacity.
+	snapshot := make([]byte, cap(hdr))
+	copy(snapshot, hdr[:cap(hdr)])
+
+	body := []byte("REPRO_LEAK_BODY")
+	err = s.sendInternalAccountMsgWithReply(s.globalAccount(), "foo", _EMPTY_, hdr, body, false)
+	require_NoError(t, err)
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(msg.Data), "REPRO_LEAK_BODY")
+	require_Equal(t, msg.Header.Get("Foo"), "bar")
+
+	// The caller's hdr slice (and its full backing array) must be untouched.
+	got := hdr[:cap(hdr)]
+	if !bytes.Equal(got, snapshot) {
+		t.Fatalf("hdr backing array was mutated by send:\n want: %q\n  got: %q", snapshot, got)
+	}
+}
