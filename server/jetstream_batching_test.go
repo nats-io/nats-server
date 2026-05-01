@@ -768,6 +768,37 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 	t.Run("Commit", func(t *testing.T) { test(t, Commit) })
 }
 
+func TestJetStreamAtomicBatchDeleteBatchApplyStateNoDoublePut(t *testing.T) {
+	mset := &stream{}
+	batch := &batchApply{
+		id:         "test-batch",
+		count:      3,
+		entryStart: 5,
+		maxApplied: 42,
+		entries:    []*CommittedEntry{{Index: 1}, {Index: 2}, {Index: 3}},
+	}
+	mset.batchApply = batch
+
+	mset.mu.Lock()
+	mset.deleteBatchApplyState()
+	mset.mu.Unlock()
+
+	require_True(t, mset.batchApply == nil)
+
+	batch.mu.Lock()
+	require_True(t, batch.entries == nil)
+	require_Equal(t, batch.id, _EMPTY_)
+	require_Equal(t, batch.count, uint64(0))
+	require_Equal(t, batch.entryStart, 0)
+	require_Equal(t, batch.maxApplied, uint64(0))
+
+	// Count was zeroed above, so the reject path must not bump clfs.
+	preCLFS := mset.clfs
+	batch.rejectBatchStateLocked(mset)
+	batch.mu.Unlock()
+	require_Equal(t, mset.clfs, preCLFS)
+}
+
 func TestJetStreamAtomicBatchPublishConfigOpts(t *testing.T) {
 	// Defaults.
 	require_Equal(t, streamMaxBatchTimeout, 10*time.Second)
