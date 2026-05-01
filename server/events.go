@@ -612,7 +612,7 @@ RESET:
 
 				// Optional raw header addition.
 				if pm.hdr != nil {
-					b = append(pm.hdr, b...)
+					b = append(pm.hdr[:len(pm.hdr):len(pm.hdr)], b...)
 					nhdr := len(pm.hdr)
 					nsize := len(b) - LEN_CR_LF
 					// MQTT producers don't have CRLF, so add it back.
