@@ -3223,6 +3223,156 @@ func TestTLSClientHandshakeFirstAndInProcessConnection(t *testing.T) {
 	}
 }
 
+type captureTLSHandshakeLogger struct {
+	DummyLogger
+	debugCh chan string
+	errCh   chan string
+}
+
+func (l *captureTLSHandshakeLogger) Debugf(format string, v ...any) {
+	select {
+	case l.debugCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+func (l *captureTLSHandshakeLogger) Errorf(format string, v ...any) {
+	select {
+	case l.errCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+func TestTLSClientHandshakeProbeErrorsLogAsDebug(t *testing.T) {
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+	}
+	tlsConfig, err := GenTLSConfig(tc)
+	require_NoError(t, err)
+
+	for _, test := range []struct {
+		name       string
+		timeout    float64
+		peer       string
+		pCerts     PinnedCertSet
+		wantDebug  bool
+		wantErrLog bool
+	}{
+		{"timeout", 0.01, _EMPTY_, nil, true, false},
+		{"not_tls_first_record", 1, "plain", nil, true, false},
+		{"pinned_cert_failure", 1, "tls", PinnedCertSet{"bad": struct{}{}}, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, err := NewServer(DefaultOptions())
+			require_NoError(t, err)
+			l := &captureTLSHandshakeLogger{
+				debugCh: make(chan string, 4),
+				errCh:   make(chan string, 4),
+			}
+			s.SetLogger(l, true, false)
+
+			serverConn, clientConn := net.Pipe()
+			defer clientConn.Close()
+
+			c := &client{srv: s, nc: serverConn, kind: CLIENT}
+			c.initClient()
+
+			switch test.peer {
+			case "plain":
+				go clientConn.Write([]byte("not tls\r\n"))
+			case "tls":
+				go func() {
+					tlsClient := tls.Client(clientConn, &tls.Config{InsecureSkipVerify: true})
+					tlsClient.Handshake()
+					tlsClient.Close()
+				}()
+			}
+
+			c.mu.Lock()
+			err = c.doTLSServerHandshake(_EMPTY_, tlsConfig, test.timeout, test.pCerts)
+			c.mu.Unlock()
+			require_Error(t, err)
+
+			var gotDebug, gotErrLog bool
+			deadline := time.After(100 * time.Millisecond)
+			for done := false; !done; {
+				select {
+				case msg := <-l.errCh:
+					if strings.Contains(msg, "TLS handshake error") {
+						gotErrLog = true
+					}
+				case msg := <-l.debugCh:
+					if strings.Contains(msg, "TLS handshake error") {
+						gotDebug = true
+					}
+				case <-deadline:
+					done = true
+				}
+			}
+			if gotDebug != test.wantDebug {
+				t.Fatalf("Expected debug TLS handshake error log: %v, got: %v", test.wantDebug, gotDebug)
+			}
+			if gotErrLog != test.wantErrLog {
+				t.Fatalf("Expected error TLS handshake error log: %v, got: %v", test.wantErrLog, gotErrLog)
+			}
+		})
+	}
+}
+
+func TestTLSHandshakeTimerTimeoutLogsAsDebug(t *testing.T) {
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+	}
+	tlsConfig, err := GenTLSConfig(tc)
+	require_NoError(t, err)
+
+	for _, kind := range []int{CLIENT, LEAF} {
+		t.Run(kindStringMap[kind], func(t *testing.T) {
+			s, err := NewServer(DefaultOptions())
+			require_NoError(t, err)
+			l := &captureTLSHandshakeLogger{
+				debugCh: make(chan string, 4),
+				errCh:   make(chan string, 4),
+			}
+			s.SetLogger(l, true, false)
+
+			serverConn, clientConn := net.Pipe()
+			defer clientConn.Close()
+
+			tlsConn := tls.Server(serverConn, tlsConfig)
+			c := &client{srv: s, nc: tlsConn, kind: kind}
+			c.initClient()
+
+			tlsTimeout(c, tlsConn)
+
+			var gotDebug, gotErrLog bool
+			deadline := time.After(100 * time.Millisecond)
+			for done := false; !done; {
+				select {
+				case msg := <-l.errCh:
+					if strings.Contains(msg, "TLS handshake timeout") {
+						gotErrLog = true
+					}
+				case msg := <-l.debugCh:
+					if strings.Contains(msg, "TLS handshake timeout") {
+						gotDebug = true
+					}
+				case <-deadline:
+					done = true
+				}
+			}
+			if !gotDebug {
+				t.Fatal("Expected debug TLS handshake timeout log")
+			}
+			if gotErrLog {
+				t.Fatal("Expected no error TLS handshake timeout log")
+			}
+		})
+	}
+}
+
 func TestRemoveHeaderIfPrefixPresent(t *testing.T) {
 	hdr := []byte("NATS/1.0\r\n\r\n")
 
