@@ -3640,7 +3640,7 @@ func tlsTimeout(c *client, conn *tls.Conn) {
 	}
 	cs := conn.ConnectionState()
 	if !cs.HandshakeComplete {
-		c.Errorf("TLS handshake timeout")
+		c.Debugf("TLS handshake timeout")
 		c.sendErr("Secure Connection - TLS Required")
 		c.closeConnection(TLSHandshakeError)
 	}

@@ -6538,10 +6538,20 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 		if len(subjs) > 0 {
 			detail = fmt.Sprintf(" (%s)", strings.Join(subjs, "; "))
 		}
-		if kind == CLIENT {
-			c.Errorf("TLS handshake error: %v%s", err, detail)
-		} else {
+		if kind == ROUTER || kind == GATEWAY {
+			// Always surface these as errors, as these ports shouldn't be behind a load
+			// balancer or regularly probed.
 			c.Errorf("TLS %s handshake error: %v%s", typ, err, detail)
+		} else {
+			logf := c.Errorf
+			if isClientProbeTLSHandshakeError(err) {
+				logf = c.Debugf
+			}
+			if kind == CLIENT {
+				logf("TLS handshake error: %v%s", err, detail)
+			} else {
+				logf("TLS %s handshake error: %v%s", typ, err, detail)
+			}
 		}
 		c.closeConnection(TLSHandshakeError)
 
@@ -6569,6 +6579,17 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	}
 
 	return false, err
+}
+
+func isClientProbeTLSHandshakeError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	var recordHeaderErr tls.RecordHeaderError
+	// Conn is only set by crypto/tls when the invalid record was the peer's
+	// initial handshake bytes, which is the non-TLS probe/load-balancer case.
+	return errors.As(err, &recordHeaderErr) && recordHeaderErr.Conn != nil
 }
 
 // getRawAuthUserLock returns the raw auth user for the client.
