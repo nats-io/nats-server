@@ -124,6 +124,26 @@ func parseInt64(d []byte) (n int64) {
 	return n
 }
 
+// parseUint64 expects decimal positive numbers. Returns the value and true on success,
+// or 0 and false on invalid input or overflow.
+func parseUint64(d []byte) (uint64, bool) {
+	if len(d) == 0 {
+		return 0, false
+	}
+	var n uint64
+	for _, dec := range d {
+		if dec < asciiZero || dec > asciiNine {
+			return 0, false
+		}
+		digit := uint64(dec) - asciiZero
+		if n > math.MaxUint64/10 || (n == math.MaxUint64/10 && digit > math.MaxUint64%10) {
+			return 0, false
+		}
+		n = n*10 + digit
+	}
+	return n, true
+}
+
 // Helper to move from float seconds to time.Duration
 func secondsToDuration(seconds float64) time.Duration {
 	ttl := seconds * float64(time.Second)
