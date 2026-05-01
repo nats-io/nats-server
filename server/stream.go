@@ -264,7 +264,7 @@ type PubAck struct {
 	Duplicate bool   `json:"duplicate,omitempty"`
 	Value     string `json:"val,omitempty"`
 	BatchId   string `json:"batch,omitempty"`
-	BatchSize int    `json:"count,omitempty"`
+	BatchSize uint64 `json:"count,omitempty"`
 }
 
 // CounterValue is the body of a message when used as a counter.
@@ -5558,15 +5558,14 @@ func getFastBatch(reply string, hdr []byte) (*FastBatch, bool) {
 	if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
 		return nil, true
 	}
-	a := parseInt64(stringToBytes(reply[o+1 : p]))
-	if a < 1 {
+	seq, ok := parseUint64(stringToBytes(reply[o+1 : p]))
+	// Reject math.MaxUint64 to prevent b.lseq overflowing on the next b.lseq++.
+	if !ok || seq == 0 || seq == math.MaxUint64 {
 		return nil, true
 	}
-	b.seq = uint64(a)
+	b.seq = seq
 	p = o
-	if b.seq <= 0 {
-		return nil, true
-	} else if b.seq == 1 && b.commitEob {
+	if b.seq == 1 && b.commitEob {
 		return nil, true
 	}
 	if op == FastBatchOpStart && b.seq != 1 {
@@ -5590,7 +5589,7 @@ func getFastBatch(reply string, hdr []byte) (*FastBatch, bool) {
 	if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
 		return nil, true
 	}
-	a = parseInt64(stringToBytes(reply[o+1 : p]))
+	a := parseInt64(stringToBytes(reply[o+1 : p]))
 	if a <= 0 {
 		a = 10
 	} else if a > math.MaxUint16 {
