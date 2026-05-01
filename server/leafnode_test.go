@@ -3191,7 +3191,7 @@ func TestLeafNodeWSFailedConnection(t *testing.T) {
 
 	select {
 	case err := <-el.errCh:
-		if !strings.Contains(err, "handshake error") {
+		if !strings.Contains(err, "Error soliciting websocket connection") {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	case <-time.After(time.Second):
