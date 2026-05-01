@@ -4591,10 +4591,14 @@ func (mset *stream) deleteInflightBatches(shuttingDown bool) {
 // Lock should be held.
 func (mset *stream) deleteBatchApplyState() {
 	if batch := mset.batchApply; batch != nil {
-		// Need to return entries (if any) to the pool.
+		// Clear under batch.mu so a stale reference held by the stream monitor
+		// can't re-pool entries we already returned.
+		batch.mu.Lock()
 		for _, bce := range batch.entries {
 			bce.ReturnToPool()
 		}
+		batch.clearBatchStateLocked()
+		batch.mu.Unlock()
 		mset.batchApply = nil
 	}
 }
