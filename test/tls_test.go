@@ -430,6 +430,46 @@ Loop:
 	}
 }
 
+func TestTLSClientCertificateNoSubjectWithSANAuth(t *testing.T) {
+	// A certificate with an empty Subject DN but a DNS SAN should be accepted
+	// and mapped to the SAN value, exercising the hasSANs branch added to
+	// checkClientTLSCertSubject.
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "./configs/certs/server-cert.pem"
+			key_file:  "./configs/certs/server-key.pem"
+			ca_file:   "./configs/certs/ca.pem"
+			verify_and_map: true
+		}
+		authorization {
+			users = [
+				{ user: "localhost" }
+			]
+		}
+	`))
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+
+	// Client with a no-subject cert (SAN only) should connect and be mapped to "localhost".
+	nc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/server-nosubj.pem", "./configs/certs/server-key-nosubj.pem"),
+		nats.RootCAs("./configs/certs/ca.pem"),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect with no-subject cert, got %v", err)
+	}
+	nc.Close()
+
+	// Client without a cert should be rejected.
+	nc, err = nats.Connect(nurl, nats.RootCAs("./configs/certs/ca.pem"))
+	if err == nil {
+		nc.Close()
+		t.Fatal("Expected connection without client cert to fail, but it succeeded")
+	}
+}
+
 func TestTLSClientCertificateTLSAuthMultipleOptions(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tls_cert_san_emails.conf")
 	defer srv.Shutdown()
