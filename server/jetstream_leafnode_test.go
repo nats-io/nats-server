@@ -16,6 +16,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,7 @@ import (
 
 	jwt "github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
 
@@ -445,24 +447,25 @@ leafnodes:{
 
 			checkClusterFormed(t, sLA, sLB)
 
-			strmCfg := func(name, placementCluster string) *nats.StreamConfig {
+			strmCfg := func(name, placementCluster string) jetstream.StreamConfig {
 				if placementCluster == "" {
-					return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
+					return jetstream.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
 				}
-				return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
-					Placement: &nats.Placement{Cluster: placementCluster}}
+				return jetstream.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
+					Placement: &jetstream.Placement{Cluster: placementCluster}}
 			}
 			// Only after the system account is fully connected can streams be placed anywhere.
 			testJSFunctions := func(pass bool) {
+				ctx := context.Background()
 				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sA.opts.Port))
 				defer ncA.Close()
-				jsA, err := ncA.JetStream()
+				jsA, err := jetstream.New(ncA)
 				require_NoError(t, err)
-				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fooA1-%t", pass), ""))
+				_, err = jsA.CreateStream(ctx, strmCfg(fmt.Sprintf("fooA1-%t", pass), ""))
 				require_NoError(t, err)
-				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fooA2-%t", pass), "clust1"))
+				_, err = jsA.CreateStream(ctx, strmCfg(fmt.Sprintf("fooA2-%t", pass), "clust1"))
 				require_NoError(t, err)
-				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fooA3-%t", pass), "clustL"))
+				_, err = jsA.CreateStream(ctx, strmCfg(fmt.Sprintf("fooA3-%t", pass), "clustL"))
 				if pass {
 					require_NoError(t, err)
 				} else {
@@ -471,13 +474,13 @@ leafnodes:{
 				}
 				ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sLA.opts.Port))
 				defer ncL.Close()
-				jsL, err := ncL.JetStream()
+				jsL, err := jetstream.New(ncL)
 				require_NoError(t, err)
-				_, err = jsL.AddStream(strmCfg(fmt.Sprintf("fooL1-%t", pass), ""))
+				_, err = jsL.CreateStream(ctx, strmCfg(fmt.Sprintf("fooL1-%t", pass), ""))
 				require_NoError(t, err)
-				_, err = jsL.AddStream(strmCfg(fmt.Sprintf("fooL2-%t", pass), "clustL"))
+				_, err = jsL.CreateStream(ctx, strmCfg(fmt.Sprintf("fooL2-%t", pass), "clustL"))
 				require_NoError(t, err)
-				_, err = jsL.AddStream(strmCfg(fmt.Sprintf("fooL3-%t", pass), "clust1"))
+				_, err = jsL.CreateStream(ctx, strmCfg(fmt.Sprintf("fooL3-%t", pass), "clust1"))
 				if pass {
 					require_NoError(t, err)
 				} else {
@@ -510,11 +513,12 @@ leafnodes:{
 			} else {
 				// In cases where the leaf nodes have to wait for the system account to connect,
 				// JetStream should not be operational during that time
+				ctx := context.Background()
 				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sLA.opts.Port))
 				defer ncA.Close()
-				jsA, err := ncA.JetStream()
+				jsA, err := jetstream.New(ncA)
 				require_NoError(t, err)
-				_, err = jsA.AddStream(strmCfg("fail-false", ""))
+				_, err = jsA.CreateStream(ctx, strmCfg("fail-false", ""))
 				require_Error(t, err)
 			}
 			// Starting the proxy will connect the system accounts.
@@ -692,30 +696,31 @@ cluster: { name: clustL }
 
 			// helper to create stream config with uniqe name and subject
 			cnt := 0
-			strmCfg := func(placementCluster string) *nats.StreamConfig {
+			strmCfg := func(placementCluster string) jetstream.StreamConfig {
 				name := fmt.Sprintf("s-%d", cnt)
 				cnt++
 				if placementCluster == "" {
-					return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
+					return jetstream.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
 				}
-				return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
-					Placement: &nats.Placement{Cluster: placementCluster}}
+				return jetstream.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
+					Placement: &jetstream.Placement{Cluster: placementCluster}}
 			}
 
 			test := func(port int, expectedDefPlacement string) {
+				ctx := context.Background()
 				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", port))
 				defer ncA.Close()
-				jsA, err := ncA.JetStream()
+				jsA, err := jetstream.New(ncA)
 				require_NoError(t, err)
-				si, err := jsA.AddStream(strmCfg(""))
+				s, err := jsA.CreateStream(ctx, strmCfg(""))
 				require_NoError(t, err)
-				require_Contains(t, si.Cluster.Name, expectedDefPlacement)
-				si, err = jsA.AddStream(strmCfg("clust1"))
+				require_Contains(t, s.CachedInfo().Cluster.Name, expectedDefPlacement)
+				s, err = jsA.CreateStream(ctx, strmCfg("clust1"))
 				require_NoError(t, err)
-				require_Contains(t, si.Cluster.Name, "clust1")
-				si, err = jsA.AddStream(strmCfg("clustL"))
+				require_Contains(t, s.CachedInfo().Cluster.Name, "clust1")
+				s, err = jsA.CreateStream(ctx, strmCfg("clustL"))
 				require_NoError(t, err)
-				require_Contains(t, si.Cluster.Name, "clustL")
+				require_Contains(t, s.CachedInfo().Cluster.Name, "clustL")
 			}
 
 			test(sA.opts.Port, "clust1")
@@ -852,12 +857,13 @@ leafnodes: {
 		checkLeafNodeConnectedCount(t, sHub, lnCnt)
 		checkLeafNodeConnectedCount(t, sLeaf, lnCnt)
 
+		ctx := context.Background()
 		ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sHub.opts.Port))
 		defer ncA.Close()
-		jsA, err := ncA.JetStream()
+		jsA, err := jetstream.New(ncA)
 		require_NoError(t, err)
 
-		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+		_, err = jsA.CreateStream(ctx, jetstream.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
 		require_True(t, err == nats.ErrNoResponders)
 
 		// Add in default domain and restart server
@@ -877,7 +883,7 @@ leafnodes: {
 		checkLeafNodeConnectedCount(t, sHubUpd1, lnCnt)
 		checkLeafNodeConnectedCount(t, sLeaf, lnCnt)
 
-		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+		_, err = jsA.CreateStream(ctx, jetstream.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
 		require_NoError(t, err)
 
 		// Enable jetstream in hub.
@@ -899,7 +905,7 @@ leafnodes: {
 		checkLeafNodeConnectedCount(t, sHubUpd2, lnCnt)
 		checkLeafNodeConnectedCount(t, sLeaf, lnCnt)
 
-		_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
+		_, err = jsA.CreateStream(ctx, jetstream.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
 		require_NoError(t, err)
 
 		// Enable jetstream in account A of hub
@@ -1007,12 +1013,13 @@ leafnodes: {
 		checkLeafNodeConnectedCount(t, sHub, 2)
 		checkLeafNodeConnectedCount(t, sLeaf, 2)
 
+		ctx := context.Background()
 		ncA := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", sHub.opts.Port), createUserCreds(t, nil, aKp))
 		defer ncA.Close()
-		jsA, err := ncA.JetStream()
+		jsA, err := jetstream.New(ncA)
 		require_NoError(t, err)
 
-		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+		_, err = jsA.CreateStream(ctx, jetstream.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
 		require_True(t, err == nats.ErrNoResponders)
 
 		// Add in default domain and restart server
@@ -1029,7 +1036,7 @@ leafnodes: {
 		checkLeafNodeConnectedCount(t, sHubUpd1, 2)
 		checkLeafNodeConnectedCount(t, sLeaf, 2)
 
-		_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
+		_, err = jsA.CreateStream(ctx, jetstream.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
 		require_NoError(t, err)
 	}
 	t.Run("with-domain", func(t *testing.T) {
@@ -1148,19 +1155,20 @@ default_js_domain: {B:"DHUB"}
 	checkLeafNodeConnectedCount(t, sLeaf1, 2)
 	checkLeafNodeConnectedCount(t, sLeaf2, 2)
 
+	ctx := context.Background()
 	ncB := natsConnect(t, fmt.Sprintf("nats://b1:b1@127.0.0.1:%d", sLeaf1.getOpts().Port))
 	defer ncB.Close()
-	jsB1, err := ncB.JetStream()
+	jsB1, err := jetstream.New(ncB)
 	require_NoError(t, err)
-	si, err := jsB1.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+	s1, err := jsB1.CreateStream(ctx, jetstream.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
 	require_NoError(t, err)
-	require_Equal(t, si.Cluster.Name, "HUB")
+	require_Equal(t, s1.CachedInfo().Cluster.Name, "HUB")
 
-	jsB2, err := ncB.JetStream(nats.Domain("DHUB"))
+	jsB2, err := jetstream.NewWithDomain(ncB, "DHUB")
 	require_NoError(t, err)
-	si, err = jsB2.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
+	s2, err := jsB2.CreateStream(ctx, jetstream.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
 	require_NoError(t, err)
-	require_Equal(t, si.Cluster.Name, "HUB")
+	require_Equal(t, s2.CachedInfo().Cluster.Name, "HUB")
 }
 
 func TestJetStreamLeafNodeSvcImportExportCycle(t *testing.T) {
@@ -1231,16 +1239,17 @@ func TestJetStreamLeafNodeSvcImportExportCycle(t *testing.T) {
 	nc := natsConnect(t, fmt.Sprintf("nats://leaf_user:leaf_user@127.0.0.1:%v", so.Port))
 	defer nc.Close()
 
-	js, _ := nc.JetStream(nats.APIPrefix("JS.leaf_ingress@leaf.API."))
+	ctx := context.Background()
+	js, _ := jetstream.NewWithAPIPrefix(nc, "JS.leaf_ingress@leaf.API.")
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
-		Storage:  nats.FileStorage,
+		Storage:  jetstream.FileStorage,
 	})
 	require_NoError(t, err)
 
-	_, err = js.Publish("foo", []byte("msg"))
+	_, err = js.Publish(ctx, "foo", []byte("msg"))
 	require_NoError(t, err)
 }
 
@@ -1258,19 +1267,21 @@ func TestJetStreamLeafNodeJSClusterMigrateRecovery(t *testing.T) {
 		s.setJetStreamMigrateOnRemoteLeaf()
 	}
 
-	nc, _ := jsClientConnect(t, lnc.randomServer())
+	ctx := context.Background()
+	nc, _ := jsClientConnectNewAPI(t, lnc.randomServer())
 	defer nc.Close()
 
-	ljs, err := nc.JetStream(nats.Domain("leaf"))
+	ljs, err := jetstream.NewWithDomain(nc, "leaf")
 	require_NoError(t, err)
 
 	// Create an asset in the leafnode cluster.
-	si, err := ljs.AddStream(&nats.StreamConfig{
+	stream, err := ljs.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+	si := stream.CachedInfo()
 	require_Equal(t, si.Cluster.Name, "leaf")
 	require_NotEqual(t, si.Cluster.Leader, noLeader)
 	require_Equal(t, len(si.Cluster.Replicas), 2)
@@ -1344,19 +1355,21 @@ func TestJetStreamLeafNodeJSClusterMigrateRecoveryWithDelay(t *testing.T) {
 		s.setJetStreamMigrateOnRemoteLeafWithDelay(delay)
 	}
 
-	nc, _ := jsClientConnect(t, lnc.randomServer())
+	ctx := context.Background()
+	nc, _ := jsClientConnectNewAPI(t, lnc.randomServer())
 	defer nc.Close()
 
-	ljs, err := nc.JetStream(nats.Domain("leaf"))
+	ljs, err := jetstream.NewWithDomain(nc, "leaf")
 	require_NoError(t, err)
 
 	// Create an asset in the leafnode cluster.
-	si, err := ljs.AddStream(&nats.StreamConfig{
+	stream, err := ljs.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+	si := stream.CachedInfo()
 	require_Equal(t, si.Cluster.Name, "leaf")
 	require_NotEqual(t, si.Cluster.Leader, noLeader)
 	require_Equal(t, len(si.Cluster.Replicas), 2)
@@ -1494,59 +1507,60 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterConnectionDown(t *testing.T) {
 	//  3. Source A <-> B
 
 	// Connect to sA.
-	ncA, jsA := jsClientConnect(t, sA, nats.UserInfo("y", "p"))
+	ctx := context.Background()
+	ncA, jsA := jsClientConnectNewAPI(t, sA, nats.UserInfo("y", "p"))
 	defer ncA.Close()
 
 	// Connect to sB.
-	ncB, jsB := jsClientConnect(t, sB, nats.UserInfo("y", "p"))
+	ncB, jsB := jsClientConnectNewAPI(t, sB, nats.UserInfo("y", "p"))
 	defer ncB.Close()
 
 	// Add in TEST-A
-	_, err := jsA.AddStream(&nats.StreamConfig{Name: "TEST-A", Subjects: []string{"foo"}})
+	_, err := jsA.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST-A", Subjects: []string{"foo"}})
 	require_NoError(t, err)
 
 	// Add in TEST-B
-	_, err = jsB.AddStream(&nats.StreamConfig{Name: "TEST-B", Subjects: []string{"bar"}})
+	_, err = jsB.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST-B", Subjects: []string{"bar"}})
 	require_NoError(t, err)
 
 	// Now setup mirrors.
-	_, err = jsB.AddStream(&nats.StreamConfig{
+	_, err = jsB.CreateStream(ctx, jetstream.StreamConfig{
 		Name: "M-A",
-		Mirror: &nats.StreamSource{
+		Mirror: &jetstream.StreamSource{
 			Name:     "TEST-A",
-			External: &nats.ExternalStream{APIPrefix: "$JS.TCM.API"},
+			External: &jetstream.ExternalStream{APIPrefix: "$JS.TCM.API"},
 		},
 	})
 	require_NoError(t, err)
 
-	_, err = jsA.AddStream(&nats.StreamConfig{
+	_, err = jsA.CreateStream(ctx, jetstream.StreamConfig{
 		Name: "M-B",
-		Mirror: &nats.StreamSource{
+		Mirror: &jetstream.StreamSource{
 			Name:     "TEST-B",
-			External: &nats.ExternalStream{APIPrefix: "$JS.XMM.API"},
+			External: &jetstream.ExternalStream{APIPrefix: "$JS.XMM.API"},
 		},
 	})
 	require_NoError(t, err)
 
 	// Now add in the streams that will source from one another bi-directionally.
-	_, err = jsA.AddStream(&nats.StreamConfig{
+	_, err = jsA.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "SRC-A",
 		Subjects: []string{"A.*"},
-		Sources: []*nats.StreamSource{{
+		Sources: []*jetstream.StreamSource{{
 			Name:          "SRC-B",
 			FilterSubject: "B.*",
-			External:      &nats.ExternalStream{APIPrefix: "$JS.XMM.API"},
+			External:      &jetstream.ExternalStream{APIPrefix: "$JS.XMM.API"},
 		}},
 	})
 	require_NoError(t, err)
 
-	_, err = jsB.AddStream(&nats.StreamConfig{
+	_, err = jsB.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "SRC-B",
 		Subjects: []string{"B.*"},
-		Sources: []*nats.StreamSource{{
+		Sources: []*jetstream.StreamSource{{
 			Name:          "SRC-A",
 			FilterSubject: "A.*",
-			External:      &nats.ExternalStream{APIPrefix: "$JS.TCM.API"},
+			External:      &jetstream.ExternalStream{APIPrefix: "$JS.TCM.API"},
 		}},
 	})
 	require_NoError(t, err)
@@ -1573,12 +1587,14 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterConnectionDown(t *testing.T) {
 	}
 
 	// Utility to check the number of stream msgs.
-	checkStreamMsgs := func(js nats.JetStreamContext, sname string, expected int, perr error) error {
+	checkStreamMsgs := func(js jetstream.JetStream, sname string, expected int, perr error) error {
 		t.Helper()
 		if perr != nil {
 			return perr
 		}
-		si, err := js.StreamInfo(sname)
+		s, err := js.Stream(ctx, sname)
+		require_NoError(t, err)
+		si, err := s.Info(ctx)
 		require_NoError(t, err)
 		if si.State.Msgs != uint64(expected) {
 			return fmt.Errorf("Expected %d msgs for %s, got state: %+v", expected, sname, si.State)
@@ -1772,55 +1788,56 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterLeafEstablished(t *testing.T) {
 
 	// Let's place a muxed stream on the hub and have it source from a stream on the Satellite.
 	// Connect to Hub.
-	ncHub, jsHub := jsClientConnect(t, sHub, nats.UserInfo("u", "p"))
+	ctx := context.Background()
+	ncHub, jsHub := jsClientConnectNewAPI(t, sHub, nats.UserInfo("u", "p"))
 	defer ncHub.Close()
 
-	_, err := jsHub.AddStream(&nats.StreamConfig{Name: "HUB", Subjects: []string{"H.>"}})
+	_, err := jsHub.CreateStream(ctx, jetstream.StreamConfig{Name: "HUB", Subjects: []string{"H.>"}})
 	require_NoError(t, err)
 
 	// Connect to Sat1.
-	ncSat1, jsSat1 := jsClientConnect(t, sSat1, nats.UserInfo("u", "p"))
+	ncSat1, jsSat1 := jsClientConnectNewAPI(t, sSat1, nats.UserInfo("u", "p"))
 	defer ncSat1.Close()
 
-	_, err = jsSat1.AddStream(&nats.StreamConfig{
+	streamSat1, err := jsSat1.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "SAT-1",
 		Subjects: []string{"S1.*"},
-		Sources: []*nats.StreamSource{{
+		Sources: []*jetstream.StreamSource{{
 			Name:          "HUB",
 			FilterSubject: "H.SAT-1.>",
-			External:      &nats.ExternalStream{APIPrefix: "$JS.HUB.API"},
+			External:      &jetstream.ExternalStream{APIPrefix: "$JS.HUB.API"},
 		}},
 	})
 	require_NoError(t, err)
 
 	// Connect to Sat2.
-	ncSat2, jsSat2 := jsClientConnect(t, sSat2, nats.UserInfo("u", "p"))
+	ncSat2, jsSat2 := jsClientConnectNewAPI(t, sSat2, nats.UserInfo("u", "p"))
 	defer ncSat2.Close()
 
-	_, err = jsSat2.AddStream(&nats.StreamConfig{
+	streamSat2, err := jsSat2.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "SAT-2",
 		Subjects: []string{"S2.*"},
-		Sources: []*nats.StreamSource{{
+		Sources: []*jetstream.StreamSource{{
 			Name:          "HUB",
 			FilterSubject: "H.SAT-2.>",
-			External:      &nats.ExternalStream{APIPrefix: "$JS.HUB.API"},
+			External:      &jetstream.ExternalStream{APIPrefix: "$JS.HUB.API"},
 		}},
 	})
 	require_NoError(t, err)
 
 	// Put in 10 msgs each in for each satellite.
 	for i := 0; i < 10; i++ {
-		jsHub.Publish("H.SAT-1.foo", []byte("CMD"))
-		jsHub.Publish("H.SAT-2.foo", []byte("CMD"))
+		jsHub.Publish(ctx, "H.SAT-1.foo", []byte("CMD"))
+		jsHub.Publish(ctx, "H.SAT-2.foo", []byte("CMD"))
 	}
 	// Make sure both are sync'd.
 	checkFor(t, time.Second, 100*time.Millisecond, func() error {
-		si, err := jsSat1.StreamInfo("SAT-1")
+		si, err := streamSat1.Info(ctx)
 		require_NoError(t, err)
 		if si.State.Msgs != 10 {
 			return errors.New("SAT-1 Not sync'd yet")
 		}
-		si, err = jsSat2.StreamInfo("SAT-2")
+		si, err = streamSat2.Info(ctx)
 		require_NoError(t, err)
 		if si.State.Msgs != 10 {
 			return errors.New("SAT-2 Not sync'd yet")
@@ -1841,8 +1858,8 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterLeafEstablished(t *testing.T) {
 
 		// Send 10 more messages for each while GW1 and GW2 are down.
 		for i := 0; i < 10; i++ {
-			jsHub.Publish("H.SAT-1.foo", []byte("CMD"))
-			jsHub.Publish("H.SAT-2.foo", []byte("CMD"))
+			jsHub.Publish(ctx, "H.SAT-1.foo", []byte("CMD"))
+			jsHub.Publish(ctx, "H.SAT-2.foo", []byte("CMD"))
 		}
 
 		// Keep GWs down for delay.
@@ -1862,12 +1879,12 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterLeafEstablished(t *testing.T) {
 
 		// Make sure sync'd in less than a second or two.
 		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-			si, err := jsSat1.StreamInfo("SAT-1")
+			si, err := streamSat1.Info(ctx)
 			require_NoError(t, err)
 			if si.State.Msgs != expected {
 				return fmt.Errorf("SAT-1 not sync'd, expected %d got %d", expected, si.State.Msgs)
 			}
-			si, err = jsSat2.StreamInfo("SAT-2")
+			si, err = streamSat2.Info(ctx)
 			require_NoError(t, err)
 			if si.State.Msgs != expected {
 				return fmt.Errorf("SAT-2 not sync'd, expected %d got %d", expected, si.State.Msgs)

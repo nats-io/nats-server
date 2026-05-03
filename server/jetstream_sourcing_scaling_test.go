@@ -14,12 +14,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 var serverConfig1 = `
@@ -124,20 +126,22 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(10*time.Second))
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
 	defer nc.Close()
 
+	ctx := context.Background()
+
 	// create n streams to source from
 	for i := 0; i < numSourced; i++ {
-		_, err := js.AddStream(&nats.StreamConfig{
+		_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:                 fmt.Sprintf("sourced-%d", i),
 			Subjects:             []string{strconv.Itoa(i)},
-			Retention:            nats.LimitsPolicy,
-			Storage:              nats.FileStorage,
-			Discard:              nats.DiscardOld,
+			Retention:            jetstream.LimitsPolicy,
+			Storage:              jetstream.FileStorage,
+			Discard:              jetstream.DiscardOld,
 			Replicas:             1,
 			AllowDirect:          true,
 			MirrorDirect:         false,
@@ -151,7 +155,7 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 	// publish n messages for each sourced stream
 	for j := 0; j < numMsgPerSource; j++ {
 		start := time.Now()
-		var pafs = make([]nats.PubAckFuture, numSourced)
+		var pafs = make([]jetstream.PubAckFuture, numSourced)
 		for i := 0; i < numSourced; i++ {
 			var err error
 
@@ -180,7 +184,7 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 			case psae := <-pafs[i].Err():
 				fmt.Printf("Error on PubAckFuture: %v, retrying sync...\n", psae)
 				retries++
-				_, err = js.Publish(strconv.Itoa(i), []byte(strconv.Itoa(j)))
+				_, err = js.Publish(ctx, strconv.Itoa(i), []byte(strconv.Itoa(j)))
 				require_NoError(t, err)
 			}
 		}
@@ -194,20 +198,20 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 	fmt.Printf("Messages published\n")
 
 	// create the StreamSources
-	streamSources := make([]*nats.StreamSource, numSourced)
+	streamSources := make([]*jetstream.StreamSource, numSourced)
 
 	for i := 0; i < numSourced; i++ {
-		streamSources[i] = &nats.StreamSource{Name: fmt.Sprintf("sourced-%d", i), FilterSubject: strconv.Itoa(i)}
+		streamSources[i] = &jetstream.StreamSource{Name: fmt.Sprintf("sourced-%d", i), FilterSubject: strconv.Itoa(i)}
 	}
 
 	// create a stream that sources from them
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:                 "sourcing",
 		Subjects:             []string{"foo"},
 		Sources:              streamSources,
-		Retention:            nats.LimitsPolicy,
-		Storage:              nats.FileStorage,
-		Discard:              nats.DiscardOld,
+		Retention:            jetstream.LimitsPolicy,
+		Storage:              jetstream.FileStorage,
+		Discard:              jetstream.DiscardOld,
 		Replicas:             3,
 		AllowDirect:          true,
 		MirrorDirect:         false,
@@ -252,20 +256,25 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 	// However, that should not happen if the publish 'batch size' is not more than the number of streams being sourced.
 
 	// create a consumer on sourcing
-	_, err = js.AddConsumer("sourcing", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "sourcing", jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
-	syncSub, err := js.SubscribeSync("", nats.BindStream("sourcing"))
+	sourcingStream, err := js.Stream(ctx, "sourcing")
 	require_NoError(t, err)
+	syncCons, err := sourcingStream.CreateConsumer(ctx, jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy})
+	require_NoError(t, err)
+	syncSub, err := syncCons.Messages()
+	require_NoError(t, err)
+	defer syncSub.Stop()
 
 	start = time.Now()
 
 	print("Checking the messages\n")
 	for i := 0; i < numSourced*numMsgPerSource; i++ {
-		msg, err := syncSub.NextMsg(30 * time.Second)
+		msg, err := syncSub.Next()
 		require_NoError(t, err)
-		sId, err := strconv.Atoi(msg.Subject)
+		sId, err := strconv.Atoi(msg.Subject())
 		require_NoError(t, err)
-		seq, err := strconv.Atoi(string(msg.Data))
+		seq, err := strconv.Atoi(string(msg.Data()))
 		require_NoError(t, err)
 		if expectedSeq[sId] == seq {
 			expectedSeq[sId]++

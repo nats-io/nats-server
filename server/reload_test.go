@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
 
@@ -5939,7 +5941,7 @@ func TestConfigReloadGlobalAccountWithMappingAndJetStream(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
 	// Verify that mapping works
@@ -5955,17 +5957,19 @@ func TestConfigReloadGlobalAccountWithMappingAndJetStream(t *testing.T) {
 	}
 	checkMapping("subj.mapped.before.reload")
 
+	ctx := context.Background()
+
 	// Create a stream and check that we can get the INFO
-	_, err := js.AddStream(&nats.StreamConfig{
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      "TEST",
 		Replicas:  3,
 		Subjects:  []string{"foo"},
-		Retention: nats.InterestPolicy,
+		Retention: jetstream.InterestPolicy,
 	})
 	require_NoError(t, err)
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 
-	_, err = js.StreamInfo("TEST")
+	_, err = stream.Info(ctx)
 	require_NoError(t, err)
 
 	// Change mapping on all servers and issue reload
@@ -5979,7 +5983,7 @@ func TestConfigReloadGlobalAccountWithMappingAndJetStream(t *testing.T) {
 	checkClusterFormed(t, c.servers...)
 	// Now repeat the test for the subject mapping and stream info
 	checkMapping("subj.mapped.after.reload")
-	_, err = js.StreamInfo("TEST")
+	_, err = stream.Info(ctx)
 	require_NoError(t, err)
 }
 
@@ -7358,23 +7362,24 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
 	require_Equal(t, cfg.MaxStore, 128*1024*1024)
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	scfg := &nats.StreamConfig{MaxBytes: 128 * 1024 * 1024}
-	storageTypes := []nats.StorageType{nats.FileStorage, nats.MemoryStorage}
+	ctx := context.Background()
+	scfg := jetstream.StreamConfig{MaxBytes: 128 * 1024 * 1024}
+	storageTypes := []jetstream.StorageType{jetstream.FileStorage, jetstream.MemoryStorage}
 	for _, st := range storageTypes {
 		scfg.Name = fmt.Sprintf("TEST-%s", st)
 		scfg.Storage = st
-		_, err := js.AddStream(scfg)
+		_, err := js.CreateStream(ctx, scfg)
 		require_NoError(t, err)
 	}
 
 	for _, st := range storageTypes {
 		scfg.Name = fmt.Sprintf("TEST2-%s", st)
 		scfg.Storage = st
-		_, err := js.AddStream(scfg)
-		if st == nats.FileStorage {
+		_, err := js.CreateStream(ctx, scfg)
+		if st == jetstream.FileStorage {
 			require_Error(t, err, NewJSStorageResourcesExceededError())
 		} else {
 			require_Error(t, err, NewJSMemoryResourcesExceededError())
@@ -7394,7 +7399,7 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	for _, st := range storageTypes {
 		scfg.Name = fmt.Sprintf("TEST2-%s", st)
 		scfg.Storage = st
-		_, err := js.AddStream(scfg)
+		_, err := js.CreateStream(ctx, scfg)
 		require_NoError(t, err)
 	}
 

@@ -1231,36 +1231,6 @@ var skip = func(t *testing.T) {
 	t.SkipNow()
 }
 
-func jsClientConnect(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
-	t.Helper()
-	nc, err := nats.Connect(s.ClientURL(), opts...)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
-	if err != nil {
-		t.Fatalf("Unexpected error getting JetStream context: %v", err)
-	}
-	return nc, js
-}
-
-func jsClientConnectEx(t testing.TB, s *Server, jsOpts []nats.JSOpt, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
-	t.Helper()
-	nc, err := nats.Connect(s.ClientURL(), opts...)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	jo := []nats.JSOpt{nats.MaxWait(10 * time.Second)}
-	if len(jsOpts) > 0 {
-		jo = append(jo, jsOpts...)
-	}
-	js, err := nc.JetStream(jo...)
-	if err != nil {
-		t.Fatalf("Unexpected error getting JetStream context: %v", err)
-	}
-	return nc, js
-}
-
 func jsClientConnectNewAPI(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(), opts...)
@@ -1274,14 +1244,44 @@ func jsClientConnectNewAPI(t testing.TB, s *Server, opts ...nats.Option) (*nats.
 	return nc, js
 }
 
-func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnectNewAPIEx(t testing.TB, s *Server, jsOpts []jetstream.JetStreamOpt, opts ...nats.Option) (*nats.Conn, jetstream.JetStream) {
+	t.Helper()
+	nc, err := nats.Connect(s.ClientURL(), opts...)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	jo := []jetstream.JetStreamOpt{jetstream.WithDefaultTimeout(10 * time.Second)}
+	if len(jsOpts) > 0 {
+		jo = append(jo, jsOpts...)
+	}
+	js, err := jetstream.New(nc, jo...)
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	return nc, js
+}
+
+func jsClientConnectNewAPIWithDomain(t testing.TB, s *Server, domain string, opts ...nats.Option) (*nats.Conn, jetstream.JetStream) {
+	t.Helper()
+	nc, err := nats.Connect(s.ClientURL(), opts...)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	js, err := jetstream.NewWithDomain(nc, domain, jetstream.WithDefaultTimeout(10*time.Second))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	return nc, js
+}
+
+func jsClientConnectNewAPIURL(t testing.TB, url string, opts ...nats.Option) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
 
 	nc, err := nats.Connect(url, opts...)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(10*time.Second))
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
@@ -1361,19 +1361,27 @@ func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	})
 }
 
-func fetchMsgs(t *testing.T, sub *nats.Subscription, numExpected int, totalWait time.Duration) []*nats.Msg {
+func fetchJetStreamMsgs(t *testing.T, cons jetstream.Consumer, numExpected int, totalWait time.Duration) []jetstream.Msg {
 	t.Helper()
-	result := make([]*nats.Msg, 0, numExpected)
+	result := make([]jetstream.Msg, 0, numExpected)
 	for start, count, wait := time.Now(), numExpected, totalWait; len(result) != numExpected; {
-		msgs, err := sub.Fetch(count, nats.MaxWait(wait))
+		batch, err := cons.Fetch(count, jetstream.FetchMaxWait(wait))
 		if err != nil {
 			antithesis.AssertUnreachable(t, "Fetch error", map[string]any{
 				"error": err.Error(),
 			})
 			t.Fatal(err)
 		}
-		result = append(result, msgs...)
-		count -= len(msgs)
+		for m := range batch.Messages() {
+			result = append(result, m)
+		}
+		if err := batch.Error(); err != nil {
+			antithesis.AssertUnreachable(t, "Fetch batch error", map[string]any{
+				"error": err.Error(),
+			})
+			t.Fatal(err)
+		}
+		count = numExpected - len(result)
 		if wait = totalWait - time.Since(start); wait < 0 {
 			break
 		}

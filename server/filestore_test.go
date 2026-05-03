@@ -18,6 +18,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/hmac"
 	crand "crypto/rand"
 	"crypto/sha256"
@@ -48,7 +49,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
-	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nuid"
 )
 
@@ -11508,24 +11509,25 @@ func TestFileStorePurgeMsgBlockRemovesSchedules(t *testing.T) {
 }
 
 func TestFileStorePurgeMsgBlockAccounting(t *testing.T) {
-	test := func(t *testing.T, update func(cfg *nats.StreamConfig)) {
+	test := func(t *testing.T, update func(cfg *jetstream.StreamConfig)) {
 		s := RunBasicJetStreamServer(t)
 		defer s.Shutdown()
 
-		nc, js := jsClientConnect(t, s)
+		nc, js := jsClientConnectNewAPI(t, s)
 		defer nc.Close()
 
-		cfg := &nats.StreamConfig{
+		ctx := context.Background()
+		cfg := jetstream.StreamConfig{
 			Name:     "TEST",
 			Subjects: []string{"foo"},
-			Storage:  nats.FileStorage,
+			Storage:  jetstream.FileStorage,
 		}
-		_, err := js.AddStream(cfg)
+		_, err := js.CreateStream(ctx, cfg)
 		require_NoError(t, err)
 
 		subj, data := "foo", make([]byte, 1024*1024)
 		for range 10 {
-			_, err = js.Publish(subj, data)
+			_, err = js.Publish(ctx, subj, data)
 			require_NoError(t, err)
 		}
 
@@ -11536,8 +11538,8 @@ func TestFileStorePurgeMsgBlockAccounting(t *testing.T) {
 		stats := gacc.JetStreamUsage()
 		require_Equal(t, state.Bytes, stats.JetStreamTier.Store)
 
-		update(cfg)
-		_, err = js.UpdateStream(cfg)
+		update(&cfg)
+		_, err = js.UpdateStream(ctx, cfg)
 		require_NoError(t, err)
 
 		state = mset.state()
@@ -11547,12 +11549,12 @@ func TestFileStorePurgeMsgBlockAccounting(t *testing.T) {
 	}
 
 	t.Run("MaxMsgs", func(t *testing.T) {
-		test(t, func(cfg *nats.StreamConfig) {
+		test(t, func(cfg *jetstream.StreamConfig) {
 			cfg.MaxMsgs = 1
 		})
 	})
 	t.Run("MaxBytes", func(t *testing.T) {
-		test(t, func(cfg *nats.StreamConfig) {
+		test(t, func(cfg *jetstream.StreamConfig) {
 			cfg.MaxBytes = int64(fileStoreMsgSizeRaw(3, 0, 1024*1024))
 		})
 	})
@@ -11909,24 +11911,25 @@ func TestJetStreamFileStoreSubjectsRemovedAfterSecureErase(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	ctx := context.Background()
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"test.*"},
-		Storage:  nats.FileStorage,
+		Storage:  jetstream.FileStorage,
 	})
 	require_NoError(t, err)
 
-	_, err = js.Publish("test.1", []byte("msg1"))
+	_, err = js.Publish(ctx, "test.1", []byte("msg1"))
 	require_NoError(t, err)
-	_, err = js.Publish("test.2", []byte("msg2"))
+	_, err = js.Publish(ctx, "test.2", []byte("msg2"))
 	require_NoError(t, err)
-	_, err = js.Publish("test.3", []byte("msg3"))
+	_, err = js.Publish(ctx, "test.3", []byte("msg3"))
 	require_NoError(t, err)
 
-	si, err := js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	si, err := stream.Info(ctx, jetstream.WithSubjectFilter(">"))
 	require_NoError(t, err)
 	require_Equal(t, si.State.NumSubjects, 3)
 	require_Len(t, len(si.State.Subjects), 3)
@@ -11935,9 +11938,9 @@ func TestJetStreamFileStoreSubjectsRemovedAfterSecureErase(t *testing.T) {
 	// corrupt the sm.subj from the shallow cache lookup. We would then pass the
 	// corrupted subject into removeSeqPerSubject() & removePerSubject(), resulting
 	// in them being no-ops. This is now fixed.
-	require_NoError(t, js.SecureDeleteMsg("TEST", 1))
+	require_NoError(t, stream.SecureDeleteMsg(ctx, 1))
 
-	si, err = js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	si, err = stream.Info(ctx, jetstream.WithSubjectFilter(">"))
 	require_NoError(t, err)
 	require_Equal(t, si.State.NumSubjects, 2)
 	require_Len(t, len(si.State.Subjects), 2)
