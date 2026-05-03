@@ -216,6 +216,14 @@ o_req -new -key "$SK_NOIP" -out "$BASE.csr" -subj "$COMMON_SUBJECT/CN=localhost"
 add_delete "$BASE.csr"
 sign_csr "DNS:localhost" -in "$BASE.csr" -out "$BASE.pem" -extensions nats_server
 
+echo
+readonly SK_NOSUBJ=server-key-nosubj.pem
+BASE=server-nosubj
+ensure_keyfile "$SK_NOSUBJ" "server key, no subject"
+o_req -new -key "$SK_NOSUBJ" -out "$BASE.csr" -subj "/"
+add_delete "$BASE.csr"
+sign_csr "DNS:localhost" -in "$BASE.csr" -out "$BASE.pem" -extensions nats_server
+
 for SRV in srva srvb; do
   echo
   KEY="${SRV}-key.pem"
