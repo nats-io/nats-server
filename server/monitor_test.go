@@ -440,6 +440,7 @@ func TestMonitorConnzBadParams(t *testing.T) {
 	readBodyEx(t, url+"offset=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"limit=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"state=xxx", http.StatusBadRequest, textPlain)
+	readBodyEx(t, url+"testpub=foo", http.StatusBadRequest, textPlain)
 }
 
 func TestMonitorConnzWithSubs(t *testing.T) {
