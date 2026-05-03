@@ -395,6 +395,46 @@ func TestAuthCalloutBasics(t *testing.T) {
 	}
 }
 
+func TestAuthCalloutConfiguredUserBypassesCallout(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		authorization {
+			timeout: 1s
+			users: [
+				{ user: "auth", password: "pwd" }
+				{ user: "local", password: "pwd" }
+			]
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				# users that will power the auth callout service.
+				auth_users: [ auth ]
+			}
+		}
+	`
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		m.Respond(nil)
+	}
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	// Configured user should authenticate locally and not be delegated.
+	nc := at.Connect(nats.UserInfo("local", "pwd"))
+	defer nc.Close()
+	if got := atomic.LoadUint32(&callouts); got != 0 {
+		t.Fatalf("Expected no auth callout for configured user, got %v", got)
+	}
+
+	// Unknown users should still use callout (and fail since handler returns nil).
+	at.RequireConnectError(nats.UserInfo("unknown", "pwd"))
+	if got := atomic.LoadUint32(&callouts); got == 0 {
+		t.Fatal("Expected auth callout to be invoked for unknown user")
+	}
+}
+
 func TestAuthCalloutMQTTJwtPassedInConnectOptions(t *testing.T) {
 	storeDir := t.TempDir()
 	conf := fmt.Sprintf(`
