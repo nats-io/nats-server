@@ -5180,9 +5180,12 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 		mset.clsMu.RUnlock()
 	} else if md < 0 {
 		// Batch decrements we need to force consumers to re-calculate num pending.
+		var ss StreamState
+		mset.store.FastState(&ss)
 		mset.clsMu.RLock()
 		for _, o := range mset.cList {
 			o.streamNumPendingLocked()
+			o.removeRedeliveredBelow(ss.FirstSeq)
 		}
 		mset.clsMu.RUnlock()
 	}

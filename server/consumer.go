@@ -3246,6 +3246,24 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 	return o.cfg.AckWait + ackWaitDelay
 }
 
+func (o *consumer) removeRedeliveredBelow(seq uint64) {
+	if seq == 0 {
+		return
+	}
+	o.mu.Lock()
+	for sseq := range o.rdc {
+		if sseq < seq {
+			delete(o.rdc, sseq)
+			o.removeFromRedeliverQueue(sseq)
+		}
+	}
+	o.mu.Unlock()
+
+	if o.store != nil {
+		o.store.RemoveRedeliveredBelow(seq)
+	}
+}
+
 // Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
 // Lock should be held.
 func (o *consumer) checkRedelivered() {

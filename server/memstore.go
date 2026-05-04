@@ -2661,6 +2661,19 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 	return nil
 }
 
+func (o *consumerMemStore) RemoveRedeliveredBelow(seq uint64) {
+	if seq == 0 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for s := range o.state.Redelivered {
+		if s < seq {
+			delete(o.state.Redelivered, s)
+		}
+	}
+}
+
 func (o *consumerMemStore) UpdateConfig(cfg *ConsumerConfig) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()

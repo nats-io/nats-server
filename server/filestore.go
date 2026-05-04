@@ -12899,6 +12899,24 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	return nil
 }
 
+func (o *consumerFileStore) RemoveRedeliveredBelow(seq uint64) {
+	if seq == 0 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var removed bool
+	for s := range o.state.Redelivered {
+		if s < seq {
+			delete(o.state.Redelivered, s)
+			removed = true
+		}
+	}
+	if removed {
+		o.kickFlusher()
+	}
+}
+
 const seqsHdrSize = 6*binary.MaxVarintLen64 + hdrLen
 
 // Encode our consumer state, version 2.
