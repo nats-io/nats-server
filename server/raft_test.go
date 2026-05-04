@@ -2870,6 +2870,42 @@ func TestNRGLoadLastSnapshotCleansLegacyZeroIndexSnapshot(t *testing.T) {
 	require_True(t, os.IsNotExist(err))
 }
 
+func TestNRGSetupLastSnapshotIgnoresTmpFile(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Make a snapshot file
+	snapDir := filepath.Join(n.sd, snapshotsDir)
+	require_NoError(t, os.MkdirAll(snapDir, defaultDirPerms))
+
+	snap := &snapshot{
+		lastTerm:  1,
+		lastIndex: 1,
+		peerstate: encodePeerState(n.currentPeerState()),
+		data:      []byte("snapshot"),
+	}
+
+	sfile := filepath.Join(snapDir, fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex))
+	require_NoError(t, os.WriteFile(sfile, n.encodeSnapshot(snap), defaultFilePerms))
+
+	// Make a empty snapshot file with a higher index, and extension
+	// .tmp to simulate the intermediate step in writeAtomically.
+	tmpSnap := filepath.Join(snapDir, fmt.Sprintf(snapFileT, uint64(1), uint64(2))+".tmp")
+	require_NoError(t, os.WriteFile(tmpSnap, nil, defaultFilePerms))
+
+	// If bug is present: setupLastSnapshot() selects
+	// the higher numbered snapshot file, even if it
+	// has the .tmp extension. The presence of a .tmp
+	// snapshot file means the server crashed, preventing
+	// writeAtomically() to finish. The contents of a
+	// .tmp snapshot file may be incomplete.
+	// Verify that setupLastSnapshot selects the "good"
+	// snapshot.
+	err := n.setupLastSnapshot()
+	require_NoError(t, err)
+	require_Equal(t, n.snapfile, sfile)
+}
+
 func TestNRGKeepRunningOnServerShutdown(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
