@@ -12832,13 +12832,15 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 		return ErrNoAckPolicy
 	}
 
+	// We do this regardless.
+	delete(o.state.Redelivered, sseq)
+
 	// On restarts the old leader may get a replay from the raft logs that are old.
 	if dseq <= o.state.AckFloor.Consumer {
 		return nil
 	}
 
 	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
-		delete(o.state.Redelivered, sseq)
 		return ErrStoreMsgNotFound
 	}
 
@@ -12892,8 +12894,6 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 			}
 		}
 	}
-	// We do these regardless.
-	delete(o.state.Redelivered, sseq)
 
 	o.kickFlusher()
 	return nil

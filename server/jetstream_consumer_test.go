@@ -11728,3 +11728,88 @@ func TestJetStreamConsumerWQMaxDeliveryAckFloorAdvancesWithPending(t *testing.T)
 	// Without the fix asflr stalls at 0 even though seqs 1-3 are dead.
 	require_Equal(t, asflr, 3)
 }
+
+func TestJetStreamConsumerWQMaxDeliveryRdcCleanedOnMaxAge(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+		MaxAge:    750 * time.Millisecond,
+	})
+	require_NoError(t, err)
+
+	for range 3 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.MaxDeliver(2),
+		nats.AckExplicit(),
+		nats.AckWait(200*time.Millisecond),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Burn through MaxDeliver for all 3 messages.
+	for range 2 {
+		msgs, err := sub.Fetch(3, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 3)
+	}
+	_, err = sub.Fetch(1, nats.MaxWait(300*time.Millisecond))
+	require_Error(t, err, nats.ErrTimeout)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// rdc preserved while the messages still exist in the stream so that
+	// needAck keeps the messages "interesting" for out-of-band inspection.
+	o.mu.RLock()
+	rdc := len(o.rdc)
+	o.mu.RUnlock()
+	require_Equal(t, rdc, 3)
+
+	// Wait for maxAge to expire all 3 messages from the store.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		var state StreamState
+		mset.store.FastState(&state)
+		if state.Msgs != 0 {
+			return fmt.Errorf("expected stream empty, still has %d msgs", state.Msgs)
+		}
+		return nil
+	})
+
+	// rdc should now be cleaned up via decStreamPending as each message was
+	// removed from the store. Verify both the in-memory rdc and the persistent
+	// state.Redelivered are cleaned (the latter is what an R3 follower has).
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		o.mu.RLock()
+		n := len(o.rdc)
+		store := o.store
+		o.mu.RUnlock()
+		if n != 0 {
+			return fmt.Errorf("expected in-memory rdc to be empty after maxAge, got %d entries", n)
+		}
+		state, err := store.State()
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			return nil
+		}
+		if nStore := len(state.Redelivered); nStore != 0 {
+			return fmt.Errorf("expected store state.Redelivered to be empty after maxAge, got %d entries", nStore)
+		}
+		return nil
+	})
+}
