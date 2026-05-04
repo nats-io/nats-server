@@ -12070,3 +12070,83 @@ func TestJetStreamConsumerCheckRedeliveredUpdatesRdc(t *testing.T) {
 	o.mu.Unlock()
 	require_Equal(t, rdcLen, 0)
 }
+
+func TestJetStreamConsumerPurgeCleanupIsReplicated(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.AckExplicit(),
+		nats.AckWait(time.Hour),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// All 5 messages delivered, none acked: state.Pending={1..5} on every replica.
+	msgs, err := sub.Fetch(5, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 5)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
+				return fmt.Errorf("consumer not found on %s", s.Name())
+			}
+			state, err := o.store.State()
+			if err != nil {
+				return err
+			}
+			if len(state.Pending) != 5 {
+				return fmt.Errorf("server %s state.Pending=%d (want 5)", s.Name(), len(state.Pending))
+			}
+		}
+		return nil
+	})
+
+	// Purge the stream. On the leader, o.purge() clears in-memory pending+rdc
+	// and proposes ack updates so followers also clear their persistent state.Pending.
+	require_NoError(t, js.PurgeStream("TEST"))
+
+	// All replicas should have empty state.Pending, since the purge cleanup was replicated.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
+				return fmt.Errorf("consumer not found on %s", s.Name())
+			}
+			state, err := o.store.State()
+			if err != nil {
+				return err
+			}
+			if len(state.Pending) != 0 {
+				return fmt.Errorf("server %s state.Pending=%d (want 0)", s.Name(), len(state.Pending))
+			}
+		}
+		return nil
+	})
+}
