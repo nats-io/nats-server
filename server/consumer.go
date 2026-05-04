@@ -1832,6 +1832,7 @@ func (o *consumer) setLeader(isLeader bool) error {
 		stopAndClearTimer(&o.uptmr)
 		// Make sure to clear out any re-deliver queues
 		o.stopAndClearPtmr()
+		o.rdc = nil
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
@@ -2342,6 +2343,7 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 		if p, ok := o.pending[seq]; ok && p != nil {
 			delete(o.pending, seq)
 			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+			o.moveAckFloor(p.Sequence, seq)
 		}
 		// Ensure redelivered state is set, if not already.
 		if o.rdc == nil {
@@ -3245,14 +3247,42 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 	return o.cfg.AckWait + ackWaitDelay
 }
 
-// Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
-// Lock should be held.
-func (o *consumer) checkRedelivered() {
-	var shouldUpdateState bool
+func (o *consumer) removeRedeliveredBelow(seq uint64) {
+	if seq == 0 {
+		return
+	}
+	o.mu.Lock()
 	for sseq := range o.rdc {
-		if sseq <= o.asflr {
+		if sseq < seq {
 			delete(o.rdc, sseq)
 			o.removeFromRedeliverQueue(sseq)
+		}
+	}
+	o.mu.Unlock()
+
+	if o.store != nil {
+		o.store.RemoveRedeliveredBelow(seq)
+	}
+}
+
+// checkRedelivered drops rdq entries at/below asflr or below stream's first sequence.
+// But rdc is kept until the message leaves the stream: needAck relies on rdc to mark
+// messages past MaxDeliver.
+// Lock should be held.
+func (o *consumer) checkRedelivered() {
+	if o.mset == nil {
+		return
+	}
+	var ss StreamState
+	o.mset.store.FastState(&ss)
+
+	var shouldUpdateState bool
+	for sseq := range o.rdc {
+		if sseq <= o.asflr || sseq < ss.FirstSeq {
+			o.removeFromRedeliverQueue(sseq)
+		}
+		if sseq < ss.FirstSeq {
+			delete(o.rdc, sseq)
 			shouldUpdateState = true
 		}
 	}
@@ -3641,22 +3671,7 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
-
-			// Only move floors if we matched an existing pending.
-			if len(o.pending) == 0 {
-				o.adflr = o.dseq - 1
-				o.asflr = o.sseq - 1
-			} else if dseq == o.adflr+1 {
-				o.adflr, o.asflr = dseq, sseq
-				for ss := sseq + 1; ss < o.sseq; ss++ {
-					if p, ok := o.pending[ss]; ok {
-						if p.Sequence > 0 {
-							o.adflr, o.asflr = p.Sequence-1, ss-1
-						}
-						break
-					}
-				}
-			}
+			o.moveAckFloor(dseq, sseq)
 		}
 		delete(o.rdc, sseq)
 		o.removeFromRedeliverQueue(sseq)
@@ -3725,6 +3740,25 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 		o.signalNewMessages()
 	}
 	return ackInPlace
+}
+
+// Lock should be held.
+func (o *consumer) moveAckFloor(dseq, sseq uint64) {
+	// Only move floors if we matched an existing pending.
+	if len(o.pending) == 0 {
+		o.adflr = o.dseq - 1
+		o.asflr = o.sseq - 1
+	} else if dseq == o.adflr+1 {
+		o.adflr, o.asflr = dseq, sseq
+		for ss := sseq + 1; ss < o.sseq; ss++ {
+			if p, ok := o.pending[ss]; ok {
+				if p.Sequence > 0 {
+					o.adflr, o.asflr = p.Sequence-1, ss-1
+				}
+				break
+			}
+		}
+	}
 }
 
 // Determine if this is a truly filtered consumer. Modern clients will place filtered subjects
@@ -4764,6 +4798,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				if p, ok := o.pending[seq]; ok && p != nil {
 					delete(o.pending, seq)
 					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+					o.moveAckFloor(p.Sequence, seq)
 				}
 				continue
 			}
@@ -6405,9 +6440,9 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 				}
 				delete(o.pending, seq)
 				delete(o.rdc, seq)
+				o.updateAcks(p.Sequence, seq, _EMPTY_)
 				// rdq handled below.
-			}
-			if isWider && store != nil {
+			} else if isWider && store != nil {
 				// Our filtered subject, which could be all, is wider than the underlying purge.
 				// We need to check if the pending items left are still valid.
 				var smv StoreMsg
@@ -6420,6 +6455,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 					}
 					delete(o.pending, seq)
 					delete(o.rdc, seq)
+					o.updateAcks(p.Sequence, seq, _EMPTY_)
 				}
 			}
 		}
@@ -6778,6 +6814,10 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	var rdc uint64
 	if wasPending {
 		rdc = o.deliveryCount(sseq)
+	} else if _, ok := o.rdc[sseq]; ok && o.isLeader() {
+		delete(o.rdc, sseq)
+		// Pass 0 as the delivered sequence to only remove the redelivered state.
+		o.updateAcks(0, sseq, _EMPTY_)
 	}
 
 	o.mu.Unlock()
