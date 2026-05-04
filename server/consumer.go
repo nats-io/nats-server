@@ -6439,9 +6439,9 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 				}
 				delete(o.pending, seq)
 				delete(o.rdc, seq)
+				o.updateAcks(p.Sequence, seq, _EMPTY_)
 				// rdq handled below.
-			}
-			if isWider && store != nil {
+			} else if isWider && store != nil {
 				// Our filtered subject, which could be all, is wider than the underlying purge.
 				// We need to check if the pending items left are still valid.
 				var smv StoreMsg
@@ -6454,6 +6454,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 					}
 					delete(o.pending, seq)
 					delete(o.rdc, seq)
+					o.updateAcks(p.Sequence, seq, _EMPTY_)
 				}
 			}
 		}
