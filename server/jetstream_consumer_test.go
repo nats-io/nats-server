@@ -12150,3 +12150,78 @@ func TestJetStreamConsumerPurgeCleanupIsReplicated(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamConsumerStepDownResetsPendingAndRdc(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for range 3 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(
+		"foo",
+		"CONSUMER",
+		nats.ManualAck(),
+		nats.AckExplicit(),
+		nats.AckWait(time.Hour),
+	)
+	require_NoError(t, err)
+
+	msgs, err := sub.Fetch(3)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 3)
+
+	// NAK each message so it gets redelivered, which bumps o.rdc through the normal path.
+	for _, m := range msgs {
+		require_NoError(t, m.Nak())
+	}
+	msgs, err = sub.Fetch(3)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 3)
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	o.mu.RLock()
+	pending, rdc := len(o.pending), len(o.rdc)
+	o.mu.RUnlock()
+	require_Equal(t, pending, 3)
+	require_Equal(t, rdc, 3)
+
+	// Stepping down the consumer leader must clear both o.pending and o.rdc.
+	n := o.raftNode()
+	require_NotNil(t, n)
+	require_NoError(t, n.StepDown())
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		o.mu.RLock()
+		pending, rdc, isLeader := o.pending, o.rdc, o.isLeader()
+		o.mu.RUnlock()
+		if isLeader {
+			return fmt.Errorf("consumer is still leader")
+		}
+		if pending != nil {
+			return fmt.Errorf("expected o.pending to be nil, got %d entries", len(pending))
+		}
+		if rdc != nil {
+			return fmt.Errorf("expected o.rdc to be nil, got %d entries", len(rdc))
+		}
+		return nil
+	})
+}
