@@ -3264,14 +3264,24 @@ func (o *consumer) removeRedeliveredBelow(seq uint64) {
 	}
 }
 
-// Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
+// checkRedelivered drops rdq entries at/below asflr or below stream's first sequence.
+// But rdc is kept until the message leaves the stream: needAck relies on rdc to mark
+// messages past MaxDeliver.
 // Lock should be held.
 func (o *consumer) checkRedelivered() {
+	if o.mset == nil {
+		return
+	}
+	var ss StreamState
+	o.mset.store.FastState(&ss)
+
 	var shouldUpdateState bool
 	for sseq := range o.rdc {
-		if sseq <= o.asflr {
-			delete(o.rdc, sseq)
+		if sseq <= o.asflr || sseq < ss.FirstSeq {
 			o.removeFromRedeliverQueue(sseq)
+		}
+		if sseq < ss.FirstSeq {
+			delete(o.rdc, sseq)
 			shouldUpdateState = true
 		}
 	}
