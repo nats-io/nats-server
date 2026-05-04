@@ -6784,6 +6784,10 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	var rdc uint64
 	if wasPending {
 		rdc = o.deliveryCount(sseq)
+	} else if _, ok := o.rdc[sseq]; ok && o.isLeader() {
+		delete(o.rdc, sseq)
+		// Pass 0 as the delivered sequence to only remove the redelivered state.
+		o.updateAcks(0, sseq, _EMPTY_)
 	}
 
 	o.mu.Unlock()
