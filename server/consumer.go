@@ -1832,6 +1832,7 @@ func (o *consumer) setLeader(isLeader bool) error {
 		stopAndClearTimer(&o.uptmr)
 		// Make sure to clear out any re-deliver queues
 		o.stopAndClearPtmr()
+		o.rdc = nil
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
