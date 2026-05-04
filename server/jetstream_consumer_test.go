@@ -11813,3 +11813,187 @@ func TestJetStreamConsumerWQMaxDeliveryRdcCleanedOnMaxAge(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamConsumerMaxDeliveryRdcCleanedOnStreamPurge(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	for range 3 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.MaxDeliver(2),
+		nats.AckExplicit(),
+		nats.AckWait(200*time.Millisecond),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Burn through MaxDeliver. Populates state.Redelivered on every replica
+	// via the dc>maxdc UpdateDelivered op (delete state.Pending, set state.Redelivered).
+	for range 2 {
+		msgs, err := sub.Fetch(3, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 3)
+	}
+	_, err = sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Confirm every replica has the 3 state.Redelivered entries, and the leader
+	// also has the 3 in-memory rdc entries populated by hasMaxDeliveries.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
+				return fmt.Errorf("consumer not found on %s", s.Name())
+			}
+			state, err := o.store.State()
+			if err != nil {
+				return err
+			}
+			if state == nil || len(state.Redelivered) != 3 {
+				return fmt.Errorf("server %s has %d state.Redelivered entries (expected 3)", s.Name(), len(state.Redelivered))
+			}
+			if o.IsLeader() {
+				o.mu.RLock()
+				n := len(o.rdc)
+				o.mu.RUnlock()
+				if n != 3 {
+					return fmt.Errorf("leader %s has %d in-memory rdc entries (expected 3)", s.Name(), n)
+				}
+			}
+		}
+		return nil
+	})
+
+	// Purge the stream. Advances FirstSeq past the 3 burned sequences on
+	// every replica via the propagated streamMsgPurge op.
+	require_NoError(t, js.PurgeStream("TEST"))
+
+	// Every replica's state.Redelivered should now be empty (all entries are
+	// below the new stream FirstSeq). On every replica the in-memory rdc must
+	// also be empty: on the leader cleared via o.purge() + removeRedeliveredBelow,
+	// on followers via removeRedeliveredBelow from storeUpdates' batch path.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
+				return fmt.Errorf("consumer not found on %s", s.Name())
+			}
+			state, err := o.store.State()
+			if err != nil {
+				return err
+			}
+			if n := len(state.Redelivered); n != 0 {
+				return fmt.Errorf("server %s has %d state.Redelivered entries left after purge", s.Name(), n)
+			}
+			o.mu.RLock()
+			n := len(o.rdc)
+			o.mu.RUnlock()
+			if n != 0 {
+				return fmt.Errorf("server %s has %d in-memory rdc entries left after purge", s.Name(), n)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamConsumerMaxDeliveryRdcNoLeakOnBatchRemoval(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.MaxDeliver(2),
+		nats.AckExplicit(),
+		nats.AckWait(200*time.Millisecond),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Burn all 5 messages through MaxDeliver. After this, o.pending is empty
+	// and o.rdc has entries {1..5}. State.Redelivered also has {1..5}.
+	for range 2 {
+		msgs, err := sub.Fetch(5, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 5)
+	}
+	_, err = sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_Error(t, err, nats.ErrTimeout)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Sanity: rdc populated, pending empty.
+	o.mu.RLock()
+	rdc, pending := len(o.rdc), len(o.pending)
+	o.mu.RUnlock()
+	require_Equal(t, rdc, 5)
+	require_Equal(t, pending, 0)
+
+	// Compact the stream store directly. This invokes the scb with
+	// (-N, -bytes, 0, _EMPTY_), which lands in storeUpdates' md<0 batch branch
+	// — NOT the per-message decStreamPending path.
+	_, err = mset.store.Compact(6)
+	require_NoError(t, err)
+
+	// Persistent state.Redelivered is cleaned via removeRedeliveredBelow.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		state, err := o.store.State()
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			return nil
+		}
+		if n := len(state.Redelivered); n != 0 {
+			return fmt.Errorf("expected state.Redelivered cleaned, got %d entries", n)
+		}
+		return nil
+	})
+
+	// But the leader's in-memory o.rdc is NOT cleaned — entries 1..5 are all
+	// below the new FirstSeq=6, yet they remain in the map.
+	o.mu.RLock()
+	rdcAfter := len(o.rdc)
+	o.mu.RUnlock()
+	require_Equal(t, rdcAfter, 0)
+}
