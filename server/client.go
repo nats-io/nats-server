@@ -5269,6 +5269,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Declared here because of goto.
 	var queues [][]byte
 
+	matchTagsEnabled := c.srv.matchTagsEnabled.Load()
+
 	var leafOrigin string
 	switch c.kind {
 	case ROUTER:
@@ -5346,6 +5348,56 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				}
 			}
 			qsubs = ql
+		} else if matchTagsEnabled && len(qsubs) > 1 {
+			// Pre-scan to a unified locality-local pool: local CLIENTs
+			// plus routed CLIENTs whose remote server satisfies this
+			// server's matching_tags. When non-empty, restrict the
+			// random pick (sindex below) to this pool so traffic stays
+			// local and balances across local subs and matching peers.
+			// Empty pool => fall through to the original cluster-wide
+			// selection.
+			//
+			// We also remember the first non-matching peer ROUTER as a
+			// fallback rsub. If every candidate in the pool fails
+			// deliverMsg (slow consumer / closed sub), the post-loop
+			// addSubToRouteTargets forwards to that peer instead of
+			// dropping the message. The delivery loop clears rsub on
+			// successful local delivery and overwrites it when it
+			// picks a matching peer, so locality and route-beats-leaf
+			// priorities are preserved.
+			var _local [32]*subscription
+			local := _local[:0]
+			var fallback *subscription
+			isSpokeLeaf := src == LEAF && c.isSpokeLeafNode()
+			for i := 0; i < len(qsubs); i++ {
+				s := qsubs[i]
+				if s == nil {
+					continue
+				}
+				switch s.client.kind {
+				case ROUTER:
+					if isSpokeLeaf {
+						continue
+					}
+					if len(s.origin) == 0 {
+						if s.client.route.tagsMatch.Load() {
+							local = append(local, s)
+						} else if fallback == nil {
+							fallback = s
+						}
+					}
+				case LEAF:
+					// LEAFs are not tagged; never treat as locality-local.
+				default:
+					local = append(local, s)
+				}
+			}
+			if len(local) > 0 {
+				qsubs = local
+				if fallback != nil {
+					rsub = fallback
+				}
+			}
 		}
 
 		sindex := 0

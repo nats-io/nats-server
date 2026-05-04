@@ -148,6 +148,7 @@ type Info struct {
 	RouteAccount  string             `json:"route_account,omitempty"`
 	RouteAccReqID string             `json:"route_acc_add_reqid,omitempty"`
 	GossipMode    byte               `json:"gossip_mode,omitempty"`
+	Tags          []string           `json:"tags,omitempty"` // Route-only — must not leak to client/leaf/gateway Info.
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
@@ -377,6 +378,11 @@ type Server struct {
 	// Controls whether or not the account NRG capability is set in statsz.
 	// Currently used by unit tests to simulate nodes not supporting account NRG.
 	accountNRGAllowed atomic.Bool
+
+	// Cached toggle for cluster.matching_tags so the route delivery
+	// hot path can skip the optsMu RLock in getOpts() per dispatch.
+	// Updated on startup and on cluster reload.
+	matchTagsEnabled atomic.Bool
 
 	// List of proxies trusted keys in `KeyPair` form so we can do signature
 	// verification when processing incoming proxy connections.
@@ -776,6 +782,9 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// By default we'll allow account NRG.
 	s.accountNRGAllowed.Store(true)
+
+	// Seed the matching_tags hot-path toggle from the initial opts.
+	s.matchTagsEnabled.Store(len(opts.Cluster.MatchingTags) > 0)
 
 	// Fill up the maximum in flight syncRequests for this server.
 	// Used in JetStream catchup semantics.
