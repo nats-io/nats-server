@@ -11667,3 +11667,64 @@ func TestJetStreamConsumerAckFlowControlBasics(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamConsumerWQMaxDeliveryAckFloorAdvancesWithPending(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	for range 3 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.MaxDeliver(2),
+		nats.AckExplicit(),
+		nats.AckWait(200*time.Millisecond),
+	)
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	for range 2 {
+		msgs, err := sub.Fetch(3, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 3)
+	}
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Wait for AckWait to elapse so checkPending adds 1, 2, 3 to the redeliver queue.
+	time.Sleep(300 * time.Millisecond)
+
+	// This fetch will burn 1, 2, 3 in the redelivery loop and then return msg 4
+	// from the store.
+	msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	o.mu.RLock()
+	pending, rdc, asflr := len(o.pending), len(o.rdc), o.asflr
+	o.mu.RUnlock()
+	// msg 4 still pending, rdc retained for the burned 1, 2, 3.
+	require_Equal(t, pending, 1)
+	require_Equal(t, rdc, 3)
+	// Without the fix asflr stalls at 0 even though seqs 1-3 are dead.
+	require_Equal(t, asflr, 3)
+}

@@ -2342,6 +2342,7 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 		if p, ok := o.pending[seq]; ok && p != nil {
 			delete(o.pending, seq)
 			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+			o.moveAckFloor(p.Sequence, seq)
 		}
 		// Ensure redelivered state is set, if not already.
 		if o.rdc == nil {
@@ -3641,22 +3642,7 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
-
-			// Only move floors if we matched an existing pending.
-			if len(o.pending) == 0 {
-				o.adflr = o.dseq - 1
-				o.asflr = o.sseq - 1
-			} else if dseq == o.adflr+1 {
-				o.adflr, o.asflr = dseq, sseq
-				for ss := sseq + 1; ss < o.sseq; ss++ {
-					if p, ok := o.pending[ss]; ok {
-						if p.Sequence > 0 {
-							o.adflr, o.asflr = p.Sequence-1, ss-1
-						}
-						break
-					}
-				}
-			}
+			o.moveAckFloor(dseq, sseq)
 		}
 		delete(o.rdc, sseq)
 		o.removeFromRedeliverQueue(sseq)
@@ -3725,6 +3711,25 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 		o.signalNewMessages()
 	}
 	return ackInPlace
+}
+
+// Lock should be held.
+func (o *consumer) moveAckFloor(dseq, sseq uint64) {
+	// Only move floors if we matched an existing pending.
+	if len(o.pending) == 0 {
+		o.adflr = o.dseq - 1
+		o.asflr = o.sseq - 1
+	} else if dseq == o.adflr+1 {
+		o.adflr, o.asflr = dseq, sseq
+		for ss := sseq + 1; ss < o.sseq; ss++ {
+			if p, ok := o.pending[ss]; ok {
+				if p.Sequence > 0 {
+					o.adflr, o.asflr = p.Sequence-1, ss-1
+				}
+				break
+			}
+		}
+	}
 }
 
 // Determine if this is a truly filtered consumer. Modern clients will place filtered subjects
@@ -4764,6 +4769,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				if p, ok := o.pending[seq]; ok && p != nil {
 					delete(o.pending, seq)
 					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+					o.moveAckFloor(p.Sequence, seq)
 				}
 				continue
 			}
