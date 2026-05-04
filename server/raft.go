@@ -1610,6 +1610,9 @@ func termAndIndexFromSnapFile(sn string) (term, index uint64, err error) {
 	if n, err := fmt.Sscanf(fn, snapFileT, &term, &index); err != nil || n != 2 {
 		return 0, 0, errBadSnapName
 	}
+	if fn != fmt.Sprintf(snapFileT, term, index) {
+		return 0, 0, errBadSnapName
+	}
 	return term, index, nil
 }
 
