@@ -11997,3 +11997,76 @@ func TestJetStreamConsumerMaxDeliveryRdcNoLeakOnBatchRemoval(t *testing.T) {
 	o.mu.RUnlock()
 	require_Equal(t, rdcAfter, 0)
 }
+
+func TestJetStreamConsumerCheckRedeliveredUpdatesRdc(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.PullSubscribe(_EMPTY_, "CONSUMER",
+		nats.BindStream("TEST"),
+		nats.MaxDeliver(2),
+		nats.AckExplicit(),
+		nats.AckWait(time.Second),
+	)
+	require_NoError(t, err)
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Simulate the post-MaxDeliver state for seqs 1, 2, 3: rdc populated,
+	// rdq populated, ack floor advanced past them. seq 4 represents an
+	// entry above asflr that must remain untouched.
+	o.mu.Lock()
+	o.rdc = map[uint64]uint64{1: 2, 2: 2, 3: 2, 4: 1}
+	o.addToRedeliverQueue(1, 2, 3, 4)
+	o.asflr = 3
+	o.checkRedelivered()
+	rdcLen := len(o.rdc)
+	_, has1 := o.rdc[1]
+	_, has2 := o.rdc[2]
+	_, has3 := o.rdc[3]
+	_, has4 := o.rdc[4]
+	on1 := o.onRedeliverQueue(1)
+	on2 := o.onRedeliverQueue(2)
+	on3 := o.onRedeliverQueue(3)
+	on4 := o.onRedeliverQueue(4)
+	o.mu.Unlock()
+
+	// rdc entries are preserved — the messages are still in the stream.
+	require_Equal(t, rdcLen, 4)
+	require_True(t, has1)
+	require_True(t, has2)
+	require_True(t, has3)
+	require_True(t, has4)
+	// rdq is cleaned for sseqs <= asflr; the entry above asflr stays.
+	require_False(t, on1)
+	require_False(t, on2)
+	require_False(t, on3)
+	require_True(t, on4)
+
+	// Purge the stream so FirstSeq advances past 1, 2, 3 (and 4). The next
+	// checkRedelivered must drop those rdc entries.
+	require_NoError(t, js.PurgeStream("TEST"))
+
+	o.mu.Lock()
+	o.checkRedelivered()
+	rdcLen = len(o.rdc)
+	o.mu.Unlock()
+	require_Equal(t, rdcLen, 0)
+}
