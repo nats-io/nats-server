@@ -478,6 +478,8 @@ const (
 	switchToCompression readCacheFlag = 1 << 1
 )
 
+const readLoopTimingBuckets = 5
+
 const sysGroup = "_sys_"
 
 // Used in readloop to cache hot subject lookups and group statistics.
@@ -509,6 +511,24 @@ type readCache struct {
 
 	// Total time stalled so far for readLoop processing.
 	tst time.Duration
+
+	// Temporary readloop diagnostics.
+	rlh [readLoopTimingBuckets]uint64
+}
+
+func (rc *readCache) recordReadLoopDuration(d time.Duration) {
+	switch {
+	case d < 500*time.Millisecond:
+		rc.rlh[0]++
+	case d < 1000*time.Millisecond:
+		rc.rlh[1]++
+	case d < 1500*time.Millisecond:
+		rc.rlh[2]++
+	case d < 2*time.Second:
+		rc.rlh[3]++
+	default:
+		rc.rlh[4]++
+	}
 }
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -1496,10 +1516,14 @@ func (c *client) readLoop(pre []byte) {
 				// decremented and their writeLoop signaled.
 				last := c.flushClients(0)
 				flushDur += time.Since(last)
-				if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
-					c.Warnf("Readloop processing time: total=%v parse=%v flush=%v msgs=%d bytes=%d subs=%d",
-						dur, parseDur, flushDur, c.in.msgs, c.in.bytes, c.in.subs)
+				dur := time.Since(c.in.start)
+				c.in.recordReadLoopDuration(dur)
+				if dur >= readLoopReportThreshold {
+					c.Warnf("Readloop processing time: total=%v parse=%v flush=%v msgs=%d bytes=%d subs=%d hist_lt500ms=%d hist_lt1000ms=%d hist_lt1500ms=%d hist_lt2000ms=%d hist_ge2000ms=%d",
+						dur, parseDur, flushDur, c.in.msgs, c.in.bytes, c.in.subs,
+						c.in.rlh[0], c.in.rlh[1], c.in.rlh[2], c.in.rlh[3], c.in.rlh[4])
 				}
+
 				// handled inline
 				if err != ErrMaxPayload && err != ErrAuthentication {
 					c.Error(err)
@@ -1600,9 +1624,12 @@ func (c *client) readLoop(pre []byte) {
 			return
 		}
 
-		if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
-			c.Warnf("Readloop processing time: total=%v parse=%v stats=%v flush=%v lock_wait=%v post=%v msgs=%d bytes=%d subs=%d",
-				dur, parseDur, statsDur, flushDur, lockWaitDur, postDur, c.in.msgs, c.in.bytes, c.in.subs)
+		dur := time.Since(c.in.start)
+		c.in.recordReadLoopDuration(dur)
+		if dur >= readLoopReportThreshold {
+			c.Warnf("Readloop processing time: total=%v parse=%v stats=%v flush=%v lock_wait=%v post=%v msgs=%d bytes=%d subs=%d hist_lt500ms=%d hist_lt1000ms=%d hist_lt1500ms=%d hist_lt2000ms=%d hist_ge2000ms=%d",
+				dur, parseDur, statsDur, flushDur, lockWaitDur, postDur, c.in.msgs, c.in.bytes, c.in.subs,
+				c.in.rlh[0], c.in.rlh[1], c.in.rlh[2], c.in.rlh[3], c.in.rlh[4])
 		}
 
 		// We could have had a read error from above but still read some data.
