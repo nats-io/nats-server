@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -274,64 +275,6 @@ func (at *authTest) Cleanup() {
 		at.srv.Shutdown()
 		removeFile(at.t, at.conf)
 	}
-}
-
-func TestAuthCalloutNoncePassthruBearerJWT(t *testing.T) {
-	conf := `
-        listen: "127.0.0.1:-1"
-        server_name: A
-        operator: eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJJVVRKUzU0NktUTzRQNFVUV0Y2WE5LTkdINUpBM1pXUjdZVzJURkhBRVRWWTREV1E3UUZBIiwiaWF0IjoxNzc1ODM0Njg4LCJpc3MiOiJPQTRDQ1NBMlhBWDZOTEhKNzNCR0Q3SkFZNjdTREIySVNUNEpNM1ZNNVY1RkxEWllGRDdWTFJaNyIsIm5hbWUiOiJNeU9wZXJhdG9yIiwic3ViIjoiT0E0Q0NTQTJYQVg2TkxISjczQkdEN0pBWTY3U0RCMklTVDRKTTNWTTVWNUZMRFpZRkQ3VkxSWjciLCJuYXRzIjp7InNpZ25pbmdfa2V5cyI6WyJPQ05CSU1ONVJRUDRCTFVYNEZXRVJKRlhPUkZQMk82VERBRTJCVVdYNUVBTEdCTFhVSFNOT0lQUSJdLCJhY2NvdW50X3NlcnZlcl91cmwiOiJuYXRzOi8vbG9jYWxob3N0OjQyMjIiLCJzeXN0ZW1fYWNjb3VudCI6IkFEU0FJNERUUDJEVFZOQzJBSDVLUks0QzVTVEE0SVE1RlNNN0I2UVpYVzNCT1VaNVhRRkhGVjRSIiwic3RyaWN0X3NpZ25pbmdfa2V5X3VzYWdlIjp0cnVlLCJ0eXBlIjoib3BlcmF0b3IiLCJ2ZXJzaW9uIjoyfX0.FVrvVqzMbZCZsH2UEcgvNjvUz3Otj4MfZVFLUGjV2hKFDLV63Y3uQIqih8a4nBAUcNPC-sTK5GnhdkcH3DW_DQ
-        system_account: ADSAI4DTP2DTVNC2AH5KRK4C5STA4IQ5FSM7B6QZXW3BOUZ5XQFHFV4R
-        resolver: MEMORY
-        resolver_preload: {
-            # SYS
-            ADSAI4DTP2DTVNC2AH5KRK4C5STA4IQ5FSM7B6QZXW3BOUZ5XQFHFV4R: eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJZQUdHQlpKNERaTVdQT0dTTVhQUDRVV0dXUUc0UUNKUkszVUhRWE1IS1RSMlRUTUZTTUhRIiwiaWF0IjoxNzc1ODM0Njg4LCJpc3MiOiJPQ05CSU1ONVJRUDRCTFVYNEZXRVJKRlhPUkZQMk82VERBRTJCVVdYNUVBTEdCTFhVSFNOT0lQUSIsIm5hbWUiOiJTWVMiLCJzdWIiOiJBRFNBSTREVFAyRFRWTkMyQUg1S1JLNEM1U1RBNElRNUZTTTdCNlFaWFczQk9VWjVYUUZIRlY0UiIsIm5hdHMiOnsiZXhwb3J0cyI6W3sibmFtZSI6ImFjY291bnQtbW9uaXRvcmluZy1zdHJlYW1zIiwic3ViamVjdCI6IiRTWVMuQUNDT1VOVC4qLlx1MDAzZSIsInR5cGUiOiJzdHJlYW0iLCJhY2NvdW50X3Rva2VuX3Bvc2l0aW9uIjozLCJkZXNjcmlwdGlvbiI6IkFjY291bnQgc3BlY2lmaWMgbW9uaXRvcmluZyBzdHJlYW0iLCJpbmZvX3VybCI6Imh0dHBzOi8vZG9jcy5uYXRzLmlvL25hdHMtc2VydmVyL2NvbmZpZ3VyYXRpb24vc3lzX2FjY291bnRzIn0seyJuYW1lIjoiYWNjb3VudC1tb25pdG9yaW5nLXNlcnZpY2VzIiwic3ViamVjdCI6IiRTWVMuUkVRLkFDQ09VTlQuKi4qIiwidHlwZSI6InNlcnZpY2UiLCJyZXNwb25zZV90eXBlIjoiU3RyZWFtIiwiYWNjb3VudF90b2tlbl9wb3NpdGlvbiI6NCwiZGVzY3JpcHRpb24iOiJSZXF1ZXN0IGFjY291bnQgc3BlY2lmaWMgbW9uaXRvcmluZyBzZXJ2aWNlcyBmb3I6IFNVQlNaLCBDT05OWiwgTEVBRlosIEpTWiBhbmQgSU5GTyIsImluZm9fdXJsIjoiaHR0cHM6Ly9kb2NzLm5hdHMuaW8vbmF0cy1zZXJ2ZXIvY29uZmlndXJhdGlvbi9zeXNfYWNjb3VudHMifV0sImxpbWl0cyI6eyJzdWJzIjotMSwiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJpbXBvcnRzIjotMSwiZXhwb3J0cyI6LTEsIndpbGRjYXJkcyI6dHJ1ZSwiY29ubiI6LTEsImxlYWYiOi0xfSwic2lnbmluZ19rZXlzIjpbIkFDWVRHUEtUNVVYR1dWRDQ0UVI0QllBSjNVM1VSWVNYRTNUNllNTE9YSVQ2VjNGQUxERVpST09BIl0sImRlZmF1bHRfcGVybWlzc2lvbnMiOnsicHViIjp7fSwic3ViIjp7fX0sImF1dGhvcml6YXRpb24iOnt9LCJ0eXBlIjoiYWNjb3VudCIsInZlcnNpb24iOjJ9fQ.cRx6dztXgu7GvTdPX4gZYVzp4_absTbPhLYGI2wWlJaMmNyk7NHeCjrG9jOblVVmm0j50z6i7c1q4b0xwf00CA
-            # AUTH
-            AAPYGIKL556K466JEXZYPWHGO7LZA45QLEBKKJ2QGPQGAZ5DV62TQTOD: eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJDQ0xER1k2UDNDUFFMRlhSRU0yUUpBNTJKRTVDS1JHM0U1NTdKSjdTTEFNUkYzSDNKMk5BIiwiaWF0IjoxNzc1ODM0Njg5LCJpc3MiOiJPQ05CSU1ONVJRUDRCTFVYNEZXRVJKRlhPUkZQMk82VERBRTJCVVdYNUVBTEdCTFhVSFNOT0lQUSIsIm5hbWUiOiJBVVRIIiwic3ViIjoiQUFQWUdJS0w1NTZLNDY2SkVYWllQV0hHTzdMWkE0NVFMRUJLS0oyUUdQUUdBWjVEVjYyVFFUT0QiLCJuYXRzIjp7ImxpbWl0cyI6eyJzdWJzIjotMSwiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJpbXBvcnRzIjotMSwiZXhwb3J0cyI6LTEsIndpbGRjYXJkcyI6dHJ1ZSwiY29ubiI6LTEsImxlYWYiOi0xLCJzdHJlYW1zIjotMSwiY29uc3VtZXIiOi0xLCJtYXhfYWNrX3BlbmRpbmciOi0xLCJtZW1fbWF4X3N0cmVhbV9ieXRlcyI6LTEsImRpc2tfbWF4X3N0cmVhbV9ieXRlcyI6LTF9LCJzaWduaW5nX2tleXMiOlsiQUFFUk5VN09ZM1haVTVKT0VGRUpTSk8yNFZITEdDT09BVzJERE1HVEdXRkpCU1ZJTVFSUFdaREUiXSwiZGVmYXVsdF9wZXJtaXNzaW9ucyI6eyJwdWIiOnt9LCJzdWIiOnt9fSwiYXV0aG9yaXphdGlvbiI6eyJhdXRoX3VzZXJzIjpbIlVDM1FBUVE3UVNTTkdWSTdTVU1GUFdGTFc0SzQ3T0oyTVlYSkpJWExIU0Q2N1dRTjIyUFJQQkczIl0sImFsbG93ZWRfYWNjb3VudHMiOlsiKiJdfSwidHlwZSI6ImFjY291bnQiLCJ2ZXJzaW9uIjoyfX0.LDvdKW7obcNabyVccdQB942v_VFsTwRTnsAadz0UaPbUSlOo-tWgoTmqznsrijyuuBzy6wl9LyuDWVeXs-L3BQ
-            # APP
-            ABD3HFCABJVXONMKEO5GP27J2YIT7EEYNUN5YPXQVBZCJXESTZASSWSA: eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJBS0dHV1lZQ1NHMjNENEJCUlJKVlMzVlozSUkzWlZXTVpRUjNOTU1DQ01ER000TUZMTzVBIiwiaWF0IjoxNzc1ODM0Njg5LCJpc3MiOiJPQ05CSU1ONVJRUDRCTFVYNEZXRVJKRlhPUkZQMk82VERBRTJCVVdYNUVBTEdCTFhVSFNOT0lQUSIsIm5hbWUiOiJBUFAiLCJzdWIiOiJBQkQzSEZDQUJKVlhPTk1LRU81R1AyN0oyWUlUN0VFWU5VTjVZUFhRVkJaQ0pYRVNUWkFTU1dTQSIsIm5hdHMiOnsibGltaXRzIjp7InN1YnMiOi0xLCJkYXRhIjotMSwicGF5bG9hZCI6LTEsImltcG9ydHMiOi0xLCJleHBvcnRzIjotMSwid2lsZGNhcmRzIjp0cnVlLCJjb25uIjotMSwibGVhZiI6LTEsInN0cmVhbXMiOi0xLCJjb25zdW1lciI6LTEsIm1heF9hY2tfcGVuZGluZyI6LTEsIm1lbV9tYXhfc3RyZWFtX2J5dGVzIjotMSwiZGlza19tYXhfc3RyZWFtX2J5dGVzIjotMX0sInNpZ25pbmdfa2V5cyI6WyJBQUkyWE5YQ09LMklZS1VOSlozSVE1Rk1LNDdLVVE1VzZGM1o1RUlHWk5PTUFETjI2R0VBVUZCQiJdLCJkZWZhdWx0X3Blcm1pc3Npb25zIjp7InB1YiI6e30sInN1YiI6e319LCJhdXRob3JpemF0aW9uIjp7fSwidHlwZSI6ImFjY291bnQiLCJ2ZXJzaW9uIjoyfX0.ClYcKgq8lTK24JaYec_M1DlIEd95GOVlcoIE0tzSE497gaFKsfLZn8d0jM4HKZYu9hLZ5kewk9R-EnoCzjxIAA
-        }
-        default_sentinel: eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJINEhaQVhZVUxBU1pPUVVKTEpUVFEzWDdSSkdQSkpGQTREUERYS1hZTElLVEU0NVVQTVdRIiwiaWF0IjoxNzc1ODM0Njg5LCJpc3MiOiJBQUVSTlU3T1kzWFpVNUpPRUZFSlNKTzI0VkhMR0NPT0FXMkRETUdUR1dGSkJTVklNUVJQV1pERSIsIm5hbWUiOiJkZWZhdWx0X3NlbnRpbmVsIiwic3ViIjoiVUNSS0lTRFZSRFlYNkVDTTNYRDJKSUVWWERPUzY0TzY0NUJZVU1SNEhLRlpES0FLWExBT1E0UVIiLCJuYXRzIjp7InB1YiI6eyJkZW55IjpbIlx1MDAzZSJdfSwic3ViIjp7ImRlbnkiOlsiXHUwMDNlIl19LCJzdWJzIjotMSwiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJiZWFyZXJfdG9rZW4iOnRydWUsImlzc3Vlcl9hY2NvdW50IjoiQUFQWUdJS0w1NTZLNDY2SkVYWllQV0hHTzdMWkE0NVFMRUJLS0oyUUdQUUdBWjVEVjYyVFFUT0QiLCJ0eXBlIjoidXNlciIsInZlcnNpb24iOjJ9fQ.AVNsFUCG9X89C36omt65gw-oYUoRYlbD3HWfsKgC3YQGK2TMkSmIIJe0Cy0IpYWobS9MRbR3aAdQPGVzI7PuDw
-        }`
-
-	a := &authTest{t: t}
-	a.conf = createConfFile(t, []byte(conf))
-	a.srv, _ = RunServerWithConfig(a.conf)
-
-	callouts := uint32(0)
-	handler := func(m *nats.Msg) {
-		atomic.AddUint32(&callouts, 1)
-		user, si, ci, opts, _ := decodeAuthRequest(t, m.Data)
-		require_True(t, si.Name == "A")
-		require_True(t, ci.Host == "127.0.0.1")
-		// Allow dlc user.
-		if (opts.Username == "dlc" && opts.Password == "zzz") || opts.Token == "SECRET_TOKEN" {
-			var j jwt.UserPermissionLimits
-			j.Pub.Allow.Add("$SYS.>")
-			j.Payload = 1024
-			if opts.Token == "SECRET_TOKEN" {
-				// Token MUST NOT be exposed in user info.
-				require_Equal(t, ci.User, "[REDACTED]")
-			}
-			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
-			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
-		} else if opts.Username == "proxy" {
-			var j jwt.UserPermissionLimits
-			j.ProxyRequired = true
-			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
-			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
-		} else {
-			// Nil response signals no authentication.
-			m.Respond(nil)
-		}
-	}
-
-	var err error
-	a.authClient = a.ConnectCallout(nats.UserJWTAndSeed("eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiIzMklNVFhPTDM0UUVXV0QyUjVBSVBDTDZESVNFUkZJWFdFVkFJSFZWNUk1SU9BUU82SVpBIiwiaWF0IjoxNzc1ODM0Njg4LCJpc3MiOiJBQUVSTlU3T1kzWFpVNUpPRUZFSlNKTzI0VkhMR0NPT0FXMkRETUdUR1dGSkJTVklNUVJQV1pERSIsIm5hbWUiOiJhdXRoIiwic3ViIjoiVUMzUUFRUTdRU1NOR1ZJN1NVTUZQV0ZMVzRLNDdPSjJNWVhKSklYTEhTRDY3V1FOMjJQUlBCRzMiLCJuYXRzIjp7InB1YiI6e30sInN1YiI6e30sInN1YnMiOi0xLCJkYXRhIjotMSwicGF5bG9hZCI6LTEsImlzc3Vlcl9hY2NvdW50IjoiQUFQWUdJS0w1NTZLNDY2SkVYWllQV0hHTzdMWkE0NVFMRUJLS0oyUUdQUUdBWjVEVjYyVFFUT0QiLCJ0eXBlIjoidXNlciIsInZlcnNpb24iOjJ9fQ.Lpwiyd4JKTf7jT_oHwlYezx0-K_qlTiKcNEkMVnvvRF4pKv5xF4XuZIoC1CGytq20lXL6gxSk11tp_BQHEbwBg", "SUADKMC6UBWLTM5VZZC67DUUM7KC2LFUYHE7HL22M63ROMMQA5LLRSJLH4"))
-	_, err = a.authClient.Subscribe(AuthCalloutSubject, handler)
-	require_NoError(t, err)
-	//  return a
-
 }
 
 func TestAuthCalloutBasics(t *testing.T) {
@@ -992,10 +935,11 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	const scopedToken = "--Scoped--"
 	const badScopedToken = "--BADScoped--"
 	const defaultToken = "--Default--"
+	const nonceChallengeToken = "--NonceChallenge--"
 
 	dkp, notAllowAccountPub := createKey(t)
 	handler := func(m *nats.Msg) {
-		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		user, si, client, opts, _ := decodeAuthRequest(t, m.Data)
 		if opts.Token == secretToken {
 			ujwt := createAuthUser(t, user, "dlc", tpub, "", tkp, 0, nil)
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
@@ -1015,6 +959,16 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else if opts.Token == defaultToken {
 			ujwt := createAuthUser(t, user, "default", tpub, "", tkp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Token == nonceChallengeToken {
+			pub, err := nkeys.FromPublicKey(opts.Nkey)
+			require_NoError(t, err)
+			sig, err := base64.RawURLEncoding.DecodeString(opts.SignedNonce)
+			require_NoError(t, err)
+			// validate the signature of the nonce using the user nkey
+			err = pub.Verify([]byte(client.Nonce), sig)
+			require_NoError(t, err)
+			ujwt := createAuthUser(t, user, "nonced", tpub, "", tkp, 0, nil)
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
 			m.Respond(nil)
@@ -1129,6 +1083,26 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	err = json.Unmarshal(resp.Data, &response)
 	ui := response.Data.(*UserInfo)
 	require_Equal(t, "default", ui.UserID)
+	require_NoError(t, err)
+
+	// this provides no sentinel (ie. default sentinel used), allowing to provide a nkey that will be used in the nonce challenge
+	// we make sure that the nkey is not rejected, and the connection should succeed if nonce challenge can be verified.
+	nkUsr, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	nkPub, err := nkUsr.PublicKey()
+	require_NoError(t, err)
+	nc = ac.Connect(nats.Token(nonceChallengeToken), nats.Nkey(nkPub, func(nonce []byte) ([]byte, error) {
+		return nkUsr.Sign(nonce)
+	}))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	ui = response.Data.(*UserInfo)
+	require_Equal(t, "nonced", ui.UserID)
 	require_NoError(t, err)
 
 }
