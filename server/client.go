@@ -3285,11 +3285,25 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
 			// Whip through the deny array and check if this wildcard subject can
 			// overlap with any denied deliveries.
-			for _, sub := range c.darray {
-				if SubjectsCollide(sub, subject) {
-					c.loadMsgDenyFilter()
+			var triggerDeny string
+			var oldWouldEnable bool
+			for _, deny := range c.darray {
+				if !oldWouldEnable && subjectIsSubsetMatch(deny, subject) {
+					oldWouldEnable = true
+				}
+				if triggerDeny == _EMPTY_ && SubjectsCollide(deny, subject) {
+					triggerDeny = deny
+				}
+				if triggerDeny != _EMPTY_ && oldWouldEnable {
 					break
 				}
+			}
+			if triggerDeny != _EMPTY_ {
+				if !oldWouldEnable {
+					c.Warnf("Subscription deny delivery filter enabled by SubjectsCollide match: account=%q sub=%q queue=%q trigger_deny=%q",
+						c.acc.GetName(), subject, queue, triggerDeny)
+				}
+				c.loadMsgDenyFilter()
 			}
 		}
 	}
