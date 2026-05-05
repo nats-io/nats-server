@@ -1452,6 +1452,7 @@ func (c *client) readLoop(pre []byte) {
 		}
 
 		c.in.start = time.Now()
+		var parseDur, statsDur, flushDur, lockWaitDur, postDur time.Duration
 
 		// Clear inbound stats cache
 		c.in.msgs = 0
@@ -1459,7 +1460,9 @@ func (c *client) readLoop(pre []byte) {
 		c.in.subs = 0
 
 		if ws {
+			parseStart := time.Now()
 			err = c.wsReadAndParse(wsr, reader, b[:n])
+			parseDur = time.Since(parseStart)
 			if err != nil {
 				// Match the normal parse path: any already-buffered deliveries
 				// need their pending flush signals drained before we close.
@@ -1479,20 +1482,24 @@ func (c *client) readLoop(pre []byte) {
 		// Main call into parser for inbound data. This will generate callouts
 		// to process messages, etc.
 		for i := 0; i < len(bufs); i++ {
+			parseStart := time.Now()
 			if err := c.parse(bufs[i]); err != nil {
+				parseDur += time.Since(parseStart)
 				if err == ErrMinimumVersionRequired {
 					// Special case here, currently only for leaf node connections.
 					// processLeafConnect() already sent the rejection and closed
 					// the connection, so there is nothing else to do here.
 					return
 				}
-				if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
-					c.Warnf("Readloop processing time: %v", dur)
-				}
 				// Need to call flushClients because some of the clients have been
 				// assigned messages and their "fsp" incremented, and need now to be
 				// decremented and their writeLoop signaled.
-				c.flushClients(0)
+				last := c.flushClients(0)
+				flushDur += time.Since(last)
+				if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
+					c.Warnf("Readloop processing time: total=%v parse=%v flush=%v msgs=%d bytes=%d subs=%d",
+						dur, parseDur, flushDur, c.in.msgs, c.in.bytes, c.in.subs)
+				}
 				// handled inline
 				if err != ErrMaxPayload && err != ErrAuthentication {
 					c.Error(err)
@@ -1500,6 +1507,7 @@ func (c *client) readLoop(pre []byte) {
 				}
 				return
 			}
+			parseDur += time.Since(parseStart)
 			c.resetReadLoopStallTime()
 		}
 
@@ -1515,6 +1523,7 @@ func (c *client) readLoop(pre []byte) {
 
 		// Updates stats for client and server that were collected
 		// from parsing through the buffer.
+		statsStart := time.Now()
 		if c.in.msgs > 0 {
 			inMsgs := int64(c.in.msgs)
 			inBytes := int64(c.in.bytes)
@@ -1536,12 +1545,17 @@ func (c *client) readLoop(pre []byte) {
 			atomic.AddInt64(&s.inMsgs, inMsgs)
 			atomic.AddInt64(&s.inBytes, inBytes)
 		}
+		statsDur = time.Since(statsStart)
 
 		// Signal to writeLoop to flush to socket.
 		last := c.flushClients(0)
+		flushDur += time.Since(last)
 
 		// Update activity, check read buffer size.
+		lockStart := time.Now()
 		c.mu.Lock()
+		lockWaitDur = time.Since(lockStart)
+		postStart := time.Now()
 
 		// Activity based on interest changes or data/msgs.
 		// Also update last receive activity for ping sender
@@ -1579,6 +1593,7 @@ func (c *client) readLoop(pre []byte) {
 			}
 		}
 		c.mu.Unlock()
+		postDur = time.Since(postStart)
 
 		// Connection was closed
 		if nc == nil {
@@ -1586,7 +1601,8 @@ func (c *client) readLoop(pre []byte) {
 		}
 
 		if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
-			c.Warnf("Readloop processing time: %v", dur)
+			c.Warnf("Readloop processing time: total=%v parse=%v stats=%v flush=%v lock_wait=%v post=%v msgs=%d bytes=%d subs=%d",
+				dur, parseDur, statsDur, flushDur, lockWaitDur, postDur, c.in.msgs, c.in.bytes, c.in.subs)
 		}
 
 		// We could have had a read error from above but still read some data.
