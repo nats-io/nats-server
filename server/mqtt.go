@@ -3726,7 +3726,7 @@ func (c *client) mqttParseConnect(r *mqttReader, hasMappings bool) (byte, *mqttC
 		if len(topic) == 0 {
 			return 0, nil, errMQTTEmptyWillTopic
 		}
-		if err := mqttValidateTopic(topic, "Will topic"); err != nil {
+		if err := mqttValidatePublishTopic(topic, "Will topic"); err != nil {
 			return 0, nil, err
 		}
 		// Convert MQTT topic to NATS subject
@@ -4080,7 +4080,7 @@ func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish, hasMapping
 	if len(pp.topic) == 0 {
 		return errMQTTTopicIsEmpty
 	}
-	if err := mqttValidateTopic(pp.topic, "topic"); err != nil {
+	if err := mqttValidatePublishTopic(pp.topic, "topic"); err != nil {
 		return err
 	}
 	// Convert the topic to a NATS subject. This call will also check that
@@ -4141,6 +4141,22 @@ func mqttValidateTopic(topic []byte, field string) error {
 	}
 	if bytes.IndexByte(topic, 0) >= 0 {
 		return fmt.Errorf("invalid null character in %s %q", field, topic)
+	}
+	return nil
+}
+
+// mqttValidatePublishTopic adds a publish-only rejection of characters that
+// would corrupt the NATS wire protocol when an MQTT topic is forwarded to
+// other connections (e.g. leaf nodes) as a NATS subject. Not applied to
+// SUBSCRIBE/UNSUBSCRIBE filters as those need to reach the per-filter
+// conversion failure path so the client receives a SUBACK failure for that
+// filter rather than being disconnected.
+func mqttValidatePublishTopic(topic []byte, field string) error {
+	if err := mqttValidateTopic(topic, field); err != nil {
+		return err
+	}
+	if bytes.ContainsAny(topic, "\t\n\r\f") {
+		return fmt.Errorf("invalid character in %s %q", field, topic)
 	}
 	return nil
 }

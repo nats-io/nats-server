@@ -9070,6 +9070,129 @@ func TestMQTTSessionPersistSpoofPrevented(t *testing.T) {
 	testMQTTCheckPubMsg(t, vc, vr, "foo/bar", 0, []byte("still-alive"))
 }
 
+func TestMQTTPublishSubjectLeafNodeParserFailures(t *testing.T) {
+	const (
+		hdrLen           = 25
+		leafControlLimit = MAX_CONTROL_LINE_SIZE * 16
+	)
+
+	hdr := []byte("NATS/1.0\r\nNmqtt-Pub:0\r\n\r\n")
+	require_Equal(t, len(hdr), hdrLen)
+
+	convertMQTTTopic := func(t *testing.T, topic []byte) []byte {
+		t.Helper()
+		require_NoError(t, mqttValidatePublishTopic(topic, "topic"))
+		subject, err := mqttTopicToNATSPubSubject(topic)
+		require_NoError(t, err)
+		return subject
+	}
+
+	parseLeafHMSG := func(subject []byte) error {
+		c := dummyClient()
+		c.kind = LEAF
+		c.leaf = &leaf{}
+		c.flags.set(connectReceived)
+		proto := fmt.Appendf(nil, "HMSG %s %d %d\r\n", subject, hdrLen, hdrLen)
+		proto = append(proto, hdr...)
+		proto = append(proto, _CRLF_...)
+		return c.parse(proto)
+	}
+
+	leafHMSGArgLen := func(subject []byte) int {
+		return len(subject) + len(" 25 25")
+	}
+
+	makeRepeatedLevelTopic := func(levels int) []byte {
+		topic := bytes.Repeat([]byte("a."), levels)
+		return topic[:len(topic)-1]
+	}
+
+	makeSlashExpansionTopic := func(t *testing.T) []byte {
+		t.Helper()
+		var topic []byte
+		for {
+			if len(topic) > 0 {
+				topic = append(topic, '/', '/')
+			}
+			topic = append(topic, 'a')
+			subject := convertMQTTTopic(t, topic)
+			if len(subject) > leafControlLimit-len(" 25 25") {
+				return topic
+			}
+		}
+	}
+
+	for _, test := range []struct {
+		name          string
+		topic         []byte
+		wantErr       bool
+		wantExpansion bool
+		wantArgLen    int
+	}{
+		{
+			name:       "converted subject at leaf control line limit is accepted",
+			topic:      bytes.Repeat([]byte{'a'}, leafControlLimit-len(" 25 25")),
+			wantErr:    false,
+			wantArgLen: leafControlLimit,
+		},
+		{
+			name:       "literal topic exceeds leaf control line limit",
+			topic:      bytes.Repeat([]byte{'a'}, leafControlLimit-len(" 25 25")+1),
+			wantErr:    true,
+			wantArgLen: leafControlLimit + 1,
+		},
+		{
+			name:          "dot expansion can make a shorter topic exceed leaf control line limit",
+			topic:         makeRepeatedLevelTopic(21845),
+			wantErr:       true,
+			wantExpansion: true,
+		},
+		{
+			name:          "slash escaping can make a shorter topic exceed leaf control line limit",
+			topic:         makeSlashExpansionTopic(t),
+			wantErr:       true,
+			wantExpansion: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			subject := convertMQTTTopic(t, test.topic)
+			if test.wantArgLen > 0 {
+				require_Equal(t, leafHMSGArgLen(subject), test.wantArgLen)
+			}
+			if test.wantExpansion {
+				require_True(t, len(test.topic) <= len(subject))
+			}
+			if err := parseLeafHMSG(subject); test.wantErr {
+				require_Error(t, err, ErrMaxControlLine)
+			} else {
+				require_NoError(t, err)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name  string
+		topic []byte
+	}{
+		{name: "space", topic: []byte("foo bar")},
+		{name: "tab", topic: []byte("foo\tbar")},
+		{name: "carriage return", topic: []byte("foo\rbar")},
+		{name: "line feed", topic: []byte("foo\nbar")},
+		{name: "carriage return line feed", topic: []byte("foo\r\nbar")},
+		{name: "null", topic: []byte("foo\x00bar")},
+		{name: "invalid utf8", topic: []byte{0xff}},
+		{name: "single level wildcard", topic: []byte("foo/+")},
+		{name: "multi level wildcard", topic: []byte("foo/#")},
+	} {
+		t.Run("rejected before leaf forwarding/"+test.name, func(t *testing.T) {
+			if err := mqttValidatePublishTopic(test.topic, "topic"); err == nil {
+				_, err = mqttTopicToNATSPubSubject(test.topic)
+				require_Error(t, err)
+			}
+		})
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks
