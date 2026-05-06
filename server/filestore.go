@@ -209,6 +209,11 @@ type fileStore struct {
 	scheduling  *MsgScheduling
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
+
+	// One-shot guard for the splice canary. First hit logs full context
+	// + stack; subsequent hits log a single line. Per-filestore so we
+	// don't lose canary signal on streams that have already fired.
+	spliceCanaryLogged atomic.Bool
 }
 
 // Represents a message store block and its data.
@@ -4652,6 +4657,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		seq = fs.state.LastSeq + 1
 	}
 
+	// Splice canary: detect in-flight protocol-frame bytes inside the
+	// payload before we persist them.
+	fs.spliceCanaryStore(subj, hdr, msg, seq)
+
 	// Write msg record.
 	// Add expiry bit to sequence if needed. This is so that if we need to
 	// rebuild, we know which messages to look at more quickly.
@@ -8249,7 +8258,11 @@ func (fs *fileStore) SubjectForSeq(seq uint64) (string, error) {
 
 // LoadMsg will lookup the message by sequence number and return it if found.
 func (fs *fileStore) LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
-	return fs.msgForSeq(seq, sm)
+	out, err := fs.msgForSeq(seq, sm)
+	if err == nil {
+		fs.spliceCanaryLoad(out)
+	}
+	return out, err
 }
 
 // loadLast will load the last message for a subject. Subject should be non empty and not ">".
