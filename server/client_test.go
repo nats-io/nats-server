@@ -3259,6 +3259,23 @@ func TestRemoveHeaderIfPrefixPresentSkipsValueMatches(t *testing.T) {
 	}
 }
 
+func TestRemoveHeaderIfPresentSkipsValueMatches(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// "Nats-Msg-Id" appearing inside another header's value must not stop
+	// the scan: the real Nats-Msg-Id header below it still needs to be
+	// removed, and the header containing the substring must be left intact.
+	hdr = genHeader(hdr, "X-Note", "Nats-Msg-Id is set below")
+	hdr = genHeader(hdr, "Nats-Msg-Id", "real-id")
+	hdr = genHeader(hdr, "c", "3")
+
+	hdr = removeHeaderIfPresent(hdr, "Nats-Msg-Id")
+	expected := []byte("NATS/1.0\r\nX-Note: Nats-Msg-Id is set below\r\nc: 3\r\n\r\n")
+	if !bytes.Equal(hdr, expected) {
+		t.Fatalf("Expected %q, got %q", expected, hdr)
+	}
+}
+
 func TestRemoveHeaderIfPresentDuplicates(t *testing.T) {
 	hdr := []byte("NATS/1.0\r\n\r\n")
 
