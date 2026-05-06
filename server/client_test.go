@@ -3241,6 +3241,24 @@ func TestRemoveHeaderIfPrefixPresent(t *testing.T) {
 	}
 }
 
+func TestRemoveHeaderIfPrefixPresentSkipsValueMatches(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// "Nats-Expected-Stream" embedded in another header's value must not
+	// short-circuit the scan: the real Nats-Expected-* headers below it
+	// still need to be removed.
+	hdr = genHeader(hdr, "X-Note", "see Nats-Expected-Stream below")
+	hdr = genHeader(hdr, JSExpectedStream, "my-stream")
+	hdr = genHeader(hdr, JSExpectedLastSeq, "22")
+	hdr = genHeader(hdr, "c", "3")
+
+	hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
+	expected := []byte("NATS/1.0\r\nX-Note: see Nats-Expected-Stream below\r\nc: 3\r\n\r\n")
+	if !bytes.Equal(hdr, expected) {
+		t.Fatalf("Expected %q, got %q", expected, hdr)
+	}
+}
+
 func TestRemoveHeaderIfPresentDuplicates(t *testing.T) {
 	hdr := []byte("NATS/1.0\r\n\r\n")
 

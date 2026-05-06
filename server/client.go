@@ -4540,7 +4540,8 @@ func removeHeaderIfPrefixPresent(hdr []byte, prefix string) []byte {
 		}
 		index += start
 		if index < 1 || hdr[index-1] != '\n' {
-			return hdr
+			index += len(prefix)
+			continue
 		}
 
 		end := bytes.Index(hdr[index+len(prefix):], []byte(_CRLF_))
