@@ -12175,21 +12175,15 @@ func TestJetStreamConsumerStepDownResetsPendingAndRdc(t *testing.T) {
 		"CONSUMER",
 		nats.ManualAck(),
 		nats.AckExplicit(),
-		nats.AckWait(time.Hour),
+		nats.AckWait(200*time.Millisecond),
 	)
 	require_NoError(t, err)
 
-	msgs, err := sub.Fetch(3)
-	require_NoError(t, err)
-	require_Len(t, len(msgs), 3)
-
-	// NAK each message so it gets redelivered, which bumps o.rdc through the normal path.
-	for _, m := range msgs {
-		require_NoError(t, m.Nak())
+	for range 2 {
+		msgs, err := sub.Fetch(3, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 3)
 	}
-	msgs, err = sub.Fetch(3)
-	require_NoError(t, err)
-	require_Len(t, len(msgs), 3)
 
 	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
 	require_NotNil(t, cl)
