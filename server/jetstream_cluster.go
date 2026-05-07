@@ -4526,6 +4526,10 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		return
 	}
 
+	// Acquire clMu before ddMu so any inflight proposals finish first, and we can
+	// clean up if they added new dedupe IDs.
+	mset.clMu.Lock()
+
 	// Clear inflight dedupe IDs, where seq=0.
 	mset.ddMu.Lock()
 	var removed int
@@ -4548,7 +4552,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	}
 	mset.ddMu.Unlock()
 
-	mset.clMu.Lock()
 	// Clear inflight if we have it.
 	mset.inflight = nil
 	mset.inflightTransform = nil
@@ -4557,6 +4560,12 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	// Clear expected per subject state.
 	mset.expectedPerSubjectSequence = nil
 	mset.expectedPerSubjectInProcess = nil
+
+	// Clear clseq on every leader transition. recalculateClusteredSeq
+	// repopulates it on the next proposal.
+	if mset.clseq > 0 {
+		mset.clseq = 0
+	}
 	mset.clMu.Unlock()
 
 	js.mu.RLock()
@@ -4577,14 +4586,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 			s.sendStreamLostQuorumAdvisory(mset)
 		}
 	}
-
-	// Clear clseq on every leader transition. recalculateClusteredSeq
-	// repopulates it on the next proposal.
-	mset.clMu.Lock()
-	if mset.clseq > 0 {
-		mset.clseq = 0
-	}
-	mset.clMu.Unlock()
 
 	// Tell stream to switch leader status.
 	mset.setLeader(isLeader)

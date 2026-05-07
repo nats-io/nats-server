@@ -2548,6 +2548,69 @@ func TestJetStreamClusterPubAckSequenceDupeResetAfterLeaderChange(t *testing.T) 
 	require_NoError(t, err)
 }
 
+func TestJetStreamClusterStreamLeaderChangeDedupeCleanupRace(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"foo"},
+		Replicas:   3,
+		Duplicates: 2 * time.Minute,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	sjs := sl.getJetStream()
+	require_NotNil(t, sjs)
+
+	// Simulate an inflight proposal: holds clMu and is about to plant a seq=0 placeholder.
+	mset.clMu.Lock()
+
+	// In the meantime, we become leader again. processStreamLeaderChange must block on
+	// clMu so the placeholder is in ddmap by the time the cleanup runs.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sjs.processStreamLeaderChange(mset, true)
+	}()
+
+	// Give the goroutine time to reach the clMu acquisition.
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("processStreamLeaderChange should be blocked on clMu")
+	default:
+	}
+
+	// Plant the seq=0 placeholder, simulating a proposal's diff.commit step
+	// happening while the leader change is in flight.
+	mset.ddMu.Lock()
+	mset.storeMsgIdLocked(&ddentry{"msgId", 0, time.Now().UnixNano()})
+	mset.ddMu.Unlock()
+
+	// Release clMu so processStreamLeaderChange can proceed with cleanup.
+	mset.clMu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("processStreamLeaderChange did not complete after clMu released")
+	}
+
+	// The placeholder must have been cleaned up.
+	mset.ddMu.Lock()
+	defer mset.ddMu.Unlock()
+	require_Len(t, len(mset.ddmap), 0)
+	require_Len(t, len(mset.ddarr), 0)
+}
+
 func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {
 
 	const (
