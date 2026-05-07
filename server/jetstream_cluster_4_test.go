@@ -7943,6 +7943,7 @@ func TestJetStreamClusterSourcingDeduplication(t *testing.T) {
 	require_NoError(t, err)
 
 	// Then publish another message on a new subject but with the same message id, which should be skipped as a duplicate
+	time.Sleep(200 * time.Millisecond) // Ensure we are outside the dedup window of the A stream so the stream doesn't do the deduplication
 	msg = nats.NewMsg("foo.4")
 	msg.Data = []byte("1")
 	msg.Header.Set("Nats-Msg-Id", "1")
