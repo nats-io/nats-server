@@ -13992,3 +13992,59 @@ func TestFileStoreSchedulingRecoveryAliasCorruption(t *testing.T) {
 		require_Equal(t, revSubj, subj)
 	}
 }
+
+func TestFileStoreConvertToEncryptedDoesNotResurrectXoredCache(t *testing.T) {
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: 8192}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	plaintext := bytes.Repeat([]byte("MARKER-PLAINTEXT-PAYLOAD-"), 32)
+	_, _, err = fs.StoreMsg("foo", nil, plaintext, 0)
+	require_NoError(t, err)
+	fs.Stop()
+
+	// Re-open with encryption, which will convert existing blocks.
+	fcfg.Cipher = AES
+	fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.mu.RLock()
+	require_True(t, fs.lmb != nil)
+	mb := fs.lmb
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	require_True(t, mb.bek != nil)
+
+	// Rewrite the on-disk file as plaintext so convertToEncrypted has
+	// fresh plaintext to encrypt.
+	encBuf, err := mb.loadBlock(nil)
+	require_NoError(t, err)
+	rbek, err := genBlockEncryptionKey(fcfg.Cipher, mb.seed, mb.nonce)
+	require_NoError(t, err)
+	rbek.XORKeyStream(encBuf, encBuf)
+	<-dios
+	err = os.WriteFile(mb.mfn, encBuf, defaultFilePerms)
+	dios <- struct{}{}
+	require_NoError(t, err)
+	recycleMsgBlockBuf(encBuf)
+
+	// Stage a sentinel on the elastic pointer; the fix must clear it.
+	sentinelCache := &cache{buf: bytes.Repeat([]byte{0xCA, 0xFE}, 64)}
+	mb.cache = sentinelCache
+	mb.ecache.Set(sentinelCache)
+
+	require_NoError(t, mb.convertToEncrypted())
+
+	mb.cache = nil
+	require_NoError(t, mb.setupWriteCache(nil))
+	require_True(t, mb.cache != nil)
+	if mb.cache == sentinelCache {
+		t.Fatalf("setupWriteCache resurrected sentinel cache via mb.ecache after convertToEncrypted")
+	}
+}

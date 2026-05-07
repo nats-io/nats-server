@@ -1425,6 +1425,7 @@ func (mb *msgBlock) convertCipher() error {
 
 		// Reset the cache since we just read everything in.
 		mb.cache = nil
+		mb.ecache.Set(nil)
 
 		// Generate new keys. If we error for some reason then we will put
 		// the old keyfile back.
@@ -1462,10 +1463,12 @@ func (mb *msgBlock) convertToEncrypted() error {
 	} else if err = mb.indexCacheBuf(buf); err != nil {
 		// This likely indicates this was already encrypted or corrupt.
 		mb.cache = nil
+		mb.ecache.Set(nil)
 		return err
 	}
 	// Undo cache from above for later.
 	mb.cache = nil
+	mb.ecache.Set(nil)
 	mb.bek.XORKeyStream(buf, buf)
 	<-dios
 	err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
