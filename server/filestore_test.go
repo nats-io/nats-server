@@ -13926,3 +13926,69 @@ func TestFileStoreGeneratePerSubjectInfoFssNilOnError(t *testing.T) {
 	// of hitting the same corrupt in-memory data indefinitely.
 	require_True(t, mb.cache == nil)
 }
+
+func TestFileStoreSchedulingRecoveryAliasCorruption(t *testing.T) {
+	dir := t.TempDir()
+
+	// Small block size + chunky per-message padding so multiple blocks
+	// roll over during the recovery scan, forcing cache eviction.
+	const blockSize = 4 * 1024
+	cfg := StreamConfig{
+		Name:              "SCHED",
+		Subjects:          []string{"sched.>"},
+		Storage:           FileStorage,
+		AllowMsgSchedules: true,
+	}
+	fcfg := FileStoreConfig{StoreDir: dir, BlockSize: blockSize}
+
+	const N = 40
+	subjects := make([]string, N)
+	for i := range subjects {
+		subjects[i] = fmt.Sprintf("sched.AAAA-%05d-%s", i, strings.Repeat("A", 40))
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	future := time.Now().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	for i, subj := range subjects {
+		hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", future))
+		hdr = genHeader(hdr, JSScheduleTarget, fmt.Sprintf("target.%d", i))
+		hdr = genHeader(hdr, "Pad", strings.Repeat("X", 200))
+		_, _, err = fs.StoreMsg(subj, hdr, nil, 0)
+		require_NoError(t, err)
+	}
+	require_NoError(t, fs.Stop())
+
+	// Remove the persisted scheduling state to force the linear-scan recovery path.
+	require_NoError(t, os.Remove(filepath.Join(dir, msgDir, msgSchedulingStreamStateFile)))
+
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	require_True(t, fs.numMsgBlocks() >= 2)
+
+	expected := make(map[string]struct{}, N)
+	for _, s := range subjects {
+		expected[s] = struct{}{}
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	require_True(t, fs.scheduling != nil)
+	require_Len(t, len(fs.scheduling.schedules), N)
+
+	for subj, sched := range fs.scheduling.schedules {
+		// Map invariant: the key must hash back to itself. If the underlying bytes were
+		// rewritten after insertion, the lookup fails even though the entry is "there".
+		_, ok := fs.scheduling.schedules[subj]
+		require_True(t, ok)
+
+		_, isOriginal := expected[subj]
+		require_True(t, isOriginal)
+
+		revSubj, ok := fs.scheduling.seqToSubj[sched.seq]
+		require_True(t, ok)
+		require_Equal(t, revSubj, subj)
+	}
+}

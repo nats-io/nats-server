@@ -1610,6 +1610,9 @@ func termAndIndexFromSnapFile(sn string) (term, index uint64, err error) {
 	if n, err := fmt.Sscanf(fn, snapFileT, &term, &index); err != nil || n != 2 {
 		return 0, 0, errBadSnapName
 	}
+	if fn != fmt.Sprintf(snapFileT, term, index) {
+		return 0, 0, errBadSnapName
+	}
 	return term, index, nil
 }
 
@@ -2784,9 +2787,9 @@ func decodeAppendEntry(msg []byte, sub *subscription, reply string) (*appendEntr
 	ae.reply, ae.sub = reply, sub
 
 	// Decode Entries.
-	ne, ri := int(le.Uint16(msg[40:])), uint64(42)
+	ne, ri := int(le.Uint16(msg[40:])), uint64(appendEntryBaseLen)
 	for i, max := 0, uint64(len(msg)); i < ne; i++ {
-		if ri >= max-1 {
+		if max-ri < 4 {
 			return nil, errBadAppendEntry
 		}
 		ml := uint64(le.Uint32(msg[ri:]))

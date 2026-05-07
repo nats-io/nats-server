@@ -1974,6 +1974,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 		{"foo/+", "foo/+", "", "wildcards not allowed in publish"},
 		{"foo/#", "foo/#", "", "wildcards not allowed in publish"},
 		{"foo bar", "foo bar", "", "not supported"},
+		{"foo\x7fbar", "foo\x7fbar", "", "not supported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := mqttTopicToNATSPubSubject([]byte(test.mqttTopic))
@@ -3562,7 +3563,7 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		as.mu.RLock()
 		defer as.mu.RUnlock()
-		if n := len(as.retmsgs); n != N {
+		if n := as.retmsgs.Size(); n != N {
 			return fmt.Errorf("Got only %v retained messages", n)
 		}
 		return nil
@@ -4849,7 +4850,7 @@ func TestMQTTPublishRetainPermViolation(t *testing.T) {
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		asm.mu.RLock()
 		defer asm.mu.RUnlock()
-		if _, ok := asm.retmsgs["foo.bar"]; ok {
+		if _, ok := asm.retmsgs.Find([]byte("foo.bar")); ok {
 			return errors.New("foo.bar subject still in map")
 		}
 		return nil
@@ -8684,6 +8685,66 @@ func TestMQTTSliceHeadersAndDecodeRetainedMessage(t *testing.T) {
 	})
 }
 
+func TestMQTTRetainedMessageWithDelSubjectIsNotRestored(t *testing.T) {
+	tdir := t.TempDir()
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: mqtt
+		jetstream {
+			store_dir = %q
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			consumer_inactive_threshold: %q
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	conf := createConfFile(t, fmt.Appendf(nil, tmpl, tdir, "0.2s"))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	// Publish one normal retained message through MQTT.
+	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mc, r, 0, false, true, "foo/ok", 0, []byte("ok"))
+	mc.Close()
+
+	// Store a legacy retained message directly into JetStream using a subject
+	// that contains DEL. That subject can no longer be indexed after restore.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	rm := mqttRetainedMsg{
+		Origin:  "test",
+		Subject: "foo.\x7fbad",
+		Topic:   "foo/\x7fbad",
+		Flags:   mqttPubFlagRetain,
+		Msg:     []byte("bad"),
+	}
+	jsonData, _ := json.Marshal(rm)
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: mqttRetainedMsgsStreamSubject + rm.Subject,
+		Data:    jsonData,
+	})
+	require_NoError(t, err)
+
+	// Restart the server so retained-message recovery runs through
+	// processRetainedMsg().
+	s.Shutdown()
+	s = RunServer(o)
+	defer testMQTTShutdownServer(s)
+
+	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
+	testMQTTCheckPubMsg(t, mc, r, "foo/ok", mqttPubFlagRetain, []byte("ok"))
+	testMQTTExpectNothing(t, r)
+}
+
 func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 	mqttRetainedCacheTTL = 250 * time.Millisecond
 	defer func() { mqttRetainedCacheTTL = mqttDefaultRetainedCacheTTL }()
@@ -8729,9 +8790,9 @@ func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 	// Make sure it is in the cache
 	rm := asm.getCachedRetainedMsg("foo")
 	require_NotNil(t, rm)
-	// Get the mqttRetainedMsgRef from the map
+	// Get the retained message sequence from the tree.
 	asm.mu.RLock()
-	rf, ok := asm.retmsgs["foo"]
+	rf, ok := asm.retmsgs.Find([]byte("foo"))
 	asm.mu.RUnlock()
 	require_True(t, ok)
 	nc, js := jsClientConnect(t, s)
@@ -8769,7 +8830,7 @@ func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
 
 	// Finally, check that the retmsgs map is empty.
 	asm.mu.RLock()
-	ok = len(asm.retmsgs) == 0
+	ok = asm.retmsgs.Size() == 0
 	asm.mu.RUnlock()
 	require_True(t, ok)
 }
@@ -9007,6 +9068,129 @@ func TestMQTTSessionPersistSpoofPrevented(t *testing.T) {
 	// Verify the victim session was NOT evicted by round-tripping a message.
 	testMQTTPublish(t, ac, ar, 0, false, false, "foo/bar", 0, []byte("still-alive"))
 	testMQTTCheckPubMsg(t, vc, vr, "foo/bar", 0, []byte("still-alive"))
+}
+
+func TestMQTTPublishSubjectLeafNodeParserFailures(t *testing.T) {
+	const (
+		hdrLen           = 25
+		leafControlLimit = MAX_CONTROL_LINE_SIZE * 16
+	)
+
+	hdr := []byte("NATS/1.0\r\nNmqtt-Pub:0\r\n\r\n")
+	require_Equal(t, len(hdr), hdrLen)
+
+	convertMQTTTopic := func(t *testing.T, topic []byte) []byte {
+		t.Helper()
+		require_NoError(t, mqttValidatePublishTopic(topic, "topic"))
+		subject, err := mqttTopicToNATSPubSubject(topic)
+		require_NoError(t, err)
+		return subject
+	}
+
+	parseLeafHMSG := func(subject []byte) error {
+		c := dummyClient()
+		c.kind = LEAF
+		c.leaf = &leaf{}
+		c.flags.set(connectReceived)
+		proto := fmt.Appendf(nil, "HMSG %s %d %d\r\n", subject, hdrLen, hdrLen)
+		proto = append(proto, hdr...)
+		proto = append(proto, _CRLF_...)
+		return c.parse(proto)
+	}
+
+	leafHMSGArgLen := func(subject []byte) int {
+		return len(subject) + len(" 25 25")
+	}
+
+	makeRepeatedLevelTopic := func(levels int) []byte {
+		topic := bytes.Repeat([]byte("a."), levels)
+		return topic[:len(topic)-1]
+	}
+
+	makeSlashExpansionTopic := func(t *testing.T) []byte {
+		t.Helper()
+		var topic []byte
+		for {
+			if len(topic) > 0 {
+				topic = append(topic, '/', '/')
+			}
+			topic = append(topic, 'a')
+			subject := convertMQTTTopic(t, topic)
+			if len(subject) > leafControlLimit-len(" 25 25") {
+				return topic
+			}
+		}
+	}
+
+	for _, test := range []struct {
+		name          string
+		topic         []byte
+		wantErr       bool
+		wantExpansion bool
+		wantArgLen    int
+	}{
+		{
+			name:       "converted subject at leaf control line limit is accepted",
+			topic:      bytes.Repeat([]byte{'a'}, leafControlLimit-len(" 25 25")),
+			wantErr:    false,
+			wantArgLen: leafControlLimit,
+		},
+		{
+			name:       "literal topic exceeds leaf control line limit",
+			topic:      bytes.Repeat([]byte{'a'}, leafControlLimit-len(" 25 25")+1),
+			wantErr:    true,
+			wantArgLen: leafControlLimit + 1,
+		},
+		{
+			name:          "dot expansion can make a shorter topic exceed leaf control line limit",
+			topic:         makeRepeatedLevelTopic(21845),
+			wantErr:       true,
+			wantExpansion: true,
+		},
+		{
+			name:          "slash escaping can make a shorter topic exceed leaf control line limit",
+			topic:         makeSlashExpansionTopic(t),
+			wantErr:       true,
+			wantExpansion: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			subject := convertMQTTTopic(t, test.topic)
+			if test.wantArgLen > 0 {
+				require_Equal(t, leafHMSGArgLen(subject), test.wantArgLen)
+			}
+			if test.wantExpansion {
+				require_True(t, len(test.topic) <= len(subject))
+			}
+			if err := parseLeafHMSG(subject); test.wantErr {
+				require_Error(t, err, ErrMaxControlLine)
+			} else {
+				require_NoError(t, err)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name  string
+		topic []byte
+	}{
+		{name: "space", topic: []byte("foo bar")},
+		{name: "tab", topic: []byte("foo\tbar")},
+		{name: "carriage return", topic: []byte("foo\rbar")},
+		{name: "line feed", topic: []byte("foo\nbar")},
+		{name: "carriage return line feed", topic: []byte("foo\r\nbar")},
+		{name: "null", topic: []byte("foo\x00bar")},
+		{name: "invalid utf8", topic: []byte{0xff}},
+		{name: "single level wildcard", topic: []byte("foo/+")},
+		{name: "multi level wildcard", topic: []byte("foo/#")},
+	} {
+		t.Run("rejected before leaf forwarding/"+test.name, func(t *testing.T) {
+			if err := mqttValidatePublishTopic(test.topic, "topic"); err == nil {
+				_, err = mqttTopicToNATSPubSubject(test.topic)
+				require_Error(t, err)
+			}
+		})
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////

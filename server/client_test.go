@@ -3241,6 +3241,41 @@ func TestRemoveHeaderIfPrefixPresent(t *testing.T) {
 	}
 }
 
+func TestRemoveHeaderIfPrefixPresentSkipsValueMatches(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// "Nats-Expected-Stream" embedded in another header's value must not
+	// short-circuit the scan: the real Nats-Expected-* headers below it
+	// still need to be removed.
+	hdr = genHeader(hdr, "X-Note", "see Nats-Expected-Stream below")
+	hdr = genHeader(hdr, JSExpectedStream, "my-stream")
+	hdr = genHeader(hdr, JSExpectedLastSeq, "22")
+	hdr = genHeader(hdr, "c", "3")
+
+	hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
+	expected := []byte("NATS/1.0\r\nX-Note: see Nats-Expected-Stream below\r\nc: 3\r\n\r\n")
+	if !bytes.Equal(hdr, expected) {
+		t.Fatalf("Expected %q, got %q", expected, hdr)
+	}
+}
+
+func TestRemoveHeaderIfPresentSkipsValueMatches(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	// "Nats-Msg-Id" appearing inside another header's value must not stop
+	// the scan: the real Nats-Msg-Id header below it still needs to be
+	// removed, and the header containing the substring must be left intact.
+	hdr = genHeader(hdr, "X-Note", "Nats-Msg-Id is set below")
+	hdr = genHeader(hdr, "Nats-Msg-Id", "real-id")
+	hdr = genHeader(hdr, "c", "3")
+
+	hdr = removeHeaderIfPresent(hdr, "Nats-Msg-Id")
+	expected := []byte("NATS/1.0\r\nX-Note: Nats-Msg-Id is set below\r\nc: 3\r\n\r\n")
+	if !bytes.Equal(hdr, expected) {
+		t.Fatalf("Expected %q, got %q", expected, hdr)
+	}
+}
+
 func TestRemoveHeaderIfPresentDuplicates(t *testing.T) {
 	hdr := []byte("NATS/1.0\r\n\r\n")
 
@@ -3298,6 +3333,29 @@ func TestSliceHeaderOrderingPrefix(t *testing.T) {
 	require_Equal(t, cap(copied), len(copied))
 
 	require_True(t, bytes.Equal(sliced, copied))
+}
+
+func TestReplyHasJSAckSuffix(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		reply string
+		want  bool
+	}{
+		{"plain JSAck no suffix", "$JS.ACK.STREAM.CONS.1.2.3.4.5", false},
+		{"single @ encoded", "$JS.ACK.STREAM.CONS.1.2.3.4.5@deliver.subject", true},
+		{"double @ encoded (already corrupted)", "$JS.ACK.STREAM.CONS.1.2.3.4.5@inner@outer", true},
+		{"non-JSAck reply with @", "_INBOX.abc@xyz", false},
+		{"@ before 8 dots", "$JS.ACK.STREAM@oops.1.2.3.4.5", false},
+		{"empty", "", false},
+		{"JSAck prefix only no fields", "$JS.ACK.", false},
+		// Cross-domain v2 token has more dots, but still 8+ before the @.
+		{"v2 token encoded", "$JS.ACK.dom.acct.STREAM.CONS.1.2.3.4.5@deliver", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := replyHasJSAckSuffix([]byte(test.reply))
+			require_Equal(t, got, test.want)
+		})
+	}
 }
 
 func TestSliceHeaderOrderingSuffix(t *testing.T) {

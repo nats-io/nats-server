@@ -264,7 +264,7 @@ type PubAck struct {
 	Duplicate bool   `json:"duplicate,omitempty"`
 	Value     string `json:"val,omitempty"`
 	BatchId   string `json:"batch,omitempty"`
-	BatchSize int    `json:"count,omitempty"`
+	BatchSize uint64 `json:"count,omitempty"`
 }
 
 // CounterValue is the body of a message when used as a counter.
@@ -1056,7 +1056,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 				suppress = true
 			}
 		} else if sa != nil {
-			suppress = sa.responded
+			suppress = sa.hasResponded()
 		}
 		if !suppress {
 			mset.sendCreateAdvisory()
@@ -1471,12 +1471,6 @@ func (mset *stream) lastSeq() uint64 {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return mset.lseq
-}
-
-// Set last seq.
-// Write lock should be held.
-func (mset *stream) setLastSeq(lseq uint64) {
-	mset.lseq = lseq
 }
 
 func (mset *stream) sendCreateAdvisory() {
@@ -2861,7 +2855,7 @@ func (mset *stream) purgeLocked(preq *JSApiStreamPurgeRequest, needLock bool) (p
 
 	// Check if our last has moved past what our original last sequence was, if so reset.
 	if lseq > mlseq {
-		mset.setLastSeq(lseq)
+		mset.lseq = lseq
 	}
 
 	// Clear any pending acks below first seq.
@@ -3339,8 +3333,13 @@ func (mset *stream) skipMsgs(start, end uint64) {
 		return
 	}
 
-	// FIXME (dlc) - We should allow proposals of DeleteRange, but would need to make sure all peers support.
-	// With syncRequest was easy to add bool into request.
+	// Must only be enabled once every peer in the cluster supports receiving
+	// deleteRangeOp in the normal apply path; older peers panic on unknown ops.
+	if mset.srv.getOpts().getFeatureFlag(FeatureFlagJsRaftDeleteRange) {
+		node.Propose(encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
+		return
+	}
+
 	var entries []*Entry
 	for seq := start; seq <= end; seq++ {
 		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0, false)))
@@ -5020,10 +5019,14 @@ func (mset *stream) deleteAtomicBatches(shuttingDown bool) {
 // Lock should be held.
 func (mset *stream) deleteBatchApplyState() {
 	if batch := mset.batchApply; batch != nil {
-		// Need to return entries (if any) to the pool.
+		// Clear under batch.mu so a stale reference held by the stream monitor
+		// can't re-pool entries we already returned.
+		batch.mu.Lock()
 		for _, bce := range batch.entries {
 			bce.ReturnToPool()
 		}
+		batch.clearBatchStateLocked()
+		batch.mu.Unlock()
 		mset.batchApply = nil
 	}
 }
@@ -5177,9 +5180,12 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 		mset.clsMu.RUnlock()
 	} else if md < 0 {
 		// Batch decrements we need to force consumers to re-calculate num pending.
+		var ss StreamState
+		mset.store.FastState(&ss)
 		mset.clsMu.RLock()
 		for _, o := range mset.cList {
 			o.streamNumPendingLocked()
+			o.removeRedeliveredBelow(ss.FirstSeq)
 		}
 		mset.clsMu.RUnlock()
 	}
@@ -5374,22 +5380,46 @@ func getMessageIncr(hdr []byte) (*big.Int, bool) {
 }
 
 // Fast lookup of message schedule.
-func getMessageSchedule(hdr []byte) (time.Time, bool) {
+func getMessageSchedule(hdr []byte) (time.Time, *ApiError) {
 	if len(hdr) == 0 {
-		return time.Time{}, true
+		return time.Time{}, nil
 	}
 	return nextMessageSchedule(hdr, time.Now().UTC().UnixNano())
 }
 
 // Fast lookup and calculation of next message schedule.
-func nextMessageSchedule(hdr []byte, ts int64) (time.Time, bool) {
+func nextMessageSchedule(hdr []byte, ts int64) (time.Time, *ApiError) {
 	if len(hdr) == 0 {
-		return time.Time{}, true
+		return time.Time{}, nil
+	}
+	loc, apiErr := loadMessageScheduleLocation(hdr)
+	if apiErr != nil {
+		return time.Time{}, apiErr
 	}
 	val := bytesToString(sliceHeader(JSSchedulePattern, hdr))
-	tz := bytesToString(sliceHeader(JSScheduleTimeZone, hdr))
-	schedule, _, ok := parseMsgSchedule(val, tz, ts)
-	return schedule, ok
+	schedule, _, ok := parseMsgSchedule(val, loc, ts)
+	if !ok {
+		return time.Time{}, NewJSMessageSchedulesPatternInvalidError()
+	}
+	return schedule, nil
+}
+
+// loadMessageScheduleLocation returns the *time.Location for the schedule's
+// time zone header. Returns nil loc when the header is absent. A header that
+// is present but empty or names an unknown zone yields a TimeZoneInvalid error.
+func loadMessageScheduleLocation(hdr []byte) (*time.Location, *ApiError) {
+	tz := sliceHeader(JSScheduleTimeZone, hdr)
+	if tz == nil {
+		return nil, nil
+	}
+	if len(tz) == 0 {
+		return nil, NewJSMessageSchedulesTimeZoneInvalidError()
+	}
+	loc, err := time.LoadLocation(bytesToString(tz))
+	if err != nil {
+		return nil, NewJSMessageSchedulesTimeZoneInvalidError()
+	}
+	return loc, nil
 }
 
 // Fast lookup of the message schedule TTL from headers.
@@ -5535,13 +5565,14 @@ func getFastBatch(reply string, hdr []byte) (*FastBatch, bool) {
 	if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
 		return nil, true
 	}
-	a := parseInt64(stringToBytes(reply[o+1 : p]))
-	if a < 1 {
+	seq, ok := parseUint64(stringToBytes(reply[o+1 : p]))
+	// Reject math.MaxUint64 to prevent b.lseq overflowing on the next b.lseq++.
+	if !ok || seq == 0 || seq == math.MaxUint64 {
 		return nil, true
 	}
-	b.seq = uint64(a)
+	b.seq = seq
 	p = o
-	if b.seq <= 0 {
+	if b.seq == 1 && b.commitEob {
 		return nil, true
 	}
 	if op == FastBatchOpStart && b.seq != 1 {
@@ -5565,7 +5596,7 @@ func getFastBatch(reply string, hdr []byte) (*FastBatch, bool) {
 	if o = strings.LastIndexByte(reply[:o], '.'); o == -1 {
 		return nil, true
 	}
-	a = parseInt64(stringToBytes(reply[o+1 : p]))
+	a := parseInt64(stringToBytes(reply[o+1 : p]))
 	if a <= 0 {
 		a = 10
 	} else if a > math.MaxUint16 {
@@ -5588,7 +5619,7 @@ func getBatchSequence(hdr []byte) (uint64, bool) {
 	if len(bseq) == 0 {
 		return 0, false
 	}
-	return uint64(parseInt64(bseq)), true
+	return parseUint64(bseq)
 }
 
 // Signal if we are clustered. Will acquire rlock.
@@ -6356,8 +6387,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			// Message scheduling.
 			if sourced {
 				// noop, sourced messages were already validated by the origin stream.
-			} else if schedule, ok := getMessageSchedule(hdr); !ok {
-				apiErr := NewJSMessageSchedulesPatternInvalidError()
+			} else if schedule, apiErr := getMessageSchedule(hdr); apiErr != nil {
 				if !allowMsgSchedules {
 					apiErr = NewJSMessageSchedulesDisabledError()
 				}
@@ -6405,7 +6435,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 					}
 					return errMsgTTLDisabled
 				} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
-					!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
+					!IsValidPublishSubject(scheduleTarget) || scheduleTarget == subject {
 					apiErr := NewJSMessageSchedulesTargetInvalidError()
 					if canRespond {
 						resp.PubAck = &PubAck{Stream: name}
@@ -6437,6 +6467,21 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 							outq.sendMsg(reply, b)
 						}
 						return apiErr
+					}
+					if scheduleSource != _EMPTY_ {
+						match = slices.ContainsFunc(mset.cfg.Subjects, func(subj string) bool {
+							return SubjectsCollide(subj, scheduleSource)
+						})
+						if !match {
+							apiErr := NewJSMessageSchedulesSourceInvalidError()
+							if canRespond {
+								resp.PubAck = &PubAck{Stream: name}
+								resp.Error = apiErr
+								b, _ := json.Marshal(resp)
+								outq.sendMsg(reply, b)
+							}
+							return apiErr
+						}
 					}
 
 					// Add a rollup sub header if it doesn't already exist.
@@ -7215,6 +7260,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			b.cleanupLocked(batchId, batches)
 			batches.mu.Unlock()
 			mset.mu.Unlock()
+			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchRequirementsNotMet)
 			err := NewJSRequiredApiLevelError()
 			return respondError(err)
 		}
@@ -7226,7 +7272,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 
 	// Detect gaps.
 	b.lseq++
-	if b.lseq != batchSeq || cleanup {
+	if b.lseq != batchSeq || cleanup || (batchSeq == 1 && commitEob) {
 		b.cleanupLocked(batchId, batches)
 		batches.mu.Unlock()
 		mset.mu.Unlock()
@@ -8731,6 +8777,17 @@ func (mset *stream) clearAllPreAcks(seq uint64) {
 func (mset *stream) clearAllPreAcksBelowFloor(floor uint64) {
 	for seq := range mset.preAcks {
 		if seq < floor {
+			delete(mset.preAcks, seq)
+		}
+	}
+}
+
+// Clear all preAcks in [first, last]. Iterates the preAcks map, not the
+// range, so callers can pass very wide ranges cheaply.
+// Write lock should be held.
+func (mset *stream) clearAllPreAcksInRange(first, last uint64) {
+	for seq := range mset.preAcks {
+		if seq >= first && seq <= last {
 			delete(mset.preAcks, seq)
 		}
 	}

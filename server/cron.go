@@ -46,19 +46,19 @@ import (
 )
 
 // parseCron parses the given cron pattern and returns the next time it will fire based on the provided ts.
-func parseCron(pattern string, tz string, ts int64) (time.Time, error) {
+func parseCron(pattern string, loc *time.Location, ts int64) (time.Time, error) {
 	fields := strings.Fields(pattern)
 	if len(fields) != 6 {
 		return time.Time{}, fmt.Errorf("pattern requires 6 fields, got %d", len(fields))
 	}
 
-	// Load the time zone.
-	loc, err := time.LoadLocation(tz)
-	if err != nil {
-		return time.Time{}, err
+	// If no time zone is passed, default to UTC.
+	if loc == nil {
+		loc = time.UTC
 	}
 
 	// Parse each field.
+	var err error
 	var second, minute, hour, dayOfMonth, month, dayOfWeek uint64
 	if second, err = getField(fields[0], seconds); err != nil {
 		return time.Time{}, err

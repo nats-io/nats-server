@@ -6823,9 +6823,9 @@ func TestJetStreamClusterProcessClusterUpdateStreamNilStreamAssignment(t *testin
 			Storage: realOsa.Group.Storage,
 		}
 	}
-	osa := *realOsa
+	osa := realOsa.clone()
 	osa.Group = cloneGroup()
-	sa := osa
+	sa := osa.clone()
 	cfg := *realOsa.Config
 	cfg.MaxMsgs = 1_000
 	sa.Config = &cfg
@@ -6843,7 +6843,7 @@ func TestJetStreamClusterProcessClusterUpdateStreamNilStreamAssignment(t *testin
 	}
 	mset.mu.Unlock()
 
-	sjs.processClusterUpdateStream(acc, &osa, &sa)
+	sjs.processClusterUpdateStream(acc, osa, sa)
 
 	mset.mu.RLock()
 	got := mset.sa
@@ -9490,6 +9490,25 @@ func TestJetStreamClusterScheduledDelayedMessage(t *testing.T) {
 				_, err = js.PublishMsg(m)
 				require_Error(t, err, NewJSMessageSchedulesPatternInvalidError())
 
+				// Unknown time zone must be reported as time-zone-invalid, not pattern-invalid.
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", "0 * * * * *")
+				m.Header.Set("Nats-Schedule-Time-Zone", "Not/A/Zone")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesTimeZoneInvalidError())
+
+				// An empty time zone is also invalid.
+				m.Header.Set("Nats-Schedule-Time-Zone", "")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesTimeZoneInvalidError())
+
+				// A valid time zone with an invalid pattern still surfaces as pattern-invalid.
+				m = nats.NewMsg("foo.invalid")
+				m.Header.Set("Nats-Schedule", "invalid")
+				m.Header.Set("Nats-Schedule-Time-Zone", "UTC")
+				_, err = js.PublishMsg(m)
+				require_Error(t, err, NewJSMessageSchedulesPatternInvalidError())
+
 				m = nats.NewMsg("foo.invalid")
 				m.Header.Set("Nats-Schedule", schedulePattern)
 				m.Header.Set("Nats-Schedule-Target", "not.matching")
@@ -9648,7 +9667,8 @@ func TestJetStreamClusterScheduledMessageSubjectSourcing(t *testing.T) {
 				// Invalid sources include if the subject:
 				// - matches the schedule/target subject
 				// - contains wildcard/is not literal
-				for _, src := range []string{"foo.schedule", "foo.publish", "foo.*", "foo.>"} {
+				// - doesn't match the stream subjects
+				for _, src := range []string{"foo.schedule", "foo.publish", "foo.*", "foo.>", "bar"} {
 					m.Header.Set("Nats-Schedule-Source", src)
 					_, err = js.PublishMsg(m)
 					require_Error(t, err, NewJSMessageSchedulesSourceInvalidError())

@@ -5239,7 +5239,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 			return
 		}
 
-		nca := *ca
+		nca := ca.clone()
 		// We're only holding the read lock and release below,
 		// we need a copy to prevent concurrent reads/writes.
 		ncfg := *ca.Config
@@ -5258,7 +5258,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		// Only PauseUntil is updated above, so reuse config for both.
 		setStaticConsumerMetadata(nca.Config)
 
-		eca := encodeAddConsumerAssignment(&nca)
+		eca := encodeAddConsumerAssignment(nca)
 		meta.Propose(eca)
 
 		resp.PauseUntil = pauseUTC

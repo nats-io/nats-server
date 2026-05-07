@@ -361,10 +361,6 @@ func (b *fastBatch) setupCleanupTimer(mset *stream, batchId string, batches *bat
 	timeout := getCleanupTimeout(mset)
 	b.timer = time.AfterFunc(timeout, func() {
 		b.cleanup(batchId, batches)
-		// Only send the advisory if we're the leader. (Since we do the tracking on followers too)
-		if mset.IsLeader() {
-			mset.sendStreamBatchAbandonedAdvisory(batchId, BatchTimeout)
-		}
 	})
 }
 
@@ -808,8 +804,7 @@ func checkMsgHeadersPreClusteredProposal(
 		// Message scheduling.
 		if sourced {
 			// noop, sourced messages were already validated by the origin stream.
-		} else if schedule, ok := getMessageSchedule(hdr); !ok {
-			apiErr := NewJSMessageSchedulesPatternInvalidError()
+		} else if schedule, apiErr := getMessageSchedule(hdr); apiErr != nil {
 			if !allowMsgSchedules {
 				apiErr = NewJSMessageSchedulesDisabledError()
 			}
@@ -827,7 +822,7 @@ func checkMsgHeadersPreClusteredProposal(
 			} else if scheduleTtl != _EMPTY_ && !allowTTL {
 				return hdr, msg, 0, NewJSMessageTTLDisabledError(), errMsgTTLDisabled
 			} else if scheduleTarget := getMessageScheduleTarget(hdr); scheduleTarget == _EMPTY_ ||
-				!IsValidPublishSubject(scheduleTarget) || SubjectsCollide(scheduleTarget, subject) {
+				!IsValidPublishSubject(scheduleTarget) || scheduleTarget == subject {
 				apiErr := NewJSMessageSchedulesTargetInvalidError()
 				return hdr, msg, 0, apiErr, apiErr
 			} else if scheduleSource := getMessageScheduleSource(hdr); scheduleSource != _EMPTY_ &&
@@ -839,11 +834,22 @@ func checkMsgHeadersPreClusteredProposal(
 				match := slices.ContainsFunc(mset.cfg.Subjects, func(subj string) bool {
 					return SubjectsCollide(subj, scheduleTarget)
 				})
-				mset.cfgMu.RUnlock()
 				if !match {
+					mset.cfgMu.RUnlock()
 					apiErr := NewJSMessageSchedulesTargetInvalidError()
 					return hdr, msg, 0, apiErr, apiErr
 				}
+				if scheduleSource != _EMPTY_ {
+					match = slices.ContainsFunc(mset.cfg.Subjects, func(subj string) bool {
+						return SubjectsCollide(subj, scheduleSource)
+					})
+					if !match {
+						mset.cfgMu.RUnlock()
+						apiErr := NewJSMessageSchedulesSourceInvalidError()
+						return hdr, msg, 0, apiErr, apiErr
+					}
+				}
+				mset.cfgMu.RUnlock()
 
 				// Add a rollup sub header if it doesn't already exist.
 				// Otherwise, it must exist already as a rollup on the subject.

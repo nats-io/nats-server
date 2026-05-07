@@ -10176,3 +10176,152 @@ func TestJetStreamClusterProposeFailureDoesNotDriftClseq(t *testing.T) {
 		require_False(t, rn.IsDeleted())
 	}
 }
+
+func TestJetStreamClusterSkipMsgsRaftDeleteRange(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		title := "Disabled"
+		if enabled {
+			title = "Enabled"
+		}
+		t.Run(title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			for _, s := range c.servers {
+				s.optsMu.Lock()
+				s.opts.FeatureFlags = map[string]bool{FeatureFlagJsRaftDeleteRange: enabled}
+				s.optsMu.Unlock()
+			}
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+			mset, err := sl.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+
+			// Enabled uses a huge gap to assert the O(1) apply path; disabled
+			// lowers it so the O(n) per-seq path finishes in a reasonable time.
+			gap := uint64(100_000_000)
+			if !enabled {
+				gap = uint64(50_000)
+			}
+			start := time.Now()
+			mset.mu.Lock()
+			mset.skipMsgs(2, gap)
+			mset.mu.Unlock()
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Fatalf("Expected to skip msgs in <2s but got %v", elapsed)
+			}
+
+			// Wait for the skip to be applied on the leader before publishing,
+			// since the clustered paths are async.
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				mset.mu.RLock()
+				lseq := mset.lseq
+				mset.mu.RUnlock()
+				if lseq < gap {
+					return fmt.Errorf("leader lseq=%d, want >=%d", lseq, gap)
+				}
+				return nil
+			})
+
+			// After the skip, publish one more live message so we have a
+			// message at LastSeq to compare against.
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				for _, s := range c.servers {
+					mset, err = s.globalAccount().lookupStream("TEST")
+					if err != nil {
+						return err
+					}
+					var state StreamState
+					mset.store.FastState(&state)
+					if state.LastSeq != gap+1 {
+						return fmt.Errorf("server %s LastSeq=%d, want %d", s.Name(), state.LastSeq, gap+1)
+					}
+					if state.Msgs != 2 {
+						return fmt.Errorf("server %s Msgs=%d, want 2", s.Name(), state.Msgs)
+					}
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	sjs := sl.getJetStream()
+
+	mset.mu.Lock()
+	require_NoError(t, mset.store.SkipMsgs(2, 999))
+	mset.lseq = 1000
+	mset.mu.Unlock()
+
+	var before StreamState
+	mset.store.FastState(&before)
+
+	// Ignore delete range if already applied.
+	replay := newCommittedEntry(1, []*Entry{
+		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 100, Num: 401})),
+	})
+	_, err = sjs.applyStreamEntries(mset, replay, false)
+	require_NoError(t, err)
+	require_Equal(t, mset.lastSeq(), 1000)
+
+	var after StreamState
+	mset.store.FastState(&after)
+	require_Equal(t, after.FirstSeq, before.FirstSeq)
+	require_Equal(t, after.LastSeq, before.LastSeq)
+	require_Equal(t, after.Msgs, before.Msgs)
+
+	// Full delete range.
+	dr := newCommittedEntry(2, []*Entry{
+		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1001, Num: 1000})),
+	})
+	_, err = sjs.applyStreamEntries(mset, dr, false)
+	require_NoError(t, err)
+	require_Equal(t, mset.lastSeq(), 2000)
+	mset.store.FastState(&after)
+	require_Equal(t, after.LastSeq, 2000)
+
+	// Partial delete range.
+	dr = newCommittedEntry(3, []*Entry{
+		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1501, Num: 1000})),
+	})
+	_, err = sjs.applyStreamEntries(mset, dr, false)
+	require_NoError(t, err)
+	require_Equal(t, mset.lastSeq(), 2500)
+	mset.store.FastState(&after)
+	require_Equal(t, after.LastSeq, 2500)
+}

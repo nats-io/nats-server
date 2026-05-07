@@ -1061,18 +1061,19 @@ func (c *client) setPermissions(perms *Permissions) {
 		return
 	}
 	c.perms = &permissions{}
+	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
 
 	// Loop over publish permissions
 	if perms.Publish != nil {
 		if perms.Publish.Allow != nil {
-			c.perms.pub.allow = NewSublistWithCache()
+			c.perms.pub.allow = NewSublist(slcache)
 		}
 		for _, pubSubject := range perms.Publish.Allow {
 			sub := &subscription{subject: []byte(pubSubject)}
 			c.perms.pub.allow.Insert(sub)
 		}
 		if len(perms.Publish.Deny) > 0 {
-			c.perms.pub.deny = NewSublistWithCache()
+			c.perms.pub.deny = NewSublist(slcache)
 		}
 		for _, pubSubject := range perms.Publish.Deny {
 			sub := &subscription{subject: []byte(pubSubject)}
@@ -1091,7 +1092,7 @@ func (c *client) setPermissions(perms *Permissions) {
 	if perms.Subscribe != nil {
 		var err error
 		if len(perms.Subscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublistWithCache()
+			c.perms.sub.allow = NewSublist(slcache)
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
 			sub := &subscription{}
@@ -1103,7 +1104,7 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.allow.Insert(sub)
 		}
 		if len(perms.Subscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublistWithCache()
+			c.perms.sub.deny = NewSublist(slcache)
 			// Also hold onto this array for later.
 			c.darray = perms.Subscribe.Deny
 		}
@@ -1200,6 +1201,7 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	if c.perms == nil {
 		c.perms = &permissions{}
 	}
+	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
 	var perms []*perm
 	switch what {
 	case pub:
@@ -1211,7 +1213,7 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	}
 	for _, p := range perms {
 		if p.deny == nil {
-			p.deny = NewSublistWithCache()
+			p.deny = NewSublist(slcache)
 		}
 	FOR_DENY:
 		for _, subj := range denyPubs {
@@ -4178,6 +4180,37 @@ func isJSAckSubject(subject []byte) bool {
 	return len(subject) > jsAckPreLen && bytesToString(subject[:jsAckPreLen]) == jsAckPre
 }
 
+// jsAckDeliverIdx returns the byte offset of the `@` separator in an encoded
+// `$JS.ACK....@<deliver>` reply, or -1 if reply is not in that form. Stream,
+// consumer, and subject tokens may legally contain `@`, so we accept only the
+// first `@` that follows the eight dots of the JS ACK token:
+//
+//	$JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<tm>.<pending>@<deliver>
+func jsAckDeliverIdx(reply []byte) int {
+	if !isJSAckSubject(reply) {
+		return -1
+	}
+	dots := 0
+	for i, b := range reply {
+		switch b {
+		case '.':
+			dots++
+		case '@':
+			if dots >= 8 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// replyHasJSAckSuffix reports whether reply is already in `$JS.ACK....@<deliver>`
+// form, so callers don't double-append the suffix on a re-entrant pass
+// (service-import or chained JS push).
+func replyHasJSAckSuffix(reply []byte) bool {
+	return jsAckDeliverIdx(reply) != -1
+}
+
 // Test whether a reply subject is a service import or a gateway routed reply.
 func isReservedReply(reply []byte) bool {
 	if isServiceReply(reply) {
@@ -4385,7 +4418,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// Now deal with gateways
 	if c.srv.gateway.enabled {
 		reply := c.pa.reply
-		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(c.pa.reply) > 0 {
+		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(reply) > 0 && !replyHasJSAckSuffix(reply) {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
 		}
@@ -4433,7 +4466,7 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	}
 	if c.srv.gateway.enabled {
 		reply := c.pa.reply
-		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(c.pa.reply) > 0 {
+		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(reply) > 0 && !replyHasJSAckSuffix(reply) {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
 		}
@@ -4507,7 +4540,8 @@ func removeHeaderIfPrefixPresent(hdr []byte, prefix string) []byte {
 		}
 		index += start
 		if index < 1 || hdr[index-1] != '\n' {
-			return hdr
+			index += len(prefix)
+			continue
 		}
 
 		end := bytes.Index(hdr[index+len(prefix):], []byte(_CRLF_))
@@ -5062,21 +5096,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Check for JetStream encoded reply subjects.
 	// For now these will only be on $JS.ACK prefixed reply subjects.
 	var remapped bool
-	if len(creply) > 0 && c.kind != CLIENT && !isInternalClient(c.kind) && bytes.HasPrefix(creply, []byte(jsAckPre)) {
+	if len(creply) > 0 && c.kind != CLIENT && !isInternalClient(c.kind) {
 		// We need to rewrite the subject and the reply.
-		// But, we must be careful that the stream name, consumer name, and subject can contain '@' characters.
-		// JS ACK contains at least 8 dots, find the first @ after this prefix.
-		// - $JS.ACK.<stream>.<consumer>.<delivered>.<sseq>.<cseq>.<tm>.<pending>
-		counter := 0
-		li := bytes.IndexFunc(creply, func(rn rune) bool {
-			if rn == '.' {
-				counter++
-			} else if rn == '@' {
-				return counter >= 8
-			}
-			return false
-		})
-		if li != -1 && li < len(creply)-1 {
+		if li := jsAckDeliverIdx(creply); li != -1 && li < len(creply)-1 {
 			remapped = true
 			subj, creply = creply[li+1:], creply[:li]
 		}
@@ -5496,7 +5518,7 @@ sendToRoutesOrLeafs:
 	// at the end of the reply subject if it exists. But only if this wasn't
 	// already performed, otherwise we'd end up with a duplicate '@' suffix
 	// resulting in a protocol error.
-	if len(deliver) > 0 && len(reply) > 0 && !remapped {
+	if len(deliver) > 0 && len(reply) > 0 && !remapped && !replyHasJSAckSuffix(reply) {
 		reply = append(reply, '@')
 		reply = append(reply, deliver...)
 	}
