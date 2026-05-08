@@ -2481,10 +2481,24 @@ func (mset *stream) retryDisconnectedSyncConsumers() {
 		return
 	}
 
+	// Not client.isClosed(): internal account clients have nil nc, which would make isClosed always true here.
+	clientClosed := func(c *client) bool {
+		return c != nil && (c.flags.isSet(closeConnection) || c.flags.isSet(connMarkedClosed))
+	}
+	// Stale sources need to be reset: if not seen past the health check interval, it's stale.
+	stale := func(si *sourceInfo) bool {
+		return time.Since(time.Unix(0, si.last.Load())) > sourceHealthCheckInterval
+	}
 	shouldRetry := func(si *sourceInfo) bool {
-		if si != nil && (si.sip || si.sub == nil || (si.sub.client != nil && si.sub.client.isClosed())) {
-			// Need to reset
-			si.fails, si.sip = 0, false
+		if si != nil && !si.sip && (si.sub == nil || clientClosed(si.sub.client) || stale(si)) {
+			// Skip if a recreate is already scheduled and we can't cancel it.
+			if t, ok := mset.sourceSetupSchedules[si.iname]; ok {
+				if !t.Stop() {
+					return false
+				}
+				delete(mset.sourceSetupSchedules, si.iname)
+			}
+			si.fails = 0
 			mset.cancelSourceInfo(si)
 			return true
 		}
