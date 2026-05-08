@@ -1283,7 +1283,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 	hasEmailAddresses := len(cert.EmailAddresses) > 0
 	hasSubject := len(cert.Subject.String()) > 0
 	hasURIs := len(cert.URIs) > 0
-	if !hasEmailAddresses && !hasSubject && !hasURIs {
+	if !hasSANs && !hasEmailAddresses && !hasSubject && !hasURIs {
 		c.Debugf("User required in cert, none found")
 		return false
 	}

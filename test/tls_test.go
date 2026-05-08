@@ -15,13 +15,19 @@ package test
 
 import (
 	"bufio"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -428,6 +434,114 @@ Loop:
 			t.Fatalf("Timed out expecting auth errors")
 		}
 	}
+}
+
+func TestTLSClientCertificateNoSubjectWithSANAuth(t *testing.T) {
+	// A certificate with an empty Subject DN but a DNS SAN should be accepted
+	// and mapped to the SAN value, exercising the hasSANs branch in
+	// checkClientTLSCertSubject.
+	dir := t.TempDir()
+	ca := issueCert(t, dir, "ca", nil, pkix.Name{CommonName: "test-ca"}, nil, nil)
+	server := issueCert(t, dir, "server", ca, pkix.Name{CommonName: "localhost"}, []string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1")})
+	client := issueCert(t, dir, "client-nosubj", ca, pkix.Name{}, []string{"localhost"}, nil)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: %q
+			key_file:  %q
+			ca_file:   %q
+			verify_and_map: true
+		}
+		authorization {
+			users = [
+				{ user: "localhost" }
+			]
+		}
+	`, server.certPath, server.keyPath, ca.certPath)))
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+
+	t.Run("no-subject cert with SAN connects", func(t *testing.T) {
+		nc, err := nats.Connect(nurl,
+			nats.ClientCert(client.certPath, client.keyPath),
+			nats.RootCAs(ca.certPath),
+		)
+		if err != nil {
+			t.Fatalf("Expected to connect with no-subject cert, got %v", err)
+		}
+		defer nc.Close()
+	})
+
+	t.Run("no client cert is rejected", func(t *testing.T) {
+		nc, err := nats.Connect(nurl, nats.RootCAs(ca.certPath))
+		if err == nil {
+			nc.Close()
+			t.Fatal("Expected connection without client cert to fail, but it succeeded")
+		}
+	})
+}
+
+type issuedCert struct {
+	cert     *x509.Certificate
+	key      ed25519.PrivateKey
+	certPath string
+	keyPath  string
+}
+
+// issueCert generates an Ed25519 keypair and an X.509 certificate written under
+// dir as <name>-cert.pem and <name>-key.pem. parent==nil produces a self-signed
+// CA; otherwise the cert is signed by parent and gets server+client EKU.
+func issueCert(t *testing.T, dir, name string, parent *issuedCert, subject pkix.Name, dnsNames []string, ips []net.IP) *issuedCert {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      subject,
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		DNSNames:     dnsNames,
+		IPAddresses:  ips,
+	}
+	parentCert, parentKey := tmpl, key
+	if parent == nil {
+		tmpl.IsCA = true
+		tmpl.BasicConstraintsValid = true
+		tmpl.KeyUsage |= x509.KeyUsageCertSign
+	} else {
+		tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+		parentCert, parentKey = parent.cert, parent.key
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parentCert, key.Public(), parentKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &issuedCert{
+		cert:     cert,
+		key:      key,
+		certPath: filepath.Join(dir, name+"-cert.pem"),
+		keyPath:  filepath.Join(dir, name+"-key.pem"),
+	}
+	if err := os.WriteFile(out.certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out.keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestTLSClientCertificateTLSAuthMultipleOptions(t *testing.T) {
