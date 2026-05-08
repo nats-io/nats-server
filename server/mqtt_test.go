@@ -2897,6 +2897,38 @@ func TestMQTTSubWithSpaces(t *testing.T) {
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo bar", qos: 0}}, []byte{mqttSubAckFailure})
 }
 
+// Filters containing characters that would corrupt the NATS wire protocol
+// (\t, \n, \r, \f) must result in a per-filter SUBACK failure, not a
+// connection drop. mqttFilterToNATSSubject rejects them; the SUBSCRIBE
+// parser logs and continues so the failure surfaces as mqttSubAckFailure.
+func TestMQTTSubWithControlChars(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	for _, test := range []struct {
+		name   string
+		filter string
+	}{
+		{"tab", "foo\tbar"},
+		{"line feed", "foo\nbar"},
+		{"carriage return", "foo\rbar"},
+		{"form feed", "foo\fbar"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+			// Mix a bad filter with a good one to prove the good one still
+			// succeeds (the connection is not torn down by the bad filter).
+			testMQTTSub(t, 1, mc, r,
+				[]*mqttFilter{{filter: test.filter, qos: 0}, {filter: "good/topic", qos: 0}},
+				[]byte{mqttSubAckFailure, 0})
+		})
+	}
+}
+
 func TestMQTTSubCaseSensitive(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
@@ -4278,6 +4310,10 @@ func TestMQTTPublishTopicErrors(t *testing.T) {
 		{"empty", ""},
 		{"with single level wildcard", "foo/+"},
 		{"with multiple level wildcard", "foo/#"},
+		{"with tab", "foo\tbar"},
+		{"with line feed", "foo\nbar"},
+		{"with carriage return", "foo\rbar"},
+		{"with form feed", "foo\fbar"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -9020,7 +9056,7 @@ func TestMQTTPublishSubjectLeafNodeParserFailures(t *testing.T) {
 
 	convertMQTTTopic := func(t *testing.T, topic []byte) []byte {
 		t.Helper()
-		require_NoError(t, mqttValidatePublishTopic(topic, "topic"))
+		require_NoError(t, mqttValidateTopic(topic, "topic"))
 		subject, err := mqttTopicToNATSPubSubject(topic)
 		require_NoError(t, err)
 		return subject
@@ -9124,7 +9160,7 @@ func TestMQTTPublishSubjectLeafNodeParserFailures(t *testing.T) {
 		{name: "multi level wildcard", topic: []byte("foo/#")},
 	} {
 		t.Run("rejected before leaf forwarding/"+test.name, func(t *testing.T) {
-			if err := mqttValidatePublishTopic(test.topic, "topic"); err == nil {
+			if err := mqttValidateTopic(test.topic, "topic"); err == nil {
 				_, err = mqttTopicToNATSPubSubject(test.topic)
 				require_Error(t, err)
 			}
