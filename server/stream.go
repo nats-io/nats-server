@@ -2772,14 +2772,20 @@ func (mset *stream) retryDisconnectedSyncConsumers() {
 	clientClosed := func(c *client) bool {
 		return c != nil && (c.flags.isSet(closeConnection) || c.flags.isSet(connMarkedClosed))
 	}
-	// Stale sources need to be reset: we expect a heartbeat every sourceHealthHB, so missing a couple
-	// is a strong signal the remote delivery is no longer reaching us and a retry is warranted.
+	// Stale sources need to be reset: if not seen past the health check interval, it's stale.
 	stale := func(si *sourceInfo) bool {
-		return time.Since(time.Unix(0, si.last.Load())) > 2*sourceHealthHB
+		return time.Since(time.Unix(0, si.last.Load())) > sourceHealthCheckInterval
 	}
 	shouldRetry := func(si *sourceInfo) bool {
-		if si != nil && (si.sip || si.sub == nil || clientClosed(si.sub.client) || stale(si)) {
-			si.fails, si.sip = 0, false
+		if si != nil && !si.sip && (si.sub == nil || clientClosed(si.sub.client) || stale(si)) {
+			// Skip if a recreate is already scheduled and we can't cancel it.
+			if t, ok := mset.sourceSetupSchedules[si.iname]; ok {
+				if !t.Stop() {
+					return false
+				}
+				delete(mset.sourceSetupSchedules, si.iname)
+			}
+			si.fails = 0
 			mset.cancelSourceInfo(si)
 			return true
 		}
