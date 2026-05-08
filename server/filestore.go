@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"math"
 	mrand "math/rand"
 	"net"
@@ -36,6 +37,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13049,7 +13051,13 @@ func init() {
 	// than 32 cores.
 	mp := runtime.GOMAXPROCS(-1)
 	nIO := min(16, max(4, mp))
-	if mp > 32 {
+	if ds, ok := os.LookupEnv("NATS_DIOS"); ok && ds != _EMPTY_ {
+		var err error
+		if nIO, err = strconv.Atoi(ds); err != nil {
+			panic(err)
+		}
+		log.Printf("dios override: %d\n", nIO)
+	} else if mp > 32 {
 		// If the system has more than 32 cores then limit dios to 50% of cores.
 		nIO = max(16, min(mp, mp/2))
 	}
