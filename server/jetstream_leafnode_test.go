@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1887,4 +1888,209 @@ func TestJetStreamLeafNodeAndMirrorResyncAfterLeafEstablished(t *testing.T) {
 	})
 	defer sGW1.Shutdown()
 	defer sGW2.Shutdown()
+}
+
+func TestJetStreamSourceConsumerLeafReconnectStorm(t *testing.T) {
+	hubT := `
+		listen: -1
+		server_name: hub
+		jetstream { store_dir: '%s', domain: HUB }
+		leaf { port: -1 }
+	`
+	hubConf := createConfFile(t, []byte(fmt.Sprintf(hubT, t.TempDir())))
+	sHub, oHub := RunServerWithConfig(hubConf)
+	defer sHub.Shutdown()
+	hubLeafURL := fmt.Sprintf("nats://u:p@127.0.0.1:%d", oHub.LeafNode.Port)
+
+	leafT := `
+		listen: -1
+		server_name: %s
+		jetstream { store_dir: '%s', domain: %s }
+		leaf { remotes [ { url: %s } ], reconnect: "0.25s" }
+	`
+
+	type leafSpec struct {
+		name      string
+		domain    string
+		srcStream string
+		conf      string
+		srv       *Server
+	}
+	leafs := []*leafSpec{
+		{name: "leaf1", domain: "L1", srcStream: "S1"},
+		{name: "leaf2", domain: "L2", srcStream: "S2"},
+		{name: "leaf3", domain: "L3", srcStream: "S3"},
+	}
+	for _, lf := range leafs {
+		lf.conf = createConfFile(t, []byte(fmt.Sprintf(leafT, lf.name, t.TempDir(), lf.domain, hubLeafURL)))
+		lf.srv, _ = RunServerWithConfig(lf.conf)
+	}
+	defer func() {
+		for _, lf := range leafs {
+			if lf.srv != nil {
+				lf.srv.Shutdown()
+			}
+		}
+	}()
+
+	// All three leaves connected to the hub.
+	checkLeafNodeConnectedCount(t, sHub, 3)
+	for _, lf := range leafs {
+		checkLeafNodeConnectedCount(t, lf.srv, 1)
+	}
+
+	// Source streams on each leaf.
+	for _, lf := range leafs {
+		nc, js := jsClientConnect(t, lf.srv, nats.UserInfo("u", "p"))
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     lf.srcStream,
+			Subjects: []string{lf.srcStream + ".>"},
+		})
+		require_NoError(t, err)
+		nc.Close()
+	}
+
+	// Aggregate stream on the hub sourcing from each leaf via that leaf's
+	// external API prefix.
+	ncHub, jsHub := jsClientConnect(t, sHub, nats.UserInfo("u", "p"))
+	defer ncHub.Close()
+
+	var sources []*nats.StreamSource
+	for _, lf := range leafs {
+		sources = append(sources, &nats.StreamSource{
+			Name:     lf.srcStream,
+			External: &nats.ExternalStream{APIPrefix: fmt.Sprintf("$JS.%s.API", lf.domain)},
+		})
+	}
+	_, err := jsHub.AddStream(&nats.StreamConfig{Name: "AGG", Sources: sources})
+	require_NoError(t, err)
+	mset, err := sHub.globalAccount().lookupStream("AGG")
+	require_NoError(t, err)
+
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if got := len(mset.sources); got != len(leafs) {
+			return fmt.Errorf("expected %d sources, have %d", len(leafs), got)
+		}
+		for _, si := range mset.sources {
+			if si.cname == _EMPTY_ || si.sub == nil {
+				return fmt.Errorf("source %s not established", si.name)
+			}
+		}
+		return nil
+	})
+
+	// Force the unrelated sources into the setup-in-progress state that the
+	// buggy shouldRetry latches onto. Correct scoping must ignore them;
+	// buggy scoping force-cancels their healthy subs.
+	type snap struct {
+		cname string
+		sub   *subscription
+	}
+	pre := map[string]snap{}
+	mset.mu.Lock()
+	for _, si := range mset.sources {
+		pre[si.name] = snap{cname: si.cname, sub: si.sub}
+		if si.name == "S1" || si.name == "S3" {
+			si.sip = true
+		}
+	}
+	mset.mu.Unlock()
+
+	leafs[1].srv.Shutdown()
+	checkLeafNodeConnectedCount(t, sHub, 2)
+	leafs[1].srv, _ = RunServerWithConfig(leafs[1].conf)
+	checkLeafNodeConnectedCount(t, sHub, 3)
+	checkLeafNodeConnectedCount(t, leafs[1].srv, 1)
+
+	// processLeafNodeConnect → checkInternalSyncConsumers →
+	// retryDisconnectedSyncConsumers runs synchronously on the hub for the
+	// new connection; give it time to do (or fail to do) any damage.
+	time.Sleep(500 * time.Millisecond)
+
+	// Pointer-equality on *subscription is timing-robust:
+	// cancelSourceInfo() nils si.sub immediately, and any fresh setup
+	// produces a new *subscription, so disturbance shows up regardless of
+	// when we sample within the post-bounce window.
+	mset.mu.RLock()
+	post := map[string]snap{}
+	for _, si := range mset.sources {
+		post[si.name] = snap{cname: si.cname, sub: si.sub}
+	}
+	mset.mu.RUnlock()
+
+	for _, name := range []string{"S1", "S3"} {
+		if post[name].sub != pre[name].sub {
+			t.Errorf("source %q was recreated by leaf2 reconnect (different domain): "+
+				"pre.sub=%p post.sub=%p (cname pre=%q post=%q)",
+				name, pre[name].sub, post[name].sub,
+				pre[name].cname, post[name].cname)
+		}
+	}
+}
+
+func TestJetStreamSourceConsumerSetupTimerGoroutineLeak(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "AGG",
+		Sources: []*nats.StreamSource{{
+			Name:     "SRC",
+			External: &nats.ExternalStream{APIPrefix: "$JS.NONEXISTENT.API"},
+		}},
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("AGG")
+	require_NoError(t, err)
+
+	// Wait for the source's sourceInfo to be present.
+	var iname string
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		for in := range mset.sources {
+			iname = in
+			return nil
+		}
+		return errors.New("no source yet")
+	})
+
+	// Let the initial setup quiesce so its inner goroutine is the
+	// pre-existing baseline rather than being attributed to the leak.
+	time.Sleep(300 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	// Per cycle: call retry, then wait one AfterFunc delay (100ms+rand(100ms))
+	// so the body fires and parks its inner goroutine in select.
+	const N = 30
+	for range N {
+		mset.mu.Lock()
+		if si := mset.sources[iname]; si != nil {
+			si.sip = true
+			// bypass the 2s retry throttle in setupSourceConsumer.
+			si.lreq = time.Time{}
+		}
+		mset.mu.Unlock()
+		mset.retryDisconnectedSyncConsumers()
+		time.Sleep(250 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	leaked := runtime.NumGoroutine() - baseline
+	const tolerance = 5
+	if leaked > tolerance {
+		t.Fatalf("AfterFunc-driven retry leaked %d goroutines after %d "+
+			"retryDisconnectedSyncConsumers cycles for a single iname "+
+			"(baseline=%d). Each cycle's AfterFunc fires a fresh "+
+			"trySetupSourceConsumer which spawns a new inner goroutine; "+
+			"the previous inner goroutine is orphaned in select, "+
+			"allowing linear ramp-up.",
+			leaked, N, baseline)
+	}
 }
