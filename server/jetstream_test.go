@@ -23791,3 +23791,78 @@ func TestJetStreamClusterInfoDoesNotBlockJSMutex(t *testing.T) {
 	// If contending then this will error.
 	require_ChanRead(t, done, time.Second)
 }
+
+// https://github.com/nats-io/nats-server/issues/8114
+func TestJetStreamStreamConfigConcurrentReadWrite(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxBytes: 1 << 10,
+	})
+	require_NoError(t, err)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, err := js.UpdateStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				MaxBytes: int64(1<<10) + int64(i%256),
+			})
+			require_NoError(t, err)
+		}
+	}()
+
+	readers := []func(){
+		// Hits jsa.reservedStorage, countStreams (indirectly via stats), tieredReservation.
+		func() { _, _ = js.AccountInfo() },
+		// Hits jsStreamNamesRequest.
+		func() {
+			for range js.StreamNames() {
+			}
+		},
+		// Hits jsStreamListRequest.
+		func() {
+			for range js.StreamsInfo() {
+			}
+		},
+		// Hits jsMsgDeleteRequest -> Sealed / DenyDelete read.
+		func() { _ = js.DeleteMsg("TEST", 1) },
+		// Hits jsStreamPurgeRequest -> Sealed / DenyPurge read.
+		func() { _ = js.PurgeStream("TEST") },
+	}
+	for _, r := range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				r()
+			}
+		}()
+	}
+
+	// Run long enough for the race detector to observe interleaving.
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}

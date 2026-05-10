@@ -7867,7 +7867,7 @@ func (js *jetStream) tieredStreamAndReservationCount(accName, tier string, cfg *
 		if sa.Config.Name == cfg.Name {
 			continue
 		}
-		if tier == _EMPTY_ || isSameTier(sa.Config, cfg) {
+		if tier == _EMPTY_ || isSameTier(sa.Config.Replicas, cfg.Replicas) {
 			numStreams++
 			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage {
 				// If tier is empty, all storage is flat and we should adjust for replicas.
@@ -9979,7 +9979,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
 	// Subtract to prevent against overflows.
 	if maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
-		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
+		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, name)
 		s.RateLimitWarnf("%s", err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
@@ -10463,8 +10463,11 @@ RETRY:
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
 					notifyLeaderStopCatchup(mrec, err)
-					if mset.js.limitsExceeded(mset.cfg.Storage) {
-						s.resourcesExceededError(mset.cfg.Storage)
+					mset.cfgMu.RLock()
+					storage := mset.cfg.Storage
+					mset.cfgMu.RUnlock()
+					if mset.js.limitsExceeded(storage) {
+						s.resourcesExceededError(storage)
 					} else {
 						s.Warnf("Catchup for stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
 					}
