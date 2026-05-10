@@ -25,10 +25,7 @@ const (
 )
 
 // Static strings to avoid strconv.Itoa and repetitive string allocations in hot paths.
-var (
-	jsApiLevelStr = strconv.Itoa(JSApiLevel)
-	natsVerStr    = VERSION
-)
+var JSApiLevelStr = strconv.Itoa(JSApiLevel)
 
 // getRequiredApiLevel returns the required API level for the JetStream asset.
 func getRequiredApiLevel(metadata map[string]string) string {
@@ -98,9 +95,9 @@ func setStaticStreamMetadata(cfg *StreamConfig) {
 
 // setDynamicStreamMetadata adds dynamic fields into the (copied) metadata.
 func setDynamicStreamMetadata(cfg *StreamConfig) *StreamConfig {
-	newCfg := new(StreamConfig)
+	var newCfg StreamConfig
 	if cfg != nil {
-		*newCfg = *cfg
+		newCfg = *cfg
 		newCfg.Metadata = make(map[string]string, len(cfg.Metadata)+2)
 		for key, value := range cfg.Metadata {
 			newCfg.Metadata[key] = value
@@ -109,10 +106,10 @@ func setDynamicStreamMetadata(cfg *StreamConfig) *StreamConfig {
 		newCfg.Metadata = make(map[string]string, 2)
 	}
 
-	newCfg.Metadata[JSServerVersionMetadataKey] = natsVerStr
-	newCfg.Metadata[JSServerLevelMetadataKey] = jsApiLevelStr
+	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
+	newCfg.Metadata[JSServerLevelMetadataKey] = JSApiLevelStr
 
-	return newCfg
+	return &newCfg
 }
 
 // copyConsumerMetadata copies versioning fields from metadata of prevCfg into cfg.
@@ -176,9 +173,9 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig) {
 
 // setDynamicConsumerMetadata adds dynamic fields into the (copied) metadata.
 func setDynamicConsumerMetadata(cfg *ConsumerConfig) *ConsumerConfig {
-	newCfg := new(ConsumerConfig)
+	var newCfg ConsumerConfig
 	if cfg != nil {
-		*newCfg = *cfg
+		newCfg = *cfg
 		newCfg.Metadata = make(map[string]string, len(cfg.Metadata)+2)
 		for key, value := range cfg.Metadata {
 			newCfg.Metadata[key] = value
@@ -187,10 +184,10 @@ func setDynamicConsumerMetadata(cfg *ConsumerConfig) *ConsumerConfig {
 		newCfg.Metadata = make(map[string]string, 2)
 	}
 
-	newCfg.Metadata[JSServerVersionMetadataKey] = natsVerStr
-	newCfg.Metadata[JSServerLevelMetadataKey] = jsApiLevelStr
+	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
+	newCfg.Metadata[JSServerLevelMetadataKey] = JSApiLevelStr
 
-	return newCfg
+	return &newCfg
 }
 
 // setDynamicConsumerInfoMetadata adds dynamic fields into the (copied) metadata.

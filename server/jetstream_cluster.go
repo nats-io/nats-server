@@ -202,19 +202,14 @@ func newUnsupportedStreamAssignment(s *Server, sa *streamAssignment, err error) 
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", req, JSApiLevel)
 		}
 	}
-
-	// Safely pre-compute the static info here.
-	var info StreamInfo
-	info.Created = sa.Created
-	info.Domain = s.getOpts().JetStreamDomain
-	info.TimeStamp = time.Now().UTC()
-	if sa.Config != nil {
-		info.Config = *setDynamicStreamMetadata(sa.Config)
-	}
-
 	return &unsupportedStreamAssignment{
 		reason: reason,
-		info:   info,
+		info: StreamInfo{
+			Created:   sa.Created,
+			Config:    *setDynamicStreamMetadata(sa.Config),
+			Domain:    s.getOpts().JetStreamDomain,
+			TimeStamp: time.Now().UTC(),
+		},
 	}
 }
 
@@ -235,13 +230,8 @@ func (usa *unsupportedStreamAssignment) setupInfoSub(s *Server, sa *streamAssign
 
 func (usa *unsupportedStreamAssignment) handleClusterStreamInfoRequest(_ *subscription, c *client, _ *Account, _, reply string, _ []byte) {
 	s, acc := c.srv, c.acc
-
-	// Create a local copy of the struct.
-	info := usa.info
-	info.TimeStamp = time.Now().UTC()
-	
-	resp := streamInfoClusterResponse{OfflineReason: usa.reason, StreamInfo: info}
-	s.sendDelayedErrResponse(acc, reply, nil, s.jsonResponse(&resp), errRespDelay)
+	info := streamInfoClusterResponse{OfflineReason: usa.reason, StreamInfo: usa.info}
+	s.sendDelayedErrResponse(acc, reply, nil, s.jsonResponse(&info), errRespDelay)
 }
 
 func (usa *unsupportedStreamAssignment) closeInfoSub(s *Server) {
@@ -294,20 +284,15 @@ func newUnsupportedConsumerAssignment(ca *consumerAssignment, err error) *unsupp
 			reason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", getRequiredApiLevel(ca.Config.Metadata), JSApiLevel)
 		}
 	}
-
-	// Pre-compute the static info safely here.
-	var info ConsumerInfo
-	info.Stream = ca.Stream
-	info.Name = ca.Name
-	info.Created = ca.Created
-	info.TimeStamp = time.Now().UTC()
-	if ca.Config != nil {
-		info.Config = setDynamicConsumerMetadata(ca.Config)
-	}
-
 	return &unsupportedConsumerAssignment{
 		reason: reason,
-		info:   info,
+		info: ConsumerInfo{
+			Stream:    ca.Stream,
+			Name:      ca.Name,
+			Created:   ca.Created,
+			Config:    setDynamicConsumerMetadata(ca.Config),
+			TimeStamp: time.Now().UTC(),
+		},
 	}
 }
 
@@ -328,12 +313,8 @@ func (uca *unsupportedConsumerAssignment) setupInfoSub(s *Server, ca *consumerAs
 
 func (uca *unsupportedConsumerAssignment) handleClusterConsumerInfoRequest(_ *subscription, c *client, _ *Account, _, reply string, _ []byte) {
 	s, acc := c.srv, c.acc
-
-	info := uca.info
-	info.TimeStamp = time.Now().UTC()
-
-	resp := consumerInfoClusterResponse{OfflineReason: uca.reason, ConsumerInfo: info}
-	s.sendDelayedErrResponse(acc, reply, nil, s.jsonResponse(&resp), errRespDelay)
+	info := consumerInfoClusterResponse{OfflineReason: uca.reason, ConsumerInfo: uca.info}
+	s.sendDelayedErrResponse(acc, reply, nil, s.jsonResponse(&info), errRespDelay)
 }
 
 func (uca *unsupportedConsumerAssignment) closeInfoSub(s *Server) {
