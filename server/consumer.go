@@ -5929,7 +5929,10 @@ func (o *consumer) selectStartingSeqNo() {
 	o.asflr = o.sseq - 1
 	// Set our starting sequence state.
 	// But only if we're not clustered, if clustered we propose upon becoming leader.
-	if o.store != nil && o.sseq > 0 && o.cfg.replicas(&o.mset.cfg) == 1 {
+	o.mset.cfgMu.RLock()
+	isR1 := o.cfg.replicas(&o.mset.cfg) == 1
+	o.mset.cfgMu.RUnlock()
+	if o.store != nil && o.sseq > 0 && isR1 {
 		o.store.SetStarting(o.sseq - 1)
 	}
 }

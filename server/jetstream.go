@@ -1850,13 +1850,15 @@ func diffCheckedLimits(a, b map[string]JetStreamAccountLimits) map[string]JetStr
 // Lock should be held.
 func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 	for _, mset := range jsa.streams {
-		cfg := &mset.cfg
-		if (tier == _EMPTY_ || tier == tierName(cfg.Replicas)) && cfg.MaxBytes > 0 {
-			switch cfg.Storage {
+		mset.cfgMu.RLock()
+		storage, replicas, maxBytes := mset.cfg.Storage, mset.cfg.Replicas, mset.cfg.MaxBytes
+		mset.cfgMu.RUnlock()
+		if (tier == _EMPTY_ || tier == tierName(replicas)) && maxBytes > 0 {
+			switch storage {
 			case FileStorage:
-				store += uint64(cfg.MaxBytes)
+				store += uint64(maxBytes)
 			case MemoryStorage:
-				mem += uint64(cfg.MaxBytes)
+				mem += uint64(maxBytes)
 			}
 		}
 	}
@@ -2371,9 +2373,9 @@ func tierName(replicas int) string {
 	return fmt.Sprintf("R%d", replicas)
 }
 
-func isSameTier(cfgA, cfgB *StreamConfig) bool {
-	a := max(1, cfgA.Replicas)
-	b := max(1, cfgB.Replicas)
+func isSameTier(replicasA, replicasB int) bool {
+	a := max(1, replicasA)
+	b := max(1, replicasB)
 	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
 	return a == b
 }
@@ -2399,9 +2401,12 @@ func (jsa *jsAccount) selectLimits(replicas int) (JetStreamAccountLimits, string
 
 // Lock should be held.
 func (jsa *jsAccount) countStreams(tier string, cfg *StreamConfig) (streams int) {
-	for _, sa := range jsa.streams {
+	for _, mset := range jsa.streams {
+		mset.cfgMu.RLock()
+		name, replicas := mset.cfg.Name, mset.cfg.Replicas
+		mset.cfgMu.RUnlock()
 		// Don't count the stream toward the limit if it already exists.
-		if (tier == _EMPTY_ || isSameTier(&sa.cfg, cfg)) && sa.cfg.Name != cfg.Name {
+		if (tier == _EMPTY_ || isSameTier(replicas, cfg.Replicas)) && name != cfg.Name {
 			streams++
 		}
 	}
