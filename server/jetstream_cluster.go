@@ -9207,6 +9207,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
+			if cfg.DeliverPolicy != DeliverAll {
+				resp.Error = NewJSConsumerWQConsumerNotDeliverAllError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			subjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
 			if len(subjects) == 0 && len(sa.consumers) > 0 {
 				resp.Error = NewJSConsumerWQMultipleUnfilteredError()

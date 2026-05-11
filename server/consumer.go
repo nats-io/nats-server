@@ -1092,7 +1092,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			mset.mu.Unlock()
 			return nil, NewJSConsumerWQRequiresExplicitAckError()
 		}
-
+		if config.DeliverPolicy != DeliverAll {
+			mset.mu.Unlock()
+			return nil, NewJSConsumerWQConsumerNotDeliverAllError()
+		}
 		if len(mset.consumers) > 0 {
 			subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 			if len(subjects) == 0 {
@@ -1119,10 +1122,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 					return nil, NewJSConsumerWQConsumerNotUniqueError()
 				}
 			}
-		}
-		if config.DeliverPolicy != DeliverAll {
-			mset.mu.Unlock()
-			return nil, NewJSConsumerWQConsumerNotDeliverAllError()
 		}
 	}
 
