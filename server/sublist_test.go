@@ -1652,8 +1652,11 @@ func TestSublistHasInterest(t *testing.T) {
 	}
 
 	// Call Match on a subject we know there is no match.
+	hits := sl.cacheHits
 	sl.Match("bar")
 	require_False(t, sl.HasInterest("bar"))
+	// The sublist caches "negative" results as well, expect a cache hit.
+	require_Equal(t, sl.cacheHits, hits+1)
 
 	// Remove fooSub and check interest again
 	sl.Remove(fooSub)
@@ -1833,8 +1836,11 @@ func TestSublistNumInterest(t *testing.T) {
 	}
 
 	// Call Match on a subject we know there is no match.
+	hits := sl.cacheHits
 	sl.Match("bar")
 	require_NumInterest(t, "bar", 0, 0)
+	// The sublist caches "negative" results as well, expect a cache hit.
+	require_Equal(t, sl.cacheHits, hits+1)
 
 	// Remove fooSub and check interest again
 	sl.Remove(fooSub)
