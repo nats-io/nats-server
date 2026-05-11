@@ -8338,3 +8338,37 @@ func TestJetStreamClusterSourceStartingSeqIgnoresInflight(t *testing.T) {
 			got, stored+inflight, stored, inflight, got+1, inflight)
 	}
 }
+
+func TestJetStreamClusterWorkQueueConsumerCreateRejectionNoOrphan(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "WQ",
+		Subjects:  []string{"wq.>"},
+		Replicas:  3,
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("WQ", &nats.ConsumerConfig{
+		Name:          "CONSUMER",
+		AckPolicy:     nats.AckExplicitPolicy,
+		DeliverPolicy: nats.DeliverByStartSequencePolicy,
+		OptStartSeq:   1,
+	})
+	require_Error(t, err, NewJSConsumerWQConsumerNotDeliverAllError())
+
+	for _, s := range c.servers {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		ca := sjs.consumerAssignment(globalAccountName, "WQ", "CONSUMER")
+		sjs.mu.RUnlock()
+		if ca != nil {
+			t.Fatalf("orphan assignment present on %s", s.Name())
+		}
+	}
+}
