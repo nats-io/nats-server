@@ -3409,8 +3409,12 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		}
 	}
 
-	// Check for proxy protocol if enabled.
-	if !isClosed && !tlsRequired && opts.ProxyProtocol {
+	// Check for proxy protocol if enabled. The PROXY header is sent as
+	// plaintext before any TLS handshake per the spec, so we must read it
+	// before doing TLS even when TLS is required. Any bytes read past the
+	// header are kept in `pre` and replayed into the TLS handshake (or the
+	// non-TLS protocol parser) by the tlsMixConn wrapper used below.
+	if !isClosed && opts.ProxyProtocol {
 		if len(pre) == 0 {
 			// There has been no pre-read yet, do so so we can work out
 			// if the client is trying to negotiate PROXY.
