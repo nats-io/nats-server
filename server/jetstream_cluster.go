@@ -3738,6 +3738,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		}
 
 		//isMoveRequest := sa.DesiredPlacement.Placement != nil
+		current := copyStrings(sa.Group.Peers)
 		actual := n.PeerNames()
 		desired := sa.DesiredPlacement.Group.Peers
 		foundAll := true
@@ -3748,10 +3749,11 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			}
 		}
 		if !foundAll {
-			//fmt.Println("Waiting for group to expand")
+			//fmt.Println("Waiting for stream group to expand")
 			js.mu.RUnlock()
 			return false
 		}
+
 		var remaining []string
 		for _, peer := range actual {
 			if !slices.Contains(desired, peer) {
@@ -3759,11 +3761,34 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			}
 		}
 		if len(remaining) > 0 {
-			current := copyStrings(sa.Group.Peers)
 			slices.Sort(current)
 			slices.Sort(actual)
 			// If the peer sets are an exact match, we can remove a peer.
 			if slices.Equal(current, actual) {
+				// First need to check on any consumers and make sure they have moved properly before scaling down ourselves.
+				var needToWait bool
+				for name, c := range sa.consumers {
+					if c.unsupported != nil {
+						continue
+					}
+					for _, peer := range c.Group.Peers {
+						// If we have peers still in the old set block.
+						if !slices.Contains(desired, peer) {
+							s.Debugf("Scale down of '%s > %s' blocked by consumer '%s'", sa.Client.serviceAccount(), sa.Config.Name, name)
+							//fmt.Printf("Scale down of '%s > %s' blocked by consumer '%s'\n", sa.Client.serviceAccount(), sa.Config.Name, name)
+							needToWait = true
+							break
+						}
+					}
+					if needToWait {
+						break
+					}
+				}
+				if needToWait {
+					js.mu.RUnlock()
+					return false
+				}
+
 				js.mu.RUnlock()
 				// TODO(mvv): removes a random peer, should instead remove non-current first
 				//  to increase chances we're not bricking ourselves.
@@ -3909,7 +3934,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 			}
 		}
 		if !foundAll {
-			//fmt.Println("Waiting for group to expand")
+			//fmt.Println("Waiting for consumer group to expand")
 			js.mu.RUnlock()
 			return false
 		}
@@ -7540,7 +7565,7 @@ func (js *jetStream) processStreamAssignmentUpdates(sub *subscription, c *client
 	}
 
 	if err := cc.meta.Propose(encodeUpdateStreamAssignment(sa)); err == nil {
-		//fmt.Printf("Stream update to peers: %v\n", sa.Group.Peers)
+		//fmt.Printf("Stream peer updates for '%s > %s' to: %v\n", sa.Client.serviceAccount(), sa.Config.Name, sa.Group.Peers)
 		cc.trackInflightStreamProposal(acc.Name, sa, false)
 	}
 }
@@ -7589,7 +7614,7 @@ func (js *jetStream) processConsumerAssignmentUpdates(sub *subscription, c *clie
 	}
 
 	if err := cc.meta.Propose(encodeAddConsumerAssignment(ca)); err == nil {
-		//fmt.Printf("Consumer update to peers: %v\n", ca.Group.Peers)
+		//fmt.Printf("Consumer peer updates for '%s > %s > %s' to: %v\n", ca.Client.serviceAccount(), ca.Stream, ca.Name, ca.Group.Peers)
 		cc.trackInflightConsumerProposal(acc.Name, update.Stream, ca, false)
 	}
 }
@@ -8744,12 +8769,20 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 						// Re-acquire here.
 						js.mu.Lock()
 					}
+
+					//// TODO(mvv): docs, preserve peers but optionally need to change the name if scaling up/to R1
+					//// FIXME(mvv): should this still be done when scaling down to R1?
+					//cca.DesiredPlacement = &desiredGroupPlacement{
+					//	ID:    nuid.Next(),
+					//	Group: cca.Group,
+					//}
+					//cca.Group = ca.Group
+
 					// We can not propose here before the stream itself so we collect them.
 					consumers = append(consumers, cca)
 				}
 			}
 		}
-
 	} else if isMoveRequest {
 		if len(peerSet) == 0 {
 			nrg, err := js.createGroupForStream(ci, newCfg)
@@ -8794,12 +8827,23 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			} else {
 				cca.Group.Peers = append(dropPeerSet, cPeerSet...)
 			}
+
+			// TODO(mvv): docs, preserve peers but optionally need to change the name if scaling up/to R1
+			// FIXME(mvv): should this still be done when scaling down to R1?
+			cca.DesiredPlacement = &desiredGroupPlacement{
+				ID:    nuid.Next(),
+				Group: cca.Group,
+			}
+			cca.Group = ca.Group
+
 			// make sure it overlaps with peers and remove if not
 			if cca.Group.Preferred != _EMPTY_ {
-				if !slices.Contains(cca.Group.Peers, cca.Group.Preferred) {
+				combined := cca.Group.combinePeersWithDesired(cca.DesiredPlacement)
+				if !slices.Contains(combined, cca.Group.Preferred) {
 					cca.Group.Preferred = _EMPTY_
 				}
 			}
+
 			// We can not propose here before the stream itself so we collect them.
 			consumers = append(consumers, cca)
 		}
@@ -11183,31 +11227,38 @@ func (js *jetStream) clusterInfoWithDesired(rg *raftGroup, desired *desiredGroup
 			}
 		}
 	}
+
+	addPeer := func(peer string) {
+		// Skip if the desired peer is already present.
+		if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
+			return
+		}
+		pi := &PeerInfo{
+			Current: false,
+			Offline: true,
+			Peer:    peer,
+		}
+		// If node is found, complete/update the settings.
+		if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
+			si := sir.(nodeInfo)
+			pi.Name, pi.Offline = si.name, si.offline
+		} else {
+			// If not, then add a name that indicates that the server name
+			// is unknown at this time, and clear the lag since it is misleading
+			// (the node may not have that much lag).
+			// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+			// would technically not be required, but keeping it for now.
+			pi.Name = fmt.Sprintf("Server name unknown at this time (peerID: %s)", peer)
+		}
+		ci.Replicas = append(ci.Replicas, pi)
+	}
 	if desiredRg != nil {
 		for _, peer := range desiredRg.Peers {
-			// Skip if the desired peer is already present.
-			if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
-				continue
-			}
-			pi := &PeerInfo{
-				Current: false,
-				Offline: true,
-				Peer:    peer,
-			}
-			// If node is found, complete/update the settings.
-			if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
-				si := sir.(nodeInfo)
-				pi.Name, pi.Offline = si.name, si.offline
-			} else {
-				// If not, then add a name that indicates that the server name
-				// is unknown at this time, and clear the lag since it is misleading
-				// (the node may not have that much lag).
-				// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
-				// would technically not be required, but keeping it for now.
-				pi.Name = fmt.Sprintf("Server name unknown at this time (peerID: %s)", peer)
-			}
-			ci.Replicas = append(ci.Replicas, pi)
+			addPeer(peer)
 		}
+	}
+	for _, peer := range rg.Peers {
+		addPeer(peer)
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...

@@ -4175,7 +4175,8 @@ func TestJetStreamClusterScaleConsumer(t *testing.T) {
 		if r == 0 {
 			r = si.Config.Replicas
 		}
-		js.UpdateConsumer("TEST", durCfg)
+		_, err = js.UpdateConsumer("TEST", durCfg)
+		require_NoError(t, err)
 
 		checkFor(t, time.Second*30, time.Millisecond*250, func() error {
 			if ci, err = js.ConsumerInfo("TEST", "DUR"); err != nil {
