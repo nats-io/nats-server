@@ -16,10 +16,13 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -610,4 +613,145 @@ func TestClientProxyProtoUnrecognizedVersion(t *testing.T) {
 
 	_, _, err := readProxyProtoHeader(conn)
 	require_Error(t, err, errProxyProtoUnrecognized)
+}
+
+// ============================================================================
+// PROXY Protocol + TLS Tests (regression for issue #7571)
+// ============================================================================
+
+// runProxyProtoTLSServer starts a server with proxy_protocol and a required
+// TLS listener (no allow_non_tls, no tls_first).
+func runProxyProtoTLSServer(t *testing.T) *Server {
+	t.Helper()
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+		CaFile:   "../test/configs/certs/ca.pem",
+	}
+	tlsConfig, err := GenTLSConfig(tc)
+	require_NoError(t, err)
+
+	opts := DefaultOptions()
+	opts.Port = -1
+	opts.ProxyProtocol = true
+	opts.TLSConfig = tlsConfig
+	opts.TLSTimeout = 2
+	return RunServer(opts)
+}
+
+// proxyProtoTLSClientConfig builds a tls.Config trusting the test CA. The
+// server cert is issued for "localhost" / 127.0.0.1, so ServerName must match.
+func proxyProtoTLSClientConfig(t *testing.T) *tls.Config {
+	t.Helper()
+	caPEM, err := os.ReadFile("../test/configs/certs/ca.pem")
+	require_NoError(t, err)
+	pool := x509.NewCertPool()
+	require_True(t, pool.AppendCertsFromPEM(caPEM))
+	return &tls.Config{
+		RootCAs:    pool,
+		ServerName: "localhost",
+	}
+}
+
+// findProxyProtoClient finds a connected client whose host/port matches what
+// was advertised in the PROXY header.
+func findProxyProtoClient(t *testing.T, s *Server, clientIP string, clientPort uint16) *client {
+	t.Helper()
+	s.mu.Lock()
+	clients := make([]*client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.mu.Unlock()
+
+	for _, c := range clients {
+		c.mu.Lock()
+		host, port := c.host, c.port
+		c.mu.Unlock()
+		if host == clientIP && port == clientPort {
+			return c
+		}
+	}
+	return nil
+}
+
+// connectProxyProtoTLS mirrors what an L4 proxy and a TLS-enabled NATS client
+// do over a single TCP connection: prepend the PROXY header, read the initial
+// plaintext INFO, then upgrade to TLS. Returns the buffered reader and the
+// TLS-wrapped connection for subsequent protocol writes.
+func connectProxyProtoTLS(t *testing.T, addr string, header []byte) (*bufio.Reader, *tls.Conn) {
+	t.Helper()
+	rawConn, err := net.Dial("tcp", addr)
+	require_NoError(t, err)
+	require_NoError(t, rawConn.SetDeadline(time.Now().Add(5*time.Second)))
+
+	_, err = rawConn.Write(header)
+	require_NoError(t, err)
+
+	// Server emits INFO over plaintext before the TLS upgrade. Read it now
+	// so the bytes don't end up as input to the TLS handshake.
+	plainReader := bufio.NewReader(rawConn)
+	infoLine, err := plainReader.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(infoLine, "INFO "))
+	require_Equal(t, plainReader.Buffered(), 0)
+
+	tlsConn := tls.Client(rawConn, proxyProtoTLSClientConfig(t))
+	require_NoError(t, tlsConn.Handshake())
+	return bufio.NewReader(tlsConn), tlsConn
+}
+
+// TestClientProxyProtoV1WithRequiredTLS verifies that with proxy_protocol and
+// required TLS, a client may send the PROXY v1 header followed by the TLS
+// upgrade on a single TCP connection. Regression for issue #7571.
+func TestClientProxyProtoV1WithRequiredTLS(t *testing.T) {
+	s := runProxyProtoTLSServer(t)
+	defer s.Shutdown()
+
+	clientIP, clientPort := "203.0.113.50", uint16(54321)
+	header := buildProxyV1Header(t, "TCP4", clientIP, "127.0.0.1", clientPort, 4222)
+	cr, tlsConn := connectProxyProtoTLS(t, s.Addr().String(), header)
+	defer tlsConn.Close()
+
+	_, err := tlsConn.Write([]byte("CONNECT {\"verbose\":true,\"pedantic\":false,\"protocol\":1}\r\nPING\r\n"))
+	require_NoError(t, err)
+
+	line, err := cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(line, "+OK"))
+	expectPong(t, cr)
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if findProxyProtoClient(t, s, clientIP, clientPort) == nil {
+			return fmt.Errorf("no client with PROXY-supplied host/port yet")
+		}
+		return nil
+	})
+}
+
+// TestClientProxyProtoV2WithRequiredTLS is the v2 counterpart to
+// TestClientProxyProtoV1WithRequiredTLS.
+func TestClientProxyProtoV2WithRequiredTLS(t *testing.T) {
+	s := runProxyProtoTLSServer(t)
+	defer s.Shutdown()
+
+	clientIP, clientPort := "203.0.113.51", uint16(54322)
+	header := buildProxyV2Header(t, clientIP, "127.0.0.1", clientPort, 4222, proxyProtoFamilyInet)
+	cr, tlsConn := connectProxyProtoTLS(t, s.Addr().String(), header)
+	defer tlsConn.Close()
+
+	_, err := tlsConn.Write([]byte("CONNECT {\"verbose\":true,\"pedantic\":false,\"protocol\":1}\r\nPING\r\n"))
+	require_NoError(t, err)
+
+	line, err := cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(line, "+OK"))
+	expectPong(t, cr)
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if findProxyProtoClient(t, s, clientIP, clientPort) == nil {
+			return fmt.Errorf("no client with PROXY-supplied host/port yet")
+		}
+		return nil
+	})
 }
