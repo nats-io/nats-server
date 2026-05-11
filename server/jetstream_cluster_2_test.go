@@ -8642,6 +8642,41 @@ func TestJetStreamClusterDesyncAfterDiskResetAllButOne(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterDesyncAfterDiskResetDuringRollout(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Perform a rolling restart.
+	for _, s := range c.servers {
+		// Shutdown and fully remove data directory for one server.
+		sd := s.StoreDir()
+		s.Shutdown()
+		require_NoError(t, os.RemoveAll(sd))
+
+		// Restart the server and wait for it to recover.
+		s = c.restartServer(s)
+		c.waitOnServerHealthz(s)
+		require_NoError(t, checkState(t, c, globalAccountName, "TEST"))
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
