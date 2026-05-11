@@ -9424,6 +9424,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
+			if cfg.DeliverPolicy != DeliverAll {
+				resp.Error = NewJSConsumerWQConsumerNotDeliverAllError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			subjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
 			for oca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
 				if oca.Name == oname || oca.Config.Direct || oca.Config.Sourcing {
