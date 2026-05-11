@@ -6122,6 +6122,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	var thdrsOnly bool
 	if mset.tr != nil {
 		tsubj, _ = mset.tr.Match(subject)
+		if tsubj != _EMPTY_ && !IsValidPublishSubject(tsubj) {
+			s.RateLimitWarnf("Stream '%s > %s' suppressing republish with invalid subject %q", accName, name, tsubj)
+			tsubj = _EMPTY_ // ... stops the republish.
+		}
 		if mset.cfg.RePublish != nil {
 			thdrsOnly = mset.cfg.RePublish.HeadersOnly
 		}
