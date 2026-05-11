@@ -16,12 +16,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func BenchmarkJetStreamCreate(b *testing.B) {
@@ -49,11 +51,11 @@ func BenchmarkJetStreamCreate(b *testing.B) {
 	benchmarksCases := []struct {
 		clusterSize int
 		replicas    int
-		storage     nats.StorageType
+		storage     jetstream.StorageType
 	}{
-		{1, 1, nats.MemoryStorage},
-		{3, 3, nats.MemoryStorage},
-		{3, 3, nats.FileStorage},
+		{1, 1, jetstream.MemoryStorage},
+		{3, 3, jetstream.MemoryStorage},
+		{3, 3, jetstream.FileStorage},
 	}
 
 	for _, bc := range benchmarksCases {
@@ -106,25 +108,27 @@ func BenchmarkJetStreamCreate(b *testing.B) {
 							opsLeft.Store(int64(b.N))
 							totalErrors := atomic.Int64{}
 
+							ctx := context.Background()
+
 							// Pre-create connections and JS contexts
 							for i := 1; i <= concurrency; i++ {
-								nc, js := jsClientConnectURL(b, connectURL)
+								nc, js := jsClientConnectNewAPIURL(b, connectURL)
 								defer nc.Close()
-								go func(clientId int, nc *nats.Conn, js nats.JetStreamContext) {
+								go func(clientId int, nc *nats.Conn, js jetstream.JetStream) {
 									defer wgComplete.Done()
 
 									// Config struct (reused and modified in place for each call)
-									streamConfig := nats.StreamConfig{
+									streamConfig := jetstream.StreamConfig{
 										Name:     "?",
 										Storage:  bc.storage,
 										Replicas: bc.replicas,
 									}
-									kvConfig := nats.KeyValueConfig{
+									kvConfig := jetstream.KeyValueConfig{
 										Bucket:   "?",
 										Storage:  bc.storage,
 										Replicas: bc.replicas,
 									}
-									objConfig := nats.ObjectStoreConfig{
+									objConfig := jetstream.ObjectStoreConfig{
 										Bucket:   "?",
 										Storage:  bc.storage,
 										Replicas: bc.replicas,
@@ -149,13 +153,13 @@ func BenchmarkJetStreamCreate(b *testing.B) {
 										switch rt {
 										case Stream:
 											streamConfig.Name = resourceName
-											_, err = js.AddStream(&streamConfig)
+											_, err = js.CreateStream(ctx, streamConfig)
 										case KVBucket:
 											kvConfig.Bucket = resourceName
-											_, err = js.CreateKeyValue(&kvConfig)
+											_, err = js.CreateKeyValue(ctx, kvConfig)
 										case ObjectStore:
 											objConfig.Bucket = resourceName
-											_, err = js.CreateObjectStore(&objConfig)
+											_, err = js.CreateObjectStore(ctx, objConfig)
 										}
 										opCount += 1
 										if err != nil {
@@ -202,11 +206,11 @@ func BenchmarkJetStreamCreateConsumers(b *testing.B) {
 	benchmarksCases := []struct {
 		clusterSize      int
 		consumerReplicas int
-		consumerStorage  nats.StorageType
+		consumerStorage  jetstream.StorageType
 	}{
-		{1, 1, nats.MemoryStorage},
-		{3, 3, nats.MemoryStorage},
-		{3, 3, nats.FileStorage},
+		{1, 1, jetstream.MemoryStorage},
+		{3, 3, jetstream.MemoryStorage},
+		{3, 3, jetstream.FileStorage},
 	}
 
 	type ConsumerType string
@@ -252,21 +256,27 @@ func BenchmarkJetStreamCreateConsumers(b *testing.B) {
 							}
 
 							// Setup server or cluster
-							_, leaderServer, shutdown, nc, js := startJSClusterAndConnect(b, bc.clusterSize)
+							_, leaderServer, shutdown, nc, _ := startJSClusterAndConnect(b, bc.clusterSize)
 							defer shutdown()
 							defer nc.Close()
 
 							// All clients connect to cluster (meta) leader for lower variability
 							connectURL := leaderServer.ClientURL()
 
+							ctx := context.Background()
+
+							// New-API JS for stream/consumer creation
+							ncAPI, js := jsClientConnectNewAPIURL(b, connectURL)
+							defer ncAPI.Close()
+
 							// Create stream
-							streamConfig := nats.StreamConfig{
+							streamConfig := jetstream.StreamConfig{
 								Name:     streamName,
-								Storage:  nats.FileStorage,
+								Storage:  jetstream.FileStorage,
 								Replicas: bc.clusterSize,
 							}
 
-							_, err := js.AddStream(&streamConfig)
+							_, err := js.CreateStream(ctx, streamConfig)
 							if err != nil {
 								b.Fatalf("Failed to create stream: %s", err)
 							}
@@ -286,18 +296,18 @@ func BenchmarkJetStreamCreateConsumers(b *testing.B) {
 
 							// Pre-create connections and JS contexts
 							for i := 1; i <= concurrency; i++ {
-								nc, js := jsClientConnectURL(b, connectURL)
+								nc, js := jsClientConnectNewAPIURL(b, connectURL)
 								defer nc.Close()
 
-								go func(clientId int, nc *nats.Conn, js nats.JetStreamContext) {
+								go func(clientId int, nc *nats.Conn, js jetstream.JetStream) {
 									defer wgComplete.Done()
 
 									// Config struct (reused and modified in place for each call)
-									cfg := nats.ConsumerConfig{
+									cfg := jetstream.ConsumerConfig{
 										Durable:       "",
 										Name:          "",
 										Replicas:      bc.consumerReplicas,
-										MemoryStorage: bc.consumerStorage == nats.MemoryStorage,
+										MemoryStorage: bc.consumerStorage == jetstream.MemoryStorage,
 									}
 
 									// Block until everyone is ready
@@ -313,7 +323,7 @@ func BenchmarkJetStreamCreateConsumers(b *testing.B) {
 										if ct == Durable {
 											cfg.Durable = cfg.Name
 										}
-										_, err = js.AddConsumer(streamName, &cfg)
+										_, err = js.CreateConsumer(ctx, streamName, cfg)
 										if err != nil {
 											b.Logf("Failed to add consumer: %s", err)
 											errCount += 1

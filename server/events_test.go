@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -2007,19 +2009,21 @@ func TestServerEventsHealthZSingleServer(t *testing.T) {
 		t.Fatalf("Error on connect: %v", err)
 	}
 	defer ncAcc.Close()
-	js, err := ncAcc.JetStream()
+	js, err := jetstream.New(ncAcc)
 	if err != nil {
 		t.Fatalf("Error creating JetStream context: %v", err)
 	}
-	_, err = js.AddStream(&nats.StreamConfig{
+	ctx := context.Background()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "test",
 		Subjects: []string{"foo"},
 	})
 	if err != nil {
 		t.Fatalf("Error creating stream: %v", err)
 	}
-	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
-		Name: "cons",
+	_, err = js.CreateConsumer(ctx, "test", jetstream.ConsumerConfig{
+		Name:      "cons",
+		AckPolicy: jetstream.AckNonePolicy,
 	})
 	if err != nil {
 		t.Fatalf("Error creating consumer: %v", err)
@@ -2313,11 +2317,12 @@ func TestServerEventsHealthZClustered(t *testing.T) {
 		t.Fatalf("Error on connect: %v", err)
 	}
 	defer ncAcc.Close()
-	js, err := ncAcc.JetStream()
+	js, err := jetstream.New(ncAcc)
 	if err != nil {
 		t.Fatalf("Error creating JetStream context: %v", err)
 	}
-	_, err = js.AddStream(&nats.StreamConfig{
+	ctx := context.Background()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "test",
 		Subjects: []string{"foo"},
 		Replicas: 3,
@@ -2325,9 +2330,10 @@ func TestServerEventsHealthZClustered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating stream: %v", err)
 	}
-	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
-		Name:     "cons",
-		Replicas: 3,
+	_, err = js.CreateConsumer(ctx, "test", jetstream.ConsumerConfig{
+		Name:      "cons",
+		Replicas:  3,
+		AckPolicy: jetstream.AckNonePolicy,
 	})
 	if err != nil {
 		t.Fatalf("Error creating consumer: %v", err)
@@ -2616,23 +2622,25 @@ func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 		t.Fatalf("Error on connect: %v", err)
 	}
 	defer ncAcc.Close()
-	js, err := ncAcc.JetStream()
+	js, err := jetstream.New(ncAcc)
 	if err != nil {
 		t.Fatalf("Error creating JetStream context: %v", err)
 	}
+	ctx := context.Background()
 
 	pingSubj := fmt.Sprintf(serverHealthzReqSubj, "PING")
 
 	t.Run("non-replicated stream", func(t *testing.T) {
-		_, err = js.AddStream(&nats.StreamConfig{
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:     "test",
 			Subjects: []string{"foo"},
 		})
 		if err != nil {
 			t.Fatalf("Error creating stream: %v", err)
 		}
-		_, err = js.AddConsumer("test", &nats.ConsumerConfig{
-			Name: "cons",
+		_, err = js.CreateConsumer(ctx, "test", jetstream.ConsumerConfig{
+			Name:      "cons",
+			AckPolicy: jetstream.AckNonePolicy,
 		})
 		if err != nil {
 			t.Fatalf("Error creating consumer: %v", err)
@@ -2685,7 +2693,7 @@ func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 	})
 
 	t.Run("non-replicated consumer", func(t *testing.T) {
-		_, err = js.AddStream(&nats.StreamConfig{
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:     "test-repl",
 			Subjects: []string{"bar"},
 			Replicas: 3,
@@ -2693,8 +2701,9 @@ func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error creating stream: %v", err)
 		}
-		_, err = js.AddConsumer("test-repl", &nats.ConsumerConfig{
-			Name: "cons-single",
+		_, err = js.CreateConsumer(ctx, "test-repl", jetstream.ConsumerConfig{
+			Name:      "cons-single",
+			AckPolicy: jetstream.AckNonePolicy,
 		})
 		if err != nil {
 			t.Fatalf("Error creating consumer: %v", err)
@@ -3479,7 +3488,7 @@ func TestServerEventsStatszSingleServer(t *testing.T) {
 
 	// Connect as a system user and make sure if there is
 	// subscription interest that we will receive updates.
-	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
+	nc, _ := jsClientConnectNewAPI(t, s, nats.UserInfo("admin", "p1d"))
 	defer nc.Close()
 
 	sub, err := nc.SubscribeSync(fmt.Sprintf(serverStatsSubj, "*"))
@@ -3504,7 +3513,7 @@ func TestServerEventsReload(t *testing.T) {
 
 	// Connect as a test user and make sure the reload endpoint is not
 	// accessible.
-	ncTest, _ := jsClientConnect(t, s, nats.UserInfo("foo", "bar"))
+	ncTest, _ := jsClientConnectNewAPI(t, s, nats.UserInfo("foo", "bar"))
 	defer ncTest.Close()
 	testReply := ncTest.NewRespInbox()
 	sub, err := ncTest.SubscribeSync(testReply)
@@ -3517,7 +3526,7 @@ func TestServerEventsReload(t *testing.T) {
 	require_True(t, s.getOpts().PingInterval == 100*time.Millisecond)
 
 	// Connect as a system user.
-	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
+	nc, _ := jsClientConnectNewAPI(t, s, nats.UserInfo("admin", "p1d"))
 	defer nc.Close()
 
 	// rewrite the config file with a different ping interval

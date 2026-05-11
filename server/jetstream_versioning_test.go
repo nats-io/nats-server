@@ -18,6 +18,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestGetAndSupportsRequiredApiLevel(t *testing.T) {
@@ -385,7 +387,7 @@ func TestJetStreamCopyConsumerMetadataRemoveDynamicFields(t *testing.T) {
 
 type server struct {
 	replicas int
-	js       nats.JetStreamContext
+	js       jetstream.JetStream
 	nc       *nats.Conn
 }
 
@@ -397,12 +399,12 @@ const (
 func TestJetStreamMetadataMutations(t *testing.T) {
 	single := RunBasicJetStreamServer(t)
 	defer single.Shutdown()
-	nc, js := jsClientConnect(t, single)
+	nc, js := jsClientConnectNewAPI(t, single)
 	defer nc.Close()
 
 	cluster := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer cluster.shutdown()
-	cnc, cjs := jsClientConnect(t, cluster.randomServer())
+	cnc, cjs := jsClientConnectNewAPI(t, cluster.randomServer())
 	defer cnc.Close()
 
 	// Test for both single server and clustered mode.
@@ -424,45 +426,61 @@ func validateMetadata(metadata map[string]string, expectedFeatureLevel string) b
 }
 
 func streamMetadataChecks(t *testing.T, s server) {
+	ctx := context.Background()
 	// Add stream.
-	sc := nats.StreamConfig{Name: streamName, Replicas: s.replicas}
-	si, err := s.js.AddStream(&sc)
+	sc := jetstream.StreamConfig{Name: streamName, Replicas: s.replicas}
+	str, err := s.js.CreateStream(ctx, sc)
+	require_NoError(t, err)
+	si, err := str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
 	// (Double) add stream, has different code path for clustered streams.
-	sc = nats.StreamConfig{Name: streamName, Replicas: s.replicas}
-	si, err = s.js.AddStream(&sc)
+	sc = jetstream.StreamConfig{Name: streamName, Replicas: s.replicas}
+	str, err = s.js.CreateStream(ctx, sc)
+	require_NoError(t, err)
+	si, err = str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
 	// Stream info.
-	si, err = s.js.StreamInfo(streamName)
+	str, err = s.js.Stream(ctx, streamName)
+	require_NoError(t, err)
+	si, err = str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
 	// Update stream.
 	// Metadata set on creation should be preserved, even if not included in update.
-	si, err = s.js.UpdateStream(&sc)
+	str, err = s.js.UpdateStream(ctx, sc)
+	require_NoError(t, err)
+	si, err = str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 }
 
 func consumerMetadataChecks(t *testing.T, s server) {
+	ctx := context.Background()
 	// Add consumer.
-	cc := nats.ConsumerConfig{Name: consumerName, Replicas: s.replicas}
-	ci, err := s.js.AddConsumer(streamName, &cc)
+	cc := jetstream.ConsumerConfig{Name: consumerName, Replicas: s.replicas, AckPolicy: jetstream.AckNonePolicy}
+	cons, err := s.js.CreateConsumer(ctx, streamName, cc)
+	require_NoError(t, err)
+	ci, err := cons.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Consumer info.
-	ci, err = s.js.ConsumerInfo(streamName, consumerName)
+	cons, err = s.js.Consumer(ctx, streamName, consumerName)
+	require_NoError(t, err)
+	ci, err = cons.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Update consumer.
 	// Metadata set on creation should be preserved, even if not included in update.
-	ci, err = s.js.UpdateConsumer(streamName, &cc)
+	cons, err = s.js.UpdateConsumer(ctx, streamName, cc)
+	require_NoError(t, err)
+	ci, err = cons.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
@@ -476,7 +494,9 @@ func consumerMetadataChecks(t *testing.T, s server) {
 	require_ChanRead(t, pauseCh, time.Second*2)
 	require_Len(t, len(pauseCh), 0)
 
-	ci, err = s.js.ConsumerInfo(streamName, consumerName)
+	cons, err = s.js.Consumer(ctx, streamName, consumerName)
+	require_NoError(t, err)
+	ci, err = cons.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(ci.Config.Metadata, "1"))
 
@@ -487,7 +507,9 @@ func consumerMetadataChecks(t *testing.T, s server) {
 	require_ChanRead(t, pauseCh, time.Second*2)
 	require_Len(t, len(pauseCh), 0)
 
-	ci, err = s.js.ConsumerInfo(streamName, consumerName)
+	cons, err = s.js.Consumer(ctx, streamName, consumerName)
+	require_NoError(t, err)
+	ci, err = cons.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
@@ -495,30 +517,39 @@ func consumerMetadataChecks(t *testing.T, s server) {
 	if s.replicas == 3 {
 		// Scale down.
 		cc.Replicas = 1
-		ci, err = s.js.UpdateConsumer(streamName, &cc)
+		cons, err = s.js.UpdateConsumer(ctx, streamName, cc)
+		require_NoError(t, err)
+		ci, err = cons.Info(ctx)
 		require_NoError(t, err)
 		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
-		ci, err = s.js.ConsumerInfo(streamName, consumerName)
+		cons, err = s.js.Consumer(ctx, streamName, consumerName)
+		require_NoError(t, err)
+		ci, err = cons.Info(ctx)
 		require_NoError(t, err)
 		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 		// Scale up.
 		cc.Replicas = 3
-		ci, err = s.js.UpdateConsumer(streamName, &cc)
+		cons, err = s.js.UpdateConsumer(ctx, streamName, cc)
+		require_NoError(t, err)
+		ci, err = cons.Info(ctx)
 		require_NoError(t, err)
 		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
-		ci, err = s.js.ConsumerInfo(streamName, consumerName)
+		cons, err = s.js.Consumer(ctx, streamName, consumerName)
+		require_NoError(t, err)
+		ci, err = cons.Info(ctx)
 		require_NoError(t, err)
 		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 	}
 }
 
 func TestJetStreamMetadataStreamRestoreAndRestart(t *testing.T) {
+	ctx := context.Background()
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
 	restoreEmptyStream(t, nc, 1)
@@ -529,7 +560,9 @@ func TestJetStreamMetadataStreamRestoreAndRestart(t *testing.T) {
 	}
 
 	// Stream restore should result in empty metadata to be preserved, only adding dynamic metadata.
-	si, err := js.StreamInfo(streamName)
+	str, err := js.Stream(ctx, streamName)
+	require_NoError(t, err)
+	si, err := str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 
@@ -540,19 +573,22 @@ func TestJetStreamMetadataStreamRestoreAndRestart(t *testing.T) {
 	s.Shutdown()
 	s = RunJetStreamServerOnPort(port, sd)
 	defer s.Shutdown()
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
 	// After restart (or upgrade) metadata data should remain empty, only adding dynamic metadata.
-	si, err = js.StreamInfo(streamName)
+	str, err = js.Stream(ctx, streamName)
+	require_NoError(t, err)
+	si, err = str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 }
 
 func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
+	ctx := context.Background()
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
 	restoreEmptyStream(t, nc, 3)
@@ -563,7 +599,9 @@ func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
 	}
 
 	// Stream restore should result in empty metadata to be preserved, only adding dynamic metadata.
-	si, err := js.StreamInfo(streamName)
+	str, err := js.Stream(ctx, streamName)
+	require_NoError(t, err)
+	si, err := str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 
@@ -573,11 +611,13 @@ func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
 	defer c.shutdown()
 	c.waitOnAllCurrent()
 	c.waitOnStreamLeader("$G", streamName)
-	nc, js = jsClientConnect(t, c.randomServer())
+	nc, js = jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
 
 	// After restart (or upgrade) metadata data should remain empty, only adding dynamic metadata.
-	si, err = js.StreamInfo(streamName)
+	str, err = js.Stream(ctx, streamName)
+	require_NoError(t, err)
+	si, err = str.Info(ctx)
 	require_NoError(t, err)
 	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 }
@@ -680,12 +720,13 @@ func TestJetStreamApiErrorOnRequiredApiLevel(t *testing.T) {
 }
 
 func TestJetStreamApiErrorOnRequiredApiLevelDirectGet(t *testing.T) {
+	ctx := context.Background()
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:        "TEST",
 		Subjects:    []string{"foo"},
 		AllowDirect: true,
@@ -708,19 +749,20 @@ func TestJetStreamApiErrorOnRequiredApiLevelDirectGet(t *testing.T) {
 }
 
 func TestJetStreamApiErrorOnRequiredApiLevelPullConsumerNextMsg(t *testing.T) {
+	ctx := context.Background()
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:        "TEST",
 		Subjects:    []string{"foo"},
 		AllowDirect: true,
 	})
 	require_NoError(t, err)
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	_, err = js.CreateConsumer(ctx, "TEST", jetstream.ConsumerConfig{Durable: "CONSUMER", AckPolicy: jetstream.AckNonePolicy})
 	require_NoError(t, err)
 
 	req := nats.NewMsg(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"))

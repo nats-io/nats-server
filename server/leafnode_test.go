@@ -38,6 +38,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	jwt "github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nats-server/v2/internal/testhelper"
@@ -6045,51 +6046,52 @@ leafnodes:{
 	ncL := natsConnect(t, sL.ClientURL(), nats.UserInfo("a1", "a1"))
 	defer ncL.Close()
 
-	test := func(jsA, jsL nats.JetStreamContext) {
-		kvA, err := jsA.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket"})
+	ctx := context.Background()
+	test := func(jsA, jsL jetstream.JetStream) {
+		kvA, err := jsA.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "bucket"})
 		require_NoError(t, err)
-		kvL, err := jsL.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket"})
+		kvL, err := jsL.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "bucket"})
 		require_NoError(t, err)
 
-		_, err = kvA.Put("A", nil)
+		_, err = kvA.Put(ctx, "A", nil)
 		require_NoError(t, err)
-		_, err = kvL.Put("L", nil)
+		_, err = kvL.Put(ctx, "L", nil)
 		require_NoError(t, err)
 
 		// check for unwanted cross talk
-		_, err = kvA.Get("A")
+		_, err = kvA.Get(ctx, "A")
 		require_NoError(t, err)
-		_, err = kvA.Get("l")
+		_, err = kvA.Get(ctx, "l")
 		require_Error(t, err)
-		require_True(t, err == nats.ErrKeyNotFound)
+		require_True(t, err == jetstream.ErrKeyNotFound)
 
-		_, err = kvL.Get("A")
+		_, err = kvL.Get(ctx, "A")
 		require_Error(t, err)
-		require_True(t, err == nats.ErrKeyNotFound)
-		_, err = kvL.Get("L")
+		require_True(t, err == jetstream.ErrKeyNotFound)
+		_, err = kvL.Get(ctx, "L")
 		require_NoError(t, err)
 
-		err = jsA.DeleteKeyValue("bucket")
+		err = jsA.DeleteKeyValue(ctx, "bucket")
 		require_NoError(t, err)
-		err = jsL.DeleteKeyValue("bucket")
+		err = jsL.DeleteKeyValue(ctx, "bucket")
 		require_NoError(t, err)
 	}
 
-	jsA, err := ncA.JetStream()
+	jsA, err := jetstream.New(ncA, jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
-	jsL, err := ncL.JetStream()
+	jsL, err := jetstream.New(ncL, jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
 	test(jsA, jsL)
 
-	jsAL, err := ncA.JetStream(nats.Domain("dl"))
+	jsAL, err := jetstream.NewWithDomain(ncA, "dl", jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
-	jsLA, err := ncL.JetStream(nats.Domain("da"))
+	jsLA, err := jetstream.NewWithDomain(ncL, "da", jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
 	test(jsAL, jsLA)
 
-	jsAA, err := ncA.JetStream(nats.Domain("da"))
+	jsAA, err := jetstream.NewWithDomain(ncA, "da", jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
-	jsLL, err := ncL.JetStream(nats.Domain("dl"))
+	jsLL, err := jetstream.NewWithDomain(ncL, "dl", jetstream.WithDefaultTimeout(10*time.Second))
 	require_NoError(t, err)
 	test(jsAA, jsLL)
 }
@@ -8163,10 +8165,10 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 	// Create 5 clients for each cluster / account
 	var c1c, c2c []*nats.Conn
 	for i := 0; i < 5; i++ {
-		nc1, _ := jsClientConnect(t, c1.randomServer(), nats.UserInfo("one", "p"))
+		nc1, _ := jsClientConnectNewAPI(t, c1.randomServer(), nats.UserInfo("one", "p"))
 		defer nc1.Close()
 		c1c = append(c1c, nc1)
-		nc2, _ := jsClientConnect(t, c2.randomServer(), nats.UserInfo("two", "p"))
+		nc2, _ := jsClientConnectNewAPI(t, c2.randomServer(), nats.UserInfo("two", "p"))
 		defer nc2.Close()
 		c2c = append(c2c, nc2)
 	}
@@ -8198,7 +8200,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 	sendRequests := func(num int) {
 		t.Helper()
 		// Now connect to the leaf cluster and send some requests.
-		nc, _ := jsClientConnect(t, ln.randomServer())
+		nc, _ := jsClientConnectNewAPI(t, ln.randomServer())
 		defer nc.Close()
 
 		for i := 0; i < num; i++ {
@@ -8286,7 +8288,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 	defer closeSubs(subs1)
 	defer closeSubs(subs2)
 
-	nc, _ := jsClientConnect(t, ln.randomServer())
+	nc, _ := jsClientConnectNewAPI(t, ln.randomServer())
 	defer nc.Close()
 
 	for i, dindex := 0, 1; i < num; i++ {
@@ -8424,10 +8426,10 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	// Create 5 clients for each cluster / account
 	var c1c, c2c []*nats.Conn
 	for i := 0; i < 5; i++ {
-		nc1, _ := jsClientConnect(t, c1.randomServer(), nats.UserInfo("efg", "p"))
+		nc1, _ := jsClientConnectNewAPI(t, c1.randomServer(), nats.UserInfo("efg", "p"))
 		defer nc1.Close()
 		c1c = append(c1c, nc1)
-		nc2, _ := jsClientConnect(t, c2.randomServer(), nats.UserInfo("efg", "p"))
+		nc2, _ := jsClientConnectNewAPI(t, c2.randomServer(), nats.UserInfo("efg", "p"))
 		defer nc2.Close()
 		c2c = append(c2c, nc2)
 	}
@@ -8459,7 +8461,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	sendRequests := func(num int) {
 		t.Helper()
 		// Now connect to the leaf cluster and send some requests.
-		nc, _ := jsClientConnect(t, ln.randomServer())
+		nc, _ := jsClientConnectNewAPI(t, ln.randomServer())
 		defer nc.Close()
 
 		for i := 0; i < num; i++ {
@@ -8562,7 +8564,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	defer closeSubs(subs1)
 	defer closeSubs(subs2)
 
-	nc, _ := jsClientConnect(t, ln.randomServer())
+	nc, _ := jsClientConnectNewAPI(t, ln.randomServer())
 	defer nc.Close()
 
 	for i, dindex := 0, 1; i < num; i++ {
@@ -8596,7 +8598,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	var rsubs []*nats.Subscription
 
 	for i := 0; i < 10; i++ {
-		nc, _ := jsClientConnect(t, ln.randomServer())
+		nc, _ := jsClientConnectNewAPI(t, ln.randomServer())
 		defer nc.Close()
 		sub, err := nc.QueueSubscribeSync("RESPONSE", "SA")
 		require_NoError(t, err)
@@ -8606,14 +8608,14 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	// Let's them propagate
 	time.Sleep(100 * time.Millisecond)
 
-	nc, _ = jsClientConnect(t, ln.randomServer())
+	nc, _ = jsClientConnectNewAPI(t, ln.randomServer())
 	defer nc.Close()
 	_, err := nc.SubscribeSync("RESPONSE")
 	require_NoError(t, err)
 	nc.Flush()
 
 	// Now connect and send responses from EFG in cloud.
-	nc, _ = jsClientConnect(t, sc.randomServer(), nats.UserInfo("efg", "p"))
+	nc, _ = jsClientConnectNewAPI(t, sc.randomServer(), nats.UserInfo("efg", "p"))
 	defer nc.Close()
 
 	for i := 0; i < 100; i++ {
@@ -8737,7 +8739,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 
 	s := ln.randomServer()
 	for i := 0; i < 4; i++ {
-		nc, _ := jsClientConnect(t, s)
+		nc, _ := jsClientConnectNewAPI(t, s)
 		defer nc.Close()
 		sub, err := nc.QueueSubscribeSync("RESPONSE", "SA")
 		require_NoError(t, err)
@@ -8746,7 +8748,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 	}
 
 	// Now connect and send responses from EFG in cloud.
-	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("efg", "p"))
+	nc, _ := jsClientConnectNewAPI(t, c.randomServer(), nats.UserInfo("efg", "p"))
 	defer nc.Close()
 	for i := 0; i < 100; i++ {
 		require_NoError(t, nc.Publish("RESPONSE", []byte("OK")))
@@ -8793,7 +8795,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 	checkFor(t, time.Second, 200*time.Millisecond, checkInterest)
 
 	for i := 0; i < 4; i++ {
-		nc, _ := jsClientConnect(t, s)
+		nc, _ := jsClientConnectNewAPI(t, s)
 		defer nc.Close()
 		sub, err := nc.QueueSubscribeSync("RESPONSE", "SA")
 		require_NoError(t, err)
@@ -9268,7 +9270,7 @@ func TestLeafNodeDQMultiAccountExportImport(t *testing.T) {
 	}
 
 	// Connect to a server in the cluster and create a DQ listener.
-	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("a", "a"))
+	nc, _ := jsClientConnectNewAPI(t, c.randomServer(), nats.UserInfo("a", "a"))
 	defer nc.Close()
 
 	var got atomic.Int32
@@ -9279,7 +9281,7 @@ func TestLeafNodeDQMultiAccountExportImport(t *testing.T) {
 	})
 
 	// Now connect to B and send the request.
-	ncb, _ := jsClientConnect(t, sb, nats.UserInfo("agg", "agg"))
+	ncb, _ := jsClientConnectNewAPI(t, sb, nats.UserInfo("agg", "agg"))
 	defer ncb.Close()
 
 	_, err := ncb.Request("A.PING", []byte("REQUEST"), time.Second)
@@ -11583,50 +11585,55 @@ func TestLeafNodeDaisyChainWithAccountImportExport(t *testing.T) {
 	checkLeafNodeConnectedCount(t, hubSh2, 3)
 	checkLeafNodeConnected(t, leafSh)
 
-	ncLeafSh, jsLeafSh := jsClientConnect(t, leafSh, nats.UserInfo("u", "u"))
+	ncLeafSh, jsLeafSh := jsClientConnectNewAPI(t, leafSh, nats.UserInfo("u", "u"))
 	defer ncLeafSh.Close()
 
-	sc := &nats.StreamConfig{
+	ctx := context.Background()
+	sc := jetstream.StreamConfig{
 		Name:        "leaf-sh",
 		Subjects:    []string{"leaf2leaf.>"},
-		Retention:   nats.LimitsPolicy,
-		Storage:     nats.FileStorage,
+		Retention:   jetstream.LimitsPolicy,
+		Storage:     jetstream.FileStorage,
 		AllowRollup: true,
 		AllowDirect: true,
 	}
-	_, err := jsLeafSh.AddStream(sc)
+	_, err := jsLeafSh.CreateStream(ctx, sc)
 	require_NoError(t, err)
 
-	ncLeafJS, jsLeafJS := jsClientConnect(t, leafJS, nats.UserInfo("u", "u"))
+	ncLeafJS, jsLeafJS := jsClientConnectNewAPI(t, leafJS, nats.UserInfo("u", "u"))
 	defer ncLeafJS.Close()
 
-	sc = &nats.StreamConfig{
+	sc = jetstream.StreamConfig{
 		Name:        "leaf-js",
-		Retention:   nats.LimitsPolicy,
-		Storage:     nats.FileStorage,
+		Retention:   jetstream.LimitsPolicy,
+		Storage:     jetstream.FileStorage,
 		AllowRollup: true,
 		AllowDirect: true,
-		Sources: []*nats.StreamSource{
+		Sources: []*jetstream.StreamSource{
 			{
 				Name: "leaf-sh",
-				External: &nats.ExternalStream{
+				External: &jetstream.ExternalStream{
 					APIPrefix:     "$JS.leaf-sh.API",
 					DeliverPrefix: "sync.leaf-sh.jspush"},
 			},
 		},
 	}
-	_, err = jsLeafJS.AddStream(sc)
+	_, err = jsLeafJS.CreateStream(ctx, sc)
 	require_NoError(t, err)
 
 	for range 10 {
-		_, err = jsLeafSh.Publish("leaf2leaf.v1.test", []byte("hello"))
+		_, err = jsLeafSh.Publish(ctx, "leaf2leaf.v1.test", []byte("hello"))
 		require_NoError(t, err)
 	}
 
-	check := func(js nats.JetStreamContext, stream string) {
+	check := func(js jetstream.JetStream, stream string) {
 		t.Helper()
 		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-			si, err := js.StreamInfo(stream)
+			s, err := js.Stream(ctx, stream)
+			if err != nil {
+				return err
+			}
+			si, err := s.Info(ctx)
 			if err != nil {
 				return err
 			}

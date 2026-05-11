@@ -17,6 +17,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestJetStreamAtomicBatchPublish(t *testing.T) {
@@ -42,8 +44,9 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		var pubAck JSPubAckResponse
 
@@ -140,8 +143,10 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 
 		// Validate stream contents.
 		if retention != InterestPolicy {
+			str, err := js.Stream(ctx, "TEST")
+			require_NoError(t, err)
 			for i := 0; i < 6; i++ {
-				rsm, err := js.GetMsg("TEST", uint64(i+1))
+				rsm, err := str.GetMsg(ctx, uint64(i+1))
 				require_NoError(t, err)
 				subj := fmt.Sprintf("foo.%d", i)
 				require_Equal(t, rsm.Subject, subj)
@@ -233,8 +238,9 @@ func TestJetStreamAtomicBatchPublishCommitEob(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		var pubAck JSPubAckResponse
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
@@ -279,8 +285,10 @@ func TestJetStreamAtomicBatchPublishCommitEob(t *testing.T) {
 
 		// Validate stream contents.
 		if retention != InterestPolicy {
+			str, err := js.Stream(ctx, "TEST")
+			require_NoError(t, err)
 			for seq := uint64(1); seq <= 2; seq++ {
-				rsm, err := js.GetMsg("TEST", seq)
+				rsm, err := str.GetMsg(ctx, seq)
 				require_NoError(t, err)
 				require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
 				require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), strconv.FormatUint(seq, 10))
@@ -461,11 +469,12 @@ func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 	test := func(
 		t *testing.T,
 		nc *nats.Conn,
-		js nats.JetStreamContext,
+		js jetstream.JetStream,
 		storage StorageType,
 		retention RetentionPolicy,
 		replicas int,
 	) {
+		ctx := context.Background()
 		cfg := &StreamConfig{
 			Name:               "TEST",
 			Retention:          retention,
@@ -478,7 +487,7 @@ func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 		_, err := jsStreamCreate(t, nc, cfg)
 		require_NoError(t, err)
 
-		_, err = js.Publish("foo", nil, nats.MsgId("pre-existing"))
+		_, err = js.Publish(ctx, "foo", nil, jetstream.WithMsgID("pre-existing"))
 		require_NoError(t, err)
 
 		var pubAck JSPubAckResponse
@@ -519,7 +528,7 @@ func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 					c := createJetStreamClusterExplicit(t, "R3S", 3)
 					defer c.shutdown()
 
-					nc, js := jsClientConnect(t, c.randomServer())
+					nc, js := jsClientConnectNewAPI(t, c.randomServer())
 					defer nc.Close()
 
 					test(t, nc, js, storage, retention, replicas)
@@ -534,8 +543,9 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:               "TEST",
@@ -566,7 +576,9 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 			require_Equal(t, pubAck.BatchSize, 3)
 		}
 
-		require_NoError(t, js.DeleteMsg("TEST", 2))
+		testStr, err := js.Stream(ctx, "TEST")
+		require_NoError(t, err)
+		require_NoError(t, testStr.DeleteMsg(ctx, 2))
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			return checkState(t, c, globalAccountName, "TEST")
 		})
@@ -581,9 +593,9 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 		})
 		require_Error(t, err, NewJSMirrorWithAtomicPublishError())
 
-		_, err = js.AddStream(&nats.StreamConfig{
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:     "M",
-			Mirror:   &nats.StreamSource{Name: "TEST"},
+			Mirror:   &jetstream.StreamSource{Name: "TEST"},
 			Replicas: replicas,
 		})
 		require_NoError(t, err)
@@ -599,9 +611,15 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			for _, name := range []string{"M", "S"} {
-				if si, err := js.StreamInfo(name); err != nil {
+				s, err := js.Stream(ctx, name)
+				if err != nil {
 					return err
-				} else if si.State.Msgs != 2 {
+				}
+				si, err := s.Info(ctx)
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
 					return fmt.Errorf("expected 2 messages for stream %q, got %d", name, si.State.Msgs)
 				}
 			}
@@ -609,20 +627,25 @@ func TestJetStreamAtomicBatchPublishSourceAndMirror(t *testing.T) {
 		})
 
 		// Ensure the batching headers were removed when ingested into the source/mirror.
-		rsm, err := js.GetMsg("M", 1)
+		mStr, err := js.Stream(ctx, "M")
+		require_NoError(t, err)
+		sStr, err := js.Stream(ctx, "S")
+		require_NoError(t, err)
+
+		rsm, err := mStr.GetMsg(ctx, 1)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 0)
 
-		rsm, err = js.GetMsg("M", 3)
+		rsm, err = mStr.GetMsg(ctx, 3)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 0)
 
-		rsm, err = js.GetMsg("S", 1)
+		rsm, err = sStr.GetMsg(ctx, 1)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 1)
 		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 1 > > foo")
 
-		rsm, err = js.GetMsg("S", 2)
+		rsm, err = sStr.GetMsg(ctx, 2)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 1)
 		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 3 > > foo")
@@ -644,8 +667,9 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		cfg := &StreamConfig{
 			Name:               "TEST",
@@ -687,7 +711,7 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		// Publish another batch that commits, state should be cleaned up by default.
 		m.Header.Set("Nats-Batch-Id", "commit")
 		m.Header.Set("Nats-Batch-Commit", "1")
-		_, err = js.PublishMsg(m)
+		_, err = js.PublishMsg(ctx, m)
 		require_NoError(t, err)
 
 		mset.mu.RLock()
@@ -721,7 +745,7 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 			m.Header.Set("Nats-Batch-Id", "uuid")
 			m.Header.Set("Nats-Batch-Sequence", "2")
 			m.Header.Set("Nats-Batch-Commit", "1")
-			_, err = js.PublishMsg(m)
+			_, err = js.PublishMsg(ctx, m)
 			require_NoError(t, err)
 		}
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
@@ -842,8 +866,9 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		cfg := &StreamConfig{
 			Name:               "TEST",
@@ -870,7 +895,7 @@ func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
 				m.Header.Set("Nats-Batch-Id", "uuid")
 				m.Header.Set("Nats-Batch-Sequence", "2")
 				m.Header.Set("Nats-Batch-Commit", "eob")
-				_, err = js.PublishMsg(m)
+				_, err = js.PublishMsg(ctx, m)
 				require_Error(t, err, NewJSAtomicPublishUnsupportedHeaderBatchError(key))
 			})
 		}
@@ -1569,8 +1594,9 @@ func TestJetStreamAtomicBatchPublishHighLevelRollback(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnectNewAPI(t, c.randomServer())
 	defer nc.Close()
+	ctx := context.Background()
 
 	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:      "TEST",
@@ -1605,7 +1631,7 @@ func TestJetStreamAtomicBatchPublishHighLevelRollback(t *testing.T) {
 	m := nats.NewMsg("foo")
 	m.Header.Set("Nats-Msg-Id", "dedupe")
 	m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
-	_, err = js.PublishMsg(m)
+	_, err = js.PublishMsg(ctx, m)
 	require_Error(t, err, NewJSStreamWrongLastSequenceError(0))
 	requireEmpty()
 }
@@ -1622,8 +1648,9 @@ func TestJetStreamAtomicBatchPublishExpectedPerSubject(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:               "TEST",
@@ -1634,7 +1661,7 @@ func TestJetStreamAtomicBatchPublishExpectedPerSubject(t *testing.T) {
 		})
 		require_NoError(t, err)
 
-		_, err = js.Publish("foo", nil)
+		_, err = js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 
 		m := nats.NewMsg("foo")
@@ -1668,7 +1695,9 @@ func TestJetStreamAtomicBatchPublishExpectedPerSubject(t *testing.T) {
 		require_Equal(t, pubAck.BatchSize, 2)
 
 		// The first message still contains the expected headers.
-		rsm, err := js.GetMsg("TEST", 2)
+		str, err := js.Stream(ctx, "TEST")
+		require_NoError(t, err)
+		rsm, err := str.GetMsg(ctx, 2)
 		require_NoError(t, err)
 		require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
 		require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), "1")
@@ -1676,7 +1705,7 @@ func TestJetStreamAtomicBatchPublishExpectedPerSubject(t *testing.T) {
 
 		// The second message doesn't have the expected headers, as the condition was already checked
 		// and seems inconsistent when getting the message afterward.
-		rsm, err = js.GetMsg("TEST", 3)
+		rsm, err = str.GetMsg(ctx, 3)
 		require_NoError(t, err)
 		require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), "uuid")
 		require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), "2")
@@ -1922,8 +1951,9 @@ func TestJetStreamAtomicBatchPublishProposeOne(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:               "TEST",
@@ -1938,7 +1968,7 @@ func TestJetStreamAtomicBatchPublishProposeOne(t *testing.T) {
 		mset, err := sl.globalAccount().lookupStream("TEST")
 		require_NoError(t, err)
 
-		pubAck, err := js.Publish("foo", nil)
+		pubAck, err := js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 1)
 
@@ -1973,7 +2003,7 @@ func TestJetStreamAtomicBatchPublishProposeOne(t *testing.T) {
 		n := mset.raftNode().(*raft)
 		n.sendAppendEntry(entries)
 
-		pubAck, err = js.Publish("foo", nil)
+		pubAck, err = js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		if combined {
 			require_Equal(t, pubAck.Sequence, 6)
@@ -1993,8 +2023,9 @@ func TestJetStreamAtomicBatchPublishProposeMultiple(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:               "TEST",
@@ -2009,7 +2040,7 @@ func TestJetStreamAtomicBatchPublishProposeMultiple(t *testing.T) {
 		mset, err := sl.globalAccount().lookupStream("TEST")
 		require_NoError(t, err)
 
-		pubAck, err := js.Publish("foo", nil)
+		pubAck, err := js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 1)
 
@@ -2054,7 +2085,7 @@ func TestJetStreamAtomicBatchPublishProposeMultiple(t *testing.T) {
 		mset.clMu.Unlock()
 		n.sendAppendEntry(entries)
 
-		pubAck, err = js.Publish("foo", nil)
+		pubAck, err = js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		expectedSeq := uint64(2)
 		if !partial {
@@ -2080,8 +2111,9 @@ func TestJetStreamAtomicBatchPublishProposeOnePartialBatch(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "R3S", 3)
 			defer c.shutdown()
 
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnectNewAPI(t, c.randomServer())
 			defer nc.Close()
+			ctx := context.Background()
 
 			_, err := jsStreamCreate(t, nc, &StreamConfig{
 				Name:               "TEST",
@@ -2096,7 +2128,7 @@ func TestJetStreamAtomicBatchPublishProposeOnePartialBatch(t *testing.T) {
 			mset, err := sl.globalAccount().lookupStream("TEST")
 			require_NoError(t, err)
 
-			pubAck, err := js.Publish("foo", nil)
+			pubAck, err := js.Publish(ctx, "foo", nil)
 			require_NoError(t, err)
 			require_Equal(t, pubAck.Sequence, 1)
 
@@ -2123,7 +2155,7 @@ func TestJetStreamAtomicBatchPublishProposeOnePartialBatch(t *testing.T) {
 			n := mset.raftNode().(*raft)
 			n.sendAppendEntry(entries)
 
-			pubAck, err = js.Publish("foo", nil)
+			pubAck, err = js.Publish(ctx, "foo", nil)
 			require_NoError(t, err)
 			expectedSeq := uint64(2)
 			if i >= maxEntries {
@@ -2140,8 +2172,9 @@ func TestJetStreamAtomicBatchPublishProposeMultiplePartialBatches(t *testing.T) 
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:               "TEST",
@@ -2156,7 +2189,7 @@ func TestJetStreamAtomicBatchPublishProposeMultiplePartialBatches(t *testing.T) 
 		mset, err := sl.globalAccount().lookupStream("TEST")
 		require_NoError(t, err)
 
-		pubAck, err := js.Publish("foo", nil)
+		pubAck, err := js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 1)
 
@@ -2190,21 +2223,23 @@ func TestJetStreamAtomicBatchPublishProposeMultiplePartialBatches(t *testing.T) 
 		n := mset.raftNode().(*raft)
 		n.sendAppendEntry(entries)
 
-		pubAck, err = js.Publish("foo", nil)
+		pubAck, err = js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, uint64(2+batchSize))
 
 		// Validate the stream only committed the full batch.
-		rsm, err := js.GetMsg("TEST", 1)
+		str, err := js.Stream(ctx, "TEST")
+		require_NoError(t, err)
+		rsm, err := str.GetMsg(ctx, 1)
 		require_NoError(t, err)
 		require_True(t, rsm.Header.Get("Nats-Batch-Id") == _EMPTY_)
 		for j := range batchSize {
-			rsm, err = js.GetMsg("TEST", uint64(2+j))
+			rsm, err = str.GetMsg(ctx, uint64(2+j))
 			require_NoError(t, err)
 			require_Equal(t, rsm.Header.Get("Nats-Batch-Id"), batchId2)
 			require_Equal(t, rsm.Header.Get("Nats-Batch-Sequence"), strconv.Itoa(j+1))
 		}
-		rsm, err = js.GetMsg("TEST", uint64(2+batchSize))
+		rsm, err = str.GetMsg(ctx, uint64(2+batchSize))
 		require_NoError(t, err)
 		require_True(t, rsm.Header.Get("Nats-Batch-Id") == _EMPTY_)
 
@@ -2242,8 +2277,9 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:               "TEST",
@@ -2258,7 +2294,7 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 		mset, err := sl.globalAccount().lookupStream("TEST")
 		require_NoError(t, err)
 
-		pubAck, err := js.Publish("foo", nil)
+		pubAck, err := js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 1)
 
@@ -2325,7 +2361,7 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 		})
 
 		// Confirm the last batch gets rejected, and we are still able to publish with quorum.
-		pubAck, err = js.Publish("foo", nil)
+		pubAck, err = js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 5)
 
@@ -2335,7 +2371,7 @@ func TestJetStreamAtomicBatchPublishContinuousBatchesStillMoveAppliedUp(t *testi
 		})
 
 		// Publish again, now with all servers online.
-		pubAck, err = js.Publish("foo", nil)
+		pubAck, err = js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 6)
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
@@ -2363,8 +2399,9 @@ func TestJetStreamAtomicBatchPublishPartiallyAppliedBatchOnRecovery(t *testing.T
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:               "TEST",
@@ -2379,7 +2416,7 @@ func TestJetStreamAtomicBatchPublishPartiallyAppliedBatchOnRecovery(t *testing.T
 		mset, err := sl.globalAccount().lookupStream("TEST")
 		require_NoError(t, err)
 
-		pubAck, err := js.Publish("foo", nil)
+		pubAck, err := js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 1)
 
@@ -2428,7 +2465,7 @@ func TestJetStreamAtomicBatchPublishPartiallyAppliedBatchOnRecovery(t *testing.T
 		})
 
 		// Publish so the commit moves up on all servers.
-		pubAck, err = js.Publish("foo", nil)
+		pubAck, err = js.Publish(ctx, "foo", nil)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 6)
 
@@ -2480,10 +2517,11 @@ func TestJetStreamRollupIsolatedRead(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
-		_, err := js.AddStream(&nats.StreamConfig{
+		_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:        "TEST",
 			Subjects:    []string{"foo.*"},
 			AllowRollup: true,
@@ -2497,11 +2535,11 @@ func TestJetStreamRollupIsolatedRead(t *testing.T) {
 
 		// Reconnect to the selected server.
 		nc.Close()
-		nc, js = jsClientConnect(t, rs)
+		nc, js = jsClientConnectNewAPI(t, rs)
 		defer nc.Close()
 
 		m := nats.NewMsg("foo.0")
-		pubAck, err := js.PublishMsg(m)
+		pubAck, err := js.PublishMsg(ctx, m)
 		require_NoError(t, err)
 		require_Equal(t, pubAck.Sequence, 1)
 
@@ -2512,7 +2550,7 @@ func TestJetStreamRollupIsolatedRead(t *testing.T) {
 		m.Subject = "foo.1"
 		m.Header.Set(JSMsgRollup, JSMsgRollupAll)
 		m.Header.Set(JSMsgId, "msgId")
-		_, _ = js.PublishMsg(m)
+		_, _ = js.PublishMsg(ctx, m)
 		err = checkForErr(2*time.Second, 200*time.Millisecond, func() error {
 			var state StreamState
 			mset.store.FastState(&state)
@@ -2728,8 +2766,9 @@ func TestJetStreamAtomicBatchPublishExpectedSeq(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
 	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:               "TEST",
@@ -2752,7 +2791,7 @@ func TestJetStreamAtomicBatchPublishExpectedSeq(t *testing.T) {
 	require_Equal(t, clseq, 0)
 	require_Equal(t, clfs, 0)
 
-	_, err = js.Publish("foo", []byte("hello"))
+	_, err = js.Publish(ctx, "foo", []byte("hello"))
 	require_NoError(t, err)
 
 	clseq, clfs = clseqAndClfs()
@@ -2760,7 +2799,7 @@ func TestJetStreamAtomicBatchPublishExpectedSeq(t *testing.T) {
 	require_Equal(t, clfs, 0)
 
 	// test expect last seq for standalone publish
-	_, err = js.Publish("foo", []byte("hello"), nats.ExpectLastSequence(1))
+	_, err = js.Publish(ctx, "foo", []byte("hello"), jetstream.WithExpectLastSequence(1))
 	require_NoError(t, err)
 
 	clseq, clfs = clseqAndClfs()
@@ -2938,8 +2977,9 @@ func TestJetStreamAtomicBatchPublishExpectedLastSubjectSequence(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnectNewAPI(t, s)
 	defer nc.Close()
+	ctx := context.Background()
 
 	cfg := &StreamConfig{
 		Name:               "TEST",
@@ -2951,9 +2991,9 @@ func TestJetStreamAtomicBatchPublishExpectedLastSubjectSequence(t *testing.T) {
 	_, err := jsStreamCreate(t, nc, cfg)
 	require_NoError(t, err)
 
-	_, err = js.Publish("foo.A", nil)
+	_, err = js.Publish(ctx, "foo.A", nil)
 	require_NoError(t, err)
-	_, err = js.Publish("foo.B", nil)
+	_, err = js.Publish(ctx, "foo.B", nil)
 	require_NoError(t, err)
 
 	m := nats.NewMsg("foo.A")
@@ -3092,8 +3132,9 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		cfg := &StreamConfig{
 			Name:      "TEST",
@@ -3216,8 +3257,10 @@ func TestJetStreamFastBatchPublish(t *testing.T) {
 
 		// Validate stream contents.
 		if retention != InterestPolicy {
+			str, err := js.Stream(ctx, "TEST")
+			require_NoError(t, err)
 			for i := 0; i < 6; i++ {
-				rsm, err := js.GetMsg("TEST", uint64(i+1))
+				rsm, err := str.GetMsg(ctx, uint64(i+1))
 				require_NoError(t, err)
 				subj := fmt.Sprintf("foo.%d", i)
 				require_Equal(t, rsm.Subject, subj)
@@ -3559,8 +3602,9 @@ func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnectNewAPI(t, c.randomServer())
 		defer nc.Close()
+		ctx := context.Background()
 
 		_, err := jsStreamCreate(t, nc, &StreamConfig{
 			Name:              "TEST",
@@ -3600,7 +3644,9 @@ func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
 			require_Equal(t, pubAck.BatchSize, 3)
 		}
 
-		require_NoError(t, js.DeleteMsg("TEST", 2))
+		testStr, err := js.Stream(ctx, "TEST")
+		require_NoError(t, err)
+		require_NoError(t, testStr.DeleteMsg(ctx, 2))
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			return checkState(t, c, globalAccountName, "TEST")
 		})
@@ -3615,9 +3661,9 @@ func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
 		})
 		require_Error(t, err, NewJSMirrorWithBatchPublishError())
 
-		_, err = js.AddStream(&nats.StreamConfig{
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 			Name:     "M",
-			Mirror:   &nats.StreamSource{Name: "TEST"},
+			Mirror:   &jetstream.StreamSource{Name: "TEST"},
 			Replicas: replicas,
 		})
 		require_NoError(t, err)
@@ -3633,9 +3679,15 @@ func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
 
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			for _, name := range []string{"M", "S"} {
-				if si, err := js.StreamInfo(name); err != nil {
+				s, err := js.Stream(ctx, name)
+				if err != nil {
 					return err
-				} else if si.State.Msgs != 2 {
+				}
+				si, err := s.Info(ctx)
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
 					return fmt.Errorf("expected 2 messages for stream %q, got %d", name, si.State.Msgs)
 				}
 			}
@@ -3643,20 +3695,25 @@ func TestJetStreamFastBatchPublishSourceAndMirror(t *testing.T) {
 		})
 
 		// Ensure the batching headers were removed when ingested into the source/mirror.
-		rsm, err := js.GetMsg("M", 1)
+		mStr, err := js.Stream(ctx, "M")
+		require_NoError(t, err)
+		sStr, err := js.Stream(ctx, "S")
+		require_NoError(t, err)
+
+		rsm, err := mStr.GetMsg(ctx, 1)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 0)
 
-		rsm, err = js.GetMsg("M", 3)
+		rsm, err = mStr.GetMsg(ctx, 3)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 0)
 
-		rsm, err = js.GetMsg("S", 1)
+		rsm, err = sStr.GetMsg(ctx, 1)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 1)
 		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 1 > > foo")
 
-		rsm, err = js.GetMsg("S", 2)
+		rsm, err = sStr.GetMsg(ctx, 2)
 		require_NoError(t, err)
 		require_Len(t, len(rsm.Header), 1)
 		require_Equal(t, rsm.Header.Get(JSStreamSource), "TEST 3 > > foo")

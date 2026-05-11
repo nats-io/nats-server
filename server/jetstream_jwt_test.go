@@ -16,6 +16,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	jwt "github.com/nats-io/jwt/v2"
@@ -334,28 +336,31 @@ func TestJetStreamJWTMove(t *testing.T) {
 		nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
 		defer nc.Close()
 
-		js, err := nc.JetStream()
+		js, err := jetstream.New(nc)
 		require_NoError(t, err)
+		ctx := context.Background()
 
-		ci, err := js.AddStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
-			Placement: &nats.Placement{Tags: []string{"cloud:C1-tag"}}})
+		cs, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
+			Placement: &jetstream.Placement{Tags: []string{"cloud:C1-tag"}}})
 		require_NoError(t, err)
-		require_Equal(t, ci.Cluster.Name, "C1")
+		require_Equal(t, cs.CachedInfo().Cluster.Name, "C1")
 
-		_, err = js.AddConsumer("MOVE-ME", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+		_, err = js.CreateConsumer(ctx, "MOVE-ME", jetstream.ConsumerConfig{Durable: "dur", AckPolicy: jetstream.AckExplicitPolicy})
 		require_NoError(t, err)
-		_, err = js.Publish("MOVE-ME", []byte("hello world"))
+		_, err = js.Publish(ctx, "MOVE-ME", []byte("hello world"))
 		require_NoError(t, err)
 
 		// Perform actual move
-		_, err = js.UpdateStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
-			Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}})
+		_, err = js.UpdateStream(ctx, jetstream.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
+			Placement: &jetstream.Placement{Tags: []string{"cloud:C2-tag"}}})
 		require_NoError(t, err)
 
 		sc.clusterForName("C2").waitOnStreamLeader(aExpPub, "MOVE-ME")
 
 		checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
-			if si, err := js.StreamInfo("MOVE-ME"); err != nil {
+			if stream, err := js.Stream(ctx, "MOVE-ME"); err != nil {
+				return fmt.Errorf("stream: %v", err)
+			} else if si, err := stream.Info(ctx); err != nil {
 				return fmt.Errorf("stream: %v", err)
 			} else if si.Cluster.Name != "C2" {
 				return fmt.Errorf("Wrong cluster: %q", si.Cluster.Name)
@@ -367,7 +372,9 @@ func TestJetStreamJWTMove(t *testing.T) {
 				return fmt.Errorf("expected one message")
 			}
 			// Now make sure consumer has leader etc..
-			if ci, err := js.ConsumerInfo("MOVE-ME", "dur"); err != nil {
+			if cons, err := js.Consumer(ctx, "MOVE-ME", "dur"); err != nil {
+				return fmt.Errorf("stream: %v", err)
+			} else if ci, err := cons.Info(ctx); err != nil {
 				return fmt.Errorf("stream: %v", err)
 			} else if ci.Cluster.Name != "C2" {
 				return fmt.Errorf("Wrong cluster: %q", ci.Cluster.Name)
@@ -377,11 +384,18 @@ func TestJetStreamJWTMove(t *testing.T) {
 			return nil
 		})
 
-		sub, err := js.PullSubscribe("", "dur", nats.BindStream("MOVE-ME"))
+		stream, err := js.Stream(ctx, "MOVE-ME")
 		require_NoError(t, err)
-		m, err := sub.Fetch(1)
+		cons, err := stream.Consumer(ctx, "dur")
 		require_NoError(t, err)
-		require_NoError(t, m[0].AckSync())
+		batch, err := cons.Fetch(1)
+		require_NoError(t, err)
+		var m jetstream.Msg
+		for msg := range batch.Messages() {
+			m = msg
+		}
+		require_NoError(t, batch.Error())
+		require_NoError(t, m.DoubleAck(ctx))
 	}
 
 	t.Run("tiered", func(t *testing.T) {
@@ -455,70 +469,71 @@ func TestJetStreamJWTClusteredTiers(t *testing.T) {
 	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	c.waitOnAccount(aExpPub)
 
 	// Test absent tiers
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR2", Replicas: 2, Subjects: []string{"testR2"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR2", Replicas: 2, Subjects: []string{"testR2"}})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: no JetStream default or applicable tiered limit present")
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR5", Replicas: 5, Subjects: []string{"testR5"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR5", Replicas: 5, Subjects: []string{"testR5"}})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: no JetStream default or applicable tiered limit present")
 
 	// Test tiers up to stream limits
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR3-1", Replicas: 3, Subjects: []string{"testR3-1"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR3-1", Replicas: 3, Subjects: []string{"testR3-1"}})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-2", Replicas: 1, Subjects: []string{"testR1-2"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-2", Replicas: 1, Subjects: []string{"testR1-2"}})
 	require_NoError(t, err)
 
 	// Test exceeding tiered stream limit
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
-	_, err = js.AddStream(&nats.StreamConfig{Name: "testR3-3", Replicas: 3, Subjects: []string{"testR3-3"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "testR3-3", Replicas: 3, Subjects: []string{"testR3-3"}})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
 
 	// Test tiers up to consumer limits
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur1", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
-	_, err = js.AddConsumer("testR3-1", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR3-1", jetstream.ConsumerConfig{Durable: "dur2", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur3", AckPolicy: jetstream.AckExplicitPolicy})
 	require_NoError(t, err)
 
 	// test exceeding tiered consumer limits
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur4", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur4", AckPolicy: jetstream.AckExplicitPolicy})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
-	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur5", AckPolicy: nats.AckExplicitPolicy})
+	_, err = js.CreateConsumer(ctx, "testR1-1", jetstream.ConsumerConfig{Durable: "dur5", AckPolicy: jetstream.AckExplicitPolicy})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 
 	// test tiered storage limit
 	msg := [512]byte{}
-	_, err = js.Publish("testR1-1", msg[:])
+	_, err = js.Publish(ctx, "testR1-1", msg[:])
 	require_NoError(t, err)
-	_, err = js.Publish("testR3-1", msg[:])
+	_, err = js.Publish(ctx, "testR3-1", msg[:])
 	require_NoError(t, err)
-	_, err = js.Publish("testR3-1", msg[:])
+	_, err = js.Publish(ctx, "testR3-1", msg[:])
 	require_NoError(t, err)
-	_, err = js.Publish("testR1-2", msg[:])
+	_, err = js.Publish(ctx, "testR1-2", msg[:])
 	require_NoError(t, err)
 
 	time.Sleep(2000 * time.Millisecond) // wait for update timer to synchronize totals
 
 	// test exceeding tiered storage limit
-	_, err = js.Publish("testR1-1", []byte("1"))
+	_, err = js.Publish(ctx, "testR1-1", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
-	_, err = js.Publish("testR3-1", []byte("fail this message!"))
+	_, err = js.Publish(ctx, "testR3-1", []byte("fail this message!"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
@@ -619,19 +634,20 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	c.waitOnAccount(aExpPub)
 
 	// Test tiers up to stream limits
-	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
-	_, err = js.AddStream(cfg)
+	cfg := jetstream.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
+	_, err = js.CreateStream(ctx, cfg)
 	require_NoError(t, err)
 
 	cfg.Replicas = 3
-	_, err = js.UpdateStream(cfg)
+	_, err = js.UpdateStream(ctx, cfg)
 	require_Error(t, err, errors.New("nats: insufficient storage resources available"))
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
@@ -646,7 +662,7 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	require_NoError(t, err)
 	err = json.Unmarshal(m.Data, &rBefore)
 	require_NoError(t, err)
-	_, err = js.UpdateStream(cfg)
+	_, err = js.UpdateStream(ctx, cfg)
 	require_NoError(t, err)
 
 	m, err = nc.Request("$JS.API.INFO", nil, time.Second)
@@ -708,15 +724,16 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	c.waitOnAccount(aExpPub)
 
 	// Test tiers up to stream limits
-	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
-	_, err = js.AddStream(cfg)
+	cfg := jetstream.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
+	_, err = js.CreateStream(ctx, cfg)
 	require_NoError(t, err)
 
 	sl := c.streamLeader(aExpPub, "testR1-1")
@@ -727,7 +744,7 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 0)
 
-	_, err = js.Publish("testR1-1", nil)
+	_, err = js.Publish(ctx, "testR1-1", nil)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 1)
 
@@ -745,18 +762,18 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 	require_True(t, respBefore.JetStreamAccountStats.Tiers["R3"].Streams == 0)
 	require_True(t, respBefore.JetStreamAccountStats.Tiers["R1"].Streams == 1)
 
-	_, err = js.Publish("testR1-1", nil)
+	_, err = js.Publish(ctx, "testR1-1", nil)
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: no JetStream default or applicable tiered limit present")
 	require_Equal(t, mset.lastSeq(), 1)
 
 	cfg.Replicas = 3
-	_, err = js.UpdateStream(cfg)
+	_, err = js.UpdateStream(ctx, cfg)
 	require_NoError(t, err)
 
 	// I noticed this taking > 5 seconds
 	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
-		_, err = js.Publish("testR1-1", nil)
+		_, err = js.Publish(ctx, "testR1-1", nil)
 		return err
 	})
 
@@ -841,16 +858,17 @@ func TestJetStreamJWTSysAccUpdateMixedMode(t *testing.T) {
 	aNc := natsConnect(t, s.ClientURL(), aUsr, disconnectCb, nats.NoCallbacksAfterClientClose())
 	defer aNc.Close()
 
-	js, err := aNc.JetStream()
+	js, err := jetstream.New(aNc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	sc.waitOnAccount(apub)
 
-	si, err := js.AddStream(&nats.StreamConfig{Name: "bar", Subjects: []string{"bar"}, Replicas: 3})
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "bar", Subjects: []string{"bar"}, Replicas: 3})
 	require_NoError(t, err)
-	require_Equal(t, si.Cluster.Name, "C2")
-	_, err = js.AccountInfo()
+	require_Equal(t, stream.CachedInfo().Cluster.Name, "C2")
+	_, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 
 	r, err := sysNc.Request(fmt.Sprintf(serverPingReqSubj, "ACCOUNTZ"),
@@ -889,9 +907,9 @@ func TestJetStreamJWTSysAccUpdateMixedMode(t *testing.T) {
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: no responders available for request")
 
-	nc2, js2 := jsClientConnect(t, sc.clusterForName("C2").randomServer(), aUsr)
+	nc2, js2 := jsClientConnectNewAPI(t, sc.clusterForName("C2").randomServer(), aUsr)
 	defer nc2.Close()
-	_, err = js2.AccountInfo()
+	_, err = js2.AccountInfo(ctx)
 	require_NoError(t, err)
 
 	r, err = sysNc.Request(fmt.Sprintf(serverPingReqSubj, "ACCOUNTZ"),
@@ -901,7 +919,7 @@ func TestJetStreamJWTSysAccUpdateMixedMode(t *testing.T) {
 	require_NoError(t, json.Unmarshal(r.Data, &respa))
 	require_True(t, hasJSExp(&respa))
 
-	_, err = js.AccountInfo()
+	_, err = js.AccountInfo(ctx)
 	require_NoError(t, err)
 }
 
@@ -974,10 +992,11 @@ func TestJetStreamJWTExpiredAccountNotCountedTowardLimits(t *testing.T) {
 	// push jwt (for full resolver)
 	updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
 
-	ncA, jsA := jsClientConnect(t, s, nats.UserCredentials(aCreds1))
+	ncA, jsA := jsClientConnectNewAPI(t, s, nats.UserCredentials(aCreds1))
 	defer ncA.Close()
+	ctx := context.Background()
 
-	ai, err := jsA.AccountInfo()
+	ai, err := jsA.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
 	ncA.Close()
@@ -993,10 +1012,10 @@ func TestJetStreamJWTExpiredAccountNotCountedTowardLimits(t *testing.T) {
 	// push jwt (for full resolver)
 	updateJwt(t, s.ClientURL(), sysCreds, ajwt2, 1)
 
-	ncB, jsB := jsClientConnect(t, s, nats.UserCredentials(aCreds2))
+	ncB, jsB := jsClientConnectNewAPI(t, s, nats.UserCredentials(aCreds2))
 	defer ncB.Close()
 
-	ai, err = jsB.AccountInfo()
+	ai, err = jsB.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
 }
@@ -1039,13 +1058,14 @@ func TestJetStreamJWTExpiredAccountWorksAfterExpirationUpdated(t *testing.T) {
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
 
 	userCreds := newUser(t, akp)
-	nc, js := jsClientConnect(t, s, nats.UserCredentials(userCreds), nats.NoReconnect(),
+	nc, js := jsClientConnectNewAPI(t, s, nats.UserCredentials(userCreds), nats.NoReconnect(),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			// Default handler would print to stderr, silence it
 		}))
 	defer nc.Close()
+	ctx := context.Background()
 
-	_, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 	})
@@ -1056,7 +1076,7 @@ func TestJetStreamJWTExpiredAccountWorksAfterExpirationUpdated(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for {
-			if _, err := js.Publish("foo", []byte("hello")); err != nil {
+			if _, err := js.Publish(ctx, "foo", []byte("hello")); err != nil {
 				return
 			}
 			time.Sleep(250 * time.Millisecond)
@@ -1112,10 +1132,10 @@ func TestJetStreamJWTExpiredAccountWorksAfterExpirationUpdated(t *testing.T) {
 	require_True(t, az.Account.JetStream)
 
 	// Create a connection and ensure we connect ok and can send a message.
-	nc, js = jsClientConnect(t, s, nats.UserCredentials(userCreds), nats.NoReconnect())
+	nc, js = jsClientConnectNewAPI(t, s, nats.UserCredentials(userCreds), nats.NoReconnect())
 	defer nc.Close()
 
-	_, err = js.Publish("foo", []byte("hello"))
+	_, err = js.Publish(ctx, "foo", []byte("hello"))
 	require_NoError(t, err)
 }
 
@@ -1213,10 +1233,10 @@ func TestJetStreamJWTDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
 		// push jwt (for full resolver)
 		updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
 
-		ncA, jsA := jsClientConnect(t, s, nats.UserCredentials(aCreds1))
+		ncA, jsA := jsClientConnectNewAPI(t, s, nats.UserCredentials(aCreds1))
 		defer ncA.Close()
 
-		ai, err := jsA.AccountInfo()
+		ai, err := jsA.AccountInfo(context.Background())
 		require_NoError(t, err)
 		require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
 		ncA.Close()
@@ -1331,15 +1351,16 @@ func TestJetStreamJWTDeletedAccountIsReEnabled(t *testing.T) {
 	// push user account
 	updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
 
-	ncA, jsA := jsClientConnect(t, s, nats.UserCredentials(aCreds1))
+	ncA, jsA := jsClientConnectNewAPI(t, s, nats.UserCredentials(aCreds1))
 	defer ncA.Close()
+	ctx := context.Background()
 
-	jsA.AddStream(&nats.StreamConfig{Name: "foo"})
-	jsA.Publish("foo", []byte("Hello World"))
-	jsA.Publish("foo", []byte("Hello Again"))
+	jsA.CreateStream(ctx, jetstream.StreamConfig{Name: "foo"})
+	jsA.Publish(ctx, "foo", []byte("Hello World"))
+	jsA.Publish(ctx, "foo", []byte("Hello Again"))
 
 	// JS should be working
-	ai, err := jsA.AccountInfo()
+	ai, err := jsA.AccountInfo(ctx)
 	require_NoError(t, err)
 	require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
 	require_True(t, ai.Limits.MaxStore == 7*1024*1024)
@@ -1355,7 +1376,7 @@ func TestJetStreamJWTDeletedAccountIsReEnabled(t *testing.T) {
 	require_True(t, strings.Contains(string(resp.Data), `"message":"deleted 1 accounts"`))
 
 	// account was disabled and now disconnected, this should get a connection is closed error.
-	_, err = jsA.AccountInfo()
+	_, err = jsA.AccountInfo(ctx)
 	if err == nil || !errors.Is(err, nats.ErrConnectionClosed) {
 		t.Errorf("Expected connection closed error, got: %v", err)
 	}
@@ -1382,9 +1403,9 @@ func TestJetStreamJWTDeletedAccountIsReEnabled(t *testing.T) {
 	updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
 
 	// reconnect with the updated account
-	ncA, jsA = jsClientConnect(t, s, nats.UserCredentials(aCreds1))
+	ncA, jsA = jsClientConnectNewAPI(t, s, nats.UserCredentials(aCreds1))
 	defer ncA.Close()
-	ai, err = jsA.AccountInfo()
+	ai, err = jsA.AccountInfo(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1393,14 +1414,18 @@ func TestJetStreamJWTDeletedAccountIsReEnabled(t *testing.T) {
 	require_True(t, ai.Tier.Streams == 1)
 
 	// should be possible to get stream info again
-	si, err := jsA.StreamInfo("foo")
+	stream, err := jsA.Stream(ctx, "foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	si, err := stream.Info(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if si.State.Msgs != 2 {
 		t.Fatal("Unexpected number of messages from recovered stream")
 	}
-	msg, err := jsA.GetMsg("foo", 1)
+	msg, err := stream.GetMsg(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1451,60 +1476,65 @@ func TestJetStreamJWTHAStorageLimitsAndAccounting(t *testing.T) {
 	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	c.waitOnAccount(aExpPub)
 
 	// Test max bytes first.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
 	require_NoError(t, err)
 
-	require_NoError(t, js.DeleteStream("TEST"))
+	require_NoError(t, js.DeleteStream(ctx, "TEST"))
 
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, Subjects: []string{"foo"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 3, Subjects: []string{"foo"}})
 	require_NoError(t, err)
 
 	// Now test actual usage.
 	// We should be able to send just over 200 of these.
 	msg := [500 * 1024]byte{}
 	for i := 0; i < 250; i++ {
-		if _, err := js.Publish("foo", msg[:]); err != nil {
+		if _, err := js.Publish(ctx, "foo", msg[:]); err != nil {
 			require_Error(t, err, NewJSAccountResourcesExceededError())
 			require_True(t, i > 200)
 			break
 		}
 	}
 
-	si, err := js.StreamInfo("TEST")
+	stream, err := js.Stream(ctx, "TEST")
+	require_NoError(t, err)
+	si, err := stream.Info(ctx)
 	require_NoError(t, err)
 	// Make sure we are no more then 1 msg below our max in terms of size.
 	delta := maxFileStorage - int64(si.State.Bytes)
 	require_True(t, int(delta) < len(msg))
 
 	// Now memory as well.
-	require_NoError(t, js.DeleteStream("TEST"))
+	require_NoError(t, js.DeleteStream(ctx, "TEST"))
 
 	// Test max bytes first.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxMemStorage, Storage: nats.MemoryStorage, Subjects: []string{"foo"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxMemStorage, Storage: jetstream.MemoryStorage, Subjects: []string{"foo"}})
 	require_NoError(t, err)
 
-	require_NoError(t, js.DeleteStream("TEST"))
+	require_NoError(t, js.DeleteStream(ctx, "TEST"))
 
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, Storage: nats.MemoryStorage, Subjects: []string{"foo"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 3, Storage: jetstream.MemoryStorage, Subjects: []string{"foo"}})
 	require_NoError(t, err)
 
 	// This is much smaller, so should only be able to send 4.
 	for i := 0; i < 5; i++ {
-		if _, err := js.Publish("foo", msg[:]); err != nil {
+		if _, err := js.Publish(ctx, "foo", msg[:]); err != nil {
 			require_Error(t, err, NewJSAccountResourcesExceededError())
 			require_Equal(t, i, 4)
 			break
 		}
 	}
 
-	si, err = js.StreamInfo("TEST")
+	stream, err = js.Stream(ctx, "TEST")
+	require_NoError(t, err)
+	si, err = stream.Info(ctx)
 	require_NoError(t, err)
 	// Make sure we are no more then 1 msg below our max in terms of size.
 	delta = maxMemStorage - int64(si.State.Bytes)
@@ -1553,35 +1583,36 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	require_NoError(t, err)
+	ctx := context.Background()
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	c.waitOnAccount(aExpPub)
 
 	// Test max bytes first.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
 	require_NoError(t, err)
 	// Now delete
-	require_NoError(t, js.DeleteStream("TEST"))
+	require_NoError(t, js.DeleteStream(ctx, "TEST"))
 	// Now do 5 1MB streams.
 	for i := 1; i <= 5; i++ {
 		sname := fmt.Sprintf("TEST%d", i)
-		_, err = js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: sname, Replicas: 3, MaxBytes: 1 * 1024 * 1024})
 		require_NoError(t, err)
 	}
 	// Should fail.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
 	require_Error(t, err, errors.New("insufficient storage resources"))
 
 	// Update Test1 and Test2 to smaller reservations.
-	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST1", Replicas: 3, MaxBytes: 512 * 1024})
+	_, err = js.UpdateStream(ctx, jetstream.StreamConfig{Name: "TEST1", Replicas: 3, MaxBytes: 512 * 1024})
 	require_NoError(t, err)
-	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST2", Replicas: 3, MaxBytes: 512 * 1024})
+	_, err = js.UpdateStream(ctx, jetstream.StreamConfig{Name: "TEST2", Replicas: 3, MaxBytes: 512 * 1024})
 	require_NoError(t, err)
 	// Now make sure TEST6 succeeds.
 	checkFor(t, 1*time.Second, 500*time.Millisecond, func() error {
-		_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
 		// Since the stream leader answers the stream update, and the meta leader determines resources,
 		// we could hit a race condition here. Simply retry if hit.
 		if err != nil && strings.Contains(err.Error(), "insufficient storage resources") {
@@ -1591,13 +1622,13 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 		return nil
 	})
 	// Now delete the R3 version.
-	require_NoError(t, js.DeleteStream("TEST6"))
+	require_NoError(t, js.DeleteStream(ctx, "TEST6"))
 	// Now do R1 version and then we will scale up.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 1, MaxBytes: 1 * 1024 * 1024})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST6", Replicas: 1, MaxBytes: 1 * 1024 * 1024})
 	require_NoError(t, err)
 	// Now make sure scale up works.
 	checkFor(t, 1*time.Second, 500*time.Millisecond, func() error {
-		_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		_, err = js.UpdateStream(ctx, jetstream.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
 		// Since the stream leader answers the stream add, and the meta leader determines stream not found,
 		// we could hit a race condition here. Simply retry if hit.
 		if err != nil && strings.Contains(err.Error(), "stream not found") {
@@ -1607,11 +1638,11 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 		return nil
 	})
 	// Add in a few more streams to check reserved reporting in account info.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST7", Replicas: 1, MaxBytes: 2 * 1024 * 1024})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST7", Replicas: 1, MaxBytes: 2 * 1024 * 1024})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST8", Replicas: 1, MaxBytes: 256 * 1024, Storage: nats.MemoryStorage})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST8", Replicas: 1, MaxBytes: 256 * 1024, Storage: jetstream.MemoryStorage})
 	require_NoError(t, err)
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST9", Replicas: 3, MaxBytes: 22 * 1024, Storage: nats.MemoryStorage})
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: "TEST9", Replicas: 3, MaxBytes: 22 * 1024, Storage: jetstream.MemoryStorage})
 	require_NoError(t, err)
 
 	// Now make sure we report reserved correctly.
@@ -1668,13 +1699,14 @@ func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testi
 	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	nc, js := jsClientConnectNewAPI(t, c.randomServer(), nats.UserCredentials(accCreds))
 	defer nc.Close()
+	ctx := context.Background()
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	c.waitOnAccount(aExpPub)
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo.*"},
 		Replicas: 3,
@@ -1683,15 +1715,15 @@ func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testi
 
 	// Now make sure we can add in 10 R1 consumers.
 	for i := 1; i <= 10; i++ {
-		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		_, err = js.CreateConsumer(ctx, "TEST", jetstream.ConsumerConfig{
 			Name:      fmt.Sprintf("C-%d", i),
-			AckPolicy: nats.AckExplicitPolicy,
+			AckPolicy: jetstream.AckExplicitPolicy,
 			Replicas:  1,
 		})
 		require_NoError(t, err)
 	}
 
-	info, err := js.AccountInfo()
+	info, err := js.AccountInfo(ctx)
 	require_NoError(t, err)
 
 	// Make sure we account for these properly.
@@ -1747,7 +1779,7 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	nc, _ := jsClientConnectNewAPI(t, c.randomServer(), nats.UserCredentials(accCreds))
 	jsStreamCreate(t, nc, &StreamConfig{
 		Name:     "TEST",
 		Replicas: 3,
@@ -1869,7 +1901,7 @@ func TestJetStreamJWTClusterAccountNRGPersistsAfterRestart(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
 	defer c.shutdown()
 
-	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	nc, _ := jsClientConnectNewAPI(t, c.randomServer(), nats.UserCredentials(accCreds))
 
 	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
 	c.waitOnAccount(aExpPub)
@@ -1996,9 +2028,10 @@ func TestJetStreamJWTUpdateWithPreExistingStream(t *testing.T) {
 	updateJwt(s.ClientURL(), sysCreds, aPubE, aJwtE)
 
 	// Create stream on importing account before we restart.
-	nci, js := jsClientConnect(t, s, nats.UserCredentials(userCredsI))
+	nci, js := jsClientConnectNewAPI(t, s, nats.UserCredentials(userCredsI))
 	defer nci.Close()
-	_, err = js.AddStream(&nats.StreamConfig{
+	ctx := context.Background()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 	})
@@ -2012,9 +2045,11 @@ func TestJetStreamJWTUpdateWithPreExistingStream(t *testing.T) {
 	defer s.Shutdown()
 
 	// Reconnect and confirm stream is empty.
-	nci, js = jsClientConnect(t, s, nats.UserCredentials(userCredsI))
+	nci, js = jsClientConnectNewAPI(t, s, nats.UserCredentials(userCredsI))
 	defer nci.Close()
-	si, err := js.StreamInfo("TEST")
+	stream, err := js.Stream(ctx, "TEST")
+	require_NoError(t, err)
+	si, err := stream.Info(ctx)
 	require_NoError(t, err)
 	require_Equal(t, si.State.Msgs, 0)
 
@@ -2037,7 +2072,7 @@ func TestJetStreamJWTUpdateWithPreExistingStream(t *testing.T) {
 
 	// Confirm the message was captured by the stream on the importing account.
 	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
-		if si, err = js.StreamInfo("TEST"); err != nil {
+		if si, err = stream.Info(ctx); err != nil {
 			return err
 		} else if si.State.Msgs != 1 {
 			return fmt.Errorf("expected 1 message in stream, got %d", si.State.Msgs)

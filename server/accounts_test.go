@@ -3978,7 +3978,7 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 	defer s.Shutdown()
 
 	// Now connect up the subscriber for HELP. No-op for this test.
-	nc, _ := jsClientConnect(t, s, nats.UserInfo("a", "p"))
+	nc, _ := jsClientConnectNewAPI(t, s, nats.UserInfo("a", "p"))
 	defer nc.Close()
 
 	_, err := nc.Subscribe("HELP", func(m *nats.Msg) { m.Respond([]byte("OK")) })
@@ -3987,7 +3987,7 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 	natsFlush(t, nc)
 
 	// Now create connection to account b where we will publish to HELP.
-	nc, _ = jsClientConnect(t, s, nats.UserInfo("b", "p"))
+	nc, _ = jsClientConnectNewAPI(t, s, nats.UserInfo("b", "p"))
 	defer nc.Close()
 
 	// We want to continually be publishing messages that will trigger the service import while calling reload.
@@ -4060,7 +4060,7 @@ func TestAccountServiceAndStreamExportDoubleDelivery(t *testing.T) {
 	defer s.Shutdown()
 
 	// Now connect up the subscriber for HELP. No-op for this test.
-	nc, _ := jsClientConnect(t, s, nats.UserInfo("one", "one"))
+	nc, _ := jsClientConnectNewAPI(t, s, nats.UserInfo("one", "one"))
 	defer nc.Close()
 
 	var msgs atomic.Int32
