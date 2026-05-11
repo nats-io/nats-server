@@ -2749,6 +2749,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 }
 
 func (cc *jetStreamCluster) isMemberOfStreamAssignment(sa *streamAssignment) bool {
+	if cc == nil || cc.meta == nil {
+		return false
+	}
 	ourID := cc.meta.ID()
 	if sa.Group != nil && sa.Group.isMember(ourID) {
 		return true
@@ -2760,6 +2763,9 @@ func (cc *jetStreamCluster) isMemberOfStreamAssignment(sa *streamAssignment) boo
 }
 
 func (cc *jetStreamCluster) isMemberOfConsumerAssignment(ca *consumerAssignment) bool {
+	if cc == nil || cc.meta == nil {
+		return false
+	}
 	ourID := cc.meta.ID()
 	if ca.Group != nil && ca.Group.isMember(ourID) {
 		return true
