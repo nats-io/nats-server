@@ -13383,6 +13383,84 @@ func TestJetStreamStreamRepublishOneTokenMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamStreamRepublishSuppressesInvalidSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	addStream(t, nc, &StreamConfig{
+		Name:     "Stream1",
+		Storage:  MemoryStorage,
+		Subjects: []string{"one"},
+		RePublish: &RePublish{
+			Source:      "one",
+			Destination: "uno\r\nPUB hijack.subject 8\r\nhijacked!\r\n",
+		},
+	})
+
+	hijackSub, err := nc.SubscribeSync("hijack.subject")
+	require_NoError(t, err)
+	repubSub, err := nc.SubscribeSync("uno")
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	_, err = js.Publish("one", []byte("payload"))
+	require_NoError(t, err)
+
+	// Should receive nothing on either the hijack or republish subjects.
+	_, err = hijackSub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err)
+	_, err = repubSub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err)
+}
+
+func TestJetStreamStreamRepublishLeftRightMappingFunctions(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for i, dest := range []string{"{{left(1,3)}}", "{{right(1,3)}}"} {
+		t.Run(dest, func(t *testing.T) {
+			inSubj := fmt.Sprintf("in%d.*", i)
+			addStream(t, nc, &StreamConfig{
+				Name:     fmt.Sprintf("S%d", i),
+				Storage:  MemoryStorage,
+				Subjects: []string{inSubj},
+				RePublish: &RePublish{
+					Source:      inSubj,
+					Destination: dest,
+				},
+			})
+
+			sub, err := nc.SubscribeSync(">")
+			require_NoError(t, err)
+			require_NoError(t, nc.Flush())
+
+			_, err = js.Publish(fmt.Sprintf("in%d.abcdef", i), []byte("x"))
+			require_NoError(t, err)
+
+			// We should receive both the original ("in.abcdef") and the republished message.
+			gotRepub := false
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				msg, err := sub.NextMsg(100 * time.Millisecond)
+				if err != nil {
+					return err
+				}
+				if msg.Subject != fmt.Sprintf("in%d.abcdef", i) {
+					gotRepub = true
+					return nil
+				}
+				return fmt.Errorf("waiting for republished message")
+			})
+			require_True(t, gotRepub)
+		})
+	}
+}
+
 func TestJetStreamStreamRepublishMultiTokenMatch(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
