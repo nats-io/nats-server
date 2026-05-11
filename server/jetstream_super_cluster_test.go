@@ -2459,7 +2459,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 				Replicas:  replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
 			})
-			require_Contains(t, err.Error(), "stream move already in progress")
+			require_Contains(t, err.Error(), "stream move in progress")
 
 			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 				si, err := js.StreamInfo("MOVE", nats.MaxWait(500*time.Millisecond))

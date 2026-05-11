@@ -217,21 +217,22 @@ func (sa *streamAssignment) clearResponded() {
 // responded via markResponded/clearResponded without holding js.mu.
 func (sa *streamAssignment) clone() *streamAssignment {
 	csa := &streamAssignment{
-		Client:      sa.Client,
-		Created:     sa.Created,
-		ConfigJSON:  sa.ConfigJSON,
-		Config:      sa.Config,
-		Group:       sa.Group,
-		Sync:        sa.Sync,
-		Subject:     sa.Subject,
-		Reply:       sa.Reply,
-		Restore:     sa.Restore,
-		consumers:   sa.consumers,
-		recovering:  sa.recovering,
-		reassigning: sa.reassigning,
-		resetting:   sa.resetting,
-		err:         sa.err,
-		unsupported: sa.unsupported,
+		Client:           sa.Client,
+		Created:          sa.Created,
+		ConfigJSON:       sa.ConfigJSON,
+		Config:           sa.Config,
+		Group:            sa.Group,
+		Sync:             sa.Sync,
+		Subject:          sa.Subject,
+		Reply:            sa.Reply,
+		Restore:          sa.Restore,
+		DesiredPlacement: sa.DesiredPlacement,
+		consumers:        sa.consumers,
+		recovering:       sa.recovering,
+		reassigning:      sa.reassigning,
+		resetting:        sa.resetting,
+		err:              sa.err,
+		unsupported:      sa.unsupported,
 	}
 	csa.responded.Store(sa.responded.Load())
 	return csa
@@ -339,19 +340,20 @@ func (ca *consumerAssignment) clearResponded() {
 // responded via markResponded/clearResponded without holding js.mu.
 func (ca *consumerAssignment) clone() *consumerAssignment {
 	cca := &consumerAssignment{
-		Client:      ca.Client,
-		Created:     ca.Created,
-		Name:        ca.Name,
-		Stream:      ca.Stream,
-		ConfigJSON:  ca.ConfigJSON,
-		Config:      ca.Config,
-		Group:       ca.Group,
-		Subject:     ca.Subject,
-		Reply:       ca.Reply,
-		State:       ca.State,
-		recovering:  ca.recovering,
-		err:         ca.err,
-		unsupported: ca.unsupported,
+		Client:           ca.Client,
+		Created:          ca.Created,
+		Name:             ca.Name,
+		Stream:           ca.Stream,
+		ConfigJSON:       ca.ConfigJSON,
+		Config:           ca.Config,
+		Group:            ca.Group,
+		Subject:          ca.Subject,
+		Reply:            ca.Reply,
+		State:            ca.State,
+		DesiredPlacement: ca.DesiredPlacement,
+		recovering:       ca.recovering,
+		err:              ca.err,
+		unsupported:      ca.unsupported,
 	}
 	cca.responded.Store(ca.responded.Load())
 	return cca
