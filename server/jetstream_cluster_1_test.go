@@ -7153,6 +7153,9 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 	require_NoError(t, err)
 	require_NotEqual(t, si.Cluster.Leader, nl.Name())
 
+	// Wait for the scale down to complete.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
 	// We pause applies for the server we're connected to.
 	// This is fine for the RAFT log and allowing the consumer to be created,
 	// but we will not be able to apply the consumer assignment for some time.
@@ -7224,6 +7227,9 @@ func TestJetStreamClusterStreamUpscalePeersAfterDownscale(t *testing.T) {
 	})
 	require_NoError(t, err)
 
+	// Wait for scale down to complete.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
 	_, err = js.UpdateStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
@@ -7232,6 +7238,9 @@ func TestJetStreamClusterStreamUpscalePeersAfterDownscale(t *testing.T) {
 	require_NoError(t, err)
 
 	checkPeerSet()
+
+	// Wait for scale up to complete.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 }
 
 func TestJetStreamClusterClearAllPreAcksOnRemoveMsg(t *testing.T) {
@@ -9327,6 +9336,9 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		require_NoError(t, err)
 		checkStoreIsAsync(supportsAsync)
 
+		// Wait for the scale up to complete.
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+
 		// Disabling async flush.
 		cfg.Replicas = 1
 		_, err = jsStreamUpdate(t, nc, cfg)
@@ -11015,34 +11027,41 @@ func TestJetStreamClusterUnsetEmptyPlacement(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
+	nc := clientConnectToServer(t, c.randomServer())
 	defer nc.Close()
 
-	cfg := &nats.StreamConfig{
+	cfg := &StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"foo"},
-		Placement: &nats.Placement{},
+		Storage:   FileStorage,
+		Placement: &Placement{},
 	}
-	si, err := js.AddStream(cfg)
-	require_NoError(t, err)
+	si := addStream(t, nc, cfg)
 	require_True(t, si.Config.Placement == nil)
 
-	si, err = js.UpdateStream(cfg)
-	require_NoError(t, err)
+	si = updateStream(t, nc, cfg)
 	require_True(t, si.Config.Placement == nil)
 
 	// Set a placement level
-	cfg.Placement = &nats.Placement{Cluster: "R3S"}
-	si, err = js.UpdateStream(cfg)
+	cfg.Placement = &Placement{Cluster: "R3S"}
+	si = updateStream(t, nc, cfg)
+	require_True(t, si.Cluster.Desired != nil)
+	require_True(t, si.Cluster.Desired.Placement != nil)
+	require_Equal(t, si.Cluster.Desired.Placement.Cluster, "R3S")
+
+	var err error
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	si, err = streamInfo(t, nc, "TEST")
 	require_NoError(t, err)
+	require_True(t, si.Cluster.Desired == nil)
 	require_True(t, si.Config.Placement != nil)
 	require_Equal(t, si.Config.Placement.Cluster, "R3S")
 
 	// And ensure it can be reset.
-	cfg.Placement = &nats.Placement{}
-	si, err = js.UpdateStream(cfg)
-	require_NoError(t, err)
+	cfg.Placement = &Placement{}
+	si = updateStream(t, nc, cfg)
 	require_True(t, si.Config.Placement == nil)
+	require_True(t, si.Cluster.Desired == nil)
 }
 
 func TestJetStreamClusterPersistModeAsync(t *testing.T) {

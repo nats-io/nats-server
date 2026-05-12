@@ -7668,6 +7668,12 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 	}
 	checkStreamInfo(js)
 
+	// Wait for scale down to complete on all servers.
+	for i := 0; i < numStreams; i++ {
+		sname := fmt.Sprintf("TEST_%v", i)
+		c.waitOnStreamLeader(globalAccountName, sname)
+	}
+
 	// Back up to 3
 	for i := 0; i < numStreams; i++ {
 		sname := fmt.Sprintf("TEST_%v", i)
@@ -7676,7 +7682,6 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 			Replicas: 3,
 		})
 		require_NoError(t, err)
-		c.waitOnStreamLeader(globalAccountName, sname)
 		for _, s := range c.servers {
 			c.waitOnStreamCurrent(s, globalAccountName, sname)
 		}
