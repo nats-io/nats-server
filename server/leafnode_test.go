@@ -2878,6 +2878,52 @@ func TestLeafNodeWSMixURLs(t *testing.T) {
 	}
 }
 
+func TestLeafNodeWSFIPSValidation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "no credentials",
+			url:  "wss://127.0.0.1:1234",
+		},
+		{
+			name: "redacted credentials",
+			url:  "wss://user:pass@example:7422",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			u, err := url.Parse(test.url)
+			if err != nil {
+				t.Fatalf("Error parsing url: %v", err)
+			}
+
+			o := DefaultOptions()
+			o.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+
+			err = validateLeafNode(o)
+			if wsAllowedFIPS() {
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("Expected FIPS validation error, got none")
+			}
+			if strings.Contains(err.Error(), "user:pass") {
+				t.Fatalf("Password was not redacted: %v", err)
+			}
+			if strings.Contains(err.Error(), "user:pass@") {
+				t.Fatalf("Credentials were not redacted: %v", err)
+			}
+			if !strings.Contains(err.Error(), "FIPS-140 mode") {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 type testConnTrackSize struct {
 	sync.Mutex
 	net.Conn
