@@ -2499,8 +2499,15 @@ func (acc *Account) updateLeafNodesEx(sub *subscription, delta int32, hubOnly bo
 	// Do this once.
 	subject := string(sub.subject)
 
-	// Walk the connected leafnodes.
-	for _, ln := range acc.lleafs {
+	// Walk the connected leafnodes from a random starting point to avoid
+	// concurrent callers all contending over leafs in the same order.
+	nleafs := len(acc.lleafs)
+	start := 0
+	if nleafs > 1 {
+		start = rand.Intn(nleafs)
+	}
+	for i := 0; i < nleafs; i++ {
+		ln := acc.lleafs[(start+i)%nleafs]
 		if ln == sub.client {
 			continue
 		}
