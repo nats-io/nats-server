@@ -666,6 +666,10 @@ type WebsocketOpts struct {
 	// be negotiated between both endpoints
 	Compression bool
 
+	// If true, websocket connections can be prefixed with a PROXY protocol
+	// header to preserve the original client address.
+	ProxyProtocol bool
+
 	// Total time allowed for the server to read the client request
 	// and write the response back to the client. This include the
 	// time needed for the TLS Handshake.
@@ -5504,6 +5508,8 @@ func parseWebsocket(v any, o *Options, errors *[]error, warnings *[]error) error
 			o.Websocket.HandshakeTimeout = ht
 		case "compress", "compression":
 			o.Websocket.Compression = mv.(bool)
+		case "proxy_protocol":
+			o.Websocket.ProxyProtocol = mv.(bool)
 		case "authorization", "authentication":
 			auth := parseSimpleAuth(tk, errors)
 			o.Websocket.Username = auth.user

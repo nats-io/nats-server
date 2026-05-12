@@ -1291,6 +1291,9 @@ func (s *Server) startWebsocketServer() {
 		s.Fatalf("Unable to listen for websocket connections: %v", err)
 		return
 	}
+	if o.ProxyProtocol {
+		hl = &websocketProxyProtoListener{Listener: hl, srv: s}
+	}
 	if config != nil {
 		hl = tls.NewListener(hl, config)
 	}
@@ -1364,6 +1367,60 @@ func (s *Server) startWebsocketServer() {
 		s.done <- true
 	}()
 	s.mu.Unlock()
+}
+
+type websocketProxyProtoListener struct {
+	net.Listener
+	srv *Server
+}
+
+func (l *websocketProxyProtoListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		wrapped, err := readWebsocketProxyProtoHeader(conn)
+		if err == nil {
+			return wrapped, nil
+		}
+		l.srv.Warnf("Error reading PROXY protocol header from %s: %v", conn.RemoteAddr(), err)
+		conn.Close()
+	}
+}
+
+func readWebsocketProxyProtoHeader(conn net.Conn) (net.Conn, error) {
+	pre := make([]byte, 6)
+	if err := conn.SetReadDeadline(time.Now().Add(proxyProtoReadTimeout)); err != nil {
+		return nil, err
+	}
+	n, err := io.ReadFull(conn, pre)
+	conn.SetReadDeadline(time.Time{})
+	pre = pre[:n]
+	if err != nil && n < 6 {
+		return nil, fmt.Errorf("failed to read PROXY protocol header: %w", err)
+	}
+
+	pconn := &tlsMixConn{Conn: conn, pre: bytes.NewBuffer(pre)}
+	addr, proxyPre, err := readProxyProtoHeader(pconn)
+	if err == errProxyProtoUnrecognized {
+		if len(pre) == 0 {
+			return conn, nil
+		}
+		return &tlsMixConn{Conn: conn, pre: bytes.NewBuffer(pre)}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapped net.Conn = conn
+	if addr != nil {
+		wrapped = &proxyConn{Conn: wrapped, remoteAddr: addr}
+	}
+	if len(proxyPre) > 0 {
+		wrapped = &tlsMixConn{Conn: wrapped, pre: bytes.NewBuffer(proxyPre)}
+	}
+	return wrapped, nil
 }
 
 // The TLS configuration is passed to the listener when the websocket
