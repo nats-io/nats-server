@@ -1222,7 +1222,13 @@ func (cc *jetStreamCluster) isStreamAssigned(a *Account, stream string) bool {
 	if sa == nil {
 		return false
 	}
-	return sa.Group.isMember(cc.meta.ID())
+	ourID := cc.meta.ID()
+	if sa.DesiredPlacement != nil {
+		if sa.DesiredPlacement.Group.isMember(ourID) {
+			return true
+		}
+	}
+	return sa.Group.isMember(ourID)
 }
 
 // Read lock should be held.
@@ -6650,7 +6656,13 @@ func (cc *jetStreamCluster) isConsumerAssigned(a *Account, stream, consumer stri
 	if ca == nil {
 		return false
 	}
-	return ca.Group.isMember(cc.meta.ID())
+	ourID := cc.meta.ID()
+	if ca.DesiredPlacement != nil {
+		if ca.DesiredPlacement.Group.isMember(ourID) {
+			return true
+		}
+	}
+	return ca.Group.isMember(ourID)
 }
 
 // Returns our stream and underlying raft node.
