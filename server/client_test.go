@@ -1106,6 +1106,23 @@ func TestClientSubscribeDenyWildcardOverlapBlocksDelivery(t *testing.T) {
 	}
 }
 
+func TestClientSetPermissionsClearsStaleMsgDenyState(t *testing.T) {
+	c := &client{}
+	c.setPermissions(&Permissions{
+		Subscribe: &SubjectPermission{Deny: []string{"foo.secret"}},
+	})
+	require_True(t, c.canSubscribe("foo.*"))
+	require_True(t, c.mperms != nil)
+	require_Len(t, len(c.darray), 1)
+
+	c.setPermissions(&Permissions{})
+	require_True(t, c.mperms == nil)
+	require_Len(t, len(c.darray), 0)
+
+	require_True(t, c.canSubscribe("foo.*"))
+	require_True(t, c.mperms == nil)
+}
+
 func TestClientPubWithQueueSubNoEcho(t *testing.T) {
 	opts := DefaultOptions()
 	s := RunServer(opts)
