@@ -1096,7 +1096,7 @@ func (c *client) setPermissions(perms *Permissions) {
 	if perms.Subscribe != nil {
 		var err error
 		if len(perms.Subscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublist(slcache)
+			c.perms.sub.allow = NewSublistNoCache()
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
 			sub := &subscription{}
@@ -1108,7 +1108,7 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.allow.Insert(sub)
 		}
 		if len(perms.Subscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublist(slcache)
+			c.perms.sub.deny = NewSublistNoCache()
 			// Also hold onto this array for later.
 			c.darray = perms.Subscribe.Deny
 		}
@@ -1205,38 +1205,40 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	if c.perms == nil {
 		c.perms = &permissions{}
 	}
-	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
-	var perms []*perm
-	switch what {
-	case pub:
-		perms = []*perm{&c.perms.pub}
-	case sub:
-		perms = []*perm{&c.perms.sub}
-	case both:
-		perms = []*perm{&c.perms.pub, &c.perms.sub}
-	}
-	for _, p := range perms {
-		if p.deny == nil {
-			p.deny = NewSublist(slcache)
+	if what == pub || what == both {
+		if c.perms.pub.deny == nil {
+			c.perms.pub.deny = NewSublistForServer(c.srv)
 		}
-	FOR_DENY:
-		for _, subj := range denyPubs {
-			r := p.deny.Match(subj)
-			for _, v := range r.qsubs {
-				for _, s := range v {
-					if string(s.subject) == subj {
-						continue FOR_DENY
-					}
-				}
-			}
-			for _, s := range r.psubs {
+		mergeDenyPerm(&c.perms.pub, denyPubs)
+	}
+	if what == sub || what == both {
+		if c.perms.sub.deny == nil {
+			// Avoid sublist cache contention in canSubscribe.
+			c.perms.sub.deny = NewSublistNoCache()
+		}
+		mergeDenyPerm(&c.perms.sub, denyPubs)
+	}
+}
+
+// mergeDenyPerm inserts new deny permissions, skipping subjects that already exist.
+func mergeDenyPerm(p *perm, denyPubs []string) {
+FOR_DENY:
+	for _, subj := range denyPubs {
+		r := p.deny.Match(subj)
+		for _, v := range r.qsubs {
+			for _, s := range v {
 				if string(s.subject) == subj {
 					continue FOR_DENY
 				}
 			}
-			sub := &subscription{subject: []byte(subj)}
-			p.deny.Insert(sub)
 		}
+		for _, s := range r.psubs {
+			if string(s.subject) == subj {
+				continue FOR_DENY
+			}
+		}
+		sub := &subscription{subject: []byte(subj)}
+		p.deny.Insert(sub)
 	}
 }
 
