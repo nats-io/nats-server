@@ -499,9 +499,22 @@ func consumerMetadataChecks(t *testing.T, s server) {
 		require_NoError(t, err)
 		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
-		ci, err = s.js.ConsumerInfo(streamName, consumerName)
-		require_NoError(t, err)
-		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
+		var ici *ConsumerInfo
+		fetchConsumerInfo := func() {
+			t.Helper()
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				ici, err = consumerInfo(t, s.nc, streamName, consumerName)
+				if err != nil {
+					return err
+				}
+				if ici.Cluster.Desired != nil {
+					return NewJSConsumerMoveInProgressError()
+				}
+				return nil
+			})
+		}
+		fetchConsumerInfo()
+		require_True(t, validateMetadata(ici.Config.Metadata, "0"))
 
 		// Scale up.
 		cc.Replicas = 3
@@ -509,9 +522,8 @@ func consumerMetadataChecks(t *testing.T, s server) {
 		require_NoError(t, err)
 		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
-		ci, err = s.js.ConsumerInfo(streamName, consumerName)
-		require_NoError(t, err)
-		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
+		fetchConsumerInfo()
+		require_True(t, validateMetadata(ici.Config.Metadata, "0"))
 	}
 }
 

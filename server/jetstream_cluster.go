@@ -11228,11 +11228,7 @@ func (js *jetStream) clusterInfoWithDesired(rg *raftGroup, desired *desiredGroup
 		}
 	}
 
-	addPeer := func(peer string) {
-		// Skip if the desired peer is already present.
-		if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
-			return
-		}
+	generatePeer := func(peer string) *PeerInfo {
 		pi := &PeerInfo{
 			Current: false,
 			Offline: true,
@@ -11250,15 +11246,31 @@ func (js *jetStream) clusterInfoWithDesired(rg *raftGroup, desired *desiredGroup
 			// would technically not be required, but keeping it for now.
 			pi.Name = fmt.Sprintf("Server name unknown at this time (peerID: %s)", peer)
 		}
-		ci.Replicas = append(ci.Replicas, pi)
+		return pi
 	}
 	if desiredRg != nil {
+		ci.Desired = &DesiredClusterInfo{
+			Name:      desiredRg.Cluster,
+			RaftGroup: desiredRg.Name,
+			Placement: desired.Placement,
+		}
 		for _, peer := range desiredRg.Peers {
-			addPeer(peer)
+			pi := generatePeer(peer)
+			ci.Desired.Replicas = append(ci.Desired.Replicas, pi)
+
+			// Skip if the desired peer is already present.
+			if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
+				continue
+			}
+			ci.Replicas = append(ci.Replicas, pi)
 		}
 	}
 	for _, peer := range rg.Peers {
-		addPeer(peer)
+		// Skip if the desired peer is already present.
+		if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
+			continue
+		}
+		ci.Replicas = append(ci.Replicas, generatePeer(peer))
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...

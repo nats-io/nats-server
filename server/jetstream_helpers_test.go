@@ -1880,6 +1880,59 @@ func updateStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	return resp.StreamInfo
 }
 
+func streamInfo(t *testing.T, nc *nats.Conn, stream string) (*StreamInfo, error) {
+	t.Helper()
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, stream), nil, 500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	var resp JSApiStreamInfoResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	if resp.Type != JSApiStreamInfoResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamInfoResponseType)
+	}
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+	return resp.StreamInfo, nil
+}
+
+func addConsumerWithError(t *testing.T, nc *nats.Conn, cfg *CreateConsumerRequest) (*ConsumerInfo, *ApiError) {
+	t.Helper()
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, cfg.Stream, cfg.Config.Durable), req, 5*time.Second)
+
+	require_NoError(t, err)
+	var resp JSApiConsumerCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	if resp.Type != JSApiConsumerCreateResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiConsumerCreateResponseType)
+	}
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+	return resp.ConsumerInfo, nil
+}
+
+func consumerInfo(t *testing.T, nc *nats.Conn, stream, consumer string) (*ConsumerInfo, error) {
+	t.Helper()
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, stream, consumer), nil, 500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	var resp JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	if resp.Type != JSApiConsumerInfoResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiConsumerInfoResponseType)
+	}
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+	return resp.ConsumerInfo, nil
+}
+
 // setInActiveDeleteThreshold sets the delete threshold for how long to wait
 // before deleting an inactive consumer.
 func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {

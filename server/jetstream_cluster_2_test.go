@@ -4612,7 +4612,7 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 
 	updateReplicas := func(r int) {
 		t.Helper()
-		si, err := js.StreamInfo("TEST")
+		si, err := streamInfo(t, nc, "TEST")
 		require_NoError(t, err)
 		leader := si.Cluster.Leader
 
@@ -4622,10 +4622,15 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 		c.waitOnStreamLeader("$G", "TEST")
 
 		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-			si, err = js.StreamInfo("TEST")
-			require_NoError(t, err)
+			si, err = streamInfo(t, nc, "TEST")
+			if err != nil {
+				return err
+			}
 			if len(si.Cluster.Replicas) != r-1 {
 				return fmt.Errorf("Expected %d replicas, got %d", r-1, len(si.Cluster.Replicas))
+			}
+			if si.Cluster.Desired != nil {
+				return NewJSStreamMoveInProgressError()
 			}
 			return nil
 		})

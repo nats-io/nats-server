@@ -18098,22 +18098,6 @@ func TestJetStreamStrictMode(t *testing.T) {
 	}
 }
 
-func addConsumerWithError(t *testing.T, nc *nats.Conn, cfg *CreateConsumerRequest) (*ConsumerInfo, *ApiError) {
-	t.Helper()
-	req, err := json.Marshal(cfg)
-	require_NoError(t, err)
-	rmsg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, cfg.Stream, cfg.Config.Durable), req, 5*time.Second)
-
-	require_NoError(t, err)
-	var resp JSApiConsumerCreateResponse
-	err = json.Unmarshal(rmsg.Data, &resp)
-	require_NoError(t, err)
-	if resp.Type != JSApiConsumerCreateResponseType {
-		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiConsumerCreateResponseType)
-	}
-	return resp.ConsumerInfo, resp.Error
-}
-
 func TestJetStreamSourceRemovalAndReAdd(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

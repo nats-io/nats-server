@@ -217,10 +217,22 @@ func TestJetStreamClusterCreateConsumerWithReplicaOneGetsResponse(t *testing.T) 
 
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "C3")
 
-	ci, err := js.ConsumerInfo("TEST", "C3")
-	require_NoError(t, err)
-	require_True(t, ci.Config.Replicas == 1)
-	require_True(t, len(ci.Cluster.Replicas) == 0)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		ci, err := consumerInfo(t, nc, "TEST", "C3")
+		if err != nil {
+			return err
+		}
+		if ci.Config.Replicas != 1 {
+			return fmt.Errorf("expected replicas to be 1, but got %d", ci.Config.Replicas)
+		}
+		if len(ci.Cluster.Replicas) != 0 {
+			return fmt.Errorf("expected replicas to be 0, but got %d", len(ci.Cluster.Replicas))
+		}
+		if ci.Cluster.Desired != nil {
+			return NewJSConsumerMoveInProgressError()
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterMetaRecoveryLogic(t *testing.T) {

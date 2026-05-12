@@ -369,13 +369,23 @@ type StreamAlternate struct {
 // ClusterInfo shows information about the underlying set of servers
 // that make up the stream or consumer.
 type ClusterInfo struct {
-	Name        string      `json:"name,omitempty"`
-	RaftGroup   string      `json:"raft_group,omitempty"`
-	Leader      string      `json:"leader,omitempty"`
-	LeaderSince *time.Time  `json:"leader_since,omitempty"`
-	SystemAcc   bool        `json:"system_account,omitempty"`
-	TrafficAcc  string      `json:"traffic_account,omitempty"`
-	Replicas    []*PeerInfo `json:"replicas,omitempty"`
+	Name        string              `json:"name,omitempty"`
+	RaftGroup   string              `json:"raft_group,omitempty"`
+	Leader      string              `json:"leader,omitempty"`
+	LeaderSince *time.Time          `json:"leader_since,omitempty"`
+	SystemAcc   bool                `json:"system_account,omitempty"`
+	TrafficAcc  string              `json:"traffic_account,omitempty"`
+	Replicas    []*PeerInfo         `json:"replicas,omitempty"`
+	Desired     *DesiredClusterInfo `json:"desired,omitempty"`
+}
+
+// DesiredClusterInfo shows information of the desired set of servers
+// that should make up the stream or consumer.
+type DesiredClusterInfo struct {
+	Name      string      `json:"name,omitempty"`
+	RaftGroup string      `json:"raft_group,omitempty"`
+	Replicas  []*PeerInfo `json:"replicas,omitempty"`
+	Placement *Placement  `json:"placement,omitempty"`
 }
 
 // PeerInfo shows information about all the peers in the cluster that
