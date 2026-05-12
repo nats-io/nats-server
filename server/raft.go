@@ -86,6 +86,7 @@ type RaftNode interface {
 	WaitForStop()
 	Delete()
 	IsDeleted() bool
+	Reset()
 	RecreateInternalSubs() error
 	IsSystemAccount() bool
 	GetTrafficAccountName() string
@@ -2230,6 +2231,61 @@ func (n *raft) shutdown() {
 		n.leaderSince.Store(nil)
 		close(n.quit)
 	}
+}
+
+// Reset discards this node's local raft state (log, snapshots, peer set,
+// term/vote) so it can be caught up cleanly by another group with the same
+// name. The caller is responsible for parking the node first (typically via
+// SetObserver) if it should not compete for leadership immediately after;
+// Reset itself steps the node down but does not flip observer mode.
+func (n *raft) Reset() {
+	n.Lock()
+	defer n.Unlock()
+
+	n.debug("Resetting Raft state")
+
+	n.stepdownLocked(_EMPTY_)
+
+	// Cancel any in-flight catchup so it does not race the reset.
+	n.cancelCatchup()
+
+	// Drop proposals and inbound entries; they are no longer meaningful
+	// against whatever log this node ends up following.
+	n.prop.drain()
+	n.entry.drain()
+	n.resp.drain()
+	n.apply.drain()
+	n.reqs.drain()
+	n.votes.drain()
+
+	// Remove every snapshot under our snapshots dir, not just the one referenced
+	// by n.snapfile. Orphans (e.g. from a crash between install and the previous
+	// file's removal) would otherwise be picked up by setupLastSnapshot on the
+	// next restart and reseed the state we are discarding here.
+	snapDir := filepath.Join(n.sd, snapshotsDir)
+	if err := os.RemoveAll(snapDir); err != nil {
+		n.warn("Error removing snapshots directory during reset: %v", err)
+	}
+	if err := os.MkdirAll(snapDir, defaultDirPerms); err != nil {
+		n.warn("Error recreating snapshots directory during reset: %v", err)
+	}
+	n.snapfile = _EMPTY_
+
+	// Reset the WAL, but reset these first to not trip the assertion.
+	n.commit, n.hcommit, n.applied, n.processed, n.papplied = 0, 0, 0, 0, 0
+	n.resetWAL()
+
+	// Reset peer set to just ourselves; a new leader will fold us back into
+	// the cluster's membership view via processPeerState.
+	n.peers = map[string]*lps{n.id: {time.Time{}, 0, true}}
+	n.removed = nil
+	n.adjustClusterSizeAndQuorum()
+
+	n.term, n.vote = 0, _EMPTY_
+	n.writeTermVote()
+
+	// Persist the cleared peer state so a restart picks up the reset.
+	n.writePeerState(n.currentPeerStateLocked())
 }
 
 const (
