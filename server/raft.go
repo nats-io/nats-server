@@ -70,6 +70,7 @@ type RaftNode interface {
 	Peers() []*Peer
 	ProposeKnownPeers(knownPeers []string)
 	UpdateKnownPeers(knownPeers []string)
+	UpdateAllowedPeers(peers []string)
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
 	MembershipChangeInProgress() bool
@@ -2183,6 +2184,21 @@ func (n *raft) updateKnownPeersLocked(knownPeers []string) {
 	n.processPeerState(ps)
 }
 
+func (n *raft) UpdateAllowedPeers(peers []string) {
+	n.Lock()
+	defer n.Unlock()
+	//fmt.Printf("%s: UpdateAllowedPeers (leader %v): %v\n", n.s.Name(), n.State() == Leader, peers)
+	for _, peer := range peers {
+		if _, ok := n.peers[peer]; ok {
+			continue
+		}
+		if n.removed == nil {
+			n.removed = map[string]time.Time{}
+		}
+		n.removed[peer] = time.Time{}
+	}
+}
+
 // ApplyQ returns the apply queue that new commits will be sent to for the
 // upper layer to apply.
 func (n *raft) ApplyQ() *ipQueue[*CommittedEntry] { return n.apply }
@@ -3051,6 +3067,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 // and adjusts cluster size and quorum accordingly.
 // Lock should be held.
 func (n *raft) addPeer(peer string) {
+	//fmt.Printf("%s: addPeer (leader %v): %v\n", n.s.Name(), n.State() == Leader, peer)
 	// If we were on the removed list reverse that here.
 	if n.removed != nil {
 		delete(n.removed, peer)
@@ -3075,10 +3092,13 @@ func (n *raft) addPeer(peer string) {
 // and adjusts cluster size and quorum accordingly.
 // Lock should be held.
 func (n *raft) removePeer(peer string) {
+	//fmt.Printf("%s: removePeer (leader %v): %v\n", n.s.Name(), n.State() == Leader, peer)
 	if n.removed == nil {
 		n.removed = map[string]time.Time{}
 	}
-	n.removed[peer] = time.Now()
+	if _, ok := n.removed[peer]; !ok {
+		n.removed[peer] = time.Now()
+	}
 	if _, ok := n.peers[peer]; ok {
 		delete(n.peers, peer)
 		n.adjustClusterSizeAndQuorum()
