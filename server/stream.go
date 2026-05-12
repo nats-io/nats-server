@@ -582,8 +582,9 @@ type stream struct {
 
 // inflightSubjectRunningTotal stores a running total of inflight messages for a specific subject.
 type inflightSubjectRunningTotal struct {
-	bytes uint64 // Running total of inflight bytes for inflight messages.
-	ops   uint64 // Inflight operations, i.e. inflight messages for this subject. If this reaches zero, we can remove the running total.
+	bytes    uint64 // Running total of inflight bytes for inflight messages.
+	ops      uint64 // Inflight operations, i.e. inflight messages for this subject. If this reaches zero, we can remove the running total.
+	schedule bool   // Marks whether the last message is a schedule.
 }
 
 // msgCounterRunningTotal stores a running total and a number of inflight
@@ -6540,6 +6541,23 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 						outq.sendMsg(reply, b)
 					}
 					return apiErr
+				} else {
+					// Check that the to-be-purged subject is a schedule message.
+					// We still allow this message through if there exists no message for this subject,
+					// to remain backward-compatible. An "expected at sequence" check can still be
+					// performed to make this stricter.
+					var smv StoreMsg
+					sm, _ := store.LoadLastMsg(bytesToString(scheduler), &smv)
+					if sm != nil && len(sliceHeader(JSSchedulePattern, sm.hdr)) == 0 {
+						apiErr := NewJSMessageSchedulesSchedulerInvalidError()
+						if canRespond {
+							resp.PubAck = &PubAck{Stream: name}
+							resp.Error = apiErr
+							b, _ := json.Marshal(resp)
+							outq.sendMsg(reply, b)
+						}
+						return apiErr
+					}
 				}
 			} else if !sourced && len(sliceHeader(JSScheduler, hdr)) > 0 {
 				// Clients may only use Nats-Scheduler alongside Nats-Schedule-Next.
