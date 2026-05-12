@@ -1950,12 +1950,14 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		// In an extension use case, pin leadership to server remotes connect to.
 		// Therefore, server with a remote that are not already in observer mode, need to be put into it.
 		if solicited && meta != nil && !meta.IsObserver() {
-			meta.setObserver(true, extExtended)
 			c.Debugf("Turning JetStream metadata controller Observer Mode on - System Account Connected")
-			// Take note that the domain was not extended to avoid this state next startup.
-			writePeerState(js.config.StoreDir, meta.currentPeerState())
-			// If this server is the leader already, step down so a new leader can be elected (that is not an observer)
-			meta.StepDown()
+			// Discard any local metagroup state accumulated before the SYS-account
+			// leaf came up (e.g. the wrong-hint case where this server bootstrapped
+			// its own metagroup). The parent's view is now authoritative; without
+			// this reset the two raft logs stay forked because the standalone log's
+			// commit prefix short-circuits the follower's AE handling.
+			meta.setObserver(true, extExtended)
+			meta.Reset()
 		}
 	} else {
 		// This deny is needed in all cases (system account shared or not)
