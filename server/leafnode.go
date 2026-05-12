@@ -304,6 +304,13 @@ func validateLeafNode(o *Options) error {
 				return fmt.Errorf("remote leaf node configuration cannot have a mix of websocket and non-websocket urls: %q", redactURLList(rcfg.URLs))
 			}
 		}
+		if !wsAllowedFIPS() {
+			for _, u := range rcfg.URLs {
+				if isWSURL(u) {
+					return fmt.Errorf("remote leaf node URL %q cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later", redactURLString(u.String()))
+				}
+			}
+		}
 		// Validate compression settings
 		if rcfg.Compression.Mode != _EMPTY_ {
 			if err := validateAndNormalizeCompressionOption(&rcfg.Compression, CompressionS2Auto); err != nil {
