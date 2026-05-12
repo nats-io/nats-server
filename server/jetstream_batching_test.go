@@ -1173,6 +1173,112 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 			},
 		},
 		{
+			title:             "msg-schedules-purge-staged-not-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+					err: NewJSMessageSchedulesSchedulerInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-purge-staged-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"baz"},
+					},
+				},
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+				},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					return
+				}
+				require_NotNil(t, mset.inflight["foo"])
+				require_True(t, mset.inflight["foo"].schedule)
+			},
+		},
+		{
+			title:             "msg-schedules-purge-staged-overwritten",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"baz"},
+					},
+				},
+				{subject: "foo"},
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+					err: NewJSMessageSchedulesSchedulerInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-purge-inflight-not-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			init: func(mset *stream) {
+				mset.inflight = map[string]*inflightSubjectRunningTotal{
+					"foo": {bytes: 10, ops: 1, schedule: false},
+				}
+			},
+			batch: []BatchItem{
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+					err: NewJSMessageSchedulesSchedulerInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-purge-inflight-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			init: func(mset *stream) {
+				mset.inflight = map[string]*inflightSubjectRunningTotal{
+					"foo": {bytes: 10, ops: 1, schedule: true},
+				}
+			},
+			batch: []BatchItem{
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+				},
+			},
+		},
+		{
 			title:      "discard-new",
 			discardNew: true,
 			batch: []BatchItem{
