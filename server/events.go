@@ -1870,6 +1870,10 @@ func (s *Server) shutdownEventing() {
 	}
 
 	s.mu.Lock()
+	if s.sys == nil || s.sys.resetCh == nil {
+		s.mu.Unlock()
+		return
+	}
 	clearTimer(&s.sys.sweeper)
 	clearTimer(&s.sys.stmr)
 	rc := s.sys.resetCh
