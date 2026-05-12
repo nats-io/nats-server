@@ -206,19 +206,23 @@ func (l *fileLogger) logPurge(fname string) {
 	var backups []string
 	lDir := filepath.Dir(fname)
 	lBase := filepath.Base(fname)
+	baseWithoutExt := strings.TrimSuffix(lBase, filepath.Ext(lBase))
 	entries, err := os.ReadDir(lDir)
 	if err != nil {
 		l.logDirect(l.l.errorLabel, "Unable to read directory %q for log purge (%v), will attempt next rotation", lDir, err)
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == lBase || !strings.HasPrefix(entry.Name(), lBase) {
+		if entry.IsDir() || entry.Name() == lBase || !strings.HasPrefix(entry.Name(), baseWithoutExt+".") {
 			continue
 		}
-		if stamp, found := strings.CutPrefix(entry.Name(), fmt.Sprintf("%s%s", lBase, ".")); found {
-			_, err := time.Parse("2006:01:02:15:04:05.999999999", strings.Replace(stamp, ".", ":", 5))
-			if err == nil {
-				backups = append(backups, entry.Name())
+		if strings.HasSuffix(entry.Name(), ".log") {
+			if stamp, found := strings.CutPrefix(entry.Name(), fmt.Sprintf("%s.", baseWithoutExt)); found {
+				stamp = strings.TrimSuffix(stamp, ".log")
+				_, err := time.Parse("2006:01:02:15:04:05.999999999", strings.Replace(stamp, ".", ":", 5))
+				if err == nil {
+					backups = append(backups, entry.Name())
+				}
 			}
 		}
 	}
@@ -257,10 +261,12 @@ func (l *fileLogger) Write(b []byte) (int, error) {
 				return n, err
 			}
 			fname := l.f.Name()
+			ext := filepath.Ext(fname)
+			base := strings.TrimSuffix(fname, ext)
 			now := time.Now()
-			bak := fmt.Sprintf("%s.%04d.%02d.%02d.%02d.%02d.%02d.%09d", fname,
+			bak := fmt.Sprintf("%s.%04d.%02d.%02d.%02d.%02d.%02d.%09d%s", base,
 				now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(),
-				now.Second(), now.Nanosecond())
+				now.Second(), now.Nanosecond(), ext)
 			os.Rename(fname, bak)
 			fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 			f, err := os.OpenFile(fname, fileflags, defaultLogPerms)
