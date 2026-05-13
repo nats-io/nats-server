@@ -976,7 +976,19 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 //
 // Errors during the upgrade are logged on the server; the response
 // itself is written by wsUpgrade before this returns.
+//
+// Returns 503 Service Unavailable if the server has not yet completed
+// Start() (or is shutting down). The built-in listener cannot reach this
+// state because its mux is only wired up after the server is running,
+// but an externally-mounted handler may receive requests before then;
+// without this gate wsUpgrade would send 101 Switching Protocols and
+// createWSClient / createMQTTClient would then bail out without closing
+// the connection, leaving the peer with an orphaned half-open socket.
 func (s *Server) HandleWsUpgrade(w http.ResponseWriter, r *http.Request) {
+	if !s.isRunning() {
+		http.Error(w, "server not ready", http.StatusServiceUnavailable)
+		return
+	}
 	res, err := s.wsUpgrade(w, r)
 	if err != nil {
 		s.Errorf(err.Error())

@@ -26,6 +26,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -1904,6 +1905,48 @@ func TestWSEmbeddedInitOptionsBeforeStart(t *testing.T) {
 	entries, ok := allowed["example.com"]
 	if !ok || len(entries) != 1 || entries[0].scheme != "http" || entries[0].port != "8080" {
 		t.Fatalf("Expected allowedOrigins to contain http://example.com:8080, got %v", allowed)
+	}
+}
+
+func TestWSHandleUpgradeRejectsBeforeStart(t *testing.T) {
+	// Regression: createWSClient and createMQTTClient bail out without
+	// closing the connection when !s.isRunning() and the server is not
+	// shutting down. Before this gate, an externally-mounted
+	// HandleWsUpgrade that received a request before Start() completed
+	// would send 101 Switching Protocols and then drop the connection on
+	// the floor, leaving the peer with an orphaned half-open socket.
+	o := DefaultOptions()
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer s.Shutdown()
+	// Note: deliberately NOT calling s.Start() here.
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleWsUpgrade))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", ts.URL, nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	key, err := wsMakeChallengeKey()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Sec-WebSocket-Key", key)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("Expected 503 before Start, got %d", resp.StatusCode)
 	}
 }
 
