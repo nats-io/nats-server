@@ -2964,7 +2964,13 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	} else {
 		// If the deliver sequence matches then the upstream stream has expired or deleted messages.
 		if dseq == mset.mirror.dseq+1 {
-			mset.skipMsgs(mset.mirror.sseq+1, sseq-1)
+			if err := mset.skipMsgs(mset.mirror.sseq+1, sseq-1); err != nil {
+				mset.mirror.sseq = osseq
+				mset.mirror.dseq = odseq
+				mset.mu.Unlock()
+				mset.retryMirrorConsumer()
+				return false
+			}
 			mset.mirror.dseq++
 			mset.mirror.sseq = sseq
 		} else {
@@ -3083,13 +3089,15 @@ func (mset *stream) retryMirrorConsumer() error {
 }
 
 // Lock should be held.
-func (mset *stream) skipMsgs(start, end uint64) {
+func (mset *stream) skipMsgs(start, end uint64) error {
 	node, store := mset.node, mset.store
 	// If we are not clustered we can short circuit now with store.SkipMsgs
 	if node == nil {
-		store.SkipMsgs(start, end-start+1)
+		if err := store.SkipMsgs(start, end-start+1); err != nil {
+			return err
+		}
 		mset.lseq = end
-		return
+		return nil
 	}
 
 	// FIXME (dlc) - We should allow proposals of DeleteRange, but would need to make sure all peers support.
@@ -3099,7 +3107,9 @@ func (mset *stream) skipMsgs(start, end uint64) {
 		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0, false)))
 		// So a single message does not get too big.
 		if len(entries) > 10_000 {
-			node.ProposeMulti(entries)
+			if err := node.ProposeMulti(entries); err != nil {
+				return err
+			}
 			// We need to re-create `entries` because there is a reference
 			// to it in the node's pae map.
 			entries = entries[:0]
@@ -3107,8 +3117,9 @@ func (mset *stream) skipMsgs(start, end uint64) {
 	}
 	// Send all at once.
 	if len(entries) > 0 {
-		node.ProposeMulti(entries)
+		return node.ProposeMulti(entries)
 	}
+	return nil
 }
 
 const (
@@ -3412,14 +3423,26 @@ func (mset *stream) setupMirrorConsumer() error {
 				mset.store.FastState(&state)
 
 				// Check if we need to skip messages.
-				if state.LastSeq != ccr.ConsumerInfo.Delivered.Stream {
+				if state.LastSeq < ccr.ConsumerInfo.Delivered.Stream {
+					// Local helper: abort consumer setup, leaving the mirror in its
+					// pre-setup state so the retry path can re-create it cleanly.
+					failSetup := func(setupErr error) {
+						mset.cancelSourceInfo(mirror)
+						mirror.err = NewJSMirrorConsumerSetupFailedError(setupErr, Unless(setupErr))
+						retry = true
+						mset.mu.Unlock()
+					}
 					// Check to see if delivered is past our last and we have no msgs. This will help the
 					// case when mirroring a stream that has a very high starting sequence number.
 					if state.Msgs == 0 && ccr.ConsumerInfo.Delivered.Stream > state.LastSeq {
-						mset.store.PurgeEx(_EMPTY_, ccr.ConsumerInfo.Delivered.Stream+1, 0)
+						if _, err := mset.store.PurgeEx(_EMPTY_, ccr.ConsumerInfo.Delivered.Stream+1, 0); err != nil {
+							failSetup(err)
+							return
+						}
 						mset.lseq = ccr.ConsumerInfo.Delivered.Stream
-					} else {
-						mset.skipMsgs(state.LastSeq+1, ccr.ConsumerInfo.Delivered.Stream)
+					} else if err := mset.skipMsgs(state.LastSeq+1, ccr.ConsumerInfo.Delivered.Stream); err != nil {
+						failSetup(err)
+						return
 					}
 				}
 

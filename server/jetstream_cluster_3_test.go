@@ -8560,3 +8560,62 @@ func TestJetStreamClusterProposeFailureDoesNotDriftClseq(t *testing.T) {
 		require_False(t, rn.IsDeleted())
 	}
 }
+
+func TestJetStreamClusterMirrorSkipMsgsPropagatesProposeFailure(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"src.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	stored := uint64(5)
+	for range stored {
+		_, err = js.Publish("src.a", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 3,
+		Mirror:   &nats.StreamSource{Name: "SRC"},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != stored {
+			return fmt.Errorf("got %d msgs, want %d", si.State.Msgs, stored)
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "M")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+
+	// Step the mirror's Raft node down so node.Propose / ProposeMulti will return
+	// errNotLeader for any subsequent proposal; including the one skipMsgs makes.
+	require_NoError(t, mset.raftNode().StepDown())
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if mset.IsLeader() {
+			return fmt.Errorf("still leader")
+		}
+		return nil
+	})
+
+	mset.mu.Lock()
+	err = mset.skipMsgs(stored+1, stored+10)
+	mset.mu.Unlock()
+	require_Error(t, err, errNotLeader)
+}
