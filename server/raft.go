@@ -344,6 +344,7 @@ var (
 	errNoInternalClient  = errors.New("raft: no internal client")
 	errMembershipChange  = errors.New("raft: membership change in progress")
 	errRemoveLastNode    = errors.New("raft: cannot remove the last peer")
+	errPeerNotFound      = errors.New("raft: peer not found")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -1046,7 +1047,10 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 		n.RUnlock()
 		return errMembershipChange
 	}
-
+	if _, ok := n.peers[peer]; !ok {
+		n.RUnlock()
+		return errPeerNotFound
+	}
 	if len(n.peers) <= 1 {
 		n.RUnlock()
 		return errRemoveLastNode
@@ -2909,6 +2913,16 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 	}
 	if n.membChangeIndex > 0 {
 		n.debug("Ignoring forwarded peer removal proposal, membership changing")
+		n.RUnlock()
+		return
+	}
+	if _, ok := n.peers[string(msg)]; !ok {
+		n.debug("Ignoring forwarded peer removal proposal, peer not found")
+		n.RUnlock()
+		return
+	}
+	if len(n.peers) <= 1 {
+		n.debug("Ignoring forwarded peer removal proposal, remove last node")
 		n.RUnlock()
 		return
 	}
