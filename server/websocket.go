@@ -1162,15 +1162,20 @@ func wsMakeChallengeKey() (string, error) {
 // Validate the websocket related options.
 func validateWebsocketOptions(o *Options) error {
 	wo := &o.Websocket
-	// If no port is defined, we don't care about other options
-	if wo.Port == 0 {
-		return nil
+	// Listener-specific checks apply only when a websocket port is configured.
+	if wo.Port != 0 {
+		// Enforce TLS... unless NoTLS is set to true.
+		if wo.TLSConfig == nil && !wo.NoTLS {
+			return errors.New("websocket requires TLS configuration")
+		}
+		if err := validatePinnedCerts(wo.TLSPinnedCerts); err != nil {
+			return fmt.Errorf("websocket: %v", err)
+		}
 	}
-	// Enforce TLS... unless NoTLS is set to true.
-	if wo.TLSConfig == nil && !wo.NoTLS {
-		return errors.New("websocket requires TLS configuration")
-	}
-	// Make sure that allowed origins, if specified, can be parsed.
+	// The remaining options also apply to HandleWsUpgrade (embedded use),
+	// so they are validated regardless of whether a listener will be bound,
+	// to avoid silently weakening origin policy when wsSetOriginOptions
+	// later skips malformed entries with only a log line.
 	for _, ao := range wo.AllowedOrigins {
 		u, err := url.ParseRequestURI(ao)
 		if err != nil {
@@ -1207,9 +1212,6 @@ func validateWebsocketOptions(o *Options) error {
 		if len(o.TrustedOperators) == 0 && len(o.TrustedKeys) == 0 {
 			return fmt.Errorf("trusted operators or trusted keys configuration is required for JWT authentication via cookie %q", wo.JWTCookie)
 		}
-	}
-	if err := validatePinnedCerts(wo.TLSPinnedCerts); err != nil {
-		return fmt.Errorf("websocket: %v", err)
 	}
 
 	// Check for invalid headers here.
