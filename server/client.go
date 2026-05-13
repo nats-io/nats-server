@@ -270,7 +270,7 @@ type client struct {
 	mpay       int32
 	msubs      int32
 	mcl        int32
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	cid        uint64
 	start      time.Time
 	nonce      []byte
@@ -998,6 +998,7 @@ func (c *client) RegisterUser(user *User) {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
 		c.mperms = nil
+		c.darray = nil
 	} else {
 		c.setPermissions(user.Permissions)
 	}
@@ -1035,6 +1036,7 @@ func (c *client) RegisterNkeyUser(user *NkeyUser) error {
 		// Reset perms to nil in case client previously had them.
 		c.perms = nil
 		c.mperms = nil
+		c.darray = nil
 	} else {
 		c.setPermissions(user.Permissions)
 	}
@@ -1061,6 +1063,8 @@ func (c *client) setPermissions(perms *Permissions) {
 		return
 	}
 	c.perms = &permissions{}
+	c.mperms = nil
+	c.darray = nil
 	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
 
 	// Loop over publish permissions
@@ -1092,7 +1096,7 @@ func (c *client) setPermissions(perms *Permissions) {
 	if perms.Subscribe != nil {
 		var err error
 		if len(perms.Subscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublist(slcache)
+			c.perms.sub.allow = NewSublistNoCache()
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
 			sub := &subscription{}
@@ -1104,7 +1108,7 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.sub.allow.Insert(sub)
 		}
 		if len(perms.Subscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublist(slcache)
+			c.perms.sub.deny = NewSublistNoCache()
 			// Also hold onto this array for later.
 			c.darray = perms.Subscribe.Deny
 		}
@@ -1201,38 +1205,40 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	if c.perms == nil {
 		c.perms = &permissions{}
 	}
-	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
-	var perms []*perm
-	switch what {
-	case pub:
-		perms = []*perm{&c.perms.pub}
-	case sub:
-		perms = []*perm{&c.perms.sub}
-	case both:
-		perms = []*perm{&c.perms.pub, &c.perms.sub}
-	}
-	for _, p := range perms {
-		if p.deny == nil {
-			p.deny = NewSublist(slcache)
+	if what == pub || what == both {
+		if c.perms.pub.deny == nil {
+			c.perms.pub.deny = NewSublistForServer(c.srv)
 		}
-	FOR_DENY:
-		for _, subj := range denyPubs {
-			r := p.deny.Match(subj)
-			for _, v := range r.qsubs {
-				for _, s := range v {
-					if string(s.subject) == subj {
-						continue FOR_DENY
-					}
-				}
-			}
-			for _, s := range r.psubs {
+		mergeDenyPerm(&c.perms.pub, denyPubs)
+	}
+	if what == sub || what == both {
+		if c.perms.sub.deny == nil {
+			// Avoid sublist cache contention in canSubscribe.
+			c.perms.sub.deny = NewSublistNoCache()
+		}
+		mergeDenyPerm(&c.perms.sub, denyPubs)
+	}
+}
+
+// mergeDenyPerm inserts new deny permissions, skipping subjects that already exist.
+func mergeDenyPerm(p *perm, denyPubs []string) {
+FOR_DENY:
+	for _, subj := range denyPubs {
+		r := p.deny.Match(subj)
+		for _, v := range r.qsubs {
+			for _, s := range v {
 				if string(s.subject) == subj {
 					continue FOR_DENY
 				}
 			}
-			sub := &subscription{subject: []byte(subj)}
-			p.deny.Insert(sub)
 		}
+		for _, s := range r.psubs {
+			if string(s.subject) == subj {
+				continue FOR_DENY
+			}
+		}
+		sub := &subscription{subject: []byte(subj)}
+		p.deny.Insert(sub)
 	}
 }
 
@@ -3240,9 +3246,9 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 	return &nsub, nil
 }
 
-// canSubscribe determines if the client is authorized to subscribe to the
-// given subject. Assumes caller is holding lock.
-func (c *client) canSubscribe(subject string, optQueue ...string) bool {
+// canSubscribeInternal determines if the client is authorized to subscribe to
+// the given subject. Assumes caller is holding at least a read lock.
+func (c *client) canSubscribeInternal(subject string, optQueue ...string) bool {
 	if c.perms == nil {
 		return true
 	}
@@ -3287,23 +3293,32 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 			// If the queue appears in the deny list, then DO NOT allow.
 			allowed = !queueMatches(queue, r.qsubs)
 		}
+	}
+	return allowed
+}
 
-		// We use the actual subscription to signal us to spin up the deny mperms
-		// and cache. We check if the subject is a wildcard that intersects any of
-		// the deny clauses.
-		// FIXME(dlc) - We could be smarter and track when these go away and remove.
-		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
-			// Whip through the deny array and check if this wildcard subject can
-			// overlap with any denied deliveries.
-			for _, sub := range c.darray {
-				if SubjectsCollide(sub, subject) {
-					c.loadMsgDenyFilter()
-					break
-				}
+// canSubscribe determines if the client is authorized to subscribe to the
+// given subject and initializes the delivery-time deny filter when needed.
+// Assumes caller is holding the write lock.
+func (c *client) canSubscribe(subject string, optQueue ...string) bool {
+	if !c.canSubscribeInternal(subject, optQueue...) {
+		return false
+	}
+	// We use the actual subscription to signal us to spin up the deny mperms
+	// and cache. We check if the subject is a wildcard that intersects any of
+	// the deny clauses.
+	// FIXME(dlc) - We could be smarter and track when these go away and remove.
+	if c.mperms == nil && subjectHasWildcard(subject) {
+		// Whip through the deny array and check if this wildcard subject can
+		// overlap with any denied deliveries.
+		for _, sub := range c.darray {
+			if SubjectsCollide(sub, subject) {
+				c.loadMsgDenyFilter()
+				break
 			}
 		}
 	}
-	return allowed
+	return true
 }
 
 func queueMatches(queue string, qsubs [][]*subscription) bool {

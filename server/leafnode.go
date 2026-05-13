@@ -2593,31 +2593,48 @@ func (acc *Account) updateLeafNodesEx(sub *subscription, delta int32, hubOnly bo
 	// Do this once.
 	subject := string(sub.subject)
 
-	// Walk the connected leafnodes.
-	for _, ln := range acc.lleafs {
+	// Walk the connected leafnodes from a random starting point to avoid
+	// concurrent callers all contending over leafs in the same order.
+	nleafs := len(acc.lleafs)
+	start := 0
+	if nleafs > 1 {
+		start = rand.Intn(nleafs)
+	}
+	for i := 0; i < nleafs; i++ {
+		ln := acc.lleafs[(start+i)%nleafs]
 		if ln == sub.client {
 			continue
 		}
-		ln.mu.Lock()
+		ln.mu.RLock()
 		// Don't advertise interest from leafnodes to other isolated leafnodes.
 		if sub.client.kind == LEAF && ln.isIsolatedLeafNode() {
-			ln.mu.Unlock()
+			ln.mu.RUnlock()
 			continue
 		}
 		// If `hubOnly` is true, it means that we want to update only leafnodes
 		// that connect to this server (so isHubLeafNode() would return `true`).
 		if hubOnly && !ln.isHubLeafNode() {
-			ln.mu.Unlock()
+			ln.mu.RUnlock()
 			continue
 		}
 		// Check to make sure this sub does not have an origin cluster that matches the leafnode.
 		// If skipped, make sure that we still let go the "$LDS." subscription that allows
 		// the detection of loops as long as different cluster.
 		clusterDifferent := cluster != ln.remoteCluster()
-		if (isLDS && clusterDifferent) || ((cluster == _EMPTY_ || clusterDifferent) && (delta <= 0 || ln.canSubscribe(subject))) {
-			ln.updateSmap(sub, delta, isLDS)
+		update := (isLDS && clusterDifferent) ||
+			((cluster == _EMPTY_ || clusterDifferent) && (delta <= 0 || ln.canSubscribeInternal(subject)))
+		ln.mu.RUnlock()
+		if update {
+			ln.mu.Lock()
+			// The leaf role, isolation mode, and remote cluster are stable
+			// for the connection. Recheck canSubscribe here since permissions
+			// can change, and to initializes mperms for wildcard subscriptions
+			// that collide with deny rules.
+			if isLDS || delta <= 0 || ln.canSubscribe(subject) {
+				ln.updateSmap(sub, delta, isLDS)
+			}
+			ln.mu.Unlock()
 		}
-		ln.mu.Unlock()
 	}
 }
 
@@ -3306,35 +3323,39 @@ func (c *client) leafMsgAllowed() bool {
 		return true
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	c.mu.RLock()
 	if c.isSpokeLeafNode() {
 		// Gateway routed replies are forwarded without
 		// permission checks.
 		if isGW || c.leafReceiveAllowed(subjectToCheck) {
+			c.mu.RUnlock()
 			return true
 		}
 	} else if c.leafSendAllowed(subjectToCheck) {
+		c.mu.RUnlock()
 		return true
 	}
+	c.mu.RUnlock()
+
 	// Check tracked reply permissions (allow_responses).
 	// Use the pre-strip subject since deliverMsg tracks
 	// replies under the original form, which includes
 	// the GW routing prefix for routed requests.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.responseAllowed(bytesToString(wireSubject))
 }
 
 // Returns true if the leaf side ACLs allow importing this subject,
 // based on the permissions received over INFO and any local deny_imports.
-// Lock must be held.
+// At least a read lock must be held.
 func (c *client) leafReceiveAllowed(subject []byte) bool {
-	return c.canSubscribe(bytesToString(subject))
+	return c.canSubscribeInternal(bytesToString(subject))
 }
 
 // Returns true if the hub side ACLs allow the remote leaf to send
 // this subject.
-// Lock must be held.
+// At least a read lock must be held.
 func (c *client) leafSendAllowed(bsubject []byte) bool {
 	// Use the original export ACL captured for this accepted leaf.
 	// The live perms also contain additional JetStream denies used by
