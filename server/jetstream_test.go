@@ -23607,3 +23607,61 @@ func TestJetStreamStreamConfigConcurrentReadWrite(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+func TestJetStreamMirrorProcessInboundNilDeref(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err := js.Publish("foo", []byte("seed"))
+		require_NoError(t, err)
+	}
+
+	mset, err := s.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+
+	var (
+		stop atomic.Bool
+		wg   sync.WaitGroup
+	)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			mset.mu.Lock()
+			mset.mirror = &sourceInfo{name: "X", cname: "X", sseq: 4}
+			mset.mu.Unlock()
+
+			// With mset.mirror{cname:"X", sseq:4}, sseq==5 takes the
+			// sequential branch and then forces errLastSeqMismatch from
+			// processJetStreamMsg with sseq<=lseq.
+			rply := fmt.Sprintf("$JS.ACK.M.X.1.5.1.%d.0", time.Now().UnixNano())
+			mset.processInboundMirrorMsg(&inMsg{subj: "bar", rply: rply, msg: []byte("x")})
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			mset.mu.Lock()
+			mset.mirror = nil
+			mset.mu.Unlock()
+			runtime.Gosched()
+		}
+	}()
+
+	time.Sleep(3 * time.Second)
+	stop.Store(true)
+	wg.Wait()
+}
