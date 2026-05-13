@@ -1,4 +1,4 @@
-// Copyright 2020-2025 The NATS Authors
+// Copyright 2020-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,7 +16,6 @@ package server
 import (
 	"bytes"
 	crand "crypto/rand"
-	"crypto/sha1"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
@@ -1107,15 +1106,6 @@ func wsGetHostAndPort(tls bool, hostport string) (string, string, error) {
 	return strings.ToLower(host), port, err
 }
 
-// Concatenate the key sent by the client with the GUID, then computes the SHA1 hash
-// and returns it as a based64 encoded string.
-func wsAcceptKey(key string) string {
-	h := sha1.New()
-	h.Write([]byte(key))
-	h.Write(wsGUID)
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
-}
-
 func wsMakeChallengeKey() (string, error) {
 	p := make([]byte, 16)
 	if _, err := io.ReadFull(crand.Reader, p); err != nil {
@@ -1130,6 +1120,9 @@ func validateWebsocketOptions(o *Options) error {
 	// If no port is defined, we don't care about other options
 	if wo.Port == 0 {
 		return nil
+	}
+	if !wsAllowedFIPS() {
+		return fmt.Errorf("websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later")
 	}
 	// Enforce TLS... unless NoTLS is set to true.
 	if wo.TLSConfig == nil && !wo.NoTLS {
