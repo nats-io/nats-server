@@ -5475,7 +5475,28 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		require_NoError(t, err)
 	}
 
+	subscribeAdvisoriesCount := func(consumer string) *atomic.Int64 {
+		t.Helper()
+		var count atomic.Int64
+		subj := fmt.Sprintf("%s.%s.%s", JSAdvisoryConsumerMaxDeliveryExceedPre, "TEST", consumer)
+		sub, err := nc.Subscribe(subj, func(*nats.Msg) { count.Add(1) })
+		require_NoError(t, err)
+		t.Cleanup(func() { sub.Unsubscribe() })
+		require_NoError(t, nc.Flush())
+		return &count
+	}
+	requireAdvisoriesCount := func(consumer string, count *atomic.Int64, want int64, when string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if got := count.Load(); got != want {
+				return fmt.Errorf("%s consumer expected %d advisories %s, got %d", consumer, want, when, got)
+			}
+			return nil
+		})
+	}
+
 	// File based.
+	fileAdv := subscribeAdvisoriesCount("file")
 	sub, err := js.PullSubscribe("foo", "file",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
@@ -5490,6 +5511,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	// Let first batch expire.
 	time.Sleep(1200 * time.Millisecond)
+	requireAdvisoriesCount("file", fileAdv, 10, "before stepdown")
 
 	cia, err := js.ConsumerInfo("TEST", "file")
 	require_NoError(t, err)
@@ -5522,7 +5544,13 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	checkConsumerInfo(cia, cib, true)
 
+	// Give the new leader a settle window. setLeader calls checkPending
+	// synchronously, but the apply goroutine may run a few ms later.
+	time.Sleep(500 * time.Millisecond)
+	requireAdvisoriesCount("file", fileAdv, 10, "after stepdown")
+
 	// Memory based.
+	memAdv := subscribeAdvisoriesCount("mem")
 	sub, err = js.PullSubscribe("foo", "mem",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
@@ -5538,6 +5566,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
+	requireAdvisoriesCount("mem", memAdv, 10, "before stepdown")
 
 	cia, err = js.ConsumerInfo("TEST", "mem")
 	require_NoError(t, err)
@@ -5551,8 +5580,11 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	require_NoError(t, err)
 
 	checkConsumerInfo(cia, cib, true)
+	requireAdvisoriesCount("mem", memAdv, 10, "after stepdown")
 
 	// Now file based but R1 and server restart.
+	r1Adv := subscribeAdvisoriesCount("r1")
+
 	sub, err = js.PullSubscribe("foo", "r1",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
@@ -5568,6 +5600,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
+	requireAdvisoriesCount("r1", r1Adv, 10, "before restart")
 
 	cia, err = js.ConsumerInfo("TEST", "r1")
 	require_NoError(t, err)
@@ -5585,6 +5618,12 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	now := time.Now()
 	cia.Created, cib.Created = now, now
 	checkConsumerInfo(cia, cib, false)
+
+	// On startup the R1 consumer's setLeader -> readStoredState -> applyState
+	// reloads pending from disk; if ghosts persisted, setLeader's checkPending
+	// re-fires every advisory exactly as a follower-promoted leader would.
+	time.Sleep(500 * time.Millisecond)
+	requireAdvisoriesCount("r1", r1Adv, 10, "after server restart")
 }
 
 func TestJetStreamClusterConsumerDefaultsFromStream(t *testing.T) {

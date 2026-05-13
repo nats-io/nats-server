@@ -2341,7 +2341,8 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 		// Make sure to remove from pending.
 		if p, ok := o.pending[seq]; ok && p != nil {
 			delete(o.pending, seq)
-			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+			// Increment by one, since the delivery count hasn't been increased above.
+			o.updateDelivered(p.Sequence, seq, dc+1, p.Timestamp)
 			o.moveAckFloor(p.Sequence, seq)
 		}
 		// Ensure redelivered state is set, if not already.
@@ -4796,6 +4797,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				// Make sure to remove from pending.
 				if p, ok := o.pending[seq]; ok && p != nil {
 					delete(o.pending, seq)
+					// The delivery count has already been incremented once.
 					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
 					o.moveAckFloor(p.Sequence, seq)
 				}
