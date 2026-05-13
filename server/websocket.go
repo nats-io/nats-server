@@ -1375,18 +1375,35 @@ type websocketProxyProtoListener struct {
 }
 
 func (l *websocketProxyProtoListener) Accept() (net.Conn, error) {
-	for {
-		conn, err := l.Listener.Accept()
-		if err != nil {
-			return nil, err
-		}
-		wrapped, err := readWebsocketProxyProtoHeader(conn)
-		if err == nil {
-			return wrapped, nil
-		}
-		l.srv.Warnf("Error reading PROXY protocol header from %s: %v", conn.RemoteAddr(), err)
-		conn.Close()
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
 	}
+	return &websocketProxyProtoConn{Conn: conn, srv: l.srv}, nil
+}
+
+type websocketProxyProtoConn struct {
+	net.Conn
+	srv      *Server
+	parsed   bool
+	parseErr error
+}
+
+func (c *websocketProxyProtoConn) Read(b []byte) (int, error) {
+	if !c.parsed {
+		c.parsed = true
+		wrapped, err := readWebsocketProxyProtoHeader(c.Conn)
+		if err != nil {
+			c.parseErr = err
+			c.srv.Warnf("Error reading PROXY protocol header from %s: %v", c.Conn.RemoteAddr(), err)
+		} else {
+			c.Conn = wrapped
+		}
+	}
+	if c.parseErr != nil {
+		return 0, c.parseErr
+	}
+	return c.Conn.Read(b)
 }
 
 func readWebsocketProxyProtoHeader(conn net.Conn) (net.Conn, error) {
