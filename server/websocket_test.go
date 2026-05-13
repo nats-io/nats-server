@@ -1950,6 +1950,56 @@ func TestWSHandleUpgradeRejectsBeforeStart(t *testing.T) {
 	}
 }
 
+func TestWSHandleUpgradeRejectsInLameDuckMode(t *testing.T) {
+	// Sibling to TestWSHandleUpgradeRejectsBeforeStart: in lame duck mode
+	// createWSClient and createMQTTClient also bail out without closing
+	// the connection (the |s.ldm branch of the gate at line 1474), so the
+	// exported handler must reject upgrades during LDM the same way the
+	// built-in listener does by closing its socket.
+	//
+	// We avoid RunServer + LameDuckShutdown here because that path arms
+	// goroutines (AcceptLoop, ldmCh) that we'd need to drain; the gate
+	// itself only reads isRunning() and isLameDuckMode(), so flipping
+	// running and ldm on a never-Started server is enough.
+	o := DefaultOptions()
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer s.Shutdown()
+
+	s.running.Store(true)
+	s.mu.Lock()
+	s.ldm = true
+	s.mu.Unlock()
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleWsUpgrade))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", ts.URL, nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	key, err := wsMakeChallengeKey()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Sec-WebSocket-Key", key)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("Expected 503 in lame duck mode, got %d", resp.StatusCode)
+	}
+}
+
 func TestWSSetOriginOptions(t *testing.T) {
 	o := testWSOptions()
 	for _, test := range []struct {
