@@ -23327,3 +23327,43 @@ func TestJetStreamMirrorProcessInboundNilDeref(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 }
+
+func TestJetStreamMirrorRetriesOnSeqAlreadySeenMismatch(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err := js.Publish("foo", []byte("seed"))
+		require_NoError(t, err)
+	}
+
+	mset, err := s.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+
+	qch := make(chan struct{})
+	mset.mu.Lock()
+	mset.mirror = &sourceInfo{name: "X", cname: "X", sseq: 4, qch: qch}
+	mset.mu.Unlock()
+
+	// With mset.mirror{cname:"X", sseq:4}, sseq==5 takes the sequential
+	// branch and then forces errLastSeqMismatch from processJetStreamMsg
+	// with sseq<=lseq.
+	rply := fmt.Sprintf("$JS.ACK.M.X.1.5.1.%d.0", time.Now().UnixNano())
+	mset.processInboundMirrorMsg(&inMsg{subj: "bar", rply: rply, msg: []byte("x")})
+
+	select {
+	case <-qch:
+		// expected: retryMirrorConsumer ran and canceled the mirror.
+	case <-time.After(2 * time.Second):
+		t.Fatal("retryMirrorConsumer was not called after errLastSeqMismatch in the sseq<=lseq branch")
+	}
+}

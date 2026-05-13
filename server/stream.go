@@ -3020,24 +3020,18 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 				accName, sname, err)
 		} else {
 			// We may have missed messages, restart.
-			if sseq <= mset.lastSeq() {
-				mset.mu.Lock()
-				if mset.mirror != nil {
-					mset.mirror.lag = olag
-					mset.mirror.sseq = osseq
-					mset.mirror.dseq = odseq
+			lseq := mset.lastSeq()
+			mset.mu.Lock()
+			if mset.mirror != nil {
+				mset.mirror.lag = olag
+				mset.mirror.dseq = odseq
+				mset.mirror.sseq = osseq
+				if sseq <= lseq {
+					mset.mirror.sseq = lseq
 				}
-				mset.mu.Unlock()
-				return false
-			} else {
-				mset.mu.Lock()
-				if mset.mirror != nil {
-					mset.mirror.dseq = odseq
-					mset.mirror.sseq = osseq
-				}
-				mset.mu.Unlock()
-				mset.retryMirrorConsumer()
 			}
+			mset.mu.Unlock()
+			mset.retryMirrorConsumer()
 		}
 	}
 	return err == nil
