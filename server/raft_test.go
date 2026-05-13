@@ -1250,6 +1250,158 @@ func TestNRGPendingAppendEntryCacheInvalidation(t *testing.T) {
 	}
 }
 
+func TestNRGTruncateWALClearsPendingAppendEntryCache(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Store three entries through the normal path so both the WAL and n.pae
+	// are populated by cachePendingEntry.
+	ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	ae3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: entries})
+
+	n.processAppendEntry(ae1, n.aesub)
+	n.processAppendEntry(ae2, n.aesub)
+	n.processAppendEntry(ae3, n.aesub)
+
+	n.Lock()
+	defer n.Unlock()
+
+	// Sanity check: WAL and cache both have all three entries.
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.wal.State().Msgs, 3)
+	require_NotNil(t, n.pae[1])
+	require_NotNil(t, n.pae[2])
+	require_NotNil(t, n.pae[3])
+
+	// Truncate WAL back to index 1, dropping entries 2 and 3 from the log.
+	n.truncateWAL(1, 1)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.wal.State().Msgs, 1)
+
+	// The cache must not retain entries for indices the WAL no longer holds,
+	// otherwise applyCommit could later apply stale entries straight from
+	// the cache (bypassing the WAL load path).
+	require_Len(t, len(n.pae), 1)
+	require_NotNil(t, n.pae[1])
+}
+
+func TestNRGResetWALClearsPendingAppendEntryCache(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	ae3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: entries})
+
+	n.processAppendEntry(ae1, n.aesub)
+	n.processAppendEntry(ae2, n.aesub)
+	n.processAppendEntry(ae3, n.aesub)
+
+	n.Lock()
+	defer n.Unlock()
+
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, len(n.pae), 3)
+
+	n.resetWAL()
+	require_Equal(t, n.pindex, 0)
+	require_Equal(t, n.wal.State().Msgs, 0)
+
+	// All cached pending append entries should be gone after a full reset.
+	require_Equal(t, len(n.pae), 0)
+}
+
+func TestNRGInstallSnapshotClearsPendingAppendEntryCache(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Three appendEntries arrive with commit lagging at 0, so applyCommit
+	// never runs and all three remain cached in n.pae.
+	ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	ae3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: entries})
+
+	n.processAppendEntry(ae1, n.aesub)
+	n.processAppendEntry(ae2, n.aesub)
+	n.processAppendEntry(ae3, n.aesub)
+
+	n.Lock()
+	defer n.Unlock()
+
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.commit, 0)
+	require_Equal(t, len(n.pae), 3)
+
+	// Install a snapshot covering the entire log. The WAL gets compacted
+	// past index 3, but cached entries 1-3 would otherwise stay in n.pae
+	// since applyCommit never ran for them and cachePendingEntry only
+	// overwrites at the current n.pindex (which won't revisit 1-3).
+	snap := &snapshot{
+		lastTerm:  1,
+		lastIndex: 3,
+		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+	}
+	require_NoError(t, n.installSnapshot(snap))
+
+	require_Equal(t, n.wal.State().Msgs, 0)
+	require_Equal(t, len(n.pae), 0)
+}
+
+func TestNRGCatchupFromSnapshotClearsPendingAppendEntryCache(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	snapshotEntries := []*Entry{
+		newEntry(EntrySnapshot, nil),
+		newEntry(EntryPeerState, encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})),
+	}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Receive two appendEntries normally; commit lags so both stay cached.
+	ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	n.processAppendEntry(ae1, n.aesub)
+	n.processAppendEntry(ae2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_Equal(t, len(n.pae), 2)
+
+	// Leader is way ahead; this triggers catchup.
+	aeTriggerCatchup := encode(t, &appendEntry{leader: nats0, term: 1, commit: 100, pterm: 1, pindex: 100, entries: nil})
+	n.processAppendEntry(aeTriggerCatchup, n.aesub)
+	require_True(t, n.catchup != nil)
+
+	// Leader sends a snapshot at the catchup point. n.pindex/n.commit jump
+	// to 100 without applyCommit running for indices 1-2, so the cached
+	// entries from before catchup would otherwise leak.
+	aeCatchupSnapshot := encode(t, &appendEntry{leader: nats0, term: 1, commit: 100, pterm: 1, pindex: 100, entries: snapshotEntries})
+	n.processAppendEntry(aeCatchupSnapshot, n.catchup.sub)
+
+	n.Lock()
+	defer n.Unlock()
+	require_Equal(t, n.pindex, 100)
+	require_Equal(t, n.commit, 100)
+	require_Equal(t, len(n.pae), 0)
+}
+
 func TestNRGCatchupDoesNotTruncateUncommittedEntriesWithQuorum(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
