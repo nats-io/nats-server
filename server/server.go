@@ -2481,6 +2481,13 @@ func (s *Server) Start() {
 		s.startGateways()
 	}
 
+	// Initialize websocket origin / headers options unconditionally so
+	// that HandleWsUpgrade is safe to use from an application-owned HTTP
+	// server even when no websocket listener is bound (i.e.
+	// Websocket.Port == 0 and startWebsocketServer is skipped below).
+	// startWebsocketServer re-runs this; the call is idempotent.
+	s.initWebsocketOptions()
+
 	// Start websocket server if needed. Do this before starting the routes, and
 	// leaf node because we want to resolve the gateway host:port so that this
 	// information can be sent to other routes.

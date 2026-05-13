@@ -965,6 +965,41 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	return &wsUpgradeResult{conn: conn, ws: ws, kind: kind}, nil
 }
 
+// HandleWsUpgrade upgrades an HTTP connection to a NATS websocket
+// client, MQTT-over-websocket client, or leafnode connection, based on
+// the request path. The handler is intended for embedded use cases in
+// which the application already runs an HTTP server and wants to route
+// a path to NATS without binding a separate websocket listener.
+//
+// Leafnode connections are accepted only when the server has a
+// leafnode port configured; otherwise the connection is silently closed.
+//
+// Errors during the upgrade are logged on the server; the response
+// itself is written by wsUpgrade before this returns.
+func (s *Server) HandleWsUpgrade(w http.ResponseWriter, r *http.Request) {
+	res, err := s.wsUpgrade(w, r)
+	if err != nil {
+		s.Errorf(err.Error())
+		return
+	}
+	switch res.kind {
+	case CLIENT:
+		s.createWSClient(res.conn, res.ws)
+	case MQTT:
+		s.createMQTTClient(res.conn, res.ws)
+	case LEAF:
+		if s.getOpts().LeafNode.Port == 0 {
+			s.Errorf("Not configured to accept leaf node connections")
+			// Silently close for now. If we want to send an error back, we would
+			// need to create the leafnode client anyway, so that is handling websocket
+			// frames, then send the error to the remote.
+			res.conn.Close()
+			return
+		}
+		s.createLeafNode(res.conn, nil, nil, res.ws)
+	}
+}
+
 // Returns true if the header named `name` contains a token with value `value`.
 func wsHeaderContains(header http.Header, name string, value string) bool {
 	for _, s := range header[name] {
@@ -1252,6 +1287,18 @@ func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
 	ws.authOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
 }
 
+// initWebsocketOptions populates the websocket origin and headers options
+// on s. It is safe to call multiple times and is invoked unconditionally
+// during server startup so that callers can use HandleWsUpgrade from their
+// own HTTP server (for which startWebsocketServer is skipped when
+// Websocket.Port == 0) and still get same_origin enforcement, the
+// allowed_origins set, and any configured upgrade headers.
+func (s *Server) initWebsocketOptions() {
+	o := &s.getOpts().Websocket
+	s.wsSetOriginOptions(o)
+	s.wsSetHeadersOptions(o)
+}
+
 func (s *Server) startWebsocketServer() {
 	if s.isShuttingDown() {
 		return
@@ -1260,8 +1307,7 @@ func (s *Server) startWebsocketServer() {
 	sopts := s.getOpts()
 	o := &sopts.Websocket
 
-	s.wsSetOriginOptions(o)
-	s.wsSetHeadersOptions(o)
+	s.initWebsocketOptions()
 
 	var hl net.Listener
 	var proto string
@@ -1322,31 +1368,8 @@ func (s *Server) startWebsocketServer() {
 		s.mu.Unlock()
 		return
 	}
-	hasLeaf := sopts.LeafNode.Port != 0
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		res, err := s.wsUpgrade(w, r)
-		if err != nil {
-			s.Errorf(err.Error())
-			return
-		}
-		switch res.kind {
-		case CLIENT:
-			s.createWSClient(res.conn, res.ws)
-		case MQTT:
-			s.createMQTTClient(res.conn, res.ws)
-		case LEAF:
-			if !hasLeaf {
-				s.Errorf("Not configured to accept leaf node connections")
-				// Silently close for now. If we want to send an error back, we would
-				// need to create the leafnode client anyway, so that is handling websocket
-				// frames, then send the error to the remote.
-				res.conn.Close()
-				return
-			}
-			s.createLeafNode(res.conn, nil, nil, res.ws)
-		}
-	})
+	mux.HandleFunc("/", s.HandleWsUpgrade)
 	hs := &http.Server{
 		Addr:        hp,
 		Handler:     mux,
