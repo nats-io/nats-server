@@ -1868,6 +1868,16 @@ func TestWSValidateOptions(t *testing.T) {
 			}
 			return "websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later"
 		}()},
+		{"embedded: bad allowed origin still validated when port is disabled", func() *Options {
+			o := nwso.Clone()
+			o.Websocket.AllowedOrigins = []string{"foo"}
+			return o
+		}, "unable to parse"},
+		{"embedded: invalid header still validated when port is disabled", func() *Options {
+			o := nwso.Clone()
+			o.Websocket.Headers = map[string]string{"Upgrade": "websocket"}
+			return o
+		}, `websocket: invalid header "Upgrade" not allowed`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateOptions(test.getOpts())
@@ -1877,6 +1887,36 @@ func TestWSValidateOptions(t *testing.T) {
 				t.Fatalf("Expected error to contain %q, got %v", test.err, err)
 			}
 		})
+	}
+}
+
+func TestWSEmbeddedInitOptionsBeforeStart(t *testing.T) {
+	// Regression: HandleWsUpgrade is exported for applications that mount the
+	// upgrade on their own HTTP server. Such applications obtain *Server from
+	// NewServer and may dispatch upgrade requests before (or concurrently
+	// with) Start, so the same_origin / allowed_origins state must be set
+	// by the time NewServer returns, even when no websocket listener will
+	// be bound (Websocket.Port == 0).
+	o := DefaultOptions()
+	o.Websocket.SameOrigin = true
+	o.Websocket.AllowedOrigins = []string{"http://example.com:8080"}
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer s.Shutdown()
+
+	s.websocket.mu.RLock()
+	sameOrigin := s.websocket.sameOrigin
+	allowed := s.websocket.allowedOrigins
+	s.websocket.mu.RUnlock()
+
+	if !sameOrigin {
+		t.Fatalf("Expected sameOrigin to be true after NewServer with Port==0")
+	}
+	entries, ok := allowed["example.com"]
+	if !ok || len(entries) != 1 || entries[0].scheme != "http" || entries[0].port != "8080" {
+		t.Fatalf("Expected allowedOrigins to contain http://example.com:8080, got %v", allowed)
 	}
 }
 
