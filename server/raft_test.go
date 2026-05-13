@@ -4438,6 +4438,96 @@ func TestNRGProposeRemovePeer(t *testing.T) {
 	})
 }
 
+func TestNRGProposeRemovePeerNonExistent(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().node().(*raft)
+
+	const bogus = "deadbeef" // 8 chars, matches idLen
+	leader.RLock()
+	_, exists := leader.peers[bogus]
+	leader.RUnlock()
+	require_False(t, exists)
+
+	// Removing a peer not in the group should fail synchronously and have no side effects.
+	require_Error(t, leader.ProposeRemovePeer(bogus), errPeerNotFound)
+	require_False(t, leader.MembershipChangeInProgress())
+
+	for _, r := range rg {
+		n := r.node().(*raft)
+		n.RLock()
+		_, removed := n.removed[bogus]
+		n.RUnlock()
+		require_False(t, removed)
+		require_Equal(t, len(r.node().Peers()), 3)
+	}
+
+	// A real removal still works afterward.
+	realPeer := rg.nonLeader().node().ID()
+	require_NoError(t, leader.ProposeRemovePeer(realPeer))
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				return errors.New("has not removed peer")
+			}
+		}
+		return nil
+	})
+}
+
+func TestNRGForwardedRemovePeerProposalNonExistent(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().node().(*raft)
+	follower := rg.nonLeader().node()
+
+	const bogus = "deadbeef" // 8 chars, matches idLen
+	leader.RLock()
+	_, exists := leader.peers[bogus]
+	leader.RUnlock()
+	require_False(t, exists)
+
+	// ProposeRemovePeer on a follower forwards to the leader's
+	// handleForwardedRemovePeerProposal. The follower returns nil regardless,
+	// so we have to inspect the leader directly for the side effects.
+	require_NoError(t, follower.ProposeRemovePeer(bogus))
+
+	// Give the forwarded RPC plenty of time to arrive and (incorrectly) take
+	// effect if the existence check were missing. With the check, no
+	// membership change is queued and the removed map stays clean.
+	time.Sleep(500 * time.Millisecond)
+
+	require_False(t, leader.MembershipChangeInProgress())
+	for _, r := range rg {
+		n := r.node().(*raft)
+		n.RLock()
+		_, removed := n.removed[bogus]
+		n.RUnlock()
+		require_False(t, removed)
+		require_Equal(t, len(r.node().Peers()), 3)
+	}
+
+	// A real forwarded removal still works.
+	realPeer := follower.ID()
+	require_NoError(t, follower.ProposeRemovePeer(realPeer))
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, r := range rg {
+			if len(r.node().Peers()) != 2 {
+				return errors.New("has not removed peer")
+			}
+		}
+		return nil
+	})
+}
+
 func TestNRGProposeRemovePeerConcurrent(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
