@@ -6679,8 +6679,14 @@ func (mb *msgBlock) tryExpireCacheLocked() {
 	}
 
 	// Check for activity on the cache that would prevent us from expiring.
-	if tns-bufts <= int64(mb.cexp) {
-		mb.resetCacheExpireTimer(mb.cexp - time.Duration(tns-bufts))
+	// Both tns and bufts come from ats.AccessTime(), which means bufts can understate
+	// how recent the last activity actually was by up to one tick.
+	if delta := tns - bufts; delta <= int64(mb.cexp)+int64(ats.TickInterval) {
+		td := mb.cexp - time.Duration(delta)
+		if td <= 0 {
+			td = ats.TickInterval
+		}
+		mb.resetCacheExpireTimer(td)
 		if strengthened {
 			mb.finishedWithCache()
 		}
