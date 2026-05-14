@@ -1469,6 +1469,13 @@ func (mb *msgBlock) convertToEncrypted() error {
 	// Undo cache from above for later.
 	mb.cache = nil
 	mb.ecache.Set(nil)
+	// Regenerate mb.bek so that the keystream offset is at zero. This matches
+	// what encryptOrDecryptIfNeeded does on read-back, otherwise re-entering
+	// convertToEncrypted with a previously-used mb.bek would write ciphertext at
+	// the wrong stream offset and silently corrupt the block.
+	if mb.bek, err = genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce); err != nil {
+		return err
+	}
 	mb.bek.XORKeyStream(buf, buf)
 	<-dios
 	err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
