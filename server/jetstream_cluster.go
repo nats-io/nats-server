@@ -3531,7 +3531,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// If we were successful lookup up our stream now.
 			if err == nil {
 				if mset, err = acc.lookupStream(sa.Config.Name); mset != nil {
-					mset.monitorWg.Add(1)
+					mset.startMonitorWg()
 					defer mset.monitorWg.Done()
 					mset.checkInMonitor()
 					mset.setStreamAssignment(sa)
@@ -3711,8 +3711,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// Need to do the rest in a separate Go routine.
 	go func() {
-		mset.signalMonitorQuit()
-		mset.monitorWg.Wait()
+		mset.stopMonitoring()
 		mset.resetAndWaitOnConsumers()
 		// Stop our stream.
 		mset.stop(shouldDelete, false)
@@ -4922,8 +4921,7 @@ func (s *Server) removeStream(mset *stream, nsa *streamAssignment) {
 
 	if !isShuttingDown {
 		// wait for monitor to be shutdown.
-		mset.signalMonitorQuit()
-		mset.monitorWg.Wait()
+		mset.stopMonitoring()
 	}
 	mset.stop(true, false)
 }
@@ -4952,8 +4950,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			s.Warnf("JetStream cluster detected stream remapping for '%s > %s' from %q to %q",
 				acc, cfg.Name, osa.Group.Name, sa.Group.Name)
 			mset.removeNode()
-			mset.signalMonitorQuit()
-			mset.monitorWg.Wait()
+			mset.stopMonitoring()
 			alreadyRunning, needsNode = false, true
 			// Make sure to clear from original.
 			js.mu.Lock()
@@ -4978,7 +4975,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 					"stream":  mset.name(),
 				})
 			}
-			mset.monitorWg.Add(1)
+			mset.startMonitorWg()
 			// Start monitoring..
 			started := s.startGoRoutine(
 				func() { js.monitorStream(mset, sa, needsNode) },
@@ -4994,8 +4991,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
-			mset.signalMonitorQuit()
-			mset.monitorWg.Wait()
+			mset.stopMonitoring()
 			// In case we need to shutdown the cluster specific subs, etc.
 			mset.mu.Lock()
 			// Stop responding to sync requests.
@@ -5247,7 +5243,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	if node != nil {
 		if !alreadyRunning {
 			if mset != nil {
-				mset.monitorWg.Add(1)
+				mset.startMonitorWg()
 			}
 			started := s.startGoRoutine(
 				func() { js.monitorStream(mset, sa, false) },
@@ -5434,8 +5430,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 				n.Delete()
 			}
 			// wait for monitor to be shut down
-			mset.signalMonitorQuit()
-			mset.monitorWg.Wait()
+			mset.stopMonitoring()
 			err = mset.stop(true, wasLeader)
 			stopped = true
 		} else if isMember {
@@ -5657,8 +5652,7 @@ func (s *Server) removeConsumer(o *consumer, nca *consumerAssignment) {
 
 	if !isShuttingDown {
 		// wait for monitor to be shutdown.
-		o.signalMonitorQuit()
-		o.monitorWg.Wait()
+		o.stopMonitoring()
 	}
 	o.deleteWithoutAdvisory()
 }
@@ -5765,8 +5759,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		s.Warnf("JetStream cluster detected consumer remapping for '%s > %s' from %q to %q",
 			acc, ca.Name, oca.Group.Name, ca.Group.Name)
 		o.clearNode()
-		o.signalMonitorQuit()
-		o.monitorWg.Wait()
+		o.stopMonitoring()
 		alreadyRunning = false
 		// Make sure to clear from original.
 		js.mu.Lock()
@@ -5932,8 +5925,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			// Check for scale down to 1..
 			if node != nil && len(rg.Peers) == 1 {
 				o.clearNode()
-				o.signalMonitorQuit()
-				o.monitorWg.Wait()
+				o.stopMonitoring()
 				// Need to clear from rg too.
 				js.mu.Lock()
 				rg.node = nil
@@ -5972,8 +5964,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 
 		if node == nil {
 			// Wait for the previous routine to stop running.
-			o.signalMonitorQuit()
-			o.monitorWg.Wait()
+			o.stopMonitoring()
 			// Single replica consumer, process manually here.
 			// Force response in case we think this is an update.
 			if !js.isMetaRecovering() && isConfigUpdate {
@@ -6004,8 +5995,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			// Start our monitoring routine if needed.
 			if !alreadyRunning {
 				// Wait for the previous routine to stop running.
-				o.signalMonitorQuit()
-				o.monitorWg.Wait()
+				o.stopMonitoring()
 				if o.shouldStartMonitor() {
 					started := s.startGoRoutine(
 						func() { js.monitorConsumer(o, ca) },

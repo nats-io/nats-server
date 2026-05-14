@@ -494,6 +494,7 @@ type consumer struct {
 	retention RetentionPolicy
 
 	monitorWg sync.WaitGroup
+	monitorMu sync.Mutex // Serializes monitorWg's Add against Wait to prevent a WaitGroup reuse panic.
 	inMonitor bool
 
 	// R>1 proposals
@@ -6520,14 +6521,21 @@ func gatherSubjectFilters(filter string, filters []string) []string {
 // shouldStartMonitor will return true if we should start a monitor
 // goroutine or will return false if one is already running.
 func (o *consumer) shouldStartMonitor() bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+	// monitorMu is held across the monitorWg.Add below so that it cannot race
+	// a concurrent monitorWg.Wait in stopMonitoring. It is taken before o.mu to
+	// keep a consistent lock ordering.
+	o.monitorMu.Lock()
+	defer o.monitorMu.Unlock()
 
+	o.mu.Lock()
 	if o.inMonitor {
+		o.mu.Unlock()
 		return false
 	}
-	o.monitorWg.Add(1)
 	o.inMonitor = true
+	o.mu.Unlock()
+
+	o.monitorWg.Add(1)
 	return true
 }
 
@@ -6541,6 +6549,18 @@ func (o *consumer) clearMonitorRunning() {
 		o.monitorWg.Done()
 		o.inMonitor = false
 	}
+}
+
+// stopMonitoring signals any running monitor goroutine to quit and waits for
+// it to fully exit.
+func (o *consumer) stopMonitoring() {
+	// monitorMu is held across both the quit signal and the wait so that a
+	// concurrent shouldStartMonitor cannot slip a new monitor generation in
+	// between.
+	o.monitorMu.Lock()
+	defer o.monitorMu.Unlock()
+	o.signalMonitorQuit()
+	o.monitorWg.Wait()
 }
 
 // Test whether we are in the monitor routine.
