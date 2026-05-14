@@ -1704,7 +1704,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 
 func TestFileStoreReadCache(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
-		fcfg.CacheExpire = 100 * time.Millisecond
+		fcfg.CacheExpire = ats.TickInterval
 
 		subj, msg := "foo.bar", make([]byte, 1024)
 		storedMsgSize := fileStoreMsgSize(subj, nil, msg)
@@ -6800,7 +6800,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 	}
 	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
 	// needing to worry about last write times blocking forced expiration.
-	time.Sleep(expire + ats.TickInterval)
+	time.Sleep(expire + ats.TickInterval*2)
 
 	checkNoCache := func() {
 		t.Helper()
