@@ -3241,6 +3241,15 @@ func (c *client) leafMsgAllowed() bool {
 		c.mu.RUnlock()
 		return true
 	}
+
+	// If allow_responses is not configured, or there is no tracked reply for
+	// this subject, the answer is "denied" and we can return it while still
+	// holding only the read lock.
+	replySubject := bytesToString(wireSubject)
+	if c.perms == nil || c.perms.resp == nil || c.replies[replySubject] == nil {
+		c.mu.RUnlock()
+		return false
+	}
 	c.mu.RUnlock()
 
 	// Check tracked reply permissions (allow_responses).
@@ -3249,7 +3258,7 @@ func (c *client) leafMsgAllowed() bool {
 	// the GW routing prefix for routed requests.
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.responseAllowed(bytesToString(wireSubject))
+	return c.responseAllowed(replySubject)
 }
 
 // Returns true if the leaf side ACLs allow importing this subject,
