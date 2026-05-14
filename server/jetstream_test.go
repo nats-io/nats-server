@@ -3109,12 +3109,12 @@ func TestJetStreamCheckBytesLimitsOverflow(t *testing.T) {
 	// hdr.Size and can be non-zero when addBytes is near MaxInt64.
 	// Previously this silently wrapped negative, bypassing the limit.
 	js.mu.RLock()
-	err := js.checkBytesLimits(limits, math.MaxInt64, FileStorage, false, 0, 1)
+	err := js.checkBytesLimits(limits, _EMPTY_, math.MaxInt64, 1, FileStorage, false, 0, 1)
 	js.mu.RUnlock()
 	require_Error(t, err)
 
 	js.mu.RLock()
-	err = js.checkBytesLimits(limits, math.MaxInt64, MemoryStorage, false, 0, 1)
+	err = js.checkBytesLimits(limits, _EMPTY_, math.MaxInt64, 1, MemoryStorage, false, 0, 1)
 	js.mu.RUnlock()
 	require_Error(t, err)
 
@@ -3125,7 +3125,7 @@ func TestJetStreamCheckBytesLimitsOverflow(t *testing.T) {
 	js.mu.Unlock()
 
 	js.mu.RLock()
-	err = js.checkBytesLimits(limits, 2, FileStorage, true, 0, 0)
+	err = js.checkBytesLimits(limits, _EMPTY_, 2, 1, FileStorage, true, 0, 0)
 	js.mu.RUnlock()
 	require_Error(t, err)
 
@@ -3140,13 +3140,49 @@ func TestJetStreamCheckBytesLimitsOverflow(t *testing.T) {
 	js.mu.Unlock()
 
 	js.mu.RLock()
-	err = js.checkBytesLimits(limits, 2, MemoryStorage, true, 0, 0)
+	err = js.checkBytesLimits(limits, _EMPTY_, 2, 1, MemoryStorage, true, 0, 0)
 	js.mu.RUnlock()
 	require_Error(t, err)
 
 	js.mu.Lock()
 	js.memReserved = origMem
 	js.mu.Unlock()
+}
+
+func TestJetStreamAccountReservation(t *testing.T) {
+	const maxInt64 = int64(math.MaxInt64)
+	for _, test := range []struct {
+		name     string
+		tier     string
+		replicas int
+		bytes    int64
+		expected int64
+	}{
+		// Non-positive bytes never reserve anything, regardless of tier/replicas.
+		{"zero bytes", _EMPTY_, 3, 0, 0},
+		{"negative bytes untiered", _EMPTY_, 3, -100, 0},
+		{"negative bytes tiered", "R3", 3, -1, 0},
+		// Un-tiered (flat) account limit: an R>1 stream counts as Replicas*bytes.
+		{"untiered R1", _EMPTY_, 1, 100, 100},
+		{"untiered R0 treated as single", _EMPTY_, 0, 100, 100},
+		{"untiered R3", _EMPTY_, 3, 100, 300},
+		{"untiered R5", _EMPTY_, 5, 100, 500},
+		// Tiered account limit: replication is baked into the tier, counted as-is.
+		{"tiered R1", "R1", 1, 100, 100},
+		{"tiered R3", "R3", 3, 100, 100},
+		// Replicas*bytes saturates at MaxInt64 instead of overflowing.
+		{"untiered R3 saturates", _EMPTY_, 3, maxInt64, maxInt64},
+		{"untiered R2 saturates", _EMPTY_, 2, maxInt64/2 + 1, maxInt64},
+		// Tiered does not multiply, so large bytes pass through untouched.
+		{"tiered large no multiply", "R3", 3, maxInt64, maxInt64},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := accountReservation(test.tier, test.replicas, test.bytes); got != test.expected {
+				t.Fatalf("accountReservation(%q, %d, %d) = %d, want %d",
+					test.tier, test.replicas, test.bytes, got, test.expected)
+			}
+		})
+	}
 }
 
 func TestJetStreamSnapshots(t *testing.T) {
