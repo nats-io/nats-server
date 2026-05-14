@@ -26,12 +26,39 @@ jobs:
     with:
       gh_app_id: ${{ vars.CLAUDE_GH_APP_ID }}
       checkout_mode: "base"
+      # review_focus is used only by the auto-review job (pull_request_target), not the
+      # interactive @claude job — so the check below only needs github.event.pull_request,
+      # which pull_request_target populates. On issue_comment events that field is absent,
+      # so this evaluates to startsWith(null, 'backports/') -> false; harmless, since the
+      # interactive job ignores review_focus. Can't be fixed in-expression: issue_comment
+      # payloads carry no head ref at all.
       review_focus: |
+        ${{ startsWith(github.event.pull_request.head.ref, 'backports/') && '
+        This is a BACKPORT / RELEASE pull request. Every cherry-picked commit
+        originates from a PR that was already independently reviewed and approved
+        on the source branch. Do NOT re-review the individual code changes and do
+        NOT comment on the implementation of cherry-picked hunks — assume they are
+        correct.
+
+        Instead, focus exclusively on:
+        - Cherry-pick completeness. Inspect the PRs/commits included in this
+          backport. For each source PR, check its milestone, labels, and target
+          branch to decide whether it belongs in this release line. Flag any PR
+          that targets this release but is MISSING here, and any included PR that
+          does not belong.
+        - Non-clean picks. Call out commits that appear to have been modified
+          during the cherry-pick (conflict resolution, adapted context) — those
+          are the only changes that warrant a closer look.
+        - Release overview. Produce a concise summary of what this release ships,
+          grouped by area (JetStream, Raft/NRG, leafnodes, security, etc.), so
+          reviewers can sanity-check the scope at a glance.
+        ' || '
         Additionally focus on:
         - Performance implications (hot paths, allocations, lock contention)
         - Concurrency safety (goroutine leaks, race conditions, deadlocks)
         - Raft consensus and JetStream clustering correctness
         - Security boundaries (authentication, authorization, TLS handling)
+        ' }}
     secrets:
       claude_oauth_token: ${{ secrets.CLAUDE_OAUTH_TOKEN }}
       gh_app_private_key: ${{ secrets.CLAUDE_GH_APP_PRIVATE_KEY }}
