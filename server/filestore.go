@@ -12767,6 +12767,7 @@ func (o *consumerFileStore) HasState() bool {
 func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.fs.srv.Debugf("UpdateDelivered: dseq %d, sseq %d, dc %d", dseq, sseq, dc)
 
 	if dc != 1 && o.cfg.AckPolicy == AckNone {
 		return ErrNoAckPolicy
@@ -12836,6 +12837,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.fs.srv.Debugf("UpdateAcks: dseq %d, sseq %d", dseq, sseq)
 
 	if o.cfg.AckPolicy == AckNone {
 		return ErrNoAckPolicy

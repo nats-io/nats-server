@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"os"
@@ -3324,6 +3325,9 @@ func (o *consumer) applyState(state *ConsumerState) {
 	o.asflr = state.AckFloor.Stream
 	o.pending = state.Pending
 	o.rdc = state.Redelivered
+
+	keys := slices.Sorted(maps.Keys(o.pending))
+	o.srv.Debugf("Apply state: dseq %d, sseq %d, adflr %d, asflr %d, keys(pending) %v", o.dseq, o.sseq, o.adflr, o.asflr, keys)
 
 	// Setup tracking timer if we have restored pending.
 	if o.isLeader() && len(o.pending) > 0 {
