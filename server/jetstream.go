@@ -2470,53 +2470,69 @@ func (jsa *jsAccount) wouldExceedLimits(storeType StorageType, tierName string, 
 
 // Check account limits.
 // Read Lock should be held
-func (js *jetStream) checkAccountLimits(selected *JetStreamAccountLimits, config *StreamConfig, currentRes int64) error {
-	return js.checkLimits(selected, config, false, currentRes, 0)
+func (js *jetStream) checkAccountLimits(selected *JetStreamAccountLimits, tier string, config *StreamConfig, currentRes int64) error {
+	return js.checkLimits(selected, tier, config, false, currentRes, 0)
 }
 
 // Check account and server limits.
 // Read Lock should be held
-func (js *jetStream) checkAllLimits(selected *JetStreamAccountLimits, config *StreamConfig, currentRes, maxBytesOffset int64) error {
-	return js.checkLimits(selected, config, true, currentRes, maxBytesOffset)
+func (js *jetStream) checkAllLimits(selected *JetStreamAccountLimits, tier string, config *StreamConfig, currentRes, maxBytesOffset int64) error {
+	return js.checkLimits(selected, tier, config, true, currentRes, maxBytesOffset)
 }
 
 // Check if a new proposed msg set while exceed our account limits.
 // Lock should be held.
-func (js *jetStream) checkLimits(selected *JetStreamAccountLimits, config *StreamConfig, checkServer bool, currentRes, maxBytesOffset int64) error {
+func (js *jetStream) checkLimits(selected *JetStreamAccountLimits, tier string, config *StreamConfig, checkServer bool, currentRes, maxBytesOffset int64) error {
 	// Check MaxConsumers
 	if config.MaxConsumers > 0 && selected.MaxConsumers > 0 && config.MaxConsumers > selected.MaxConsumers {
 		return NewJSMaximumConsumersLimitError()
 	}
 	// stream limit is checked separately on stream create only!
 	// Check storage, memory or disk.
-	return js.checkBytesLimits(selected, config.MaxBytes, config.Storage, checkServer, currentRes, maxBytesOffset)
+	return js.checkBytesLimits(selected, tier, config.MaxBytes, config.Replicas, config.Storage, checkServer, currentRes, maxBytesOffset)
+}
+
+// accountReservation returns how many bytes count against the account limit
+// for a stream with the given replica count. Un-tiered limits are flat, so R>1
+// is counted as Replicas*bytes; tiered limits already bake in replication.
+func accountReservation(tier string, replicas int, bytes int64) int64 {
+	if bytes <= 0 {
+		return 0
+	}
+	if tier == _EMPTY_ && replicas > 1 {
+		return mulSaturate(int64(replicas), bytes)
+	}
+	return bytes
 }
 
 // Check if additional bytes will exceed our account limits and optionally the server itself.
 // Read Lock should be held.
-func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, addBytes int64, storage StorageType, checkServer bool, currentRes, maxBytesOffset int64) error {
+func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, tier string, addBytes int64, replicas int, storage StorageType, checkServer bool, currentRes, maxBytesOffset int64) error {
 	if addBytes < 0 {
 		addBytes = 1
 	}
-	totalBytes := addSaturate(addBytes, maxBytesOffset)
+	// The per-server footprint is a single replica's worth of bytes; the
+	// account footprint additionally accounts for replication in un-tiered setups.
+	serverBytes := addSaturate(addBytes, maxBytesOffset)
+	accountBytes := accountReservation(tier, replicas, serverBytes)
 
 	switch storage {
 	case MemoryStorage:
 		// Account limits defined.
-		if selectedLimits.MaxMemory >= 0 && (currentRes > selectedLimits.MaxMemory || totalBytes > selectedLimits.MaxMemory-currentRes) {
+		if selectedLimits.MaxMemory >= 0 && (currentRes > selectedLimits.MaxMemory || accountBytes > selectedLimits.MaxMemory-currentRes) {
 			return NewJSMemoryResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && (js.memReserved > js.config.MaxMemory || totalBytes > js.config.MaxMemory-js.memReserved) {
+		if checkServer && (js.memReserved > js.config.MaxMemory || serverBytes > js.config.MaxMemory-js.memReserved) {
 			return NewJSMemoryResourcesExceededError()
 		}
 	case FileStorage:
 		// Account limits defined.
-		if selectedLimits.MaxStore >= 0 && (currentRes > selectedLimits.MaxStore || totalBytes > selectedLimits.MaxStore-currentRes) {
+		if selectedLimits.MaxStore >= 0 && (currentRes > selectedLimits.MaxStore || accountBytes > selectedLimits.MaxStore-currentRes) {
 			return NewJSStorageResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && (js.storeReserved > js.config.MaxStore || totalBytes > js.config.MaxStore-js.storeReserved) {
+		if checkServer && (js.storeReserved > js.config.MaxStore || serverBytes > js.config.MaxStore-js.storeReserved) {
 			return NewJSStorageResourcesExceededError()
 		}
 	}

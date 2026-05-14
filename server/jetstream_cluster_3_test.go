@@ -6545,7 +6545,7 @@ func TestJetStreamClusterTieredReservationConsistency(t *testing.T) {
 
 func TestJetStreamClusterTieredReservationOverflow(t *testing.T) {
 	tmpl := strings.Replace(jsClusterMaxBytesAccountLimitTempl, "max_file_store: 4GB", "max_file_store: 9223372036854775807", 1)
-	tmpl = strings.Replace(tmpl, "max_file:  3GB", "max_file:  5000000000000000000", 1)
+	tmpl = strings.Replace(tmpl, "max_file:  3GB", "max_file:  9223372036854775807", 1)
 	c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
 	defer c.shutdown()
 
@@ -6555,8 +6555,8 @@ func TestJetStreamClusterTieredReservationOverflow(t *testing.T) {
 	// Create a stream with R=3 and MaxBytes large enough that
 	// Replicas * MaxBytes overflows int64:
 	//   3 * 4e18 = 12e18 > MaxInt64 (9.22e18)
-	// The first stream passes the limit check because there are no
-	// existing reservations: 0 + 4e18 < 5e18 (account limit).
+	// The account limit is MaxInt64, so the first stream is accepted: its
+	// reservation saturates to MaxInt64 rather than wrapping negative.
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "S1",
 		Subjects: []string{"s1"},
@@ -6565,9 +6565,9 @@ func TestJetStreamClusterTieredReservationOverflow(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// The true reservation for S1 is 3 * 4e18 = 12e18, which already
-	// exceeds the account limit of 5e18. Creating any additional stream
-	// should be rejected. With the overflow bug, the reservation
+	// The true reservation for S1 is 3 * 4e18 = 12e18, which saturates to
+	// MaxInt64 and consumes the whole account. Creating any additional
+	// stream should be rejected. With the overflow bug, the reservation
 	// computation wraps to a negative value, making the account appear
 	// to have plenty of room.
 	_, err = js.AddStream(&nats.StreamConfig{

@@ -7679,13 +7679,7 @@ func (js *jetStream) tieredStreamAndReservationCount(accName, tier string, cfg *
 		if tier == _EMPTY_ || isSameTier(sa.Config.Replicas, cfg.Replicas) {
 			numStreams++
 			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage {
-				// If tier is empty, all storage is flat and we should adjust for replicas.
-				// Otherwise if tiered, storage replication already taken into consideration.
-				if tier == _EMPTY_ && sa.Config.Replicas > 1 {
-					reservation = addSaturate(reservation, mulSaturate(int64(sa.Config.Replicas), sa.Config.MaxBytes))
-				} else {
-					reservation = addSaturate(reservation, sa.Config.MaxBytes)
-				}
+				reservation = addSaturate(reservation, accountReservation(tier, sa.Config.Replicas, sa.Config.MaxBytes))
 			}
 		}
 	}
@@ -7761,7 +7755,7 @@ func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfi
 		return NewJSMaximumStreamsLimitError()
 	}
 	// Check for account limits here before proposing.
-	if err := js.checkAccountLimits(selectedLimits, cfg, reservations); err != nil {
+	if err := js.checkAccountLimits(selectedLimits, tier, cfg, reservations); err != nil {
 		return NewJSStreamLimitsError(err, Unless(err))
 	}
 	return nil

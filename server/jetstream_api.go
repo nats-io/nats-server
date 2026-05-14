@@ -1596,13 +1596,7 @@ func (jsa *jsAccount) tieredReservation(tier string, cfg *StreamConfig) int64 {
 			continue
 		}
 		if (tier == _EMPTY_ || isSameTier(replicas, cfg.Replicas)) && maxBytes > 0 && storage == cfg.Storage {
-			// If tier is empty, all storage is flat and we should adjust for replicas.
-			// Otherwise if tiered, storage replication already taken into consideration.
-			if tier == _EMPTY_ && replicas > 1 {
-				reservation = addSaturate(reservation, mulSaturate(int64(replicas), maxBytes))
-			} else {
-				reservation = addSaturate(reservation, maxBytes)
-			}
+			reservation = addSaturate(reservation, accountReservation(tier, replicas, maxBytes))
 		}
 	}
 	return reservation
@@ -4020,7 +4014,7 @@ func (acc *Account) jsNonClusteredStreamLimitsCheck(cfg *StreamConfig) *ApiError
 		return NewJSMaximumStreamsLimitError()
 	}
 	reserved := jsa.tieredReservation(tier, cfg)
-	if err := jsa.js.checkAllLimits(selectedLimits, cfg, reserved, 0); err != nil {
+	if err := jsa.js.checkAllLimits(selectedLimits, tier, cfg, reserved, 0); err != nil {
 		return NewJSStreamLimitsError(err, Unless(err))
 	}
 	return nil
