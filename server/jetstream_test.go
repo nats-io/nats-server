@@ -13383,6 +13383,84 @@ func TestJetStreamStreamRepublishOneTokenMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamStreamRepublishSuppressesInvalidSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	addStream(t, nc, &StreamConfig{
+		Name:     "Stream1",
+		Storage:  MemoryStorage,
+		Subjects: []string{"one"},
+		RePublish: &RePublish{
+			Source:      "one",
+			Destination: "uno\r\nPUB hijack.subject 8\r\nhijacked!\r\n",
+		},
+	})
+
+	hijackSub, err := nc.SubscribeSync("hijack.subject")
+	require_NoError(t, err)
+	repubSub, err := nc.SubscribeSync("uno")
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	_, err = js.Publish("one", []byte("payload"))
+	require_NoError(t, err)
+
+	// Should receive nothing on either the hijack or republish subjects.
+	_, err = hijackSub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err)
+	_, err = repubSub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err)
+}
+
+func TestJetStreamStreamRepublishLeftRightMappingFunctions(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for i, dest := range []string{"{{left(1,3)}}", "{{right(1,3)}}"} {
+		t.Run(dest, func(t *testing.T) {
+			inSubj := fmt.Sprintf("in%d.*", i)
+			addStream(t, nc, &StreamConfig{
+				Name:     fmt.Sprintf("S%d", i),
+				Storage:  MemoryStorage,
+				Subjects: []string{inSubj},
+				RePublish: &RePublish{
+					Source:      inSubj,
+					Destination: dest,
+				},
+			})
+
+			sub, err := nc.SubscribeSync(">")
+			require_NoError(t, err)
+			require_NoError(t, nc.Flush())
+
+			_, err = js.Publish(fmt.Sprintf("in%d.abcdef", i), []byte("x"))
+			require_NoError(t, err)
+
+			// We should receive both the original ("in.abcdef") and the republished message.
+			gotRepub := false
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				msg, err := sub.NextMsg(100 * time.Millisecond)
+				if err != nil {
+					return err
+				}
+				if msg.Subject != fmt.Sprintf("in%d.abcdef", i) {
+					gotRepub = true
+					return nil
+				}
+				return fmt.Errorf("waiting for republished message")
+			})
+			require_True(t, gotRepub)
+		})
+	}
+}
+
 func TestJetStreamStreamRepublishMultiTokenMatch(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -23790,4 +23868,177 @@ func TestJetStreamClusterInfoDoesNotBlockJSMutex(t *testing.T) {
 
 	// If contending then this will error.
 	require_ChanRead(t, done, time.Second)
+}
+
+// https://github.com/nats-io/nats-server/issues/8114
+func TestJetStreamStreamConfigConcurrentReadWrite(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxBytes: 1 << 10,
+	})
+	require_NoError(t, err)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, err := js.UpdateStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				MaxBytes: int64(1<<10) + int64(i%256),
+			})
+			require_NoError(t, err)
+		}
+	}()
+
+	readers := []func(){
+		// Hits jsa.reservedStorage, countStreams (indirectly via stats), tieredReservation.
+		func() { _, _ = js.AccountInfo() },
+		// Hits jsStreamNamesRequest.
+		func() {
+			for range js.StreamNames() {
+			}
+		},
+		// Hits jsStreamListRequest.
+		func() {
+			for range js.StreamsInfo() {
+			}
+		},
+		// Hits jsMsgDeleteRequest -> Sealed / DenyDelete read.
+		func() { _ = js.DeleteMsg("TEST", 1) },
+		// Hits jsStreamPurgeRequest -> Sealed / DenyPurge read.
+		func() { _ = js.PurgeStream("TEST") },
+	}
+	for _, r := range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				r()
+			}
+		}()
+	}
+
+	// Run long enough for the race detector to observe interleaving.
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+func TestJetStreamMirrorProcessInboundNilDeref(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err := js.Publish("foo", []byte("seed"))
+		require_NoError(t, err)
+	}
+
+	mset, err := s.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+
+	var (
+		stop atomic.Bool
+		wg   sync.WaitGroup
+	)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			mset.mu.Lock()
+			mset.mirror = &sourceInfo{name: "X", cname: "X", sseq: 4}
+			mset.mu.Unlock()
+
+			// With mset.mirror{cname:"X", sseq:4}, sseq==5 takes the
+			// sequential branch and then forces errLastSeqMismatch from
+			// processJetStreamMsg with sseq<=lseq.
+			rply := fmt.Sprintf("$JS.ACK.M.X.1.5.1.%d.0", time.Now().UnixNano())
+			mset.processInboundMirrorMsg(&inMsg{subj: "bar", rply: rply, msg: []byte("x")})
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			mset.mu.Lock()
+			mset.mirror = nil
+			mset.mu.Unlock()
+			runtime.Gosched()
+		}
+	}()
+
+	time.Sleep(3 * time.Second)
+	stop.Store(true)
+	wg.Wait()
+}
+
+func TestJetStreamMirrorRetriesOnSeqAlreadySeenMismatch(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err := js.Publish("foo", []byte("seed"))
+		require_NoError(t, err)
+	}
+
+	mset, err := s.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+
+	qch := make(chan struct{})
+	mset.mu.Lock()
+	mset.mirror = &sourceInfo{name: "X", cname: "X", sseq: 4, qch: qch}
+	mset.mu.Unlock()
+
+	// With mset.mirror{cname:"X", sseq:4}, sseq==5 takes the sequential
+	// branch and then forces errLastSeqMismatch from processJetStreamMsg
+	// with sseq<=lseq.
+	rply := fmt.Sprintf("$JS.ACK.M.X.1.5.1.%d.0", time.Now().UnixNano())
+	mset.processInboundMirrorMsg(&inMsg{subj: "bar", rply: rply, msg: []byte("x")})
+
+	select {
+	case <-qch:
+		// expected: retryMirrorConsumer ran and canceled the mirror.
+	case <-time.After(2 * time.Second):
+		t.Fatal("retryMirrorConsumer was not called after errLastSeqMismatch in the sseq<=lseq branch")
+	}
 }

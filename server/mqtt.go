@@ -239,7 +239,7 @@ var (
 	errMQTTEmptyUsername              = errors.New("empty user name not allowed")
 	errMQTTTopicIsEmpty               = errors.New("topic cannot be empty")
 	errMQTTPacketIdentifierIsZero     = errors.New("packet identifier cannot be 0")
-	errMQTTUnsupportedCharacters      = errors.New("character ' ' not supported for MQTT topics")
+	errMQTTUnsupportedCharacters      = errors.New("character not supported for MQTT topics")
 	errMQTTInvalidSession             = errors.New("invalid MQTT session")
 	errMQTTInvalidRetainFlags         = errors.New("invalid retained message flags")
 	errMQTTSessionCollision           = errors.New("stored session does not match client ID")
@@ -5713,8 +5713,11 @@ func mqttToNATSSubjectConversion(mt []byte, wcOk bool) ([]byte, error) {
 				}
 				res = append(res, btsep)
 			}
-		case ' ':
-			// As of now, we cannot support ' ' in the MQTT topic/filter.
+		case ' ', '\t', '\n', '\r', '\f':
+			// We cannot support whitespace in the MQTT topic/filter — these
+			// characters would also corrupt the NATS wire protocol when the
+			// subject is forwarded to other connection types (e.g. leaf
+			// nodes) where the resulting control line could be split.
 			return nil, errMQTTUnsupportedCharacters
 		case 0x7f:
 			// SubjectTree uses DEL as an internal pivot marker, so retained

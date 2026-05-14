@@ -3612,7 +3612,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// If we were successful lookup up our stream now.
 			if err == nil {
 				if mset, err = acc.lookupStream(sa.Config.Name); mset != nil {
-					mset.monitorWg.Add(1)
+					mset.startMonitorWg()
 					defer mset.monitorWg.Done()
 					mset.checkInMonitor()
 					mset.setStreamAssignment(sa)
@@ -3792,8 +3792,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// Need to do the rest in a separate Go routine.
 	go func() {
-		mset.signalMonitorQuit()
-		mset.monitorWg.Wait()
+		mset.stopMonitoring()
 		mset.resetAndWaitOnConsumers()
 		// Stop our stream.
 		mset.stop(shouldDelete, false)
@@ -4526,6 +4525,10 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		return
 	}
 
+	// Acquire clMu before ddMu so any inflight proposals finish first, and we can
+	// clean up if they added new dedupe IDs.
+	mset.clMu.Lock()
+
 	// Clear inflight dedupe IDs, where seq=0.
 	mset.ddMu.Lock()
 	var removed int
@@ -4548,7 +4551,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	}
 	mset.ddMu.Unlock()
 
-	mset.clMu.Lock()
 	// Clear inflight if we have it.
 	mset.inflight = nil
 	mset.inflightTransform = nil
@@ -4557,6 +4559,12 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	// Clear expected per subject state.
 	mset.expectedPerSubjectSequence = nil
 	mset.expectedPerSubjectInProcess = nil
+
+	// Clear clseq on every leader transition. recalculateClusteredSeq
+	// repopulates it on the next proposal.
+	if mset.clseq > 0 {
+		mset.clseq = 0
+	}
 	mset.clMu.Unlock()
 
 	js.mu.RLock()
@@ -4577,14 +4585,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 			s.sendStreamLostQuorumAdvisory(mset)
 		}
 	}
-
-	// Clear clseq on every leader transition. recalculateClusteredSeq
-	// repopulates it on the next proposal.
-	mset.clMu.Lock()
-	if mset.clseq > 0 {
-		mset.clseq = 0
-	}
-	mset.clMu.Unlock()
 
 	// Tell stream to switch leader status.
 	mset.setLeader(isLeader)
@@ -5047,8 +5047,7 @@ func (s *Server) removeStream(mset *stream, nsa *streamAssignment) {
 
 	if !isShuttingDown {
 		// wait for monitor to be shutdown.
-		mset.signalMonitorQuit()
-		mset.monitorWg.Wait()
+		mset.stopMonitoring()
 	}
 	mset.stop(true, false)
 }
@@ -5077,8 +5076,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			s.Warnf("JetStream cluster detected stream remapping for '%s > %s' from %q to %q",
 				acc, cfg.Name, osa.Group.Name, sa.Group.Name)
 			mset.removeNode()
-			mset.signalMonitorQuit()
-			mset.monitorWg.Wait()
+			mset.stopMonitoring()
 			alreadyRunning, needsNode = false, true
 			// Make sure to clear from original.
 			js.mu.Lock()
@@ -5103,7 +5101,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 					"stream":  mset.name(),
 				})
 			}
-			mset.monitorWg.Add(1)
+			mset.startMonitorWg()
 			// Start monitoring..
 			started := s.startGoRoutine(
 				func() { js.monitorStream(mset, sa, needsNode) },
@@ -5119,8 +5117,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
-			mset.signalMonitorQuit()
-			mset.monitorWg.Wait()
+			mset.stopMonitoring()
 			// In case we need to shutdown the cluster specific subs, etc.
 			mset.mu.Lock()
 			// Stop responding to sync requests.
@@ -5372,7 +5369,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	if node != nil {
 		if !alreadyRunning {
 			if mset != nil {
-				mset.monitorWg.Add(1)
+				mset.startMonitorWg()
 			}
 			started := s.startGoRoutine(
 				func() { js.monitorStream(mset, sa, false) },
@@ -5559,8 +5556,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 				n.Delete()
 			}
 			// wait for monitor to be shut down
-			mset.signalMonitorQuit()
-			mset.monitorWg.Wait()
+			mset.stopMonitoring()
 			err = mset.stop(true, wasLeader)
 			stopped = true
 		} else if isMember {
@@ -5782,8 +5778,7 @@ func (s *Server) removeConsumer(o *consumer, nca *consumerAssignment) {
 
 	if !isShuttingDown {
 		// wait for monitor to be shutdown.
-		o.signalMonitorQuit()
-		o.monitorWg.Wait()
+		o.stopMonitoring()
 	}
 	o.deleteWithoutAdvisory()
 }
@@ -5890,8 +5885,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		s.Warnf("JetStream cluster detected consumer remapping for '%s > %s' from %q to %q",
 			acc, ca.Name, oca.Group.Name, ca.Group.Name)
 		o.clearNode()
-		o.signalMonitorQuit()
-		o.monitorWg.Wait()
+		o.stopMonitoring()
 		alreadyRunning = false
 		// Make sure to clear from original.
 		js.mu.Lock()
@@ -6057,8 +6051,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			// Check for scale down to 1..
 			if node != nil && len(rg.Peers) == 1 {
 				o.clearNode()
-				o.signalMonitorQuit()
-				o.monitorWg.Wait()
+				o.stopMonitoring()
 				// Need to clear from rg too.
 				js.mu.Lock()
 				rg.node = nil
@@ -6097,8 +6090,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 
 		if node == nil {
 			// Wait for the previous routine to stop running.
-			o.signalMonitorQuit()
-			o.monitorWg.Wait()
+			o.stopMonitoring()
 			// Single replica consumer, process manually here.
 			// Force response in case we think this is an update.
 			if !js.isMetaRecovering() && isConfigUpdate {
@@ -6129,8 +6121,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			// Start our monitoring routine if needed.
 			if !alreadyRunning {
 				// Wait for the previous routine to stop running.
-				o.signalMonitorQuit()
-				o.monitorWg.Wait()
+				o.stopMonitoring()
 				if o.shouldStartMonitor() {
 					started := s.startGoRoutine(
 						func() { js.monitorConsumer(o, ca) },
@@ -7866,7 +7857,7 @@ func (js *jetStream) tieredStreamAndReservationCount(accName, tier string, cfg *
 		if sa.Config.Name == cfg.Name {
 			continue
 		}
-		if tier == _EMPTY_ || isSameTier(sa.Config, cfg) {
+		if tier == _EMPTY_ || isSameTier(sa.Config.Replicas, cfg.Replicas) {
 			numStreams++
 			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage {
 				// If tier is empty, all storage is flat and we should adjust for replicas.
@@ -9423,6 +9414,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
+			if cfg.DeliverPolicy != DeliverAll {
+				resp.Error = NewJSConsumerWQConsumerNotDeliverAllError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			subjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
 			for oca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
 				if oca.Name == oname || oca.Config.Direct || oca.Config.Sourcing {
@@ -9978,7 +9974,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
 	// Subtract to prevent against overflows.
 	if maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
-		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
+		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, name)
 		s.RateLimitWarnf("%s", err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
@@ -10462,8 +10458,11 @@ RETRY:
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
 					notifyLeaderStopCatchup(mrec, err)
-					if mset.js.limitsExceeded(mset.cfg.Storage) {
-						s.resourcesExceededError(mset.cfg.Storage)
+					mset.cfgMu.RLock()
+					storage := mset.cfg.Storage
+					mset.cfgMu.RUnlock()
+					if mset.js.limitsExceeded(storage) {
+						s.resourcesExceededError(storage)
 					} else {
 						s.Warnf("Catchup for stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
 					}

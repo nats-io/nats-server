@@ -9966,10 +9966,19 @@ func TestJetStreamClusterPurgeScheduleWithInvalidScheduler(t *testing.T) {
 			_, err := jsStreamCreate(t, nc, cfg)
 			require_NoError(t, err)
 
-			_, err = js.Publish("foo.schedule", []byte("previous"))
+			// Publish a normal non-schedule message.
+			_, err = js.Publish("foo.normal", []byte("previous"))
 			require_NoError(t, err)
 
+			// Publish a schedule message.
 			m := nats.NewMsg("foo.schedule")
+			m.Header.Set("Nats-Schedule", "@every 1h")
+			m.Header.Set("Nats-Schedule-Target", "foo.target")
+			m.Data = []byte("previous")
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+
+			m = nats.NewMsg("foo.schedule")
 			m.Header.Set("Nats-Schedule-Next", "purge")
 			// Missing scheduler
 			_, err = js.PublishMsg(m)
@@ -9985,10 +9994,22 @@ func TestJetStreamClusterPurgeScheduleWithInvalidScheduler(t *testing.T) {
 			_, err = js.PublishMsg(m)
 			require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
 
-			// We're allowed to purge a schedule, as long as the subject we're publishing to doesn't equal.
+			// Should error if the scheduler message is not actually a schedule.
+			// Otherwise, non-schedule messages could be purged this way.
+			m.Header.Set("Nats-Scheduler", "foo.normal")
+			m.Subject = "foo.last"
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSMessageSchedulesSchedulerInvalidError())
+
+			// We're allowed to purge a schedule, as long as the subject we're
+			// publishing to doesn't equal and it is a schedule.
+			m.Header.Set("Nats-Scheduler", "foo.schedule")
 			m.Subject = "foo.last"
 			_, err = js.PublishMsg(m)
 			require_NoError(t, err)
+
+			// Purge the normal message separately.
+			require_NoError(t, js.PurgeStream("SchedulesEnabled", &nats.StreamPurgeRequest{Subject: "foo.normal"}))
 
 			// Only the last message should exist.
 			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
@@ -9996,11 +10017,25 @@ func TestJetStreamClusterPurgeScheduleWithInvalidScheduler(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if state.Msgs != 1 || state.FirstSeq != 2 || state.LastSeq != 2 {
+				if state.Msgs != 1 || state.FirstSeq != 3 || state.LastSeq != 3 {
 					return fmt.Errorf("expected 1 msg, got %v", state)
 				}
 				return nil
 			})
+
+			// If the scheduler message does not exist, we should preserve backward-compatibility
+			// and allow the message to be persisted with a noop purge.
+			m.Header.Set("Nats-Scheduler", "foo.none")
+			m.Subject = "foo.last"
+			_, err = js.PublishMsg(m)
+			require_NoError(t, err)
+
+			// Should still be able to perform an "expected at sequence" check to make sure the
+			// schedule actually exists before persisting the message and performing a purge.
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "1")
+			m.Header.Set("Nats-Expected-Last-Subject-Sequence-Subject", "foo.none")
+			_, err = js.PublishMsg(m)
+			require_Error(t, err, NewJSStreamWrongLastSequenceError(0))
 		})
 	}
 }

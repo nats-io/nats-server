@@ -4440,6 +4440,56 @@ func TestRouteCustomPing(t *testing.T) {
 	}
 }
 
+func TestRouteCompressionStaleConnectionUsesClusterPingMax(t *testing.T) {
+	mockListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require_NoError(t, err)
+	defer mockListener.Close()
+	mockPort := mockListener.Addr().(*net.TCPAddr).Port
+
+	// The mock peer never sends INFO, so the soliciting route never completes
+	// compression negotiation. The connection can only be closed by the stale
+	// watch installed in createRoute.
+	connCh := make(chan net.Conn, 1)
+	go func() {
+		conn, err := mockListener.Accept()
+		if err != nil {
+			return
+		}
+		connCh <- conn
+	}()
+
+	// Cluster.MaxPingsOut and MaxPingsOut differ so the stale timer's deadline
+	// distinguishes which is used: 50ms*2 = 100ms vs 50ms*101 ≈ 5s.
+	o := DefaultOptions()
+	o.Cluster.Compression.Mode = CompressionS2Fast
+	o.Cluster.PingInterval = 50 * time.Millisecond
+	o.Cluster.MaxPingsOut = 1
+	o.MaxPingsOut = 100
+	o.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", mockPort))
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	var conn net.Conn
+	select {
+	case conn = <-connCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Mock listener did not accept route connection")
+	}
+	defer conn.Close()
+
+	require_NoError(t, conn.SetReadDeadline(time.Now().Add(1500*time.Millisecond)))
+	buf := make([]byte, 256)
+	start := time.Now()
+	for {
+		if _, err = conn.Read(buf); err != nil {
+			break
+		}
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Stale-connection timer used wrong ping_max: closed after %v, expected <1s (Cluster.MaxPingsOut=1)", elapsed)
+	}
+}
+
 func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	o1 := DefaultOptions()
 	o1.Cluster.PoolSize = -1

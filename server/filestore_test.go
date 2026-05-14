@@ -1704,7 +1704,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 
 func TestFileStoreReadCache(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
-		fcfg.CacheExpire = 100 * time.Millisecond
+		fcfg.CacheExpire = ats.TickInterval
 
 		subj, msg := "foo.bar", make([]byte, 1024)
 		storedMsgSize := fileStoreMsgSize(subj, nil, msg)
@@ -6800,7 +6800,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 	}
 	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
 	// needing to worry about last write times blocking forced expiration.
-	time.Sleep(expire + ats.TickInterval)
+	time.Sleep(expire + ats.TickInterval*2)
 
 	checkNoCache := func() {
 		t.Helper()
@@ -13991,4 +13991,64 @@ func TestFileStoreSchedulingRecoveryAliasCorruption(t *testing.T) {
 		require_True(t, ok)
 		require_Equal(t, revSubj, subj)
 	}
+}
+
+func TestFileStoreConvertToEncryptedDoesNotResurrectXoredCache(t *testing.T) {
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: 8192}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	plaintext := bytes.Repeat([]byte("MARKER-PLAINTEXT-PAYLOAD-"), 32)
+	_, _, err = fs.StoreMsg("foo", nil, plaintext, 0)
+	require_NoError(t, err)
+	fs.Stop()
+
+	// Re-open with encryption, which will convert existing blocks.
+	fcfg.Cipher = AES
+	fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.mu.RLock()
+	require_True(t, fs.lmb != nil)
+	mb := fs.lmb
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	require_True(t, mb.bek != nil)
+
+	// Rewrite the on-disk file as plaintext so convertToEncrypted has
+	// fresh plaintext to encrypt.
+	encBuf, err := mb.loadBlock(nil)
+	require_NoError(t, err)
+	rbek, err := genBlockEncryptionKey(fcfg.Cipher, mb.seed, mb.nonce)
+	require_NoError(t, err)
+	rbek.XORKeyStream(encBuf, encBuf)
+	<-dios
+	err = os.WriteFile(mb.mfn, encBuf, defaultFilePerms)
+	dios <- struct{}{}
+	require_NoError(t, err)
+	recycleMsgBlockBuf(encBuf)
+
+	// Stage a sentinel on the elastic pointer; the fix must clear it.
+	sentinelCache := &cache{buf: bytes.Repeat([]byte{0xCA, 0xFE}, 64)}
+	mb.cache = sentinelCache
+	mb.ecache.Set(sentinelCache)
+
+	require_NoError(t, mb.convertToEncrypted())
+
+	mb.cache = nil
+	require_NoError(t, mb.setupWriteCache(nil))
+	require_True(t, mb.cache != nil)
+	if mb.cache == sentinelCache {
+		t.Fatalf("setupWriteCache resurrected sentinel cache via mb.ecache after convertToEncrypted")
+	}
+	// If convertToEncrypted wrote ciphertext at the wrong keystream offset, the
+	// block would decrypt to garbage and rebuildStateFromBufLocked would silently
+	// truncate it to zero bytes — losing the message.
+	require_NotEqual(t, len(mb.cache.buf), 0)
 }

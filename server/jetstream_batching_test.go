@@ -445,7 +445,7 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 				require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 				if size <= streamMaxAtomicBatchSize {
 					require_True(t, pubAck.Error == nil)
-					require_Equal(t, pubAck.BatchSize, size)
+					require_Equal(t, pubAck.BatchSize, uint64(size))
 				} else {
 					require_Error(t, pubAck.Error, NewJSAtomicPublishTooLargeBatchError(streamMaxAtomicBatchSize))
 				}
@@ -766,6 +766,37 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 	t.Run("StepDown", func(t *testing.T) { test(t, StepDown) })
 	t.Run("Delete", func(t *testing.T) { test(t, Delete) })
 	t.Run("Commit", func(t *testing.T) { test(t, Commit) })
+}
+
+func TestJetStreamAtomicBatchDeleteBatchApplyStateNoDoublePut(t *testing.T) {
+	mset := &stream{}
+	batch := &batchApply{
+		id:         "test-batch",
+		count:      3,
+		entryStart: 5,
+		maxApplied: 42,
+		entries:    []*CommittedEntry{{Index: 1}, {Index: 2}, {Index: 3}},
+	}
+	mset.batchApply = batch
+
+	mset.mu.Lock()
+	mset.deleteBatchApplyState()
+	mset.mu.Unlock()
+
+	require_True(t, mset.batchApply == nil)
+
+	batch.mu.Lock()
+	require_True(t, batch.entries == nil)
+	require_Equal(t, batch.id, _EMPTY_)
+	require_Equal(t, batch.count, uint64(0))
+	require_Equal(t, batch.entryStart, 0)
+	require_Equal(t, batch.maxApplied, uint64(0))
+
+	// Count was zeroed above, so the reject path must not bump clfs.
+	preCLFS := mset.clfs
+	batch.rejectBatchStateLocked(mset)
+	batch.mu.Unlock()
+	require_Equal(t, mset.clfs, preCLFS)
 }
 
 func TestJetStreamAtomicBatchPublishConfigOpts(t *testing.T) {
@@ -1137,6 +1168,112 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
 						JSScheduleTarget:  {"baz"},
 						JSMsgRollup:       {JSMsgRollupSubject},
+					},
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-purge-staged-not-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			batch: []BatchItem{
+				{subject: "foo"},
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+					err: NewJSMessageSchedulesSchedulerInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-purge-staged-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"baz"},
+					},
+				},
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+				},
+			},
+			validate: func(mset *stream, commit bool) {
+				if !commit {
+					return
+				}
+				require_NotNil(t, mset.inflight["foo"])
+				require_True(t, mset.inflight["foo"].schedule)
+			},
+		},
+		{
+			title:             "msg-schedules-purge-staged-overwritten",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			batch: []BatchItem{
+				{
+					subject: "foo",
+					header: nats.Header{
+						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
+						JSScheduleTarget:  {"baz"},
+					},
+				},
+				{subject: "foo"},
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+					err: NewJSMessageSchedulesSchedulerInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-purge-inflight-not-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			init: func(mset *stream) {
+				mset.inflight = map[string]*inflightSubjectRunningTotal{
+					"foo": {bytes: 10, ops: 1, schedule: false},
+				}
+			},
+			batch: []BatchItem{
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
+					},
+					err: NewJSMessageSchedulesSchedulerInvalidError(),
+				},
+			},
+		},
+		{
+			title:             "msg-schedules-purge-inflight-schedule",
+			allowMsgSchedules: true,
+			allowRollup:       true,
+			init: func(mset *stream) {
+				mset.inflight = map[string]*inflightSubjectRunningTotal{
+					"foo": {bytes: 10, ops: 1, schedule: true},
+				}
+			},
+			batch: []BatchItem{
+				{
+					subject: "bar",
+					header: nats.Header{
+						JSScheduleNext: {JSScheduleNextPurge},
+						JSScheduler:    {"foo"},
 					},
 				},
 			},
@@ -3025,6 +3162,28 @@ func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {
 	require_Len(t, len(sliceHeader(JSRequiredApiLevel, sm.Header)), 0)
 }
 
+func TestJetStreamAtomicPublishGetBatchSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		hdr    []byte
+		seq    uint64
+		exists bool
+	}{
+		{"missing", nil, 0, false},
+		{"empty-value", genHeader(nil, JSBatchSeq, ""), 0, false},
+		{"valid", genHeader(nil, JSBatchSeq, "42"), 42, true},
+		{"non-numeric", genHeader(nil, JSBatchSeq, "abc"), 0, false},
+		{"negative", genHeader(nil, JSBatchSeq, "-1"), 0, false},
+		{"overflow", genHeader(nil, JSBatchSeq, "18446744073709551616"), 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq, exists := getBatchSequence(tc.hdr)
+			require_Equal(t, seq, tc.seq)
+			require_Equal(t, exists, tc.exists)
+		})
+	}
+}
+
 func generateFastBatchReply(inbox string, batchId string, batchSeq uint64, flow uint16, gap string, op int) string {
 	return fmt.Sprintf("%s.%s.%d.%s.%d.%d.$FI", inbox, batchId, flow, gap, batchSeq, op)
 }
@@ -3280,6 +3439,86 @@ func TestJetStreamFastBatchPublishGapDetection(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestJetStreamFastBatchPublishMaxUint64SequenceRejected(t *testing.T) {
+	test := func(t *testing.T, commitEob bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Replicas:          1,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 1, FastBatchGapOk, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		var batchFlowAck BatchFlowAck
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 1)
+		require_Equal(t, batchFlowAck.Sequence, 0)
+
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"ack\","))
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 1)
+		require_Equal(t, batchFlowAck.Sequence, 1)
+
+		m.Reply = generateFastBatchReply(inbox, "uuid", math.MaxUint64-1, 1, FastBatchGapOk, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"gap\","))
+		var batchFlowGap BatchFlowGap
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
+		require_Equal(t, batchFlowGap.ExpectedLastSequence, 2)
+		require_Equal(t, batchFlowGap.CurrentSequence, uint64(math.MaxUint64-1))
+
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"ack\","))
+		batchFlowAck = BatchFlowAck{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 1)
+		require_Equal(t, batchFlowAck.Sequence, uint64(math.MaxUint64-1))
+
+		// math.MaxUint64 must be rejected so b.lseq cannot be jumped to a value
+		// where the next b.lseq++ would wrap to zero.
+		opCommit := FastBatchOpCommit
+		if commitEob {
+			opCommit = FastBatchOpCommitEob
+		}
+		m.Reply = generateFastBatchReply(inbox, "uuid", math.MaxUint64, 1, FastBatchGapOk, opCommit)
+		require_NoError(t, nc.PublishMsg(m))
+
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
+		require_Error(t, pubAck.Error, NewJSBatchPublishInvalidPatternError())
+	}
+
+	t.Run("Commit", func(t *testing.T) { test(t, false) })
+	t.Run("CommitEob", func(t *testing.T) { test(t, true) })
 }
 
 func TestJetStreamFastBatchPublishFlowControl(t *testing.T) {
