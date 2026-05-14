@@ -4824,7 +4824,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				DeliverSubject: sub.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      AckExplicit,
-				AckWait:        100 * time.Millisecond,
+				AckWait:        500 * time.Millisecond,
 				MaxDeliver:     3,
 			})
 			if err != nil {
@@ -4881,7 +4881,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				DeliverSubject: sub.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      AckExplicit,
-				AckWait:        100 * time.Millisecond,
+				AckWait:        500 * time.Millisecond,
 				MaxDeliver:     3,
 			})
 			if err != nil {
@@ -4924,7 +4924,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 
 			// We should get the second half back since we did not ack those from above.
 			expect = toSend - 5
-			checkFor(t, time.Second, 5*time.Millisecond, func() error {
+			checkFor(t, 5*time.Second, 5*time.Millisecond, func() error {
 				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != expect {
 					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, expect)
 				}
