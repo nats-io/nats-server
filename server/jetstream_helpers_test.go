@@ -2166,7 +2166,7 @@ func checkStateAndErr(t *testing.T, c *cluster, accountName, streamName string) 
 	mset, err := acc.lookupStream(streamName)
 	require_NoError(t, err)
 
-	cfgReplicas := mset.cfg.Replicas
+	cfgReplicas := mset.config().Replicas
 	foundReplicas := 1 // We already know the leader.
 	var errs []error
 	for _, srv := range c.servers {

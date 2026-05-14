@@ -119,6 +119,30 @@ func TestSublistInit(t *testing.T) {
 	verifyCount(s, 0, t)
 }
 
+func TestSublistForServerNoOpts(t *testing.T) {
+	s := NewSublistForServer(&Server{})
+	if s == nil {
+		t.Fatal("Expected a sublist")
+	}
+	if s.CacheEnabled() {
+		t.Fatal("Expected cache to be disabled when server options are nil")
+	}
+}
+
+func TestSetAccountSublistNoOpts(t *testing.T) {
+	s := &Server{}
+	acc := NewAccount("foo")
+
+	s.setAccountSublist(acc)
+
+	if acc.sl == nil {
+		t.Fatal("Expected account sublist to be initialized")
+	}
+	if acc.sl.CacheEnabled() {
+		t.Fatal("Expected cache to be disabled when server options are nil")
+	}
+}
+
 func TestSublistInsertCount(t *testing.T) {
 	testSublistInsertCount(t, NewSublistWithCache())
 }
@@ -1628,8 +1652,11 @@ func TestSublistHasInterest(t *testing.T) {
 	}
 
 	// Call Match on a subject we know there is no match.
+	hits := sl.cacheHits
 	sl.Match("bar")
 	require_False(t, sl.HasInterest("bar"))
+	// The sublist caches "negative" results as well, expect a cache hit.
+	require_Equal(t, sl.cacheHits, hits+1)
 
 	// Remove fooSub and check interest again
 	sl.Remove(fooSub)
@@ -1809,8 +1836,11 @@ func TestSublistNumInterest(t *testing.T) {
 	}
 
 	// Call Match on a subject we know there is no match.
+	hits := sl.cacheHits
 	sl.Match("bar")
 	require_NumInterest(t, "bar", 0, 0)
+	// The sublist caches "negative" results as well, expect a cache hit.
+	require_Equal(t, sl.cacheHits, hits+1)
 
 	// Remove fooSub and check interest again
 	sl.Remove(fooSub)

@@ -248,7 +248,7 @@ func checkMsgHeadersPreClusteredProposal(
 		// Since we encode header len as u16 make sure we do not exceed.
 		// Again this works if it goes through but better to be pre-emptive.
 		if len(hdr) > math.MaxUint16 {
-			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
+			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, name)
 			return hdr, msg, 0, NewJSStreamHeaderExceedsMaximumError(), err
 		}
 		// Counter increments.

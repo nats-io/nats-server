@@ -5462,7 +5462,28 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		require_NoError(t, err)
 	}
 
+	subscribeAdvisoriesCount := func(consumer string) *atomic.Int64 {
+		t.Helper()
+		var count atomic.Int64
+		subj := fmt.Sprintf("%s.%s.%s", JSAdvisoryConsumerMaxDeliveryExceedPre, "TEST", consumer)
+		sub, err := nc.Subscribe(subj, func(*nats.Msg) { count.Add(1) })
+		require_NoError(t, err)
+		t.Cleanup(func() { sub.Unsubscribe() })
+		require_NoError(t, nc.Flush())
+		return &count
+	}
+	requireAdvisoriesCount := func(consumer string, count *atomic.Int64, want int64, when string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if got := count.Load(); got != want {
+				return fmt.Errorf("%s consumer expected %d advisories %s, got %d", consumer, want, when, got)
+			}
+			return nil
+		})
+	}
+
 	// File based.
+	fileAdv := subscribeAdvisoriesCount("file")
 	sub, err := js.PullSubscribe("foo", "file",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
@@ -5477,6 +5498,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	// Let first batch expire.
 	time.Sleep(1200 * time.Millisecond)
+	requireAdvisoriesCount("file", fileAdv, 10, "before stepdown")
 
 	cia, err := js.ConsumerInfo("TEST", "file")
 	require_NoError(t, err)
@@ -5509,7 +5531,13 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	checkConsumerInfo(cia, cib, true)
 
+	// Give the new leader a settle window. setLeader calls checkPending
+	// synchronously, but the apply goroutine may run a few ms later.
+	time.Sleep(500 * time.Millisecond)
+	requireAdvisoriesCount("file", fileAdv, 10, "after stepdown")
+
 	// Memory based.
+	memAdv := subscribeAdvisoriesCount("mem")
 	sub, err = js.PullSubscribe("foo", "mem",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
@@ -5525,6 +5553,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
+	requireAdvisoriesCount("mem", memAdv, 10, "before stepdown")
 
 	cia, err = js.ConsumerInfo("TEST", "mem")
 	require_NoError(t, err)
@@ -5538,8 +5567,11 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	require_NoError(t, err)
 
 	checkConsumerInfo(cia, cib, true)
+	requireAdvisoriesCount("mem", memAdv, 10, "after stepdown")
 
 	// Now file based but R1 and server restart.
+	r1Adv := subscribeAdvisoriesCount("r1")
+
 	sub, err = js.PullSubscribe("foo", "r1",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
@@ -5555,6 +5587,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
+	requireAdvisoriesCount("r1", r1Adv, 10, "before restart")
 
 	cia, err = js.ConsumerInfo("TEST", "r1")
 	require_NoError(t, err)
@@ -5572,6 +5605,12 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	now := time.Now()
 	cia.Created, cib.Created = now, now
 	checkConsumerInfo(cia, cib, false)
+
+	// On startup the R1 consumer's setLeader -> readStoredState -> applyState
+	// reloads pending from disk; if ghosts persisted, setLeader's checkPending
+	// re-fires every advisory exactly as a follower-promoted leader would.
+	time.Sleep(500 * time.Millisecond)
+	requireAdvisoriesCount("r1", r1Adv, 10, "after server restart")
 }
 
 func TestJetStreamClusterConsumerDefaultsFromStream(t *testing.T) {
@@ -7400,12 +7439,16 @@ func TestJetStreamClusterScaleDownWaitsForMonitorRoutineQuit(t *testing.T) {
 	require_NotNil(t, o)
 
 	// Increment the wait group for this test to confirm the right ordering.
-	o.mu.Lock()
+	// The Add must be done under monitorMu, just like shouldStartMonitor does,
+	// so it cannot race a concurrent monitorWg.Wait.
+	o.mu.RLock()
 	inMonitor := o.inMonitor
+	o.mu.RUnlock()
+	require_True(t, inMonitor)
+	o.monitorMu.Lock()
 	wg := &o.monitorWg
 	wg.Add(1)
-	o.mu.Unlock()
-	require_True(t, inMonitor)
+	o.monitorMu.Unlock()
 
 	// The monitor routine should stop.
 	ccfg.Replicas = 1
@@ -7438,12 +7481,16 @@ func TestJetStreamClusterScaleDownWaitsForMonitorRoutineQuit(t *testing.T) {
 	require_NoError(t, err)
 
 	// Increment the wait group for this test to confirm the right ordering.
-	mset.mu.Lock()
+	// The Add must be done under monitorMu, just like startMonitorWg does,
+	// so it cannot race a concurrent monitorWg.Wait.
+	mset.mu.RLock()
 	inMonitor = mset.inMonitor
+	mset.mu.RUnlock()
+	require_True(t, inMonitor)
+	mset.monitorMu.Lock()
 	wg = &mset.monitorWg
 	wg.Add(1)
-	mset.mu.Unlock()
-	require_True(t, inMonitor)
+	mset.monitorMu.Unlock()
 
 	// The monitor routine should stop.
 	scfg.Replicas = 1
@@ -7505,13 +7552,17 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 	require_NotNil(t, o)
 
 	// Increment the wait group for this test to confirm the right ordering.
-	o.mu.Lock()
+	// The Add must be done under monitorMu, just like shouldStartMonitor does,
+	// so it cannot race a concurrent monitorWg.Wait.
+	o.mu.RLock()
 	inMonitor := o.inMonitor
+	rn := o.node
+	o.mu.RUnlock()
+	require_True(t, inMonitor)
+	o.monitorMu.Lock()
 	wg := &o.monitorWg
 	wg.Add(1)
-	rn := o.node
-	o.mu.Unlock()
-	require_True(t, inMonitor)
+	o.monitorMu.Unlock()
 
 	// Simulate a consumer Raft group remapping that has been collapsed down into just a single update.
 	// Instead of one update to R1 and then to R3, it's just one update straight to the new R3 group.
@@ -7546,6 +7597,86 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// Must be run with -race.
+func TestJetStreamClusterConsumerMonitorWaitGroupRace(t *testing.T) {
+	o := &consumer{}
+
+	var ready sync.WaitGroup
+	ready.Add(1)
+	done := make(chan struct{})
+
+	var fin sync.WaitGroup
+	fin.Add(2)
+
+	// Repeatedly start and stop the monitor, exercising monitorWg.Add / Done.
+	go func() {
+		defer fin.Done()
+		ready.Wait()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if o.shouldStartMonitor() {
+				o.clearMonitorRunning()
+			}
+		}
+	}()
+
+	// Repeatedly wait on the monitor, exercising monitorWg.Wait.
+	go func() {
+		defer fin.Done()
+		ready.Done()
+		for range 500_000 {
+			o.stopMonitoring()
+		}
+		close(done)
+	}()
+
+	fin.Wait()
+}
+
+// Must be run with -race.
+func TestJetStreamClusterStreamMonitorWaitGroupRace(t *testing.T) {
+	mset := &stream{}
+
+	var ready sync.WaitGroup
+	ready.Add(1)
+	done := make(chan struct{})
+
+	var fin sync.WaitGroup
+	fin.Add(2)
+
+	// Repeatedly register and unregister a monitor goroutine, exercising
+	// monitorWg.Add (via startMonitorWg) / Done.
+	go func() {
+		defer fin.Done()
+		ready.Wait()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			mset.startMonitorWg()
+			mset.monitorWg.Done()
+		}
+	}()
+
+	// Repeatedly wait on the monitor, exercising monitorWg.Wait.
+	go func() {
+		defer fin.Done()
+		ready.Done()
+		for range 500_000 {
+			mset.stopMonitoring()
+		}
+		close(done)
+	}()
+
+	fin.Wait()
 }
 
 func TestJetStreamClusterAccountStoreLimits(t *testing.T) {
@@ -8559,4 +8690,63 @@ func TestJetStreamClusterProposeFailureDoesNotDriftClseq(t *testing.T) {
 		require_NotNil(t, rn)
 		require_False(t, rn.IsDeleted())
 	}
+}
+
+func TestJetStreamClusterMirrorSkipMsgsPropagatesProposeFailure(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"src.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	stored := uint64(5)
+	for range stored {
+		_, err = js.Publish("src.a", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 3,
+		Mirror:   &nats.StreamSource{Name: "SRC"},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != stored {
+			return fmt.Errorf("got %d msgs, want %d", si.State.Msgs, stored)
+		}
+		return nil
+	})
+
+	sl := c.streamLeader(globalAccountName, "M")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+
+	// Step the mirror's Raft node down so node.Propose / ProposeMulti will return
+	// errNotLeader for any subsequent proposal; including the one skipMsgs makes.
+	require_NoError(t, mset.raftNode().StepDown())
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if mset.IsLeader() {
+			return fmt.Errorf("still leader")
+		}
+		return nil
+	})
+
+	mset.mu.Lock()
+	err = mset.skipMsgs(stored+1, stored+10)
+	mset.mu.Unlock()
+	require_Error(t, err, errNotLeader)
 }

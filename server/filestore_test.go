@@ -1628,7 +1628,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 
 func TestFileStoreReadCache(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
-		fcfg.CacheExpire = 100 * time.Millisecond
+		fcfg.CacheExpire = ats.TickInterval
 
 		subj, msg := "foo.bar", make([]byte, 1024)
 		storedMsgSize := fileStoreMsgSize(subj, nil, msg)
@@ -6700,7 +6700,7 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 	}
 	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
 	// needing to worry about last write times blocking forced expiration.
-	time.Sleep(expire + ats.TickInterval)
+	time.Sleep(expire + ats.TickInterval*2)
 
 	checkNoCache := func() {
 		t.Helper()
@@ -12464,4 +12464,130 @@ func TestFileStoreRemovePerSubjectWithMultipleBlocks(t *testing.T) {
 	fs.mu.Unlock()
 	require_NoError(t, err)
 	require_Equal(t, seq, 1)
+}
+
+func TestFileStoreSchedulingRecoveryAliasCorruption(t *testing.T) {
+	dir := t.TempDir()
+
+	// Small block size + chunky per-message padding so multiple blocks
+	// roll over during the recovery scan, forcing cache eviction.
+	const blockSize = 4 * 1024
+	cfg := StreamConfig{
+		Name:              "SCHED",
+		Subjects:          []string{"sched.>"},
+		Storage:           FileStorage,
+		AllowMsgSchedules: true,
+	}
+	fcfg := FileStoreConfig{StoreDir: dir, BlockSize: blockSize}
+
+	const N = 40
+	subjects := make([]string, N)
+	for i := range subjects {
+		subjects[i] = fmt.Sprintf("sched.AAAA-%05d-%s", i, strings.Repeat("A", 40))
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	future := time.Now().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	for i, subj := range subjects {
+		hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", future))
+		hdr = genHeader(hdr, JSScheduleTarget, fmt.Sprintf("target.%d", i))
+		hdr = genHeader(hdr, "Pad", strings.Repeat("X", 200))
+		_, _, err = fs.StoreMsg(subj, hdr, nil, 0)
+		require_NoError(t, err)
+	}
+	require_NoError(t, fs.Stop())
+
+	// Remove the persisted scheduling state to force the linear-scan recovery path.
+	require_NoError(t, os.Remove(filepath.Join(dir, msgDir, msgSchedulingStreamStateFile)))
+
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	require_True(t, fs.numMsgBlocks() >= 2)
+
+	expected := make(map[string]struct{}, N)
+	for _, s := range subjects {
+		expected[s] = struct{}{}
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	require_True(t, fs.scheduling != nil)
+	require_Len(t, len(fs.scheduling.schedules), N)
+
+	for subj, sched := range fs.scheduling.schedules {
+		// Map invariant: the key must hash back to itself. If the underlying bytes were
+		// rewritten after insertion, the lookup fails even though the entry is "there".
+		_, ok := fs.scheduling.schedules[subj]
+		require_True(t, ok)
+
+		_, isOriginal := expected[subj]
+		require_True(t, isOriginal)
+
+		revSubj, ok := fs.scheduling.seqToSubj[sched.seq]
+		require_True(t, ok)
+		require_Equal(t, revSubj, subj)
+	}
+}
+
+func TestFileStoreConvertToEncryptedDoesNotResurrectXoredCache(t *testing.T) {
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: 8192}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	plaintext := bytes.Repeat([]byte("MARKER-PLAINTEXT-PAYLOAD-"), 32)
+	_, _, err = fs.StoreMsg("foo", nil, plaintext, 0)
+	require_NoError(t, err)
+	fs.Stop()
+
+	// Re-open with encryption, which will convert existing blocks.
+	fcfg.Cipher = AES
+	fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.mu.RLock()
+	require_True(t, fs.lmb != nil)
+	mb := fs.lmb
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	require_True(t, mb.bek != nil)
+
+	// Rewrite the on-disk file as plaintext so convertToEncrypted has
+	// fresh plaintext to encrypt.
+	encBuf, err := mb.loadBlock(nil)
+	require_NoError(t, err)
+	rbek, err := genBlockEncryptionKey(fcfg.Cipher, mb.seed, mb.nonce)
+	require_NoError(t, err)
+	rbek.XORKeyStream(encBuf, encBuf)
+	<-dios
+	err = os.WriteFile(mb.mfn, encBuf, defaultFilePerms)
+	dios <- struct{}{}
+	require_NoError(t, err)
+	recycleMsgBlockBuf(encBuf)
+
+	// Stage a sentinel on the elastic pointer; the fix must clear it.
+	sentinelCache := &cache{buf: bytes.Repeat([]byte{0xCA, 0xFE}, 64)}
+	mb.cache = sentinelCache
+	mb.ecache.Set(sentinelCache)
+
+	require_NoError(t, mb.convertToEncrypted())
+
+	mb.cache = nil
+	require_NoError(t, mb.setupWriteCache(nil))
+	require_True(t, mb.cache != nil)
+	if mb.cache == sentinelCache {
+		t.Fatalf("setupWriteCache resurrected sentinel cache via mb.ecache after convertToEncrypted")
+	}
+	// If convertToEncrypted wrote ciphertext at the wrong keystream offset, the
+	// block would decrypt to garbage and rebuildStateFromBufLocked would silently
+	// truncate it to zero bytes — losing the message.
+	require_NotEqual(t, len(mb.cache.buf), 0)
 }

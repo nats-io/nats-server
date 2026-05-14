@@ -121,6 +121,18 @@ func NewSublist(enableCache bool) *Sublist {
 	return &Sublist{root: newLevel()}
 }
 
+// NewSublistForServer will create a default sublist with caching enabled determined
+// by the server options.
+func NewSublistForServer(srv *Server) *Sublist {
+	if srv == nil {
+		return NewSublistNoCache() // Probably just unit tests.
+	}
+	if opts := srv.getOpts(); opts != nil {
+		return NewSublist(!opts.NoSublistCache)
+	}
+	return NewSublistNoCache()
+}
+
 // NewSublistWithCache will create a default sublist with caching enabled.
 func NewSublistWithCache() *Sublist {
 	return NewSublist(true)
@@ -626,9 +638,10 @@ func (s *Sublist) hasInterest(subject string, doLock bool, np, nq *int) bool {
 	if doLock {
 		s.RLock()
 	}
-	var matched bool
+	var matched, ok bool
 	if s.cache != nil {
-		if r, ok := s.cache[subject]; ok {
+		var r *SublistResult
+		if r, ok = s.cache[subject]; ok {
 			if np != nil && nq != nil {
 				*np += len(r.psubs)
 				for _, qsub := range r.qsubs {
@@ -641,9 +654,9 @@ func (s *Sublist) hasInterest(subject string, doLock bool, np, nq *int) bool {
 	if doLock {
 		s.RUnlock()
 	}
-	if matched {
+	if ok {
 		atomic.AddUint64(&s.cacheHits, 1)
-		return true
+		return matched
 	}
 
 	tsa := [32]string{}
