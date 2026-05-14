@@ -2593,6 +2593,52 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 	})
 }
 
+func TestFileStoreConsumerUpdateAcksFlushesRedelivered(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// MaxDeliver: 1 means that on the second delivery the message is dropped from
+		// pending while still being tracked in Redelivered.
+		cfg := &ConsumerConfig{AckPolicy: AckExplicit, MaxDeliver: 1}
+		o, err := fs.ConsumerStore("o22", time.Time{}, cfg)
+		require_NoError(t, err)
+
+		restartConsumer := func() {
+			t.Helper()
+			require_NoError(t, o.Stop())
+			time.Sleep(200 * time.Millisecond) // Wait for all things to settle.
+			o, err = fs.ConsumerStore("o22", time.Time{}, cfg)
+			require_NoError(t, err)
+		}
+
+		ts := time.Now().UnixNano()
+		require_NoError(t, o.UpdateDelivered(1, 1, 1, ts))
+		// Redelivery exceeds MaxDeliver, so sseq 1 is removed from pending but kept
+		// in Redelivered.
+		require_NoError(t, o.UpdateDelivered(2, 1, 2, ts))
+
+		// Persist and recover so we know the Redelivered entry is on disk.
+		restartConsumer()
+		state, err := o.State()
+		require_NoError(t, err)
+		require_Equal(t, len(state.Pending), 0)
+		require_Equal(t, len(state.Redelivered), 1)
+
+		// Acking sseq 1 deletes it from Redelivered, but UpdateAcks bails out with
+		// ErrStoreMsgNotFound since it is no longer pending. The deletion must still
+		// be flushed.
+		require_Error(t, o.UpdateAcks(2, 1), ErrStoreMsgNotFound)
+
+		restartConsumer()
+		defer o.Stop()
+		state, err = o.State()
+		require_NoError(t, err)
+		require_Equal(t, len(state.Redelivered), 0)
+	})
+}
+
 func TestFileStoreConsumerFlusher(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
