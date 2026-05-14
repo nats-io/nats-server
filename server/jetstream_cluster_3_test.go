@@ -8116,12 +8116,16 @@ func TestJetStreamClusterScaleDownWaitsForMonitorRoutineQuit(t *testing.T) {
 	require_NotNil(t, o)
 
 	// Increment the wait group for this test to confirm the right ordering.
-	o.mu.Lock()
+	// The Add must be done under monitorMu, just like shouldStartMonitor does,
+	// so it cannot race a concurrent monitorWg.Wait.
+	o.mu.RLock()
 	inMonitor := o.inMonitor
+	o.mu.RUnlock()
+	require_True(t, inMonitor)
+	o.monitorMu.Lock()
 	wg := &o.monitorWg
 	wg.Add(1)
-	o.mu.Unlock()
-	require_True(t, inMonitor)
+	o.monitorMu.Unlock()
 
 	// The monitor routine should stop.
 	ccfg.Replicas = 1
@@ -8154,12 +8158,16 @@ func TestJetStreamClusterScaleDownWaitsForMonitorRoutineQuit(t *testing.T) {
 	require_NoError(t, err)
 
 	// Increment the wait group for this test to confirm the right ordering.
-	mset.mu.Lock()
+	// The Add must be done under monitorMu, just like startMonitorWg does,
+	// so it cannot race a concurrent monitorWg.Wait.
+	mset.mu.RLock()
 	inMonitor = mset.inMonitor
+	mset.mu.RUnlock()
+	require_True(t, inMonitor)
+	mset.monitorMu.Lock()
 	wg = &mset.monitorWg
 	wg.Add(1)
-	mset.mu.Unlock()
-	require_True(t, inMonitor)
+	mset.monitorMu.Unlock()
 
 	// The monitor routine should stop.
 	scfg.Replicas = 1
@@ -8221,13 +8229,17 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 	require_NotNil(t, o)
 
 	// Increment the wait group for this test to confirm the right ordering.
-	o.mu.Lock()
+	// The Add must be done under monitorMu, just like shouldStartMonitor does,
+	// so it cannot race a concurrent monitorWg.Wait.
+	o.mu.RLock()
 	inMonitor := o.inMonitor
+	rn := o.node
+	o.mu.RUnlock()
+	require_True(t, inMonitor)
+	o.monitorMu.Lock()
 	wg := &o.monitorWg
 	wg.Add(1)
-	rn := o.node
-	o.mu.Unlock()
-	require_True(t, inMonitor)
+	o.monitorMu.Unlock()
 
 	// Simulate a consumer Raft group remapping that has been collapsed down into just a single update.
 	// Instead of one update to R1 and then to R3, it's just one update straight to the new R3 group.
@@ -8262,6 +8274,86 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// Must be run with -race.
+func TestJetStreamClusterConsumerMonitorWaitGroupRace(t *testing.T) {
+	o := &consumer{}
+
+	var ready sync.WaitGroup
+	ready.Add(1)
+	done := make(chan struct{})
+
+	var fin sync.WaitGroup
+	fin.Add(2)
+
+	// Repeatedly start and stop the monitor, exercising monitorWg.Add / Done.
+	go func() {
+		defer fin.Done()
+		ready.Wait()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if o.shouldStartMonitor() {
+				o.clearMonitorRunning()
+			}
+		}
+	}()
+
+	// Repeatedly wait on the monitor, exercising monitorWg.Wait.
+	go func() {
+		defer fin.Done()
+		ready.Done()
+		for range 500_000 {
+			o.stopMonitoring()
+		}
+		close(done)
+	}()
+
+	fin.Wait()
+}
+
+// Must be run with -race.
+func TestJetStreamClusterStreamMonitorWaitGroupRace(t *testing.T) {
+	mset := &stream{}
+
+	var ready sync.WaitGroup
+	ready.Add(1)
+	done := make(chan struct{})
+
+	var fin sync.WaitGroup
+	fin.Add(2)
+
+	// Repeatedly register and unregister a monitor goroutine, exercising
+	// monitorWg.Add (via startMonitorWg) / Done.
+	go func() {
+		defer fin.Done()
+		ready.Wait()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			mset.startMonitorWg()
+			mset.monitorWg.Done()
+		}
+	}()
+
+	// Repeatedly wait on the monitor, exercising monitorWg.Wait.
+	go func() {
+		defer fin.Done()
+		ready.Done()
+		for range 500_000 {
+			mset.stopMonitoring()
+		}
+		close(done)
+	}()
+
+	fin.Wait()
 }
 
 func TestJetStreamClusterAccountStoreLimits(t *testing.T) {
