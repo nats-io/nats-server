@@ -12586,4 +12586,8 @@ func TestFileStoreConvertToEncryptedDoesNotResurrectXoredCache(t *testing.T) {
 	if mb.cache == sentinelCache {
 		t.Fatalf("setupWriteCache resurrected sentinel cache via mb.ecache after convertToEncrypted")
 	}
+	// If convertToEncrypted wrote ciphertext at the wrong keystream offset, the
+	// block would decrypt to garbage and rebuildStateFromBufLocked would silently
+	// truncate it to zero bytes — losing the message.
+	require_NotEqual(t, len(mb.cache.buf), 0)
 }
