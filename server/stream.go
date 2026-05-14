@@ -571,6 +571,7 @@ type stream struct {
 	mirrorLastBySub *subscription // Mirrors only.
 
 	monitorWg sync.WaitGroup // Wait group for the monitor routine.
+	monitorMu sync.Mutex     // Serializes monitorWg's Add against Wait to prevent a WaitGroup reuse panic.
 
 	// If standalone/single-server, the offline reason needs to be stored directly in the stream.
 	// Otherwise, if clustered it will be part of the stream assignment.
@@ -8216,10 +8217,7 @@ func (mset *stream) resetAndWaitOnConsumers() {
 			node.StepDown()
 			node.Stop()
 		}
-		if o.isMonitorRunning() {
-			o.signalMonitorQuit()
-			o.monitorWg.Wait()
-		}
+		o.stopMonitoring()
 	}
 }
 
@@ -8323,8 +8321,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			// but should we log?
 			o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
 			if !isShuttingDown {
-				o.signalMonitorQuit()
-				o.monitorWg.Wait()
+				o.stopMonitoring()
 			}
 		}
 	}
@@ -9228,6 +9225,28 @@ func (mset *stream) checkConsumerReplication() {
 		}
 		o.mu.RUnlock()
 	}
+}
+
+// startMonitorWg registers a pending monitor goroutine on monitorWg. It is
+// held under monitorMu so that the monitorWg.Add can never race a concurrent
+// monitorWg.Wait in stopMonitoring. The corresponding monitorWg.Done is done by
+// the monitor goroutine directly and must not be wrapped with monitorMu.
+func (mset *stream) startMonitorWg() {
+	mset.monitorMu.Lock()
+	mset.monitorWg.Add(1)
+	mset.monitorMu.Unlock()
+}
+
+// stopMonitoring signals any running monitor goroutine to quit and waits for
+// it to fully exit.
+func (mset *stream) stopMonitoring() {
+	// monitorMu is held across both the quit signal and the wait so that a
+	// concurrent startMonitorWg cannot slip a new monitor generation in
+	// between.
+	mset.monitorMu.Lock()
+	defer mset.monitorMu.Unlock()
+	mset.signalMonitorQuit()
+	mset.monitorWg.Wait()
 }
 
 // Will check if we are running in the monitor already and if not set the appropriate flag.
