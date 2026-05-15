@@ -3788,6 +3788,194 @@ func TestJetStreamClusterAccountReservations(t *testing.T) {
 	test(t, 1)
 }
 
+func TestJetStreamClusterAccountReservationsCreateUpdateConsistency(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "C1", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// The account has an un-tiered limit of max_file: 3GB. In an un-tiered setup the account
+	// limit is "flat", so a stream is counted as Replicas*MaxBytes (see tieredReservation and
+	// tieredStreamAndReservationCount). An R3 stream therefore reserves 3*MaxBytes, and the
+	// create and update paths must agree on that accounting. The effective limit must not
+	// differ depending on whether the stream is being created or already exists.
+	const GB = 1024 * 1024 * 1024
+
+	// R3 * 3GB = 9GB exceeds the 3GB account limit, so create must be rejected,
+	// consistent with how the stream is accounted for once it exists.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "S1",
+		Subjects: []string{"s1"},
+		Replicas: 3,
+		MaxBytes: 3 * GB,
+	})
+	require_Error(t, err, NewJSStorageResourcesExceededError())
+
+	// R1 * 3GB = 3GB fits the account limit exactly.
+	cfg := &nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"s"},
+		Replicas: 1,
+		MaxBytes: 3 * GB,
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// A no-op update of the same config must still be accepted.
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_NoError(t, js.DeleteStream(cfg.Name))
+
+	// R3 * 1GB = 3GB fits the account limit exactly.
+	cfg = &nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"s"},
+		Replicas: 3,
+		MaxBytes: 1 * GB,
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// A no-op update of the same config must still be accepted.
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Growing the stream past the account limit must be rejected on update,
+	// just as the equivalent create would be.
+	cfg.MaxBytes++
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStorageResourcesExceededError())
+}
+
+func TestJetStreamClusterConfigUpdateCheckReplicaScalingReservation(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "C1", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// The account has an un-tiered limit of max_file: 3GB.
+	const GB = 1024 * 1024 * 1024
+
+	// R3 * 1GB = 3GB fills the account limit exactly.
+	cfg := &nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"s"},
+		Replicas: 3,
+		MaxBytes: 1 * GB,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Scale down to R1 while raising MaxBytes to 2GB. The new footprint
+	// R1 * 2GB = 2GB fits the 3GB account limit, just as creating R1 * 2GB
+	// from scratch would.
+	cfg.Replicas = 1
+	cfg.MaxBytes = 2 * GB
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	require_NoError(t, js.DeleteStream(cfg.Name))
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterConfigUpdateCheckOverLimitStreamCanShrink(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "C1", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	const GB = 1024 * 1024 * 1024
+
+	// R3 * 1GB = 3GB fills the un-tiered 3GB account limit exactly.
+	cfg := &nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"s"},
+		Replicas: 3,
+		MaxBytes: 1 * GB,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Make the stream "pre-existing and over the limit" by lowering the
+	// account's un-tiered file limit below the stream's 3GB footprint.
+	for _, s := range c.servers {
+		acc, err := s.LookupAccount("$U")
+		require_NoError(t, err)
+		require_NoError(t, acc.UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+			_EMPTY_: {MaxMemory: 128 * 1024 * 1024, MaxStore: 1 * GB, MaxStreams: -1, MaxConsumers: -1},
+		}))
+	}
+
+	// Growing it further must still be rejected: the account is already over.
+	cfg.MaxBytes = 2 * GB
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStorageResourcesExceededError())
+
+	// Shrinking it must be accepted: the new footprint R3 * 0.25GB = 0.75GB is
+	// within the lowered 1GB limit. The pre-fix accounting added back the old
+	// 3GB footprint and wrongly rejected this, leaving the account unfixable.
+	cfg.MaxBytes = GB / 4
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterAccountReservationsRecoveryOfOverLimitStream(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "C1", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	const GB = 1024 * 1024 * 1024
+
+	// R3 * 1GB = 3GB fills the un-tiered 3GB account limit exactly.
+	cfg := &nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"s"},
+		Replicas: 3,
+		MaxBytes: 1 * GB,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader("$U", "S")
+	nc.Close()
+
+	// Pick a non-leader, wipe its local state, and restart it.
+	rs := c.randomNonStreamLeader("$U", "S")
+	require_NotNil(t, rs)
+
+	// Persist the lowered limit into the server's config file so the restarted
+	// peer comes up with max_file: 1GB instead of the original 3GB.
+	opts := rs.getOpts()
+	cfile := opts.ConfigFile
+	conf, err := os.ReadFile(cfile)
+	require_NoError(t, err)
+	newConf := strings.ReplaceAll(string(conf), "max_file:  3GB", "max_file:  1GB")
+	require_True(t, newConf != string(conf))
+	require_NoError(t, os.WriteFile(cfile, []byte(newConf), 0644))
+
+	rs.Shutdown()
+	removeDir(t, opts.StoreDir)
+
+	// Prior to the recovery-path fix, addStreamWithAssignment was called with
+	// recovering=false here, so the post-fix account check rejected this
+	// already-over-the-limit stream and the wiped peer never re-materialized it.
+	rs = c.restartServer(rs)
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader("$U", "S")
+	c.waitOnStreamCurrent(rs, "$U", "S")
+
+	// Check that the stream actually exists.
+	acc, err := rs.LookupAccount("$U")
+	require_NoError(t, err)
+	_, err = acc.lookupStream("S")
+	require_NoError(t, err)
+}
+
 func TestJetStreamClusterConcurrentAccountLimits(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "cluster", 3)
 	defer c.shutdown()
