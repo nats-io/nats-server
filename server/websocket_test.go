@@ -2271,6 +2271,34 @@ func TestWSProxyProtocolNonProxiedConnection(t *testing.T) {
 	wsc.Close()
 }
 
+func TestWSProxyProtocolPreservesHandshakeTimeout(t *testing.T) {
+	o := testWSOptions()
+	o.Websocket.ProxyProtocol = true
+	o.Websocket.HandshakeTimeout = 10 * time.Millisecond
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
+	raw, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating ws connection: %v", err)
+	}
+	defer raw.Close()
+
+	preTLS := buildProxyV2Header(t, "203.0.113.60", "127.0.0.1", 43210, uint16(o.Websocket.Port), proxyProtoFamilyInet)
+	if _, err := raw.Write(preTLS); err != nil {
+		t.Fatalf("Error writing PROXY protocol header: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
+	tlsConn.SetDeadline(time.Now().Add(time.Second))
+	if err := tlsConn.Handshake(); err == nil {
+		t.Fatal("Expected TLS handshake to fail after websocket handshake timeout")
+	}
+}
+
 func testWSReadFrame(t testing.TB, br *bufio.Reader) []byte {
 	t.Helper()
 	fh := [2]byte{}

@@ -1384,15 +1384,37 @@ func (l *websocketProxyProtoListener) Accept() (net.Conn, error) {
 
 type websocketProxyProtoConn struct {
 	net.Conn
-	srv      *Server
-	parsed   bool
-	parseErr error
+	srv          *Server
+	parsed       bool
+	parseErr     error
+	deadlineMu   sync.Mutex
+	readDeadline time.Time
+}
+
+func (c *websocketProxyProtoConn) SetDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	c.readDeadline = t
+	c.deadlineMu.Unlock()
+	return c.Conn.SetDeadline(t)
+}
+
+func (c *websocketProxyProtoConn) SetReadDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	c.readDeadline = t
+	c.deadlineMu.Unlock()
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *websocketProxyProtoConn) currentReadDeadline() time.Time {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	return c.readDeadline
 }
 
 func (c *websocketProxyProtoConn) Read(b []byte) (int, error) {
 	if !c.parsed {
 		c.parsed = true
-		wrapped, err := readWebsocketProxyProtoHeader(c.Conn)
+		wrapped, err := readWebsocketProxyProtoHeader(c)
 		if err != nil {
 			c.parseErr = err
 			c.srv.Warnf("Error reading PROXY protocol header from %s: %v", c.Conn.RemoteAddr(), err)
@@ -1406,31 +1428,38 @@ func (c *websocketProxyProtoConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
-func readWebsocketProxyProtoHeader(conn net.Conn) (net.Conn, error) {
-	pre := make([]byte, 6)
-	if err := conn.SetReadDeadline(time.Now().Add(proxyProtoReadTimeout)); err != nil {
+func readWebsocketProxyProtoHeader(conn *websocketProxyProtoConn) (net.Conn, error) {
+	baseConn := conn.Conn
+	orgReadDeadline := conn.currentReadDeadline()
+	proxyReadDeadline := time.Now().Add(proxyProtoReadTimeout)
+	if !orgReadDeadline.IsZero() && orgReadDeadline.Before(proxyReadDeadline) {
+		proxyReadDeadline = orgReadDeadline
+	}
+	if err := conn.SetReadDeadline(proxyReadDeadline); err != nil {
 		return nil, err
 	}
-	n, err := io.ReadFull(conn, pre)
-	conn.SetReadDeadline(time.Time{})
+	defer conn.SetReadDeadline(orgReadDeadline)
+
+	pre := make([]byte, 6)
+	n, err := io.ReadFull(baseConn, pre)
 	pre = pre[:n]
 	if err != nil && n < 6 {
 		return nil, fmt.Errorf("failed to read PROXY protocol header: %w", err)
 	}
 
-	pconn := &tlsMixConn{Conn: conn, pre: bytes.NewBuffer(pre)}
-	addr, proxyPre, err := readProxyProtoHeader(pconn)
+	pconn := &tlsMixConn{Conn: baseConn, pre: bytes.NewBuffer(pre)}
+	addr, proxyPre, err := readProxyProtoHeaderNoDeadline(pconn)
 	if err == errProxyProtoUnrecognized {
 		if len(pre) == 0 {
-			return conn, nil
+			return baseConn, nil
 		}
-		return &tlsMixConn{Conn: conn, pre: bytes.NewBuffer(pre)}, nil
+		return &tlsMixConn{Conn: baseConn, pre: bytes.NewBuffer(pre)}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	var wrapped net.Conn = conn
+	var wrapped net.Conn = baseConn
 	if addr != nil {
 		wrapped = &proxyConn{Conn: wrapped, remoteAddr: addr}
 	}
