@@ -12848,8 +12848,18 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 		return ErrNoAckPolicy
 	}
 
+	var kick bool
+	defer func() {
+		if kick {
+			o.kickFlusher()
+		}
+	}()
+
 	// We do this regardless.
-	delete(o.state.Redelivered, sseq)
+	if _, ok := o.state.Redelivered[sseq]; ok {
+		delete(o.state.Redelivered, sseq)
+		kick = true
+	}
 
 	// On restarts the old leader may get a replay from the raft logs that are old.
 	if dseq <= o.state.AckFloor.Consumer {
@@ -12859,6 +12869,9 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
 		return ErrStoreMsgNotFound
 	}
+
+	// Done with the consistency checks, we'll always kick for below updates.
+	kick = true
 
 	// Check for AckAll here (or AckFlowControl which functions like AckAll).
 	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
@@ -12878,7 +12891,6 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 				delete(o.state.Redelivered, seq)
 			}
 		}
-		o.kickFlusher()
 		return nil
 	}
 
@@ -12910,8 +12922,6 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 			}
 		}
 	}
-
-	o.kickFlusher()
 	return nil
 }
 
