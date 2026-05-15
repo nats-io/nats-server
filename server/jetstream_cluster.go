@@ -5307,7 +5307,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			}
 		} else if err == NewJSStreamNotFoundError() {
 			// Add in the stream here.
-			mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa, false, false)
+			mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa, false, true)
 		}
 		if mset != nil {
 			mset.setCreatedTime(created)
