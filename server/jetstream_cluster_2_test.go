@@ -3923,6 +3923,59 @@ func TestJetStreamClusterConfigUpdateCheckOverLimitStreamCanShrink(t *testing.T)
 	require_NoError(t, err)
 }
 
+func TestJetStreamClusterAccountReservationsRecoveryOfOverLimitStream(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "C1", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	const GB = 1024 * 1024 * 1024
+
+	// R3 * 1GB = 3GB fills the un-tiered 3GB account limit exactly.
+	cfg := &nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"s"},
+		Replicas: 3,
+		MaxBytes: 1 * GB,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader("$U", "S")
+	nc.Close()
+
+	// Pick a non-leader, wipe its local state, and restart it.
+	rs := c.randomNonStreamLeader("$U", "S")
+	require_NotNil(t, rs)
+
+	// Persist the lowered limit into the server's config file so the restarted
+	// peer comes up with max_file: 1GB instead of the original 3GB.
+	opts := rs.getOpts()
+	cfile := opts.ConfigFile
+	conf, err := os.ReadFile(cfile)
+	require_NoError(t, err)
+	newConf := strings.ReplaceAll(string(conf), "max_file:  3GB", "max_file:  1GB")
+	require_True(t, newConf != string(conf))
+	require_NoError(t, os.WriteFile(cfile, []byte(newConf), 0644))
+
+	rs.Shutdown()
+	removeDir(t, opts.StoreDir)
+
+	// Prior to the recovery-path fix, addStreamWithAssignment was called with
+	// recovering=false here, so the post-fix account check rejected this
+	// already-over-the-limit stream and the wiped peer never re-materialized it.
+	rs = c.restartServer(rs)
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader("$U", "S")
+	c.waitOnStreamCurrent(rs, "$U", "S")
+
+	// Check that the stream actually exists.
+	acc, err := rs.LookupAccount("$U")
+	require_NoError(t, err)
+	_, err = acc.lookupStream("S")
+	require_NoError(t, err)
+}
+
 func TestJetStreamClusterConcurrentAccountLimits(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "cluster", 3)
 	defer c.shutdown()
