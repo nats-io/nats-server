@@ -10076,9 +10076,7 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
 			o.mu.Lock()
-			if o.isLeader() {
-				o.streamNumPending()
-			}
+			o.streamNumPending()
 			o.mu.Unlock()
 		}
 		mset.mu.Unlock()
