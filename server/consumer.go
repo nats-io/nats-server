@@ -1838,6 +1838,8 @@ func (o *consumer) setLeader(isLeader bool) error {
 		o.pending = nil
 		o.rsm = nil
 		o.resetPendingDeliveries()
+		// Reset num pending, these are only authoritative on the leader.
+		o.npc, o.npf = 0, 0
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSubOld)
 		o.unsubscribe(o.ackSub)
