@@ -1699,6 +1699,8 @@ func (o *consumer) setLeader(isLeader bool) error {
 		o.rdqi.Empty()
 		o.pending = nil
 		o.resetPendingDeliveries()
+		// Reset num pending, these are only authoritative on the leader.
+		o.npc, o.npf = 0, 0
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
