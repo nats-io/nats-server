@@ -230,7 +230,7 @@ func (store *DirJWTStore) Pack(maxJWTs int) (string, error) {
 	}
 	store.Lock()
 	err := filepath.Walk(store.directory, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
+		if info != nil && !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
 			if count == maxJWTs { // won't match negative
 				return nil
 			}
