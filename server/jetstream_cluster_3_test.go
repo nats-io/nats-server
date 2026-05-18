@@ -10516,3 +10516,120 @@ func TestJetStreamClusterMirrorSkipMsgsPropagatesProposeFailure(t *testing.T) {
 	mset.mu.Unlock()
 	require_Error(t, err, errNotLeader)
 }
+
+func TestJetStreamClusterDegradedRaftRelaxRecovery(t *testing.T) {
+	// relaxed is process-global with a 60s TTL, so a prior test run
+	// can leave it set and silently relax voting in this test's "no leader"
+	// window. Reset it explicitly here, and again on exit.
+	resetRelax := func() {
+		relaxedMu.Lock()
+		defer relaxedMu.Unlock()
+		relaxed = false
+		if relaxedExpire != nil {
+			relaxedExpire.Stop()
+		}
+	}
+	resetRelax()
+	defer resetRelax()
+
+	c := createJetStreamClusterExplicit(t, "R6S", 6)
+	defer c.shutdown()
+
+	alive := []*Server{c.servers[0], c.servers[1], c.servers[2]}
+	deadNames := make([]string, 0, 3)
+	for _, s := range c.servers[3:6] {
+		deadNames = append(deadNames, s.Name())
+		s.Shutdown()
+		s.WaitForShutdown()
+	}
+
+	expectNoLeaderFor := func(d time.Duration) {
+		t.Helper()
+		deadline := time.Now().Add(d)
+		for time.Now().Before(deadline) {
+			if l := c.leader(); l != nil {
+				t.Fatalf("Did not expect a meta leader, got %s", l.Name())
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	// Wait for the current leader to step down due to lost quorum, then confirm
+	// no new leader can be elected.
+	c.expectNoLeader()
+	expectNoLeaderFor(1500 * time.Millisecond)
+
+	// Add a seventh server with an empty raft log. We cannot use addInNewServer
+	// here because it calls checkClusterFormed against every entry in c.servers,
+	// which would block on the three shut-down servers.
+	storeDir := t.TempDir()
+	seedRoute := fmt.Sprintf("nats-route://127.0.0.1:%d", c.opts[0].Cluster.Port)
+	conf := fmt.Sprintf(jsClusterTempl, "S-7", storeDir, c.name, -1, seedRoute)
+	s7, o7 := RunServerWithConfig(createConfFile(t, []byte(conf)))
+	c.servers = append(c.servers, s7)
+	c.opts = append(c.opts, o7)
+	checkClusterFormed(t, append(alive, s7)...)
+
+	// Even with a fourth live server, the seventh node's empty log means its
+	// vote is treated as empty and the alive servers (csz=6, quorum=4) still
+	// cannot reach quorum: 3 full votes + 1 empty < 4 full votes required.
+	expectNoLeaderFor(1500 * time.Millisecond)
+
+	// Issue the relax API targeting the seventh server. The handler is broadcast-style,
+	// so only the addressed server responds.
+	nc, err := nats.Connect(alive[0].ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	relaxReq := &JSApiDegradedRaftRelaxRequest{
+		Servers: []JSApiDegradedRaftRelaxServer{{Server: s7.Name()}},
+	}
+	jsreq, err := json.Marshal(relaxReq)
+	require_NoError(t, err)
+
+	// The request races with sub propagation between the alive servers and
+	// the new node, so allow a few attempts.
+	var relaxResp JSApiDegradedRaftRelaxResponse
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		rmsg, err := nc.Request(JSApiServerDegradedRaftRelax, jsreq, time.Second)
+		if err != nil {
+			return err
+		}
+		relaxResp = JSApiDegradedRaftRelaxResponse{}
+		if err := json.Unmarshal(rmsg.Data, &relaxResp); err != nil {
+			return err
+		}
+		if relaxResp.Error != nil {
+			return fmt.Errorf("unexpected relax error: %+v", relaxResp.Error)
+		}
+		if relaxResp.Server != s7.Name() {
+			return fmt.Errorf("expected response from %s, got %s", s7.Name(), relaxResp.Server)
+		}
+		return nil
+	})
+
+	// With the new node now casting full votes, the surviving peers can elect
+	// a meta leader — and it must be one of the original alive servers, never s7.
+	c.waitOnLeader()
+	leader := c.leader()
+	require_NotNil(t, leader)
+	require_True(t, slices.Contains(alive, leader))
+
+	// Peer-remove the three dead servers, one by one. Removing non-leader peers
+	// must not cause the meta leader to step down.
+	for _, deadName := range deadNames {
+		req := &JSApiMetaServerRemoveRequest{Server: deadName}
+		payload, err := json.Marshal(req)
+		require_NoError(t, err)
+		rmsg, err := nc.Request(JSApiRemoveServer, payload, 2*time.Second)
+		require_NoError(t, err)
+
+		var resp JSApiMetaServerRemoveResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_True(t, resp.Success)
+
+		require_False(t, slices.Contains(leader.JetStreamClusterPeers(), deadName))
+		require_Equal(t, c.leader(), leader)
+	}
+}

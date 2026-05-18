@@ -212,6 +212,10 @@ const (
 	JSApiServerStreamCancelMove  = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.*.*"
 	JSApiServerStreamCancelMoveT = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.%s.%s"
 
+	// JSApiServerDegradedRaftRelax allows Raft groups to temporarily relax consistency checks
+	// to value availability over correctness.
+	JSApiServerDegradedRaftRelax = "$JS.SERVER.DEGRADED.RAFT.RELAX"
+
 	// The prefix for system level account API.
 	jsAPIAccountPre = "$JS.API.ACCOUNT."
 
@@ -783,6 +787,24 @@ type JSApiConsumerResetResponse struct {
 }
 
 const JSApiConsumerResetResponseType = "io.nats.jetstream.api.v1.consumer_reset_response"
+
+type JSApiDegradedRaftRelaxRequest struct {
+	Servers []JSApiDegradedRaftRelaxServer `json:"servers,omitempty"`
+}
+
+type JSApiDegradedRaftRelaxServer struct {
+	// Server name.
+	Server string `json:"peer,omitempty"`
+	// Peer ID of the server.
+	Peer string `json:"peer_id,omitempty"`
+}
+
+type JSApiDegradedRaftRelaxResponse struct {
+	ApiResponse
+	JSApiDegradedRaftRelaxServer
+}
+
+const JSApiDegradedRaftRelaxResponseType = "io.nats.jetstream.api.v1.degraded_raft_relax"
 
 // Structure that holds state for a JetStream API request that is processed
 // in a separate long-lived go routine. This is to avoid blocking connections.
@@ -2841,6 +2863,56 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	// We will always have peers and therefore never do a callout, therefore it is safe to call inline
 	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers, false)
+}
+
+func (s *Server) jsServerDegradedRaftRelaxRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	if acc != s.SystemAccount() {
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	var resp = JSApiDegradedRaftRelaxResponse{
+		ApiResponse: ApiResponse{Type: JSApiDegradedRaftRelaxResponseType},
+	}
+	var req JSApiDegradedRaftRelaxRequest
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
+		resp.Error = NewJSInvalidJSONError(err)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	name := s.Name()
+	js.mu.RLock()
+	var ourID string
+	if cc.meta != nil {
+		ourID = cc.meta.ID()
+	}
+	js.mu.RUnlock()
+	resp.Server = name
+	resp.Peer = ourID
+
+	// Check if this server is in the requested serves, only relax and respond then.
+	for _, srv := range req.Servers {
+		if srv.Server == name || (ourID != _EMPTY_ && srv.Peer == ourID) {
+			s.setRelaxedEmptyVote()
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+	}
 }
 
 // Request to have an account purged

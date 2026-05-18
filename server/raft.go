@@ -303,6 +303,37 @@ var (
 	peerRemoveTimeout    = peerRemoveTimeoutDefault
 )
 
+// Empty votes can be relaxed for relaxedTTL amount of time.
+const relaxedTTL = time.Minute
+
+var (
+	relaxedMu     sync.Mutex
+	relaxed       bool
+	relaxedExpire *time.Timer
+)
+
+func (s *Server) setRelaxedEmptyVote() {
+	relaxedMu.Lock()
+	if relaxedExpire != nil {
+		relaxedExpire.Stop()
+	}
+	relaxedExpire = time.AfterFunc(relaxedTTL, func() {
+		relaxedMu.Lock()
+		relaxed = false
+		relaxedMu.Unlock()
+		s.Warnf("Raft relaxed empty-vote mode expired")
+	})
+	relaxed = true
+	relaxedMu.Unlock()
+	s.Warnf("Raft relaxed empty-vote mode set for %s", relaxedTTL)
+}
+
+func isRelaxedEmptyVote() bool {
+	relaxedMu.Lock()
+	defer relaxedMu.Unlock()
+	return relaxed
+}
+
 type RaftConfig struct {
 	Name     string
 	Store    string
@@ -5070,8 +5101,9 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
 
-	// If we have an empty log, but are initializing.
-	if voteOk && vresp.empty && n.initializing {
+	// If we have an empty log, but are initializing or have been temporarily
+	// relaxed by a degraded raft relax request.
+	if voteOk && vresp.empty && (n.initializing || isRelaxedEmptyVote()) {
 		// Reset notion of having an empty log if we're voting during initialization/scale up.
 		// Ensures they only need quorum, and not need to hear from all servers.
 		vresp.empty = false
