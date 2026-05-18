@@ -5738,7 +5738,6 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 		lhdr, lmsg int
 		ttl        int64
 	)
-	// We don't use a copy as long as that's possible. When unlocking mb or erasing, we'll copy the subject.
 	sm, err := mb.cacheLookupNoCopy(seq, &smv)
 	if err != nil {
 		finishedWithCache()
@@ -5749,7 +5748,9 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 		}
 		return false, err
 	} else if sm != nil {
-		subj = sm.subj
+		// subj aliases mb.cache.buf; copy now because the cache may be erased or
+		// recycled after we drop mb.mu. The rest are scalars stashed for later use.
+		subj = copyString(sm.subj)
 		ts = sm.ts
 		lhdr = len(sm.hdr)
 		lmsg = len(sm.msg)
@@ -5761,8 +5762,6 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	// when the last block is empty.
 	// If not via limits and not empty (empty writes tombstone below if last) write tombstone.
 	if !viaLimits && !isEmpty && sm != nil {
-		// Need to copy the subject since we unlock and re-acquire, and the cache could change.
-		subj = copyString(subj)
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
@@ -5795,9 +5794,6 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 			mb.mu.Unlock()
 			return false, err
 		}
-		// Need to copy the subject, as eraseMsg will overwrite the cache and we won't
-		// be able to access sm.subj anymore later on.
-		subj = copyString(subj)
 		if err := mb.eraseMsg(seq, int(ri), int(msz), isLastBlock); err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
