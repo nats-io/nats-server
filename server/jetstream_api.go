@@ -4549,6 +4549,8 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 
 	var hdr []byte
 	chunk := make([]byte, chunkSize)
+	ackTimer := time.NewTimer(snapshotAckTimeout)
+	defer ackTimer.Stop()
 	for index := 1; ; index++ {
 		select {
 		case <-slots:
@@ -4561,7 +4563,7 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 			// The snapshotting goroutine has failed for some reason.
 			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %s\r\n\r\n", err))
 			goto done
-		case <-time.After(snapshotAckTimeout):
+		case <-ackTimer.C:
 			// It's taking a very long time for the receiver to send us acks,
 			// they have probably stalled or there is high loss on the link.
 			hdr = []byte("NATS/1.0 408 No Flow Response\r\n\r\n")
@@ -4580,6 +4582,13 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 			hdr = []byte("NATS/1.0 204\r\n\r\n")
 		}
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, ackReply, nil, chunk, nil, 0))
+		if !ackTimer.Stop() {
+			select {
+			case <-ackTimer.C:
+			default:
+			}
+		}
+		ackTimer.Reset(snapshotAckTimeout)
 	}
 
 done:
