@@ -56,6 +56,8 @@ var (
 type route struct {
 	remoteID     string
 	remoteName   string
+	remoteTags   []string
+	tagsMatch    atomic.Bool
 	didSolicit   bool
 	retry        bool
 	lnoc         bool
@@ -146,6 +148,27 @@ var (
 	routeConnectMaxDelay = DEFAULT_ROUTE_CONNECT_MAX
 	routeMaxPingInterval = defaultRouteMaxPingInterval
 )
+
+// tagsContainAll reports whether every tag in required is present in have.
+// Empty required returns false: the caller treats this as "matching disabled",
+// so no peer should be classified as locality-matched.
+// Both slices must be normalized (lower-cased, trimmed) by callers; the
+// jwt.TagList.Add path used by config parsing handles that.
+func tagsContainAll(have, required []string) bool {
+	if len(required) == 0 {
+		return false
+	}
+outer:
+	for _, r := range required {
+		for _, h := range have {
+			if h == r {
+				continue outer
+			}
+		}
+		return false
+	}
+	return true
+}
 
 // removeReplySub is called when we trip the max on remoteReply subs.
 func (c *client) removeReplySub(sub *subscription) {
@@ -713,6 +736,13 @@ func (c *client) processRouteInfo(info *Info) {
 		} else {
 			// Update only if we detect a difference
 			updateRoutePerms = !reflect.DeepEqual(c.opts.Import, info.Import) || !reflect.DeepEqual(c.opts.Export, info.Export)
+			// Refresh tags if the remote sent an updated set. tagsMatch
+			// is recomputed against this server's current matching_tags
+			// filter so locality routing converges without a reconnect.
+			if !reflect.DeepEqual(c.route.remoteTags, info.Tags) {
+				c.route.remoteTags = info.Tags
+				c.route.tagsMatch.Store(tagsContainAll(info.Tags, opts.Cluster.MatchingTags))
+			}
 		}
 		c.mu.Unlock()
 
@@ -811,6 +841,8 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.tlsRequired = info.TLSRequired
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
+	c.route.remoteTags = info.Tags
+	c.route.tagsMatch.Store(tagsContainAll(info.Tags, opts.Cluster.MatchingTags))
 	c.route.lnoc = info.LNOC
 	c.route.lnocu = info.LNOCU
 	c.route.jetstream = info.JetStream
@@ -2745,6 +2777,7 @@ func (s *Server) startRouteAcceptLoop() {
 		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
 		LNOCU:        true,
+		Tags:         opts.Tags,
 	}
 	// For tests that want to simulate old servers, do not set the compression
 	// on the INFO protocol if configured with CompressionNotSupported.

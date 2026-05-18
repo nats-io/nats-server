@@ -87,6 +87,7 @@ type ClusterOpts struct {
 	MaxPingsOut       int                `json:"-"`
 	WriteDeadline     time.Duration      `json:"-"`
 	WriteTimeout      WriteTimeoutPolicy `json:"-"`
+	MatchingTags      jwt.TagList        `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -2138,6 +2139,34 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			opts.Cluster.WriteDeadline = parseDuration("write_deadline", tk, mv, errors, warnings)
 		case "write_timeout":
 			opts.Cluster.WriteTimeout = parseWriteDeadlinePolicy(tk, mv.(string), errors)
+		case "matching_tags":
+			var err error
+			switch v := mv.(type) {
+			case string:
+				opts.Cluster.MatchingTags.Add(v)
+			case []string:
+				opts.Cluster.MatchingTags.Add(v...)
+			case []any:
+				for _, t := range v {
+					if token, ok := t.(token); ok {
+						if ts, ok := token.Value().(string); ok {
+							opts.Cluster.MatchingTags.Add(ts)
+							continue
+						} else {
+							err = &configErr{tk, fmt.Sprintf("error parsing matching_tags: unsupported type %T where string is expected", token)}
+						}
+					} else {
+						err = &configErr{tk, fmt.Sprintf("error parsing matching_tags: unsupported type %T", t)}
+					}
+					break
+				}
+			default:
+				err = &configErr{tk, fmt.Sprintf("error parsing matching_tags: unsupported type %T", v)}
+			}
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

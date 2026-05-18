@@ -362,6 +362,27 @@ type tagsOption struct {
 }
 
 func (u *tagsOption) Apply(server *Server) {
+	// Refresh routeInfo.Tags and broadcast async INFO so peers recompute
+	// their tagsMatch view of us. Our own routes' tagsMatch is driven by
+	// Cluster.MatchingTags, not server_tags, so we don't recompute it here.
+	server.mu.Lock()
+	// Slice-header alias is safe: reload installs a fresh *Options with a fresh
+	// Tags backing array, so this header is replaced (never mutated in place).
+	server.routeInfo.Tags = server.getOpts().Tags
+	infoJSON := generateInfoJSON(&server.routeInfo)
+	var routes []*client
+	server.forEachRoute(func(r *client) {
+		routes = append(routes, r)
+	})
+	server.mu.Unlock()
+
+	for _, r := range routes {
+		r.mu.Lock()
+		if r.opts.Protocol >= RouteProtoInfo {
+			r.enqueueProto(infoJSON)
+		}
+		r.mu.Unlock()
+	}
 	server.Noticef("Reloaded: tags")
 }
 
@@ -405,12 +426,13 @@ func (u *nkeysOption) Apply(server *Server) {
 // clusterOption implements the option interface for the `cluster` setting.
 type clusterOption struct {
 	authOption
-	newValue        ClusterOpts
-	permsChanged    bool
-	accsAdded       []string
-	accsRemoved     []string
-	poolSizeChanged bool
-	compressChanged bool
+	newValue            ClusterOpts
+	permsChanged        bool
+	accsAdded           []string
+	accsRemoved         []string
+	poolSizeChanged     bool
+	compressChanged     bool
+	matchingTagsChanged bool
 }
 
 // Apply the cluster change.
@@ -456,6 +478,17 @@ func (c *clusterOption) Apply(s *Server) {
 				// Simply change the compression writer
 				r.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
 				r.route.compression = newMode
+			}
+			r.mu.Unlock()
+		})
+	}
+	if c.matchingTagsChanged {
+		mt := c.newValue.MatchingTags
+		s.matchTagsEnabled.Store(len(mt) > 0)
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			if r.route != nil {
+				r.route.tagsMatch.Store(tagsContainAll(r.route.remoteTags, mt))
 			}
 			r.mu.Unlock()
 		})
@@ -1690,9 +1723,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, err
 			}
 			co := &clusterOption{
-				newValue:        newClusterOpts,
-				permsChanged:    !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
-				compressChanged: !oldClusterOpts.Compression.equals(&newClusterOpts.Compression),
+				newValue:            newClusterOpts,
+				permsChanged:        !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
+				compressChanged:     !oldClusterOpts.Compression.equals(&newClusterOpts.Compression),
+				matchingTagsChanged: !reflect.DeepEqual(oldClusterOpts.MatchingTags, newClusterOpts.MatchingTags),
 			}
 			co.diffPoolAndAccounts(&oldClusterOpts)
 			// If there are added accounts, first make sure that we can look them up.
