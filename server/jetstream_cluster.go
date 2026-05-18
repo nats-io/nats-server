@@ -346,7 +346,7 @@ func (ca *consumerAssignment) clone() *consumerAssignment {
 
 type unsupportedConsumerAssignment struct {
 	reason  string
-	info    ConsumerInfo
+	info    ConsumerInfo // Hold the static info here, not a pointer
 	sysc    *client
 	infoSub *subscription
 }
