@@ -26,6 +26,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -1855,6 +1856,16 @@ func TestWSValidateOptions(t *testing.T) {
 			o.Websocket.Headers = map[string]string{"Nats-No-Masking": "false"}
 			return o
 		}, `websocket: invalid header "Nats-No-Masking" not allowed`},
+		{"embedded: bad allowed origin still validated when port is disabled", func() *Options {
+			o := nwso.Clone()
+			o.Websocket.AllowedOrigins = []string{"foo"}
+			return o
+		}, "unable to parse"},
+		{"embedded: invalid header still validated when port is disabled", func() *Options {
+			o := nwso.Clone()
+			o.Websocket.Headers = map[string]string{"Upgrade": "websocket"}
+			return o
+		}, `websocket: invalid header "Upgrade" not allowed`},
 		{"disabled websocket listener", func() *Options {
 			o := wso.Clone()
 			o.Websocket.Port = 0
@@ -1877,6 +1888,128 @@ func TestWSValidateOptions(t *testing.T) {
 				t.Fatalf("Expected error to contain %q, got %v", test.err, err)
 			}
 		})
+	}
+}
+
+func TestWSEmbeddedInitOptionsBeforeStart(t *testing.T) {
+	// Regression: HandleWsUpgrade is exported for applications that mount the
+	// upgrade on their own HTTP server. Such applications obtain *Server from
+	// NewServer and may dispatch upgrade requests before (or concurrently
+	// with) Start, so the same_origin / allowed_origins state must be set
+	// by the time NewServer returns, even when no websocket listener will
+	// be bound (Websocket.Port == 0).
+	o := DefaultOptions()
+	o.Websocket.SameOrigin = true
+	o.Websocket.AllowedOrigins = []string{"http://example.com:8080"}
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer s.Shutdown()
+
+	s.websocket.mu.RLock()
+	sameOrigin := s.websocket.sameOrigin
+	allowed := s.websocket.allowedOrigins
+	s.websocket.mu.RUnlock()
+
+	if !sameOrigin {
+		t.Fatalf("Expected sameOrigin to be true after NewServer with Port==0")
+	}
+	entries, ok := allowed["example.com"]
+	if !ok || len(entries) != 1 || entries[0].scheme != "http" || entries[0].port != "8080" {
+		t.Fatalf("Expected allowedOrigins to contain http://example.com:8080, got %v", allowed)
+	}
+}
+
+func TestWSHandleUpgradeRejectsBeforeStart(t *testing.T) {
+	// Regression: createWSClient and createMQTTClient bail out without
+	// closing the connection when !s.isRunning() and the server is not
+	// shutting down. Before this gate, an externally-mounted
+	// HandleWsUpgrade that received a request before Start() completed
+	// would send 101 Switching Protocols and then drop the connection on
+	// the floor, leaving the peer with an orphaned half-open socket.
+	o := DefaultOptions()
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer s.Shutdown()
+	// Note: deliberately NOT calling s.Start() here.
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleWsUpgrade))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", ts.URL, nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	key, err := wsMakeChallengeKey()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Sec-WebSocket-Key", key)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("Expected 503 before Start, got %d", resp.StatusCode)
+	}
+}
+
+func TestWSHandleUpgradeRejectsInLameDuckMode(t *testing.T) {
+	// Sibling to TestWSHandleUpgradeRejectsBeforeStart: in lame duck mode
+	// createWSClient and createMQTTClient also bail out without closing
+	// the connection (the |s.ldm branch of the gate at line 1474), so the
+	// exported handler must reject upgrades during LDM the same way the
+	// built-in listener does by closing its socket.
+	//
+	// We avoid RunServer + LameDuckShutdown here because that path arms
+	// goroutines (AcceptLoop, ldmCh) that we'd need to drain; the gate
+	// itself only reads isRunning() and isLameDuckMode(), so flipping
+	// running and ldm on a never-Started server is enough.
+	o := DefaultOptions()
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer s.Shutdown()
+
+	s.running.Store(true)
+	s.mu.Lock()
+	s.ldm = true
+	s.mu.Unlock()
+
+	ts := httptest.NewServer(http.HandlerFunc(s.HandleWsUpgrade))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", ts.URL, nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	key, err := wsMakeChallengeKey()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	req.Header.Set("Sec-WebSocket-Key", key)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("Expected 503 in lame duck mode, got %d", resp.StatusCode)
 	}
 }
 
