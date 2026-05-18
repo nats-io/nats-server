@@ -7407,6 +7407,96 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/8160
+func TestJetStreamProgrammaticMaxStoreAndMaxMemory(t *testing.T) {
+	gb := int64(1024 * 1024 * 1024)
+
+	for _, test := range []struct {
+		name     string
+		maxMem   int64
+		maxStore int64
+	}{
+		{"only-max-store", 0, 1 * gb},
+		{"only-max-memory", 2 * gb, 0},
+		{"both", 2 * gb, 1 * gb},
+		{"neither", 0, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := DefaultTestOptions
+			opts.Port = -1
+			opts.JetStream = true
+			opts.StoreDir = t.TempDir()
+			opts.JetStreamMaxMemory = test.maxMem
+			opts.JetStreamMaxStore = test.maxStore
+
+			s := RunServer(&opts)
+			defer s.Shutdown()
+
+			require_True(t, s.JetStreamEnabled())
+			jsc := s.JetStreamConfig()
+
+			if test.maxStore > 0 {
+				require_Equal(t, jsc.MaxStore, test.maxStore)
+			} else {
+				require_True(t, jsc.MaxStore > 0)
+			}
+			if test.maxMem > 0 {
+				require_Equal(t, jsc.MaxMemory, test.maxMem)
+			} else {
+				require_True(t, jsc.MaxMemory > 0)
+			}
+		})
+	}
+}
+
+func TestJetStreamDynConfigBothPositive(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Both flags are false because opts came from code, not a config file.
+	opts := s.getOpts()
+	require_False(t, opts.maxMemSet)
+	require_False(t, opts.maxStoreSet)
+
+	const maxStore = int64(1024 * 1024 * 1024)
+	const maxMem = int64(2 * 1024 * 1024 * 1024)
+
+	jsc := s.dynJetStreamConfig(t.TempDir(), maxStore, maxMem)
+	require_Equal(t, jsc.MaxStore, maxStore)
+	require_Equal(t, jsc.MaxMemory, maxMem)
+}
+
+func TestJetStreamConfigNegativeLimitsFallBackToDynamic(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: -1, max_file_store: -1, store_dir: %q}
+	`, t.TempDir())))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_True(t, s.JetStreamEnabled())
+	jsc := s.JetStreamConfig()
+	// -1 is the "unset" sentinel: it must be replaced with dynamic limits,
+	require_True(t, jsc.MaxMemory > 0)
+	require_True(t, jsc.MaxStore > 0)
+}
+
+func TestJetStreamConfigExplicitZeroLimits(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 0, max_file_store: 0, store_dir: %q}
+	`, t.TempDir())))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_True(t, s.JetStreamEnabled())
+	jsc := s.JetStreamConfig()
+	require_Equal(t, jsc.MaxMemory, 0)
+	require_Equal(t, jsc.MaxStore, 0)
+}
+
 // From 2.2.2 to 2.2.3 we fixed a bug that would not consistently place a jetstream directory
 // under the store directory configured. However there were some cases where the directory was
 // created that way and therefore 2.2.3 would start and not recognize the existing accounts,
