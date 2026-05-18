@@ -560,6 +560,13 @@ func (c *client) GetNonce() []byte {
 	return c.nonce
 }
 
+// GetID returns the client ID
+func (c *client) GetID() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cid
+}
+
 // GetName returns the application supplied name for the connection.
 func (c *client) GetName() string {
 	c.mu.Lock()
