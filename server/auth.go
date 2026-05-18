@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -21,8 +22,11 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -279,6 +283,8 @@ func (s *Server) configureAuthorization() {
 		s.nkeys, s.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
 		s.info.AuthRequired = true
 	} else if opts.Username != _EMPTY_ || opts.Authorization != _EMPTY_ {
+		s.info.AuthRequired = true
+	} else if opts.AuthHTTP != nil {
 		s.info.AuthRequired = true
 	} else {
 		s.users = nil
@@ -1170,6 +1176,25 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		return ok
 	}
 
+	// Check for HTTP-based authentication when auth_http is configured.
+	if opts.AuthHTTP != nil && c.opts.Username != _EMPTY_ && c.opts.Password != _EMPTY_ {
+		if proxyRequired = opts.ProxyRequired; proxyRequired && !trustedProxy {
+			return setProxyAuthError(ErrAuthProxyRequired)
+		}
+		perms, ok := s.checkAuthHTTP(opts.AuthHTTP, c.opts.Username, c.opts.Password)
+		if ok {
+			authUser := &User{
+				Username:    c.opts.Username,
+				Account:     nil, // global account
+				Permissions: perms,
+			}
+			c.RegisterUser(authUser)
+			return true
+		}
+		c.Debugf("HTTP authentication failed for user %q", c.opts.Username)
+		return false
+	}
+
 	// Check for the use of simple auth.
 	if c.kind == CLIENT || c.kind == LEAF {
 		if proxyRequired = opts.ProxyRequired; proxyRequired && !trustedProxy {
@@ -1637,6 +1662,120 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 		}
 	}
 	return true
+}
+
+// authHTTPResponse is the expected JSON structure from the auth HTTP endpoint.
+// When the endpoint returns 2xx, the body may include permissions to restrict
+// what subjects the user can publish to and subscribe to.
+type authHTTPResponse struct {
+	Permissions *authHTTPPermissions `json:"permissions,omitempty"`
+}
+
+type authHTTPPermissions struct {
+	Publish   *authHTTPSubjectPermission `json:"publish,omitempty"`
+	Subscribe *authHTTPSubjectPermission `json:"subscribe,omitempty"`
+}
+
+type authHTTPSubjectPermission struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
+}
+
+// checkAuthHTTP validates username and password against an external HTTP endpoint.
+// The server POSTs JSON {"username": "...", "password": "..."} to the URL.
+// A 2xx response indicates success; 4xx/5xx or network errors indicate failure.
+// On success, the response body may include a "permissions" object to restrict
+// publish/subscribe access. If omitted or invalid, the user gets full access.
+func (s *Server) checkAuthHTTP(ah *AuthHTTP, username, password string) (*Permissions, bool) {
+	timeout := ah.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+
+	body, err := json.Marshal(map[string]string{
+		"username": username,
+		"password": password,
+	})
+	if err != nil {
+		s.Debugf("HTTP auth: failed to marshal request: %v", err)
+		return nil, false
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ah.URL, bytes.NewReader(body))
+	if err != nil {
+		s.Debugf("HTTP auth: failed to create request: %v", err)
+		return nil, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		s.Debugf("HTTP auth: request failed: %v", err)
+		return nil, false
+	}
+	defer resp.Body.Close()
+
+	// 4xx/5xx indicate authentication failure
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, false
+	}
+
+	// Parse optional permissions from response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.Debugf("HTTP auth: failed to read response: %v", err)
+		return nil, true // auth succeeded, use full access
+	}
+
+	if len(respBody) == 0 {
+		return nil, true // empty body, full access
+	}
+
+	var authResp authHTTPResponse
+	if err := json.Unmarshal(respBody, &authResp); err != nil {
+		s.Debugf("HTTP auth: failed to parse response (using full access): %v", err)
+		return nil, true // invalid JSON, backward compat: full access
+	}
+
+	if authResp.Permissions == nil {
+		return nil, true // no permissions in response, full access
+	}
+
+	perms := authHTTPPermissionsToPermissions(authResp.Permissions)
+	if perms != nil {
+		validateResponsePermissions(perms)
+	}
+	return perms, true
+}
+
+// authHTTPPermissionsToPermissions converts the HTTP response format to server Permissions.
+func authHTTPPermissionsToPermissions(p *authHTTPPermissions) *Permissions {
+	if p == nil {
+		return nil
+	}
+	// If both are nil/empty, treat as full access
+	if (p.Publish == nil || (len(p.Publish.Allow) == 0 && len(p.Publish.Deny) == 0)) &&
+		(p.Subscribe == nil || (len(p.Subscribe.Allow) == 0 && len(p.Subscribe.Deny) == 0)) {
+		return nil
+	}
+	perms := &Permissions{}
+	if p.Publish != nil && (len(p.Publish.Allow) > 0 || len(p.Publish.Deny) > 0) {
+		perms.Publish = &SubjectPermission{
+			Allow: p.Publish.Allow,
+			Deny:  p.Publish.Deny,
+		}
+	}
+	if p.Subscribe != nil && (len(p.Subscribe.Allow) > 0 || len(p.Subscribe.Deny) > 0) {
+		perms.Subscribe = &SubjectPermission{
+			Allow: p.Subscribe.Allow,
+			Deny:  p.Subscribe.Deny,
+		}
+	}
+	if perms.Publish == nil && perms.Subscribe == nil {
+		return nil
+	}
+	return perms
 }
 
 func validateAuth(o *Options) error {

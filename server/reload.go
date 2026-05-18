@@ -1566,6 +1566,7 @@ func imposeOrder(value any) error {
 		*OCSPConfig, map[string]string, map[string]bool, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig, *ProxiesConfig, WriteTimeoutPolicy:
 		// explicitly skipped types
 	case *AuthCallout:
+	case *AuthHTTP:
 	case JSTpmOpts:
 	default:
 		// this will fail during unit tests
