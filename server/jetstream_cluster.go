@@ -11159,7 +11159,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	// Run as long as we are still active and need catchup.
 	// FIXME(dlc) - Purge event? Stream delete?
 	retryTimer := time.NewTimer(500 * time.Millisecond)
-	defer retryTimer.Stop()
+	defer stopAndClearTimer(&retryTimer)
 	for {
 		// Get this each time, will be non-nil if globally blocked and we will close to wake everyone up.
 		cbKick := s.cbKickChan()
@@ -11190,12 +11190,6 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			if !sendNextBatchAndContinue(qch) {
 				mset.clearCatchupPeer(sreq.Peer)
 				return
-			}
-		}
-		if !retryTimer.Stop() {
-			select {
-			case <-retryTimer.C:
-			default:
 			}
 		}
 		retryTimer.Reset(500 * time.Millisecond)
