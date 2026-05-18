@@ -4550,7 +4550,7 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 	var hdr []byte
 	chunk := make([]byte, chunkSize)
 	ackTimer := time.NewTimer(snapshotAckTimeout)
-	defer ackTimer.Stop()
+	defer stopAndClearTimer(&ackTimer)
 	for index := 1; ; index++ {
 		select {
 		case <-slots:
@@ -4582,12 +4582,6 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 			hdr = []byte("NATS/1.0 204\r\n\r\n")
 		}
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, ackReply, nil, chunk, nil, 0))
-		if !ackTimer.Stop() {
-			select {
-			case <-ackTimer.C:
-			default:
-			}
-		}
 		ackTimer.Reset(snapshotAckTimeout)
 	}
 
