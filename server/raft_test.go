@@ -6152,6 +6152,11 @@ func TestNRGReset(t *testing.T) {
 	_, err = n.votes.push(&voteResponse{})
 	require_NoError(t, err)
 
+	// Start an async checkpoint so Reset has to clear n.snapshotting too.
+	_, err = n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+	require_True(t, n.snapshotting)
+
 	// Park the node before resetting, mirroring how callers (e.g. the SYS-account
 	// leaf extension path) use Reset: observer mode is set first so the
 	// node doesn't compete for leadership immediately after step-down.
@@ -6186,9 +6191,11 @@ func TestNRGReset(t *testing.T) {
 	require_Equal(t, n.term, 0)
 	require_Equal(t, n.vote, noVote)
 
-	// Snapshot reference cleared, and the entire snapshots directory was
-	// wiped (both the referenced file and the orphan), then recreated empty.
+	// Snapshot reference cleared, in-flight checkpoint flag cleared, and the
+	// entire snapshots directory was wiped (both the referenced file and the
+	// orphan), then recreated empty.
 	require_Equal(t, n.snapfile, _EMPTY_)
+	require_False(t, n.snapshotting)
 	if _, err = os.Stat(sfile); !os.IsNotExist(err) {
 		t.Fatalf("expected snapshot file %q to be removed, stat err=%v", sfile, err)
 	}
