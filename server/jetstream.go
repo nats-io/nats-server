@@ -209,9 +209,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 			maxStore, maxMem = config.MaxStore, config.MaxMemory
 		}
 		config = s.dynJetStreamConfig(storeDir, maxStore, maxMem)
-		if maxMem > 0 {
-			config.MaxMemory = maxMem
-		}
 		if domain != _EMPTY_ {
 			config.Domain = domain
 		}
@@ -2752,13 +2749,13 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	jsc.SyncInterval = opts.SyncInterval
 	jsc.SyncAlways = opts.SyncAlways
 
-	if opts.maxStoreSet && maxStore >= 0 {
+	if maxStore > 0 || (opts.maxStoreSet && maxStore == 0) {
 		jsc.MaxStore = maxStore
 	} else {
 		jsc.MaxStore = diskAvailable(jsc.StoreDir)
 	}
 
-	if opts.maxMemSet && maxMem >= 0 {
+	if maxMem > 0 || (opts.maxMemSet && maxMem == 0) {
 		jsc.MaxMemory = maxMem
 	} else {
 		// Estimate to 75% of total memory if we can determine system memory.
