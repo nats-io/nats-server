@@ -2271,6 +2271,9 @@ func (n *raft) Reset() {
 	}
 	n.snapfile = _EMPTY_
 
+	// Abort any inflight async snapshot checkpoint.
+	n.snapshotting = false
+
 	// Reset the WAL, but reset these first to not trip the assertion.
 	n.commit, n.hcommit, n.applied, n.processed, n.papplied = 0, 0, 0, 0, 0
 	n.resetWAL()
