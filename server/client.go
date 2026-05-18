@@ -422,8 +422,9 @@ func nbPoolPut(b []byte) {
 }
 
 type perm struct {
-	allow *Sublist
-	deny  *Sublist
+	allow       *Sublist
+	deny        *Sublist
+	noWildcards bool
 }
 
 type permissions struct {
@@ -1121,6 +1122,7 @@ func (c *client) setPermissions(perms *Permissions) {
 			}
 			c.perms.sub.deny.Insert(sub)
 		}
+		c.perms.sub.noWildcards = perms.Subscribe.NoWildcards
 	}
 
 	// If we are a leafnode and we are the hub copy the extracted perms
@@ -3256,6 +3258,12 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 func (c *client) canSubscribeInternal(subject string, optQueue ...string) bool {
 	if c.perms == nil {
 		return true
+	}
+
+	// If NoWildcards is set for subscribe permissions, deny any subscription
+	// that contains wildcard tokens (* or >).
+	if c.perms.sub.noWildcards && subjectHasWildcard(subject) {
+		return false
 	}
 
 	allowed, checkAllow := true, true
