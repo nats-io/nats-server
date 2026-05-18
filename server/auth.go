@@ -693,9 +693,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			}
 		}
 
-		// If we are here we have an auth callout defined and we have failed auth so far
+		// If we are here we have an auth callout defined and we have failed auth so far,
 		// so we will callout to our auth backend for processing.
-		if !skip {
+		if !authorized && !skip {
 			authorized, reason = s.processClientOrLeafCallout(c, opts, proxyRequired, trustedProxy, ujwt)
 		}
 		// Check if we are authorized and in the auth callout account, and if so add in deny publish permissions for the auth subject.
