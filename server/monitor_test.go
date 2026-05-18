@@ -5734,6 +5734,7 @@ func TestMonitorWebsocket(t *testing.T) {
 		SameOrigin:       true,
 		AllowedOrigins:   []string{"https://origin1", "https://origin2"},
 		Compression:      true,
+		ProxyProtocol:    true,
 		HandshakeTimeout: 4 * time.Second,
 	}
 	s := RunServer(o)
@@ -5752,6 +5753,7 @@ func TestMonitorWebsocket(t *testing.T) {
 		SameOrigin:       true,
 		AllowedOrigins:   []string{"https://origin1", "https://origin2"},
 		Compression:      true,
+		ProxyProtocol:    true,
 		HandshakeTimeout: 4 * time.Second,
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
