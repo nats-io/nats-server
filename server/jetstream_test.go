@@ -7759,6 +7759,21 @@ func TestJetStreamConfigNegativeLimitsFallBackToDynamic(t *testing.T) {
 	require_True(t, jsc.MaxStore > 0)
 }
 
+func TestJetStreamConfigExplicitZeroLimits(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 0, max_file_store: 0, store_dir: %q}
+	`, t.TempDir())))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_True(t, s.JetStreamEnabled())
+	jsc := s.JetStreamConfig()
+	require_Equal(t, jsc.MaxMemory, 0)
+	require_Equal(t, jsc.MaxStore, 0)
+}
+
 // From 2.2.2 to 2.2.3 we fixed a bug that would not consistently place a jetstream directory
 // under the store directory configured. However there were some cases where the directory was
 // created that way and therefore 2.2.3 would start and not recognize the existing accounts,
