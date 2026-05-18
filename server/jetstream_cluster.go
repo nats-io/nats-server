@@ -77,6 +77,8 @@ type jetStreamCluster struct {
 	peerStreamMove *subscription
 	// System level request to cancel a stream move
 	peerStreamCancelMove *subscription
+	// System level requests to manage degraded mode
+	degradedEmpty *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
 	// To notify others that monitorCluster has actually stopped.
@@ -1068,6 +1070,8 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
+
+	js.startManagementSub()
 
 	// Set to true before we start.
 	js.metaRecovering = true
@@ -7294,6 +7298,23 @@ func (js *jetStream) stopUpdatesSub() {
 	if js.accountPurge != nil {
 		cc.s.sysUnsubscribe(js.accountPurge)
 		js.accountPurge = nil
+	}
+}
+
+// Lock should be held.
+func (js *jetStream) startManagementSub() {
+	cc, s, c := js.cluster, js.srv, js.cluster.c
+	if cc.degradedEmpty == nil {
+		cc.degradedEmpty, _ = s.systemSubscribe(JSApiServerDegradedRaftRelax, _EMPTY_, false, c, s.jsServerDegradedRaftRelaxRequest)
+	}
+}
+
+// Lock should be held.
+func (js *jetStream) stopManagementSub() {
+	cc := js.cluster
+	if cc.degradedEmpty != nil {
+		cc.s.sysUnsubscribe(cc.degradedEmpty)
+		cc.degradedEmpty = nil
 	}
 }
 

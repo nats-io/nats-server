@@ -6221,3 +6221,70 @@ func TestNRGReset(t *testing.T) {
 	// Append entry cache cleared.
 	require_Equal(t, len(n.pae), 0)
 }
+
+func TestNRGRelaxedEmptyVote(t *testing.T) {
+	// The relaxed empty-vote flag is process-global with a 60s TTL, so reset
+	// it before and after this test to stay isolated from any earlier run.
+	resetRelaxed := func() {
+		relaxedMu.Lock()
+		defer relaxedMu.Unlock()
+		relaxed = false
+		if relaxedExpire != nil {
+			relaxedExpire.Stop()
+		}
+	}
+	resetRelaxed()
+	defer resetRelaxed()
+
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// We want to exercise the relax path independently of the existing
+	// initializing/scale-up shortcut, which also clears vresp.empty.
+	n.initializing = false
+
+	nats0 := "S1Nunr6R"
+	voteReply := "$TEST"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(voteReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// 1) Without relax (and not initializing), a vote on an empty log must
+	//    be marked empty so the candidate cannot count it toward full quorum.
+	require_False(t, isRelaxedEmptyVote())
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, candidate: nats0, reply: voteReply}))
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	vr := decodeVoteResponse(msg.Data)
+	require_True(t, vr.granted)
+	require_True(t, vr.empty)
+
+	// 2) Enable relaxed mode: a degraded raft relax request would call this.
+	//    A subsequent vote on an empty log must NOT be marked empty so the
+	//    candidate can reach quorum across surviving peers.
+	n.s.setRelaxedEmptyVote()
+	require_True(t, isRelaxedEmptyVote())
+
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, candidate: nats0, reply: voteReply}))
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	vr = decodeVoteResponse(msg.Data)
+	require_True(t, vr.granted)
+	require_False(t, vr.empty)
+
+	// 3) Clear relaxed mode and the empty-vote suppression must come back.
+	resetRelaxed()
+	require_False(t, isRelaxedEmptyVote())
+
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 3, candidate: nats0, reply: voteReply}))
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	vr = decodeVoteResponse(msg.Data)
+	require_True(t, vr.granted)
+	require_True(t, vr.empty)
+}
