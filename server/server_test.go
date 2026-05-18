@@ -378,6 +378,112 @@ func TestTLSCipher(t *testing.T) {
 	require_Equal(t, tls.CipherSuiteName(0x9999), "0x9999")
 }
 
+func TestTLSDefaultCipherAndCurvePreferences(t *testing.T) {
+	// The module still targets Go 1.25 in go.mod, so Go 1.26 keeps the SecP ML-KEM
+	// groups disabled by default unless the test opts in explicitly.
+	t.Setenv("GODEBUG", "tlssecpmlkem=1")
+
+	runTLSServer := func(t *testing.T, cipherSuites []uint16, curvePreferences []tls.CurveID, minVersion, maxVersion uint16) *Server {
+		t.Helper()
+		tc := &TLSConfigOpts{
+			Certificates: []*TLSCertPairOpt{
+				{
+					CertFile: "../test/configs/certs/server-cert.pem",
+					KeyFile:  "../test/configs/certs/server-key.pem",
+				},
+				{
+					CertFile: "../test/configs/certs/tlsauth/certstore/ecdsa_server.pem",
+					KeyFile:  "../test/configs/certs/tlsauth/certstore/ecdsa_server.key",
+				},
+			},
+			Ciphers:          cipherSuites,
+			CurvePreferences: curvePreferences,
+			MinVersion:       minVersion,
+		}
+		config, err := GenTLSConfig(tc)
+		require_NoError(t, err)
+		config.MaxVersion = maxVersion
+
+		opts := DefaultOptions()
+		opts.TLSConfig = config
+		opts.TLSHandshakeFirst = true
+		return RunServer(opts)
+	}
+
+	dial := func(s *Server, config *tls.Config) (*tls.Conn, error) {
+		return tls.Dial("tcp", s.Addr().String(), config)
+	}
+
+	t.Run("cipher suites", func(t *testing.T) {
+		for _, id := range defaultCipherSuites() {
+			cs := cipherMapByID[id]
+			if !slices.Contains(cs.SupportedVersions, tls.VersionTLS12) {
+				continue // t.Skip("tls.Config.CipherSuites does not configure TLS 1.3 cipher suites")
+			}
+
+			t.Run(cs.Name, func(t *testing.T) {
+				tlsConfig := &tls.Config{
+					InsecureSkipVerify: true,
+					ServerName:         "localhost",
+					MinVersion:         tls.VersionTLS12,
+					MaxVersion:         tls.VersionTLS12,
+					CipherSuites:       []uint16{cs.ID},
+					CurvePreferences:   defaultCurvePreferences(),
+				}
+
+				s := runTLSServer(t, []uint16{cs.ID}, tlsConfig.CurvePreferences, tlsConfig.MinVersion, tlsConfig.MaxVersion)
+				defer s.Shutdown()
+
+				// Prove that we can connect with the right curve preference.
+				conn, err := dial(s, tlsConfig)
+				require_NoError(t, err)
+				defer conn.Close()
+				require_Equal(t, conn.ConnectionState().CipherSuite, cs.ID)
+
+				// Now configure other ciphers and check that we fail to connect.
+				tlsConfig.CipherSuites = slices.DeleteFunc(slices.Clone(defaultCipherSuites()), func(id uint16) bool {
+					return id == cs.ID || !slices.Contains(cipherMapByID[id].SupportedVersions, tls.VersionTLS12)
+				})
+				if conn, err = dial(s, tlsConfig); conn != nil {
+					defer conn.Close()
+				}
+				require_Error(t, err)
+			})
+		}
+	})
+
+	t.Run("curve preferences", func(t *testing.T) {
+		for name, curve := range curvePreferenceMap {
+			t.Run(name, func(t *testing.T) {
+				tlsConfig := &tls.Config{
+					InsecureSkipVerify: true,
+					MinVersion:         tls.VersionTLS13,
+					MaxVersion:         tls.VersionTLS13,
+					CurvePreferences:   []tls.CurveID{curve},
+				}
+
+				s := runTLSServer(t, nil, []tls.CurveID{curve}, tlsConfig.MinVersion, tlsConfig.MaxVersion)
+				defer s.Shutdown()
+
+				// Prove that we can connect with the right cipher suites.
+				conn, err := dial(s, tlsConfig)
+				require_NoError(t, err)
+				defer conn.Close()
+				require_Equal(t, conn.ConnectionState().CurveID, curve)
+
+				// Now configure other curves and check that we fail to connect.
+				tlsConfig.CurvePreferences = slices.DeleteFunc(slices.Clone(defaultCurvePreferences()), func(id tls.CurveID) bool {
+					return id == curve
+				})
+				if conn, err = dial(s, tlsConfig); conn != nil {
+					defer conn.Close()
+				}
+				require_Error(t, err)
+			})
+		}
+	})
+}
+
 func TestGetConnectURLs(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Port = 4222
