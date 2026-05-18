@@ -12219,3 +12219,125 @@ func TestJetStreamConsumerStepDownResetsPendingAndRdc(t *testing.T) {
 		return nil
 	})
 }
+
+// https://github.com/nats-io/nats-server/issues/8140
+func TestJetStreamConsumerStreamNumPendingOnlyOnLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for _, subj := range []string{"a", "b"} {
+		_, err = js.Publish(fmt.Sprintf("foo.%s", subj), nil)
+		require_NoError(t, err)
+	}
+
+	cfg := &nats.ConsumerConfig{Durable: "CONSUMER"}
+	ci, err := js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 2)
+
+	checkNumPending := func(expected uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				mset, err := s.globalAccount().lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				o := mset.lookupConsumer("CONSUMER")
+				if o == nil {
+					return fmt.Errorf("consumer not found on %s", s.Name())
+				}
+				ici := o.info()
+				if o.IsLeader() {
+					if ici.NumPending != expected {
+						return fmt.Errorf("leader %s: expected NumPending=%d, got %d", s.Name(), expected, ici.NumPending)
+					}
+				} else if ici.NumPending != 0 {
+					return fmt.Errorf("follower %s: expected NumPending=0, got %d", s.Name(), ici.NumPending)
+				}
+			}
+			return nil
+		})
+	}
+	checkNumPending(2)
+
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 2)
+	checkNumPending(2)
+
+	// Update the filters, which should recalculate num pending, but only on the leader.
+	cfg.FilterSubject = "foo.b"
+	ci, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 1)
+	checkNumPending(1)
+
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 1)
+	checkNumPending(1)
+}
+
+// https://github.com/nats-io/nats-server/issues/8140
+func TestJetStreamConsumerStreamNumPendingClearedOnStepDown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	oldLeader := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, oldLeader)
+	mset, err := oldLeader.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Sanity: leader has the computed value.
+	require_Equal(t, o.info().NumPending, 5)
+
+	// Step down the consumer leader.
+	n := o.raftNode()
+	require_NotNil(t, n)
+	require_NoError(t, n.StepDown())
+
+	// The old leader must transition to follower, and its in-memory NumPending must be reset.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		o.mu.RLock()
+		npc, isLeader := o.npc, o.isLeader()
+		o.mu.RUnlock()
+		if isLeader {
+			return fmt.Errorf("old leader %s has not stepped down", oldLeader.Name())
+		}
+		if npc != 0 {
+			return fmt.Errorf("old leader %s still reports stale npc=%d, expected 0", oldLeader.Name(), npc)
+		}
+		return nil
+	})
+}

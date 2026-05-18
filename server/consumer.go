@@ -1838,6 +1838,8 @@ func (o *consumer) setLeader(isLeader bool) error {
 		o.pending = nil
 		o.rsm = nil
 		o.resetPendingDeliveries()
+		// Reset num pending, these are only authoritative on the leader.
+		o.npc, o.npf = 0, 0
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSubOld)
 		o.unsubscribe(o.ackSub)
@@ -5544,11 +5546,11 @@ func (o *consumer) streamNumPendingLocked() (uint64, error) {
 	return o.streamNumPending()
 }
 
-// Will force a set from the stream store of num pending.
+// Will force a set from the stream store of num pending on the consumer leader.
 // Depends on delivery policy, for last per subject we calculate differently.
 // Lock should be held.
 func (o *consumer) streamNumPending() (uint64, error) {
-	if o.mset == nil || o.mset.store == nil {
+	if o.mset == nil || o.mset.store == nil || !o.isLeader() {
 		o.npc, o.npf = 0, 0
 		return 0, nil
 	}
