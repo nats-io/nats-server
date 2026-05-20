@@ -128,18 +128,29 @@ func getBatchStoreDir(storeDir, streamName, batchId string) (string, string) {
 }
 
 func newBatchStore(mset *stream, batchId string, replicas int, storage StorageType, storeDir, streamName string) (StreamStore, error) {
-	if replicas == 1 && storage == FileStorage {
-		bname, storeDir := getBatchStoreDir(storeDir, streamName, batchId)
-		fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir}
-		s := mset.srv
-		prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
-		if prf != nil {
-			// We are encrypted here, fill in correct cipher selection.
-			fcfg.Cipher = s.getOpts().JetStreamCipher
+	// For R1 streams we stage batches in a persistent store so they survive hard
+	// kills. Custom providers are persistent and get their own staging namespace.
+	if replicas == 1 {
+		if provider := streamStoreProvider(storage); provider != nil {
+			bname, storeDir := getBatchStoreDir(storeDir, streamName, batchId)
+			return provider(StreamStoreConfig{
+				StreamConfig: &StreamConfig{Name: bname, Storage: storage},
+				FileConfig:   &FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir},
+			})
 		}
-		oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
-		cfg := StreamConfig{Name: bname, Storage: FileStorage}
-		return newFileStoreWithCreated(fcfg, cfg, time.Time{}, prf, oldprf)
+		if storage == FileStorage {
+			bname, storeDir := getBatchStoreDir(storeDir, streamName, batchId)
+			fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir}
+			s := mset.srv
+			prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
+			if prf != nil {
+				// We are encrypted here, fill in correct cipher selection.
+				fcfg.Cipher = s.getOpts().JetStreamCipher
+			}
+			oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
+			cfg := StreamConfig{Name: bname, Storage: FileStorage}
+			return newFileStoreWithCreated(fcfg, cfg, time.Time{}, prf, oldprf)
+		}
 	}
 	return newMemStore(&StreamConfig{Name: _EMPTY_, Storage: MemoryStorage})
 }
@@ -953,7 +964,8 @@ func checkMsgHeadersPreClusteredProposal(
 		diff.inflight = make(map[string]*inflightSubjectRunningTotal, 1)
 	}
 	var sz uint64
-	if mset.store.Type() == FileStorage {
+	// Custom storage providers are persistent and sized like the file store.
+	if mset.store.Type() != MemoryStorage {
 		sz = fileStoreMsgSizeRaw(len(subject), len(hdr), len(msg))
 	} else {
 		sz = memStoreMsgSizeRaw(len(subject), len(hdr), len(msg))

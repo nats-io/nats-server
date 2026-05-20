@@ -5138,30 +5138,42 @@ func (mset *stream) unsubscribe(sub *subscription) {
 
 func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	mset.mu.Lock()
-	switch mset.cfg.Storage {
-	case MemoryStorage:
-		ms, err := newMemStore(&mset.cfg)
+	if provider := streamStoreProvider(mset.cfg.Storage); provider != nil {
+		store, err := provider(StreamStoreConfig{StreamConfig: &mset.cfg, FileConfig: fsCfg, Created: mset.created})
 		if err != nil {
 			mset.mu.Unlock()
 			return err
 		}
-		mset.store = ms
-	case FileStorage:
-		s := mset.srv
-		prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
-		if prf != nil {
-			// We are encrypted here, fill in correct cipher selection.
-			fsCfg.Cipher = s.getOpts().JetStreamCipher
-		}
-		oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
-		cfg := *fsCfg
-		cfg.srv = s
-		fs, err := newFileStoreWithCreated(cfg, mset.cfg, mset.created, prf, oldprf)
-		if err != nil {
+		mset.store = store
+	} else {
+		switch mset.cfg.Storage {
+		case MemoryStorage:
+			ms, err := newMemStore(&mset.cfg)
+			if err != nil {
+				mset.mu.Unlock()
+				return err
+			}
+			mset.store = ms
+		case FileStorage:
+			s := mset.srv
+			prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
+			if prf != nil {
+				// We are encrypted here, fill in correct cipher selection.
+				fsCfg.Cipher = s.getOpts().JetStreamCipher
+			}
+			oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
+			cfg := *fsCfg
+			cfg.srv = s
+			fs, err := newFileStoreWithCreated(cfg, mset.cfg, mset.created, prf, oldprf)
+			if err != nil {
+				mset.mu.Unlock()
+				return err
+			}
+			mset.store = fs
+		default:
 			mset.mu.Unlock()
-			return err
+			return fmt.Errorf("no stream store provider registered for storage type %v", mset.cfg.Storage)
 		}
-		mset.store = fs
 	}
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
@@ -7359,8 +7371,8 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 	}
 
 	// Persist, but optimize if we're committing because we already know last.
-	// If the underlying store is file-based we need to persist everything to survive hard kills, because we're R1.
-	if !commit || b.store.Type() == FileStorage {
+	// If the underlying store is persistent we need to persist everything to survive hard kills, because we're R1.
+	if !commit || b.store.Type() != MemoryStorage {
 		seq, _, err := b.store.StoreMsg(subject, hdr, msg, 0)
 		if err != nil || seq != batchSeq {
 			b.cleanupLocked(batchId, batches)
@@ -7452,7 +7464,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 
 	diff := &batchStagedDiff{}
 	for seq := uint64(1); seq <= batchSeq; seq++ {
-		if seq == batchSeq && !commitEob && b.store.Type() != FileStorage {
+		if seq == batchSeq && !commitEob && b.store.Type() == MemoryStorage {
 			bsubj, bhdr, bmsg = subject, hdr, msg
 		} else if sm, err = b.store.LoadMsg(seq, &smv); sm != nil && err == nil {
 			bsubj, bhdr, bmsg = sm.subj, sm.hdr, sm.msg

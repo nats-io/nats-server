@@ -4672,7 +4672,8 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	}
 
 	var sz uint64
-	if n.wtype == FileStorage {
+	// Custom storage providers are persistent and sized like the file store.
+	if n.wtype != MemoryStorage {
 		sz = fileStoreMsgSize(_EMPTY_, nil, ae.buf)
 	} else {
 		sz = memStoreMsgSize(_EMPTY_, nil, ae.buf)
