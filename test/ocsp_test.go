@@ -1235,6 +1235,79 @@ func TestOCSPCluster(t *testing.T) {
 	}
 }
 
+// B requires OCSP staples from connecting peers. A uses solicit_tls with a
+// separate must-staple cert. The cluster must form, proving SolicitTLSConfig
+// is wired into the OCSP subsystem so A attaches a staple when it connects.
+func TestOCSPClusterSolicitTLS(t *testing.T) {
+	const (
+		caCert = "configs/certs/ocsp/ca-cert.pem"
+		caKey  = "configs/certs/ocsp/ca-key.pem"
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := NewOCSPResponder(t, caCert, caKey)
+	defer ocspr.Shutdown(ctx)
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+	SetOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
+	SetOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-02-cert.pem", ocsp.Good)
+	SetOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-03-cert.pem", ocsp.Good)
+
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		host: "127.0.0.1"
+		port: -1
+		server_name: "B"
+		store_dir: '%s'
+		cluster {
+			name: OCSPSolicit
+			host: "127.0.0.1"
+			port: -1
+			pool_size: -1
+			tls {
+				cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+				key_file:  "configs/certs/ocsp/server-status-request-url-01-key.pem"
+				ca_file:   "configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+			}
+		}
+	`, storeDirB)))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		host: "127.0.0.1"
+		port: -1
+		server_name: "A"
+		store_dir: '%s'
+		cluster {
+			name: OCSPSolicit
+			host: "127.0.0.1"
+			port: -1
+			pool_size: -1
+			connect_retries: 10
+			routes: ["nats://127.0.0.1:%d"]
+			tls {
+				cert_file: "configs/certs/ocsp/server-status-request-url-02-cert.pem"
+				key_file:  "configs/certs/ocsp/server-status-request-url-02-key.pem"
+				ca_file:   "configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+			}
+			solicit_tls {
+				cert_file: "configs/certs/ocsp/server-status-request-url-03-cert.pem"
+				key_file:  "configs/certs/ocsp/server-status-request-url-03-key.pem"
+				ca_file:   "configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+			}
+		}
+	`, storeDirA, optsB.Cluster.Port)))
+	srvA, _ := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+}
+
 func TestOCSPLeaf(t *testing.T) {
 	const (
 		caCert = "configs/certs/ocsp/ca-cert.pem"

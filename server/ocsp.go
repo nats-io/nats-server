@@ -627,6 +627,16 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 		}
 		configs = append(configs, o)
 	}
+	if config := sopts.Cluster.SolicitTLSConfig; config != nil {
+		opts := sopts.Cluster.solicitTLSConfigOpts
+		o := &tlsConfigKind{
+			kind:      kindStringMap[ROUTER],
+			tlsConfig: config,
+			tlsOpts:   opts,
+			apply:     func(tc *tls.Config) { sopts.Cluster.SolicitTLSConfig = tc },
+		}
+		configs = append(configs, o)
+	}
 	if config := sopts.LeafNode.TLSConfig; config != nil {
 		opts := sopts.LeafNode.tlsConfigOpts
 		o := &tlsConfigKind{

@@ -173,3 +173,277 @@ func TestClusterTLSInsecure(t *testing.T) {
 		t.Fatalf("Did not get warning about using cluster's insecure setting")
 	}
 }
+
+func TestClusterSolicitTLSConfig(t *testing.T) {
+	confB := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/server-cert.pem"
+				key_file:  "./configs/certs/server-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+		}
+	`))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	// A's 'tls' cert is untrusted by B; only 'solicit_tls' is trusted, so the
+	// cluster forms only if the solicited route uses 'solicit_tls'.
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/tlsauth/server.pem"
+				key_file:  "./configs/certs/tlsauth/server-key.pem"
+				ca_file:   "./configs/certs/tlsauth/ca.pem"
+				timeout: 2
+			}
+			solicit_tls {
+				cert_file: "./configs/certs/client-cert.pem"
+				key_file:  "./configs/certs/client-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+			routes [
+				"nats://%s:%d"
+			]
+		}
+	`, optsB.Cluster.Host, optsB.Cluster.Port)))
+	srvA, _ := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+}
+
+func TestClusterSolicitTLSConfigUntrusted(t *testing.T) {
+	confB := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/server-cert.pem"
+				key_file:  "./configs/certs/server-key.pem"
+				ca_file:   "./configs/certs/tlsauth/ca.pem"
+				timeout: 2
+			}
+		}
+	`))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	l := &captureTLSError{ch: make(chan struct{}, 1)}
+	srvB.SetLogger(l, false, false)
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/server-cert.pem"
+				key_file:  "./configs/certs/server-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+			solicit_tls {
+				cert_file: "./configs/certs/client-cert.pem"
+				key_file:  "./configs/certs/client-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+			routes [
+				"nats://%s:%d"
+			]
+		}
+	`, optsB.Cluster.Host, optsB.Cluster.Port)))
+	srvA, _ := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	// Expect B to reject the outbound handshake.
+	select {
+	case <-l.ch:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Did not get TLS handshake error")
+	}
+
+	if nr := srvA.NumRoutes(); nr != 0 {
+		t.Fatalf("Expected no routes on srvA, got %d", nr)
+	}
+	if nr := srvB.NumRoutes(); nr != 0 {
+		t.Fatalf("Expected no routes on srvB, got %d", nr)
+	}
+}
+
+func TestClusterSolicitTLSPinnedCertsReload(t *testing.T) {
+	const (
+		fpServerCert = "89386860ea1222698ea676fc97310bdf2bff6f7e2b0420fac3b3f8f5a08fede5"
+		fpClientCert = "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+		fpBad        = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+
+	confB := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/server-cert.pem"
+				key_file:  "./configs/certs/server-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+		}
+	`))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	// A's tls pinned_certs uses client-cert's fingerprint, blocking B (which
+	// presents server-cert.pem) from reconnecting inbound after reload.
+	// A's solicit_tls pins server-cert.pem so the initial outbound route forms.
+	tmplA := `
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/client-cert.pem"
+				key_file:  "./configs/certs/client-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+				pinned_certs: ["%s"]
+			}
+			solicit_tls {
+				cert_file: "./configs/certs/client-cert.pem"
+				key_file:  "./configs/certs/client-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+				pinned_certs: ["%s"]
+			}
+			routes: ["nats://127.0.0.1:%d"]
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, fpClientCert, fpServerCert, optsB.Cluster.Port)))
+	srvA, _ := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	// Reload with a bad solicit pinned cert. The outbound route must drop.
+	if err := os.WriteFile(confA, []byte(fmt.Sprintf(tmplA, fpClientCert, fpBad, optsB.Cluster.Port)), 0660); err != nil {
+		t.Fatalf("Error rewriting file: %v", err)
+	}
+	if err := srvA.Reload(); err != nil {
+		t.Fatalf("on Reload got %v", err)
+	}
+	checkNumRoutes(t, srvA, 0)
+	checkNumRoutes(t, srvB, 0)
+}
+
+func TestClusterTLSPinnedCertsReloadKeepsSolicitedRoute(t *testing.T) {
+	const (
+		fpServerCert = "89386860ea1222698ea676fc97310bdf2bff6f7e2b0420fac3b3f8f5a08fede5"
+		fpClientCert = "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+		fpBad        = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+
+	confB := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/server-cert.pem"
+				key_file:  "./configs/certs/server-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+			}
+		}
+	`))
+	srvB, optsB := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	// Reload tls.pinned_certs to a bogus value; the solicited route should
+	// survive because it is governed by solicit_tls.pinned_certs, which still
+	// matches B's server cert.
+	tmplA := `
+		port: -1
+		cluster {
+			name: "xyz"
+			listen: "127.0.0.1:-1"
+			pool_size: -1
+			compression: "disabled"
+			tls {
+				cert_file: "./configs/certs/client-cert.pem"
+				key_file:  "./configs/certs/client-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+				pinned_certs: ["%s"]
+			}
+			solicit_tls {
+				cert_file: "./configs/certs/client-cert.pem"
+				key_file:  "./configs/certs/client-key.pem"
+				ca_file:   "./configs/certs/ca.pem"
+				timeout: 2
+				pinned_certs: ["%s"]
+			}
+			routes: ["nats://127.0.0.1:%d"]
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, fpClientCert, fpServerCert, optsB.Cluster.Port)))
+	srvA, _ := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	rzBefore, err := srvA.Routez(nil)
+	if err != nil {
+		t.Fatalf("Routez err: %v", err)
+	}
+	if len(rzBefore.Routes) == 0 {
+		t.Fatalf("Expected at least one route on srvA")
+	}
+	ridsBefore := make(map[uint64]bool, len(rzBefore.Routes))
+	for _, r := range rzBefore.Routes {
+		ridsBefore[r.Rid] = true
+	}
+
+	if err := os.WriteFile(confA, []byte(fmt.Sprintf(tmplA, fpBad, fpServerCert, optsB.Cluster.Port)), 0660); err != nil {
+		t.Fatalf("Error rewriting file: %v", err)
+	}
+	if err := srvA.Reload(); err != nil {
+		t.Fatalf("on Reload got %v", err)
+	}
+
+	checkClusterFormed(t, srvA, srvB)
+
+	rzAfter, err := srvA.Routez(nil)
+	if err != nil {
+		t.Fatalf("Routez err: %v", err)
+	}
+	for _, r := range rzAfter.Routes {
+		if !ridsBefore[r.Rid] {
+			t.Fatalf("Solicited route was reset after reload (new rid=%d)", r.Rid)
+		}
+	}
+}

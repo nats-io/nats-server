@@ -1332,8 +1332,24 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 		checkClients(LEAF, s.leafs, newOpts.LeafNode.TLSPinnedCerts)
 	}
 	if !reflect.DeepEqual(newOpts.Cluster.TLSPinnedCerts, curOpts.Cluster.TLSPinnedCerts) {
+		hasSolicitTLS := newOpts.Cluster.SolicitTLSConfig != nil
 		s.forEachRoute(func(c *client) {
+			if hasSolicitTLS && c.route != nil && c.route.didSolicit {
+				return
+			}
 			if !c.matchesPinnedCert(newOpts.Cluster.TLSPinnedCerts) {
+				disconnectClients = append(disconnectClients, c)
+			}
+		})
+	}
+	newSolicitSet := newOpts.Cluster.SolicitTLSPinnedCerts
+	if newOpts.Cluster.SolicitTLSConfig == nil {
+		newSolicitSet = newOpts.Cluster.TLSPinnedCerts
+	}
+	solicitRemoved := curOpts.Cluster.SolicitTLSConfig != nil && newOpts.Cluster.SolicitTLSConfig == nil
+	if solicitRemoved || !reflect.DeepEqual(newOpts.Cluster.SolicitTLSPinnedCerts, curOpts.Cluster.SolicitTLSPinnedCerts) {
+		s.forEachRoute(func(c *client) {
+			if c.route != nil && c.route.didSolicit && !c.matchesPinnedCert(newSolicitSet) {
 				disconnectClients = append(disconnectClients, c)
 			}
 		})

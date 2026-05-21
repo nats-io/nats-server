@@ -967,6 +967,66 @@ func TestTlsPinnedCertificates(t *testing.T) {
 	check(opts.Websocket.TLSPinnedCerts)
 }
 
+// Test the optional separate TLS config for solicited (outbound) routes.
+func TestClusterSolicitTLSConfig(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	cluster {
+		port: -1
+		name: "abc"
+		tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			timeout: 2
+		}
+		solicit_tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			timeout: 3
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"]
+		}
+	}`))
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	if opts.Cluster.TLSConfig == nil {
+		t.Fatalf("Expected cluster TLSConfig to be set")
+	}
+	if opts.Cluster.SolicitTLSConfig == nil {
+		t.Fatalf("Expected cluster SolicitTLSConfig to be set")
+	}
+	// The solicit config must be a distinct object from the inbound one.
+	if opts.Cluster.SolicitTLSConfig == opts.Cluster.TLSConfig {
+		t.Fatalf("Expected SolicitTLSConfig to be a separate config from TLSConfig")
+	}
+	if opts.Cluster.SolicitTLSTimeout != 3 {
+		t.Fatalf("Expected SolicitTLSTimeout to be 3, got %v", opts.Cluster.SolicitTLSTimeout)
+	}
+	if l := len(opts.Cluster.SolicitTLSPinnedCerts); l != 1 {
+		t.Fatalf("Expected 1 solicit pinned certificate, got %d", l)
+	}
+}
+
+// 'solicit_tls' has no effect without a 'tls' block and must be rejected.
+func TestClusterSolicitTLSConfigRequiresTLS(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	cluster {
+		port: -1
+		name: "abc"
+		solicit_tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+		}
+	}`))
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected an error for 'solicit_tls' without 'tls'")
+	}
+	if !strings.Contains(err.Error(), "solicit_tls") {
+		t.Fatalf("Expected error to mention solicit_tls, got %v", err)
+	}
+}
+
 func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`
 	authorization {

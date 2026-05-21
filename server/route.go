@@ -1977,12 +1977,19 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 	// Check for TLS
 	if tlsRequired {
 		tlsConfig := opts.Cluster.TLSConfig
+		tlsTimeout := opts.Cluster.TLSTimeout
+		tlsPinnedCerts := opts.Cluster.TLSPinnedCerts
 		if didSolicit {
+			if opts.Cluster.SolicitTLSConfig != nil {
+				tlsConfig = opts.Cluster.SolicitTLSConfig
+				tlsTimeout = opts.Cluster.SolicitTLSTimeout
+				tlsPinnedCerts = opts.Cluster.SolicitTLSPinnedCerts
+			}
 			// Copy off the config to add in ServerName if we need to.
 			tlsConfig = tlsConfig.Clone()
 		}
 		// Perform (server or client side) TLS handshake.
-		if resetTLSName, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, tlsName, opts.Cluster.TLSTimeout, opts.Cluster.TLSPinnedCerts); err != nil {
+		if resetTLSName, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, tlsName, tlsTimeout, tlsPinnedCerts); err != nil {
 			c.mu.Unlock()
 			if resetTLSName {
 				s.mu.Lock()

@@ -88,10 +88,17 @@ type ClusterOpts struct {
 	WriteDeadline     time.Duration      `json:"-"`
 	WriteTimeout      WriteTimeoutPolicy `json:"-"`
 
+	// Optional separate TLS config for solicited (outbound) routes.
+	SolicitTLSTimeout     float64       `json:"-"`
+	SolicitTLSConfig      *tls.Config   `json:"-"`
+	SolicitTLSPinnedCerts PinnedCertSet `json:"-"`
+
 	// Not exported (used in tests)
 	resolver netResolver
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
+	// Snapshot of configured solicit TLS options.
+	solicitTLSConfigOpts *TLSConfigOpts
 }
 
 // CompressionOpts defines the compression mode and optional configuration.
@@ -814,6 +821,9 @@ func (o *Options) Clone() *Options {
 	}
 	if o.Cluster.TLSConfig != nil {
 		clone.Cluster.TLSConfig = o.Cluster.TLSConfig.Clone()
+	}
+	if o.Cluster.SolicitTLSConfig != nil {
+		clone.Cluster.SolicitTLSConfig = o.Cluster.SolicitTLSConfig.Clone()
 	}
 	if o.Gateway.TLSConfig != nil {
 		clone.Gateway.TLSConfig = o.Gateway.TLSConfig.Clone()
@@ -2001,6 +2011,7 @@ func parseListen(v any) (*hostPort, error) {
 // parseCluster will parse the cluster config.
 func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
+	var solicitTLSTok token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
@@ -2095,6 +2106,17 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			opts.Cluster.TLSPinnedCerts = tlsopts.PinnedCerts
 			opts.Cluster.TLSCheckKnownURLs = tlsopts.TLSCheckKnownURLs
 			opts.Cluster.tlsConfigOpts = tlsopts
+		case "solicit_tls":
+			solicitTLSTok = tk
+			config, tlsopts, err := getTLSConfig(tk)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			opts.Cluster.SolicitTLSConfig = config
+			opts.Cluster.SolicitTLSTimeout = tlsopts.Timeout
+			opts.Cluster.SolicitTLSPinnedCerts = tlsopts.PinnedCerts
+			opts.Cluster.solicitTLSConfigOpts = tlsopts
 		case "cluster_advertise", "advertise":
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
@@ -2150,6 +2172,10 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 				continue
 			}
 		}
+	}
+	if opts.Cluster.SolicitTLSConfig != nil && opts.Cluster.TLSConfig == nil {
+		*errors = append(*errors, &configErr{solicitTLSTok,
+			"cluster 'solicit_tls' requires 'tls' to also be configured"})
 	}
 	return nil
 }
@@ -5969,6 +5995,9 @@ func setBaselineOptions(opts *Options) {
 		}
 		if opts.Cluster.TLSTimeout == 0 {
 			opts.Cluster.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
+		}
+		if opts.Cluster.SolicitTLSConfig != nil && opts.Cluster.SolicitTLSTimeout == 0 {
+			opts.Cluster.SolicitTLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 		}
 		if opts.Cluster.AuthTimeout == 0 {
 			opts.Cluster.AuthTimeout = getDefaultAuthTimeout(opts.Cluster.TLSConfig, opts.Cluster.TLSTimeout)

@@ -1099,6 +1099,9 @@ func validateCluster(o *Options) error {
 	if err := validatePinnedCerts(o.Cluster.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("cluster: %v", err)
 	}
+	if err := validatePinnedCerts(o.Cluster.SolicitTLSPinnedCerts); err != nil {
+		return fmt.Errorf("cluster: %v", err)
+	}
 	// Check that cluster name if defined matches any gateway name.
 	// Note that we have already verified that the gateway name does not have spaces.
 	if o.Gateway.Name != _EMPTY_ && o.Gateway.Name != o.Cluster.Name {
