@@ -200,6 +200,7 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 				return true
 			}
 			rollup := getMessageScheduleRollup(sm.hdr)
+			scheduleMsgId := getMessageScheduleMsgId(sm.hdr)
 			source := getMessageScheduleSource(sm.hdr)
 			if source != _EMPTY_ {
 				// Fall back to the scheduled message's own content if the source has no last message.
@@ -233,6 +234,9 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 			}
 			if rollup != _EMPTY_ {
 				hdr = genHeader(hdr, JSMsgRollup, rollup)
+			}
+			if scheduleMsgId != _EMPTY_ {
+				hdr = genHeader(hdr, JSMsgId, scheduleMsgId)
 			}
 			msgs = append(msgs, &inMsg{seq: seq, subj: target, hdr: hdr, msg: msg})
 			ms.markInflight(subj)

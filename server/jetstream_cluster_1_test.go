@@ -9921,6 +9921,68 @@ func TestJetStreamClusterScheduledMessageSubjectSourcing(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterScheduledMessageMsgId(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, storage), func(t *testing.T) {
+				c := createJetStreamClusterExplicit(t, "R3S", 3)
+				defer c.shutdown()
+
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				cfg := &StreamConfig{
+					Name:              "SchedulesEnabled",
+					Subjects:          []string{"foo.*"},
+					Storage:           storage,
+					Replicas:          replicas,
+					AllowMsgSchedules: true,
+					Duplicates:        2 * time.Minute,
+				}
+				_, err := jsStreamCreate(t, nc, cfg)
+				require_NoError(t, err)
+
+				schedulePattern := "@at 1970-01-01T00:00:00Z"
+
+				m := nats.NewMsg("foo.schedule")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Msg-Id", "schedule-dedupe-1")
+				m.Header.Set("Nats-Schedule-Msg-Id", "fire-dedupe")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+
+				m = nats.NewMsg("foo.schedule2")
+				m.Header.Set("Nats-Schedule", schedulePattern)
+				m.Header.Set("Nats-Schedule-Target", "foo.publish")
+				m.Header.Set("Nats-Msg-Id", "schedule-dedupe-2")
+				m.Header.Set("Nats-Schedule-Msg-Id", "fire-dedupe")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					mi, err := js.StreamInfo("SchedulesEnabled", &nats.StreamInfoRequest{SubjectsFilter: "foo.publish"})
+					if err != nil {
+						return err
+					}
+					if n := mi.State.Subjects["foo.publish"]; n != 1 {
+						return fmt.Errorf("expected 1 message on foo.publish, got %d", n)
+					}
+					return nil
+				})
+
+				rsm, err := js.GetLastMsg("SchedulesEnabled", "foo.publish")
+				require_NoError(t, err)
+				require_Equal(t, rsm.Header.Get("Nats-Msg-Id"), "fire-dedupe")
+
+				checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+					return checkState(t, c, globalAccountName, "SchedulesEnabled")
+				})
+			})
+		}
+	}
+}
+
 func TestJetStreamClusterScheduledMessageSubjectSourcingFallback(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		for _, storage := range []StorageType{FileStorage, MemoryStorage} {

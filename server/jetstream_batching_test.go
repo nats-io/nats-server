@@ -1160,6 +1160,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 					header: nats.Header{
 						JSSchedulePattern: {"@at 1970-01-01T00:00:00Z"},
 						JSScheduleTarget:  {"baz"},
+						JSScheduleMsgId:   {"fire-1"},
 					},
 				},
 				{

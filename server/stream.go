@@ -652,6 +652,7 @@ const (
 	JSScheduleRollup          = "Nats-Schedule-Rollup"
 	JSScheduleTarget          = "Nats-Schedule-Target"
 	JSScheduleSource          = "Nats-Schedule-Source"
+	JSScheduleMsgId           = "Nats-Schedule-Msg-Id"
 )
 
 // Headers for published KV messages.
@@ -5479,6 +5480,18 @@ func getMessageScheduleSource(hdr []byte) string {
 		return _EMPTY_
 	}
 	return string(getHeader(JSScheduleSource, hdr))
+}
+
+// Fast lookup of the message schedule msg-id from headers.
+// Returns empty when the header is absent or empty.
+func getMessageScheduleMsgId(hdr []byte) string {
+	if len(hdr) == 0 {
+		return _EMPTY_
+	}
+	if msgId := string(getHeader(JSScheduleMsgId, hdr)); msgId != _EMPTY_ {
+		return msgId
+	}
+	return _EMPTY_
 }
 
 // Fast lookup of message scheduler.

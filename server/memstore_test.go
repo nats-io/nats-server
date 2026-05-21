@@ -1371,6 +1371,92 @@ func TestMemStoreMessageSchedule(t *testing.T) {
 	require_Equal(t, bytesToString(getHeader(JSScheduleNext, im.hdr)), JSScheduleNextPurge)
 }
 
+func TestMemStoreMessageScheduleMsgId(t *testing.T) {
+	fs, err := newMemStore(
+		&StreamConfig{
+			Name: "TEST", Subjects: []string{"foo.*"}, Storage: MemoryStorage,
+			AllowMsgSchedules: true,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ch := make(chan *inMsg, 1)
+	fs.pmsgcb = func(im *inMsg) {
+		ch <- im
+	}
+
+	hdr := genHeader(nil, JSSchedulePattern, "@at 1970-01-01T00:00:00Z")
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	hdr = genHeader(hdr, JSScheduleMsgId, "fire-1")
+	_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+	require_NoError(t, err)
+
+	im := require_ChanRead(t, ch, time.Second*5)
+	require_Equal(t, im.subj, "foo.target")
+	require_Equal(t, bytesToString(getHeader(JSMsgId, im.hdr)), "fire-1")
+	require_Equal(t, len(getHeader(JSScheduleMsgId, im.hdr)), 0)
+}
+
+func TestMemStoreMessageScheduleEmptyMsgId(t *testing.T) {
+	fs, err := newMemStore(
+		&StreamConfig{
+			Name: "TEST", Subjects: []string{"foo.*"}, Storage: MemoryStorage,
+			AllowMsgSchedules: true,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ch := make(chan *inMsg, 1)
+	fs.pmsgcb = func(im *inMsg) {
+		ch <- im
+	}
+
+	hdr := genHeader(nil, JSSchedulePattern, "@at 1970-01-01T00:00:00Z")
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	hdr = genHeader(hdr, JSScheduleMsgId, "")
+	_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+	require_NoError(t, err)
+
+	im := require_ChanRead(t, ch, time.Second*5)
+	require_Equal(t, im.subj, "foo.target")
+	require_Equal(t, len(getHeader(JSMsgId, im.hdr)), 0)
+}
+
+func TestMemStoreMessageScheduleSourceMsgId(t *testing.T) {
+	fs, err := newMemStore(
+		&StreamConfig{
+			Name: "TEST", Subjects: []string{"foo.*"}, Storage: MemoryStorage,
+			AllowMsgSchedules: true,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ch := make(chan *inMsg, 1)
+	fs.pmsgcb = func(im *inMsg) {
+		ch <- im
+	}
+
+	srcHdr := genHeader(nil, JSMsgId, "source-id")
+	_, _, err = fs.StoreMsg("foo.data", srcHdr, []byte("data"), 0)
+	require_NoError(t, err)
+
+	hdr := genHeader(nil, JSSchedulePattern, "@at 1970-01-01T00:00:00Z")
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	hdr = genHeader(hdr, JSScheduleSource, "foo.data")
+	hdr = genHeader(hdr, JSScheduleMsgId, "fire-1")
+	_, _, err = fs.StoreMsg("foo.schedule", hdr, []byte("ignored"), 0)
+	require_NoError(t, err)
+
+	im := require_ChanRead(t, ch, time.Second*5)
+	require_Equal(t, im.subj, "foo.target")
+	require_True(t, bytes.Equal(im.msg, []byte("data")))
+	require_Equal(t, bytesToString(getHeader(JSMsgId, im.hdr)), "fire-1")
+	require_Equal(t, len(getHeader(JSScheduleMsgId, im.hdr)), 0)
+}
+
 func TestMemStoreNextWildcardMatch(t *testing.T) {
 	cfg := &StreamConfig{
 		Name:     "zzz",
