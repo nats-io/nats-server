@@ -1352,20 +1352,17 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if eo, ok := mset.consumers[o.name]; ok {
 		mset.mu.Unlock()
 		if !o.isDurable() || !o.isPushMode() {
-			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, NewJSConsumerNameExistError()
 		}
 		// If we are here we have already registered this durable. If it is still active that is an error.
 		if eo.isActive() {
-			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, NewJSConsumerExistingActiveError()
 		}
 		// Since we are here this means we have a potentially new durable so we should update here.
 		// Check that configs are the same.
 		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
-			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, NewJSConsumerReplacementWithDifferentNameError()
 		}
