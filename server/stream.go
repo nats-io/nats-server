@@ -9045,6 +9045,9 @@ func (mset *stream) numConsumers() int {
 
 // Lock should be held.
 func (mset *stream) setConsumer(o *consumer) {
+	if _, ok := mset.consumers[o.name]; ok {
+		return
+	}
 	mset.consumers[o.name] = o
 	if len(o.subjf) > 0 {
 		mset.numFilter++
@@ -9066,32 +9069,33 @@ func (mset *stream) setConsumer(o *consumer) {
 
 // Lock should be held.
 func (mset *stream) removeConsumer(o *consumer) {
-	if _, ok := mset.consumers[o.name]; ok {
-		delete(mset.consumers, o.name)
-
-		if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
-			mset.numFilter--
-		}
-		if (o.direct || o.sourcing) && mset.sourcingConsumers > 0 {
-			mset.sourcingConsumers--
-		}
-
-		// Now update consumers list as well
-		mset.clsMu.Lock()
-		for i, ol := range mset.cList {
-			if ol == o {
-				mset.cList = append(mset.cList[:i], mset.cList[i+1:]...)
-				break
-			}
-		}
-		// Always remove from the leader sublist.
-		if mset.csl != nil {
-			for _, sub := range o.signalSubs() {
-				mset.csl.Remove(sub, o)
-			}
-		}
-		mset.clsMu.Unlock()
+	if c, ok := mset.consumers[o.name]; !ok || c != o {
+		return
 	}
+	delete(mset.consumers, o.name)
+
+	if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
+		mset.numFilter--
+	}
+	if (o.direct || o.sourcing) && mset.sourcingConsumers > 0 {
+		mset.sourcingConsumers--
+	}
+
+	// Now update consumers list as well
+	mset.clsMu.Lock()
+	for i, ol := range mset.cList {
+		if ol == o {
+			mset.cList = append(mset.cList[:i], mset.cList[i+1:]...)
+			break
+		}
+	}
+	// Always remove from the leader sublist.
+	if mset.csl != nil {
+		for _, sub := range o.signalSubs() {
+			mset.csl.Remove(sub, o)
+		}
+	}
+	mset.clsMu.Unlock()
 }
 
 // swapSigSubs will update signal Subs for a new subject filter.
