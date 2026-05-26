@@ -1259,6 +1259,29 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, NewJSConsumerBadDurableNameError()
 	}
 
+	// Check if we already have this one registered.
+	if eo, ok := mset.consumers[o.name]; ok {
+		mset.mu.Unlock()
+		if !o.isDurable() || !o.isPushMode() {
+			_ = o.stop()
+			return nil, NewJSConsumerNameExistError()
+		}
+		// If we are here we have already registered this durable. If it is still active that is an error.
+		if eo.isActive() {
+			_ = o.stop()
+			return nil, NewJSConsumerExistingActiveError()
+		}
+		// Since we are here this means we have a potentially new durable so we should update here.
+		// Check that configs are the same.
+		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
+			_ = o.stop()
+			return nil, NewJSConsumerReplacementWithDifferentNameError()
+		}
+		// Once we are here we have a replacement push-based durable.
+		eo.updateDeliverSubject(o.cfg.DeliverSubject)
+		return eo, nil
+	}
+
 	// Setup our storage if not a direct consumer.
 	if !config.Direct {
 		store, err := mset.store.ConsumerStore(o.name, o.created, config)
@@ -1345,30 +1368,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			o.deleteWithoutAdvisory()
 			return nil, err
 		}
-	}
-
-	// Now register with mset and create the ack subscription.
-	// Check if we already have this one registered.
-	if eo, ok := mset.consumers[o.name]; ok {
-		mset.mu.Unlock()
-		if !o.isDurable() || !o.isPushMode() {
-			o.deleteWithoutAdvisory()
-			return nil, NewJSConsumerNameExistError()
-		}
-		// If we are here we have already registered this durable. If it is still active that is an error.
-		if eo.isActive() {
-			o.deleteWithoutAdvisory()
-			return nil, NewJSConsumerExistingActiveError()
-		}
-		// Since we are here this means we have a potentially new durable so we should update here.
-		// Check that configs are the same.
-		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
-			o.deleteWithoutAdvisory()
-			return nil, NewJSConsumerReplacementWithDifferentNameError()
-		}
-		// Once we are here we have a replacement push-based durable.
-		eo.updateDeliverSubject(o.cfg.DeliverSubject)
-		return eo, nil
 	}
 
 	// Set up the ack subscription for this consumer. Will use wildcard for all acks.

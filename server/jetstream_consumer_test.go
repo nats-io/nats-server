@@ -13194,3 +13194,40 @@ func TestJetStreamConsumerFlowControlResetOnLeaderChange(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerStore(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+
+	// Existing durable consumer registered under "dur" with an on-disk store.
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	cfs, ok := o.store.(*consumerFileStore)
+	require_True(t, ok)
+	odir := cfs.odir
+	require_NotEqual(t, odir, _EMPTY_)
+
+	// Sanity: the existing consumer's store directory exists.
+	_, err = os.Stat(odir)
+	require_NoError(t, err)
+
+	// Trigger the collision path. Since the consumer already exists, this should error.
+	_, err = mset.addConsumerWithAssignment(
+		&ConsumerConfig{AckPolicy: AckExplicit},
+		"dur", nil, false, ActionCreateOrUpdate, false,
+	)
+	require_Error(t, err, NewJSConsumerNameExistError())
+
+	// The existing consumer should still be registered, and its store directory intact.
+	require_Equal(t, mset.lookupConsumer("dur"), o)
+	_, err = os.Stat(odir)
+	require_NoError(t, err)
+}
