@@ -169,6 +169,46 @@ type psi struct {
 	total uint64
 	fblk  uint32
 	lblk  uint32
+	// blks is a sorted set of all block indices known to contain this subject.
+	// It is maintained lazily: entries are appended on write and are never trimmed
+	// on delete (callers must tolerate stale entries, same as fblk/lblk).
+	// nil means the block set is not yet populated (pre-v5 state files or in-progress rebuild).
+	blks []uint32
+}
+
+// psiAddBlock records blk in p.blks, keeping the slice sorted.
+// The common case (new block ≥ all existing entries) is O(1).
+func (p *psi) psiAddBlock(blk uint32) {
+	n := len(p.blks)
+	if n == 0 || p.blks[n-1] < blk {
+		p.blks = append(p.blks, blk)
+		return
+	}
+	// Already recorded?
+	if p.blks[n-1] == blk {
+		return
+	}
+	// Insertion into interior (recovery or out-of-order); keep sorted, deduplicate.
+	i := sort.Search(n, func(i int) bool { return p.blks[i] >= blk })
+	if i < n && p.blks[i] == blk {
+		return // already present
+	}
+	p.blks = append(p.blks, 0)
+	copy(p.blks[i+1:], p.blks[i:])
+	p.blks[i] = blk
+}
+
+// psiNextBlock returns the smallest block index in p.blks that is strictly
+// greater than after, or (0, false) if none exists.
+func (p *psi) psiNextBlock(after uint32) (uint32, bool) {
+	if len(p.blks) == 0 {
+		return 0, false
+	}
+	i := sort.Search(len(p.blks), func(i int) bool { return p.blks[i] > after })
+	if i >= len(p.blks) {
+		return 0, false
+	}
+	return p.blks[i], true
 }
 
 type fileStore struct {
@@ -1994,13 +2034,25 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 					return errCorruptState
 				}
 				bi += lsubj
-				psi := psi{total: readU64(), fblk: uint32(readU64())}
-				if psi.total > 1 || version >= 4 {
-					psi.lblk = uint32(readU64())
+				np := psi{total: readU64(), fblk: uint32(readU64())}
+				if np.total > 1 || version >= 4 {
+					np.lblk = uint32(readU64())
 				} else {
-					psi.lblk = psi.fblk
+					np.lblk = np.fblk
 				}
-				fs.psim.Insert(subj, psi)
+				if version >= 5 {
+					nblks := int(readU64())
+					if nblks > 0 {
+						np.blks = make([]uint32, nblks)
+						var prev uint32
+						for i := 0; i < nblks; i++ {
+							delta := uint32(readU64())
+							prev += delta
+							np.blks[i] = prev
+						}
+					}
+				}
+				fs.psim.Insert(subj, np)
 				fs.tsl += lsubj
 			}
 		}
@@ -3450,6 +3502,17 @@ func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool, bi int) (int, e
 			}
 		})
 	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
+		// If we have a full block list, use it to skip directly to the next known block.
+		if len(psi.blks) > 0 {
+			mbi := fs.blks[bi].getIndex()
+			if next, ok := psi.psiNextBlock(mbi); ok {
+				if mb := fs.bim[next]; mb != nil {
+					ni, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
+					return ni, nil
+				}
+			}
+			// next block not in bim (retired) — fall through to selectSkipFirstBlock
+		}
 		start, stop = psi.fblk, psi.lblk
 	}
 	// Nothing was found.
@@ -4935,9 +4998,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 			info.total++
 			if index > info.lblk {
 				info.lblk = index
+				info.psiAddBlock(index)
 			}
 		} else {
-			fs.psim.Insert(stringToBytes(subj), psi{total: 1, fblk: index, lblk: index})
+			np := psi{total: 1, fblk: index, lblk: index}
+			np.psiAddBlock(index)
+			fs.psim.Insert(stringToBytes(subj), np)
 			fs.tsl += len(subj)
 		}
 	}
@@ -9181,21 +9247,39 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 			} else if err != ErrStoreMsgNotFound {
 				return nil, 0, err
 			} else {
-				// Nothing found in this block. We missed, if first block (bi) check psim.
-				// Similar to above if start <= first seq.
-				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
-				// We should not do this at all if we are already on the last block.
-				// Also if we are a wildcard do not check if large subject space.
+				// Nothing found in this block. Try to skip ahead using the psim block list.
+				// For a literal subject with a populated blks set, we can binary-search to the
+				// next block known to contain the subject, skipping all interior-sparse blocks.
 				const wcMaxSizeToCheck = 64 * 1024
+				if !wc {
+					if info, ok := fs.psim.Find(stringToBytes(filter)); ok && len(info.blks) > 0 {
+						mbi := fs.blks[i].getIndex()
+						if next, ok := info.psiNextBlock(mbi); ok {
+							if nmb := fs.bim[next]; nmb != nil {
+								if nbi, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&nmb.last.seq)); nbi > i {
+									if expireOk {
+										mb.tryForceExpireCache()
+									}
+									i = nbi - 1 // loop will i++
+									continue
+								}
+							}
+						} else {
+							// No more blocks in blks — subject exhausted.
+							if expireOk {
+								mb.tryForceExpireCache()
+							}
+							return nil, fs.state.LastSeq, ErrStoreEOF
+						}
+					}
+				}
+				// Fallback: first-block psim skip (wildcard or blks not yet populated).
 				if i == bi && i < len(fs.blks)-1 && (!wc || fs.psim.Size() < wcMaxSizeToCheck) {
 					nbi, err := fs.checkSkipFirstBlock(filter, wc, bi)
 					// Nothing available.
 					if err == ErrStoreEOF {
 						return nil, fs.state.LastSeq, ErrStoreEOF
 					}
-					// See if we can jump ahead here.
-					// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
-					// For v2 will track all blocks that have matches for psim.
 					if nbi > i {
 						i = nbi - 1 // For the iterator condition i++
 					}
@@ -11431,8 +11515,11 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) error {
 				if mb.index > info.lblk {
 					info.lblk = mb.index
 				}
+				info.psiAddBlock(mb.index)
 			} else {
-				fs.psim.Insert(bsubj, psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index})
+				np := psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index}
+				np.psiAddBlock(mb.index)
+				fs.psim.Insert(bsubj, np)
 				fs.tsl += len(bsubj)
 			}
 		}
@@ -11598,10 +11685,11 @@ func (fs *fileStore) cancelSyncTimer() {
 // The full state file is versioned.
 // - 0x1: original binary index.db format
 // - 0x2: adds support for TTL count field after num deleted
+// - 0x5: psim entries include a full sorted block-index list after fblk/lblk
 const (
 	fullStateMagic      = uint8(11)
 	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
-	fullStateVersion    = uint8(4) // What is the current version written out to index.db?
+	fullStateVersion    = uint8(5) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -11763,6 +11851,13 @@ func (fs *fileStore) _writeFullState(force bool) error {
 			buf = binary.AppendUvarint(buf, psi.total)
 			buf = binary.AppendUvarint(buf, uint64(psi.fblk))
 			buf = binary.AppendUvarint(buf, uint64(psi.lblk))
+			// v5: write block-index list (count followed by deltas from fblk)
+			buf = binary.AppendUvarint(buf, uint64(len(psi.blks)))
+			var prev uint32
+			for _, blk := range psi.blks {
+				buf = binary.AppendUvarint(buf, uint64(blk-prev))
+				prev = blk
+			}
 		})
 	}
 

@@ -7802,6 +7802,123 @@ func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
 	require_Equal(t, loaded, 1)
 }
 
+// TestFileStorePSIMBlockListSparseSkip verifies that LoadNextMsg uses the psim block
+// list to skip interior-sparse blocks entirely for a literal subject. It checks both
+// that all messages are returned correctly and that cold blocks containing only filler
+// subjects are never loaded from disk.
+func TestFileStorePSIMBlockListSparseSkip(t *testing.T) {
+	sd := t.TempDir()
+	// BlockSize 256 forces each message into its own block (subject + payload > 128 B).
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Layout (each row = one block):
+	//   sparse.subject (seq 1)
+	//   filler.A … filler.H  (8 interior blocks with no sparse.subject)
+	//   sparse.subject (seq 10)
+	//   filler.I … filler.P  (8 more interior blocks)
+	//   sparse.subject (seq 19)
+	const sparseSubj = "sparse.subject"
+	// Payload sized so that any single message exceeds BlockSize=256, guaranteeing
+	// each message lands in its own block (overhead: 22 hdr + subj_len + 8 cksum).
+	payload := bytes.Repeat([]byte("x"), 230)
+	var sparseSeqs []uint64
+	publish := func(subj string) uint64 {
+		seq, _, err := fs.StoreMsg(subj, nil, payload, 0)
+		require_NoError(t, err)
+		return seq
+	}
+
+	sparseSeqs = append(sparseSeqs, publish(sparseSubj))
+	for i := 0; i < 8; i++ {
+		publish(fmt.Sprintf("filler.%c", 'A'+i))
+	}
+	sparseSeqs = append(sparseSeqs, publish(sparseSubj))
+	for i := 0; i < 8; i++ {
+		publish(fmt.Sprintf("filler.%c", 'I'+i))
+	}
+	sparseSeqs = append(sparseSeqs, publish(sparseSubj))
+
+	// Verify psim blks is populated for sparseSubj before restart.
+	fs.mu.RLock()
+	info, ok := fs.psim.Find([]byte(sparseSubj))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, len(info.blks), 3)
+
+	// Close and reopen to ensure all data is on disk, then evict all cache and fss
+	// to force cold reads (simulating a server restart followed by new consumer replay).
+	cfg := fs.cfg
+	fcfg := fs.fcfg
+	require_NoError(t, fs.Stop())
+	var err2 error
+	fs, err2 = newFileStore(fcfg, cfg.StreamConfig)
+	require_NoError(t, err2)
+	defer fs.Stop()
+
+	// Sanity-check psim block list survived the state reload (v5 serialization round-trip).
+	fs.mu.RLock()
+	info, ok = fs.psim.Find([]byte(sparseSubj))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, len(info.blks), 3)
+
+	// Evict all in-memory state to force cold disk reads.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss, mb.cache = nil, nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	// Scan all messages for sparseSubj via LoadNextMsg.
+	var got []uint64
+	var sm StoreMsg
+	seq := uint64(1)
+	for {
+		msg, next, err := fs.LoadNextMsg(sparseSubj, false, seq, &sm)
+		if err == ErrStoreEOF {
+			break
+		}
+		require_NoError(t, err)
+		got = append(got, msg.seq)
+		seq = next + 1
+	}
+
+	// All three sparse messages must be found in order.
+	require_Equal(t, len(got), len(sparseSeqs))
+	for i, s := range sparseSeqs {
+		require_Equal(t, got[i], s)
+	}
+
+	// The blocks strictly interior to each sparse gap (i.e., neither sparse hits nor
+	// the scan-start blocks that incur one miss before jumping) must not be loaded.
+	// Layout:
+	//   block 1  = sparse (seq 1)   ← loaded: first hit
+	//   block 2  = filler.A         ← loaded: scan-start for start=2 (one miss before jump)
+	//   blocks 3-9  = filler        ← must NOT be loaded (interior gap)
+	//   block 10 = sparse (seq 10)  ← loaded: jumped to via blks[]
+	//   block 11 = filler.I         ← loaded: scan-start for start=11 (one miss before jump)
+	//   blocks 12-18 = filler       ← must NOT be loaded (interior gap)
+	//   block 19 = sparse (seq 19)  ← loaded: jumped to via blks[]
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		idx := mb.index
+		isInteriorFiller := (idx >= 3 && idx <= 9) || (idx >= 12 && idx <= 18)
+		wasLoaded := mb.cache != nil || mb.fss != nil
+		mb.mu.RUnlock()
+		if isInteriorFiller && wasLoaded {
+			t.Errorf("interior filler block %d was unexpectedly loaded (psim skip not working)", idx)
+		}
+	}
+	fs.mu.RUnlock()
+}
+
 func TestFileStoreCheckSkipFirstBlockBug(t *testing.T) {
 	sd := t.TempDir()
 	fs, err := newFileStore(
