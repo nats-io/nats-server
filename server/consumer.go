@@ -1250,7 +1250,8 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 	if isDurableConsumer(config) {
 		if len(config.Durable) > JSMaxNameLen {
 			mset.mu.Unlock()
-			o.deleteWithoutAdvisory()
+			// Release the temporary consumer we built; it was never registered.
+			_ = o.stop()
 			return nil, NewJSConsumerNameTooLongError(JSMaxNameLen)
 		}
 		o.name = config.Durable
@@ -1288,7 +1289,8 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 
 	if !isValidAssetName(o.name) {
 		mset.mu.Unlock()
-		o.deleteWithoutAdvisory()
+		// Release the temporary consumer we built; it was never registered.
+		_ = o.stop()
 		return nil, NewJSConsumerBadDurableNameError()
 	}
 
@@ -1312,6 +1314,8 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 		}
 		// Once we are here we have a replacement push-based durable.
 		eo.updateDeliverSubject(o.cfg.DeliverSubject)
+		// Release the temporary consumer we built; it was never registered.
+		_ = o.stop()
 		return eo, nil
 	}
 
@@ -1320,7 +1324,8 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 		store, err := mset.store.ConsumerStore(o.name, o.created, config)
 		if err != nil {
 			mset.mu.Unlock()
-			o.deleteWithoutAdvisory()
+			// Store creation failed, so just cleanup.
+			_ = o.stop()
 			return nil, NewJSConsumerStoreFailedError(err)
 		}
 		o.store = store
@@ -1390,6 +1395,8 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 			if err != nil {
 				s.Errorf("JetStream consumer '%s > %s > %s' errored while updating state: %v", o.acc.Name, o.stream, o.name, err)
 				mset.mu.Unlock()
+				// Release the temporary consumer we built; it was never registered.
+				_ = o.stop()
 				return nil, NewJSConsumerStoreFailedError(err)
 			}
 		}
@@ -1397,8 +1404,15 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 		// Clustered non-direct consumers defer this to setLeader so the
 		// expensive store scans don't block the meta apply goroutine.
 		if err := o.selectStartingSeqNo(); err != nil {
+			// Delete our store while holding the stream lock, so a concurrent create
+			// for the same name cannot have registered and be sharing this on-disk
+			// directory. Then release the rest of the consumer non-destructively.
+			if o.store != nil {
+				_ = o.store.Delete()
+				o.store = nil
+			}
 			mset.mu.Unlock()
-			o.deleteWithoutAdvisory()
+			_ = o.stop()
 			return nil, err
 		}
 	}

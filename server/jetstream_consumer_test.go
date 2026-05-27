@@ -13276,3 +13276,84 @@ func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerStore(t *testi
 	_, err = os.Stat(odir)
 	require_NoError(t, err)
 }
+
+func TestJetStreamConsumerFailedRecoverStateDoesNotLeakInternalClients(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+	sys := s.SystemAccount()
+
+	// Stream stays empty, so its last sequence is 0 while the recovered consumer below
+	// has a much higher delivered sequence: this drives the reconcile path.
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	// Set up a consumer store whose delivered sequence is far ahead of the stream.
+	cfg := &ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit}
+	cs, err := mset.store.ConsumerStore("dur", time.Now().UTC(), cfg)
+	require_NoError(t, err)
+	odir := cs.(*consumerFileStore).odir // Capture before stop.
+	require_NoError(t, cs.ForceUpdate(&ConsumerState{
+		Delivered: SequencePair{Consumer: 100, Stream: 100},
+		AckFloor:  SequencePair{Consumer: 100, Stream: 100},
+	}))
+	require_NoError(t, cs.Stop())
+
+	// Make the store directory read-only so the reconcile fails.
+	require_NoError(t, os.Chmod(odir, 0o500))
+	defer os.Chmod(odir, 0o700) // restore before Shutdown cleans up
+
+	numClients := func(a *Account) int {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		return len(a.clients)
+	}
+	accBefore, sysBefore := numClients(acc), numClients(sys)
+
+	// Trigger recovery multiple times to exploit if internal clients are leaked.
+	const iters = 20
+	for range iters {
+		_, err = mset.addConsumerWithAssignment(cfg, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "error creating store for consumer")
+	}
+
+	// Validate that no internal clients were leaked.
+	const tolerance = 5
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if d := numClients(acc) - accBefore; d > tolerance {
+			return fmt.Errorf("account leaked ~%d internal clients over %d failed recovery creates", d, iters)
+		}
+		if d := numClients(sys) - sysBefore; d > tolerance {
+			return fmt.Errorf("system account leaked ~%d internal clients over %d failed recovery creates", d, iters)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamConsumerCreateNameTooLongDoesNotDeleteObsStream(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// A stream literally named "obs".
+	acc := s.globalAccount()
+	obs, err := acc.addStream(&StreamConfig{Name: "obs", Subjects: []string{"obs.>"}, Storage: FileStorage})
+	require_NoError(t, err)
+	fs, ok := obs.store.(*fileStore)
+	require_True(t, ok)
+	obsDir := fs.fcfg.StoreDir
+	_, err = os.Stat(obsDir)
+	require_NoError(t, err)
+
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	// Durable name longer than the limit: rejected before the consumer is registered.
+	_, err = mset.addConsumer(&ConsumerConfig{Durable: strings.Repeat("a", JSMaxNameLen+1), AckPolicy: AckExplicit})
+	require_Error(t, err)
+
+	// The unrelated "obs" stream's directory must still exist.
+	_, err = os.Stat(obsDir)
+	require_NoError(t, err)
+}
