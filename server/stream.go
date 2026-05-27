@@ -570,7 +570,6 @@ type stream struct {
 	term      uint64                  // Raft term, used to determine if we are still the leader for the current term (if applicable, 0 otherwise).
 	lmsgId    string                  // The de-duplication message ID of the last message stored in the stream.
 	consumers map[string]*consumer    // The consumers for this stream.
-	numFilter int                     // The number of filtered consumers.
 	cfg       StreamConfig            // The stream's config.
 	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
 	created   time.Time               // Time the stream was created.
@@ -9049,9 +9048,6 @@ func (mset *stream) setConsumer(o *consumer) {
 		return
 	}
 	mset.consumers[o.name] = o
-	if len(o.subjf) > 0 {
-		mset.numFilter++
-	}
 	if o.direct || o.sourcing {
 		mset.sourcingConsumers++
 	}
@@ -9074,9 +9070,6 @@ func (mset *stream) removeConsumer(o *consumer) {
 	}
 	delete(mset.consumers, o.name)
 
-	if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
-		mset.numFilter--
-	}
 	if (o.direct || o.sourcing) && mset.sourcingConsumers > 0 {
 		mset.sourcingConsumers--
 	}
@@ -9135,16 +9128,6 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 	}
 	o.mu.Unlock()
 	mset.clsMu.Unlock()
-
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-
-	if mset.numFilter > 0 && len(o.subjf) > 0 {
-		mset.numFilter--
-	}
-	if len(newFilters) > 0 {
-		mset.numFilter++
-	}
 }
 
 // lookupConsumer will retrieve a consumer by name.
