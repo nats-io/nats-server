@@ -7809,10 +7809,10 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	checkNumFilter := func(expected int) {
 		t.Helper()
 		mset.mu.RLock()
-		nf := mset.numFilter
+		nf := int(mset.csl.Count())
 		mset.mu.RUnlock()
 		if nf != expected {
-			t.Fatalf("Expected stream's numFilter to be %d, got %d", expected, nf)
+			t.Fatalf("Expected stream's filters to be %d, got %d", expected, nf)
 		}
 	}
 
@@ -7826,7 +7826,7 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// and expect that numFilter reports correctly.
+	// and expect that it reports correctly.
 	checkNumFilter(0)
 }
 
