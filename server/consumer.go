@@ -1271,16 +1271,6 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 			config.Name = o.name
 		}
 	}
-	// Create ackMsgs queue now that we have a consumer name
-	o.ackMsgs = newIPQueue[*jsAckMsg](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' ackMsgs", accName, o.name, cfg.Name))
-
-	// Create our request waiting queue.
-	if o.isPullMode() {
-		o.waiting = newWaitQueue(config.MaxWaiting)
-		// Create our internal queue for next msg requests.
-		o.nextMsgReqs = newIPQueue[*nextMsgReq](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' pull requests", accName, o.name, cfg.Name))
-	}
-
 	// already under lock, mset.Name() would deadlock
 	o.stream = cfg.Name
 	o.ackEventT = JSMetricConsumerAckPre + "." + o.stream + "." + o.name
@@ -1415,6 +1405,15 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 			_ = o.stop()
 			return nil, err
 		}
+	}
+
+	// Create ackMsgs queue now that we have a consumer name
+	o.ackMsgs = newIPQueue[*jsAckMsg](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' ackMsgs", accName, o.name, cfg.Name))
+
+	// Create our request waiting queue.
+	if o.isPullMode() {
+		o.waiting = newWaitQueue(config.MaxWaiting)
+		o.nextMsgReqs = newIPQueue[*nextMsgReq](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' pull requests", accName, o.name, cfg.Name))
 	}
 
 	// Set up the ack subscription for this consumer. Will use wildcard for all acks.
