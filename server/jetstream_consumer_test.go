@@ -13312,3 +13312,33 @@ func TestJetStreamConsumerCreateNameTooLongDoesNotDeleteObsStream(t *testing.T) 
 	_, err = os.Stat(obsDir)
 	require_NoError(t, err)
 }
+
+func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerQueues(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	// A pull consumer registers two queues in the server's ipQueues map.
+	ackKey, reqKey := o.ackMsgs.name, o.nextMsgReqs.name
+	if _, ok := s.ipQueues.Load(ackKey); !ok {
+		t.Fatal("precondition: existing consumer ackMsgs queue not registered")
+	}
+
+	// Trigger the name collision path.
+	_, err = mset.addConsumerWithAssignment(
+		&ConsumerConfig{AckPolicy: AckExplicit}, "dur", nil, false, ActionCreateOrUpdate, false,
+	)
+	require_Error(t, err)
+
+	// The existing registry entries must still be present and still point at its queues.
+	v, ok := s.ipQueues.Load(ackKey)
+	require_True(t, ok)
+	require_Equal(t, v.(*ipQueue[*jsAckMsg]), o.ackMsgs)
+	v, ok = s.ipQueues.Load(reqKey)
+	require_True(t, ok)
+	require_Equal(t, v.(*ipQueue[*nextMsgReq]), o.nextMsgReqs)
+}
