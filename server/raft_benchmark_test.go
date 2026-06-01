@@ -42,6 +42,7 @@ func benchmarkWriteTermVote(b *testing.B, workers int) {
 		wtvs[i] = wtv
 	}
 
+	dios := defaultDiskIOSemaphore()
 	var next atomic.Uint64
 	var wg sync.WaitGroup
 	type latencyStats struct {
@@ -67,7 +68,7 @@ func benchmarkWriteTermVote(b *testing.B, workers int) {
 				}
 				binary.LittleEndian.PutUint64(wtv[:termLen], n)
 				start := time.Now()
-				if err := writeTermVote(dir, wtv); err != nil {
+				if err := writeTermVote(dios, dir, wtv); err != nil {
 					b.Errorf("writeTermVote failed: %v", err)
 					return
 				}
