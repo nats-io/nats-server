@@ -159,6 +159,7 @@ type raft struct {
 	id      string         // Node ID
 	wg      sync.WaitGroup // Wait for running goroutines to exit on shutdown
 
+	dios  *diskIOSemaphore
 	wal   WAL         // WAL store (filestore or memstore)
 	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
 	bytes uint64      // Total amount of bytes stored in the WAL. (Saves us from needing to call wal.FastState very often)
@@ -413,13 +414,13 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
-	return writePeerState(cfg.Store, &peerState{knownPeers, expected, extUndetermined})
+	return writePeerState(s.diskIOSemaphore(), cfg.Store, &peerState{knownPeers, expected, extUndetermined})
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
 func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (*raft, error) {
 	restorePeerState := func(n *raft) error {
-		ps, err := readPeerState(cfg.Store)
+		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
 		if err != nil {
 			return err
 		}
@@ -450,6 +451,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		sd:       cfg.Store,
 		wal:      cfg.Log,
 		wtype:    cfg.Log.Type(),
+		dios:     s.diskIOSemaphore(),
 		track:    cfg.Track,
 		peers:    make(map[string]*lps),
 		acks:     make(map[uint64]map[string]struct{}),
@@ -1362,7 +1364,7 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
 
-	if err := writeFileWithSync(sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
+	if err := writeFileWithSync(n.dios, sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
 		return err
@@ -1554,7 +1556,7 @@ func (c *checkpoint) InstallSnapshot(data []byte) (uint64, error) {
 
 	// Unlock while writing.
 	n.Unlock()
-	err := writeFileWithSync(c.snapFile, encoded, defaultFilePerms)
+	err := writeFileWithSync(n.dios, c.snapFile, encoded, defaultFilePerms)
 	n.Lock()
 	// On any failure path, drop the file we just wrote so it doesn't get
 	// picked up by setupLastSnapshot on restart. Skip the remove if it's the
@@ -1732,9 +1734,9 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 		return nil, errNoSnapAvailable
 	}
 
-	<-dios
+	n.dios.acquire()
 	buf, err := os.ReadFile(n.snapfile)
-	dios <- struct{}{}
+	n.dios.release()
 
 	if err != nil {
 		n.warn("Error reading snapshot: %v", err)
@@ -4943,25 +4945,25 @@ func (n *raft) writePeerState(ps *peerState) {
 	}
 	// Stamp latest and write the peer state file.
 	n.wps = pse
-	if err := writePeerState(n.sd, ps); err != nil && !n.isClosed() {
+	if err := writePeerState(n.dios, n.sd, ps); err != nil && !n.isClosed() {
 		n.setWriteErrLocked(err)
 		n.warn("Error writing peer state file for %q: %v", n.group, err)
 	}
 }
 
 // Writes out our peer state outside of a specific raft context.
-func writePeerState(sd string, ps *peerState) error {
+func writePeerState(dios *diskIOSemaphore, sd string, ps *peerState) error {
 	psf := filepath.Join(sd, peerStateFile)
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return writeFileWithSync(psf, encodePeerState(ps), defaultFilePerms)
+	return writeFileWithSync(dios, psf, encodePeerState(ps), defaultFilePerms)
 }
 
-func readPeerState(sd string) (ps *peerState, err error) {
-	<-dios
+func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) {
+	dios.acquire()
 	buf, err := os.ReadFile(filepath.Join(sd, peerStateFile))
-	dios <- struct{}{}
+	dios.release()
 
 	if err != nil {
 		return nil, err
@@ -4974,20 +4976,20 @@ const termLen = 8 // uint64
 const termVoteLen = idLen + termLen
 
 // Writes out our term & vote outside of a specific raft context.
-func writeTermVote(sd string, wtv []byte) error {
+func writeTermVote(dios *diskIOSemaphore, sd string, wtv []byte) error {
 	psf := filepath.Join(sd, termVoteFile)
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return writeFileWithSync(psf, wtv, defaultFilePerms)
+	return writeFileWithSync(dios, psf, wtv, defaultFilePerms)
 }
 
 // readTermVote will read the largest term and who we voted from to stable storage.
 // Lock should be held.
 func (n *raft) readTermVote() (term uint64, voted string, err error) {
-	<-dios
+	n.dios.acquire()
 	buf, err := os.ReadFile(filepath.Join(n.sd, termVoteFile))
-	dios <- struct{}{}
+	n.dios.release()
 
 	if err != nil {
 		return 0, noVote, err
@@ -5091,7 +5093,7 @@ func (n *raft) writeTermVote() error {
 	}
 	// Stamp latest and write the term & vote file.
 	n.wtv = b
-	if err := writeTermVote(n.sd, n.wtv); err != nil && !n.isClosed() {
+	if err := writeTermVote(n.dios, n.sd, n.wtv); err != nil && !n.isClosed() {
 		// Clear wtv since we failed.
 		n.wtv = nil
 		n.setWriteErrLocked(err)

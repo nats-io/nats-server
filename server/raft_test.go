@@ -484,6 +484,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 		resp:  newIPQueue[*appendEntryResponse](s, "resp"),
 		leadc: make(chan bool, 1), // for switchState
 		sd:    t.TempDir(),
+		dios:  defaultDiskIOSemaphore(),
 	}
 	n.state.Store(int32(Leader))
 	require_Equal(t, n.prop.len(), 0)
@@ -3202,7 +3203,7 @@ func TestNRGLoadLastSnapshotCleansLegacyZeroIndexSnapshot(t *testing.T) {
 		data:      []byte("legacy"),
 	}
 	sfile := filepath.Join(snapDir, fmt.Sprintf(snapFileT, legacy.lastTerm, legacy.lastIndex))
-	require_NoError(t, writeFileWithSync(sfile, n.encodeSnapshot(legacy), defaultFilePerms))
+	require_NoError(t, writeFileWithSync(n.dios, sfile, n.encodeSnapshot(legacy), defaultFilePerms))
 
 	n.Lock()
 	n.snapfile = sfile
@@ -5875,7 +5876,7 @@ func TestNRGCheckpointInstallSnapshotAbortDuringWrite(t *testing.T) {
 		drain:
 			for {
 				select {
-				case <-dios:
+				case <-n.dios.ch:
 					drained++
 				default:
 					break drain
@@ -5883,7 +5884,7 @@ func TestNRGCheckpointInstallSnapshotAbortDuringWrite(t *testing.T) {
 			}
 			refill := func() {
 				for i := 0; i < drained; i++ {
-					dios <- struct{}{}
+					n.dios.ch <- struct{}{}
 				}
 				drained = 0
 			}
@@ -6852,7 +6853,7 @@ func TestNRGBootstrapExpectedClusterSize(t *testing.T) {
 			// allPeersKnown=false forces the estimate path.
 			require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
 
-			ps, err := readPeerState(cfg.Store)
+			ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
 			require_NoError(t, err)
 			require_Equal(t, ps.clusterSize, test.expected)
 		})

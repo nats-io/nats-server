@@ -190,6 +190,7 @@ type Server struct {
 	sys                 *internal
 	sysAcc              atomic.Pointer[Account]
 	js                  atomic.Pointer[jetStream]
+	dios                *diskIOSemaphore
 	isMetaLeader        atomic.Bool
 	jsClustered         atomic.Bool
 	accounts            sync.Map
@@ -773,6 +774,7 @@ func NewServer(opts *Options) (*Server, error) {
 		rateLimitLoggingCh: make(chan time.Duration, 1),
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
+		dios:               defaultDiskIOSemaphore(),
 	}
 
 	// Delayed API response queue. Create regardless if JetStream is configured
@@ -4773,4 +4775,11 @@ func (s *Server) LDMClientByID(id uint64) error {
 	} else {
 		return errors.New("client does not support Lame Duck Mode or is not ready to receive the notification")
 	}
+}
+
+func (s *Server) diskIOSemaphore() *diskIOSemaphore {
+	if s == nil || s.dios == nil {
+		return defaultDiskIOSemaphore()
+	}
+	return s.dios
 }

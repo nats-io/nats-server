@@ -14298,9 +14298,9 @@ func TestFileStoreConvertToEncryptedDoesNotResurrectXoredCache(t *testing.T) {
 	rbek, err := genBlockEncryptionKey(fcfg.Cipher, mb.seed, mb.nonce)
 	require_NoError(t, err)
 	rbek.XORKeyStream(encBuf, encBuf)
-	<-dios
+	fs.dios.acquire()
 	err = os.WriteFile(mb.mfn, encBuf, defaultFilePerms)
-	dios <- struct{}{}
+	fs.dios.release()
 	require_NoError(t, err)
 	recycleMsgBlockBuf(encBuf)
 
