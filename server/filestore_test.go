@@ -8759,6 +8759,77 @@ func Benchmark_FileStoreSyncDeletedPartialBlocks(b *testing.B) {
 	}
 }
 
+// Based on TestNoRaceJetStreamConsumerFileStoreConcurrentDiskIO, a test that
+// was introduced together with the disk IO semaphore "dios".
+func BenchmarkFileStoreConsumerStoreConcurrentDiskIO(b *testing.B) {
+	const consumersPerIteration = 10000
+
+	// This compares the same operations of that using a filestore configure with
+	// default "dios", against a filestore with an unbounded "dios" (make it as
+	// (large as the number of consumer stores created by the test).
+	for _, test := range []struct {
+		name string
+		dios *diskIOSemaphore
+	}{
+		{name: "default_dios", dios: defaultDiskIOSemaphore()},
+		{name: "unbounded_dios", dios: newDiskIOSemaphore(consumersPerIteration)},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			storeRoot := benchmarkDir(b)
+			var dioLimit int
+
+			b.StopTimer()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				storeDir := filepath.Join(storeRoot, fmt.Sprintf("%d", i))
+				fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "MT", Storage: FileStorage})
+				require_NoError(b, err)
+				fs.dios = test.dios
+				dioLimit = fs.dios.cap()
+
+				var wg sync.WaitGroup
+				ts := time.Now().UnixNano()
+
+				b.StartTimer()
+				for j := 1; j <= consumersPerIteration; j++ {
+					name := fmt.Sprintf("o%d", j)
+					o, err := fs.ConsumerStore(name, time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
+					require_NoError(b, err)
+					wg.Add(1)
+
+					go func(o ConsumerStore) {
+						defer wg.Done()
+						if err := o.UpdateDelivered(22, 22, 1, ts); err != nil {
+							panic(err)
+						}
+						cfs := o.(*consumerFileStore)
+						buf, err := cfs.encodeState()
+						if err != nil {
+							panic(err)
+						}
+						if err := cfs.writeState(buf); err != nil {
+							panic(err)
+						}
+						if err := o.Delete(); err != nil {
+							panic(err)
+						}
+					}(o)
+				}
+
+				wg.Wait()
+				b.StopTimer()
+
+				require_NoError(b, fs.Stop())
+			}
+
+			b.ReportMetric(0, "ns/op")
+			b.ReportMetric(float64(dioLimit), "dios_limit")
+			b.ReportMetric(float64(b.N*consumersPerIteration)/b.Elapsed().Seconds(), "consumer_ops/s")
+		})
+	}
+}
+
 func TestFileStoreWriteFullStateDetectCorruptState(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
