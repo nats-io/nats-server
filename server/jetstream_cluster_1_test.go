@@ -8390,6 +8390,197 @@ func TestJetStreamClusterConsumerHealthCheckStreamMissingNoLockLeak(t *testing.T
 	}
 }
 
+func TestJetStreamClusterProcessStreamAssignmentResults(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// The result handler runs on the metadata leader.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	// Malformed payloads and unknown accounts are dropped silently.
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, []byte("{not-json"))
+	badAcc, err := json.Marshal(&streamAssignmentResult{Account: "DOES_NOT_EXIST", Stream: "TEST"})
+	require_NoError(t, err)
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, badAcc)
+
+	// Reset the assignment so it's treated as not-yet-responded, and ensure we're
+	// inside the canDelete window.
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_True(t, sa != nil)
+	sa.clearResponded()
+	sa.Created = time.Now()
+	mjs.mu.Unlock()
+
+	// Craft a rejection result, as a member sends after a failed local create.
+	result := &streamAssignmentResult{
+		Account: globalAccountName,
+		Stream:  "TEST",
+		Response: &JSApiStreamCreateResponse{
+			ApiResponse: ApiResponse{
+				Type:  JSApiStreamCreateResponseType,
+				Error: NewJSStreamLimitsError(errors.New("synthetic limits error")),
+			},
+		},
+	}
+	b, err := json.Marshal(result)
+	require_NoError(t, err)
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, b)
+
+	// The handler forwards the response, so the assignment is now marked responded.
+	mjs.mu.Lock()
+	responded := sa.hasResponded()
+	mjs.mu.Unlock()
+	require_True(t, responded)
+
+	// The rejected assignment must be cleaned up from the meta layer.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.Lock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		mjs.mu.Unlock()
+		if sa != nil {
+			return fmt.Errorf("stream assignment still present")
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterProcessStreamAssignmentResultsRetry(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	ml := sc.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	// Determine the assigned cluster and an alternate to retry into.
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_True(t, sa != nil)
+	assignedCluster := sa.Client.Cluster
+	var alternate string
+	for _, cl := range sc.clusters {
+		if cl.name != assignedCluster {
+			alternate = cl.name
+			break
+		}
+	}
+	// Prepare the assignment so the retry branch is eligible: fresh, unresponded,
+	// no fixed placement, and with an alternate cluster to fall back to.
+	sa.clearResponded()
+	sa.Created = time.Now()
+	sa.Config.Placement = nil
+	sa.Client.Alternates = []string{alternate}
+	mjs.mu.Unlock()
+	require_NotEqual(t, alternate, _EMPTY_)
+
+	// Craft an insufficient-resources rejection.
+	result := &streamAssignmentResult{
+		Account: globalAccountName,
+		Stream:  "TEST",
+		Response: &JSApiStreamCreateResponse{
+			ApiResponse: ApiResponse{
+				Type:  JSApiStreamCreateResponseType,
+				Error: NewJSInsufficientResourcesError(),
+			},
+		},
+	}
+	b, err := json.Marshal(result)
+	require_NoError(t, err)
+
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, b)
+
+	// The retry branch re-proposes the assignment and flags it as reassigning.
+	mjs.mu.Lock()
+	nsa := mjs.streamAssignmentOrInflight(globalAccountName, "TEST")
+	responded := nsa.hasResponded()
+	reassigning := nsa.reassigning
+	mjs.mu.Unlock()
+	// Retry returns before responding, so the client is not told it failed.
+	require_False(t, responded)
+	require_True(t, reassigning)
+}
+
+func TestJetStreamClusterProcessConsumerAssignmentResults(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	// Malformed payloads and unknown accounts are dropped silently.
+	mjs.processConsumerAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, []byte("{not-json"))
+	badAcc, err := json.Marshal(&consumerAssignmentResult{Account: "DOES_NOT_EXIST", Stream: "TEST", Consumer: "CONSUMER"})
+	require_NoError(t, err)
+	mjs.processConsumerAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, badAcc)
+
+	mjs.mu.Lock()
+	ca := mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	require_True(t, ca != nil)
+	ca.clearResponded()
+	ca.Created = time.Now()
+	mjs.mu.Unlock()
+
+	result := &consumerAssignmentResult{
+		Account:  globalAccountName,
+		Stream:   "TEST",
+		Consumer: "CONSUMER",
+		Response: &JSApiConsumerCreateResponse{
+			ApiResponse: ApiResponse{
+				Type:  JSApiConsumerCreateResponseType,
+				Error: NewJSConsumerStoreFailedError(errors.New("synthetic store error")),
+			},
+		},
+	}
+	b, err := json.Marshal(result)
+	require_NoError(t, err)
+	mjs.processConsumerAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, b)
+
+	// The handler is synchronous: the assignment must now be marked responded and
+	// carry the recorded assignment-level error.
+	mjs.mu.Lock()
+	responded := ca.hasResponded()
+	caErr := ca.err
+	mjs.mu.Unlock()
+	require_True(t, responded)
+	require_Error(t, caErr, NewJSClusterNotAssignedError())
+}
+
 func TestJetStreamClusterStreamHealthCheckRecoversAfterSuccessfulUpdate(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

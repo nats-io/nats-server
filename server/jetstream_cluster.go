@@ -7395,15 +7395,16 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 						}
 						cc.trackInflightStreamProposal(result.Account, sa, true)
 						// Propose new.
-						sa.Group, sa.err = rg, nil
-						if err := cc.meta.Propose(encodeAddStreamAssignment(sa)); err != nil {
+						nsa := sa.copyGroup()
+						nsa.Group, nsa.err = rg, nil
+						if err := cc.meta.Propose(encodeAddStreamAssignment(nsa)); err != nil {
 							return
 						}
-						cc.trackInflightStreamProposal(result.Account, sa, false)
+						cc.trackInflightStreamProposal(result.Account, nsa, false)
 						// When the new stream assignment is processed, sa.reassigning will be
 						// automatically set back to false. Until then, don't process any more
 						// assignment results.
-						sa.reassigning = true
+						nsa.reassigning = true
 						return
 					}
 				}
