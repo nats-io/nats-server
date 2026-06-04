@@ -340,6 +340,37 @@ func TestConvenientIntegerValues(t *testing.T) {
 	}
 	lx = lex("foo = 4Gb, bar = 5Gø")
 	expect(t, lx, expectedItems)
+
+	// A digit following a size suffix means this is not a convenient
+	// number, so the whole token must be lexed as a string rather than
+	// emitting a partial integer for the leading "0K". See #5186.
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "0K1abc", 1, 6},
+		{itemEOF, "", 1, 0},
+	}
+	lx = lex("foo = 0K1abc")
+	expect(t, lx, expectedItems)
+
+	// The 'e'/'E' suffix has the same problem: "5e7bcd" must be a string,
+	// not the integer "5e7" followed by stray "bcd". See #5189 and #6891.
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "5e7bcd", 1, 6},
+		{itemEOF, "", 1, 0},
+	}
+	lx = lex("foo = 5e7bcd")
+	expect(t, lx, expectedItems)
+
+	// Same as above but terminated by a comma, ensuring the trailing
+	// separator still ends the string value cleanly.
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemString, "4e2abc", 1, 6},
+		{itemEOF, "", 1, 0},
+	}
+	lx = lex("foo = 4e2abc,")
+	expect(t, lx, expectedItems)
 }
 
 func TestSimpleKeyFloatValues(t *testing.T) {
