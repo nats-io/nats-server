@@ -1290,6 +1290,7 @@ type Varz struct {
 	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         // OCSPResponseCache is the state of the OCSP cache
 	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`               // SlowConsumersStats are statistics about all detected Slow Consumer
 	StaleConnectionStats  *StaleConnectionStats  `json:"stale_connection_stats,omitempty"`  // StaleConnectionStats are statistics about all detected Stale Connections
+	DiskIOWaitStats       *DiskIOWaitStats       `json:"disk_io_wait_stats"`                // DiskIOWaitStats are statistics about disk I/O semaphore contention
 	Proxies               *ProxiesOptsVarz       `json:"proxies,omitempty"`                 // Proxies hold information about network proxy devices
 	TLSCertNotAfter       time.Time              `json:"tls_cert_not_after,omitzero"`       // TLSCertNotAfter is the expiration date of the TLS certificate of this server
 }
@@ -1447,6 +1448,14 @@ type StaleConnectionStats struct {
 	Routes   uint64 `json:"routes"`   // Routes is how many Route connections became stale connections
 	Gateways uint64 `json:"gateways"` // Gateways is how many Gateway connections became stale connections
 	Leafs    uint64 `json:"leafs"`    // Leafs is how many Leafnode connections became stale connections
+}
+
+// DiskIOWaitStats contains information about disk I/O semaphore contention.
+type DiskIOWaitStats struct {
+	Waiters     int64  `json:"waiters"`       // Waiters is the number of goroutines waiting on the dios
+	Waits       uint64 `json:"waits"`         // Waits is the number of dios acquires that had to wait
+	WaitTime    uint64 `json:"wait_time"`     // WaitTime is the cumulative time spent waiting for dios
+	MaxWaitTime uint64 `json:"max_wait_time"` // MaxWaitTime is the longest observed wait
 }
 
 func myUptime(d time.Duration) string {
@@ -1968,6 +1977,19 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 				stats.Unknowns,
 			}
 		}
+	}
+	v.DiskIOWaitStats = diskIOWaitStats(s.dios)
+}
+
+func diskIOWaitStats(d *diskIOSemaphore) *DiskIOWaitStats {
+	if d == nil {
+		return &DiskIOWaitStats{}
+	}
+	return &DiskIOWaitStats{
+		Waiters:     d.waiters.Load(),
+		Waits:       d.waits.Load(),
+		WaitTime:    d.waitNanos.Load(),
+		MaxWaitTime: d.maxWaitNanos.Load(),
 	}
 }
 
