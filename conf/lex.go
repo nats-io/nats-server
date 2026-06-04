@@ -1110,11 +1110,13 @@ func lexConvenientNumber(lx *lexer) stateFn {
 		return lexConvenientNumber
 	}
 	lx.backup()
-	if isNL(r) || r == eof || r == mapEnd || r == optValTerm || r == mapValTerm || isWhitespace(r) || unicode.IsDigit(r) {
+	if isNL(r) || r == eof || r == mapEnd || r == optValTerm || r == mapValTerm || isWhitespace(r) {
 		lx.emit(itemInteger)
 		return lx.pop()
 	}
-	// This is not a number, so treat it as a string.
+	// Anything else following the suffix (including a digit, e.g. "0K1abc"
+	// or "5e7bcd") means this isn't a convenient number after all, so treat
+	// the whole token as a string.
 	lx.stringStateFn = lexString
 	return lexString
 }
