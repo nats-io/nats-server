@@ -1322,11 +1322,13 @@ func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
 }
 
 // initWebsocketOptions populates the websocket origin and headers options
-// on s. It is safe to call multiple times and is invoked unconditionally
-// during server startup so that callers can use HandleWsUpgrade from their
-// own HTTP server (for which startWebsocketServer is skipped when
-// Websocket.Port == 0) and still get same_origin enforcement, the
-// allowed_origins set, and any configured upgrade headers.
+// on s. It is invoked once by NewServer before Start() makes the server
+// reachable, so that HandleWsUpgrade callers in an application-owned HTTP
+// server (for which startWebsocketServer is skipped when Websocket.Port == 0)
+// get same_origin enforcement, the allowed_origins set, and any configured
+// upgrade headers. The listener path does not re-run this: re-running after
+// Start() has set running=true would race with concurrent embedded upgrades
+// that read s.websocket.rawHeaders without holding s.websocket.mu.
 func (s *Server) initWebsocketOptions() {
 	o := &s.getOpts().Websocket
 	s.wsSetOriginOptions(o)
@@ -1340,8 +1342,6 @@ func (s *Server) startWebsocketServer() {
 
 	sopts := s.getOpts()
 	o := &sopts.Websocket
-
-	s.initWebsocketOptions()
 
 	var hl net.Listener
 	var proto string
