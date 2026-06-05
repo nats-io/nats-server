@@ -1177,9 +1177,14 @@ func validateWebsocketOptions(o *Options) error {
 		if err := validatePinnedCerts(wo.TLSPinnedCerts); err != nil {
 			return fmt.Errorf("websocket: %v", err)
 		}
-		if !wsAllowedFIPS() {
-			return fmt.Errorf("websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later")
-		}
+	}
+	// FIPS applies to any path that can perform a websocket upgrade.
+	// HandleWsUpgrade calls wsUpgrade -> wsAcceptKey, which on Go <=1.25
+	// uses sha1.New() without fips140.WithoutEnforcement and panics under
+	// FIPS-strict mode, so embedded callers must be rejected at config
+	// validation rather than crash at first upgrade.
+	if !wsAllowedFIPS() {
+		return fmt.Errorf("websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later")
 	}
 	// The remaining options also apply to HandleWsUpgrade (embedded use),
 	// so they are validated regardless of whether a listener will be bound,

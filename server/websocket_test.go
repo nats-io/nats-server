@@ -1873,12 +1873,22 @@ func TestWSValidateOptions(t *testing.T) {
 			o := nwso.Clone()
 			o.Websocket.AllowedOrigins = []string{"foo"}
 			return o
-		}, "unable to parse"},
+		}, func() string {
+			if wsAllowedFIPS() {
+				return "unable to parse"
+			}
+			return "websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later"
+		}()},
 		{"embedded: invalid header still validated when port is disabled", func() *Options {
 			o := nwso.Clone()
 			o.Websocket.Headers = map[string]string{"Upgrade": "websocket"}
 			return o
-		}, `websocket: invalid header "Upgrade" not allowed`},
+		}, func() string {
+			if wsAllowedFIPS() {
+				return `websocket: invalid header "Upgrade" not allowed`
+			}
+			return "websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later"
+		}()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateOptions(test.getOpts())
