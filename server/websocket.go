@@ -971,7 +971,8 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 // a path to NATS without binding a separate websocket listener.
 //
 // Leafnode connections are accepted only when the server has a
-// leafnode port configured; otherwise the connection is silently closed.
+// leafnode port configured; otherwise the connection is closed and the
+// rejection is logged at error level.
 //
 // Errors during the upgrade are logged on the server; the response
 // itself is written by wsUpgrade before this returns.
