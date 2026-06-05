@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -1168,6 +1169,14 @@ func wsMakeChallengeKey() (string, error) {
 // Validate the websocket related options.
 func validateWebsocketOptions(o *Options) error {
 	wo := &o.Websocket
+	// If no websocket option has been configured, the user has not opted
+	// into websockets at all (neither via a listener nor by mounting
+	// HandleWsUpgrade), so skip validation entirely. In particular this
+	// avoids tripping the FIPS guard below for deployments that do not
+	// use websockets on Go <=1.25 FIPS builds.
+	if reflect.DeepEqual(*wo, WebsocketOpts{}) {
+		return nil
+	}
 	// Listener-specific checks apply only when a websocket port is configured.
 	if wo.Port != 0 {
 		// Enforce TLS... unless NoTLS is set to true.
@@ -1178,11 +1187,11 @@ func validateWebsocketOptions(o *Options) error {
 			return fmt.Errorf("websocket: %v", err)
 		}
 	}
-	// FIPS applies to any path that can perform a websocket upgrade.
-	// HandleWsUpgrade calls wsUpgrade -> wsAcceptKey, which on Go <=1.25
-	// uses sha1.New() without fips140.WithoutEnforcement and panics under
-	// FIPS-strict mode, so embedded callers must be rejected at config
-	// validation rather than crash at first upgrade.
+	// FIPS applies to any opted-in websocket configuration. HandleWsUpgrade
+	// calls wsUpgrade -> wsAcceptKey, which on Go <=1.25 uses sha1.New()
+	// without fips140.WithoutEnforcement and panics under FIPS-strict mode,
+	// so embedded callers must be rejected at config validation rather
+	// than crash at first upgrade.
 	if !wsAllowedFIPS() {
 		return fmt.Errorf("websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later")
 	}
