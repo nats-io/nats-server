@@ -14,6 +14,38 @@
 - Watch [a video overview](https://rethink.synadia.com/episodes/1/) of NATS.
 - Watch [this video from SCALE 13x](https://www.youtube.com/watch?v=sm63oAVPqAM) to learn more about its origin story and design philosophy.
 
+## HTTP Endpoint Authentication
+
+The NATS server supports delegating username/password authentication to an external HTTP endpoint. When clients connect with credentials, the server validates them by POSTing to your auth service. This is useful when integrating with existing identity providers or custom auth backends.
+
+**Configuration example:**
+
+```conf
+authorization {
+  auth_http {
+    url: "http://auth-service:8080/verify"
+    timeout: 5
+  }
+}
+```
+
+The auth endpoint receives a POST request with JSON body `{"username": "...", "password": "..."}`.
+
+**Response:**
+- **2xx** = authentication success. The response body may optionally include permissions to restrict publish/subscribe access:
+  ```json
+  {
+    "permissions": {
+      "publish":   { "allow": ["foo.*", "bar.>"], "deny": ["secret.>"] },
+      "subscribe": { "allow": ["foo.*", "bar.>"], "deny": ["secret.>"] }
+    }
+  }
+  ```
+  Omit `permissions` or leave the body empty for full access.
+- **4xx/5xx** = authentication failure.
+
+**Alternative: Auth Callout (NATS subject)** — For JWT-based or NATS-native auth, you can use `auth_callout` which subscribes to the `$SYS.REQ.USER.AUTH` subject. Your auth service responds to requests on that subject. See the [auth callout documentation](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/auth_callout) for details.
+
 ## Contact
 
 - [Twitter](https://twitter.com/nats_io): Follow us on Twitter!
