@@ -988,9 +988,18 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 // createMQTTClient would then bail out on !isRunning() / s.ldm without
 // closing the connection, leaving the peer with an orphaned half-open
 // socket until its TCP timeout.
+//
+// Returns 501 Not Implemented when the binary was built with a Go
+// version whose FIPS-140 mode forbids SHA-1, since wsUpgrade would
+// otherwise panic in wsAcceptKey. This makes embedded mounts safe to
+// reach with a default WebsocketOpts that skips config-time validation.
 func (s *Server) HandleWsUpgrade(w http.ResponseWriter, r *http.Request) {
 	if !s.isRunning() || s.isLameDuckMode() {
 		http.Error(w, "server not ready", http.StatusServiceUnavailable)
+		return
+	}
+	if !wsAllowedFIPS() {
+		http.Error(w, "websocket: cannot be used in FIPS-140 mode when built with this Go version", http.StatusNotImplemented)
 		return
 	}
 	res, err := s.wsUpgrade(w, r)
