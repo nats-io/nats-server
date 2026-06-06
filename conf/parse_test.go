@@ -178,14 +178,19 @@ func TestBcryptVariable(t *testing.T) {
 // not convenient numbers and must be parsed as plain strings rather than
 // failing to parse. See #5186, #5189 and #6891.
 func TestUnquotedStringStartingWithNumberAndSuffix(t *testing.T) {
-	for _, val := range []string{"0K1abc", "8m4dwr", "5e7bcd-abc10", "4e2abc"} {
+	for _, val := range []string{"0K1abc", "8m4dwr", "5e7bcd-abc10", "4e2abc", "-1k2abc"} {
 		ex := map[string]any{"password": val}
 		test(t, fmt.Sprintf("password: %s", val), ex)
 	}
 
+	ex := map[string]any{
+		"passwords": []any{"4e2abc", "0K1abc"},
+	}
+	test(t, "passwords: [4e2abc, 0K1abc]", ex)
+
 	// Also verify it works inside a map, matching the reported nats.conf
 	// authorization block.
-	ex := map[string]any{
+	ex = map[string]any{
 		"authorization": map[string]any{
 			"user":     "foo",
 			"password": "4e2abc",
