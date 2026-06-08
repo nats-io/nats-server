@@ -10817,15 +10817,14 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// fake a message that would have been sourced with pre 2.10
-	msg := nats.NewMsg("A.A")
+	// Fake a message that would have been sourced with pre 2.10, as if it
+	// already existed in B's store from an old server.
+	mset, err := s.globalAccount().lookupStream("B")
+	require_NoError(t, err)
 	// pre 2.10 header format just stream name and sequence number
-	msg.Header.Set(JSStreamSource, "A 1")
-	msg.Data = []byte("OK")
-
-	if _, err := js.PublishMsg(msg); err != nil {
-		t.Fatalf("Unexpected publish error: %v", err)
-	}
+	srcHdr := genHeader(nil, JSStreamSource, "A 1")
+	_, _, err = mset.store.StoreMsg("A.A", srcHdr, []byte("OK"), 0)
+	require_NoError(t, err)
 
 	bConfig.Sources = []*nats.StreamSource{{Name: "A"}}
 	if _, err := js.UpdateStream(&bConfig); err != nil {
@@ -10840,6 +10839,21 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		}
 		return nil
 	})
+
+	// The pre 2.10 sourced message must be honored: B should hold the faked
+	// A.A plus only the newly sourced A.B, not a re-sourced copy of A.A.
+	if m, err := js.GetMsg("B", 1); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else if m.Subject != "A.A" {
+		t.Fatalf("Expected subject 'A.A' and got %s", m.Subject)
+	} else if shdr := m.Header.Get(JSStreamSource); shdr != "A 1" {
+		t.Fatalf("Expected pre 2.10 source header 'A 1', got %q", shdr)
+	}
+	if m, err := js.GetMsg("B", 2); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else if m.Subject != "A.B" {
+		t.Fatalf("Expected subject 'A.B' and got %s", m.Subject)
+	}
 }
 
 func TestJetStreamSourceWorkingQueueWithLimit(t *testing.T) {

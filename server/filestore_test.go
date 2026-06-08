@@ -11611,6 +11611,46 @@ func TestFileStoreSourcesRecoveredOneMessageAfterFlush(t *testing.T) {
 	require_Equal(t, fs.SourcesState()["ORIGIN > >"].Seq, last)
 }
 
+func TestFileStoreSourcesRecoveredFromPre210Header(t *testing.T) {
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{">"},
+		Storage:  FileStorage,
+		Sources:  []*StreamSource{{Name: "ORIGIN"}},
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+
+	// A modern header first, purely so an index exists on disk and recovery takes
+	// the scan path rather than bailing out.
+	hdr := genHeader(nil, JSStreamSource, "ORIGIN 1 > > foo.bar")
+	_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.writeFullState())
+
+	fn := filepath.Join(dir, sourcesStreamStateFile)
+	outdated, err := os.ReadFile(fn)
+	require_NoError(t, err)
+
+	// The message that lands after the flush carries a pre-2.10 header, which has
+	// no index name. Only the stream-name fallback in the scan can match it.
+	const last = 9
+	hdr = genHeader(nil, JSStreamSource, fmt.Sprintf("ORIGIN %d", last))
+	_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+	require_NoError(t, os.WriteFile(fn, outdated, defaultFilePerms))
+
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	require_Equal(t, fs.SourcesState()["ORIGIN > >"].Seq, last)
+}
+
 func TestFileStoreCorruptedNonOrderedSequences(t *testing.T) {
 	for _, test := range []struct {
 		title   string
