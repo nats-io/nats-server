@@ -6900,6 +6900,18 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 				}
 				return apiErr
 			}
+
+			// Non-sourced messages aren't allowed to have the stream source header.
+			if !sourced && len(sliceHeader(JSStreamSource, hdr)) > 0 {
+				apiErr := NewJSMessageSourceHdrNotAllowedError()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = apiErr
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return apiErr
+			}
 		}
 
 		// Dedupe detection. This is done at the cluster level for dedupe detection above the
