@@ -22453,6 +22453,180 @@ func TestJetStreamScheduledMessageNotTriggering(t *testing.T) {
 	}
 }
 
+type jetStreamSchedulePermissionTest struct {
+	name             string
+	publish          *SubjectPermission
+	subscribe        *SubjectPermission
+	source           string
+	schedulerHeaders bool
+	err              string
+}
+
+func TestJetStreamScheduledMessageRespectsClientPermissions(t *testing.T) {
+	for _, test := range []jetStreamSchedulePermissionTest{
+		{
+			name: "DeniedTarget",
+			publish: &SubjectPermission{
+				Allow: []string{"foo.schedule"},
+				Deny:  []string{"foo.out"},
+			},
+			err: `Permissions Violation for Publish to "foo.out"`,
+		},
+		{
+			name: "DeniedTargetWithSchedulerHeaders",
+			publish: &SubjectPermission{
+				Allow: []string{"foo.schedule"},
+				Deny:  []string{"foo.out"},
+			},
+			schedulerHeaders: true,
+			err:              `Permissions Violation for Publish to "foo.out"`,
+		},
+		{
+			name: "DeniedSource",
+			publish: &SubjectPermission{
+				Allow: []string{"foo.schedule", "foo.out"},
+			},
+			subscribe: &SubjectPermission{
+				Allow: []string{"_INBOX.>"},
+				Deny:  []string{"foo.source"},
+			},
+			source: "foo.source",
+			err:    `Permissions Violation for Subscription to "foo.source"`,
+		},
+		{
+			name: "DeniedSourceWithSchedulerHeaders",
+			publish: &SubjectPermission{
+				Allow: []string{"foo.schedule", "foo.out"},
+			},
+			subscribe: &SubjectPermission{
+				Allow: []string{"_INBOX.>"},
+				Deny:  []string{"foo.source"},
+			},
+			source:           "foo.source",
+			schedulerHeaders: true,
+			err:              `Permissions Violation for Subscription to "foo.source"`,
+		},
+		{
+			name: "AllowedTargetAndSource",
+			publish: &SubjectPermission{
+				Allow: []string{"foo.schedule", "foo.out"},
+			},
+			subscribe: &SubjectPermission{
+				Allow: []string{"_INBOX.>", "foo.source"},
+			},
+			source: "foo.source",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.run(t)
+		})
+	}
+}
+
+func (test jetStreamSchedulePermissionTest) run(t *testing.T) {
+	s := runJetStreamSchedulePermissionServer(t, test.publish, test.subscribe)
+	defer s.Shutdown()
+
+	admin, js := jsClientConnect(t, s, nats.UserInfo("admin", "pwd"))
+	defer admin.Close()
+
+	_, err := jsStreamCreate(t, admin, &StreamConfig{
+		Name:              "S",
+		Subjects:          []string{"foo.*"},
+		Storage:           MemoryStorage,
+		AllowMsgSchedules: true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo.source", []byte("SOURCE"))
+	require_NoError(t, err)
+
+	errCh := make(chan error, 1)
+	nc := connectSchedulePermissionClient(t, s, errCh)
+	defer nc.Close()
+
+	msg := nats.NewMsg("foo.schedule")
+	msg.Header.Set(JSSchedulePattern, "@at 1970-01-01T00:00:00Z")
+	msg.Header.Set(JSScheduleTarget, "foo.out")
+	if test.source != _EMPTY_ {
+		msg.Header.Set(JSScheduleSource, test.source)
+	}
+	if test.schedulerHeaders {
+		msg.Header.Set(JSScheduleNext, JSScheduleNextPurge)
+		msg.Header.Set(JSScheduler, "foo.other")
+	}
+	msg.Data = []byte("fallback")
+
+	require_NoError(t, nc.PublishMsg(msg))
+	require_NoError(t, nc.Flush())
+
+	if test.err != _EMPTY_ {
+		requireSchedulePermissionError(t, errCh, test.err)
+		_, err = js.GetLastMsg("S", "foo.out")
+		require_Error(t, err, nats.ErrMsgNotFound)
+		return
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		sm, err := js.GetLastMsg("S", "foo.out")
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(sm.Data, []byte("SOURCE")) {
+			return fmt.Errorf("expected scheduled output to copy source, got %q", sm.Data)
+		}
+		return nil
+	})
+}
+
+func runJetStreamSchedulePermissionServer(
+	t *testing.T, publish, subscribe *SubjectPermission,
+) *Server {
+	t.Helper()
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.StoreDir = t.TempDir()
+	opts.Users = []*User{
+		{Username: "admin", Password: "pwd"},
+		{
+			Username: "client",
+			Password: "pwd",
+			Permissions: &Permissions{
+				Publish:   publish,
+				Subscribe: subscribe,
+			},
+		},
+	}
+	return RunServer(&opts)
+}
+
+func connectSchedulePermissionClient(
+	t *testing.T, s *Server, errCh chan<- error,
+) *nats.Conn {
+	t.Helper()
+	nc, err := nats.Connect(s.ClientURL(),
+		nats.UserInfo("client", "pwd"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			select {
+			case errCh <- err:
+			default:
+			}
+		}))
+	require_NoError(t, err)
+	return nc
+}
+
+func requireSchedulePermissionError(t *testing.T, errCh <-chan error, want string) {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		require_Contains(t, err.Error(), want)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Expected permission violation %q", want)
+	}
+}
+
 func TestJetStreamScheduledMessageIncompatibleSettings(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

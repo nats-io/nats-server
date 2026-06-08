@@ -5677,12 +5677,24 @@ func (c *client) pubPermissionViolation(subject []byte) {
 }
 
 func (c *client) subPermissionViolation(sub *subscription) {
-	errTxt := fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject)
-	logTxt := fmt.Sprintf("Subscription Violation - Subject %q, SID %s", sub.subject, sub.sid)
+	c.subPermissionViolationForSubjectAndQueue(sub.subject, sub.queue, sub.sid)
+}
 
-	if sub.queue != nil {
-		errTxt = fmt.Sprintf("Permissions Violation for Subscription to %q using queue %q", sub.subject, sub.queue)
-		logTxt = fmt.Sprintf("Subscription Violation - Subject %q, Queue: %q, SID %s", sub.subject, sub.queue, sub.sid)
+func (c *client) subPermissionViolationForSubject(subject string) {
+	c.subPermissionViolationForSubjectAndQueue(stringToBytes(subject), nil, nil)
+}
+
+func (c *client) subPermissionViolationForSubjectAndQueue(subject, queue, sid []byte) {
+	errTxt := fmt.Sprintf("Permissions Violation for Subscription to %q", subject)
+	logTxt := fmt.Sprintf("Subscription Violation - Subject %q, SID %s", subject, sid)
+
+	if queue != nil {
+		errTxt = fmt.Sprintf(
+			"Permissions Violation for Subscription to %q using queue %q",
+			subject, queue)
+		logTxt = fmt.Sprintf(
+			"Subscription Violation - Subject %q, Queue: %q, SID %s",
+			subject, queue, sid)
 	}
 
 	c.sendErr(errTxt)

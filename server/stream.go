@@ -6108,6 +6108,9 @@ func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Ac
 		// object.
 		mt.addJetStreamEvent(mset.name())
 	}
+	if !mset.checkMsgScheduleSubjectPermissions(c, subject, hdr) {
+		return
+	}
 	mset.queueInbound(mset.msgs, subject, reply, hdr, msg, nil, c.pa.trace)
 }
 
@@ -6119,6 +6122,109 @@ var (
 	errStreamMismatch    = errors.New("expected stream does not match")
 	errMsgTTLDisabled    = errors.New("message TTL disabled")
 )
+
+type msgSchedulePermissionViolation int
+
+const (
+	msgSchedulePermissionOK msgSchedulePermissionViolation = iota
+	msgScheduleTargetPermissionViolation
+	msgScheduleSourcePermissionViolation
+)
+
+func (mset *stream) checkMsgScheduleSubjectPermissions(c *client, subject string, hdr []byte) bool {
+	violation, subject := mset.msgScheduleSubjectPermissionViolation(c, subject, hdr)
+	switch violation {
+	case msgSchedulePermissionOK:
+		return true
+	case msgScheduleTargetPermissionViolation:
+		c.pubPermissionViolation(stringToBytes(subject))
+	case msgScheduleSourcePermissionViolation:
+		c.subPermissionViolationForSubject(subject)
+	}
+	return false
+}
+
+func (mset *stream) msgScheduleSubjectPermissionViolation(
+	c *client, subject string, hdr []byte,
+) (msgSchedulePermissionViolation, string) {
+	if len(hdr) == 0 {
+		return msgSchedulePermissionOK, _EMPTY_
+	}
+	schedule, apiErr := getMessageSchedule(hdr)
+	if apiErr != nil || schedule.IsZero() {
+		return msgSchedulePermissionOK, _EMPTY_
+	}
+	scheduleTtl, ok := getMessageScheduleTTL(hdr)
+	if !ok {
+		return msgSchedulePermissionOK, _EMPTY_
+	}
+	if scheduleRollup := getMessageScheduleRollup(hdr); scheduleRollup != _EMPTY_ &&
+		scheduleRollup != JSMsgRollupSubject {
+		return msgSchedulePermissionOK, _EMPTY_
+	}
+	if rollup := getRollup(hdr); rollup != _EMPTY_ && rollup != JSMsgRollupSubject {
+		return msgSchedulePermissionOK, _EMPTY_
+	}
+	target := getMessageScheduleTarget(hdr)
+	if target == _EMPTY_ || !IsValidPublishSubject(target) || target == subject {
+		return msgSchedulePermissionOK, _EMPTY_
+	}
+	source := getMessageScheduleSource(hdr)
+	if source != _EMPTY_ {
+		if source == target || source == subject || !IsValidPublishSubject(source) {
+			return msgSchedulePermissionOK, _EMPTY_
+		}
+	}
+	if !mset.msgScheduleConfigAllowsSubjects(scheduleTtl, target, source) {
+		return msgSchedulePermissionOK, _EMPTY_
+	}
+	if !c.canPublishMsgScheduleTarget(target) {
+		return msgScheduleTargetPermissionViolation, target
+	}
+	if source != _EMPTY_ && !c.canSubscribeMsgScheduleSource(source) {
+		return msgScheduleSourcePermissionViolation, source
+	}
+	return msgSchedulePermissionOK, _EMPTY_
+}
+
+func (mset *stream) msgScheduleConfigAllowsSubjects(scheduleTtl, target, source string) bool {
+	mset.cfgMu.RLock()
+	defer mset.cfgMu.RUnlock()
+	if !mset.cfg.AllowMsgSchedules || scheduleTtl != _EMPTY_ && !mset.cfg.AllowMsgTTL {
+		return false
+	}
+	matches := func(subject string) bool {
+		return slices.ContainsFunc(mset.cfg.Subjects, func(streamSubject string) bool {
+			return SubjectsCollide(streamSubject, subject)
+		})
+	}
+	if !matches(target) {
+		return false
+	}
+	return source == _EMPTY_ || matches(source)
+}
+
+func (c *client) canPublishMsgScheduleTarget(subject string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.kind == CLIENT {
+		bsubj := stringToBytes(subject)
+		if hasGWRoutedReplyPrefix(bsubj) {
+			return false
+		}
+		if bytes.HasPrefix(bsubj, clientNRGPrefix) && c.srv != nil &&
+			c.acc != c.srv.SystemAccount() {
+			return false
+		}
+	}
+	return c.pubAllowedFullCheck(subject, false, true)
+}
+
+func (c *client) canSubscribeMsgScheduleSource(subject string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.canSubscribeInternal(subject)
+}
 
 // processJetStreamMsg is where we try to actually process the stream msg.
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needLock bool) error {
