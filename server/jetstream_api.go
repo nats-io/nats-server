@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nuid"
 )
 
@@ -4571,6 +4572,11 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+	if apiErr := s.checkConsumerDeliverSubjectPermission(c, ci, acc, &req.Config); apiErr != nil {
+		resp.Error = apiErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 
 	if isClustered && !direct {
 		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config, req.Action, req.Pedantic)
@@ -4655,6 +4661,156 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		o.sendPauseAdvisoryLocked(&o.cfg)
 	}
 	o.mu.RUnlock()
+}
+
+func (s *Server) checkConsumerDeliverSubjectPermission(
+	c *client,
+	ci *ClientInfo,
+	acc *Account,
+	cfg *ConsumerConfig,
+) *ApiError {
+	if cfg == nil || cfg.DeliverSubject == _EMPTY_ {
+		return nil
+	}
+	deliver := cfg.DeliverSubject
+	if !subjectIsLiteral(deliver) || !IsValidSubject(deliver) {
+		return nil
+	}
+
+	if rc := s.requestorClient(c, ci); rc != nil {
+		rc.mu.Lock()
+		allowed := rc.pubAllowedFullCheck(deliver, false, true)
+		rc.mu.Unlock()
+		if allowed {
+			return nil
+		}
+		return consumerDeliverSubjectPermissionError(deliver)
+	}
+
+	perms, ok := s.requestorPermissions(c, ci, acc)
+	if !ok || !permissionsCanPublishToSubject(perms, deliver) {
+		return consumerDeliverSubjectPermissionError(deliver)
+	}
+	return nil
+}
+
+func consumerDeliverSubjectPermissionError(deliver string) *ApiError {
+	err := fmt.Errorf("consumer deliver subject %q not permitted by publish permissions", deliver)
+	return NewJSConsumerInvalidPolicyError(err)
+}
+
+func (s *Server) requestorClient(c *client, ci *ClientInfo) *client {
+	if ci != nil && ci.ID != 0 && (ci.Server == _EMPTY_ || ci.Server == s.Name()) {
+		return s.getClient(ci.ID)
+	}
+	if c != nil && c.kind == CLIENT && (ci == nil || ci.ID == 0 || ci.ID == c.cid) {
+		return c
+	}
+	return nil
+}
+
+func (s *Server) requestorPermissions(c *client, ci *ClientInfo, acc *Account) (*Permissions, bool) {
+	if ci == nil || (ci.User == _EMPTY_ && ci.Jwt == _EMPTY_) {
+		return s.requestorPermissionsWithoutIdentity(c, ci, acc)
+	}
+	if ci.Jwt != _EMPTY_ {
+		return requestorJWTPermissions(ci.Jwt, acc)
+	}
+	return s.namedRequestorPermissions(ci, acc)
+}
+
+func (s *Server) requestorPermissionsWithoutIdentity(
+	c *client,
+	ci *ClientInfo,
+	acc *Account,
+) (*Permissions, bool) {
+	if isInternalRequestor(c, ci) {
+		return nil, true
+	}
+	if perms := defaultPermissions(acc); perms != nil {
+		return perms, true
+	}
+	if isRemoteRequestor(ci, s.Name()) {
+		return nil, false
+	}
+	return nil, true
+}
+
+func requestorJWTPermissions(userJWT string, acc *Account) (*Permissions, bool) {
+	uc, err := jwt.DecodeUserClaims(userJWT)
+	if err != nil {
+		return nil, false
+	}
+	perms := buildPermissionsFromJwt(&uc.Permissions)
+	if perms == nil {
+		perms = defaultPermissions(acc)
+	}
+	return perms, true
+}
+
+func (s *Server) namedRequestorPermissions(ci *ClientInfo, acc *Account) (*Permissions, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if nu := s.nkeys[ci.User]; nu != nil && samePermissionsAccount(nu.Account, acc) {
+		return nu.Permissions.clone(), true
+	}
+	if u := s.users[ci.User]; u != nil && samePermissionsAccount(u.Account, acc) {
+		return u.Permissions.clone(), true
+	}
+	return nil, false
+}
+
+func isInternalRequestor(c *client, ci *ClientInfo) bool {
+	if ci != nil {
+		switch ci.Kind {
+		case kindStringMap[JETSTREAM], kindStringMap[SYSTEM], kindStringMap[ACCOUNT]:
+			return true
+		case _EMPTY_:
+		default:
+			return false
+		}
+	}
+	return c != nil && isInternalClient(c.kind)
+}
+
+func isRemoteRequestor(ci *ClientInfo, serverName string) bool {
+	return ci != nil && ci.ID != 0 && ci.Server != _EMPTY_ && ci.Server != serverName
+}
+
+func defaultPermissions(acc *Account) *Permissions {
+	if acc == nil {
+		return nil
+	}
+	acc.mu.RLock()
+	defer acc.mu.RUnlock()
+	return acc.defaultPerms.clone()
+}
+
+func samePermissionsAccount(userAcc, requestAcc *Account) bool {
+	if userAcc == nil || requestAcc == nil {
+		return userAcc == requestAcc
+	}
+	return userAcc.Name == requestAcc.Name
+}
+
+func permissionsCanPublishToSubject(perms *Permissions, subject string) bool {
+	if perms == nil || perms.Publish == nil {
+		return true
+	}
+	for _, deny := range perms.Publish.Deny {
+		if subjectIsSubsetMatch(subject, deny) {
+			return false
+		}
+	}
+	if len(perms.Publish.Allow) == 0 {
+		return true
+	}
+	for _, allow := range perms.Publish.Allow {
+		if subjectIsSubsetMatch(subject, allow) {
+			return true
+		}
+	}
+	return false
 }
 
 // Request for the list of all consumer names.

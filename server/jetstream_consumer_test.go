@@ -11323,6 +11323,128 @@ func TestJetStreamConsumerLegacyDurableCreateSetsConsumerName(t *testing.T) {
 	require_Equal(t, resp.Config.Name, "CONSUMER")
 }
 
+func TestJetStreamPushConsumerDeliverSubjectRequiresPublishPermission(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		jetstream: {store_dir: %q}
+		authorization {
+			users: [
+				{user: admin, password: pwd}
+				{
+					user: attacker
+					password: pwd
+					permissions: {
+						publish: {
+							allow: ["foo.in", "$JS.API.CONSUMER.CREATE.S.C"]
+							deny: ["victim.>"]
+						}
+						subscribe: {allow: "_INBOX.>"}
+					}
+				}
+			]
+		}
+	`, t.TempDir())))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	adminNC, adminJS := jsClientConnect(t, s, nats.UserInfo("admin", "pwd"))
+	defer adminNC.Close()
+
+	_, err := adminJS.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"foo.in"},
+		Storage:  nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	sub, err := adminNC.SubscribeSync("victim.inbox")
+	require_NoError(t, err)
+	require_NoError(t, adminNC.Flush())
+
+	errCh := make(chan error, 2)
+	attackerNC := natsConnect(t, s.ClientURL(),
+		nats.UserInfo("attacker", "pwd"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			select {
+			case errCh <- err:
+			default:
+			}
+		}))
+	defer attackerNC.Close()
+
+	require_NoError(t, attackerNC.Publish("victim.inbox", []byte("direct denied")))
+	require_NoError(t, attackerNC.Flush())
+	select {
+	case err := <-errCh:
+		require_Contains(t, err.Error(), `Permissions Violation for Publish to "victim.inbox"`)
+	case <-time.After(time.Second):
+		t.Fatal("Expected direct publish to victim.inbox to be denied")
+	}
+
+	req, err := json.Marshal(&CreateConsumerRequest{
+		Stream: "S",
+		Config: ConsumerConfig{
+			Name:           "C",
+			DeliverSubject: "victim.inbox",
+			DeliverPolicy:  DeliverAll,
+			AckPolicy:      AckNone,
+		},
+	})
+	require_NoError(t, err)
+
+	msg, err := attackerNC.Request("$JS.API.CONSUMER.CREATE.S.C", req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerCreateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	if resp.Error == nil {
+		t.Fatal("Expected consumer create to be rejected")
+	}
+	require_Contains(t, resp.Error.Description, "consumer deliver subject")
+	require_Contains(t, resp.Error.Description, "not permitted")
+
+	require_NoError(t, attackerNC.Publish("foo.in", []byte("blocked by consumer create")))
+	require_NoError(t, attackerNC.Flush())
+
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err)
+}
+
+func TestJetStreamPushConsumerDeliverSubjectRejectsUnknownRemoteClient(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	ci := &ClientInfo{
+		ID:      22,
+		Account: globalAccountName,
+		User:    "dynamic",
+		Server:  "remote-server",
+		Kind:    kindStringMap[CLIENT],
+	}
+	cfg := &ConsumerConfig{DeliverSubject: "victim.inbox"}
+	if apiErr := s.checkConsumerDeliverSubjectPermission(nil, ci, s.globalAccount(), cfg); apiErr == nil {
+		t.Fatal("Expected unknown remote client identity to be rejected")
+	}
+}
+
+func TestJetStreamPushConsumerDeliverSubjectAllowsInternalRequestor(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	acc := s.globalAccount()
+	acc.mu.Lock()
+	acc.defaultPerms = &Permissions{Publish: &SubjectPermission{Deny: []string{">"}}}
+	acc.mu.Unlock()
+
+	ci := &ClientInfo{
+		Account: globalAccountName,
+		Kind:    kindStringMap[JETSTREAM],
+	}
+	cfg := &ConsumerConfig{DeliverSubject: "$JS.S.123"}
+	if apiErr := s.checkConsumerDeliverSubjectPermission(nil, ci, acc, cfg); apiErr != nil {
+		t.Fatalf("Expected internal requestor to be allowed, got %v", apiErr)
+	}
+}
+
 // https://github.com/nats-io/nats-server/issues/7852
 func TestJetStreamConsumerSingleFilterSubjectInFilterSubjects(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
