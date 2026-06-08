@@ -10605,7 +10605,13 @@ func TestFileStoreNoPanicOnRecoverTTLWithCorruptBlocks(t *testing.T) {
 		atomic.StoreUint64(&lmb.first.seq, fseq)
 		atomic.StoreUint64(&lmb.last.seq, lseq)
 
-		require_NoError(t, fs.recoverTTLState())
+		// Reset TTL state so recoverPerMessageState actually re-runs TTL
+		// recovery and scans the (corrupted) blocks.
+		fs.mu.Lock()
+		fs.ttls = nil
+		fs.mu.Unlock()
+
+		require_NoError(t, fs.recoverPerMessageState())
 	})
 }
 
@@ -11228,6 +11234,11 @@ func TestFileStoreMessageScheduleRecovered(t *testing.T) {
 		require_Equal(t, ss.FirstSeq, 1)
 		require_Equal(t, ss.LastSeq, 1)
 		require_Equal(t, ss.Msgs, 1)
+
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		require_True(t, fs.scheduling != nil)
+		require_Len(t, len(fs.scheduling.schedules), 1)
 	})
 }
 

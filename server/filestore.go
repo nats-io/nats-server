@@ -468,16 +468,6 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 		}
 	}()
 
-	// Only create a THW if we're going to allow TTLs.
-	if cfg.AllowMsgTTL {
-		fs.ttls = thw.NewHashWheel()
-	}
-	// Only create scheduling data structure if we're going to allow message schedules.
-	if cfg.AllowMsgSchedules {
-		fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
-		fs.scheduling.paused = recovering
-	}
-
 	// Set flush in place to AsyncFlush which by default is false.
 	fs.fip = !fcfg.AsyncFlush
 
@@ -567,18 +557,10 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 		}
 	}()
 
-	// See if we can bring back our TTL timed hash wheel state from disk.
-	if cfg.AllowMsgTTL {
-		if err = fs.recoverTTLState(); err != nil && !os.IsNotExist(err) {
-			fs.warn("Recovering TTL state from index errored: %v", err)
-		}
-	}
-
-	// See if we can bring back our message scheduling state from disk.
-	if cfg.AllowMsgSchedules {
-		if err = fs.recoverMsgSchedulingState(); err != nil && !os.IsNotExist(err) {
-			fs.warn("Recovering message scheduling state from index errored: %v", err)
-		}
+	// Recover per-message state like TTLs and schedules.
+	if err = fs.recoverPerMessageState(); err != nil {
+		fs.mu.Unlock()
+		return nil, err
 	}
 
 	// Also make sure we get rid of old idx and fss files on return.
@@ -728,25 +710,11 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		return err
 	}
 
-	// Create or delete the THW if needed.
-	if cfg.AllowMsgTTL && fs.ttls == nil {
-		if err := fs.recoverTTLState(); err != nil {
-			fs.mu.Unlock()
-			return err
-		}
-	} else if !cfg.AllowMsgTTL && fs.ttls != nil {
-		fs.ttls = nil
+	// Recover per-message state like TTLs and schedules.
+	if err := fs.recoverPerMessageState(); err != nil {
+		fs.mu.Unlock()
+		return err
 	}
-	// Create or delete the message scheduling state if needed.
-	if cfg.AllowMsgSchedules && fs.scheduling == nil {
-		if err := fs.recoverMsgSchedulingState(); err != nil {
-			fs.mu.Unlock()
-			return err
-		}
-	} else if !cfg.AllowMsgSchedules && fs.scheduling != nil {
-		fs.scheduling = nil
-	}
-
 	// Limits checks and enforcement.
 	if err := fs.enforceMsgLimit(); err != nil {
 		fs.mu.Unlock()
@@ -2222,8 +2190,123 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	return nil
 }
 
+// Recover per-message state like TTLs and schedules. Doing a linear scan through the stream
+// only once if both states need to be recovered from the same sequences.
 // Lock should be held.
-func (fs *fileStore) recoverTTLState() error {
+func (fs *fileStore) recoverPerMessageState() error {
+	scanSeq := uint64(math.MaxUint64)
+	var ttlSeq, schedSeq uint64
+	var ttlRecover, schedRecover bool
+	allowMsgTTL, allowMsgSchedules := fs.cfg.AllowMsgTTL, fs.cfg.AllowMsgSchedules
+
+	// Create or delete the THW if needed.
+	if allowMsgTTL && fs.ttls == nil {
+		ttlSeq = fs.recoverTTLState()
+		ttlRecover = true
+		scanSeq = min(scanSeq, ttlSeq)
+	} else if !allowMsgTTL && fs.ttls != nil {
+		fs.ttls = nil
+	}
+
+	// Create or delete the message scheduling state if needed.
+	if allowMsgSchedules && fs.scheduling == nil {
+		schedSeq = fs.recoverMsgSchedulingState()
+		schedRecover = true
+		scanSeq = min(scanSeq, schedSeq)
+	} else if !allowMsgSchedules && fs.scheduling != nil {
+		fs.scheduling = nil
+	}
+
+	// Short-circuit if no recovering is required.
+	if !ttlRecover && !schedRecover {
+		return nil
+	}
+
+	if allowMsgTTL {
+		defer fs.resetAgeChk(0)
+	}
+	if allowMsgSchedules {
+		defer fs.scheduling.resetTimer()
+	}
+
+	if fs.state.Msgs > 0 && scanSeq <= fs.state.LastSeq {
+		if ttlRecover && ttlSeq <= fs.state.LastSeq {
+			fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", ttlSeq, fs.state.LastSeq)
+		}
+		if schedRecover && schedSeq <= fs.state.LastSeq {
+			fs.warn("Message scheduling state is outdated; attempting to recover using linear scan (seq %d to %d)", schedSeq, fs.state.LastSeq)
+		}
+		var (
+			mb     *msgBlock
+			sm     StoreMsg
+			mblseq uint64
+		)
+		for seq := scanSeq; seq <= fs.state.LastSeq; seq++ {
+		retry:
+			if mb == nil {
+				if mb = fs.selectMsgBlock(seq); mb == nil {
+					// Selecting the message block should return a block that contains this sequence,
+					// or a later block if it can't be found.
+					// It's an error if we can't find any block within the bounds of first and last seq.
+					fs.warn("Error loading msg block with seq %d for recovering per-message state", seq)
+					continue
+				}
+				seq = atomic.LoadUint64(&mb.first.seq)
+				mblseq = atomic.LoadUint64(&mb.last.seq)
+			}
+			// Check if this block can be skipped.
+			ttlBlock := ttlRecover && mblseq >= ttlSeq
+			schedBlock := schedRecover && mblseq >= schedSeq
+			if (!ttlBlock || mb.ttls == 0) && (!schedBlock || mb.schedules == 0) {
+				// None of the messages in the block have state that needs recovering, so
+				// don't bother doing anything further with this block, skip to the end.
+				seq = mblseq + 1
+			}
+			if seq > mblseq {
+				// We've reached the end of the loaded block, so let's go back to the
+				// beginning and process the next block.
+				mb.tryForceExpireCache()
+				mb = nil
+				if seq <= fs.state.LastSeq {
+					goto retry
+				}
+				// Done.
+				break
+			}
+			mb.mu.Lock()
+			msg, _, err := mb.fetchMsgNoCopyLocked(seq, &sm)
+			if err != nil {
+				mb.finishedWithCache()
+				mb.mu.Unlock()
+				if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+					continue
+				}
+				fs.warn("Error loading msg seq %d for recovering per-message state: %s", seq, err)
+				return err
+			}
+			if len(msg.hdr) > 0 {
+				if ttlRecover && seq >= ttlSeq {
+					if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
+						expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
+						fs.ttls.Add(seq, int64(expires))
+					}
+				}
+				if schedRecover && seq >= schedSeq {
+					if schedule, apiErr := nextMessageSchedule(msg.hdr, msg.ts); apiErr == nil && !schedule.IsZero() {
+						// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
+						fs.scheduling.init(seq, copyString(msg.subj), schedule.UnixNano())
+					}
+				}
+			}
+			mb.finishedWithCache()
+			mb.mu.Unlock()
+		}
+	}
+	return nil
+}
+
+// Lock should be held.
+func (fs *fileStore) recoverTTLState() uint64 {
 	// See if we have a timed hash wheel for TTLs.
 	fs.dios.acquire()
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
@@ -2231,7 +2314,7 @@ func (fs *fileStore) recoverTTLState() error {
 	fs.dios.release()
 
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		fs.warn("Recovering TTL state from index errored: %v", err)
 	}
 
 	fs.ttls = thw.NewHashWheel()
@@ -2250,75 +2333,19 @@ func (fs *fileStore) recoverTTLState() error {
 	if ttlseq < fs.state.FirstSeq {
 		ttlseq = fs.state.FirstSeq
 	}
-
-	defer fs.resetAgeChk(0)
-	if fs.state.Msgs > 0 && ttlseq <= fs.state.LastSeq {
-		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", ttlseq, fs.state.LastSeq)
-		var (
-			mb     *msgBlock
-			sm     StoreMsg
-			mblseq uint64
-		)
-		for seq := ttlseq; seq <= fs.state.LastSeq; seq++ {
-		retry:
-			if mb == nil {
-				if mb = fs.selectMsgBlock(seq); mb == nil {
-					// Selecting the message block should return a block that contains this sequence,
-					// or a later block if it can't be found.
-					// It's an error if we can't find any block within the bounds of first and last seq.
-					fs.warn("Error loading msg block with seq %d for recovering TTL", seq)
-					continue
-				}
-				seq = atomic.LoadUint64(&mb.first.seq)
-				mblseq = atomic.LoadUint64(&mb.last.seq)
-			}
-			if mb.ttls == 0 {
-				// None of the messages in the block have message TTLs so don't
-				// bother doing anything further with this block, skip to the end.
-				seq = atomic.LoadUint64(&mb.last.seq) + 1
-			}
-			if seq > mblseq {
-				// We've reached the end of the loaded block, so let's go back to the
-				// beginning and process the next block.
-				mb.tryForceExpireCache()
-				mb = nil
-				if seq <= fs.state.LastSeq {
-					goto retry
-				}
-				// Done.
-				break
-			}
-			mb.mu.Lock()
-			msg, _, err := mb.fetchMsgNoCopyLocked(seq, &sm)
-			if err != nil {
-				mb.finishedWithCache()
-				mb.mu.Unlock()
-				fs.warn("Error loading msg seq %d for recovering TTL: %s", seq, err)
-				continue
-			}
-			if len(msg.hdr) > 0 {
-				if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
-					expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
-					fs.ttls.Add(seq, int64(expires))
-				}
-			}
-			mb.finishedWithCache()
-			mb.mu.Unlock()
-		}
-	}
-	return nil
+	return ttlseq
 }
 
 // Lock should be held.
-func (fs *fileStore) recoverMsgSchedulingState() error {
-	// See if we have a timed hash wheel for TTLs.
+func (fs *fileStore) recoverMsgSchedulingState() uint64 {
+	// See if we have a schedule index file.
 	fs.dios.acquire()
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, msgSchedulingStreamStateFile)
 	buf, err := os.ReadFile(fn)
 	fs.dios.release()
 
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		fs.warn("Recovering message scheduling state from index errored: %v", err)
 	}
 
 	fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
@@ -2339,63 +2366,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 	if schedSeq < fs.state.FirstSeq {
 		schedSeq = fs.state.FirstSeq
 	}
-
-	defer fs.scheduling.resetTimer()
-	if fs.state.Msgs > 0 && schedSeq <= fs.state.LastSeq {
-		fs.warn("Message scheduling state is outdated; attempting to recover using linear scan (seq %d to %d)", schedSeq, fs.state.LastSeq)
-		var (
-			mb     *msgBlock
-			sm     StoreMsg
-			mblseq uint64
-		)
-		for seq := schedSeq; seq <= fs.state.LastSeq; seq++ {
-		retry:
-			if mb == nil {
-				if mb = fs.selectMsgBlock(seq); mb == nil {
-					// Selecting the message block should return a block that contains this sequence,
-					// or a later block if it can't be found.
-					// It's an error if we can't find any block within the bounds of first and last seq.
-					fs.warn("Error loading msg block with seq %d for recovering message schedules", seq)
-					continue
-				}
-				seq = atomic.LoadUint64(&mb.first.seq)
-				mblseq = atomic.LoadUint64(&mb.last.seq)
-			}
-			if mb.schedules == 0 {
-				// None of the messages in the block have message schedules, so don't
-				// bother doing anything further with this block, skip to the end.
-				seq = atomic.LoadUint64(&mb.last.seq) + 1
-			}
-			if seq > mblseq {
-				// We've reached the end of the loaded block, so let's go back to the
-				// beginning and process the next block.
-				mb.tryForceExpireCache()
-				mb = nil
-				if seq <= fs.state.LastSeq {
-					goto retry
-				}
-				// Done.
-				break
-			}
-			mb.mu.Lock()
-			msg, _, err := mb.fetchMsgNoCopyLocked(seq, &sm)
-			if err != nil {
-				mb.finishedWithCache()
-				mb.mu.Unlock()
-				fs.warn("Error loading msg seq %d for recovering message schedules: %s", seq, err)
-				continue
-			}
-			if len(msg.hdr) > 0 {
-				if schedule, apiErr := nextMessageSchedule(msg.hdr, msg.ts); apiErr == nil && !schedule.IsZero() {
-					// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
-					fs.scheduling.init(seq, copyString(msg.subj), schedule.UnixNano())
-				}
-			}
-			mb.finishedWithCache()
-			mb.mu.Unlock()
-		}
-	}
-	return nil
+	return schedSeq
 }
 
 // Grabs last checksum for the named block file.
