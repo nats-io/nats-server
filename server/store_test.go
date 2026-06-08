@@ -1548,3 +1548,58 @@ func Benchmark_StoreMultiLastSeqsManyBlocks(b *testing.B) {
 		run(b, fs)
 	})
 }
+
+func TestStoreSourcesOnlyTracksConfiguredSources(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{
+			Name:     "SOURCE",
+			Subjects: []string{">"},
+			Sources:  []*StreamSource{{Name: "ORIGIN1"}},
+		},
+		func(t *testing.T, fs StreamStore) {
+			h1 := genHeader(nil, JSStreamSource, "ORIGIN1 5 > > foo.a IDENT1")
+			_, _, err := fs.StoreMsg("foo.a", h1, nil, 0)
+			require_NoError(t, err)
+
+			// Only configured sources are seeded into the map, so a header naming one that
+			// isn't configured is not tracked. It is recovered by a scan if it is added.
+			h2 := genHeader(nil, JSStreamSource, "ORIGIN2 7 > > foo.b IDENT2")
+			_, _, err = fs.StoreMsg("foo.b", h2, nil, 0)
+			require_NoError(t, err)
+
+			// Nor is a pre-2.10 header, which carries no index name at all.
+			h3 := genHeader(nil, JSStreamSource, "ORIGIN3 9")
+			_, _, err = fs.StoreMsg("foo.c", h3, nil, 0)
+			require_NoError(t, err)
+
+			state := fs.SourcesState()
+			require_Len(t, len(state), 1)
+			require_Equal(t, state["ORIGIN1 > >"].Seq, 5)
+			require_Equal(t, state["ORIGIN1 > >"].Ident, "IDENT1")
+
+			var tracked int
+			if fss, ok := fs.(*fileStore); ok {
+				fss.mu.RLock()
+				tracked = len(fss.sources)
+				fss.mu.RUnlock()
+			} else if mss, ok := fs.(*memStore); ok {
+				mss.mu.RLock()
+				tracked = len(mss.sources)
+				mss.mu.RUnlock()
+			} else {
+				t.Fatal("unknown store")
+			}
+			require_Equal(t, tracked, 1)
+
+			// A new message should update both the sequence and identity.
+			h4 := genHeader(nil, JSStreamSource, "ORIGIN1 2 > > foo.a IDENT3")
+			_, _, err = fs.StoreMsg("foo.a", h4, nil, 0)
+			require_NoError(t, err)
+			state = fs.SourcesState()
+			require_Len(t, len(state), 1)
+			require_Equal(t, state["ORIGIN1 > >"].Seq, 2)
+			require_Equal(t, state["ORIGIN1 > >"].Ident, "IDENT3")
+		},
+	)
+}

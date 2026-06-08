@@ -25038,6 +25038,160 @@ func TestJetStreamDurableStreamSourcesWithUniqueConsumerNames(t *testing.T) {
 	})
 }
 
+func TestJetStreamSourcesState(t *testing.T) {
+	test := func(t *testing.T, storage nats.StorageType) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+		port := s.getOpts().Port
+		sd := s.JetStreamConfig().StoreDir
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "ORIGIN",
+			Storage:  storage,
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+
+		cfg := &nats.StreamConfig{
+			Name:    "SOURCE",
+			Storage: storage,
+			Sources: []*nats.StreamSource{{Name: "ORIGIN"}},
+		}
+		_, err = js.AddStream(cfg)
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("SOURCE")
+		require_NoError(t, err)
+		store := mset.Store()
+		state := store.SourcesState()
+		require_True(t, state == nil)
+
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if msgs := store.State().Msgs; msgs != 1 {
+				return fmt.Errorf("expected 1 message, got %d", msgs)
+			}
+			return nil
+		})
+		state = store.SourcesState()
+		require_NotNil(t, state)
+		require_Equal(t, state["ORIGIN > >"].Seq, 1)
+
+		if storage == nats.FileStorage {
+			s.Shutdown()
+			s = RunJetStreamServerOnPort(port, sd)
+			defer s.Shutdown()
+
+			nc.Close()
+			nc, js = jsClientConnect(t, s)
+			defer nc.Close()
+
+			mset, err = s.globalAccount().lookupStream("SOURCE")
+			require_NoError(t, err)
+			store = mset.Store()
+			state = store.SourcesState()
+			require_NotNil(t, state)
+			require_Equal(t, state["ORIGIN > >"].Seq, 1)
+		}
+
+		cfg.Sources = nil
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		state = store.SourcesState()
+		require_True(t, state == nil)
+	}
+
+	t.Run("File", func(t *testing.T) { test(t, nats.FileStorage) })
+	t.Run("Memory", func(t *testing.T) { test(t, nats.MemoryStorage) })
+}
+
+func TestJetStreamSourcesStateStartingSequence(t *testing.T) {
+	test := func(t *testing.T, storage nats.StorageType, purge bool) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "ORIGIN",
+			Storage:  storage,
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:    "SOURCE",
+			Storage: storage,
+			Sources: []*nats.StreamSource{{Name: "ORIGIN"}},
+		})
+		require_NoError(t, err)
+
+		const total = 5
+		for range total {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+
+		mset, err := s.globalAccount().lookupStream("SOURCE")
+		require_NoError(t, err)
+		store := mset.Store()
+
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			if msgs := store.State().Msgs; msgs != total {
+				return fmt.Errorf("expected %d messages, got %d", total, msgs)
+			}
+			return nil
+		})
+
+		origin, err := s.globalAccount().lookupStream("ORIGIN")
+		require_NoError(t, err)
+		ident := origin.identity()
+		require_NotEqual(t, ident, _EMPTY_)
+
+		const iname = "ORIGIN > >"
+		// The source's identity must be tracked alongside its sequence.
+		require_Equal(t, store.SourcesState()[iname].Seq, total)
+		require_Equal(t, store.SourcesState()[iname].Ident, ident)
+
+		if purge {
+			// Purge all destination messages. The tracked source state must survive
+			// this so we can resume rather than start over.
+			_, err = mset.purge(nil)
+			require_NoError(t, err)
+			require_Equal(t, store.State().Msgs, 0)
+			require_Equal(t, store.SourcesState()[iname].Seq, total)
+			require_Equal(t, store.SourcesState()[iname].Ident, ident)
+		}
+
+		// Both sequence and identity must survive the recovery path that runs on
+		// restart and on leader election. Without the identity a recreated origin
+		// goes undetected, and we would resume from a sequence that means nothing
+		// in the new stream.
+		mset.mu.Lock()
+		mset.startingSequenceForSources()
+		si := mset.sources[iname]
+		mset.mu.Unlock()
+
+		require_NotNil(t, si)
+		require_Equal(t, si.sseq, total)
+		require_Equal(t, si.ident, ident)
+	}
+
+	t.Run("File", func(t *testing.T) {
+		t.Run("Fresh", func(t *testing.T) { test(t, nats.FileStorage, false) })
+		t.Run("AfterPurge", func(t *testing.T) { test(t, nats.FileStorage, true) })
+	})
+	t.Run("Memory", func(t *testing.T) {
+		t.Run("Fresh", func(t *testing.T) { test(t, nats.MemoryStorage, false) })
+		t.Run("AfterPurge", func(t *testing.T) { test(t, nats.MemoryStorage, true) })
+	})
+}
+
 func TestJetStreamClusterInfoDoesNotBlockJSMutex(t *testing.T) {
 	// Use a real raft node with its RWMutex held to simulate a Raft
 	// runloop blocked during vote processing, e.g. by dios. clusterInfo

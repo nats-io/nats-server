@@ -115,6 +115,7 @@ type StreamStore interface {
 	FilteredState(seq uint64, subject string) (SimpleState, error)
 	SubjectsState(filterSubject string) map[string]SimpleState
 	SubjectsTotals(filterSubject string) map[string]uint64
+	SourcesState() map[string]StreamSourceState
 	AllLastSeqs() ([]uint64, error)
 	MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error)
 	MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error)

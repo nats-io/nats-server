@@ -219,6 +219,7 @@ type fileStore struct {
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
+	sources     map[string]*StreamSourceState
 }
 
 // Represents a message store block and its data.
@@ -355,6 +356,11 @@ const (
 
 	// This is the encoded message scheduling file.
 	msgSchedulingStreamStateFile = "sched.db"
+
+	// This is the encoded sources state file. Unlike the other state files it
+	// lives at the FileStoreConfig.StoreDir root rather than under msgDir, so
+	// a full purge does not also purge this file.
+	sourcesStreamStateFile = "sources.db"
 
 	// AEK key sizes
 	minMetaKeySize = 64
@@ -2195,9 +2201,17 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 // Lock should be held.
 func (fs *fileStore) recoverPerMessageState() error {
 	scanSeq := uint64(math.MaxUint64)
-	var ttlSeq, schedSeq uint64
-	var ttlRecover, schedRecover bool
+	var ttlSeq, schedSeq, sourcesSeq uint64
+	var ttlRecover, schedRecover, sourcesRecover bool
 	allowMsgTTL, allowMsgSchedules := fs.cfg.AllowMsgTTL, fs.cfg.AllowMsgSchedules
+
+	var sources map[string]*StreamSource
+	if len(fs.cfg.Sources) > 0 {
+		sources = make(map[string]*StreamSource, len(fs.cfg.Sources))
+		for _, ssi := range fs.cfg.Sources {
+			sources[ssi.composeIName()] = ssi
+		}
+	}
 
 	// Create or delete the THW if needed.
 	if allowMsgTTL && fs.ttls == nil {
@@ -2217,8 +2231,56 @@ func (fs *fileStore) recoverPerMessageState() error {
 		fs.scheduling = nil
 	}
 
+	// Create or delete the source tracking if needed.
+	if sources != nil && fs.sources == nil {
+		sourcesSeq = fs.recoverSourcesState()
+		// Only allow scanning if the index recovered something. If there is no index
+		// yet, then we'll just not do the scan and let the upper layer do so when needed.
+		if fs.sources != nil {
+			sourcesRecover = true
+			scanSeq = min(scanSeq, sourcesSeq)
+		}
+	}
+	if len(sources) > 0 {
+		// Ensure the map exists even on a fresh stream that has no persisted
+		// index yet, so storeRawMsg can validate headers against the configured
+		// set (zero sequence == configured but not yet observed).
+		if fs.sources == nil {
+			fs.sources = make(map[string]*StreamSourceState, len(sources))
+		}
+		// Remove sources that are tracked but no longer exist.
+		for k := range fs.sources {
+			if _, ok := sources[k]; !ok {
+				delete(fs.sources, k)
+			}
+		}
+		// Seed sources that aren't in the map yet.
+		for k := range sources {
+			if _, ok := fs.sources[k]; !ok {
+				fs.sources[k] = &StreamSourceState{}
+			}
+		}
+	}
+	if fs.sources != nil {
+		// No sources configured anymore, clear.
+		if len(sources) == 0 {
+			fs.sources = nil
+		}
+		// If all zeros or empty, remove the index from disk.
+		remove := true
+		for _, ss := range fs.sources {
+			if ss.Seq > 0 {
+				remove = false
+				break
+			}
+		}
+		if remove {
+			_ = os.Remove(fs.sourcesStatePath())
+		}
+	}
+
 	// Short-circuit if no recovering is required.
-	if !ttlRecover && !schedRecover {
+	if !ttlRecover && !schedRecover && !sourcesRecover {
 		return nil
 	}
 
@@ -2229,12 +2291,26 @@ func (fs *fileStore) recoverPerMessageState() error {
 		defer fs.scheduling.resetTimer()
 	}
 
+	// If only sources need recovering, then we can optimize to a backward scan.
+	if sourcesRecover && !ttlRecover && !schedRecover {
+		if fs.state.Msgs > 0 && sourcesSeq <= fs.state.LastSeq {
+			fs.warn("Sourcing state is outdated; attempting to recover using backward scan (seq %d to %d)", sourcesSeq, fs.state.LastSeq)
+			if err := fs.recoverSourcesBackwardScan(sourcesSeq, sources); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	if fs.state.Msgs > 0 && scanSeq <= fs.state.LastSeq {
 		if ttlRecover && ttlSeq <= fs.state.LastSeq {
 			fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", ttlSeq, fs.state.LastSeq)
 		}
 		if schedRecover && schedSeq <= fs.state.LastSeq {
 			fs.warn("Message scheduling state is outdated; attempting to recover using linear scan (seq %d to %d)", schedSeq, fs.state.LastSeq)
+		}
+		if sourcesRecover && sourcesSeq <= fs.state.LastSeq {
+			fs.warn("Sourcing state is outdated; attempting to recover using linear scan (seq %d to %d)", sourcesSeq, fs.state.LastSeq)
 		}
 		var (
 			mb     *msgBlock
@@ -2257,7 +2333,8 @@ func (fs *fileStore) recoverPerMessageState() error {
 			// Check if this block can be skipped.
 			ttlBlock := ttlRecover && mblseq >= ttlSeq
 			schedBlock := schedRecover && mblseq >= schedSeq
-			if (!ttlBlock || mb.ttls == 0) && (!schedBlock || mb.schedules == 0) {
+			sourcesBlock := sourcesRecover && mblseq >= sourcesSeq
+			if !sourcesBlock && (!ttlBlock || mb.ttls == 0) && (!schedBlock || mb.schedules == 0) {
 				// None of the messages in the block have state that needs recovering, so
 				// don't bother doing anything further with this block, skip to the end.
 				seq = mblseq + 1
@@ -2295,6 +2372,16 @@ func (fs *fileStore) recoverPerMessageState() error {
 					if schedule, apiErr := nextMessageSchedule(msg.hdr, msg.ts); apiErr == nil && !schedule.IsZero() {
 						// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
 						fs.scheduling.init(seq, copyString(msg.subj), schedule.UnixNano())
+					}
+				}
+				if sourcesRecover && seq >= sourcesSeq {
+					if ss := sliceHeader(JSStreamSource, msg.hdr); len(ss) > 0 {
+						_, indexName, sseq, ident := streamAndSeq(bytesToString(ss))
+						if indexName != _EMPTY_ {
+							if sss, ok := fs.sources[indexName]; ok {
+								sss.Seq, sss.Ident = sseq, ident
+							}
+						}
 					}
 				}
 			}
@@ -4841,6 +4928,26 @@ func (fs *fileStore) subjectsTotalsLocked(filter string) map[string]uint64 {
 	return fst
 }
 
+// SourcesState return sources keys and their last known state.
+func (fs *fileStore) SourcesState() (dst map[string]StreamSourceState) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	if len(fs.sources) == 0 {
+		return nil
+	}
+	// Allocate lazily so that a map containing only seeded (zero) entries returns
+	// nil rather than an empty map; zeros must not leak out of SourcesState.
+	for k, ss := range fs.sources {
+		if ss.Seq > 0 {
+			if dst == nil {
+				dst = make(map[string]StreamSourceState, 1)
+			}
+			dst[k] = *ss
+		}
+	}
+	return dst
+}
+
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.
@@ -5232,6 +5339,16 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 			scheduler := getMessageScheduler(hdr)
 			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
 				fs.scheduling.update(scheduler, next.UnixNano())
+			}
+		}
+	}
+
+	// Track sources.
+	if len(fs.cfg.Sources) > 0 {
+		if ss := sliceHeader(JSStreamSource, hdr); len(ss) > 0 {
+			_, indexName, sseq, ident := streamAndSeq(bytesToString(ss))
+			if sss, ok := fs.sources[indexName]; ok {
+				sss.Seq, sss.Ident = sseq, ident
 			}
 		}
 	}
@@ -9682,7 +9799,12 @@ func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.loadPrevMsgMultiLocked(sl, start, smp)
+}
 
+// loadPrevMsgMultiLocked will find the previous message matching any entry in the sublist.
+// Lock should be held.
+func (fs *fileStore) loadPrevMsgMultiLocked(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
 	if fs.state.Msgs == 0 || start < fs.state.FirstSeq {
 		return nil, fs.state.FirstSeq, ErrStoreEOF
 	}
@@ -12178,13 +12300,16 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	fs.dirty -= priorDirty
 	fs.mu.Unlock()
 
-	// Attempt to write both files, an error in one should not prevent the other from being written.
+	// Attempt to write other index files, an error in one should not prevent the other from being written.
 	ttlErr := fs.writeTTLState()
 	schedErr := fs.writeMsgSchedulingState()
+	sourcesErr := fs.writeSourcesState()
 	if ttlErr != nil {
 		return ttlErr
 	} else if schedErr != nil {
 		return schedErr
+	} else if sourcesErr != nil {
+		return sourcesErr
 	}
 	return nil
 }
@@ -12215,6 +12340,210 @@ func (fs *fileStore) writeMsgSchedulingState() error {
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
+}
+
+const sourcesHeaderLen = 17 // 1 byte magic + 2x uint64s
+
+func (fs *fileStore) sourcesStatePath() string {
+	return filepath.Join(fs.fcfg.StoreDir, sourcesStreamStateFile)
+}
+
+func (fs *fileStore) writeSourcesState() error {
+	fs.mu.RLock()
+	if fs.sources == nil {
+		fs.mu.RUnlock()
+		return nil
+	}
+	fn := fs.sourcesStatePath()
+
+	// Must be lseq+1 to identify up to which sequence the sources are valid.
+	highSeq := fs.state.LastSeq + 1
+
+	var count, sz uint64
+	for source, ss := range fs.sources {
+		if ss.Seq > 0 {
+			count++
+			// Length prefix + source bytes + seq varint +
+			// length prefix + identity bytes.
+			sz += uint64(uvarintLen(uint64(len(source)))) + uint64(len(source)) + binary.MaxVarintLen64 +
+				uint64(uvarintLen(uint64(len(ss.Ident)))) + uint64(len(ss.Ident))
+		}
+	}
+	// Nothing observed yet, don't persist an empty index. Any stale file is
+	// removed by recoverPerMessageState on recovery.
+	if count == 0 {
+		fs.mu.RUnlock()
+		return nil
+	}
+	buf := make([]byte, 0, sourcesHeaderLen+sz)
+	buf = append(buf, 1)                                 // Magic version
+	buf = binary.LittleEndian.AppendUint64(buf, count)   // Entry count
+	buf = binary.LittleEndian.AppendUint64(buf, highSeq) // Stamp
+	for source, ss := range fs.sources {
+		if ss.Seq == 0 {
+			continue
+		}
+		buf = binary.AppendUvarint(buf, uint64(len(source)))
+		buf = append(buf, source...)
+		buf = binary.AppendUvarint(buf, ss.Seq)
+		buf = binary.AppendUvarint(buf, uint64(len(ss.Ident)))
+		buf = append(buf, ss.Ident...)
+	}
+	fs.mu.RUnlock()
+
+	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
+}
+
+// Lock should be held.
+func (fs *fileStore) recoverSourcesState() uint64 {
+	// See if we have a sources index file.
+	fs.dios.acquire()
+	fn := fs.sourcesStatePath()
+	buf, err := os.ReadFile(fn)
+	fs.dios.release()
+
+	if err != nil && !os.IsNotExist(err) {
+		fs.warn("Recovering sources state from index errored: %v", err)
+	}
+
+	var sourcesSeq uint64
+	if err == nil {
+		sourcesSeq, err = fs.decodeSourcesState(buf)
+		if err != nil {
+			fs.warn("Error decoding sources state: %s", err)
+			// Remove the file, and reset collected state (if any).
+			_ = os.Remove(fn)
+			fs.sources = nil
+		}
+	}
+
+	if sourcesSeq < fs.state.FirstSeq {
+		sourcesSeq = fs.state.FirstSeq
+	}
+	return sourcesSeq
+}
+
+var errSourcesInvalidVersion = errors.New("sources: encoded version not known")
+
+func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
+	if len(b) < sourcesHeaderLen {
+		return 0, io.ErrShortBuffer
+	}
+	if b[0] != 1 {
+		return 0, errSourcesInvalidVersion
+	}
+
+	count := binary.LittleEndian.Uint64(b[1:])
+	stamp := binary.LittleEndian.Uint64(b[9:])
+	if count > 0 && fs.sources == nil {
+		fs.sources = make(map[string]*StreamSourceState)
+	}
+	b = b[sourcesHeaderLen:]
+	readStr := func() (string, bool) {
+		n, vn := binary.Uvarint(b)
+		if vn <= 0 || uint64(len(b)-vn) < n {
+			return _EMPTY_, false
+		}
+		b = b[vn:]
+		s := string(b[:n])
+		b = b[n:]
+		return s, true
+	}
+	for i := uint64(0); i < count; i++ {
+		source, ok := readStr()
+		if !ok {
+			return 0, io.ErrUnexpectedEOF
+		}
+		seq, vn := binary.Uvarint(b)
+		if vn <= 0 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		b = b[vn:]
+		ident, ok := readStr()
+		if !ok {
+			return 0, io.ErrUnexpectedEOF
+		}
+		fs.sources[source] = &StreamSourceState{Seq: seq, Ident: ident}
+	}
+	return stamp, nil
+}
+
+// recoverSourcesBackwardScan recovers fs.sources by scanning the stream backwards,
+// mirroring stream.startingSequenceForSources, down to and including the stopSeq.
+// Lock should be held.
+func (fs *fileStore) recoverSourcesBackwardScan(stopSeq uint64, sources map[string]*StreamSource) error {
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for _, src := range sources {
+			if src.FilterSubject == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(src.FilterSubject, struct{}{})
+			}
+			for _, tr := range src.SubjectTransforms {
+				if tr.Destination == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(tr.Destination, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
+	update := func(iName string, sseq uint64, ident string) {
+		// Only consider sources that are configured and not yet found. The backward
+		// scan visits the highest matching sequence first, so the first hit per source
+		// is the latest and overwrites any older decoded value.
+		if _, ok := sources[iName]; !ok {
+			return
+		}
+		if fs.sources == nil {
+			fs.sources = make(map[string]*StreamSourceState, 1)
+		}
+		fs.sources[iName] = &StreamSourceState{Seq: sseq, Ident: ident}
+		delete(sources, iName)
+		refreshSublist()
+	}
+
+	var smv StoreMsg
+	for last := fs.state.LastSeq; ; {
+		sm, seq, err := fs.loadPrevMsgMultiLocked(sl, last, &smv)
+		if err == ErrStoreEOF {
+			// Done.
+			break
+		}
+		if err != nil {
+			return err
+		}
+		// Stop if we've gone below the point where decoded state is still valid.
+		if seq < stopSeq {
+			break
+		}
+		if len(sm.hdr) > 0 {
+			if ss := sliceHeader(JSStreamSource, sm.hdr); len(ss) > 0 {
+				streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
+				if iName == _EMPTY_ {
+					// Pre-2.10 message header means it's a match for any source using that stream name.
+					// Such headers carry no identity, so it is left unset.
+					for _, ssi := range fs.cfg.Sources {
+						if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
+							update(ssi.composeIName(), sseq, _EMPTY_)
+						}
+					}
+				} else {
+					update(iName, sseq, ident)
+				}
+			}
+		}
+		// Done once every source has been resolved, or we've reached the floor.
+		if len(sources) == 0 || seq <= stopSeq {
+			break
+		}
+		last = seq - 1
+	}
+	return nil
 }
 
 // Stop the current filestore.

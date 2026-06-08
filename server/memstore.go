@@ -52,6 +52,7 @@ type memStore struct {
 	ttls        *thw.HashWheel
 	scheduling  *MsgScheduling
 	sdm         *SDMMeta
+	sources     map[string]*StreamSourceState
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -85,6 +86,14 @@ func newMemStoreWithMode(cfg *StreamConfig, recovering bool) (*memStore, error) 
 			return nil, err
 		}
 	}
+	// Seed configured sources (zero sequence == configured but not yet observed),
+	// so storeRawMsg can validate headers against the configured set.
+	if len(cfg.Sources) > 0 {
+		ms.sources = make(map[string]*StreamSourceState, len(cfg.Sources))
+		for _, ssi := range cfg.Sources {
+			ms.sources[ssi.composeIName()] = &StreamSourceState{}
+		}
+	}
 
 	// Register with access time service.
 	ats.Register()
@@ -113,6 +122,35 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	} else if !cfg.AllowMsgSchedules && ms.scheduling != nil {
 		ms.scheduling = nil
 	}
+
+	// Refresh the source tracking to match the new config.
+	if len(cfg.Sources) == 0 {
+		// If no sources remain, clear.
+		ms.sources = nil
+	} else {
+		// Ensure the map exists even if sources were just added, so storeRawMsg
+		// can validate headers against the configured set.
+		if ms.sources == nil {
+			ms.sources = make(map[string]*StreamSourceState, len(cfg.Sources))
+		}
+		sources := make(map[string]struct{}, len(cfg.Sources))
+		for _, ssi := range cfg.Sources {
+			sources[ssi.composeIName()] = struct{}{}
+		}
+		// Remove sources that are tracked but no longer exist.
+		for k := range ms.sources {
+			if _, ok := sources[k]; !ok {
+				delete(ms.sources, k)
+			}
+		}
+		// Seed sources that aren't in the map yet.
+		for k := range sources {
+			if _, ok := ms.sources[k]; !ok {
+				ms.sources[k] = &StreamSourceState{}
+			}
+		}
+	}
+
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
 	ms.enforceBytesLimit()
@@ -330,6 +368,16 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 			scheduler := getMessageScheduler(hdr)
 			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
 				ms.scheduling.update(scheduler, next.UnixNano())
+			}
+		}
+	}
+
+	// Track sources.
+	if len(ms.cfg.Sources) > 0 {
+		if ss := sliceHeader(JSStreamSource, hdr); len(ss) > 0 {
+			_, indexName, sseq, ident := streamAndSeq(bytesToString(ss))
+			if sss, ok := ms.sources[indexName]; ok {
+				sss.Seq, sss.Ident = sseq, ident
 			}
 		}
 	}
@@ -976,6 +1024,26 @@ func (ms *memStore) subjectsTotalsLocked(filterSubject string) map[string]uint64
 		}
 	})
 	return fst
+}
+
+// SourcesState return sources keys and their last known state.
+func (ms *memStore) SourcesState() (dst map[string]StreamSourceState) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	if len(ms.sources) == 0 {
+		return nil
+	}
+	// Allocate lazily so that a map containing only seeded (zero) entries returns
+	// nil rather than an empty map; zeros must not leak out of SourcesState.
+	for k, ss := range ms.sources {
+		if ss.Seq > 0 {
+			if dst == nil {
+				dst = make(map[string]StreamSourceState, 1)
+			}
+			dst[k] = *ss
+		}
+	}
+	return dst
 }
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
