@@ -1585,6 +1585,7 @@ func TestWSParseOptions(t *testing.T) {
 		{"bad advertise type", `websocket: { advertise: 123 }`, nil, "not string"},
 		{"bad tls", `websocket: { tls: 123 }`, nil, "not map[string]interface {}"},
 		{"bad same origin", `websocket: { same_origin: "abc" }`, nil, "not bool"},
+		{"bad proxy protocol", `websocket: { proxy_protocol: "abc" }`, nil, "not bool"},
 		{"bad allowed origins type", `websocket: { allowed_origins: {} }`, nil, "unsupported type"},
 		{"bad allowed origins values", `websocket: { allowed_origins: [ {} ] }`, nil, "unsupported type in array"},
 		{"bad handshake timeout type", `websocket: { handshake_timeout: [] }`, nil, "unsupported type"},
@@ -1686,6 +1687,17 @@ func TestWSParseOptions(t *testing.T) {
 			`, func(wo *WebsocketOpts) error {
 				if !wo.Compression {
 					return fmt.Errorf("Compression should have been set")
+				}
+				return nil
+			}, ""},
+		{"proxy protocol",
+			`
+			websocket {
+				proxy_protocol: true
+			}
+			`, func(wo *WebsocketOpts) error {
+				if !wo.ProxyProtocol {
+					return fmt.Errorf("ProxyProtocol should have been set")
 				}
 				return nil
 			}, ""},
@@ -2003,6 +2015,7 @@ type testWSClientOptions struct {
 	host                 string
 	port                 int
 	extraHeaders         map[string][]string
+	preTLS               []byte
 	noTLS                bool
 	path                 string
 	extraResponseHeaders map[string]string
@@ -2022,6 +2035,12 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 	wsc, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("Error creating ws connection: %v", err)
+	}
+	if len(o.preTLS) > 0 {
+		if _, err := wsc.Write(o.preTLS); err != nil {
+			wsc.Close()
+			return nil, nil, nil, fmt.Errorf("Error writing ws connection prefix: %v", err)
+		}
 	}
 	if !o.noTLS {
 		wsc = tls.Client(wsc, &tls.Config{InsecureSkipVerify: true})
@@ -2197,6 +2216,87 @@ func testWSCreateClient(t testing.TB, compress, web bool, host string, port int)
 		t.Fatalf("Expected PONG, got %s", msg)
 	}
 	return wsc, br
+}
+
+func TestWSProxyProtocol(t *testing.T) {
+	o := testWSOptions()
+	o.Websocket.ProxyProtocol = true
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	clientIP := "203.0.113.60"
+	clientPort := uint16(43210)
+	preTLS := buildProxyV2Header(t, clientIP, "127.0.0.1", clientPort, uint16(o.Websocket.Port), proxyProtoFamilyInet)
+	wsc, br, _ := testNewWSClient(t, testWSClientOptions{
+		host:   o.Websocket.Host,
+		port:   o.Websocket.Port,
+		preTLS: preTLS,
+	})
+	defer wsc.Close()
+
+	wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
+	if _, err := wsc.Write(wsmsg); err != nil {
+		t.Fatalf("Error sending message: %v", err)
+	}
+	if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+		t.Fatalf("Expected PONG, got %s", msg)
+	}
+
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		s.mu.Lock()
+		clients := make([]*client, 0, len(s.clients))
+		for _, c := range s.clients {
+			clients = append(clients, c)
+		}
+		s.mu.Unlock()
+		for _, c := range clients {
+			c.mu.Lock()
+			host, port := c.host, c.port
+			c.mu.Unlock()
+			if host == clientIP && port == clientPort {
+				return nil
+			}
+		}
+		return fmt.Errorf("did not find websocket client with proxied address %s:%d", clientIP, clientPort)
+	})
+}
+
+func TestWSProxyProtocolNonProxiedConnection(t *testing.T) {
+	o := testWSOptions()
+	o.Websocket.ProxyProtocol = true
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	wsc, _ := testWSCreateClient(t, false, false, o.Websocket.Host, o.Websocket.Port)
+	wsc.Close()
+}
+
+func TestWSProxyProtocolPreservesHandshakeTimeout(t *testing.T) {
+	o := testWSOptions()
+	o.Websocket.ProxyProtocol = true
+	o.Websocket.HandshakeTimeout = 10 * time.Millisecond
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := net.JoinHostPort(o.Websocket.Host, fmt.Sprintf("%d", o.Websocket.Port))
+	raw, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating ws connection: %v", err)
+	}
+	defer raw.Close()
+
+	preTLS := buildProxyV2Header(t, "203.0.113.60", "127.0.0.1", 43210, uint16(o.Websocket.Port), proxyProtoFamilyInet)
+	if _, err := raw.Write(preTLS); err != nil {
+		t.Fatalf("Error writing PROXY protocol header: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
+	tlsConn.SetDeadline(time.Now().Add(time.Second))
+	if err := tlsConn.Handshake(); err == nil {
+		t.Fatal("Expected TLS handshake to fail after websocket handshake timeout")
+	}
 }
 
 func testWSReadFrame(t testing.TB, br *bufio.Reader) []byte {

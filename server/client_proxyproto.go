@@ -236,6 +236,12 @@ func readProxyProtoHeader(conn net.Conn) (*proxyProtoAddr, []byte, error) {
 	}
 	defer conn.SetReadDeadline(time.Time{})
 
+	return readProxyProtoHeaderNoDeadline(conn)
+}
+
+// readProxyProtoHeaderNoDeadline parses PROXY protocol without changing read deadlines.
+// The caller is responsible for setting any deadline required by its accept/read path.
+func readProxyProtoHeaderNoDeadline(conn net.Conn) (*proxyProtoAddr, []byte, error) {
 	// Detect version
 	version, firstBytes, err := detectProxyProtoVersion(conn)
 	if err != nil {

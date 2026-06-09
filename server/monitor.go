@@ -1410,6 +1410,7 @@ type WebsocketOptsVarz struct {
 	SameOrigin        bool          `json:"same_origin,omitempty"`          // SameOrigin indicates if same origin connections are allowed
 	AllowedOrigins    []string      `json:"allowed_origins,omitempty"`      // AllowedOrigins list of configured trusted origins
 	Compression       bool          `json:"compression,omitempty"`          // Compression indicates if compression is supported
+	ProxyProtocol     bool          `json:"proxy_protocol,omitempty"`       // ProxyProtocol indicates if PROXY protocol is supported
 	TLSOCSPPeerVerify bool          `json:"tls_ocsp_peer_verify,omitempty"` // TLSOCSPPeerVerify indicates if OCSP verification will be done
 	TLSCertNotAfter   time.Time     `json:"tls_cert_not_after,omitzero"`    // TLSCertNotAfter is the expiration date of the TLS certificate
 }
@@ -1715,6 +1716,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			SameOrigin:        ws.SameOrigin,
 			AllowedOrigins:    copyStrings(ws.AllowedOrigins),
 			Compression:       ws.Compression,
+			ProxyProtocol:     ws.ProxyProtocol,
 			HandshakeTimeout:  ws.HandshakeTimeout,
 			TLSOCSPPeerVerify: wsTlsOCSPPeerVerify,
 		},

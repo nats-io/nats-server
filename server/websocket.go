@@ -1291,6 +1291,9 @@ func (s *Server) startWebsocketServer() {
 		s.Fatalf("Unable to listen for websocket connections: %v", err)
 		return
 	}
+	if o.ProxyProtocol {
+		hl = &websocketProxyProtoListener{Listener: hl, srv: s}
+	}
 	if config != nil {
 		hl = tls.NewListener(hl, config)
 	}
@@ -1364,6 +1367,106 @@ func (s *Server) startWebsocketServer() {
 		s.done <- true
 	}()
 	s.mu.Unlock()
+}
+
+type websocketProxyProtoListener struct {
+	net.Listener
+	srv *Server
+}
+
+func (l *websocketProxyProtoListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &websocketProxyProtoConn{Conn: conn, srv: l.srv}, nil
+}
+
+type websocketProxyProtoConn struct {
+	net.Conn
+	srv          *Server
+	parsed       bool
+	parseErr     error
+	deadlineMu   sync.Mutex
+	readDeadline time.Time
+}
+
+func (c *websocketProxyProtoConn) SetDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	c.readDeadline = t
+	c.deadlineMu.Unlock()
+	return c.Conn.SetDeadline(t)
+}
+
+func (c *websocketProxyProtoConn) SetReadDeadline(t time.Time) error {
+	c.deadlineMu.Lock()
+	c.readDeadline = t
+	c.deadlineMu.Unlock()
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *websocketProxyProtoConn) currentReadDeadline() time.Time {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	return c.readDeadline
+}
+
+func (c *websocketProxyProtoConn) Read(b []byte) (int, error) {
+	if !c.parsed {
+		c.parsed = true
+		wrapped, err := readWebsocketProxyProtoHeader(c)
+		if err != nil {
+			c.parseErr = err
+			c.srv.Warnf("Error reading PROXY protocol header from %s: %v", c.Conn.RemoteAddr(), err)
+		} else {
+			c.Conn = wrapped
+		}
+	}
+	if c.parseErr != nil {
+		return 0, c.parseErr
+	}
+	return c.Conn.Read(b)
+}
+
+func readWebsocketProxyProtoHeader(conn *websocketProxyProtoConn) (net.Conn, error) {
+	baseConn := conn.Conn
+	orgReadDeadline := conn.currentReadDeadline()
+	proxyReadDeadline := time.Now().Add(proxyProtoReadTimeout)
+	if !orgReadDeadline.IsZero() && orgReadDeadline.Before(proxyReadDeadline) {
+		proxyReadDeadline = orgReadDeadline
+	}
+	if err := conn.SetReadDeadline(proxyReadDeadline); err != nil {
+		return nil, err
+	}
+	defer conn.SetReadDeadline(orgReadDeadline)
+
+	pre := make([]byte, 6)
+	n, err := io.ReadFull(baseConn, pre)
+	pre = pre[:n]
+	if err != nil && n < 6 {
+		return nil, fmt.Errorf("failed to read PROXY protocol header: %w", err)
+	}
+
+	pconn := &tlsMixConn{Conn: baseConn, pre: bytes.NewBuffer(pre)}
+	addr, proxyPre, err := readProxyProtoHeaderNoDeadline(pconn)
+	if err == errProxyProtoUnrecognized {
+		if len(pre) == 0 {
+			return baseConn, nil
+		}
+		return &tlsMixConn{Conn: baseConn, pre: bytes.NewBuffer(pre)}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapped net.Conn = baseConn
+	if addr != nil {
+		wrapped = &proxyConn{Conn: wrapped, remoteAddr: addr}
+	}
+	if len(proxyPre) > 0 {
+		wrapped = &tlsMixConn{Conn: wrapped, pre: bytes.NewBuffer(proxyPre)}
+	}
+	return wrapped, nil
 }
 
 // The TLS configuration is passed to the listener when the websocket
