@@ -2955,13 +2955,11 @@ VALID:
 				o.mu.Lock()
 			}
 		}
-
-		// Recalculate pending, and re-trigger message delivery.
-		o.streamNumPending()
-		o.signalNewMessages()
-		return seq, true, nil
 	}
-	return seq, false, nil
+	// Recalculate pending, and re-trigger message delivery.
+	o.streamNumPending()
+	o.signalNewMessages()
+	return seq, true, nil
 }
 
 // Lock should be held.
