@@ -11345,7 +11345,7 @@ func TestJetStreamConsumerAllowOverlappingSubjectsIfNotSubset(t *testing.T) {
 }
 
 func TestJetStreamConsumerResetToSequence(t *testing.T) {
-	test := func(replicas int) {
+	test := func(replicas int, ackPolicy AckPolicy) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
@@ -11360,8 +11360,18 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 		_, err := js.AddStream(cfg)
 		require_NoError(t, err)
 
+		var ackOpt nats.SubOpt
+		switch ackPolicy {
+		case AckExplicit:
+			ackOpt = nats.AckExplicit()
+		case AckAll:
+			ackOpt = nats.AckAll()
+		default:
+			t.Fatalf("unsupported ack policy for this test: %v", ackPolicy)
+		}
 		sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
 			nats.BindStream("TEST"),
+			ackOpt,
 			nats.MaxAckPending(1),
 			nats.AckWait(time.Second),
 			nats.ConsumerReplicas(replicas),
@@ -11448,6 +11458,12 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 2, adflr: 1,
 			sseq: 2, asflr: 1,
 		})
+		// Confirm the initial pending values.
+		o.mu.RLock()
+		npc, npf := o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 2)
+		require_Equal(t, npf, 0)
 
 		// Resetting the consumer with an empty request results in a reset back to the ack floor.
 		var resp JSApiConsumerResetResponse
@@ -11468,6 +11484,17 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 0, adflr: 0,
 			sseq: 1, asflr: 1,
 		})
+		// AckAll can use the ack-floor fast path and leaves the floor as-is;
+		// AckExplicit always requires full recalculation here.
+		o.mu.RLock()
+		npc, npf = o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 3)
+		if ackPolicy == AckAll {
+			require_Equal(t, npf, 0)
+		} else {
+			require_Equal(t, npf, 4)
+		}
 
 		// Trying to reset to zero also resets back to the ack floor.
 		req := JSApiConsumerResetRequest{Seq: 0}
@@ -11490,6 +11517,16 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 0, adflr: 0,
 			sseq: 1, asflr: 1,
 		})
+		// Same as above.
+		o.mu.RLock()
+		npc, npf = o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 3)
+		if ackPolicy == AckAll {
+			require_Equal(t, npf, 0)
+		} else {
+			require_Equal(t, npf, 4)
+		}
 
 		// Resetting the consumer to the last message's sequence so it can be delivered still.
 		req = JSApiConsumerResetRequest{Seq: 4}
@@ -11513,6 +11550,12 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 0, adflr: 0,
 			sseq: 3, asflr: 3,
 		})
+		// Confirm pending was recalculated.
+		o.mu.RLock()
+		npc, npf = o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 1)
+		require_Equal(t, npf, 4)
 
 		// As a result of moving the starting sequence up, some messages
 		// have now lost interest and need to be removed.
@@ -11562,9 +11605,11 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 	}
 
 	for _, replicas := range []int{1, 3} {
-		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
-			test(replicas)
-		})
+		for _, ackPolicy := range []AckPolicy{AckExplicit, AckAll} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, ackPolicy), func(t *testing.T) {
+				test(replicas, ackPolicy)
+			})
+		}
 	}
 }
 
