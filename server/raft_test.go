@@ -811,6 +811,512 @@ func TestNRGAssumeHighTermAfterCandidateIsolation(t *testing.T) {
 	}
 }
 
+func TestNRGPreVoteEncoding(t *testing.T) {
+	// Real vote requests must keep the legacy encoding so that older servers
+	// can still process them.
+	vr := &voteRequest{term: 8, lastTerm: 7, lastIndex: 6, candidate: "S1Nunr6R"}
+	buf := vr.encode()
+	require_Equal(t, len(buf), voteRequestLen)
+	dec := decodeVoteRequest(buf, "reply")
+	require_True(t, dec != nil)
+	require_False(t, dec.preVote)
+	require_Equal(t, dec.term, 8)
+	require_Equal(t, dec.candidate, "S1Nunr6R")
+
+	// Pre-vote requests carry an extra flags byte.
+	vr.preVote = true
+	buf = vr.encode()
+	require_Equal(t, len(buf), voteRequestPreVoteLen)
+	dec = decodeVoteRequest(buf, "reply")
+	require_True(t, dec != nil)
+	require_True(t, dec.preVote)
+	require_Equal(t, dec.term, 8)
+	require_Equal(t, dec.lastTerm, 7)
+	require_Equal(t, dec.lastIndex, 6)
+	require_Equal(t, dec.candidate, "S1Nunr6R")
+	require_Equal(t, dec.reply, "reply")
+
+	// The pre-vote flag is echoed in responses, so a candidate can tell
+	// pre-votes and real votes apart when counting.
+	vresp := &voteResponse{term: 9, peer: "S1Nunr6R", granted: true, preVote: true}
+	rdec := decodeVoteResponse(vresp.encode())
+	require_True(t, rdec != nil)
+	require_True(t, rdec.granted)
+	require_True(t, rdec.preVote)
+	require_Equal(t, rdec.term, 9)
+}
+
+func runCandidateAndReadVoteRequest(t *testing.T, n *raft) (*voteRequest, chan struct{}) {
+	t.Helper()
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	sub, err := nc.SubscribeSync(n.vsubj)
+	require_NoError(t, err)
+	t.Cleanup(func() { sub.Unsubscribe() })
+	require_NoError(t, nc.Flush())
+
+	done := make(chan struct{})
+	go func() {
+		n.runAsCandidate()
+		close(done)
+	}()
+
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	vr := decodeVoteRequest(msg.Data, msg.Reply)
+	require_True(t, vr != nil)
+	return vr, done
+}
+
+func requireCandidateRunDone(t *testing.T, done chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("candidate did not finish")
+	}
+}
+
+func TestNRGPreVoteCampaignDoesNotIncrementTerm(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// An election timeout starts a pre-vote round, which must not change our
+	// term or cast a vote for ourselves yet.
+	n.switchToPreCandidate()
+	require_Equal(t, n.State(), Candidate)
+	require_True(t, n.preVote)
+	require_Equal(t, n.term, 0)
+	n.requestVote()
+	require_Equal(t, n.vote, noVote)
+
+	// Repeated pre-vote rounds, as would happen while partitioned away from
+	// the rest of the group, must not inflate the term either. Previously every
+	// failed election would increment the term, and a server coming back from a
+	// long partition would force the healthy leader to step down.
+	for i := 0; i < 5; i++ {
+		n.switchToPreCandidate()
+		require_Equal(t, n.term, 0)
+	}
+
+	// Only winning the pre-vote round moves us to a real election, and that is
+	// when the term is incremented and we vote for ourselves.
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+	require_False(t, n.preVote)
+	require_Equal(t, n.term, 1)
+	n.requestVote()
+	require_Equal(t, n.vote, n.id)
+}
+
+func TestNRGPreVoteFeatureFlagDisabledFallsBackToElection(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.s.optsMu.Lock()
+	n.s.opts.FeatureFlags[FeatureFlagJsRaftPreVote] = false
+	n.s.optsMu.Unlock()
+
+	startTerm := n.term
+	n.switchToPreCandidate()
+	require_Equal(t, n.State(), Candidate)
+	require_False(t, n.preVote)
+	require_Equal(t, n.term, startTerm+1)
+	n.requestVote()
+	require_Equal(t, n.vote, n.id)
+}
+
+func TestNRGPreVoteDoesNotDisturbVoterState(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	n.term = 1
+	n.pterm, n.pindex = 1, 10
+	n.etlr = time.Time{}
+
+	// A pre-vote for a future term from an up-to-date candidate is granted if
+	// we haven't heard from a leader, but unlike a real vote our own state must
+	// remain completely untouched: no term change, no vote cast, and no
+	// election timer reset.
+	vresp := n.evaluateVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 10, candidate: nats0, preVote: true})
+	require_True(t, vresp.granted)
+	require_True(t, vresp.preVote)
+	require_Equal(t, vresp.term, 2) // Echoes the prospective term the candidate would campaign with.
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, noVote)
+	require_Equal(t, n.etlr, time.Time{})
+
+	// A pre-vote that's not for a term above ours is denied.
+	vresp = n.evaluateVoteRequest(&voteRequest{term: 1, lastTerm: 1, lastIndex: 10, candidate: nats0, preVote: true})
+	require_False(t, vresp.granted)
+	require_Equal(t, vresp.term, 1)
+	require_Equal(t, n.etlr, time.Time{})
+
+	// A pre-vote from a candidate with an outdated log is denied, and just like
+	// with real votes we start campaigning earlier ourselves since the leader
+	// seems unavailable to us as well.
+	vresp = n.evaluateVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 5, candidate: nats0, preVote: true})
+	require_False(t, vresp.granted)
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, noVote)
+	require_NotEqual(t, n.etlr, time.Time{})
+}
+
+func TestNRGPreVoteDeniedWhileLeaderActive(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	// Make sure the leader is a known peer so its activity is tracked.
+	n.Lock()
+	n.peers[nats0] = &lps{}
+	n.Unlock()
+
+	// Heartbeat from the leader, so we consider it active.
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: nil})
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.leader, nats0)
+	require_Equal(t, n.term, 1)
+
+	// A pre-vote while the leader is active is denied, even for a future term
+	// and with an up-to-date log. This is what prevents a server that was
+	// partitioned away from a healthy group from disrupting it.
+	vresp := n.evaluateVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 10, candidate: nats1, preVote: true})
+	require_False(t, vresp.granted)
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, noVote)
+
+	// Once we haven't heard from the leader for at least the minimum election
+	// timeout, the same pre-vote is granted (still without changing our state).
+	n.Lock()
+	n.peers[nats0].ts = time.Now().Add(-2 * minElectionTimeout)
+	n.Unlock()
+	vresp = n.evaluateVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 10, candidate: nats1, preVote: true})
+	require_True(t, vresp.granted)
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, noVote)
+}
+
+func TestNRGPreVotePreventsDisruptionOfHealthyLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	enablePreVote(c)
+	c.waitOnLeader()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+	require_True(t, leader != nil)
+	term := leader.node().Term()
+
+	// Fire the election timer of a follower repeatedly, as would happen when it
+	// is separated from the rest of the group by a network partition. Without
+	// the pre-vote phase every timeout incremented the follower's term, and the
+	// healthy leader was then forced to step down by the higher term once it
+	// heard from the follower again, even though the follower could not win an
+	// election (see TestNRGAssumeHighTermAfterCandidateIsolation). With
+	// pre-vote each timeout only results in a pre-vote round, which the rest of
+	// the group denies as long as they can still see a healthy leader.
+	follower := rg.nonLeader().node().(*raft)
+
+	// Wait until the pre-vote capability of all peers has propagated via
+	// statsz, otherwise the election timeout would (correctly) fall back to a
+	// real election and we'd be testing the wrong thing.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		follower.RLock()
+		defer follower.RUnlock()
+		if !follower.allPeersSupportPreVote() {
+			return fmt.Errorf("pre-vote capability not yet propagated")
+		}
+		return nil
+	})
+
+	for i := 0; i < 3; i++ {
+		follower.resetElectWithLock(time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// The follower must not have moved its term, and the leader must not have
+	// been disturbed.
+	require_Equal(t, follower.Term(), term)
+	require_True(t, leader.node().Leader())
+	require_Equal(t, leader.node().Term(), term)
+
+	// The follower returns to follower state on the next heartbeat from the
+	// leader, again without any term change.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if state := follower.State(); state != Follower {
+			return fmt.Errorf("node still in state %v", state)
+		}
+		return nil
+	})
+	require_Equal(t, follower.Term(), term)
+
+	// And the group as a whole must still make progress.
+	leader.(*stateAdder).proposeDelta(1)
+	rg.waitOnTotal(t, 1)
+}
+
+func TestNRGPreVoteStillAllowsElectionAfterLeaderLoss(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	enablePreVote(c)
+	c.waitOnLeader()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+	require_True(t, leader != nil)
+	term := leader.node().Term()
+
+	// Stop the leader outright. The remaining two nodes no longer hear from a
+	// leader, so a pre-vote round between them succeeds, followed by a real
+	// election at a higher term.
+	leader.stop()
+
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		for _, sm := range rg {
+			if n := sm.node(); n.State() != Closed && n.Leader() {
+				return nil
+			}
+		}
+		return fmt.Errorf("no new leader elected yet")
+	})
+	for _, sm := range rg {
+		if n := sm.node(); n.State() != Closed && n.Leader() {
+			require_True(t, n.Term() > term)
+		}
+	}
+}
+
+func TestNRGPreVoteMixedVersionFallsBackToElection(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.Lock()
+	n.addPeer(nats0)
+	n.addPeer(nats1)
+	n.Unlock()
+
+	// One of our peers is on an older version that doesn't understand pre-vote
+	// requests, so it would never answer them and a pre-vote round could never
+	// reach quorum. An election timeout must fall back to a direct election so
+	// that we don't lose liveness during a rolling upgrade.
+	n.s.nodeToInfo.Store(nats0, nodeInfo{prevote: false})
+	n.s.nodeToInfo.Store(nats1, nodeInfo{prevote: true})
+
+	n.switchToPreCandidate()
+	require_Equal(t, n.State(), Candidate)
+	require_False(t, n.preVote)
+	require_Equal(t, n.term, 1)
+
+	// Once all peers support pre-vote, the same entry point runs a pre-vote
+	// round without touching the term.
+	n.switchToFollower(noLeader)
+	n.s.nodeToInfo.Store(nats0, nodeInfo{prevote: true})
+	n.switchToPreCandidate()
+	require_Equal(t, n.State(), Candidate)
+	require_True(t, n.preVote)
+	require_Equal(t, n.term, 1)
+}
+
+func TestNRGPreVoteResponsesDoNotCountAsRealVotes(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
+
+	n.switchToCandidate()
+	term := n.term
+	vr, done := runCandidateAndReadVoteRequest(t, n)
+	require_False(t, vr.preVote)
+	require_Equal(t, vr.term, term)
+
+	n.votes.push(&voteResponse{term: term, peer: nats0, granted: true, preVote: true})
+	time.Sleep(100 * time.Millisecond)
+	require_Equal(t, n.State(), Candidate)
+	require_False(t, n.Leader())
+
+	n.votes.push(&voteResponse{term: term, peer: nats0, granted: true})
+	requireCandidateRunDone(t, done)
+	require_Equal(t, n.State(), Leader)
+}
+
+func TestNRGRealVoteResponsesDoNotCountAsPreVotes(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
+	n.s.nodeToInfo.Store(nats0, nodeInfo{prevote: true})
+
+	startTerm := n.term
+	n.switchToPreCandidate()
+	vr, done := runCandidateAndReadVoteRequest(t, n)
+	require_True(t, vr.preVote)
+	require_Equal(t, vr.term, startTerm+1)
+
+	n.votes.push(&voteResponse{term: vr.term, peer: nats0, granted: true})
+	requireCandidateRunDone(t, done)
+	require_Equal(t, n.State(), Follower)
+	require_False(t, n.preVote)
+	require_Equal(t, n.term, startTerm+1)
+}
+
+func TestNRGDeniedPreVoteHigherTermStepsDown(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
+	n.s.nodeToInfo.Store(nats0, nodeInfo{prevote: true})
+
+	n.switchToPreCandidate()
+	vr, done := runCandidateAndReadVoteRequest(t, n)
+	require_True(t, vr.preVote)
+
+	higherTerm := vr.term + 1
+	n.votes.push(&voteResponse{term: higherTerm, peer: nats0, granted: false, preVote: true})
+	requireCandidateRunDone(t, done)
+	require_Equal(t, n.State(), Follower)
+	require_Equal(t, n.term, higherTerm)
+	require_Equal(t, n.vote, noVote)
+	require_False(t, n.preVote)
+}
+
+func TestNRGPreVoteObserverDoesNotPreCampaign(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	follower := rg.nonLeader().node().(*raft)
+	follower.SetObserver(true)
+
+	startTerm := follower.Term()
+	// Drive the election-timeout entry point. An observer must short-circuit
+	// before entering any campaign, pre-vote or real.
+	follower.switchToPreCandidate()
+	time.Sleep(500 * time.Millisecond)
+
+	require_Equal(t, follower.State(), Follower)
+	require_Equal(t, follower.Term(), startTerm)
+}
+
+func TestNRGPreVoteLeaderTransferBypassesPreVote(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	enablePreVote(c)
+	c.waitOnLeader()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+	require_True(t, leader != nil)
+
+	target := rg.nonLeader()
+	targetID := target.node().ID()
+	targetRaft := target.node().(*raft)
+	startTerm := leader.node().Term()
+
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		targetRaft.RLock()
+		defer targetRaft.RUnlock()
+		if !targetRaft.allPeersSupportPreVote() {
+			return fmt.Errorf("pre-vote capability not yet propagated")
+		}
+		return nil
+	})
+
+	// Leadership transfer must bypass the pre-vote phase: the transfer target
+	// needs to campaign immediately, and peers could otherwise refuse its
+	// pre-vote because they still consider the departing leader healthy.
+	require_NoError(t, leader.node().StepDown(targetID))
+
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		nl := rg.leader()
+		if nl == nil {
+			return fmt.Errorf("no leader yet")
+		}
+		if nl.node().ID() != targetID {
+			return fmt.Errorf("expected transfer target to lead, %s is leader", nl.node().ID())
+		}
+		return nil
+	})
+	require_True(t, rg.leader().node().Term() > startTerm)
+}
+
+// maxGroupTerm returns the highest term observed across the group.
+func maxGroupTerm(sg smGroup) uint64 {
+	var mx uint64
+	for _, sm := range sg {
+		if t := sm.node().Term(); t > mx {
+			mx = t
+		}
+	}
+	return mx
+}
+
+func TestNRGPreVoteFlappingNodeNeverDisrupts(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	enablePreVote(c)
+	c.waitOnLeader()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	leader := rg.waitOnLeader()
+	require_True(t, leader != nil)
+
+	// Wait until the pre-vote capability of all peers has propagated via
+	// statsz, otherwise switchToPreCandidate would (correctly) fall back to a
+	// real election and we'd be testing the wrong thing.
+	follower := rg.nonLeader().node().(*raft)
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		follower.RLock()
+		defer follower.RUnlock()
+		if !follower.allPeersSupportPreVote() {
+			return fmt.Errorf("pre-vote capability not yet propagated")
+		}
+		return nil
+	})
+
+	leaderID := leader.node().ID()
+	startMax := maxGroupTerm(rg)
+
+	// A flapping / half-partitioned node that keeps trying to campaign must
+	// never disrupt the healthy leader: the cluster's term must not advance
+	// and the leader must not change across many forced campaign attempts.
+	for i := 0; i < 25; i++ {
+		follower.switchToPreCandidate()
+		time.Sleep(40 * time.Millisecond)
+		require_Equal(t, maxGroupTerm(rg), startMax)
+		nl := rg.leader()
+		require_True(t, nl != nil)
+		require_Equal(t, nl.node().ID(), leaderID)
+	}
+
+	// The cluster must still be fully functional after the flapping storm.
+	rg.waitOnLeader()
+	rg.leader().(*stateAdder).proposeDelta(1)
+	rg.waitOnTotal(t, 1)
+}
+
 // Test to make sure this does not cause us to truncate our wal or enter catchup state.
 func TestNRGHeartbeatOnLeaderChange(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -2603,7 +3109,7 @@ func TestNRGCancelCatchupWhenDetectingHigherTermDuringVoteRequest(t *testing.T) 
 	// Receiving a vote request should cancel our catchup.
 	// Otherwise, we could receive catchup messages after this that provides the previous leader with quorum.
 	// If the new leader doesn't have these entries, the previous leader would desync since it would commit them.
-	err := n.processVoteRequest(&voteRequest{2, 1, 1, nats0, "reply"})
+	err := n.processVoteRequest(&voteRequest{2, 1, 1, nats0, false, "reply"})
 	require_NoError(t, err)
 	require_True(t, n.catchup == nil)
 }

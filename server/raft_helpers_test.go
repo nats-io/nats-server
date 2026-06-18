@@ -446,6 +446,7 @@ func initSingleMemRaftNode(t *testing.T) (*raft, func()) {
 func initSingleMemRaftNodeWithCluster(t *testing.T) (*raft, *cluster) {
 	t.Helper()
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	enablePreVote(c)
 	s := c.servers[0] // RunBasicJetStreamServer not available
 
 	ms, err := newMemStore(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
@@ -459,6 +460,19 @@ func initSingleMemRaftNodeWithCluster(t *testing.T) (*raft, *cluster) {
 	require_NoError(t, err)
 
 	return n, c
+}
+
+// enablePreVote turns on the Raft pre-vote feature flag on every server in the
+// cluster, so tests that exercise the pre-vote phase observe it as active.
+func enablePreVote(c *cluster) {
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		if s.opts.FeatureFlags == nil {
+			s.opts.FeatureFlags = map[string]bool{}
+		}
+		s.opts.FeatureFlags[FeatureFlagJsRaftPreVote] = true
+		s.optsMu.Unlock()
+	}
 }
 
 // Encode an AppendEntry.

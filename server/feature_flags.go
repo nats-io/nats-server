@@ -23,6 +23,7 @@ const (
 	FeatureFlagJsAckFormatV2     = "js_ack_fc_v2"
 	FeatureFlagJsRaftDeleteRange = "js_raft_delete_range"
 	FeatureFlagJsSnapshotSources = "js_snapshot_sources"
+	FeatureFlagJsRaftPreVote     = "js_raft_prevote"
 )
 
 var featureFlags = map[string]bool{
@@ -57,6 +58,18 @@ var featureFlags = map[string]bool{
 	// WARNING: Only enable once every peer in the cluster is on a version that
 	// accepts the v2 encoding. Older peers reject the snapshot outright.
 	FeatureFlagJsSnapshotSources: false,
+
+	// Run a pre-vote round (Raft dissertation §9.6) before incrementing the term
+	// and campaigning. This prevents a server that can't win an election, for
+	// example one that was partitioned away, from endlessly incrementing its term
+	// and disrupting the group once it reconnects.
+	// - Introduced: X, the receive-side always answers pre-vote requests.
+	// - Enabled: TBD, once all supported versions carry the receive-side.
+	//
+	// Even when enabled, pre-vote is only used if every known peer is on a
+	// version that understands pre-vote requests; otherwise we fall back to a
+	// direct election.
+	FeatureFlagJsRaftPreVote: false,
 }
 
 // getFeatureFlag is used to retrieve either the default or overwritten value for a feature flag.

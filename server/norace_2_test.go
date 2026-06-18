@@ -3925,3 +3925,163 @@ func TestNoRaceFileStoreWeakCacheGCRecyclesBuf(t *testing.T) {
 		expectNotRecycled(t, arr)
 	})
 }
+
+// Partition soak using the netProxy helper. We build a 3-node JetStream cluster
+// where one server (S2) can only reach the other two through two stoppable
+// proxies (with no_advertise so route gossip can't create a direct bypass).
+// We then cut S2 off from the cluster and measure S2's OWN meta term: with
+// pre-vote it can reach no one while partitioned and so never inflates its term
+// (and thus has nothing to disrupt the leader with on rejoin); without pre-vote
+// it campaigns repeatedly and its term climbs — the classic disruptive-server
+// scenario, now over a real (proxied) network partition.
+func TestNRGPreVotePartitionSoakDoesNotDisruptMeta(t *testing.T) {
+	const p0, p1, p2 = 24722, 24723, 24724
+	tmpl := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 1GB, store_dir: '%s'}
+	cluster {
+		name: "PV3"
+		listen: 127.0.0.1:%d
+		no_advertise: true
+		routes = [%s]
+	}
+	feature_flags { js_raft_prevote: true }
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	c := &cluster{t: t, servers: make([]*Server, 3), opts: make([]*Options, 3), name: "PV3"}
+
+	// S0 and S1 route directly to each other.
+	conf0 := fmt.Sprintf(tmpl, "S0", t.TempDir(), p0, fmt.Sprintf("route://127.0.0.1:%d", p1))
+	c.servers[0], c.opts[0] = RunServerWithConfig(createConfFile(t, []byte(conf0)))
+	conf1 := fmt.Sprintf(tmpl, "S1", t.TempDir(), p1, fmt.Sprintf("route://127.0.0.1:%d", p0))
+	c.servers[1], c.opts[1] = RunServerWithConfig(createConfFile(t, []byte(conf1)))
+
+	// S2 reaches S0 and S1 ONLY through these proxies.
+	const gbit = 1024 * 1024 * 1024
+	pA := createNetProxy(time.Millisecond, gbit, gbit, fmt.Sprintf("route://127.0.0.1:%d", p0), true)
+	pB := createNetProxy(time.Millisecond, gbit, gbit, fmt.Sprintf("route://127.0.0.1:%d", p1), true)
+	c.nproxies = []*netProxy{pA, pB}
+
+	conf2 := fmt.Sprintf(tmpl, "S2", t.TempDir(), p2, fmt.Sprintf("%s, %s", pA.routeURL(), pB.routeURL()))
+	c.servers[2], c.opts[2] = RunServerWithConfig(createConfFile(t, []byte(conf2)))
+
+	defer c.shutdown()
+
+	c.checkClusterFormed()
+	c.waitOnClusterReady()
+	c.waitOnLeader()
+
+	s2 := c.servers[2]
+	s2meta := s2.getJetStream().getMetaGroup().(*raft)
+
+	// Clear the pre-vote capability S2 has recorded for its peers, so S2
+	// behaves as in a mixed-version cluster and falls back to real elections.
+	// A statsz that was still in flight when the partition was cut can
+	// re-record the capability behind our back, so keep re-clearing it for the
+	// whole partition window.
+	clearS2PeersPreVote := func(done chan struct{}) {
+		for {
+			for _, s := range c.servers[:2] {
+				node := getHash(s.serverName())
+				if v, ok := s2.nodeToInfo.Load(node); ok && v != nil {
+					ni := v.(nodeInfo)
+					ni.prevote = false
+					s2.nodeToInfo.Store(node, ni)
+				}
+			}
+			select {
+			case <-done:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+
+	// Ensure the meta leader is on S0/S1 (so S2 is the would-be disruptor) and
+	// that S2 is a caught-up follower in contact with that leader.
+	settleWithLeaderOffS2 := func() {
+		t.Helper()
+		checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
+			l := c.leader()
+			if l == nil {
+				return fmt.Errorf("no meta leader yet")
+			}
+			if l == s2 {
+				s2meta.StepDown()
+				return fmt.Errorf("meta leader is S2, stepping down")
+			}
+			if s2meta.Leaderless() {
+				return fmt.Errorf("S2 not yet in contact with a leader")
+			}
+			if !s2meta.Healthy() {
+				return fmt.Errorf("S2 meta not yet healthy/caught up")
+			}
+			return nil
+		})
+		time.Sleep(time.Second)
+	}
+
+	// partitionTermDelta isolates S2 for the soak and returns how much S2's own
+	// meta term advanced while partitioned, then heals and waits for S2 to be
+	// back in contact with a leader. duringCut, if set, runs in a goroutine for
+	// the duration of the partition.
+	partitionTermDelta := func(soak time.Duration, duringCut func(done chan struct{})) uint64 {
+		before := s2meta.Term()
+		pA.stop()
+		pB.stop()
+		done := make(chan struct{})
+		if duringCut != nil {
+			go duringCut(done)
+		}
+		time.Sleep(soak)
+		after := s2meta.Term()
+		close(done)
+		pA.start()
+		pB.start()
+		// Wait for S2 to rejoin and the cluster to have a settled leader again.
+		checkFor(t, 30*time.Second, 200*time.Millisecond, func() error {
+			if c.leader() == nil {
+				return fmt.Errorf("no meta leader after heal")
+			}
+			if s2meta.Leaderless() {
+				return fmt.Errorf("S2 not back in contact after heal")
+			}
+			return nil
+		})
+		return after - before
+	}
+
+	// Soak comfortably longer than a full election timeout so that, without
+	// pre-vote, S2 is guaranteed at least one (usually several) term bumps.
+	soak := maxElectionTimeout + 5*time.Second
+
+	// Phase 1: pre-vote (the default). A partitioned S2 reaches no one, so it
+	// never escalates past the pre-vote round and its term does NOT move —
+	// nothing to disrupt the leader with on rejoin.
+	t.Run("WithPreVote", func(t *testing.T) {
+		settleWithLeaderOffS2()
+		// Make sure the pre-vote capability of the peers has propagated to S2
+		// via statsz, so the partition exercises pre-vote rounds rather than
+		// the mixed-version fallback.
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+			s2meta.RLock()
+			defer s2meta.RUnlock()
+			if !s2meta.allPeersSupportPreVote() {
+				return fmt.Errorf("pre-vote capability not yet propagated")
+			}
+			return nil
+		})
+		require_Equal(t, partitionTermDelta(soak, nil), 0)
+	})
+
+	// Phase 2: pre-vote off on the would-be disruptor, as in a mixed-version
+	// cluster. The SAME partition now lets S2 inflate its term while isolated —
+	// proving both that the partition is real and that pre-vote is what kept
+	// the term pinned above.
+	t.Run("WithoutPreVote", func(t *testing.T) {
+		settleWithLeaderOffS2()
+		delta := partitionTermDelta(soak, clearS2PeersPreVote)
+		require_True(t, delta > 0)
+	})
+}

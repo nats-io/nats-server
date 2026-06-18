@@ -38,6 +38,17 @@ func TestGetFeatureFlag(t *testing.T) {
 	require_Equal(t, o.getFeatureFlag("test_flag"), false)
 }
 
+func TestJsRaftPreVoteFeatureFlagDefaultAndOverride(t *testing.T) {
+	o := &Options{}
+	require_False(t, o.getFeatureFlag(FeatureFlagJsRaftPreVote))
+
+	o.FeatureFlags = map[string]bool{FeatureFlagJsRaftPreVote: true}
+	require_True(t, o.getFeatureFlag(FeatureFlagJsRaftPreVote))
+
+	o.FeatureFlags[FeatureFlagJsRaftPreVote] = false
+	require_False(t, o.getFeatureFlag(FeatureFlagJsRaftPreVote))
+}
+
 func TestFeatureFlagsConfigParseNonBool(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		feature_flags {
@@ -48,6 +59,22 @@ func TestFeatureFlagsConfigParseNonBool(t *testing.T) {
 	_, err := ProcessConfigFile(conf)
 	require_Error(t, err)
 	require_Contains(t, err.Error(), `error parsing feature flag "opt_in_flag": expected bool, got string`)
+}
+
+func TestFeatureFlagsConfigReloadNotSupported(t *testing.T) {
+	s, _, conf := runReloadServerWithContent(t, []byte(`
+		listen: 127.0.0.1:-1
+	`))
+	defer s.Shutdown()
+
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(`
+		listen: 127.0.0.1:-1
+		feature_flags { js_raft_prevote: true }
+	`))
+
+	err := s.Reload()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "config reload not supported for FeatureFlags")
 }
 
 func TestGetMergedFeatureFlags(t *testing.T) {

@@ -254,6 +254,7 @@ type raft struct {
 	quit  chan struct{}                  // Raft group shutdown
 
 	lxfer        bool // Are we doing a leadership transfer?
+	preVote      bool // As candidate, are we in the pre-vote phase, i.e. we have not incremented our term yet.
 	hcbehind     bool // Were we falling behind at the last health check? (see: isCurrent)
 	maybeLeader  bool // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
 	paused       bool // Whether or not applies are paused
@@ -2885,7 +2886,25 @@ func (n *raft) runAsFollower() {
 				n.resetElectionTimeout()
 				n.Unlock()
 			} else {
-				n.switchToCandidate()
+				n.RLock()
+				lxfer := n.lxfer
+				gid, grp := n.id, n.group
+				n.RUnlock()
+				if lxfer {
+					// A leadership transfer campaigns immediately with a
+					// real election, bypassing the pre-vote phase.
+					assert.Reachable("raft leadership transfer bypasses pre-vote", map[string]any{
+						"group": grp, "id": gid,
+					})
+					// The previous leader asked us to take over via a leadership
+					// transfer, skip the pre-vote round and campaign immediately.
+					n.switchToCandidate()
+				} else {
+					// Start with a pre-vote round (Raft dissertation §9.6) to check
+					// that we could actually win an election, before disrupting the
+					// group by incrementing our term.
+					n.switchToPreCandidate()
+				}
 				return
 			}
 		case <-n.votes.ch:
@@ -4144,13 +4163,21 @@ func (n *raft) runAsCandidate() {
 	n.Lock()
 	// Drain old responses.
 	n.votes.drain()
+	// Check if we are in the pre-vote phase. Pre-votes are requested for the
+	// term we would campaign with, i.e. one above our current term.
+	preVote := n.preVote
+	voteTerm := n.term
+	if preVote {
+		voteTerm++
+	}
+	gid, grp := n.id, n.group
 	n.Unlock()
 
-	// Send out our request for votes.
+	// Send out our request for (pre-)votes.
 	n.requestVote()
 
 	// We vote for ourselves.
-	n.votes.push(&voteResponse{term: n.term, peer: n.ID(), granted: true})
+	n.votes.push(&voteResponse{term: voteTerm, peer: n.ID(), granted: true, preVote: preVote})
 
 	votes := map[string]struct{}{}
 	emptyVotes := map[string]struct{}{}
@@ -4171,7 +4198,30 @@ func (n *raft) runAsCandidate() {
 		case <-n.quit:
 			return
 		case <-elect.C:
-			n.switchToCandidate()
+			n.RLock()
+			lxfer := n.lxfer
+			n.RUnlock()
+			if lxfer {
+				// Keep campaigning with real elections during a leadership transfer.
+				n.switchToCandidate()
+			} else {
+				// Repeated pre-vote rounds don't increment the term, and a failed
+				// real election starts over with a pre-vote round, so that we don't
+				// keep inflating our term while we can't reach quorum anyway.
+				if preVote {
+					// A pre-vote round timed out; retry without a term bump.
+					assert.Reachable("raft pre-vote round timed out, retrying without a term bump", map[string]any{
+						"group": grp, "id": gid,
+					})
+				} else {
+					// A real election timed out; drop back to a pre-vote
+					// round instead of inflating the term again.
+					assert.Reachable("raft real election timed out, falling back to a pre-vote round", map[string]any{
+						"group": grp, "id": gid,
+					})
+				}
+				n.switchToPreCandidate()
+			}
 			return
 		case <-n.votes.ch:
 			// Because of drain() it is possible that we get nil from popOne().
@@ -4189,7 +4239,7 @@ func (n *raft) runAsCandidate() {
 			countEmpty := n.rescue != nil && n.pindex > 0
 			n.RUnlock()
 
-			if vresp.granted && nterm == vresp.term {
+			if vresp.granted && vresp.preVote == preVote && voteTerm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
 				if countVote {
@@ -4199,16 +4249,30 @@ func (n *raft) runAsCandidate() {
 						emptyVotes[vresp.peer] = struct{}{}
 					}
 				}
-				if n.wonElection(len(votes)) {
-					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
-					n.switchToLeader()
-					return
-				} else if len(votes)+len(emptyVotes) == csz {
-					// Become LEADER if we've got voted in by ALL servers.
+				won := n.wonElection(len(votes))
+				if !won && len(votes)+len(emptyVotes) == csz {
 					// We couldn't get quorum based on just our normal votes.
 					// But, we have heard from the full cluster, and some servers came up empty.
 					// We know for sure we have the most up-to-date log.
-					n.switchToLeader()
+					won = true
+				}
+				if won {
+					if preVote {
+						// A quorum granted the pre-vote, so we now increment the term and run a real election.
+						assert.Reachable("raft pre-vote won a quorum, escalating to a real election", map[string]any{
+							"group": grp, "id": gid,
+						})
+						// We won the pre-vote round, so a quorum told us they would
+						// vote for us. Now increment the term and run a real election.
+						n.switchToCandidate()
+					} else {
+						// Leadership must only ever won from a real election, never from a pre-vote tally.
+						assert.AlwaysOrUnreachable(!preVote, "raft becomes leader only from a real election", map[string]any{
+							"group": grp, "id": gid,
+						})
+						// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
+						n.switchToLeader()
+					}
 					return
 				}
 			} else if vresp.term > nterm {
@@ -5343,34 +5407,48 @@ type voteRequest struct {
 	lastTerm  uint64
 	lastIndex uint64
 	candidate string
+	preVote   bool // Pre-vote round (Raft dissertation §9.6), term is the prospective term the candidate would campaign with.
 	// internal only.
 	reply string
 }
 
 const voteRequestLen = 24 + idLen
 
+// Pre-vote requests carry an extra flags byte. Real vote requests keep the
+// legacy encoding so that older servers can still process them.
+const voteRequestPreVoteLen = voteRequestLen + 1
+
 func (vr *voteRequest) encode() []byte {
-	var buf [voteRequestLen]byte
+	var buf [voteRequestPreVoteLen]byte
 	var le = binary.LittleEndian
 	le.PutUint64(buf[0:], vr.term)
 	le.PutUint64(buf[8:], vr.lastTerm)
 	le.PutUint64(buf[16:], vr.lastIndex)
 	copy(buf[24:24+idLen], vr.candidate)
+	if !vr.preVote {
+		return buf[:voteRequestLen]
+	}
+	buf[voteRequestLen] = 1
 
-	return buf[:voteRequestLen]
+	return buf[:voteRequestPreVoteLen]
 }
 
 func decodeVoteRequest(msg []byte, reply string) *voteRequest {
-	if len(msg) != voteRequestLen {
+	if len(msg) != voteRequestLen && len(msg) != voteRequestPreVoteLen {
 		return nil
 	}
 
+	if len(msg) == voteRequestPreVoteLen {
+		// A pre-vote request actually traversed the wire to a peer.
+		assert.Reachable("raft received a pre-vote request on the wire", nil)
+	}
 	var le = binary.LittleEndian
 	return &voteRequest{
 		term:      le.Uint64(msg[0:]),
 		lastTerm:  le.Uint64(msg[8:]),
 		lastIndex: le.Uint64(msg[16:]),
 		candidate: string(copyBytes(msg[24 : 24+idLen])),
+		preVote:   len(msg) > voteRequestLen && msg[voteRequestLen]&1 != 0,
 		reply:     reply,
 	}
 }
@@ -5549,6 +5627,7 @@ type voteResponse struct {
 	peer    string
 	granted bool
 	empty   bool // "Empty vote", whether this peer's log is empty.
+	preVote bool // Response to a pre-vote request, if granted the term is the candidate's prospective term.
 }
 
 const voteResponseLen = 8 + 8 + 1
@@ -5564,6 +5643,9 @@ func (vr *voteResponse) encode() []byte {
 	if vr.empty {
 		buf[16] |= 2
 	}
+	if vr.preVote {
+		buf[16] |= 4
+	}
 	return buf[:voteResponseLen]
 }
 
@@ -5575,6 +5657,7 @@ func decodeVoteResponse(msg []byte) *voteResponse {
 	vr := &voteResponse{term: le.Uint64(msg[0:]), peer: string(msg[8:16])}
 	vr.granted = msg[16]&1 != 0
 	vr.empty = msg[16]&2 != 0
+	vr.preVote = msg[16]&4 != 0
 	return vr
 }
 
@@ -5602,17 +5685,92 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 	n.debug("Received a voteRequest %+v", vr)
 
-	n.Lock()
+	vresp := n.evaluateVoteRequest(vr)
+	n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
+	n.sendReply(vr.reply, vresp.encode())
 
-	vresp := &voteResponse{n.term, n.id, false, n.pindex == 0}
-	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
+	return nil
+}
+
+// Returns whether we are the leader ourselves, or believe the current leader
+// is still healthy because we heard from it within the minimum election timeout.
+// Lock should be held.
+func (n *raft) currentLeaderActive() bool {
+	if n.State() == Leader {
+		return true
+	}
+	if n.leader == noLeader {
+		return false
+	}
+	ps := n.peers[n.leader]
+	return ps != nil && time.Since(ps.ts) < minElectionTimeout
+}
+
+// evaluateVoteRequest decides whether to grant a (pre-)vote request,
+// updating our own state as needed.
+func (n *raft) evaluateVoteRequest(vr *voteRequest) *voteResponse {
+	n.Lock()
+	defer n.Unlock()
+
+	vresp := &voteResponse{term: n.term, peer: n.id, empty: n.pindex == 0}
+
+	// Handle a pre-vote round (Raft dissertation §9.6) first. A pre-vote must not
+	// change any of our own state: we don't update our term or vote, don't reset
+	// our election timer, and don't step down even if the prospective term is above
+	// ours. We grant it only if we would also grant a real vote at that term, and
+	// we haven't heard from a healthy leader within the minimum election timeout.
+	// This stops a server that can't win an election, for example one that was
+	// partitioned away from a healthy group, from being able to inflate its term
+	// and disrupt the group with it once it reconnects.
+	if vr.preVote {
+		vresp.preVote = true
+		termBefore, voteBefore := n.term, n.vote
+		if vr.term > n.term && !n.currentLeaderActive() {
+			if vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex {
+				vresp.granted = true
+				// Echo the prospective term back so the pre-candidate can count this
+				// response against the term it would campaign with.
+				vresp.term = vr.term
+				if vresp.empty && n.initializing {
+					// Reset notion of having an empty log if we're voting during initialization/scale up.
+					// Ensures they only need quorum, and not need to hear from all servers.
+					vresp.empty = false
+				}
+				// A voter granted a pre-vote.
+				assert.Reachable("raft voter granted a pre-vote", map[string]any{
+					"group": n.group, "id": n.id, "candidate": vr.candidate, "term": vr.term,
+				})
+			} else if n.State() != Candidate {
+				// We have a more up-to-date log than the pre-candidate, and the leader
+				// also seems unavailable to us. Start campaigning earlier, but only if
+				// not candidate already, as that would short-circuit us.
+				n.resetElect(randCampaignTimeout())
+
+				// Pre-vote denied because the candidate's log is behind ours.
+				assert.Reachable("raft voter denied a pre-vote: candidate log is behind", map[string]any{
+					"group": n.group, "id": n.id, "candidate": vr.candidate,
+				})
+			}
+		} else if vr.term > n.term {
+			// The prospective term is higher, but we still hear from a healthy leader,
+			// so we refuse. This leader-stickiness guard is what stops a returning node
+			// from disrupting the group.
+			assert.Reachable("raft voter denied a pre-vote: current leader still active", map[string]any{
+				"group": n.group, "id": n.id, "candidate": vr.candidate,
+			})
+		}
+		// A pre-vote must never change our term or persisted vote.
+		assert.AlwaysOrUnreachable(n.term == termBefore && n.vote == voteBefore,
+			"raft pre-vote leaves the voter's term and vote unchanged", map[string]any{
+				"group": n.group, "id": n.id, "termBefore": termBefore, "term": n.term,
+			})
+		return vresp
+	}
 
 	// Ignore if we are newer. This is important so that we don't accidentally process
 	// votes from a previous term if they were still in flight somewhere.
 	if vr.term < n.term {
-		n.Unlock()
-		n.sendReply(vr.reply, vresp.encode())
-		return nil
+		return vresp
 	}
 
 	// If this is a higher term go ahead and stepdown.
@@ -5663,11 +5821,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	// Term might have changed, make sure response has the most current
 	vresp.term = n.term
 
-	n.Unlock()
-
-	n.sendReply(vr.reply, vresp.encode())
-
-	return nil
+	return vresp
 }
 
 func (n *raft) handleVoteRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
@@ -5685,16 +5839,24 @@ func (n *raft) requestVote() {
 		n.Unlock()
 		return
 	}
-	n.vote = n.id
-	if err := n.writeTermVote(); err != nil {
-		// Make sure that our self-vote is persisted durably before campaigning, otherwise
-		// we could vote for someone else in the same term after a restart.
-		n.vote = noVote
-		n.Unlock()
-		n.warn("Not requesting votes for %q, could not persist term and vote: %v", n.group, err)
-		return
+	var vr voteRequest
+	if n.preVote {
+		// Pre-vote round (Raft dissertation §9.6): ask whether our peers would
+		// vote for us at the next term, without incrementing our term or
+		// casting a (persisted) vote for ourselves.
+		vr = voteRequest{n.term + 1, n.pterm, n.pindex, n.id, true, _EMPTY_}
+	} else {
+		n.vote = n.id
+		if err := n.writeTermVote(); err != nil {
+			// Make sure that our self-vote is persisted durably before campaigning, otherwise
+			// we could vote for someone else in the same term after a restart.
+			n.vote = noVote
+			n.Unlock()
+			n.warn("Not requesting votes for %q, could not persist term and vote: %v", n.group, err)
+			return
+		}
+		vr = voteRequest{n.term, n.pterm, n.pindex, n.id, false, _EMPTY_}
 	}
-	vr := voteRequest{n.term, n.pterm, n.pindex, n.id, _EMPTY_}
 	subj, reply := n.vsubj, n.vreply
 	n.Unlock()
 
@@ -5817,6 +5979,7 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.leaderState.Store(false)
 	n.leaderSince.Store(nil)
 	n.lxfer = false
+	n.preVote = false
 
 	// Reset acks, we can't assume acks from a previous term are still valid in another term.
 	if len(n.acks) > 0 {
@@ -5826,7 +5989,44 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.switchState(Follower)
 }
 
+// allPeersSupportPreVote reports whether every known peer is on a server
+// version that understands pre-vote requests. In a mixed-version cluster we
+// must not run pre-vote rounds, because old servers treat the longer pre-vote
+// request as malformed and never answer it, so we could never reach quorum.
+// Lock should be held.
+func (n *raft) allPeersSupportPreVote() bool {
+	if n.s == nil {
+		return false
+	}
+	for id := range n.peers {
+		if id == n.id {
+			continue
+		}
+		si, ok := n.s.nodeToInfo.Load(id)
+		if !ok || si == nil || !si.(nodeInfo).prevote {
+			// Unknown peers are conservatively assumed to not support it.
+			return false
+		}
+	}
+	return true
+}
+
+// switchToPreCandidate starts a pre-vote round (Raft dissertation §9.6). We
+// switch into candidate state but do not increment our term yet. Instead we
+// first ask our peers whether they would vote for us at the next term, and only
+// if a quorum says yes do we move to a real election via switchToCandidate.
+// This prevents a server that can't win an election, for example one that was
+// partitioned away, from endlessly incrementing its term and then disrupting
+// the group once it reconnects.
+func (n *raft) switchToPreCandidate() {
+	n.switchToCandidateWithPreVote(true)
+}
+
 func (n *raft) switchToCandidate() {
+	n.switchToCandidateWithPreVote(false)
+}
+
+func (n *raft) switchToCandidateWithPreVote(preVote bool) {
 	if n.State() == Closed {
 		return
 	}
@@ -5860,8 +6060,32 @@ func (n *raft) switchToCandidate() {
 		return
 	}
 
+	// Snapshot for the pre-vote invariants below.
+	termBefore, voteBefore := n.term, n.vote
+
+	// Fall back to a direct election if the pre-vote feature is not enabled.
+	if preVote && (n.s == nil || !n.s.getOpts().getFeatureFlag(FeatureFlagJsRaftPreVote)) {
+		n.debug("Pre-vote feature disabled, will campaign with a direct election")
+		preVote = false
+	}
+
+	// Fall back to a direct election if not all of our peers support the
+	// pre-vote phase yet, as we couldn't reach quorum in a pre-vote round.
+	if preVote && !n.allPeersSupportPreVote() {
+		n.debug("Not all peers support pre-vote, will campaign with a direct election")
+		preVote = false
+		// A mixed-version group fell back to a classic election.
+		assert.Reachable("raft pre-vote skipped: mixed-version fallback to a direct election", map[string]any{
+			"group": n.group, "id": n.id,
+		})
+	}
+
 	if n.State() != Candidate {
-		n.debug("Switching to candidate")
+		if preVote {
+			n.debug("Switching to candidate (pre-vote)")
+		} else {
+			n.debug("Switching to candidate")
+		}
 	} else {
 		if n.lostQuorumLocked() && time.Since(n.llqrt) > lostQuorumSignal {
 			// We signal to the upper layers such that can alert on quorum lost.
@@ -5869,9 +6093,29 @@ func (n *raft) switchToCandidate() {
 			n.llqrt = time.Now()
 		}
 	}
-	// Increment the term.
-	n.term++
-	n.vote = noVote
+	n.preVote = preVote
+	if !preVote {
+		// Increment the term.
+		n.term++
+		n.vote = noVote
+	}
+	if preVote {
+		// A pre-vote round actually started.
+		assert.Reachable("raft pre-vote round started", map[string]any{
+			"group": n.group, "id": n.id, "term": n.term,
+		})
+		// A pre-vote must not move the term or cast a vote.
+		assert.AlwaysOrUnreachable(n.term == termBefore && n.vote == voteBefore,
+			"raft pre-vote leaves the asker's term and vote unchanged", map[string]any{
+				"group": n.group, "id": n.id, "termBefore": termBefore, "term": n.term,
+			})
+	} else {
+		// Escalating to a real election bumps the term by exactly one.
+		assert.AlwaysOrUnreachable(n.term == termBefore+1,
+			"raft real-election escalation increments the term by exactly one", map[string]any{
+				"group": n.group, "id": n.id, "termBefore": termBefore, "term": n.term,
+			})
+	}
 	// Reset quorum paused. If it was previously set, we checked above that we've applied all committed entries.
 	n.quorumPaused = false
 	// Clear current Leader.

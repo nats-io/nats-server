@@ -2926,6 +2926,35 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	}
 }
 
+func TestServerEventsStatsZAlwaysAdvertisesPreVoteCapability(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("feature_flag_%t", enabled), func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				server_name: S
+				system_account: SYS
+				jetstream: {max_mem_store: 64MB, max_file_store: 64MB, store_dir: %q}
+				feature_flags { js_raft_prevote: %t }
+				accounts { SYS { users = [ {user: "admin", pass: "s3cr3t!"} ] } }
+			`, t.TempDir(), enabled)))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			require_NoError(t, err)
+			defer nc.Close()
+
+			msg, err := nc.Request(fmt.Sprintf(serverDirectReqSubj, s.ID(), "STATSZ"), nil, time.Second)
+			require_NoError(t, err)
+
+			var stats ServerStatsMsg
+			require_NoError(t, json.Unmarshal(msg.Data, &stats))
+			require_True(t, stats.Server.PreVote())
+			require_Equal(t, stats.Server.FeatureFlags[FeatureFlagJsRaftPreVote], enabled)
+		})
+	}
+}
+
 func TestServerEventsPingStatsZDedicatedRecvQ(t *testing.T) {
 	sa, _, sb, optsB, akp := runTrustedCluster(t)
 	defer sa.Shutdown()

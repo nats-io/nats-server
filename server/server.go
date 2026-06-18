@@ -400,6 +400,7 @@ type nodeInfo struct {
 	js              bool
 	binarySnapshots bool
 	accountNRG      bool
+	prevote         bool
 }
 
 // selectable reports whether we've had STATSZ from this node. Peer selection
@@ -846,6 +847,7 @@ func NewServer(opts *Options) (*Server, error) {
 			js:              true,
 			binarySnapshots: true,
 			accountNRG:      true,
+			prevote:         true,
 		})
 	}
 

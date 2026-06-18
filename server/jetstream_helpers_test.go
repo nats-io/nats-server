@@ -2022,9 +2022,12 @@ func (np *netProxy) start() {
 		}
 	}
 
+	// Capture the listener, as stop() will nil it out and the goroutine below
+	// would otherwise panic when stopped between accepts.
+	l := np.listener
 	go func() {
 		for {
-			client, err := np.listener.Accept()
+			client, err := l.Accept()
 			if err != nil {
 				return
 			}

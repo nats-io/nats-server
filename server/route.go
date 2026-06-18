@@ -2356,6 +2356,7 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 					js:              info.JetStream,
 					binarySnapshots: true, // Updated default to true. Versions 2.10.0+ support it.
 					accountNRG:      false,
+					prevote:         false, // Conservative until statsz confirms the capability.
 				})
 			}
 		}
