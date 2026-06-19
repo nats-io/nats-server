@@ -50,6 +50,9 @@ type JetStreamConfig struct {
 	CompressOK   bool          `json:"compress_ok,omitempty"`   // CompressOK indicates if compression is supported
 	UniqueTag    string        `json:"unique_tag,omitempty"`    // UniqueTag is the unique tag assigned to this instance
 	Strict       bool          `json:"strict,omitempty"`        // Strict indicates if strict JSON parsing is performed
+	// dynamicMaxStore is true when MaxStore was derived from available disk (not
+	// user-set), so it can be adjusted after recovery. Unexported = not serialized.
+	dynamicMaxStore bool
 }
 
 // Statistics about JetStream for this server.
@@ -514,6 +517,36 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	// Enable accounts and restore state before starting clustering.
 	if err := s.enableJetStreamAccounts(); err != nil {
 		return err
+	}
+
+	// In dynamic mode MaxStore was derived from free disk only, so JetStream's own
+	// usage shrinks the limit on each restart. After recovering file-based streams,
+	// add their reported bytes back into the dynamic limit so it doesn't regress.
+	if standAlone && !canExtend && js.config.dynamicMaxStore {
+		var streams []*stream
+		js.mu.RLock()
+		for _, jsa := range js.accounts {
+			jsa.mu.RLock()
+			for _, mset := range jsa.streams {
+				if mset.stype == FileStorage && mset.store != nil {
+					streams = append(streams, mset)
+				}
+			}
+			jsa.mu.RUnlock()
+		}
+		js.mu.RUnlock()
+
+		var used int64
+		for _, mset := range streams {
+			used += int64(mset.state().Bytes)
+		}
+		// Apply the same 75% factor diskAvailable() uses, so the limit reflects
+		// 75% of (free + used) and stays stable across restarts instead of
+		// ratcheting upward toward the whole disk on repeated fill/restart cycles.
+		js.mu.Lock()
+		js.config.MaxStore += used / 4 * 3
+		atomic.StoreInt64(&js.storeMax, js.config.MaxStore)
+		js.mu.Unlock()
 	}
 
 	// If we are in clustered mode go ahead and start the meta controller.
@@ -2724,6 +2757,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 		jsc.MaxStore = maxStore
 	} else {
 		jsc.MaxStore = diskAvailable(jsc.StoreDir)
+		jsc.dynamicMaxStore = true
 	}
 
 	if maxMem > 0 || (opts.maxMemSet && maxMem == 0) {
