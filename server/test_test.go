@@ -19,7 +19,9 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -395,4 +397,43 @@ func skipIfBuildkite(t *testing.T) {
 	if os.Getenv("BUILDKITE") == "true" {
 		t.Skip("skipping test on Buildkite CI")
 	}
+}
+
+func getEnvOrDefault(b *testing.B, name string, defaultValue int) int {
+	b.Helper()
+	v := os.Getenv(name)
+	if v == _EMPTY_ {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		b.Fatalf("invalid %s=%q", name, v)
+	}
+	return n
+}
+
+// benchmarkDir creates a benchmark work directory under NATS_BENCH_DIR, or
+// .tmp under the package working directory when unset, so disk benchmarks do
+// not default to /tmp.
+func benchmarkDir(b *testing.B) string {
+	b.Helper()
+
+	root := os.Getenv("NATS_BENCH_DIR")
+	cleanupRoot := _EMPTY_
+	if root == _EMPTY_ {
+		var err error
+		root, err = os.Getwd()
+		require_NoError(b, err)
+		root = filepath.Join(root, ".tmp")
+		cleanupRoot = root
+	}
+	root = filepath.Join(root, b.Name())
+	require_NoError(b, os.MkdirAll(root, defaultDirPerms))
+	b.Cleanup(func() {
+		_ = os.RemoveAll(root)
+		if cleanupRoot != _EMPTY_ {
+			_ = os.Remove(cleanupRoot)
+		}
+	})
+	return root
 }

@@ -130,8 +130,8 @@ func getBatchStoreDir(storeDir, streamName, batchId string) (string, string) {
 func newBatchStore(mset *stream, batchId string, replicas int, storage StorageType, storeDir, streamName string) (StreamStore, error) {
 	if replicas == 1 && storage == FileStorage {
 		bname, storeDir := getBatchStoreDir(storeDir, streamName, batchId)
-		fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir}
 		s := mset.srv
+		fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir, srv: s}
 		prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
 		if prf != nil {
 			// We are encrypted here, fill in correct cipher selection.

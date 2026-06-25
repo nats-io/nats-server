@@ -17,9 +17,13 @@ package server
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -347,4 +351,160 @@ func BenchmarkJetStreamCreateConsumers(b *testing.B) {
 			},
 		)
 	}
+}
+
+func BenchmarkJetStreamMetaLeaderShutdownWithStreams(b *testing.B) {
+	numStreams := getEnvOrDefault(b, "NATS_BENCH_STREAMS", 1024)
+	concurrency := getEnvOrDefault(b, "NATS_BENCH_STREAM_CREATE_CONCURRENCY", 64)
+
+	b.Run(fmt.Sprintf("streams=%d", numStreams), func(b *testing.B) {
+		var setupTotal time.Duration
+		var shutdownTotal time.Duration
+		var recoveryTotal time.Duration
+		var cleanupTotal time.Duration
+
+		for b.Loop() {
+
+			// Create a cluster with 3 replicas
+			storeRoot := benchmarkDir(b)
+			modify := func(serverName, _, helperStoreDir, conf string) string {
+				storeDir := filepath.Join(storeRoot, serverName)
+				require_NoError(b, os.MkdirAll(storeDir, defaultDirPerms))
+				return strings.Replace(conf, helperStoreDir, filepath.ToSlash(storeDir), 1)
+			}
+			c := createJetStreamClusterWithTemplateAndModHook(b, jsClusterTempl, "R3S", 3, modify)
+			c.waitOnClusterReadyWithNumPeers(3)
+			c.waitOnLeader()
+
+			// Create numStream streams
+			nc, js := jsClientConnect(b, c.leader())
+			setupStart := time.Now()
+			addMetaBenchmarkStreams(b, c.leader().ClientURL(), js, numStreams, concurrency)
+			setupElapsed := time.Since(setupStart)
+			setupTotal += setupElapsed
+			nc.Close()
+
+			// Shutdown the leader, keep track of how much time
+			// is required to:
+			// - meta_leader_shutdown: shutdown the meta leader server
+			// - leader_recovery: until all streams have a new leader
+			// - cluster_shutdown: time for the remaining nodes to shutdown
+			target := c.leader()
+			if target == nil {
+				b.Fatal("expected meta leader")
+			}
+			shutdownStart := time.Now()
+			target.Shutdown()
+			target.WaitForShutdown()
+			shutdownElapsed := time.Since(shutdownStart)
+			shutdownTotal += shutdownElapsed
+
+			c.waitOnLeader()
+			recoveryNC, recoveryJS := jsClientConnect(b, c.leader())
+			waitForMetaBenchmarkStreamLeaders(b, recoveryJS, numStreams, target.Name())
+			recoveryNC.Close()
+			recoveryElapsed := time.Since(shutdownStart)
+			recoveryTotal += recoveryElapsed
+
+			clusterShutdownStart := time.Now()
+			c.shutdown()
+			clusterShutdownElapsed := time.Since(clusterShutdownStart)
+			cleanupTotal += clusterShutdownElapsed
+		}
+
+		b.ReportMetric(float64(setupTotal/time.Millisecond)/float64(b.N), "ms/setup")
+		b.ReportMetric(float64(shutdownTotal/time.Millisecond)/float64(b.N), "ms/meta_leader_shutdown")
+		b.ReportMetric(float64(recoveryTotal/time.Millisecond)/float64(b.N), "ms/leader_recovery")
+		b.ReportMetric(float64(cleanupTotal/time.Millisecond)/float64(b.N), "ms/cluster_shutdown")
+		b.ReportMetric(float64(0), "ns/op")
+	})
+}
+
+func addMetaBenchmarkStreams(t testing.TB, url string, js nats.JetStreamContext, numStreams, concurrency int) {
+	t.Helper()
+
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	errCh := make(chan error, concurrency)
+
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+
+			nc, wjs := jsClientConnectURL(t, url)
+			defer nc.Close()
+
+			for {
+				n := int(next.Add(1)) - 1
+				if n >= numStreams {
+					return
+				}
+
+				name := fmt.Sprintf("S%05d", n)
+				_, err := wjs.AddStream(&nats.StreamConfig{
+					Name:     name,
+					Subjects: []string{fmt.Sprintf("S.%05d.>", n)},
+					Storage:  nats.FileStorage,
+					Replicas: 3,
+				}, nats.MaxWait(30*time.Second))
+				if err != nil {
+					errCh <- fmt.Errorf("add stream %q: %w", name, err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	waitForMetaBenchmarkStreamLeaders(t, js, numStreams, _EMPTY_)
+}
+
+func waitForMetaBenchmarkStreamLeaders(t testing.TB, js nats.JetStreamContext, expected int, staleLeader string) {
+	t.Helper()
+
+	found := make([]bool, expected)
+	foundCount := 0
+	checkFor(t, 2*time.Minute, 500*time.Millisecond, func() error {
+		leaderless := 0
+		stale := 0
+		leaders := make(map[string]int)
+		for i := range expected {
+			if found[i] {
+				continue
+			}
+			si, err := js.StreamInfo(fmt.Sprintf("S%05d", i), nats.MaxWait(2*time.Second))
+			if err != nil {
+				continue
+			}
+			if si == nil || si.Cluster == nil || si.Cluster.Leader == _EMPTY_ {
+				leaderless++
+				continue
+			}
+			leaders[si.Cluster.Leader]++
+			if staleLeader != _EMPTY_ && si.Cluster.Leader == staleLeader {
+				stale++
+				continue
+			}
+			found[i] = true
+			foundCount++
+		}
+		if foundCount != expected {
+			t.Log("waiting for streams", expected, foundCount, "leaderless", leaderless, "stale", stale, "leaders", leaders)
+			return fmt.Errorf("have %d streams with current leaders, want %d", foundCount, expected)
+		}
+		return nil
+	})
 }
