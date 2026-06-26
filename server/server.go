@@ -774,7 +774,7 @@ func NewServer(opts *Options) (*Server, error) {
 		rateLimitLoggingCh: make(chan time.Duration, 1),
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
-		dios:               defaultDiskIOSemaphore(),
+		dios:               newDiskIOSemaphore(opts.JetStreamConcurrentIOs),
 	}
 
 	// Delayed API response queue. Create regardless if JetStream is configured

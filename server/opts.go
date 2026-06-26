@@ -462,6 +462,7 @@ type Options struct {
 	JetStreamMetaCompact       uint64
 	JetStreamMetaCompactSize   uint64
 	JetStreamMetaCompactSync   bool
+	JetStreamConcurrentIOs     int
 	StreamMaxBufferedMsgs      int               `json:"-"`
 	StreamMaxBufferedSize      int64             `json:"-"`
 	StoreDir                   string            `json:"-"`
@@ -2762,6 +2763,12 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 				opts.JetStreamMetaCompactSize = uint64(s)
 			case "meta_compact_sync":
 				opts.JetStreamMetaCompactSync = mv.(bool)
+			case "max_concurrent_io":
+				dios, ok := mv.(int64)
+				if !ok || dios < minConcurrentIOs || dios > maxConcurrentIOs {
+					return &configErr{tk, fmt.Sprintf("Expected an absolute size for %q between 4 and 8192, got %v", mk, mv)}
+				}
+				opts.JetStreamConcurrentIOs = int(dios)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -6121,6 +6128,9 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.JetStreamInfoQueueLimit <= 0 {
 		opts.JetStreamInfoQueueLimit = opts.JetStreamRequestQueueLimit
+	}
+	if opts.JetStreamConcurrentIOs <= 0 {
+		opts.JetStreamConcurrentIOs = defaultConcurrentIOs
 	}
 }
 

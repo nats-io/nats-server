@@ -77,6 +77,7 @@ func TestDefaultOptions(t *testing.T) {
 		SyncInterval:               2 * time.Minute,
 		JetStreamRequestQueueLimit: JSDefaultRequestQueueLimit,
 		JetStreamInfoQueueLimit:    JSDefaultRequestQueueLimit,
+		JetStreamConcurrentIOs:     defaultConcurrentIOs,
 	}
 
 	opts := &Options{}

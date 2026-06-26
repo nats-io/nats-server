@@ -22842,6 +22842,47 @@ func TestJetStreamDirectGetBatchParallelWriteDeadlock(t *testing.T) {
 	})
 }
 
+func TestJetStreamMaxConcurrentIO(t *testing.T) {
+	for _, test := range []struct {
+		Name    string
+		Given   int
+		Allowed bool
+	}{
+		{"ConfiguredMin", minConcurrentIOs, true},
+		{"ConfiguredMid", 512, true},
+		{"ConfiguredMax", maxConcurrentIOs, true},
+		{"TooLow", -1, false},
+		{"TooHigh", 10_000, false},
+	} {
+		t.Run(test.Name, func(t *testing.T) {
+			storeDir := t.TempDir()
+			defer func() {
+				if test.Allowed {
+					return
+				}
+				if err := recover(); err == nil {
+					t.Fatalf("should have panicked at startup")
+				}
+			}()
+
+			conf := createConfFile(t, fmt.Appendf(nil, `
+				listen: 127.0.0.1:-1
+				jetstream: {
+					max_mem_store: 2MB
+					max_file_store: 8MB
+					store_dir: '%s'
+					max_concurrent_io: %d
+				}
+			`, storeDir, test.Given))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			require_True(t, s.ReadyForConnections(5*time.Second))
+			require_Equal(t, s.dios.cap(), test.Given)
+		})
+	}
+}
+
 func TestJetStreamReloadMetaCompact(t *testing.T) {
 	storeDir := t.TempDir()
 
