@@ -18,6 +18,10 @@ import (
 	"time"
 )
 
+const defaultConcurrentIOs = 4096
+const minConcurrentIOs = 4
+const maxConcurrentIOs = 8192
+
 // Used to limit number of disk IO calls in flight since they could all be blocking an OS thread.
 // https://github.com/nats-io/nats-server/issues/2742
 type diskIOSemaphore struct {
@@ -29,6 +33,7 @@ type diskIOSemaphore struct {
 }
 
 func newDiskIOSemaphore(n int) *diskIOSemaphore {
+	n = max(minConcurrentIOs, min(n, maxConcurrentIOs))
 	d := &diskIOSemaphore{ch: make(chan struct{}, n)}
 	for range n {
 		d.ch <- struct{}{}
@@ -41,7 +46,7 @@ func defaultDiskIOSemaphore() *diskIOSemaphore {
 	// of CPU cores. That policy led to poor use of devices that
 	// can handle many requests in parallel, so simply cap the
 	// number of concurrent IO requests handed to the Go runtime.
-	return newDiskIOSemaphore(512)
+	return newDiskIOSemaphore(defaultConcurrentIOs)
 }
 
 func (d *diskIOSemaphore) acquire() {

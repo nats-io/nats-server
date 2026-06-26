@@ -8648,7 +8648,7 @@ func BenchmarkFileStoreConsumerStoreConcurrentDiskIO(b *testing.B) {
 		{name: "unbounded_dios", dios: newDiskIOSemaphore(consumersPerIteration)},
 	} {
 		b.Run(test.name, func(b *testing.B) {
-			storeRoot := benchmarkDir(b)
+			storeRoot := b.TempDir()
 			var dioLimit int
 
 			b.StopTimer()
