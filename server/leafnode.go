@@ -545,7 +545,7 @@ func (cfg *leafNodeCfg) stillValid() bool {
 	return !cfg.Disabled && !cfg.removed
 }
 
-// Will pick an URL from the list of available URLs.
+// Will pick a URL from the list of available URLs.
 func (cfg *leafNodeCfg) pickNextURL() *url.URL {
 	cfg.Lock()
 	defer cfg.Unlock()

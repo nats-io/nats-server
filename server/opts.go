@@ -268,7 +268,7 @@ type RemoteLeafOpts struct {
 	// setting and also be different from the LeafNode options.
 	Compression CompressionOpts `json:"-"`
 
-	// When an URL has the "ws" (or "wss") scheme, then the server will initiate the
+	// When a URL has the "ws" (or "wss") scheme, then the server will initiate the
 	// connection as a websocket connection. By default, the websocket frames will be
 	// masked (as if this server was a websocket client to the remote server). The
 	// NoMasking option will change this behavior and will send umasked frames.
