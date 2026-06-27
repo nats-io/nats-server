@@ -4014,7 +4014,7 @@ func (c *client) trackRemoteReply(subject, reply string) {
 
 // pruneRemoteTracking will prune any remote tracking objects
 // that are too old. These are orphaned when a service is not
-// sending reponses etc.
+// sending responses etc.
 // Lock should be held upon entry.
 func (c *client) pruneRemoteTracking() {
 	c.mu.Lock()

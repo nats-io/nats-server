@@ -302,7 +302,7 @@ const (
 	DeliverNew
 	// DeliverByStartSequence will look for a defined starting sequence to start.
 	DeliverByStartSequence
-	// DeliverByStartTime will select the first messsage with a timestamp >= to StartTime.
+	// DeliverByStartTime will select the first message with a timestamp >= to StartTime.
 	DeliverByStartTime
 	// DeliverLastPerSubject will start the consumer with the last message for all subjects received.
 	DeliverLastPerSubject
@@ -5867,7 +5867,7 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 		o.creditWaitingRequest(subj)
 		// pull mode and we have pending.
 		if _, ok := o.pending[seq]; ok {
-			// We found this messsage on pending, we need
+			// We found this message on pending, we need
 			// to queue it up for immediate redelivery since
 			// we know it was not delivered
 			if !o.onRedeliverQueue(seq) {
