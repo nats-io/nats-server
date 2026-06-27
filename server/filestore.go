@@ -3959,7 +3959,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return 0, validThrough, nil
 	}
 
-	// If sseq is less then our first set to first.
+	// If sseq is less than our first set to first.
 	if sseq < fs.state.FirstSeq {
 		sseq = fs.state.FirstSeq
 	}
@@ -4310,7 +4310,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		return 0, validThrough, nil
 	}
 
-	// If sseq is less then our first set to first.
+	// If sseq is less than our first set to first.
 	if sseq < fs.state.FirstSeq {
 		sseq = fs.state.FirstSeq
 	}

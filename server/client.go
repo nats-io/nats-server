@@ -83,7 +83,7 @@ const (
 	// ClientProtoZero is the original Client protocol from 2009.
 	// http://nats.io/documentation/internals/nats-protocol/
 	ClientProtoZero = iota
-	// ClientProtoInfo signals a client can receive more then the original INFO block.
+	// ClientProtoInfo signals a client can receive more than the original INFO block.
 	// This can be used to update clients on other cluster members, etc.
 	ClientProtoInfo
 )

@@ -3964,7 +3964,7 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 			req.Config.OptStartSeq = ssi.OptStartSeq
 			req.Config.DeliverPolicy = DeliverByStartSequence
 		} else {
-			// We have not recovered state so check that configured time is less that our first seq time.
+			// We have not recovered state so check that configured time is less than our first seq time.
 			var state StreamState
 			mset.store.FastState(&state)
 			if ssi.OptStartTime != nil {
@@ -4185,7 +4185,7 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 
 // This will process all inbound source msgs.
 // We mux them into one go routine to avoid lock contention and high cpu and thread thrashing.
-// TODO(dlc) make this more then one and pin sources to one of a group.
+// TODO(dlc) make this more than one and pin sources to one of a group.
 func (mset *stream) processAllSourceMsgs() {
 	s := mset.srv
 	defer s.grWG.Done()

@@ -2037,7 +2037,7 @@ func (js *jetStream) checkClusterSize() {
 			}
 		}
 	}
-	// If we have less then our cluster size adjust that here. Can not do individual peer removals since
+	// If we have less than our cluster size adjust that here. Can not do individual peer removals since
 	// they will not be in the tracked peers.
 	if totalJS < ps.clusterSize {
 		s.Debugf("Adjusting JetStream cluster size from %d to %d", ps.clusterSize, totalJS)
@@ -9502,7 +9502,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 		return nil
 	}
 
-	// If we want less then our parent stream, select from active.
+	// If we want less than our parent stream, select from active.
 	if replicas > 0 && replicas < len(peers) {
 		// Pedantic in case stream is say R5 and consumer is R3 and 3 or more offline, etc.
 		if len(active) < replicas {

@@ -70,7 +70,7 @@ const (
 	// RouteProtoZero is the original Route protocol from 2009.
 	// http://nats.io/documentation/internals/nats-protocol/
 	RouteProtoZero = iota
-	// RouteProtoInfo signals a route can receive more then the original INFO block.
+	// RouteProtoInfo signals a route can receive more than the original INFO block.
 	// This can be used to update remote cluster permissions, etc...
 	RouteProtoInfo
 	// RouteProtoV2 is the new route/cluster protocol that provides account support.
