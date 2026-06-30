@@ -6917,11 +6917,11 @@ var errBadDeliveredUpdate = errors.New("jetstream cluster bad replicated deliver
 
 func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
 	var bi, n int
-	if dseq, n = binary.Uvarint(buf); n < 0 {
+	if dseq, n = binary.Uvarint(buf); n <= 0 {
 		return 0, 0, errBadAckUpdate
 	}
 	bi += n
-	if sseq, n = binary.Uvarint(buf[bi:]); n < 0 {
+	if sseq, n = binary.Uvarint(buf[bi:]); n <= 0 {
 		return 0, 0, errBadAckUpdate
 	}
 	return dseq, sseq, nil
@@ -6929,19 +6929,19 @@ func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
 
 func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err error) {
 	var bi, n int
-	if dseq, n = binary.Uvarint(buf); n < 0 {
+	if dseq, n = binary.Uvarint(buf); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	bi += n
-	if sseq, n = binary.Uvarint(buf[bi:]); n < 0 {
+	if sseq, n = binary.Uvarint(buf[bi:]); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	bi += n
-	if dc, n = binary.Uvarint(buf[bi:]); n < 0 {
+	if dc, n = binary.Uvarint(buf[bi:]); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	bi += n
-	if ts, n = binary.Varint(buf[bi:]); n < 0 {
+	if ts, n = binary.Varint(buf[bi:]); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	return dseq, sseq, dc, ts, nil

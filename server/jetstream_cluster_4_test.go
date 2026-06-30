@@ -8573,3 +8573,35 @@ func TestJetStreamClusterDecodeBatchMsgRejectsMalformed(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
+	// binary.Uvarint/Varint return n == 0 when the buffer is too short to
+	// hold a full varint, so a truncated replicated update must be rejected
+	// rather than silently decoded as zero-valued fields.
+	t.Run("AckUpdate", func(t *testing.T) {
+		valid := binary.AppendUvarint(nil, 10)
+		valid = binary.AppendUvarint(valid, 20)
+		if _, _, err := decodeAckUpdate(valid); err != nil {
+			t.Fatalf("expected valid ack update to decode, got %v", err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1]} {
+			if _, _, err := decodeAckUpdate(buf); err != errBadAckUpdate {
+				t.Fatalf("expected errBadAckUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
+	t.Run("DeliveredUpdate", func(t *testing.T) {
+		valid := binary.AppendUvarint(nil, 10)
+		valid = binary.AppendUvarint(valid, 20)
+		valid = binary.AppendUvarint(valid, 1)
+		valid = binary.AppendVarint(valid, time.Now().UnixNano())
+		if _, _, _, _, err := decodeDeliveredUpdate(valid); err != nil {
+			t.Fatalf("expected valid delivered update to decode, got %v", err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1], valid[:2], valid[:3]} {
+			if _, _, _, _, err := decodeDeliveredUpdate(buf); err != errBadDeliveredUpdate {
+				t.Fatalf("expected errBadDeliveredUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
+}
