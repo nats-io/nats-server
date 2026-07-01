@@ -57,7 +57,7 @@ func (sg smGroup) leader() stateMachine {
 	return nil
 }
 
-func (sg smGroup) followers() []stateMachine {
+func (sg smGroup) followers() smGroup {
 	var f []stateMachine
 	for _, sm := range sg {
 		if sm.node().Leader() {
