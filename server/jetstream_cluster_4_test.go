@@ -8607,4 +8607,30 @@ func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
 			}
 		}
 	})
+	// updateSkipOp and resetSeqOp read a fixed-width little-endian uint64 for
+	// the sequence, so a buffer shorter than 8 bytes must be rejected rather
+	// than triggering an out-of-bounds slice access.
+	t.Run("SkipUpdate", func(t *testing.T) {
+		valid := binary.LittleEndian.AppendUint64(nil, 10)
+		if sseq, err := decodeSkipUpdate(valid); err != nil || sseq != 10 {
+			t.Fatalf("expected valid skip update to decode, got sseq=%d err=%v", sseq, err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1], valid[:7]} {
+			if _, err := decodeSkipUpdate(buf); err != errBadSkipUpdate {
+				t.Fatalf("expected errBadSkipUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
+	t.Run("ResetUpdate", func(t *testing.T) {
+		valid := binary.LittleEndian.AppendUint64(nil, 10)
+		valid = append(valid, "reply"...)
+		if sseq, reply, err := decodeResetUpdate(valid); err != nil || sseq != 10 || reply != "reply" {
+			t.Fatalf("expected valid reset update to decode, got sseq=%d reply=%q err=%v", sseq, reply, err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1], valid[:7]} {
+			if _, _, err := decodeResetUpdate(buf); err != errBadResetUpdate {
+				t.Fatalf("expected errBadResetUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
 }

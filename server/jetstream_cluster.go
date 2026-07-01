@@ -6950,9 +6950,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					return err
 				}
 			case updateSkipOp:
+				sseq, err := decodeSkipUpdate(buf[1:])
+				if err != nil {
+					return err
+				}
 				o.mu.Lock()
-				var le = binary.LittleEndian
-				sseq := le.Uint64(buf[1:])
 				if !o.isLeader() && sseq > o.sseq {
 					o.sseq = sseq
 				}
@@ -6964,10 +6966,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 				o.mu.Unlock()
 			case resetSeqOp:
+				sseq, reply, err := decodeResetUpdate(buf[1:])
+				if err != nil {
+					return err
+				}
 				o.mu.Lock()
-				var le = binary.LittleEndian
-				sseq := le.Uint64(buf[1:9])
-				reply := string(buf[9:])
 				o.resetLocalStartingSeq(sseq)
 				if o.store != nil {
 					o.store.Reset(sseq - 1)
@@ -7088,6 +7091,8 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 
 var errBadAckUpdate = errors.New("jetstream cluster bad replicated ack update")
 var errBadDeliveredUpdate = errors.New("jetstream cluster bad replicated delivered update")
+var errBadSkipUpdate = errors.New("jetstream cluster bad replicated skip update")
+var errBadResetUpdate = errors.New("jetstream cluster bad replicated reset update")
 
 func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
 	var bi, n int
@@ -7119,6 +7124,20 @@ func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err err
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	return dseq, sseq, dc, ts, nil
+}
+
+func decodeSkipUpdate(buf []byte) (sseq uint64, err error) {
+	if len(buf) < 8 {
+		return 0, errBadSkipUpdate
+	}
+	return binary.LittleEndian.Uint64(buf), nil
+}
+
+func decodeResetUpdate(buf []byte) (sseq uint64, reply string, err error) {
+	if len(buf) < 8 {
+		return 0, _EMPTY_, errBadResetUpdate
+	}
+	return binary.LittleEndian.Uint64(buf[:8]), string(buf[8:]), nil
 }
 
 func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) error {
