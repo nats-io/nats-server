@@ -6032,6 +6032,43 @@ func TestMQTTRedeliveryAckWait(t *testing.T) {
 	}
 }
 
+// [MQTT-2.3.1-4] A QoS 1/2 packet identifier must not be reused while it (or an
+// earlier one) is still in flight, and clients treat a just-freed identifier
+// re-appearing within a delivery burst as a duplicate. Deliver-and-ack one
+// message so pendingPublish momentarily empties, then deliver a second: its
+// packet identifier must advance rather than reset to the first one.
+func TestMQTTPacketIdentifierMonotonicAfterAck(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: true}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+
+	// First message: receive it, then PUBACK so pendingPublish drains back to
+	// empty before the next delivery is assigned an identifier.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("msg1"))
+	pi1 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("msg1"))
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi1)
+	testMQTTFlush(t, c, nil, r)
+
+	// Second message: its identifier must not reuse the freed one.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("msg2"))
+	pi2 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("msg2"))
+	if pi2 == pi1 {
+		t.Fatalf("Packet identifier was reset and reused after ack: pi1=%v pi2=%v", pi1, pi2)
+	}
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi2)
+}
+
 // - [MQTT-3.10.4-3] If a Server deletes a Subscription It MUST complete the
 // delivery of any QoS 1 or QoS 2 messages which it has started to send to the
 // Client.

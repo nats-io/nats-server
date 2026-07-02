@@ -3326,6 +3326,9 @@ func (sess *mqttSession) clear(noWait bool) error {
 	sess.pubRelConsumer = nil
 	sess.seq = 0
 	sess.tmaxack = 0
+	// Discarded session: reset the PI counter too so a reused session object
+	// does not inherit the previous session's identifiers. Spec [MQTT-3.1.2-6].
+	sess.last_pi = 0
 	sess.mu.Unlock()
 
 	for _, dur := range durs {
@@ -3527,9 +3530,9 @@ func (sess *mqttSession) untrackPublish(pi uint16) (jsAckSubject string) {
 	}
 
 	delete(sess.pendingPublish, pi)
-	if len(sess.pendingPublish) == 0 {
-		sess.last_pi = 0
-	}
+	// Do NOT reset last_pi here: it is a monotonic rolling counter (see bumpPI) so
+	// a just-freed id is not reused within a delivery burst, which a client would
+	// read as a duplicate. Spec [MQTT-2.3.1-4].
 
 	if len(sess.cpending) != 0 && ack.jsDur != _EMPTY_ {
 		if sseqToPi := sess.cpending[ack.jsDur]; sseqToPi != nil {
@@ -5593,9 +5596,7 @@ func (c *client) mqttProcessUnsubs(filters []*mqttFilter) error {
 				for _, pi := range seqPis {
 					delete(sess.pendingPublish, pi)
 				}
-				if len(sess.pendingPublish) == 0 {
-					sess.last_pi = 0
-				}
+				// last_pi stays monotonic (see untrackPublish); do not reset here.
 			}
 			sess.mu.Unlock()
 		}
