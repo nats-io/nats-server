@@ -8619,3 +8619,34 @@ func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
 		}
 	})
 }
+
+func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
+	// The append entry wire format only requires each entry to carry its type
+	// byte, so a cluster peer can replicate an EntryNormal with a zero-length
+	// body and it still decodes cleanly.
+	le := binary.LittleEndian
+	raw := make([]byte, appendEntryBaseLen)
+	le.PutUint16(raw[40:], 1)            // one entry
+	raw = le.AppendUint32(raw, 1)        // entry length is the type byte only
+	raw = append(raw, byte(EntryNormal)) // no data follows
+	ae, err := decodeAppendEntry(raw, nil, _EMPTY_)
+	require_NoError(t, err)
+	require_Len(t, len(ae.entries), 1)
+	require_Equal(t, ae.entries[0].Type, EntryNormal)
+	require_Len(t, len(ae.entries[0].Data), 0)
+
+	// The apply loops read the op from data[0]; an empty EntryNormal must be
+	// rejected rather than triggering an out-of-bounds access.
+	empty := []*Entry{{EntryNormal, nil}}
+	js := &jetStream{}
+	if _, _, err := js.applyMetaEntries(empty, nil); err != errBadEntryOp {
+		t.Fatalf("expected errBadEntryOp from applyMetaEntries, got %v", err)
+	}
+	ce := &CommittedEntry{Entries: empty}
+	if _, err := js.applyStreamEntries(&stream{}, ce, false); err != errBadEntryOp {
+		t.Fatalf("expected errBadEntryOp from applyStreamEntries, got %v", err)
+	}
+	if err := js.applyConsumerEntries(&consumer{}, ce, false); err != errBadEntryOp {
+		t.Fatalf("expected errBadEntryOp from applyConsumerEntries, got %v", err)
+	}
+}

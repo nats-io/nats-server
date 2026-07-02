@@ -2311,6 +2311,9 @@ func (js *jetStream) collectStreamAndConsumerChanges(c RaftNodeCheckpoint, strea
 		for _, e := range ae.entries {
 			if e.Type == EntryNormal {
 				buf := e.Data
+				if len(buf) == 0 {
+					return errBadEntryOp
+				}
 				op := entryOp(buf[0])
 				switch op {
 				case assignStreamOp, updateStreamOp, removeStreamOp:
@@ -2696,6 +2699,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 			}
 		} else {
 			buf := e.Data
+			if len(buf) == 0 {
+				return isRecovering, didSnap, errBadEntryOp
+			}
 			switch entryOp(buf[0]) {
 			case assignStreamOp:
 				sa, err := decodeStreamAssignment(js.srv, buf[1:])
@@ -3898,6 +3904,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 		}
 
 		if e.Type == EntryNormal {
+			if len(e.Data) == 0 {
+				return 0, errBadEntryOp
+			}
 			buf, op := e.Data, entryOp(e.Data[0])
 			if op == batchMsgOp {
 				batchId, batchSeq, _, _, err := decodeBatchMsg(buf[1:])
@@ -6770,6 +6779,9 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			// Ignore for now.
 		} else {
 			buf := e.Data
+			if len(buf) == 0 {
+				return errBadEntryOp
+			}
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
 				dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
@@ -6914,6 +6926,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	return nil
 }
 
+var errBadEntryOp = errors.New("jetstream cluster bad replicated entry")
 var errBadAckUpdate = errors.New("jetstream cluster bad replicated ack update")
 var errBadDeliveredUpdate = errors.New("jetstream cluster bad replicated delivered update")
 var errBadSkipUpdate = errors.New("jetstream cluster bad replicated skip update")
