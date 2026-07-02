@@ -3011,7 +3011,18 @@ retry:
 
 	n, err := func() (RaftNode, error) {
 		var store StreamStore
-		if storage == FileStorage {
+		if provider := streamStoreProvider(storage); provider != nil {
+			ps, err := provider(StreamStoreConfig{
+				StreamConfig: &StreamConfig{Name: rgName, Storage: storage, Metadata: labels},
+				FileConfig:   &FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize},
+				Created:      time.Now().UTC(),
+			})
+			if err != nil {
+				s.Errorf("Error creating provider WAL: %v", err)
+				return nil, err
+			}
+			store = ps
+		} else if storage == FileStorage {
 			opts := s.getOpts()
 			fs, err := newFileStoreWithCreated(
 				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s},
@@ -4607,7 +4618,8 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			// Decrement from pending operations. Once it reaches zero, it can be deleted.
 			if i.ops > 0 {
 				var sz uint64
-				if mset.store.Type() == FileStorage {
+				// Custom storage providers are persistent and sized like the file store.
+				if mset.store.Type() != MemoryStorage {
 					sz = fileStoreMsgSizeRaw(len(csubject), len(hdr), len(msg))
 				} else {
 					sz = memStoreMsgSizeRaw(len(csubject), len(hdr), len(msg))
@@ -8055,8 +8067,8 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 
 		var available uint64
 		if ni.stats != nil {
-			switch cfg.Storage {
-			case MemoryStorage:
+			// Custom storage providers are accounted against the file store bucket.
+			if cfg.Storage == MemoryStorage {
 				used := ni.stats.ReservedMemory
 				if ni.stats.Memory > used {
 					used = ni.stats.Memory
@@ -8064,7 +8076,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 				if ni.cfg.MaxMemory > int64(used) {
 					available = uint64(ni.cfg.MaxMemory) - used
 				}
-			case FileStorage:
+			} else {
 				used := ni.stats.ReservedStore
 				if ni.stats.Store > used {
 					used = ni.stats.Store

@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -79,6 +81,64 @@ type StoreMsg struct {
 	ts   int64
 }
 
+// Set stores message fields in sm for StreamStore implementations outside this package.
+func (sm *StoreMsg) Set(subject string, hdr, msg []byte, seq uint64, ts int64) {
+	if sm == nil {
+		return
+	}
+	sm.buf = append(sm.buf[:0], hdr...)
+	sm.buf = append(sm.buf, msg...)
+	if len(hdr) > 0 {
+		sm.hdr = sm.buf[:len(hdr):len(hdr)]
+	} else {
+		sm.hdr = nil
+	}
+	sm.msg = sm.buf[len(hdr):]
+	sm.subj = subject
+	sm.seq = seq
+	sm.ts = ts
+}
+
+// Subject returns the stored message subject.
+func (sm *StoreMsg) Subject() string {
+	if sm == nil {
+		return _EMPTY_
+	}
+	return sm.subj
+}
+
+// Header returns the stored message header bytes.
+func (sm *StoreMsg) Header() []byte {
+	if sm == nil {
+		return nil
+	}
+	return sm.hdr
+}
+
+// Message returns the stored message payload bytes.
+func (sm *StoreMsg) Message() []byte {
+	if sm == nil {
+		return nil
+	}
+	return sm.msg
+}
+
+// Sequence returns the stored message sequence.
+func (sm *StoreMsg) Sequence() uint64 {
+	if sm == nil {
+		return 0
+	}
+	return sm.seq
+}
+
+// TimeStamp returns the stored message timestamp as Unix nanoseconds.
+func (sm *StoreMsg) TimeStamp() int64 {
+	if sm == nil {
+		return 0
+	}
+	return sm.ts
+}
+
 // Used to call back into the upper layers to report on changes in storage resources.
 // For the cases where its a single message we will also supply sequence number and subject.
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
@@ -89,6 +149,66 @@ type StorageRemoveMsgHandler func(seq uint64)
 // Used to call back into the upper layers to process a JetStream message.
 // Will propose the message if the stream is replicated.
 type ProcessJetStreamMsgHandler func(*inMsg)
+
+// StreamStoreProvider constructs a StreamStore for a registered storage type.
+type StreamStoreProvider func(StreamStoreConfig) (StreamStore, error)
+
+// StreamStoreConfig contains the inputs needed to construct a stream store.
+type StreamStoreConfig struct {
+	StreamConfig *StreamConfig
+	FileConfig   *FileStoreConfig
+	Created      time.Time
+}
+
+type storageProviderRegistration struct {
+	name        string
+	displayName string
+	provider    StreamStoreProvider
+}
+
+var storageProviders = struct {
+	sync.RWMutex
+	byType map[StorageType]storageProviderRegistration
+	byName map[string]StorageType
+}{
+	byType: make(map[StorageType]storageProviderRegistration),
+	byName: make(map[string]StorageType),
+}
+
+// RegisterStreamStoreProvider registers an external StreamStore provider.
+//
+// Custom providers are treated as persistent, file-like storage for resource
+// accounting, placement and replication. The provider must be registered
+// before JetStream is enabled so that persisted stream assignments referencing
+// the custom storage type can be unmarshaled and recovered. In a cluster the
+// same provider (storage type and name) must be registered on every node that
+// may host the stream, including its replicas.
+func RegisterStreamStoreProvider(storage StorageType, name string, provider StreamStoreProvider) error {
+	if storage == FileStorage || storage == MemoryStorage || name == _EMPTY_ || provider == nil {
+		return fmt.Errorf("invalid stream store provider")
+	}
+	jsonName := strings.ToLower(name)
+	if jsonName == memoryStorageString || jsonName == fileStorageString {
+		return fmt.Errorf("stream store provider name %q is reserved", name)
+	}
+	storageProviders.Lock()
+	defer storageProviders.Unlock()
+	if _, ok := storageProviders.byType[storage]; ok {
+		return fmt.Errorf("stream store provider already registered for storage type %d", int(storage))
+	}
+	if _, ok := storageProviders.byName[jsonName]; ok {
+		return fmt.Errorf("stream store provider already registered for %q", name)
+	}
+	storageProviders.byType[storage] = storageProviderRegistration{name: jsonName, displayName: name, provider: provider}
+	storageProviders.byName[jsonName] = storage
+	return nil
+}
+
+func streamStoreProvider(storage StorageType) StreamStoreProvider {
+	storageProviders.RLock()
+	defer storageProviders.RUnlock()
+	return storageProviders.byType[storage].provider
+}
 
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
@@ -555,8 +675,11 @@ func (dp *DiscardPolicy) UnmarshalJSON(data []byte) error {
 }
 
 const (
-	memoryStorageJSONString = `"memory"`
-	fileStorageJSONString   = `"file"`
+	memoryStorageString = "memory"
+	fileStorageString   = "file"
+
+	memoryStorageJSONString = `"` + memoryStorageString + `"`
+	fileStorageJSONString   = `"` + fileStorageString + `"`
 )
 
 var (
@@ -571,6 +694,11 @@ func (st StorageType) String() string {
 	case FileStorage:
 		return "File"
 	default:
+		storageProviders.RLock()
+		defer storageProviders.RUnlock()
+		if registered, ok := storageProviders.byType[st]; ok {
+			return registered.displayName
+		}
 		return "Unknown Storage Type"
 	}
 }
@@ -582,6 +710,11 @@ func (st StorageType) MarshalJSON() ([]byte, error) {
 	case FileStorage:
 		return fileStorageJSONBytes, nil
 	default:
+		storageProviders.RLock()
+		defer storageProviders.RUnlock()
+		if registered, ok := storageProviders.byType[st]; ok {
+			return []byte(strconv.Quote(registered.name)), nil
+		}
 		return nil, fmt.Errorf("can not marshal %v", st)
 	}
 }
@@ -593,6 +726,14 @@ func (st *StorageType) UnmarshalJSON(data []byte) error {
 	case fileStorageJSONString:
 		*st = FileStorage
 	default:
+		name := strings.Trim(strings.ToLower(string(data)), `"`)
+		storageProviders.RLock()
+		storage, ok := storageProviders.byName[name]
+		storageProviders.RUnlock()
+		if ok {
+			*st = storage
+			return nil
+		}
 		return fmt.Errorf("can not unmarshal %q", data)
 	}
 	return nil

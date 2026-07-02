@@ -1832,11 +1832,11 @@ func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 		storage, replicas, maxBytes := mset.cfg.Storage, mset.cfg.Replicas, mset.cfg.MaxBytes
 		mset.cfgMu.RUnlock()
 		if (tier == _EMPTY_ || tier == tierName(replicas)) && maxBytes > 0 {
-			switch storage {
-			case FileStorage:
-				store += uint64(maxBytes)
-			case MemoryStorage:
+			// Custom storage providers are persistent and counted as file store.
+			if storage == MemoryStorage {
 				mem += uint64(maxBytes)
+			} else {
+				store += uint64(maxBytes)
 			}
 		}
 	}
@@ -1849,11 +1849,11 @@ func reservedStorage(sas map[string]*streamAssignment, tier string) (mem, store 
 	for _, sa := range sas {
 		cfg := sa.Config
 		if (tier == _EMPTY_ || tier == tierName(cfg.Replicas)) && cfg.MaxBytes > 0 {
-			switch cfg.Storage {
-			case FileStorage:
-				store += uint64(cfg.MaxBytes)
-			case MemoryStorage:
+			// Custom storage providers are persistent and counted as file store.
+			if cfg.Storage == MemoryStorage {
 				mem += uint64(cfg.MaxBytes)
+			} else {
+				store += uint64(cfg.MaxBytes)
 			}
 		}
 	}
@@ -2494,8 +2494,8 @@ func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, ti
 	serverBytes := addSaturate(addBytes, maxBytesOffset)
 	accountBytes := accountReservation(tier, replicas, serverBytes)
 
-	switch storage {
-	case MemoryStorage:
+	// Custom storage providers are persistent and accounted against the file store.
+	if storage == MemoryStorage {
 		// Account limits defined.
 		if selectedLimits.MaxMemory >= 0 && (currentRes > selectedLimits.MaxMemory || accountBytes > selectedLimits.MaxMemory-currentRes) {
 			return NewJSMemoryResourcesExceededError()
@@ -2504,7 +2504,7 @@ func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, ti
 		if checkServer && (js.memReserved > js.config.MaxMemory || serverBytes > js.config.MaxMemory-js.memReserved) {
 			return NewJSMemoryResourcesExceededError()
 		}
-	case FileStorage:
+	} else {
 		// Account limits defined.
 		if selectedLimits.MaxStore >= 0 && (currentRes > selectedLimits.MaxStore || accountBytes > selectedLimits.MaxStore-currentRes) {
 			return NewJSStorageResourcesExceededError()
@@ -2654,10 +2654,10 @@ func (js *jetStream) reserveStreamResources(cfg *StreamConfig) {
 	}
 
 	js.mu.Lock()
-	switch cfg.Storage {
-	case MemoryStorage:
+	// Custom storage providers are persistent and reserved against the file store.
+	if cfg.Storage == MemoryStorage {
 		js.memReserved += cfg.MaxBytes
-	case FileStorage:
+	} else {
 		js.storeReserved += cfg.MaxBytes
 	}
 	s, clustered := js.srv, !js.standAlone
@@ -2675,10 +2675,10 @@ func (js *jetStream) releaseStreamResources(cfg *StreamConfig) {
 	}
 
 	js.mu.Lock()
-	switch cfg.Storage {
-	case MemoryStorage:
+	// Custom storage providers are persistent and reserved against the file store.
+	if cfg.Storage == MemoryStorage {
 		js.memReserved -= cfg.MaxBytes
-	case FileStorage:
+	} else {
 		js.storeReserved -= cfg.MaxBytes
 	}
 	s, clustered := js.srv, !js.standAlone
