@@ -1385,7 +1385,9 @@ func TestNRGTruncateWALRevertsUncommittedAddPeer(t *testing.T) {
 		require_False(t, gz.Peers[newPeer].Known)
 
 		// Truncate the uncommitted AddPeer entry. Its speculative effects must be reverted.
+		n.Lock()
 		n.truncateWAL(1, 1)
+		n.Unlock()
 		require_Equal(t, n.pindex, 1)
 		_, ok = n.peers[newPeer]
 		require_False(t, ok)
@@ -1463,7 +1465,9 @@ func TestNRGTruncateWALRevertsUncommittedRemovePeer(t *testing.T) {
 		require_True(t, gz.Peers[nats0].Known)
 
 		// Truncate the uncommitted RemovePeer entry. Its speculative effects must be reverted.
+		n.Lock()
 		n.truncateWAL(1, 1)
+		n.Unlock()
 		_, ok = n.peers[oldPeer]
 		require_True(t, ok)
 		require_Equal(t, n.csz, 3)
