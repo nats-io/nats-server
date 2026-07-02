@@ -3215,7 +3215,7 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	sess := mqttSession{}
 
 	sess.last_pi = 0xFFFF
-	pi := sess.trackPublishRetained()
+	pi := sess.trackPublishRetained("foo")
 	if pi != 1 {
 		t.Fatalf("Expected 1, got %v", pi)
 	}
@@ -3230,7 +3230,7 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	}
 
 	delete(sess.pendingPublish, 1234)
-	pi = sess.trackPublishRetained()
+	pi = sess.trackPublishRetained("foo")
 	if pi != 1234 {
 		t.Fatalf("Expected 1234, got %v", pi)
 	}
@@ -6067,6 +6067,71 @@ func TestMQTTPacketIdentifierMonotonicAfterAck(t *testing.T) {
 		t.Fatalf("Packet identifier was reset and reused after ack: pi1=%v pi2=%v", pi1, pi2)
 	}
 	testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi2)
+}
+
+// Re-subscribing a QoS 1/2 filter at QoS 0 deletes its JS consumer; the
+// consumer's pending (unacknowledged) deliveries must be purged too, otherwise
+// their packet identifiers leak and permanently count against the in-flight cap
+// for the life of the session (as mqttProcessUnsubs already does). Same for
+// in-flight retained deliveries, which have no JS consumer at all.
+func TestMQTTQoS0DowngradePurgesPending(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+
+	// Store a retained QoS 1 message before the subscriber connects.
+	testMQTTPublish(t, cp, rp, 1, false, true, "foo", 1, []byte("retained"))
+
+	ci := &mqttConnInfo{clientID: "sub", cleanSess: true}
+	c, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	// Subscribing at QoS 1 delivers the retained message; receive it without
+	// acking: tracked as pending under the sid's retained pseudo-durable.
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("retained"))
+
+	// Deliver a QoS 1 message and receive it without acking: it is now tracked
+	// as pending against the "foo" consumer.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 2, []byte("msg"))
+	testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("msg"))
+
+	countPending := func() (int, int) {
+		mc := testMQTTGetClient(t, s, "sub")
+		mc.mu.Lock()
+		sess := mc.mqtt.sess
+		mc.mu.Unlock()
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		var np, nc int
+		np = len(sess.pendingPublish)
+		for _, m := range sess.cpending {
+			nc += len(m)
+		}
+		return np, nc
+	}
+
+	if np, nc := countPending(); np != 2 || nc != 2 {
+		t.Fatalf("Expected 2 pending publish/cpending before downgrade, got %v/%v", np, nc)
+	}
+
+	// Re-subscribe the same filter at QoS 0: deletes the JS consumer and must
+	// purge its pending deliveries, consumer-based and retained alike.
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
+	// The new subscription re-delivers the retained message, now at QoS 0
+	// (no packet identifier, so nothing new is tracked).
+	testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubFlagRetain, []byte("retained"))
+	testMQTTFlush(t, c, nil, r)
+
+	if np, nc := countPending(); np != 0 || nc != 0 {
+		t.Fatalf("Expected pending maps purged after QoS 0 downgrade, got pendingPublish=%v cpending=%v", np, nc)
+	}
 }
 
 // - [MQTT-3.10.4-3] If a Server deletes a Subscription It MUST complete the
