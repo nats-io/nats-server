@@ -484,6 +484,7 @@ type Options struct {
 	TLSTimeout                 float64           `json:"tls_timeout"`
 	TLS                        bool              `json:"-"`
 	TLSVerify                  bool              `json:"-"`
+	TLSVerifyClientCertIfGiven bool              `json:"-"`
 	TLSMap                     bool              `json:"-"`
 	TLSCert                    string            `json:"-"`
 	TLSKey                     string            `json:"-"`
@@ -863,29 +864,30 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile             string
-	KeyFile              string
-	CaFile               string
-	Verify               bool
-	Insecure             bool
-	Map                  bool
-	TLSCheckKnownURLs    bool
-	HandshakeFirst       bool          // Indicate that the TLS handshake should occur first, before sending the INFO protocol.
-	FallbackDelay        time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
-	Timeout              float64
-	RateLimit            int64
-	AllowInsecureCiphers bool
-	Ciphers              []uint16
-	CurvePreferences     []tls.CurveID
-	PinnedCerts          PinnedCertSet
-	CertStore            certstore.StoreType
-	CertMatchBy          certstore.MatchByType
-	CertMatch            string
-	CertMatchSkipInvalid bool
-	CaCertsMatch         []string
-	OCSPPeerConfig       *certidp.OCSPPeerConfig
-	Certificates         []*TLSCertPairOpt
-	MinVersion           uint16
+	CertFile                string
+	KeyFile                 string
+	CaFile                  string
+	Verify                  bool
+	VerifyClientCertIfGiven bool
+	Insecure                bool
+	Map                     bool
+	TLSCheckKnownURLs       bool
+	HandshakeFirst          bool          // Indicate that the TLS handshake should occur first, before sending the INFO protocol.
+	FallbackDelay           time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
+	Timeout                 float64
+	RateLimit               int64
+	AllowInsecureCiphers    bool
+	Ciphers                 []uint16
+	CurvePreferences        []tls.CurveID
+	PinnedCerts             PinnedCertSet
+	CertStore               certstore.StoreType
+	CertMatchBy             certstore.MatchByType
+	CertMatch               string
+	CertMatchSkipInvalid    bool
+	CaCertsMatch            []string
+	OCSPPeerConfig          *certidp.OCSPPeerConfig
+	Certificates            []*TLSCertPairOpt
+	MinVersion              uint16
 }
 
 // TLSCertPairOpt are the paths to a certificate and private key.
@@ -5094,6 +5096,12 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 				return nil, &configErr{tk, "error parsing tls config, expected 'verify' to be a boolean"}
 			}
 			tc.Verify = verify
+		case "verify_client_cert_if_given":
+			verifyClientCertIfGiven, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, "error parsing tls config, expected 'verify_client_cert_if_given' to be a boolean"}
+			}
+			tc.VerifyClientCertIfGiven = verifyClientCertIfGiven
 		case "verify_and_map":
 			verify, ok := mv.(bool)
 			if !ok {
@@ -5342,6 +5350,10 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 	}
 	if len(tc.Certificates) > 0 && tc.CertFile != _EMPTY_ {
 		return nil, &configErr{tk, "error parsing tls config, cannot combine 'cert_file' option with 'certs' option"}
+	}
+
+	if tc.Verify && tc.VerifyClientCertIfGiven {
+		return nil, &configErr{tk, "error parsing tls config, cannot combine 'verify' option with 'verify_client_cert_if_given' option"}
 	}
 
 	// If cipher suites were not specified then use the defaults
@@ -5796,10 +5808,17 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 	}
 
-	// Require client certificates as needed
+	// Only one or the other client auth methods below can be configured when starting the server
+
+	// Require and verify client certificates
 	if tc.Verify {
 		config.ClientAuth = tls.RequireAndVerifyClientCert
 	}
+	// Verify client certificates if given
+	if tc.VerifyClientCertIfGiven {
+		config.ClientAuth = tls.VerifyClientCertIfGiven
+	}
+
 	// Add in CAs if applicable.
 	if tc.CaFile != _EMPTY_ {
 		rootPEM, err := os.ReadFile(tc.CaFile)
@@ -6208,6 +6227,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	fs.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
+	fs.BoolVar(&opts.TLSVerifyClientCertIfGiven, "tlsverify_client_certs_if_given", false, "Enable TLS with client verification if client certs are given.")
 	fs.StringVar(&opts.TLSCert, "tlscert", _EMPTY_, "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", _EMPTY_, "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", _EMPTY_, "Client certificate CA for verification.")
@@ -6419,12 +6439,16 @@ func overrideTLS(opts *Options) error {
 	if opts.TLSKey == _EMPTY_ {
 		return errors.New("TLS Server private key must be present and valid")
 	}
+	if opts.TLSVerify && opts.TLSVerifyClientCertIfGiven {
+		return errors.New("TLS verify and TLS verify_client_cert_if_given can't both be set")
+	}
 
 	tc := TLSConfigOpts{}
 	tc.CertFile = opts.TLSCert
 	tc.KeyFile = opts.TLSKey
 	tc.CaFile = opts.TLSCaCert
 	tc.Verify = opts.TLSVerify
+	tc.VerifyClientCertIfGiven = opts.TLSVerifyClientCertIfGiven
 	tc.Ciphers = defaultCipherSuites()
 
 	var err error

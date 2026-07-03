@@ -967,6 +967,44 @@ func TestTlsPinnedCertificates(t *testing.T) {
 	check(opts.Websocket.TLSPinnedCerts)
 }
 
+// Test the TLS config option verify_client_cert_if_given sets the TLSConfig.ClientAuth to the correct option
+func TestTlsVerifyClientCertsIfGiven(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	tls {
+		cert_file: "./configs/certs/server.pem"
+		key_file: "./configs/certs/key.pem"
+		verify_client_cert_if_given: true
+	}
+	`))
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	if opts.TLSConfig == nil {
+		t.Fatal("Expected TLSConfig to be set")
+	}
+	if opts.TLSConfig.ClientAuth != tls.VerifyClientCertIfGiven {
+		t.Fatal("Expected ClientAuth to be set to VerifyClientCertIfGiven")
+	}
+
+}
+
+// Test that the TLS config option verify_client_cert_if_given, and verify can't be set at the same time.
+func TestTlsVerifyClientCertsIfGivenAndVerify(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	tls {
+		cert_file: "./configs/certs/server.pem"
+		key_file: "./configs/certs/key.pem"
+		verify: true
+		verify_client_cert_if_given: true
+	}
+	`))
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatal("Expected an error when both verify and verify_client_cert_if_given are set")
+	}
+}
+
 func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`
 	authorization {
