@@ -5809,6 +5809,9 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	}
 
 	// Only one or the other client auth methods below can be configured when starting the server
+	if tc.Verify && tc.VerifyClientCertIfGiven {
+		return nil, fmt.Errorf("cannot combine 'verify' option with 'verify_client_cert_if_given' option")
+	}
 
 	// Require and verify client certificates
 	if tc.Verify {
