@@ -967,6 +967,83 @@ func TestTlsPinnedCertificates(t *testing.T) {
 	check(opts.Websocket.TLSPinnedCerts)
 }
 
+// Test the TLS config option verify_client_cert_if_given sets the TLSConfig.ClientAuth to the correct option
+func TestTlsVerifyClientCertsIfGiven(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	tls {
+		cert_file: "./configs/certs/server.pem"
+		key_file: "./configs/certs/key.pem"
+		verify_client_cert_if_given: true
+	}
+	`))
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	if opts.TLSConfig == nil {
+		t.Fatal("Expected TLSConfig to be set")
+	}
+	if opts.TLSConfig.ClientAuth != tls.VerifyClientCertIfGiven {
+		t.Fatalf("Expected ClientAuth to be VerifyClientCertIfGiven, got %v", opts.TLSConfig.ClientAuth)
+	}
+}
+
+// Test that the TLS config option verify_client_cert_if_given, and verify can't be set at the same time.
+func TestTlsVerifyClientCertsIfGivenAndVerify(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	tls {
+		cert_file: "./configs/certs/server.pem"
+		key_file: "./configs/certs/key.pem"
+		verify: true
+		verify_client_cert_if_given: true
+	}
+	`))
+	_, err := ProcessConfigFile(confFileName)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "cannot combine 'verify' option with 'verify_client_cert_if_given' option")
+}
+
+func TestTlsVerifyClientCertIfGivenConfigErrors(t *testing.T) {
+	const tlsBlock = `tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			%s
+		}`
+	for _, test := range []struct {
+		name string
+		conf string
+		err  string
+	}{
+		{"verify_and_map", fmt.Sprintf(tlsBlock, "verify_and_map: true\n verify_client_cert_if_given: true"),
+			"cannot combine 'verify_and_map' option with 'verify_client_cert_if_given' option"},
+		{"cluster", fmt.Sprintf("cluster { listen: 127.0.0.1:-1\n "+tlsBlock+" }", "verify_client_cert_if_given: true"),
+			"verify_client_cert_if_given not supported in this context"},
+		{"gateway", fmt.Sprintf("gateway { name: A\n listen: 127.0.0.1:-1\n "+tlsBlock+" }", "verify_client_cert_if_given: true"),
+			"verify_client_cert_if_given not supported in this context"},
+		{"leafnode remote", fmt.Sprintf("leafnodes { remotes [ { url: \"tls://127.0.0.1:7422\"\n "+tlsBlock+" } ] }", "verify_client_cert_if_given: true"),
+			"verify_client_cert_if_given not supported in this context"},
+		{"resolver_tls", fmt.Sprintf(strings.Replace(tlsBlock, "tls {", "resolver_tls {", 1), "verify_client_cert_if_given: true"),
+			"verify_client_cert_if_given not supported in this context"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(test.conf))
+			_, err := ProcessConfigFile(conf)
+			require_Error(t, err)
+			require_Contains(t, err.Error(), test.err)
+		})
+	}
+}
+
+func TestTlsVerifyClientCertIfGivenGenTLSConfig(t *testing.T) {
+	_, err := GenTLSConfig(&TLSConfigOpts{
+		CertFile:                "./configs/certs/server.pem",
+		KeyFile:                 "./configs/certs/key.pem",
+		Verify:                  true,
+		VerifyClientCertIfGiven: true,
+	})
+	require_Error(t, err)
+}
+
 func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`
 	authorization {

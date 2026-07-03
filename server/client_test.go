@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"os"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -4741,4 +4743,82 @@ func TestClientMsgsMetric(t *testing.T) {
 	} else {
 		t.Fatalf("Did not get expected outClientMsg/Bytes for message sent on qsub")
 	}
+}
+
+func TestTLSClientVerifyClientCertIfGiven(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "localhost:-1"
+		tls {
+			cert_file: "../test/configs/certs/tlsauth/server.pem"
+			key_file: "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file: "../test/configs/certs/tlsauth/ca.pem"
+			verify_client_cert_if_given: true
+		}
+	`))
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_True(t, opts.TLSConfig.ClientAuth == tls.VerifyClientCertIfGiven)
+	// Clients must not be told that a certificate is required.
+	s.mu.RLock()
+	tlsVerify := s.info.TLSVerify
+	s.mu.RUnlock()
+	require_False(t, tlsVerify)
+
+	rootCAs := nats.RootCAs("../test/configs/certs/tlsauth/ca.pem")
+
+	// Returns the TLS connection state of the server side of the given connection.
+	serverConnState := func(t *testing.T, nc *nats.Conn) *tls.ConnectionState {
+		t.Helper()
+		cid, err := nc.GetClientID()
+		require_NoError(t, err)
+		c := s.getClient(cid)
+		require_NotNil(t, c)
+		cs := c.GetTLSConnectionState()
+		require_NotNil(t, cs)
+		return cs
+	}
+
+	t.Run("no client cert", func(t *testing.T) {
+		nc, err := nats.Connect(s.ClientURL(), rootCAs)
+		require_NoError(t, err)
+		defer nc.Close()
+		cs := serverConnState(t, nc)
+		require_Len(t, len(cs.PeerCertificates), 0)
+		require_Len(t, len(cs.VerifiedChains), 0)
+	})
+
+	t.Run("valid client cert", func(t *testing.T) {
+		nc, err := nats.Connect(s.ClientURL(), rootCAs,
+			nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"))
+		require_NoError(t, err)
+		defer nc.Close()
+		cs := serverConnState(t, nc)
+		require_Len(t, len(cs.PeerCertificates), 1)
+		require_Len(t, len(cs.VerifiedChains), 1)
+		require_Equal(t, cs.VerifiedChains[0][0].Subject.CommonName, "example.com")
+	})
+
+	t.Run("untrusted client cert", func(t *testing.T) {
+		// Signed by a CA other than the one in ca_file, so must be rejected.
+		// The Go TLS client does not send a certificate whose issuer is not
+		// in the server's acceptable CAs, so force it to be sent.
+		cert, err := tls.LoadX509KeyPair("../test/configs/certs/client-cert.pem", "../test/configs/certs/client-key.pem")
+		require_NoError(t, err)
+		caPEM, err := os.ReadFile("../test/configs/certs/tlsauth/ca.pem")
+		require_NoError(t, err)
+		pool := x509.NewCertPool()
+		require_True(t, pool.AppendCertsFromPEM(caPEM))
+		tlsConfig := &tls.Config{
+			RootCAs: pool,
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return &cert, nil
+			},
+		}
+		nc, err := nats.Connect(s.ClientURL(), nats.Secure(tlsConfig), nats.MaxReconnects(0))
+		if err == nil {
+			nc.Close()
+			t.Fatal("Expected connection with untrusted client certificate to fail")
+		}
+	})
 }

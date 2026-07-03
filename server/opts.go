@@ -863,29 +863,30 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile             string
-	KeyFile              string
-	CaFile               string
-	Verify               bool
-	Insecure             bool
-	Map                  bool
-	TLSCheckKnownURLs    bool
-	HandshakeFirst       bool          // Indicate that the TLS handshake should occur first, before sending the INFO protocol.
-	FallbackDelay        time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
-	Timeout              float64
-	RateLimit            int64
-	AllowInsecureCiphers bool
-	Ciphers              []uint16
-	CurvePreferences     []tls.CurveID
-	PinnedCerts          PinnedCertSet
-	CertStore            certstore.StoreType
-	CertMatchBy          certstore.MatchByType
-	CertMatch            string
-	CertMatchSkipInvalid bool
-	CaCertsMatch         []string
-	OCSPPeerConfig       *certidp.OCSPPeerConfig
-	Certificates         []*TLSCertPairOpt
-	MinVersion           uint16
+	CertFile                string
+	KeyFile                 string
+	CaFile                  string
+	Verify                  bool
+	VerifyClientCertIfGiven bool
+	Insecure                bool
+	Map                     bool
+	TLSCheckKnownURLs       bool
+	HandshakeFirst          bool          // Indicate that the TLS handshake should occur first, before sending the INFO protocol.
+	FallbackDelay           time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
+	Timeout                 float64
+	RateLimit               int64
+	AllowInsecureCiphers    bool
+	Ciphers                 []uint16
+	CurvePreferences        []tls.CurveID
+	PinnedCerts             PinnedCertSet
+	CertStore               certstore.StoreType
+	CertMatchBy             certstore.MatchByType
+	CertMatch               string
+	CertMatchSkipInvalid    bool
+	CaCertsMatch            []string
+	OCSPPeerConfig          *certidp.OCSPPeerConfig
+	Certificates            []*TLSCertPairOpt
+	MinVersion              uint16
 }
 
 // TLSCertPairOpt are the paths to a certificate and private key.
@@ -1660,6 +1661,10 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		tc, err := parseTLS(tk, true)
 		if err != nil {
 			*errors = append(*errors, err)
+			return
+		}
+		if tc.VerifyClientCertIfGiven {
+			*errors = append(*errors, &configErr{tk, "verify_client_cert_if_given not supported in this context"})
 			return
 		}
 		tlsConfig, err := GenTLSConfig(tc)
@@ -3109,6 +3114,10 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 					*errors = append(*errors, err)
 					continue
 				}
+				if tc.VerifyClientCertIfGiven {
+					*errors = append(*errors, &configErr{tk, "verify_client_cert_if_given not supported in this context"})
+					continue
+				}
 				if remote.TLSConfig, err = GenTLSConfig(tc); err != nil {
 					*errors = append(*errors, &configErr{tk, err.Error()})
 					continue
@@ -3252,6 +3261,9 @@ func getTLSConfig(tk token) (*tls.Config, *TLSConfigOpts, error) {
 	tc, err := parseTLS(tk, false)
 	if err != nil {
 		return nil, nil, err
+	}
+	if tc.VerifyClientCertIfGiven {
+		return nil, nil, &configErr{tk, "verify_client_cert_if_given not supported in this context, cluster and gateway connections always require verification"}
 	}
 	config, err := GenTLSConfig(tc)
 	if err != nil {
@@ -5094,6 +5106,12 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 				return nil, &configErr{tk, "error parsing tls config, expected 'verify' to be a boolean"}
 			}
 			tc.Verify = verify
+		case "verify_client_cert_if_given":
+			verifyClientCertIfGiven, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, "error parsing tls config, expected 'verify_client_cert_if_given' to be a boolean"}
+			}
+			tc.VerifyClientCertIfGiven = verifyClientCertIfGiven
 		case "verify_and_map":
 			verify, ok := mv.(bool)
 			if !ok {
@@ -5342,6 +5360,18 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 	}
 	if len(tc.Certificates) > 0 && tc.CertFile != _EMPTY_ {
 		return nil, &configErr{tk, "error parsing tls config, cannot combine 'cert_file' option with 'certs' option"}
+	}
+
+	if tc.Verify && tc.VerifyClientCertIfGiven {
+		// Name the option the user actually set, since both
+		// 'verify_and_map' and 'verify_cert_and_check_known_urls' imply 'verify'.
+		verifyOpt := "verify"
+		if tc.TLSCheckKnownURLs {
+			verifyOpt = "verify_cert_and_check_known_urls"
+		} else if tc.Map {
+			verifyOpt = "verify_and_map"
+		}
+		return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, cannot combine '%s' option with 'verify_client_cert_if_given' option", verifyOpt)}
 	}
 
 	// If cipher suites were not specified then use the defaults
@@ -5796,10 +5826,20 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 	}
 
-	// Require client certificates as needed
+	// Request client certificates as needed. With Verify, a valid certificate
+	// is required. With VerifyClientCertIfGiven, a certificate is requested
+	// and verified if presented, but connections without one are accepted,
+	// which allows certificate-based auth to be optional (e.g. auth callout).
+	if tc.Verify && tc.VerifyClientCertIfGiven {
+		return nil, fmt.Errorf("cannot combine 'verify' option with 'verify_client_cert_if_given' option")
+	}
+
 	if tc.Verify {
 		config.ClientAuth = tls.RequireAndVerifyClientCert
+	} else if tc.VerifyClientCertIfGiven {
+		config.ClientAuth = tls.VerifyClientCertIfGiven
 	}
+
 	// Add in CAs if applicable.
 	if tc.CaFile != _EMPTY_ {
 		rootPEM, err := os.ReadFile(tc.CaFile)

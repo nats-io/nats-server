@@ -736,6 +736,88 @@ func TestAuthCalloutClientTLSCerts(t *testing.T) {
 	require_True(t, userInfo.Account == "FOO")
 }
 
+func TestAuthCalloutClientTLSCertsIfGiven(t *testing.T) {
+	conf := `
+		listen: "localhost:-1"
+		server_name: T
+
+		tls {
+			cert_file = "../test/configs/certs/tlsauth/server.pem"
+			key_file = "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file = "../test/configs/certs/tlsauth/ca.pem"
+			verify_client_cert_if_given = true
+		}
+
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, ctls := decodeAuthRequest(t, m.Data)
+		require_NotNil(t, ctls)
+		if len(ctls.VerifiedChains) == 1 {
+			// Authenticate by client certificate.
+			blk, _ := pem.Decode([]byte(ctls.VerifiedChains[0][0]))
+			cert, err := x509.ParseCertificate(blk.Bytes)
+			require_NoError(t, err)
+			if strings.HasPrefix(cert.Subject.String(), "CN=example.com") {
+				ujwt := createAuthUser(t, user, "cert", "FOO", "", nil, 0, nil)
+				m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+			}
+			return
+		}
+		// No client certificate, fall back to a token.
+		require_Len(t, len(ctls.VerifiedChains), 0)
+		require_Len(t, len(ctls.Certs), 0)
+		if opts.Token == "secret" {
+			ujwt := createAuthUser(t, user, "token", "FOO", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(serviceResponse(t, user, si.ID, "", "not authorized", 0))
+		}
+	}
+
+	rootCAs := nats.RootCAs("../test/configs/certs/tlsauth/ca.pem")
+	clientCert := nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem")
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"), rootCAs)
+	defer ac.Cleanup()
+
+	userID := func(nc *nats.Conn) string {
+		t.Helper()
+		resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+		require_NoError(t, err)
+		response := ServerAPIResponse{Data: &UserInfo{}}
+		require_NoError(t, json.Unmarshal(resp.Data, &response))
+		userInfo := response.Data.(*UserInfo)
+		require_Equal(t, userInfo.Account, "FOO")
+		return userInfo.UserID
+	}
+
+	// Client certificate is used to determine the user.
+	nc := ac.Connect(rootCAs, clientCert)
+	defer nc.Close()
+	require_Equal(t, userID(nc), "cert")
+
+	// No client certificate, the connection is accepted and the token is used.
+	nc = ac.Connect(rootCAs, nats.Token("secret"))
+	defer nc.Close()
+	require_Equal(t, userID(nc), "token")
+
+	// No client certificate and no valid token.
+	ac.RequireConnectError(rootCAs, nats.Token("wrong"))
+}
+
 func TestAuthCalloutVerifiedUserCalloutsWithSig(t *testing.T) {
 	conf := `
 		listen: "127.0.0.1:-1"
