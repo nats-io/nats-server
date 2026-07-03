@@ -7255,3 +7255,51 @@ func TestNRGLeaderWithoutQuorumAfterPeerAdd(t *testing.T) {
 		})
 	}
 }
+
+func TestNRGRemovedPeerVoteDoesNotElectLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R4S", 4)
+	defer c.shutdown()
+
+	hub, rg := c.createMockMemRaftGroup("MOCK", 4, newStateAdder)
+	defer hub.healPartitions()
+
+	nodeA := rg.waitOnLeader()
+	require_NotNil(t, nodeA)
+
+	followers := rg.followers()
+	require_Equal(t, len(followers), 3)
+	nodeB, nodeC, nodeD := followers[0], followers[1], followers[2]
+
+	// Partition D away and then remove it.
+	// D never learns that it is no longer part of the group.
+	hub.partition(nodeD.node().ID(), 1)
+
+	require_NoError(t, nodeA.node().ProposeRemovePeer(nodeD.node().ID()))
+	valid := smGroup{nodeA, nodeB, nodeC}
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		for _, sm := range valid {
+			node := sm.node()
+			if size := node.ClusterSize(); size != 3 {
+				return fmt.Errorf("%q has cluster size %d", node.ID(), size)
+			}
+		}
+		return nil
+	})
+
+	// Partition C with D, leaving two partitions:
+	//  - {A, B} which has a valid quorum
+	//  - {C, D} which is not supposed to have a leader
+	hub.partition(nodeC.node().ID(), 1)
+	require_NoError(t, nodeC.node().CampaignImmediately())
+
+	err := checkForErr(time.Second, 10*time.Millisecond, func() error {
+		if nodeC.node().State() == Leader {
+			return nil
+		}
+		return fmt.Errorf("%q has not become leader", nodeC.node().ID())
+	})
+	if err == nil {
+		t.Fatalf("removed peer %q helped elect second leader %q while %q was leader",
+			nodeD.node().ID(), nodeC.node().ID(), nodeA.node().ID())
+	}
+}

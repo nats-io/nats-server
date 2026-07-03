@@ -3755,6 +3755,19 @@ func (n *raft) adjustClusterSizeAndQuorum() {
 	}
 }
 
+// Returns true if we should count vote responses from this peer.
+// Lock should be held.
+func (n *raft) shouldCountVoteFromPeer(peer string) bool {
+	if _, ok := n.peers[peer]; ok {
+		return true
+	}
+	// During bootstrap, we may know fewer peer ids
+	// than the declared cluster size. Initially, we
+	// may need to accept votes from peers that are
+	// not yet in the peer set.
+	return len(n.peers) < n.csz
+}
+
 // Track interactions with this peer.
 func (n *raft) trackPeer(peer string) error {
 	n.Lock()
@@ -3826,15 +3839,18 @@ func (n *raft) runAsCandidate() {
 			n.RLock()
 			nterm := n.term
 			csz := n.csz
+			countVote := n.shouldCountVoteFromPeer(vresp.peer)
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
-				if !vresp.empty {
-					votes[vresp.peer] = struct{}{}
-				} else {
-					emptyVotes[vresp.peer] = struct{}{}
+				if countVote {
+					if !vresp.empty {
+						votes[vresp.peer] = struct{}{}
+					} else {
+						emptyVotes[vresp.peer] = struct{}{}
+					}
 				}
 				if n.wonElection(len(votes)) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
