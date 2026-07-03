@@ -8014,21 +8014,20 @@ func TestFileStoreSyncCompressOnlyIfDirty(t *testing.T) {
 	}
 	fs.mu.Unlock()
 
-	// Let sync run.
-	time.Sleep(300 * time.Millisecond)
-
 	// We want to make sure the last block, which is filled with tombstones and is not compactable, returns false now.
-	fs.mu.Lock()
-	for _, mb := range fs.blks {
-		mb.mu.Lock()
-		shouldCompact := mb.shouldCompactSync()
-		mb.mu.Unlock()
-		if shouldCompact {
-			fs.mu.Unlock()
-			t.Fatalf("Expected should compact to be false for %d, got true", mb.getIndex())
+	checkFor(t, 2*time.Second, 20*time.Millisecond, func() error {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			index, shouldCompact := mb.index, mb.shouldCompactSync()
+			mb.mu.Unlock()
+			if shouldCompact {
+				return fmt.Errorf("Expected should compact to be false for %d, got true", index)
+			}
 		}
-	}
-	fs.mu.Unlock()
+		return nil
+	})
 
 	// Now remove some from block 3 and verify that compact is not suppressed.
 	_, err = fs.RemoveMsg(13)
