@@ -302,8 +302,11 @@ func decodev2(buf []byte) (*SequenceSet, int, error) {
 	sz := int(le.Uint32(buf[index+4:]))
 	index += 8
 
-	expectedLen := minLen + (nn * ((numBuckets+1)*8 + 2))
-	if len(buf) < expectedLen {
+	// nn is decoded as a uint32 but held in an int. On 32-bit builds a value
+	// above MaxInt32 turns negative and nn*perNode below overflows, so the
+	// length check would pass for a short buffer and the following make/reads
+	// run off the end. Compare with division so the bound holds on every arch.
+	if nn < 0 || nn > (len(buf)-minLen)/((numBuckets+1)*8+2) {
 		return nil, -1, ErrBadEncoding
 	}
 
@@ -335,8 +338,9 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 
 	const v1NumBuckets = 64
 
-	expectedLen := minLen + (nn * ((v1NumBuckets+1)*8 + 2))
-	if len(buf) < expectedLen {
+	// See decodev2: guard the node count without overflowing the multiply so
+	// the bound stays correct on 32-bit builds too.
+	if nn < 0 || nn > (len(buf)-minLen)/((v1NumBuckets+1)*8+2) {
 		return nil, -1, ErrBadEncoding
 	}
 
