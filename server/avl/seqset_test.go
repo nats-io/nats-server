@@ -15,6 +15,7 @@ package avl
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"math/rand"
 	"testing"
 )
@@ -302,6 +303,38 @@ FgEDAAAABQAAAABgAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 	require_True(t, ss.Size() == len(seqs))
 	for _, seq := range seqs {
 		require_True(t, ss.Exists(seq))
+	}
+}
+
+func TestSeqSetDecodeNodeCountOverflow(t *testing.T) {
+	// A replicated stream state carries an avl-encoded delete map decoded from
+	// a peer. The node count is read as a uint32 into an int; on 32-bit builds
+	// a value above MaxInt32 turns negative (and a smaller value can overflow
+	// the nn*perNode multiply), defeating the length check so the decode then
+	// panics in make([]node, nn) or reads past the buffer. Both encodings must
+	// reject such counts on every architecture instead.
+	le := binary.LittleEndian
+	for _, ver := range []uint8{1, 2} {
+		buf := make([]byte, minLen)
+		buf[0], buf[1] = magic, ver
+		le.PutUint32(buf[2:], 0xFFFFFFFF) // node count, negative as a 32-bit int
+		if _, _, err := Decode(buf); err != ErrBadEncoding {
+			t.Fatalf("v%d: expected ErrBadEncoding for oversized node count, got %v", ver, err)
+		}
+
+		// Positive on 32-bit but the multiply still overflows for a short buffer.
+		le.PutUint32(buf[2:], 0x00800000)
+		if _, _, err := Decode(buf); err != ErrBadEncoding {
+			t.Fatalf("v%d: expected ErrBadEncoding for overflowing node count, got %v", ver, err)
+		}
+	}
+
+	// A well-formed single-node v2 buffer must still decode.
+	valid := make([]byte, minLen+(numBuckets+1)*8+2)
+	valid[0], valid[1] = magic, version
+	le.PutUint32(valid[2:], 1)
+	if _, _, err := Decode(valid); err != nil {
+		t.Fatalf("valid single-node buffer should decode, got %v", err)
 	}
 }
 
