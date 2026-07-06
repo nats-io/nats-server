@@ -3570,22 +3570,26 @@ func (mset *stream) setupMirrorConsumer() error {
 		}
 	}
 
-	respCh := make(chan *JSApiConsumerCreateResponse, 1)
-	reply := infoReplySubject()
-	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		_, msg := c.msgParts(rmsg)
+	newReplySubscription := func() (string, chan *JSApiConsumerCreateResponse, *subscription, error) {
+		respCh := make(chan *JSApiConsumerCreateResponse, 1)
+		reply := infoReplySubject()
+		crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+			_, msg := c.msgParts(rmsg)
 
-		var ccr JSApiConsumerCreateResponse
-		if err := json.Unmarshal(msg, &ccr); err != nil {
-			c.Warnf("JetStream bad mirror consumer create response: %q", msg)
-			mset.setMirrorErr(ApiErrors[JSInvalidJSONErr])
-			return
-		}
-		select {
-		case respCh <- &ccr:
-		default:
-		}
-	})
+			var ccr JSApiConsumerCreateResponse
+			if err := json.Unmarshal(msg, &ccr); err != nil {
+				c.Warnf("JetStream bad mirror consumer create response: %q", msg)
+				mset.setMirrorErr(ApiErrors[JSInvalidJSONErr])
+				return
+			}
+			select {
+			case respCh <- &ccr:
+			default:
+			}
+		})
+		return reply, respCh, crSub, err
+	}
+	reply, respCh, crSub, err := newReplySubscription()
 	if err != nil {
 		mirror.err = NewJSMirrorConsumerSetupFailedError(err, Unless(err))
 		mset.scheduleSetupMirrorConsumerRetry()
@@ -3688,6 +3692,14 @@ func (mset *stream) setupMirrorConsumer() error {
 					b, _ := json.Marshal(req)
 					// Regenerate subject since the previous name could've been included in it.
 					subject = generateSubject()
+					// Recreate the reply subscription so we don't get stale responses from other servers.
+					mset.unsubscribe(crSub)
+					if reply, respCh, crSub, err = newReplySubscription(); err != nil {
+						mirror.err = NewJSMirrorConsumerSetupFailedError(err, Unless(err))
+						retry = true
+						mset.mu.Unlock()
+						return
+					}
 					mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
 					mset.mu.Unlock()
 					goto SELECT
@@ -4004,20 +4016,24 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 	}
 	req.Config.FilterSubjects = filterSubjects
 
-	respCh := make(chan *JSApiConsumerCreateResponse, 1)
-	reply := infoReplySubject()
-	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		_, msg := c.msgParts(rmsg)
-		var ccr JSApiConsumerCreateResponse
-		if err := json.Unmarshal(msg, &ccr); err != nil {
-			c.Warnf("JetStream bad source consumer create response: %q", msg)
-			return
-		}
-		select {
-		case respCh <- &ccr:
-		default:
-		}
-	})
+	newReplySubscription := func() (string, chan *JSApiConsumerCreateResponse, *subscription, error) {
+		respCh := make(chan *JSApiConsumerCreateResponse, 1)
+		reply := infoReplySubject()
+		crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+			_, msg := c.msgParts(rmsg)
+			var ccr JSApiConsumerCreateResponse
+			if err := json.Unmarshal(msg, &ccr); err != nil {
+				c.Warnf("JetStream bad source consumer create response: %q", msg)
+				return
+			}
+			select {
+			case respCh <- &ccr:
+			default:
+			}
+		})
+		return reply, respCh, crSub, err
+	}
+	reply, respCh, crSub, err := newReplySubscription()
 	if err != nil {
 		si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
 		mset.setupSourceConsumer(iname, seq, startTime)
@@ -4109,6 +4125,14 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 						b, _ := json.Marshal(req)
 						// Regenerate subject since the previous name could've been included in it.
 						subject = generateSubject()
+						// Recreate the reply subscription so we don't get stale responses from other servers.
+						mset.unsubscribe(crSub)
+						if reply, respCh, crSub, err = newReplySubscription(); err != nil {
+							si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
+							retry = true
+							mset.mu.Unlock()
+							return
+						}
 						mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
 						mset.mu.Unlock()
 						goto SELECT
