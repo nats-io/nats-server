@@ -8620,6 +8620,34 @@ func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterDecodeStreamMsgRejectOversizedLength(t *testing.T) {
+	// A valid replicated stream msg still round trips.
+	esm := encodeStreamMsg("foo", _EMPTY_, nil, []byte("hello"), 1, 0, false)
+	subject, _, _, msg, lseq, _, _, err := decodeStreamMsg(esm[1:])
+	require_NoError(t, err)
+	require_Equal(t, subject, "foo")
+	require_Equal(t, lseq, 1)
+	require_Equal(t, string(msg), "hello")
+
+	// The message length is read as a uint32 into an int. On 32-bit builds a
+	// value with the high bit set turns negative and slips past the
+	// len(buf) < ml check, so the following buf[:ml] panics. Such a length must
+	// be rejected on every architecture rather than decoded. This mirrors what a
+	// cluster peer could replicate on the applyStreamMsgOp/catchup path.
+	le := binary.LittleEndian
+	var buf []byte
+	buf = le.AppendUint64(buf, 1) // lseq
+	buf = le.AppendUint64(buf, 0) // ts
+	buf = le.AppendUint16(buf, 3) // subject length
+	buf = append(buf, "foo"...)
+	buf = le.AppendUint16(buf, 0)          // reply length
+	buf = le.AppendUint16(buf, 0)          // header length
+	buf = le.AppendUint32(buf, 0xFFFFFFFF) // message length, negative as a 32-bit int
+	if _, _, _, _, _, _, _, err := decodeStreamMsg(buf); err != errBadStreamMsg {
+		t.Fatalf("expected errBadStreamMsg for oversized message length, got %v", err)
+	}
+}
+
 func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
 	// The append entry wire format only requires each entry to carry its type
 	// byte, so a cluster peer can replicate an EntryNormal with a zero-length
