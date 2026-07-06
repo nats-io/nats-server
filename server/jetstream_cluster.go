@@ -9952,7 +9952,10 @@ func decodeStreamMsg(buf []byte) (subject, reply string, hdr, msg []byte, lseq u
 	}
 	ml := int(le.Uint32(buf))
 	buf = buf[4:]
-	if len(buf) < ml {
+	// ml is read as a uint32 but held in an int; on 32-bit builds a length with
+	// the high bit set becomes negative, which slips past len(buf) < ml and then
+	// panics on buf[:ml]. Reject a negative length so the bound holds everywhere.
+	if ml < 0 || len(buf) < ml {
 		return _EMPTY_, _EMPTY_, nil, nil, 0, 0, false, errBadStreamMsg
 	}
 	if msg = buf[:ml]; len(msg) == 0 {
