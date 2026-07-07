@@ -3948,6 +3948,197 @@ func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) 
 	})
 }
 
+func TestJetStreamSuperClusterR1MoveAcrossClustersWithMaxHAAssets(t *testing.T) {
+	// Use a config with max_ha_assets set to 1 cluster-wide.
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 1}, store_dir:", 1)
+	s := createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, 3, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [cluster:%s, server:%s]", conf, clusterName, serverName)
+		}, nil)
+	defer s.shutdown()
+
+	c := s.clusterForName("C1")
+	srv := c.randomNonLeader()
+	nc, js := jsClientConnect(t, srv)
+	defer nc.Close()
+
+	// R1 stream in C1 with a durable consumer (inherits R1) and some data.
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	}
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "C1")
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	const numMsgs = 100
+	for range numMsgs {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Move the stream (and its consumer) to C2. Must succeed despite max_ha_assets: 1.
+	cfg.Placement = &nats.Placement{Tags: []string{"cluster:C2"}}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Wait until the stream has fully migrated to C2, still R1, with data intact.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+		if err != nil {
+			return fmt.Errorf("could not fetch stream info: %v", err)
+		}
+		if si.Cluster == nil || si.Cluster.Name != "C2" {
+			return fmt.Errorf("stream not in C2 yet: %+v", si.Cluster)
+		}
+		if si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("no leader yet")
+		}
+		if len(si.Cluster.Replicas) != 0 {
+			return fmt.Errorf("expected R1, still has %d replicas", len(si.Cluster.Replicas))
+		}
+		if si.Config.Replicas != 1 {
+			return fmt.Errorf("bad replica count %d", si.Config.Replicas)
+		}
+		if si.State.Msgs != numMsgs {
+			return fmt.Errorf("expected %d msgs, got %d", numMsgs, si.State.Msgs)
+		}
+		return nil
+	})
+
+	// The consumer must have moved along with the stream and still be usable.
+	ci, err := js.ConsumerInfo("TEST", "DUR")
+	require_NoError(t, err)
+	require_Equal(t, ci.Cluster.Name, "C2")
+
+	sub, err := js.PullSubscribe("foo", "DUR")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(numMsgs, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), numMsgs)
+
+	// The R1 stream + consumer must never have consumed any HA asset budget on the
+	// meta leader's authoritative accounting.
+	ml := s.leader()
+	require_NotNil(t, ml)
+	sjs := ml.getJetStream()
+	sjs.mu.RLock()
+	defer sjs.mu.RUnlock()
+	require_Equal(t, len(sjs.cluster.peerHAAssets), 0)
+}
+
+func TestJetStreamSuperClusterR1MoveIntoSaturatedClusterWithMaxHAAssets(t *testing.T) {
+	// Use a config with max_ha_assets set to 1 cluster-wide.
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 1}, store_dir:", 1)
+	s := createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, 3, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [cluster:%s, server:%s]", conf, clusterName, serverName)
+		}, nil)
+	defer s.shutdown()
+
+	c := s.clusterForName("C1")
+	srv := c.randomNonLeader()
+	nc, js := jsClientConnect(t, srv)
+	defer nc.Close()
+
+	// Saturate every C2 peer: one R3 stream pinned to C2 puts an HA asset on all
+	// three C2 peers, so each is now at the max_ha_assets: 1 limit.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "HA",
+		Subjects:  []string{"ha"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cluster:C2"}},
+	})
+	require_NoError(t, err)
+
+	// A second HA asset in C2 must be rejected: confirms C2 is truly saturated and
+	// that genuine HA assets are still limited.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "HA2",
+		Subjects:  []string{"ha2"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cluster:C2"}},
+	})
+	require_Error(t, err)
+
+	// R1 stream in C1 (empty cluster, so it lands there) with a durable consumer
+	// (inherits R1) and some data.
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	}
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "C1")
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	const numMsgs = 100
+	for range numMsgs {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Move the R1 stream into the saturated C2. With R1 exempt from the HA limit,
+	// this must succeed even though every C2 peer is already at max_ha_assets.
+	cfg.Placement = &nats.Placement{Tags: []string{"cluster:C2"}}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Wait until TEST has fully migrated to C2, still R1, with data intact.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+		if err != nil {
+			return fmt.Errorf("could not fetch stream info: %v", err)
+		}
+		if si.Cluster == nil || si.Cluster.Name != "C2" {
+			return fmt.Errorf("stream not in C2 yet: %+v", si.Cluster)
+		}
+		if si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("no leader yet")
+		}
+		if len(si.Cluster.Replicas) != 0 {
+			return fmt.Errorf("expected R1, still has %d replicas", len(si.Cluster.Replicas))
+		}
+		if si.Config.Replicas != 1 {
+			return fmt.Errorf("bad replica count %d", si.Config.Replicas)
+		}
+		if si.State.Msgs != numMsgs {
+			return fmt.Errorf("expected %d msgs, got %d", numMsgs, si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Consumer moved with the stream and is still usable.
+	ci, err := js.ConsumerInfo("TEST", "DUR")
+	require_NoError(t, err)
+	require_Equal(t, ci.Cluster.Name, "C2")
+
+	sub, err := js.PullSubscribe("foo", "DUR")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(numMsgs, nats.MaxWait(10*time.Second))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), numMsgs)
+
+	// The saturated HA stream is untouched, and the R1 move added no HA budget:
+	// exactly the 3 C2 peers of HA are counted, each still at the limit of 1.
+	ml := s.leader()
+	require_NotNil(t, ml)
+	sjs := ml.getJetStream()
+	sjs.mu.RLock()
+	defer sjs.mu.RUnlock()
+	require_Equal(t, len(sjs.cluster.peerHAAssets), 3)
+	for _, n := range sjs.cluster.peerHAAssets {
+		require_Equal(t, n, 1)
+	}
+}
+
 func TestJetStreamSuperClusterMirrorInheritsAllowDirect(t *testing.T) {
 	sc := createJetStreamTaggedSuperCluster(t)
 	defer sc.shutdown()

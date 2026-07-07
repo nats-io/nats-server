@@ -9969,7 +9969,7 @@ func TestJetStreamClusterSetPreferredToOnlineNode(t *testing.T) {
 	js = ml.getJetStream()
 	cc = js.cluster
 	require_NotNil(t, cc)
-	peers, err := cc.selectPeerGroup(3, "R3S", cfg, nil, 0, nil)
+	peers, err := js.selectPeerGroup(3, "R3S", cfg, nil, 0, nil)
 	// Need explicit nil-check.
 	if err != nil {
 		require_NoError(t, err)

@@ -1239,7 +1239,7 @@ func TestJetStreamClusterScaleDownWhileNoQuorum(t *testing.T) {
 }
 
 // We noticed that ha_assets enforcement seemed to not be upheld when assets created in a rapid fashion.
-func TestJetStreamClusterHAssetsEnforcement(t *testing.T) {
+func TestJetStreamClusterMaxHAAssetsEnforcement(t *testing.T) {
 	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 2}, store_dir:", 1)
 	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
 	defer c.shutdown()
@@ -1270,6 +1270,83 @@ func TestJetStreamClusterHAssetsEnforcement(t *testing.T) {
 		Replicas: 3,
 	})
 	require_Error(t, err, exceededErrs...)
+}
+
+func TestJetStreamClusterMaxHAAssetsLoweredBelowExistingOnRestart(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterTempl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	streams := []string{"S1", "S2"}
+	for _, name := range streams {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Subjects: []string{name},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, name)
+		})
+	}
+
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(nil)
+		require_NoError(t, err)
+		require_Equal(t, jsz.HAAssets, 3) // _meta_ + S1 + S2
+	}
+	nc.Close()
+
+	// Stop everything, then lower the limit to 1 by editing each config file on
+	// disk before restarting.
+	c.stopAll()
+	for _, o := range c.opts {
+		cfgPath := o.ConfigFile
+		b, err := os.ReadFile(cfgPath)
+		require_NoError(t, err)
+		newCfg := strings.Replace(string(b), "store_dir:", "limits: {max_ha_assets: 1}, store_dir:", 1)
+		require_True(t, strings.Contains(newCfg, "max_ha_assets: 1"))
+		require_NoError(t, os.WriteFile(cfgPath, []byte(newCfg), defaultFilePerms))
+	}
+
+	c.restartAll()
+	c.waitOnClusterReady()
+
+	// Confirm the new limit is actually in effect on every server.
+	for _, s := range c.servers {
+		require_Equal(t, s.getOpts().JetStreamLimits.MaxHAAssets, 1)
+	}
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Any HA assets already assigned must ALL come up, even if they exceed the new limit.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		total := 0
+		for _, s := range c.servers {
+			jsz, err := s.Jsz(nil)
+			if err != nil {
+				return err
+			}
+			total += jsz.HAAssets
+		}
+		if total != 9 {
+			return fmt.Errorf("expected 9 total HA assets (3 meta + 2x3 stream slots), got %d", total)
+		}
+		return nil
+	})
+
+	for _, name := range streams {
+		c.waitOnStreamLeader(globalAccountName, name)
+
+		_, err := js.Publish(name, nil)
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, name)
+		})
+	}
 }
 
 func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
@@ -7966,9 +8043,8 @@ func TestJetStreamClusterMetaLeaderRespectsInflight(t *testing.T) {
 	ml := c.leader()
 	require_NotNil(t, ml)
 
-	sjs, cc := ml.getJetStreamCluster()
+	sjs := ml.getJetStream()
 	require_NotNil(t, sjs)
-	require_NotNil(t, cc)
 
 	ci := &ClientInfo{Account: globalAccountName}
 	rg := &raftGroup{Name: "INFLIGHT_G", Peers: []string{"offline"}, Storage: MemoryStorage}
@@ -7988,8 +8064,8 @@ func TestJetStreamClusterMetaLeaderRespectsInflight(t *testing.T) {
 		Config:  &ConsumerConfig{},
 		Group:   rg,
 	}
-	cc.trackInflightStreamProposal(globalAccountName, sa, false)
-	cc.trackInflightConsumerProposal(globalAccountName, "S", ca, false)
+	sjs.trackInflightStreamProposal(globalAccountName, sa, false)
+	sjs.trackInflightConsumerProposal(globalAccountName, "S", ca, false)
 
 	asa := sjs.streamAssignment(globalAccountName, "S")
 	isa := sjs.streamAssignmentOrInflight(globalAccountName, "S")

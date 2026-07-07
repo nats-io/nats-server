@@ -53,6 +53,8 @@ type jetStreamCluster struct {
 	// a response but they need to be same group, peers etc. and sync subjects.
 	inflightStreams   map[string]map[string]*inflightStreamInfo
 	inflightConsumers map[string]map[string]map[string]*inflightConsumerInfo
+	// Per-peer count of HA assets, used by the meta leader to enforce max_ha_assets.
+	peerHAAssets map[string]int
 	// Tracks raft groups currently being started by createRaftGroup, so that
 	// concurrent callers for the same group can wait without holding js.mu
 	// across the disk I/O performed during startup.
@@ -1321,10 +1323,67 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	return false
 }
 
+// haAssetPeers the last replicas peers, similar to genPeerInfo to take
+// stream/consumer moves into account.
+func haAssetPeers(peers []string, replicas int) []string {
+	if replicas > 1 && len(peers) > replicas {
+		return peers[len(peers)-replicas:]
+	}
+	return peers
+}
+
 // Track the stream for the account `accName` in the inflight proposals map.
 // This is done after proposing a stream change.
 // (Write) Lock held on entry.
-func (cc *jetStreamCluster) trackInflightStreamProposal(accName string, sa *streamAssignment, deleted bool) {
+func (js *jetStream) trackInflightStreamProposal(accName string, sa *streamAssignment, deleted bool) {
+	cc, osa := js.cluster, js.streamAssignmentOrInflight(accName, sa.Config.Name)
+
+	// Perform max HA asset accounting.
+	if osa != nil {
+		if osa.Config.Replicas > 1 {
+			for _, peer := range haAssetPeers(osa.Group.Peers, osa.Config.Replicas) {
+				cc.peerHAAssets[peer]--
+				if cc.peerHAAssets[peer] <= 0 {
+					delete(cc.peerHAAssets, peer)
+				}
+			}
+		}
+
+		// If the stream is deleted or replicas are updated, also clean up consumer tracking.
+		if deleted || osa.Config.Replicas != sa.Config.Replicas {
+			for oca := range js.consumerAssignmentsOrInflightSeq(accName, sa.Config.Name) {
+				oldReplicas := oca.Config.replicas(osa.Config)
+				newReplicas := oca.Config.replicas(sa.Config)
+				// Can skip if the replicas didn't change.
+				if !deleted && oldReplicas == newReplicas {
+					continue
+				}
+				if oldReplicas > 1 {
+					for _, peer := range haAssetPeers(oca.Group.Peers, oldReplicas) {
+						cc.peerHAAssets[peer]--
+						if cc.peerHAAssets[peer] <= 0 {
+							delete(cc.peerHAAssets, peer)
+						}
+					}
+				}
+				// If not deleted, then the replicas changed, re-add under the new replica count.
+				// Important that we still use the old consumer peers! This feels slightly odd,
+				// but when the consumer makes the accounting changes, it only knows the new stream.
+				// So we must adjust the accounting here while we know both the old and new stream.
+				if !deleted && newReplicas > 1 {
+					for _, peer := range haAssetPeers(oca.Group.Peers, newReplicas) {
+						cc.peerHAAssets[peer]++
+					}
+				}
+			}
+		}
+	}
+	if !deleted && sa.Config.Replicas > 1 {
+		for _, peer := range haAssetPeers(sa.Group.Peers, sa.Config.Replicas) {
+			cc.peerHAAssets[peer]++
+		}
+	}
+
 	if cc.inflightStreams == nil {
 		cc.inflightStreams = make(map[string]map[string]*inflightStreamInfo)
 	}
@@ -1365,7 +1424,31 @@ func (cc *jetStreamCluster) removeInflightStreamProposal(accName, streamName str
 // Track the consumer for the `streamName` and account `accName` in the inflight proposals map.
 // This is done after proposing a consumer change.
 // (Write) Lock held on entry.
-func (cc *jetStreamCluster) trackInflightConsumerProposal(accName, streamName string, ca *consumerAssignment, deleted bool) {
+func (js *jetStream) trackInflightConsumerProposal(accName, streamName string, ca *consumerAssignment, deleted bool) {
+	cc, osa, oca := js.cluster, js.streamAssignmentOrInflight(accName, streamName), js.consumerAssignmentOrInflight(accName, streamName, ca.Name)
+
+	// If the stream is deleted, we've accounted for it there, and we can't do anything here.
+	if osa == nil {
+		return
+	}
+
+	// Perform max HA asset accounting.
+	if oca != nil {
+		if r := oca.Config.replicas(osa.Config); r > 1 {
+			for _, peer := range haAssetPeers(oca.Group.Peers, r) {
+				cc.peerHAAssets[peer]--
+				if cc.peerHAAssets[peer] <= 0 {
+					delete(cc.peerHAAssets, peer)
+				}
+			}
+		}
+	}
+	if r := ca.Config.replicas(osa.Config); !deleted && r > 1 {
+		for _, peer := range haAssetPeers(ca.Group.Peers, r) {
+			cc.peerHAAssets[peer]++
+		}
+	}
+
 	if cc.inflightConsumers == nil {
 		cc.inflightConsumers = make(map[string]map[string]map[string]*inflightConsumerInfo)
 	}
@@ -1411,6 +1494,68 @@ func (cc *jetStreamCluster) removeInflightConsumerProposal(accName, streamName, 
 			delete(cc.inflightConsumers, accName)
 		}
 	}
+}
+
+// rebuildPeerAssets recomputes the authoritative per-peer HA asset counts from the
+// applied cluster state. Only HA (replicated, R>1) streams and consumers are counted.
+// js write lock must be held.
+func (cc *jetStreamCluster) rebuildPeerAssets() {
+	cc.peerHAAssets = make(map[string]int)
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			if sa.Config.Replicas > 1 {
+				for _, peer := range haAssetPeers(sa.Group.Peers, sa.Config.Replicas) {
+					cc.peerHAAssets[peer]++
+				}
+			}
+			for _, ca := range sa.consumers {
+				if r := ca.Config.replicas(sa.Config); r > 1 {
+					for _, peer := range haAssetPeers(ca.Group.Peers, r) {
+						cc.peerHAAssets[peer]++
+					}
+				}
+			}
+		}
+	}
+}
+
+// updateExceedsMaxHAAssets reports whether replacing the stream and consumers
+// old assignments with the new assignments would exceed the max_ha_assets.
+// Lock must be held.
+func (js *jetStream) updateExceedsMaxHAAssets(accName string, osa, sa *streamAssignment, consumers []*consumerAssignment) bool {
+	cc := js.cluster
+	maxHaAssets := js.srv.getOpts().JetStreamLimits.MaxHAAssets
+	if maxHaAssets <= 0 || cc == nil {
+		return false
+	}
+
+	delta := make(map[string]int)
+	add := func(replicas int, peers []string, sign int) {
+		if replicas > 1 {
+			for _, peer := range peers {
+				delta[peer] += sign
+			}
+		}
+	}
+	if osa != nil {
+		add(osa.Config.Replicas, osa.Group.Peers, -1)
+	}
+	add(sa.Config.Replicas, sa.Group.Peers, +1)
+	for _, cca := range consumers {
+		if osa != nil {
+			if oca := js.consumerAssignmentOrInflight(accName, osa.Config.Name, cca.Name); oca != nil {
+				add(oca.Config.replicas(osa.Config), oca.Group.Peers, -1)
+			}
+		}
+		add(cca.Config.replicas(sa.Config), cca.Group.Peers, +1)
+	}
+
+	for peer, d := range delta {
+		if d > 0 && cc.peerHAAssets[peer]+d > maxHaAssets {
+			return true
+		}
+	}
+	return false
 }
 
 // Return the cluster quit chan.
@@ -2550,10 +2695,12 @@ func (js *jetStream) processAddPeer(peer string) {
 			csa := sa.copyGroup()
 			csa.Group.Peers = append(csa.Group.Peers, peer)
 			// Send our proposal for this csa. Also use same group definition for all the consumers as well.
+			// We intentionally ignore max_ha_assets since this is a system-level command, and we'd rather
+			// have the streams and consumers be fully operational as soon as possible.
 			if err := cc.meta.Propose(encodeAddStreamAssignment(csa)); err != nil {
 				return
 			}
-			cc.trackInflightStreamProposal(accName, csa, false)
+			js.trackInflightStreamProposal(accName, csa, false)
 			for ca := range js.consumerAssignmentsOrInflightSeq(accName, csa.Config.Name) {
 				if ca.unsupported != nil {
 					continue
@@ -2565,7 +2712,7 @@ func (js *jetStream) processAddPeer(peer string) {
 					if err := cc.meta.Propose(encodeAddConsumerAssignment(cca)); err != nil {
 						return
 					}
-					cc.trackInflightConsumerProposal(accName, csa.Config.Name, cca, false)
+					js.trackInflightConsumerProposal(accName, csa.Config.Name, cca, false)
 				}
 			}
 		}
@@ -2642,17 +2789,19 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 	if cc == nil || cc.meta == nil {
 		return false
 	}
-	replaced := cc.remapStreamAssignment(csa, peer)
+	replaced := js.remapStreamAssignment(csa, peer)
 	accName := sa.Client.serviceAccount()
 	if !replaced {
 		s.Warnf("JetStream cluster could not replace peer for stream '%s > %s'", accName, sa.Config.Name)
 	}
 
 	// Send our proposal for this csa. Also use same group definition for all the consumers as well.
+	// We intentionally ignore max_ha_assets since this is a system-level command, and we'd rather
+	// have the streams and consumers be fully operational as soon as possible.
 	if err := cc.meta.Propose(encodeAddStreamAssignment(csa)); err != nil {
 		return false
 	}
-	cc.trackInflightStreamProposal(accName, csa, false)
+	js.trackInflightStreamProposal(accName, csa, false)
 	rg := csa.Group
 	for ca := range js.consumerAssignmentsOrInflightSeq(accName, sa.Config.Name) {
 		if ca.unsupported != nil {
@@ -2665,13 +2814,13 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 			if err := cc.meta.Propose(encodeAddConsumerAssignment(cca)); err != nil {
 				return false
 			}
-			cc.trackInflightConsumerProposal(accName, csa.Config.Name, cca, false)
+			js.trackInflightConsumerProposal(accName, csa.Config.Name, cca, false)
 		} else if ca.Group.isMember(peer) {
 			// These are ephemerals. Check to see if we deleted this peer.
 			if err := cc.meta.Propose(encodeDeleteConsumerAssignment(ca)); err != nil {
 				return false
 			}
-			cc.trackInflightConsumerProposal(accName, csa.Config.Name, ca, true)
+			js.trackInflightConsumerProposal(accName, csa.Config.Name, ca, true)
 		}
 	}
 	return replaced
@@ -2989,16 +3138,6 @@ retry:
 		return nil, errors.New("shutting down")
 	}
 
-	// Check here to see if we have a max HA Assets limit set.
-	if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets > 0 {
-		if s.numRaftNodes()+len(cc.creatingRaftGroups) > maxHaAssets {
-			s.Warnf("Maximum HA Assets limit reached: %d", maxHaAssets)
-			// Since the meta leader assigned this, send a statsz update to them to get them up to date.
-			go s.sendStatszUpdate()
-			return nil, errors.New("system limit reached")
-		}
-	}
-
 	// Register an in-flight sentinel so concurrent callers for the same group
 	// will wait for us. Then drop js.mu around all the blocking work below
 	// (file store creation, peer state read, snapshot replay, fsyncs) so we
@@ -3106,6 +3245,11 @@ func (mset *stream) removeNode() {
 // Helper function to generate peer info.
 // lists and sets for old and new.
 func genPeerInfo(peers []string, split int) (newPeers, oldPeers []string, newPeerSet, oldPeerSet map[string]bool) {
+	if split < 0 {
+		split = 0
+	} else if split > len(peers) {
+		split = len(peers)
+	}
 	newPeers = peers[split:]
 	oldPeers = peers[:split]
 	newPeerSet = make(map[string]bool, len(newPeers))
@@ -4923,9 +5067,8 @@ func (js *jetStream) streamAssignmentOrInflight(account, stream string) *streamA
 		if inflight, ok := streams[stream]; ok {
 			if !inflight.deleted {
 				return inflight.streamAssignment
-			} else {
-				return nil
 			}
+			return nil
 		}
 	}
 
@@ -6475,14 +6618,17 @@ func (js *jetStream) consumerAssignmentOrInflight(account, stream, consumer stri
 	if cc == nil {
 		return nil
 	}
+	// If the stream itself is deleted, the consumer is as well.
+	if js.streamAssignmentOrInflight(account, stream) == nil {
+		return nil
+	}
 	if streams, ok := cc.inflightConsumers[account]; ok {
 		if consumers, ok := streams[stream]; ok {
 			if inflight, ok := consumers[consumer]; ok {
 				if !inflight.deleted {
 					return inflight.consumerAssignment
-				} else {
-					return nil
 				}
+				return nil
 			}
 		}
 	}
@@ -6500,7 +6646,10 @@ func (js *jetStream) consumerAssignmentsOrInflightSeq(account, stream string) it
 		if cc == nil {
 			return
 		}
-
+		// If the stream itself is deleted, the consumer is as well.
+		if js.streamAssignmentOrInflight(account, stream) == nil {
+			return
+		}
 		var inflight map[string]*inflightConsumerInfo
 		if streams, ok := cc.inflightConsumers[account]; ok {
 			inflight = streams[stream]
@@ -7490,14 +7639,14 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 						if err := cc.meta.Propose(encodeDeleteStreamAssignment(sa)); err != nil {
 							return
 						}
-						cc.trackInflightStreamProposal(result.Account, sa, true)
+						js.trackInflightStreamProposal(result.Account, sa, true)
 						// Propose new.
 						nsa := sa.copyGroup()
 						nsa.Group, nsa.err = rg, nil
 						if err := cc.meta.Propose(encodeAddStreamAssignment(nsa)); err != nil {
 							return
 						}
-						cc.trackInflightStreamProposal(result.Account, nsa, false)
+						js.trackInflightStreamProposal(result.Account, nsa, false)
 						// When the new stream assignment is processed, sa.reassigning will be
 						// automatically set back to false. Until then, don't process any more
 						// assignment results.
@@ -7532,7 +7681,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 			if err := cc.meta.Propose(encodeDeleteStreamAssignment(sa)); err != nil {
 				return
 			}
-			cc.trackInflightStreamProposal(result.Account, sa, true)
+			js.trackInflightStreamProposal(result.Account, sa, true)
 		}
 	}
 }
@@ -7675,6 +7824,7 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 	if s == nil {
 		return
 	}
+
 	// Update our server atomic.
 	s.isMetaLeader.Store(isLeader)
 
@@ -7707,14 +7857,17 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 	js.cluster.inflightStreams = nil
 	js.cluster.inflightConsumers = nil
 
+	// Clear per-peer HA asset counts, only re-populate on the meta leader.
+	js.cluster.peerHAAssets = nil
+
 	if isLeader {
+		js.cluster.rebuildPeerAssets()
+
 		if meta := js.cluster.meta; meta != nil && meta.IsObserver() {
 			meta.StepDown()
 			return
 		}
-	}
 
-	if isLeader {
 		js.startUpdatesSub()
 	} else {
 		js.stopUpdatesSub()
@@ -7736,7 +7889,7 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 				if err := cc.meta.Propose(encodeUpdateStreamAssignment(nsa)); err != nil {
 					return
 				}
-				cc.trackInflightStreamProposal(acc, nsa, false)
+				js.trackInflightStreamProposal(acc, nsa, false)
 			}
 		}
 		// Clear check.
@@ -7745,7 +7898,7 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 }
 
 // Lock should be held.
-func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePeer string) bool {
+func (js *jetStream) remapStreamAssignment(sa *streamAssignment, removePeer string) bool {
 	// Invoke placement algo passing RG peers that stay (existing) and the peer that is being removed (ignore)
 	var retain, ignore []string
 	for _, v := range sa.Group.Peers {
@@ -7756,7 +7909,7 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 		}
 	}
 
-	newPeers, placementError := cc.selectPeerGroup(len(sa.Group.Peers), sa.Group.Cluster, sa.Config, retain, 0, ignore)
+	newPeers, placementError := js.selectPeerGroup(len(sa.Group.Peers), sa.Group.Cluster, sa.Config, retain, 0, ignore)
 
 	if placementError == nil {
 		sa.Group.Peers = newPeers
@@ -7880,8 +8033,9 @@ func (e *selectPeerError) accumulate(eAdd *selectPeerError) {
 // selectPeerGroup will select a group of peers to start a raft group.
 // when peers exist already the unique tag prefix check for the replaceFirstExisting will be skipped
 // js lock should be held.
-func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string, replaceFirstExisting int, ignore []string) ([]string, *selectPeerError) {
-	if cluster == _EMPTY_ || cfg == nil {
+func (js *jetStream) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string, replaceFirstExisting int, ignore []string) ([]string, *selectPeerError) {
+	cc := js.cluster
+	if cluster == _EMPTY_ || cfg == nil || cc == nil {
 		return nil, &selectPeerError{misc: true}
 	}
 
@@ -7977,22 +8131,11 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 	}
 
-	// Grab the number of streams and HA assets currently assigned to each peer.
-	// HAAssets under usage is async, so calculate here in realtime based on assignments.
+	// Grab the number of streams currently assigned to each peer.
 	peerStreams := make(map[string]int, len(peers))
-	peerHA := make(map[string]int, len(peers))
-	for _, asa := range cc.streams {
-		for _, sa := range asa {
-			if sa.unsupported != nil {
-				continue
-			}
-			isHA := len(sa.Group.Peers) > 1
-			for _, peer := range sa.Group.Peers {
-				peerStreams[peer]++
-				if isHA {
-					peerHA[peer]++
-				}
-			}
+	for _, sa := range js.streamAssignmentsOrInflightSeqAllAccounts() {
+		for _, peer := range sa.Group.Peers {
+			peerStreams[peer]++
 		}
 	}
 
@@ -8095,10 +8238,12 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			err.noStorage = true
 			continue
 		}
-		// HAAssets contain _meta_ which we want to ignore, hence > and not >=.
-		if maxHaAssets > 0 && ni.stats != nil && ni.stats.HAAssets > maxHaAssets {
+		// Only HA (replicated, R>1) assets count against and are limited by max_ha_assets.
+		// R1 assets do have a Raft group while moving, but explicitly ignore this guard.
+		ha := cc.peerHAAssets[p.ID]
+		if cfg.Replicas > 1 && maxHaAssets > 0 && ha >= maxHaAssets {
 			s.Warnf("Peer selection: discard %s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d for stream placement",
-				ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets)
+				ni.name, ni.cluster, ha, maxHaAssets)
 			err.misc = true
 			continue
 		}
@@ -8117,7 +8262,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			}
 		}
 		// Add to our list of potential nodes.
-		nodes = append(nodes, wn{p.ID, available, ni.offline, peerHA[p.ID], peerStreams[p.ID]})
+		nodes = append(nodes, wn{p.ID, available, ni.offline, ha, peerStreams[p.ID]})
 		if !ni.offline {
 			onlinePeers++
 		}
@@ -8219,7 +8364,7 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) (*r
 	}
 
 	// Default connected cluster from the request origin.
-	cc, cluster := js.cluster, ci.Cluster
+	cluster := ci.Cluster
 	// If specified, override the default.
 	clusterDefined := cfg.Placement != nil && cfg.Placement.Cluster != _EMPTY_
 	if clusterDefined {
@@ -8233,7 +8378,7 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) (*r
 	// Need to create a group here.
 	errs := &selectPeerError{}
 	for _, cn := range clusters {
-		peers, err := cc.selectPeerGroup(replicas, cn, cfg, nil, 0, nil)
+		peers, err := js.selectPeerGroup(replicas, cn, cfg, nil, 0, nil)
 		if len(peers) < replicas {
 			errs.accumulate(err)
 			continue
@@ -8377,7 +8522,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	// On success, add this as an inflight proposal so we can apply limits
 	// on concurrent create requests while this stream assignment has
 	// possibly not been processed yet.
-	cc.trackInflightStreamProposal(acc.Name, sa, false)
+	js.trackInflightStreamProposal(acc.Name, sa, false)
 }
 
 var (
@@ -8617,7 +8762,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 					rg.Cluster = ci.Cluster
 				}
 			}
-			peers, err := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0, nil)
+			peers, err := js.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0, nil)
 			if err != nil {
 				resp.Error = NewJSClusterNoPeersError(err)
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -8815,17 +8960,25 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		syncSubject = syncSubjForStream()
 	}
 	sa := &streamAssignment{Group: rg, Sync: syncSubject, Created: osa.Created, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
+
+	// Confirm we'll still satisfy max_ha_assets after the update.
+	if js.updateExceedsMaxHAAssets(acc.Name, osa, sa, consumers) {
+		resp.Error = NewJSInsufficientResourcesError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
 	if err := meta.Propose(encodeUpdateStreamAssignment(sa)); err != nil {
 		return
 	}
-	cc.trackInflightStreamProposal(acc.Name, sa, false)
+	js.trackInflightStreamProposal(acc.Name, sa, false)
 
 	// Process any staged consumers.
 	for _, ca := range consumers {
 		if err := meta.Propose(encodeAddConsumerAssignment(ca)); err != nil {
 			return
 		}
-		cc.trackInflightConsumerProposal(acc.Name, sa.Config.Name, ca, false)
+		js.trackInflightConsumerProposal(acc.Name, sa.Config.Name, ca, false)
 	}
 }
 
@@ -8854,7 +9007,7 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, st
 	if err := cc.meta.Propose(encodeDeleteStreamAssignment(sa)); err != nil {
 		return
 	}
-	cc.trackInflightStreamProposal(acc.Name, sa, true)
+	js.trackInflightStreamProposal(acc.Name, sa, true)
 }
 
 // Process a clustered purge request.
@@ -8959,7 +9112,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	if err := cc.meta.Propose(encodeAddStreamAssignment(sa)); err != nil {
 		return
 	}
-	cc.trackInflightStreamProposal(ci.serviceAccount(), sa, false)
+	js.trackInflightStreamProposal(ci.serviceAccount(), sa, false)
 }
 
 // Determine if all peers for this group are offline.
@@ -9384,7 +9537,7 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, acc *Account, 
 	if err := cc.meta.Propose(encodeDeleteConsumerAssignment(ca)); err != nil {
 		return
 	}
-	cc.trackInflightConsumerProposal(acc.Name, stream, ca, true)
+	js.trackInflightConsumerProposal(acc.Name, stream, ca, true)
 }
 
 func encodeMsgDelete(md *streamMsgDelete) []byte {
@@ -9777,16 +9930,18 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		if len(rg.Peers) > 1 {
 			if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets != 0 {
 				for _, peer := range rg.Peers {
-					if ni, ok := s.nodeToInfo.Load(peer); ok {
-						ni := ni.(nodeInfo)
-						if stats := ni.stats; stats != nil && stats.HAAssets > maxHaAssets {
-							resp.Error = NewJSInsufficientResourcesError()
-							s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-							s.Warnf("%s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d"+
-								" for (durable) consumer %s placement on stream %s",
-								ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets, oname, stream)
-							return
+					if ha := cc.peerHAAssets[peer]; ha >= maxHaAssets {
+						resp.Error = NewJSInsufficientResourcesError()
+						s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+						name, cluster := peer, _EMPTY_
+						if ni, ok := s.nodeToInfo.Load(peer); ok {
+							ni := ni.(nodeInfo)
+							name, cluster = ni.name, ni.cluster
 						}
+						s.Warnf("%s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d"+
+							" for (durable) consumer %s placement on stream %s",
+							name, cluster, ha, maxHaAssets, oname, stream)
+						return
 					}
 				}
 			}
@@ -9904,6 +10059,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			nca.Group.Peers = newPeerSet
 			nca.Group.Preferred = curLeader
 			nca.Group.ScaleUp = true
+
+			// Confirm we'll still satisfy max_ha_assets after the update.
+			if js.updateExceedsMaxHAAssets(acc.Name, sa, sa, []*consumerAssignment{nca}) {
+				resp.Error = NewJSInsufficientResourcesError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 		} else if rBefore > rAfter {
 			// Mark the current leader as preferred, it will be kept in the new peer set.
 			nca.Group.Preferred = curLeader
@@ -9927,7 +10089,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	if err := cc.meta.Propose(encodeAddConsumerAssignment(ca)); err != nil {
 		return
 	}
-	cc.trackInflightConsumerProposal(acc.Name, stream, ca, false)
+	js.trackInflightConsumerProposal(acc.Name, stream, ca, false)
 }
 
 func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {

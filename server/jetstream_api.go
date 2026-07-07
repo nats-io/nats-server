@@ -2685,7 +2685,8 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		cfg.Placement.Tags = append(cfg.Placement.Tags, req.Tags...)
 	}
 
-	peers, e := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1, nil)
+	js.mu.RLock()
+	peers, e := js.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1, nil)
 	if len(peers) <= cfg.Replicas {
 		// since expanding in the same cluster did not yield a result, try in different cluster
 		peers = nil
@@ -2700,7 +2701,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		errs := &selectPeerError{}
 		errs.accumulate(e)
 		for cluster := range clusters {
-			newPeers, e := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0, nil)
+			newPeers, e := js.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0, nil)
 			if len(newPeers) >= cfg.Replicas {
 				peers = append([]string{}, currPeers...)
 				peers = append(peers, newPeers[:cfg.Replicas]...)
@@ -2709,11 +2710,13 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			errs.accumulate(e)
 		}
 		if peers == nil {
+			js.mu.RUnlock()
 			resp.Error = NewJSClusterNoPeersError(errs)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 	}
+	js.mu.RUnlock()
 
 	cfg.Placement = origPlacement
 
@@ -2931,7 +2934,7 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
 			}
-			cc.trackInflightConsumerProposal(accName, osa.Config.Name, ca, true)
+			js.trackInflightConsumerProposal(accName, osa.Config.Name, ca, true)
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client, Created: osa.Created}
@@ -2941,7 +2944,7 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		cc.trackInflightStreamProposal(accName, sa, true)
+		js.trackInflightStreamProposal(accName, sa, true)
 		ns++
 	}
 	js.mu.Unlock()
@@ -5291,7 +5294,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 			js.mu.Unlock()
 			return
 		}
-		cc.trackInflightConsumerProposal(acc.Name, stream, nca, false)
+		js.trackInflightConsumerProposal(acc.Name, stream, nca, false)
 		js.mu.Unlock()
 
 		resp.PauseUntil = pauseUTC
