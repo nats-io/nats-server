@@ -1205,6 +1205,10 @@ func (fs *fileStore) recoverMsgBlock(index uint32) (*msgBlock, error) {
 
 	// Make sure encryption loaded if needed.
 	if err = fs.loadEncryptionForMsgBlock(mb); err != nil {
+		// If the encryption key is truncated or unrecoverable, return the block so it can be deleted.
+		if err == errBadKeySize || err == errKeyInvalid {
+			return mb, err
+		}
 		return nil, err
 	}
 
@@ -1455,7 +1459,7 @@ func (mb *msgBlock) convertCipher() error {
 		}
 		return nil
 	}
-	return fmt.Errorf("unable to recover keys")
+	return errKeyInvalid
 }
 
 // Convert a plaintext block to encrypted.
@@ -2491,6 +2495,18 @@ func (fs *fileStore) recoverMsgs() error {
 				mb.last.ts = fs.state.LastTime.UnixNano()
 			}
 			mb.mu.Unlock()
+		} else if (err == errBadKeySize || err == errKeyInvalid) && mb != nil {
+			// If we can't load the encryption key, we can't decrypt the block's data.
+			// We'll revert to deleting this block until there is peer-based recovery. This still
+			// catches up from the leader if it happened in the stream's tail.
+			mb.mu.Lock()
+			if err := mb.dirtyCloseWithRemove(true); err != nil {
+				mb.mu.Unlock()
+				return err
+			}
+			fs.removeMsgBlockFromList(mb)
+			mb.mu.Unlock()
+			continue
 		} else {
 			return err
 		}
@@ -8612,6 +8628,7 @@ var (
 	errPendingData   = errors.New("pending data still present")
 	errNoEncryption  = errors.New("encryption not enabled")
 	errBadKeySize    = errors.New("encryption bad key size")
+	errKeyInvalid    = errors.New("unable to recover keys")
 	errNoMsgBlk      = errors.New("no message block")
 	errMsgBlkTooBig  = errors.New("message block size exceeded int capacity")
 	errUnknownCipher = errors.New("unknown cipher")
