@@ -582,8 +582,7 @@ type stream struct {
 	// Otherwise, if clustered it will be part of the stream assignment.
 	offlineReason string
 
-	batches    *batching   // Inflight batches prior to committing them.
-	batchApply *batchApply // State to check for batch completeness before applying it.
+	batches *batching // Inflight batches prior to committing them.
 }
 
 // inflightSubjectRunningTotal stores a running total of inflight messages for a specific subject.
@@ -2715,7 +2714,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	// If atomic publish is disabled, delete any in-progress batches.
 	if !cfg.AllowAtomicPublish {
 		mset.deleteAtomicBatches(false)
-		mset.deleteBatchApplyState()
 	}
 	// If fast batch publish is disabled, delete any in-progress batches.
 	if !cfg.AllowBatchPublish {
@@ -5123,21 +5121,6 @@ func (mset *stream) deleteAtomicBatches(shuttingDown bool) {
 		}
 		mset.batches.atomic = nil
 		mset.batches.mu.Unlock()
-	}
-}
-
-// Lock should be held.
-func (mset *stream) deleteBatchApplyState() {
-	if batch := mset.batchApply; batch != nil {
-		// Clear under batch.mu so a stale reference held by the stream monitor
-		// can't re-pool entries we already returned.
-		batch.mu.Lock()
-		for _, bce := range batch.entries {
-			bce.ReturnToPool()
-		}
-		batch.clearBatchStateLocked()
-		batch.mu.Unlock()
-		mset.batchApply = nil
 	}
 }
 
@@ -9394,9 +9377,6 @@ func (mset *stream) clearMonitorRunning() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	mset.inMonitor = false
-
-	// We've stopped running the monitor goroutine, now also do additional cleanup.
-	mset.deleteBatchApplyState()
 }
 
 // Check if our monitor is running.
