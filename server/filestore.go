@@ -32,6 +32,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -215,51 +216,52 @@ type fileStore struct {
 // Represents a message store block and its data.
 type msgBlock struct {
 	// Here for 32bit systems and atomic.
-	first      msgId
-	last       msgId
-	mu         sync.RWMutex
-	fs         *fileStore
-	aek        cipher.AEAD
-	bek        cipher.Stream
-	seed       []byte
-	nonce      []byte
-	mfn        string
-	mfd        *os.File
-	cmp        StoreCompression // Effective compression at the time of loading the block
-	liwsz      int64
-	index      uint32
-	bytes      uint64 // User visible bytes count.
-	rbytes     uint64 // Total bytes (raw) including deleted. Used for rolling to new blk.
-	cbytes     uint64 // Bytes count after last compaction. 0 if no compaction happened yet.
-	msgs       uint64 // User visible message count.
-	fss        *stree.SubjectTree[SimpleState]
-	kfn        string
-	lwts       int64
-	llts       int64
-	lrts       int64
-	lsts       int64
-	llseq      uint64
-	hh         *highwayhash.Digest64
-	ecache     elastic.Pointer[cache]
-	cache      *cache
-	cloads     uint64
-	cexp       time.Duration
-	fexp       time.Duration
-	ctmr       *time.Timer
-	werr       error
-	dmap       avl.SequenceSet
-	fch        chan struct{}
-	qch        chan struct{}
-	lchk       [8]byte
-	loading    bool
-	flusher    bool
-	noTrack    bool
-	needSync   bool
-	syncAlways bool
-	noCompact  bool
-	closed     bool
-	ttls       uint64 // How many msgs have TTLs?
-	schedules  uint64 // How many msgs have schedules?
+	first       msgId
+	last        msgId
+	mu          sync.RWMutex
+	fs          *fileStore
+	aek         cipher.AEAD
+	bek         cipher.Stream
+	seed        []byte
+	nonce       []byte
+	mfn         string
+	mfd         *os.File
+	cmp         StoreCompression // Effective compression at the time of loading the block
+	liwsz       int64
+	index       uint32
+	bytes       uint64 // User visible bytes count.
+	rbytes      uint64 // Total bytes (raw) including deleted. Used for rolling to new blk.
+	cbytes      uint64 // Bytes count after last compaction. 0 if no compaction happened yet.
+	msgs        uint64 // User visible message count.
+	fss         *stree.SubjectTree[SimpleState]
+	kfn         string
+	lwts        int64
+	llts        int64
+	lrts        int64
+	lsts        int64
+	llseq       uint64
+	hh          *highwayhash.Digest64
+	ecache      elastic.Pointer[cache]
+	cache       *cache
+	cloads      uint64
+	cexp        time.Duration
+	fexp        time.Duration
+	ctmr        *time.Timer
+	werr        error
+	dmap        avl.SequenceSet
+	fch         chan struct{}
+	qch         chan struct{}
+	lchk        [8]byte
+	loading     bool
+	flusher     bool
+	noTrack     bool
+	needSync    bool
+	needKeySync bool // Key file is written once and immutable, cleared after its one sync.
+	syncAlways  bool
+	noCompact   bool
+	closed      bool
+	ttls        uint64 // How many msgs have TTLs?
+	schedules   uint64 // How many msgs have schedules?
 
 	// Used to mock write failures.
 	mockWriteErr bool
@@ -1399,7 +1401,7 @@ func (mb *msgBlock) convertCipher() error {
 		// the old keyfile back.
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
 			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
-			fs.writeFileWithOptionalSync(keyFile, ekey, defaultFilePerms)
+			writeFileWithSync(fs.dios, keyFile, ekey, defaultFilePerms)
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
@@ -4645,11 +4647,14 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
+	sync := fs.syncAlways.Load()
+	err = writeAtomically(fs.dios, keyFile, encrypted, defaultFilePerms, sync)
 	if err != nil {
 		return err
 	}
 	mb.kfn = keyFile
+	// If we did not sync the key file above, mark it to be synced on the next syncBlocks pass.
+	mb.needKeySync = !sync
 	return nil
 }
 
@@ -7252,6 +7257,12 @@ func (fs *fileStore) syncBlocks() {
 		mb.flushPendingMsgsLocked()
 		// Check if we need to sync. We will not hold lock during actual sync.
 		needSync := mb.needSync
+		needKeySync, kfn := mb.needKeySync, mb.kfn
+
+		// Reset. Because we let go of the lock, we could write new data to this mb which might or
+		// might not be synced later if we would've reset after letting go of the lock.
+		mb.needSync = false
+		mb.needKeySync = false
 		mb.mu.Unlock()
 
 		// Check if we should compact here.
@@ -7274,6 +7285,13 @@ func (fs *fileStore) syncBlocks() {
 				mb.mu.Unlock()
 				fs.mu.Unlock()
 				needSync = false
+			}
+		}
+
+		// Check if we need to sync this block's key file.
+		if needKeySync && kfn != _EMPTY_ {
+			if err := fs.syncFileAndDir(kfn); err != nil {
+				continue
 			}
 		}
 
@@ -12719,6 +12737,10 @@ func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.
 	return writeAtomically(dios, name, data, perm, true)
 }
 
+// Windows does not support fsyncing directory metadata, it results in a panic, so
+// we need to skip doing this there.
+const canFsyncDirectories = runtime.GOOS != "windows"
+
 func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode, sync bool) error {
 	tmp := name + ".tmp"
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
@@ -12744,13 +12766,56 @@ func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.Fi
 		_ = os.Remove(tmp)
 		return err
 	}
-	if sync {
+	if sync && canFsyncDirectories {
 		// To ensure that the file rename was persisted on all filesystems,
 		// also try to flush the directory metadata.
-		if d, err := os.Open(filepath.Dir(name)); err == nil {
-			_ = d.Sync()
-			_ = d.Close()
+		if err = syncDir(name); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func (fs *fileStore) syncFileAndDir(name string) error {
+	fs.dios.acquire()
+	defer fs.dios.release()
+	f, err := os.OpenFile(name, os.O_RDWR, defaultFilePerms)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		// Close fd, but ignore its error since sync takes precedence.
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if canFsyncDirectories {
+		if err = syncDir(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Dios should already be held.
+func syncDir(name string) error {
+	var d *os.File
+	var err error
+	if d, err = os.Open(filepath.Dir(name)); err != nil {
+		return err
+	}
+	if err = d.Sync(); err != nil {
+		// Close fd, but ignore its error since sync takes precedence.
+		_ = d.Close()
+		return err
+	}
+	if err = d.Close(); err != nil {
+		return err
 	}
 	return nil
 }
