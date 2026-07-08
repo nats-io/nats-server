@@ -14789,3 +14789,49 @@ func TestFileStoreSyncDeletedDmapAliasRace(t *testing.T) {
 	// Sanity: store still usable.
 	_ = fs.State()
 }
+
+func TestFileStoreEncryptionKeyFileSyncedBySyncBlocks(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "S1", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	// The key file is written without a sync, so it should be marked for one.
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_NotNil(t, lmb)
+	lmb.mu.RLock()
+	needKeySync, kfn := lmb.needKeySync, lmb.kfn
+	lmb.mu.RUnlock()
+	require_True(t, needKeySync)
+	require_True(t, kfn != _EMPTY_)
+
+	// A sync pass should sync the key file and clear the flag.
+	fs.syncBlocks()
+	lmb.mu.RLock()
+	needKeySync = lmb.needKeySync
+	lmb.mu.RUnlock()
+	require_False(t, needKeySync)
+
+	// With SyncAlways the key file write is already synced, so the flag should not be set.
+	fcfg = FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES, SyncAlways: true}
+	fs2, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "S2", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs2.Stop()
+
+	_, _, err = fs2.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	fs2.mu.RLock()
+	lmb = fs2.lmb
+	fs2.mu.RUnlock()
+	require_NotNil(t, lmb)
+	lmb.mu.RLock()
+	needKeySync = lmb.needKeySync
+	lmb.mu.RUnlock()
+	require_False(t, needKeySync)
+}
