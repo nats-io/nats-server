@@ -2925,7 +2925,7 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 	for osa := range js.streamAssignmentsOrInflightSeq(accName) {
 		for oca := range js.consumerAssignmentsOrInflightSeq(accName, osa.Config.Name) {
 			ca := &consumerAssignment{Group: oca.Group, Stream: oca.Stream, Name: oca.Name, Config: oca.Config, Subject: subject, Client: oca.Client, Created: oca.Created}
-			if err = meta.Propose(encodeDeleteConsumerAssignment(ca)); err != nil {
+			if err = meta.Propose(cc.term, encodeDeleteConsumerAssignment(ca)); err != nil {
 				js.mu.Unlock()
 				resp.Error = NewJSStreamGeneralError(err)
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2935,7 +2935,7 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 			nc++
 		}
 		sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Client: osa.Client, Created: osa.Created}
-		if err = meta.Propose(encodeDeleteStreamAssignment(sa)); err != nil {
+		if err = meta.Propose(cc.term, encodeDeleteStreamAssignment(sa)); err != nil {
 			js.mu.Unlock()
 			resp.Error = NewJSStreamGeneralError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -5287,7 +5287,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		setStaticConsumerMetadata(nca.Config)
 
 		eca := encodeAddConsumerAssignment(nca)
-		if err = meta.Propose(eca); err != nil {
+		if err = meta.Propose(cc.term, eca); err != nil {
 			js.mu.Unlock()
 			return
 		}

@@ -8572,7 +8572,7 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 	require_NotNil(t, ca)
 	cca := ca.copyGroup()
 	cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
-	require_NoError(t, cc.meta.Propose(encodeAddConsumerAssignment(cca)))
+	require_NoError(t, cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(cca)))
 
 	// The monitor routine should stop.
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
@@ -10673,11 +10673,11 @@ type failProposeRaftNode struct {
 	RaftNode
 }
 
-func (n *failProposeRaftNode) Propose([]byte) error {
+func (n *failProposeRaftNode) Propose(uint64, []byte) error {
 	return errNotLeader
 }
 
-func (n *failProposeRaftNode) ProposeMulti([]*Entry) error {
+func (n *failProposeRaftNode) ProposeMulti(uint64, []*Entry) error {
 	return errNotLeader
 }
 

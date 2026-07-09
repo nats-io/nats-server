@@ -2578,7 +2578,7 @@ func TestJetStreamClusterStreamLeaderChangeDedupeCleanupRace(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sjs.processStreamLeaderChange(mset, true)
+		sjs.processStreamLeaderChange(mset, true, 0)
 	}()
 
 	// Give the goroutine time to reach the clMu acquisition.
@@ -4580,7 +4580,7 @@ func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 	require_NoError(t, err)
 
 	// Simulate leader change, we do this so we can check what happens in the upper layer logic.
-	rn.leadc <- true
+	rn.leadc <- leadChange{isLeader: true, term: rn.Term()}
 	rn.SetObserver(false)
 
 	// Since upper layer is async, we don't know whether it will or will not act on the leader change.
@@ -7613,7 +7613,7 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				// Kicking the leader change channel is the easiest way to
 				// trick monitorCluster() into calling doSnapshot().
 				entries, _ := cc.meta.Size()
-				cc.meta.(*raft).leadc <- true
+				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
 
 				// Should we have compacted on this iteration?
 				if entries > thresh {
@@ -7673,7 +7673,7 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 				// Kicking the leader change channel is the easiest way to
 				// trick monitorCluster() into calling doSnapshot().
 				_, size := cc.meta.Size()
-				cc.meta.(*raft).leadc <- true
+				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
 
 				// Should we have compacted on this iteration?
 				if size > thresh {
@@ -7936,7 +7936,7 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdateRestart(t *testing.T) {
 	}
 	consumerAdd := encodeAddConsumerAssignment(cca)
 	mljs.mu.RUnlock()
-	require_NoError(t, cc.meta.Propose(consumerAdd))
+	require_NoError(t, cc.meta.Propose(cc.meta.Term(), consumerAdd))
 
 	// Wait for the meta leader to apply the entry.
 	time.Sleep(500 * time.Millisecond)

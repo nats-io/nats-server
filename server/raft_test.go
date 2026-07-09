@@ -482,7 +482,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	n := &raft{
 		prop:  newIPQueue[*proposedEntry](s, "prop"),
 		resp:  newIPQueue[*appendEntryResponse](s, "resp"),
-		leadc: make(chan bool, 1), // for switchState
+		leadc: make(chan leadChange, 1), // for switchState
 		sd:    t.TempDir(),
 		dios:  defaultDiskIOSemaphore(),
 	}
@@ -2774,8 +2774,8 @@ func TestNRGSignalLeadChangeFalseIfCampaignImmediately(t *testing.T) {
 			n.processAppendEntry(aeMsg1, n.aesub)
 
 			select {
-			case isLeader := <-n.LeadChangeC():
-				require_False(t, isLeader)
+			case lc := <-n.LeadChangeC():
+				require_False(t, lc.isLeader)
 			default:
 				t.Error("Expected leadChange signal")
 			}
@@ -6390,17 +6390,86 @@ func TestNRGOnlyCommitIfCurrentTerm(t *testing.T) {
 	require_Equal(t, n.commit, 3)
 }
 
+func TestNRGTermFencedProposals(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Simulate winning an election.
+	n.switchToCandidate()
+	n.switchToLeader()
+	require_Equal(t, n.State(), Leader)
+	term := n.Term()
+	require_Equal(t, term, 1)
+
+	// Proposals with the current term are accepted.
+	require_NoError(t, n.Propose(term, nil))
+	require_NoError(t, n.ProposeMulti(term, []*Entry{newEntry(EntryNormal, nil)}))
+
+	// Proposals with a stale or future term are rejected, even though we are leader.
+	// Term 0 can never be a valid proposing term, elected leaders always have term >= 1.
+	require_Error(t, n.Propose(0, nil), errNotLeader)
+	require_Error(t, n.Propose(term+1, nil), errNotLeader)
+	require_Error(t, n.ProposeMulti(0, []*Entry{newEntry(EntryNormal, nil)}), errNotLeader)
+	require_Error(t, n.ProposeMulti(term+1, []*Entry{newEntry(EntryNormal, nil)}), errNotLeader)
+	require_Equal(t, n.State(), Leader)
+
+	// Losing leadership signals the upper layer with the term the loss happened in.
+	n.stepdown(noLeader)
+	select {
+	case lc := <-n.LeadChangeC():
+		require_False(t, lc.isLeader)
+		require_Equal(t, lc.term, term)
+	default:
+		t.Fatal("Expected leadChange signal")
+	}
+
+	// Get re-elected at a higher term.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		n.RLock()
+		prop, commit, processed := n.prop.len(), n.commit, n.processed
+		n.RUnlock()
+		if prop > 0 {
+			return fmt.Errorf("expected prop to be 0, got %d", prop)
+		}
+		if processed >= commit {
+			return nil
+		}
+		n.Applied(commit)
+		return fmt.Errorf("processed %d < commit %d", processed, commit)
+	})
+	n.switchToCandidate()
+	n.switchToLeader()
+	newTerm := n.Term()
+	require_Equal(t, newTerm, term+1)
+
+	// A stale process still holding the previous epoch's term must not be able
+	// to propose into the new epoch.
+	require_Error(t, n.Propose(term, nil), errNotLeader)
+	require_Error(t, n.ProposeMulti(term, []*Entry{newEntry(EntryNormal, nil)}), errNotLeader)
+
+	// Proposals with the new term are accepted, and forwarded proposals always
+	// use the node's current term.
+	require_NoError(t, n.Propose(newTerm, nil))
+	require_NoError(t, n.ForwardProposal(nil))
+}
+
 func TestNRGLeaderStepsDownIfOverrun(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
 	// Proposals are only accepted if we're the leader.
-	require_Error(t, n.Propose(nil), errNotLeader)
-	require_Error(t, n.ProposeMulti(nil), errNotLeader)
+	term := n.Term()
+	require_Equal(t, term, 0)
+	require_Error(t, n.Propose(term, nil), errNotLeader)
+	require_Error(t, n.ProposeMulti(term, nil), errNotLeader)
 
+	// Simulate winning an election.
+	n.switchToCandidate()
 	n.switchToLeader()
-	require_NoError(t, n.Propose(nil))
-	require_NoError(t, n.ProposeMulti(nil))
+	term = n.Term()
+	require_Equal(t, term, 1)
+	require_NoError(t, n.Propose(term, nil))
+	require_NoError(t, n.ProposeMulti(term, nil))
 	require_Equal(t, n.State(), Leader)
 
 	// Too many uncommitted entries in our log.
@@ -6409,17 +6478,17 @@ func TestNRGLeaderStepsDownIfOverrun(t *testing.T) {
 
 		// Proposing while we're exactly at the threshold still succeeds.
 		n.pindex, n.commit, n.applied = pauseQuorumThreshold, 0, 0
-		require_NoError(t, n.Propose(nil))
-		require_NoError(t, n.ProposeMulti(nil))
+		require_NoError(t, n.Propose(term, nil))
+		require_NoError(t, n.ProposeMulti(term, nil))
 		require_Equal(t, n.State(), Leader)
 
 		// While we're over the threshold, we temporarily don't send proposals.
 		n.pindex, n.commit, n.applied = pauseQuorumThreshold+1, 0, 0
-		require_Error(t, n.Propose(nil), errNotLeader)
+		require_Error(t, n.Propose(term, nil), errNotLeader)
 		require_Equal(t, n.State(), Follower)
 
 		n.state.Store(int32(Leader))
-		require_Error(t, n.ProposeMulti(nil), errNotLeader)
+		require_Error(t, n.ProposeMulti(term, nil), errNotLeader)
 		require_Equal(t, n.State(), Follower)
 	})
 
@@ -6429,17 +6498,17 @@ func TestNRGLeaderStepsDownIfOverrun(t *testing.T) {
 
 		// Proposing while we're exactly at the threshold still succeeds.
 		n.pindex, n.commit, n.applied = pauseQuorumThreshold, pauseQuorumThreshold, 0
-		require_NoError(t, n.Propose(nil))
-		require_NoError(t, n.ProposeMulti(nil))
+		require_NoError(t, n.Propose(term, nil))
+		require_NoError(t, n.ProposeMulti(term, nil))
 		require_Equal(t, n.State(), Leader)
 
 		// While we're over the threshold, we temporarily don't send proposals.
 		n.pindex, n.commit, n.applied = pauseQuorumThreshold+1, pauseQuorumThreshold+1, 0
-		require_Error(t, n.Propose(nil), errNotLeader)
+		require_Error(t, n.Propose(term, nil), errNotLeader)
 		require_Equal(t, n.State(), Follower)
 
 		n.state.Store(int32(Leader))
-		require_Error(t, n.ProposeMulti(nil), errNotLeader)
+		require_Error(t, n.ProposeMulti(term, nil), errNotLeader)
 		require_Equal(t, n.State(), Follower)
 	})
 }

@@ -264,8 +264,8 @@ func smLoop(sm stateMachine) {
 			}
 			aq.recycle(&ces)
 
-		case isLeader := <-lch:
-			sm.leaderChange(isLeader)
+		case lc := <-lch:
+			sm.leaderChange(lc.isLeader)
 		}
 	}
 }

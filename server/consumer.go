@@ -502,6 +502,7 @@ type consumer struct {
 	// Clustered.
 	ca        *consumerAssignment
 	node      RaftNode
+	term      uint64 // Raft term, used to determine if we are still the leader for the current term (if applicable, 0 otherwise).
 	infoSub   *subscription
 	lqsent    time.Time
 	prm       map[string]struct{}
@@ -1435,7 +1436,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		o.resetStartingSeq(0, _EMPTY_, false)
 	}
 	if config.Direct || standalone {
-		o.setLeader(true)
+		o.setLeader(true, 0)
 	}
 
 	// This is always true in single server mode.
@@ -1602,18 +1603,112 @@ func (o *consumer) isLeader() bool {
 	return o.leader.Load()
 }
 
-func (o *consumer) setLeader(isLeader bool) error {
-	o.mu.RLock()
+func (o *consumer) setLeader(isLeader bool, term uint64) error {
+	o.mu.Lock()
 	mset, closed := o.mset, o.closed
-	movingToClustered := o.node != nil && o.pch == nil
-	movingToNonClustered := o.node == nil && o.pch != nil
 	wasLeader := o.leader.Swap(isLeader)
 
 	// For clustered new consumers, starting seq selection was deferred from
 	// addConsumerWithAssignment so the scan wouldn't block the meta apply
 	// goroutine, run it here on leader-elect instead.
 	needsSelect := isLeader && !wasLeader && o.dseq == 0 && (o.store == nil || !o.store.HasState())
-	o.mu.RUnlock()
+
+	// We can skip the teardown if we were leader before and are still the leader now.
+	// But only at term 1, since that means scale up from or down to an unreplicated config.
+	// R1 assets have no raft node and use the coerced term 1.
+	if term < 1 {
+		term = 1
+	}
+	skipTeardown := wasLeader && isLeader && term == 1
+	o.term = term
+
+	if skipTeardown {
+		movingToClustered := o.node != nil && o.pch == nil
+		movingToNonClustered := o.node == nil && o.pch != nil
+
+		// If we detect we are scaling up, make sure to create clustered routines and channels.
+		if movingToClustered {
+			// We are moving from R1 to clustered.
+			o.pch = make(chan struct{}, 1)
+			go o.loopAndForwardProposals(o.node, o.qch, o.pch, term)
+			if o.phead != nil {
+				select {
+				case o.pch <- struct{}{}:
+				default:
+				}
+			}
+		} else if movingToNonClustered {
+			// We are moving from clustered to non-clustered now.
+			// Set pch to nil so if we scale back up we will recreate the loopAndForward from above.
+			pch := o.pch
+			o.pch = nil
+			select {
+			case pch <- struct{}{}:
+			default:
+			}
+		}
+		o.mu.Unlock()
+		return nil
+	}
+
+	// Shutdown the go routines and the subscriptions.
+	if o.qch != nil {
+		close(o.qch)
+		o.qch = nil
+	}
+	// Stop any inactivity timers. Should only be running on leaders.
+	stopAndClearTimer(&o.dtmr)
+	// Stop any unpause timers. Should only be running on leaders.
+	stopAndClearTimer(&o.uptmr)
+	// Make sure to clear out any re-deliver queues
+	o.stopAndClearPtmr()
+	o.rdc = nil
+	o.rdq = nil
+	o.rdqi.Empty()
+	o.pending = nil
+	o.rsm = nil
+	o.resetPendingDeliveries()
+	// Reset num pending, these are only authoritative on the leader.
+	o.npc, o.npf = 0, 0
+	// ok if they are nil, we protect inside unsubscribe()
+	o.unsubscribe(o.ackSubOld)
+	o.unsubscribe(o.ackSub)
+	o.unsubscribe(o.reqSub)
+	o.unsubscribe(o.resetSub)
+	o.unsubscribe(o.fcSubOld)
+	o.unsubscribe(o.fcSub)
+	o.ackSubOld, o.ackSub, o.reqSub, o.resetSub, o.fcSubOld, o.fcSub = nil, nil, nil, nil, nil, nil
+	if o.infoSub != nil {
+		o.srv.sysUnsubscribe(o.infoSub)
+		o.infoSub = nil
+	}
+	// Reset waiting if we are in pull mode.
+	if o.isPullMode() {
+		o.waiting = newWaitQueue(o.cfg.MaxWaiting)
+		o.nextMsgReqs.drain()
+	} else if o.srv.gateway.enabled {
+		stopAndClearTimer(&o.gwdtmr)
+	}
+	o.unassignPinId()
+
+	// Make sure to drain queued up acks.
+	o.ackMsgs.drain()
+	// Reset amount of acks that need to be processed.
+	atomic.StoreInt64(&o.awl, 0)
+	// Also remove any pending replies since we should not be the one to respond at this point.
+	o.replies = nil
+
+	// Set pch to nil, we will recreate the loopAndForwardProposals for the new term.
+	if pch := o.pch; pch != nil {
+		o.pch = nil
+		select {
+		case pch <- struct{}{}:
+		default:
+		}
+	}
+	// Clear proposals, none are valid anymore.
+	o.phead, o.ptail = nil, nil
+	o.mu.Unlock()
 
 	// If we are here we have a change in leader status.
 	if isLeader {
@@ -1635,35 +1730,6 @@ func (o *consumer) setLeader(isLeader bool) error {
 				return err
 			}
 			o.mu.Unlock()
-		}
-
-		if wasLeader {
-			// If we detect we are scaling up, make sure to create clustered routines and channels.
-			if movingToClustered {
-				o.mu.Lock()
-				// We are moving from R1 to clustered.
-				o.pch = make(chan struct{}, 1)
-				go o.loopAndForwardProposals(o.qch)
-				if o.phead != nil {
-					select {
-					case o.pch <- struct{}{}:
-					default:
-					}
-				}
-				o.mu.Unlock()
-			} else if movingToNonClustered {
-				// We are moving from clustered to non-clustered now.
-				// Set pch to nil so if we scale back up we will recreate the loopAndForward from above.
-				o.mu.Lock()
-				pch := o.pch
-				o.pch = nil
-				select {
-				case pch <- struct{}{}:
-				default:
-				}
-				o.mu.Unlock()
-			}
-			return nil
 		}
 
 		mset.mu.RLock()
@@ -1770,8 +1836,10 @@ func (o *consumer) setLeader(isLeader bool) error {
 		o.qch = make(chan struct{})
 		qch := o.qch
 		node := o.node
+		var pch chan struct{}
 		if node != nil && o.pch == nil {
 			o.pch = make(chan struct{}, 1)
+			pch = o.pch
 		}
 		pullMode := o.isPullMode()
 		o.mu.Unlock()
@@ -1811,67 +1879,16 @@ func (o *consumer) setLeader(isLeader bool) error {
 		}
 
 		// If we are R>1 spin up our proposal loop.
-		if node != nil {
+		if node != nil && pch != nil {
 			// Determine if we can send pending requests info to the group.
 			// They must be on server versions >= 2.7.1
 			o.checkAndSetPendingRequestsOk()
 			o.checkPendingRequests()
 			go func() {
 				setGoRoutineLabels(labels)
-				o.loopAndForwardProposals(qch)
+				o.loopAndForwardProposals(node, qch, pch, term)
 			}()
 		}
-
-	} else {
-		// Shutdown the go routines and the subscriptions.
-		o.mu.Lock()
-		if o.qch != nil {
-			close(o.qch)
-			o.qch = nil
-		}
-		// Stop any inactivity timers. Should only be running on leaders.
-		stopAndClearTimer(&o.dtmr)
-		// Stop any unpause timers. Should only be running on leaders.
-		stopAndClearTimer(&o.uptmr)
-		// Make sure to clear out any re-deliver queues
-		o.stopAndClearPtmr()
-		o.rdc = nil
-		o.rdq = nil
-		o.rdqi.Empty()
-		o.pending = nil
-		o.rsm = nil
-		o.resetPendingDeliveries()
-		// Reset num pending, these are only authoritative on the leader.
-		o.npc, o.npf = 0, 0
-		// ok if they are nil, we protect inside unsubscribe()
-		o.unsubscribe(o.ackSubOld)
-		o.unsubscribe(o.ackSub)
-		o.unsubscribe(o.reqSub)
-		o.unsubscribe(o.resetSub)
-		o.unsubscribe(o.fcSubOld)
-		o.unsubscribe(o.fcSub)
-		o.ackSubOld, o.ackSub, o.reqSub, o.resetSub, o.fcSubOld, o.fcSub = nil, nil, nil, nil, nil, nil
-		if o.infoSub != nil {
-			o.srv.sysUnsubscribe(o.infoSub)
-			o.infoSub = nil
-		}
-		// Reset waiting if we are in pull mode.
-		if o.isPullMode() {
-			o.waiting = newWaitQueue(o.cfg.MaxWaiting)
-			o.nextMsgReqs.drain()
-		} else if o.srv.gateway.enabled {
-			stopAndClearTimer(&o.gwdtmr)
-		}
-		o.unassignPinId()
-		// If we were the leader make sure to drain queued up acks.
-		if wasLeader {
-			o.ackMsgs.drain()
-			// Reset amount of acks that need to be processed.
-			atomic.StoreInt64(&o.awl, 0)
-			// Also remove any pending replies since we should not be the one to respond at this point.
-			o.replies = nil
-		}
-		o.mu.Unlock()
 	}
 	return nil
 }
@@ -2896,25 +2913,14 @@ func (o *consumer) resetLocalStartingSeq(seq uint64) {
 	o.ldt, o.lat = time.Time{}, time.Time{}
 }
 
-func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
-	// On exit make sure we nil out pch.
-	defer func() {
-		o.mu.Lock()
-		o.pch = nil
-		o.mu.Unlock()
-	}()
-
-	o.mu.RLock()
-	node, pch := o.node, o.pch
-	o.mu.RUnlock()
-
-	if node == nil || pch == nil {
+func (o *consumer) loopAndForwardProposals(node RaftNode, qch, pch chan struct{}, term uint64) {
+	if node == nil || qch == nil || pch == nil {
 		return
 	}
 
 	forwardProposals := func() error {
 		o.mu.Lock()
-		if o.node == nil || !o.node.Leader() {
+		if node == nil || !node.Leader() || o.term != term {
 			o.mu.Unlock()
 			return errors.New("no longer leader")
 		}
@@ -2928,14 +2934,14 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 			entries = append(entries, newEntry(EntryNormal, proposal.data))
 			sz += len(proposal.data)
 			if sz > maxBatch {
-				node.ProposeMulti(entries)
+				node.ProposeMulti(term, entries)
 				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
 				sz, entries = 0, nil
 			}
 		}
 		if len(entries) > 0 {
-			node.ProposeMulti(entries)
+			node.ProposeMulti(term, entries)
 		}
 		return nil
 	}

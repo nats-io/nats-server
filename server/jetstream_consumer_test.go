@@ -3094,8 +3094,8 @@ func TestJetStreamConsumerSwitchLeaderDuringInflightAck(t *testing.T) {
 
 	// Simulate an ack being pushed, and o.setLeader(false) being called before the ack is processed and resets o.awl
 	atomic.AddInt64(&o.awl, 1)
-	o.setLeader(false)
-	o.setLeader(true)
+	o.setLeader(false, 0)
+	o.setLeader(true, 0)
 
 	msgs, err = sub.Fetch(1, nats.MaxWait(5*time.Second))
 	require_NoError(t, err)
@@ -11156,7 +11156,7 @@ func TestJetStreamConsumerNoDeleteAfterConcurrentShutdownAndLeaderChange(t *test
 	fs.odir = odir
 	fs.mu.Unlock()
 	o.mu.Unlock()
-	o.setLeader(true)
+	o.setLeader(true, 0)
 
 	// Check the consumer was not deleted.
 	s, _ = RunServerWithConfig(conf)

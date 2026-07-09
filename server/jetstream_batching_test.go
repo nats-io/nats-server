@@ -3247,7 +3247,7 @@ func TestJetStreamAtomicBatchPublishRejectPartialBatchOnLeaderChange(t *testing.
 		entries = append(entries, newEntry(EntryNormal, esm))
 	}
 	n := mset.raftNode()
-	require_NoError(t, n.ProposeMulti(entries))
+	require_NoError(t, n.ProposeMulti(n.Term(), entries))
 
 	// Wait for all servers to have received and populated the partial batch.
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
