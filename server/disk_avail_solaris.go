@@ -17,8 +17,21 @@ package server
 
 import (
 	"os"
+	"path/filepath"
+
 	"golang.org/x/sys/unix"
 )
+
+func dirSize(path string) int64 {
+	var size int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
+}
 
 func diskAvailable(storeDir string) int64 {
 	var ba int64
@@ -28,7 +41,7 @@ func diskAvailable(storeDir string) int64 {
 	var fs unix.Statvfs_t
 	if err := unix.Statvfs(storeDir, &fs); err == nil {
 		// Estimate 75% of available storage.
-		ba = int64(uint64(fs.Frsize) * uint64(fs.Bavail) / 4 * 3)
+		ba = int64((uint64(fs.Frsize)*uint64(fs.Bavail) + uint64(dirSize(storeDir))) / 4 * 3)
 	} else {
 		// Used 1TB default as a guess if all else fails.
 		ba = JetStreamMaxStoreDefault
