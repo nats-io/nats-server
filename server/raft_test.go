@@ -5496,6 +5496,41 @@ func TestNRGMustNotResetVoteOnStepDownOrLeaderTransfer(t *testing.T) {
 	require_Equal(t, n.vote, nats0)
 }
 
+func TestNRGAppendEntriesSeqStopsOnRangeBreak(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Store and commit two entries
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2})
+
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	n.Applied(2)
+
+	c, err := n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+	defer c.Abort()
+
+	var calls int
+	for ae, err := range c.AppendEntriesSeq() {
+		calls++
+		require_NoError(t, err)
+		require_NotNil(t, ae)
+		// If bug is present: the iterator keeps
+		// yielding even if we break, causing a
+		// runtime panic.
+		break
+	}
+	require_Equal(t, calls, 1)
+}
+
 func TestNRGInstallSnapshotFromCheckpoint(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()

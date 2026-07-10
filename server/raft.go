@@ -1509,8 +1509,11 @@ func (c *checkpoint) AppendEntriesSeq() iter.Seq2[*appendEntry, error] {
 				yield(nil, err)
 				return
 			}
-			yield(ae, nil)
+			hasMore := yield(ae, nil)
 			ae.returnToPool()
+			if !hasMore {
+				return
+			}
 		}
 	}
 }
