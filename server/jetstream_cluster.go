@@ -1025,10 +1025,11 @@ func (js *jetStream) setupMetaGroup() error {
 
 	js.srv.optsMu.RLock()
 	syncAlways := js.srv.opts.SyncAlways
+	syncBatched := js.srv.opts.SyncBatched
 	syncInterval := js.srv.opts.SyncInterval
 	js.srv.optsMu.RUnlock()
 	fs, err := newFileStoreWithCreated(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, SyncAlways: syncAlways, SyncBatched: syncBatched, SyncInterval: syncInterval, srv: s},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 		time.Now().UTC(),
 		s.jsKeyGen(s.getOpts().JetStreamKey, defaultMetaGroupName),
@@ -3016,7 +3017,7 @@ retry:
 		if storage == FileStorage {
 			opts := s.getOpts()
 			fs, err := newFileStoreWithCreated(
-				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s},
+				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncBatched: opts.SyncBatched, SyncInterval: opts.SyncInterval, srv: s},
 				StreamConfig{Name: rgName, Storage: FileStorage, Metadata: labels},
 				time.Now().UTC(),
 				s.jsKeyGen(opts.JetStreamKey, rgName),

@@ -8730,6 +8730,36 @@ func Benchmark_FileStoreCreateConsumerStores(b *testing.B) {
 	}
 }
 
+func Benchmark_FileStoreStoreMsgSyncModes(b *testing.B) {
+	for _, mode := range []struct {
+		name string
+		fcfg FileStoreConfig
+	}{
+		{"Interval", FileStoreConfig{}},
+		{"Batched", FileStoreConfig{SyncBatched: true}},
+		{"Always", FileStoreConfig{SyncAlways: true}},
+	} {
+		for _, size := range []int{64, 1024, 16 * 1024} {
+			b.Run(fmt.Sprintf("%s/%db", mode.name, size), func(b *testing.B) {
+				fcfg := mode.fcfg
+				fcfg.StoreDir = b.TempDir()
+				fs, err := newFileStore(fcfg,
+					StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+				require_NoError(b, err)
+				defer fs.Stop()
+
+				msg := bytes.Repeat([]byte("Z"), size)
+				b.SetBytes(int64(size))
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					_, _, err := fs.StoreMsg("foo", nil, msg, 0)
+					require_NoError(b, err)
+				}
+			})
+		}
+	}
+}
+
 func TestFileStoreMaxMsgsPerSubjectOneStaleFblkAfterRestart(t *testing.T) {
 	sd := t.TempDir()
 	fcfg := FileStoreConfig{StoreDir: sd, BlockSize: 256}
@@ -15383,4 +15413,71 @@ func Benchmark_FileStoreDeleteMapExists(b *testing.B) {
 		v.Exists(uint64(i%numMsgs) + 1)
 	}
 	b.StopTimer()
+}
+
+func TestFileStoreSyncBatched(t *testing.T) {
+	// Use a long sync interval so any timely sync must come from the batch sync loop.
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), SyncBatched: true, SyncInterval: time.Hour}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), nil, nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// The batch sync loop should be running.
+	require_True(t, fs.sbch != nil)
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_NotNil(t, lmb)
+
+	// The write should be synced shortly after, well before the sync interval.
+	checkFor(t, time.Second, 5*time.Millisecond, func() error {
+		lmb.mu.RLock()
+		needSync := lmb.needSync
+		lmb.mu.RUnlock()
+		if needSync {
+			return fmt.Errorf("write still pending sync")
+		}
+		return nil
+	})
+}
+
+func TestFileStoreSyncBatchedEncryptionKeyFile(t *testing.T) {
+	// The batch sync loop should also make block key files durable.
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES, SyncBatched: true, SyncInterval: time.Hour}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "S1", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_NotNil(t, lmb)
+
+	checkFor(t, time.Second, 5*time.Millisecond, func() error {
+		lmb.mu.RLock()
+		needSync, needKeySync := lmb.needSync, lmb.needKeySync
+		lmb.mu.RUnlock()
+		if needSync || needKeySync {
+			return fmt.Errorf("write still pending sync (needSync=%v, needKeySync=%v)", needSync, needKeySync)
+		}
+		return nil
+	})
+}
+
+func TestFileStoreSyncBatchedSupersededBySyncAlways(t *testing.T) {
+	// SyncAlways already syncs every write inline, so batched syncing should be disabled.
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), SyncBatched: true, SyncAlways: true}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), nil, nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	require_False(t, fs.fcfg.SyncBatched)
+	require_True(t, fs.sbch == nil)
 }

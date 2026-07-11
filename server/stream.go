@@ -985,6 +985,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	// Grab configured sync interval.
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
+	fsCfg.SyncBatched = s.getOpts().SyncBatched
 	fsCfg.Compression = config.Compression
 	// Async flushing is only allowed if the stream has a sync log backing it.
 	fsCfg.AsyncFlush = !fsCfg.SyncAlways && config.Replicas > 1

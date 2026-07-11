@@ -998,6 +998,200 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 	}
 }
 
+func BenchmarkJetStreamPublishSyncModes(b *testing.B) {
+
+	const (
+		seed        = 12345
+		streamName  = "S"
+		subject     = "s-1"
+		asyncWindow = 1000
+	)
+
+	runSyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int) (int, int) {
+		published, errors := 0, 0
+		message := make([]byte, messageSize)
+		rand.New(rand.NewSource(int64(seed))).Read(message)
+
+		b.ResetTimer()
+
+		for i := 1; i <= b.N; i++ {
+			fastRandomMutation(message, 10)
+			if _, err := js.Publish(subject, message); err != nil {
+				errors++
+			} else {
+				published++
+			}
+		}
+
+		b.StopTimer()
+
+		return published, errors
+	}
+
+	runAsyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int) (int, int) {
+		const publishCompleteMaxWait = 30 * time.Second
+		message := make([]byte, messageSize)
+		rand.New(rand.NewSource(int64(seed))).Read(message)
+
+		published, errors := 0, 0
+
+		b.ResetTimer()
+
+		for done := 0; done < b.N; {
+			batchSize := asyncWindow
+			if b.N-done < asyncWindow {
+				batchSize = b.N - done
+			}
+
+			pending := make([]nats.PubAckFuture, 0, batchSize)
+			for i := 0; i < batchSize; i++ {
+				fastRandomMutation(message, 10)
+				pubAckFuture, err := js.PublishAsync(subject, message)
+				if err != nil {
+					errors++
+					continue
+				}
+				pending = append(pending, pubAckFuture)
+			}
+
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(publishCompleteMaxWait):
+				b.Fatalf("Publish timed out")
+			}
+
+			for _, pubAckFuture := range pending {
+				select {
+				case <-pubAckFuture.Ok():
+					published++
+				case <-pubAckFuture.Err():
+					errors++
+				default:
+					b.Fatalf("PubAck is still pending after publish completed")
+				}
+			}
+
+			done += batchSize
+		}
+
+		b.StopTimer()
+
+		return published, errors
+	}
+
+	type PublishType string
+	const (
+		Sync  PublishType = "Sync"
+		Async PublishType = "Async"
+	)
+
+	benchmarksCases := []struct {
+		clusterSize int
+		replicas    int
+		messageSize int
+	}{
+		{1, 1, 128},
+		{1, 1, 1024},
+		{3, 3, 128},
+		{3, 3, 1024},
+	}
+
+	syncModeCases := []struct {
+		name        string
+		syncAlways  bool
+		syncBatched bool
+	}{
+		{"Interval", false, false},
+		{"Batched", false, true},
+		{"Always", true, false},
+	}
+
+	publisherCases := []PublishType{Sync, Async}
+
+	for _, bc := range benchmarksCases {
+		name := fmt.Sprintf("N=%d,R=%d,MsgSz=%db", bc.clusterSize, bc.replicas, bc.messageSize)
+		b.Run(name, func(b *testing.B) {
+			for _, sc := range syncModeCases {
+				b.Run(sc.name, func(b *testing.B) {
+					for _, pType := range publisherCases {
+						b.Run(string(pType), func(b *testing.B) {
+							cl, s, shutdown, nc, _ := startJSClusterAndConnect(b, bc.clusterSize)
+							defer shutdown()
+							defer nc.Close()
+
+							// Set the sync mode on all servers before creating the stream.
+							// Sync options are picked up when the stream and its Raft log
+							// create their stores.
+							servers := []*Server{s}
+							if cl != nil {
+								servers = cl.servers
+							}
+							for _, srv := range servers {
+								srv.optsMu.Lock()
+								srv.opts.SyncAlways = sc.syncAlways
+								srv.opts.SyncBatched = sc.syncBatched
+								srv.optsMu.Unlock()
+							}
+
+							jsOpts := []nats.JSOpt{
+								nats.MaxWait(10 * time.Second),
+							}
+							if pType == Async {
+								jsOpts = append(jsOpts, nats.PublishAsyncMaxPending(asyncWindow))
+							}
+							js, err := nc.JetStream(jsOpts...)
+							if err != nil {
+								b.Fatalf("Unexpected error getting JetStream context: %v", err)
+							}
+
+							_, err = jsStreamCreate(b, nc, &StreamConfig{
+								Name:     streamName,
+								Subjects: []string{subject},
+								Replicas: bc.replicas,
+								Storage:  FileStorage,
+							})
+							if err != nil {
+								b.Fatalf("Error creating stream: %v", err)
+							}
+
+							// If replicated resource, connect to stream leader for lower variability.
+							if bc.replicas > 1 {
+								connectURL := cl.streamLeader("$G", streamName).ClientURL()
+								nc.Close()
+								nc, err = nats.Connect(connectURL)
+								if err != nil {
+									b.Fatalf("Failed to create client connection to stream leader: %v", err)
+								}
+								defer nc.Close()
+								js, err = nc.JetStream(jsOpts...)
+								if err != nil {
+									b.Fatalf("Unexpected error getting JetStream context for stream leader: %v", err)
+								}
+							}
+
+							b.SetBytes(int64(bc.messageSize))
+
+							var published, errors int
+							switch pType {
+							case Sync:
+								published, errors = runSyncPublisher(b, js, bc.messageSize)
+							case Async:
+								published, errors = runAsyncPublisher(b, js, bc.messageSize)
+							}
+
+							if published+errors != b.N {
+								b.Fatalf("Something doesn't add up: %d + %d != %d", published, errors, b.N)
+							}
+
+							b.ReportMetric(float64(errors)*100/float64(b.N), "%error")
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
 func BenchmarkJetStreamMetaSnapshot(b *testing.B) {
 	c := createJetStreamClusterExplicit(b, "R3S", 3)
 	defer c.shutdown()

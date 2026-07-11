@@ -2432,6 +2432,7 @@ func (s *Server) Start() {
 			StoreDir:     opts.StoreDir,
 			SyncInterval: opts.SyncInterval,
 			SyncAlways:   opts.SyncAlways,
+			SyncBatched:  opts.SyncBatched,
 			Strict:       !opts.NoJetStreamStrict,
 			MaxMemory:    opts.JetStreamMaxMemory,
 			MaxStore:     opts.JetStreamMaxStore,

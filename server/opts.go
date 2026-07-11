@@ -468,6 +468,7 @@ type Options struct {
 	StoreDir                   string            `json:"-"`
 	SyncInterval               time.Duration     `json:"-"`
 	SyncAlways                 bool              `json:"-"`
+	SyncBatched                bool              `json:"-"`
 	JsAccDefaultDomain         map[string]string `json:"-"` // account to domain name mapping
 	Websocket                  WebsocketOpts     `json:"-"`
 	MQTT                       MQTTOpts          `json:"-"`
@@ -2682,6 +2683,9 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 				if v, ok := mv.(string); ok && strings.ToLower(v) == "always" {
 					opts.SyncInterval = defaultSyncInterval
 					opts.SyncAlways = true
+				} else if ok && strings.ToLower(v) == "batched" {
+					opts.SyncInterval = defaultSyncInterval
+					opts.SyncBatched = true
 				} else {
 					opts.SyncInterval = parseDuration(mk, tk, mv, errors, warnings)
 				}

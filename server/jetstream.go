@@ -46,6 +46,7 @@ type JetStreamConfig struct {
 	StoreDir     string        `json:"store_dir,omitempty"`     // StoreDir is where storage files are stored
 	SyncInterval time.Duration `json:"sync_interval,omitempty"` // SyncInterval is how frequently we sync to disk in the background by calling fsync
 	SyncAlways   bool          `json:"sync_always,omitempty"`   // SyncAlways indicates flushes are done after every write
+	SyncBatched  bool          `json:"sync_batched,omitempty"`  // SyncBatched indicates writes are synced shortly after they happen, batched into a single fsync
 	Domain       string        `json:"domain,omitempty"`        // Domain is the JetStream domain
 	CompressOK   bool          `json:"compress_ok,omitempty"`   // CompressOK indicates if compression is supported
 	UniqueTag    string        `json:"unique_tag,omitempty"`    // UniqueTag is the unique tag assigned to this instance
@@ -565,6 +566,7 @@ func (s *Server) restartJetStream() error {
 		StoreDir:     opts.StoreDir,
 		SyncInterval: opts.SyncInterval,
 		SyncAlways:   opts.SyncAlways,
+		SyncBatched:  opts.SyncBatched,
 		MaxMemory:    opts.JetStreamMaxMemory,
 		MaxStore:     opts.JetStreamMaxStore,
 		Domain:       opts.JetStreamDomain,
@@ -2730,6 +2732,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	// Sync options.
 	jsc.SyncInterval = opts.SyncInterval
 	jsc.SyncAlways = opts.SyncAlways
+	jsc.SyncBatched = opts.SyncBatched
 
 	if maxStore > 0 || (opts.maxStoreSet && maxStore == 0) {
 		jsc.MaxStore = maxStore

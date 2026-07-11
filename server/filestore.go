@@ -67,6 +67,11 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
 	SyncAlways bool
+	// SyncBatched will sync to disk shortly after data writes, coalescing all
+	// writes within a small window into a single fsync per message block. This
+	// keeps the possible data loss window small without paying the cost of
+	// syncing every write inline like SyncAlways does. Ignored if SyncAlways is set.
+	SyncBatched bool
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
@@ -201,6 +206,7 @@ type fileStore struct {
 	hh          *highwayhash.Digest64
 	qch         chan struct{}
 	fsld        chan struct{}
+	sbch        chan struct{} // Kicks the batch sync loop when running with SyncBatched.
 	cmu         sync.RWMutex
 	cfs         []ConsumerStore
 	werr        error
@@ -330,6 +336,8 @@ const (
 	defaultCacheBufferExpiration = 10 * time.Second
 	// default sync interval
 	defaultSyncInterval = 2 * time.Minute
+	// default window to coalesce writes into a single sync when running with SyncBatched.
+	defaultSyncBatchWindow = 25 * time.Millisecond
 	// default idle timeout to close FDs.
 	closeFDsIdle = 30 * time.Second
 	// default expiration time for mb.fss when idle.
@@ -416,6 +424,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	if fcfg.SyncInterval == 0 {
 		fcfg.SyncInterval = defaultSyncInterval
 	}
+	// SyncAlways supersedes batched syncing since every write is already synced inline.
+	if fcfg.SyncAlways {
+		fcfg.SyncBatched = false
+	}
 	dios := fcfg.srv.diskIOSemaphore()
 
 	// Check the directory
@@ -449,6 +461,9 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		srv:    fcfg.srv,
 	}
 	fs.syncAlways.Store(fcfg.SyncAlways)
+	if fcfg.SyncBatched {
+		fs.sbch = make(chan struct{}, 1)
+	}
 
 	// Register with access time service.
 	ats.Register()
@@ -656,6 +671,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// Spin up the go routine that will write out our full state stream index.
 	go fs.flushStreamStateLoop(fs.qch, fs.fsld)
+
+	// Spin up the go routine that will sync writes to disk shortly after they
+	// happen when running in batched sync mode.
+	if fs.sbch != nil {
+		go fs.batchSyncLoop(fs.sbch, fs.qch)
+	}
 
 	return fs, nil
 }
@@ -4932,6 +4953,9 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	mb.kfn = keyFile
 	// If we did not sync the key file above, mark it to be synced on the next syncBlocks pass.
 	mb.needKeySync = !sync
+	if mb.needKeySync {
+		fs.kickBatchSync()
+	}
 	return nil
 }
 
@@ -6269,6 +6293,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 
 	// Make sure to sync
 	mb.needSync = true
+	mb.fs.kickBatchSync()
 
 	// Capture the updated rbytes.
 	if rbytes := uint64(len(nbuf)); rbytes == mb.rbytes {
@@ -8039,6 +8064,90 @@ func (fs *fileStore) syncBlocks() {
 	}
 }
 
+// kickBatchSync signals the batch sync loop, if configured, that there are
+// writes pending sync. Multiple kicks coalesce into a single sync pass.
+func (fs *fileStore) kickBatchSync() {
+	kickFlusher(fs.sbch)
+}
+
+// batchSyncLoop runs when SyncBatched is configured. Once kicked after a write,
+// it waits out the batch window so all writes within it share a single fsync
+// per message block, then syncs whatever is marked as needing it.
+func (fs *fileStore) batchSyncLoop(sbch, qch chan struct{}) {
+	t := time.NewTimer(defaultSyncBatchWindow)
+	if !t.Stop() {
+		<-t.C
+	}
+	defer t.Stop()
+
+	for {
+		select {
+		case <-sbch:
+		case <-qch:
+			return
+		}
+		// Wait out the batch window to coalesce any additional writes.
+		t.Reset(defaultSyncBatchWindow)
+		select {
+		case <-t.C:
+		case <-qch:
+			return
+		}
+		fs.syncPendingBlocks()
+	}
+}
+
+// syncPendingBlocks syncs any message blocks that have writes pending sync.
+// Unlike syncBlocks this does no compaction or other maintenance, it only
+// makes recent writes durable, so it is cheap enough to run per batch window.
+func (fs *fileStore) syncPendingBlocks() {
+	if fs.isClosed() {
+		return
+	}
+	fs.mu.RLock()
+	if fs.werr != nil {
+		fs.mu.RUnlock()
+		return
+	}
+	blks := append([]*msgBlock(nil), fs.blks...)
+	fs.mu.RUnlock()
+
+	var werr error
+	for _, mb := range blks {
+		// Hold the lock for consistency, same as syncBlocks does for the actual sync.
+		mb.mu.Lock()
+		if mb.closed || mb.werr != nil {
+			mb.mu.Unlock()
+			continue
+		}
+		// Sync the key file first, it needs to be durable for the block data to be readable.
+		if mb.needKeySync && mb.kfn != _EMPTY_ {
+			if err := fs.syncFileAndDir(mb.kfn); err != nil {
+				mb.mu.Unlock()
+				werr = err
+				continue
+			}
+			mb.needKeySync = false
+		}
+		// Only sync here if we still have an open fd from the write, otherwise any
+		// pending sync is left to the periodic syncBlocks pass which reopens the file.
+		if mb.needSync && mb.mfd != nil {
+			if err := mb.mfd.Sync(); err != nil {
+				werr = err
+			} else {
+				mb.needSync = false
+			}
+		}
+		mb.mu.Unlock()
+	}
+
+	if werr != nil {
+		fs.mu.Lock()
+		fs.setWriteErr(werr)
+		fs.mu.Unlock()
+	}
+}
+
 // Select the message block where this message should be found.
 // Return nil if not in the set.
 // Read lock should be held.
@@ -8427,6 +8536,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		}
 	} else {
 		mb.needSync = true
+		mb.fs.kickBatchSync()
 	}
 
 	// Check for additional writes while we were writing to the disk.
@@ -10559,6 +10669,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 		} else {
 			// Make sure to sync changes.
 			smb.needSync = true
+			fs.kickBatchSync()
 		}
 		// Update fs first here as well.
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
@@ -10567,6 +10678,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 	} else {
 		// Make sure to sync changes.
 		smb.needSync = true
+		fs.kickBatchSync()
 		// Just for start condition for selectNextFirst.
 		if smb.first.seq < seq {
 			atomic.StoreUint64(&smb.first.seq, seq-1)

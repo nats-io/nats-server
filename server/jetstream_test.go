@@ -16689,10 +16689,12 @@ func TestJetStreamSyncInterval(t *testing.T) {
 		sync     string
 		expected time.Duration
 		always   bool
+		batched  bool
 	}{
-		{"Default", _EMPTY_, defaultSyncInterval, false},
-		{"10s", "sync_interval: 10s", time.Duration(10 * time.Second), false},
-		{"Always", "sync_interval: always", defaultSyncInterval, true},
+		{"Default", _EMPTY_, defaultSyncInterval, false, false},
+		{"10s", "sync_interval: 10s", time.Duration(10 * time.Second), false, false},
+		{"Always", "sync_interval: always", defaultSyncInterval, true, false},
+		{"Batched", "sync_interval: batched", defaultSyncInterval, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, sd, test.sync)))
@@ -16717,9 +16719,11 @@ func TestJetStreamSyncInterval(t *testing.T) {
 			fs.mu.RLock()
 			fsSync := fs.fcfg.SyncInterval
 			syncAlways := fs.fcfg.SyncAlways
+			syncBatched := fs.fcfg.SyncBatched
 			fs.mu.RUnlock()
 			require_True(t, fsSync == test.expected)
 			require_True(t, syncAlways == test.always)
+			require_True(t, syncBatched == test.batched)
 		})
 	}
 }
