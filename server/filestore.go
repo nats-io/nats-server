@@ -4901,9 +4901,11 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	mmp := uint64(fs.cfg.MaxMsgsPer)
 	var psmc uint64
 	psmax := mmp > 0 && len(subj) > 0
+	var info *psi
 	if psmax {
-		if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
-			psmc = info.total
+		if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+			// Take current total, but add 1 for the message we are about to store.
+			psmc = info.total + 1
 		}
 	}
 
@@ -4913,7 +4915,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	// the message here since it could cause replicas to drift.
 	if discardNewCheck && fs.cfg.Discard == DiscardNew {
 		var asl bool
-		if psmax && psmc >= mmp {
+		if psmax && psmc > mmp {
 			// If we are instructed to discard new per subject, this is an error.
 			// However, allow rollup messages through since they will purge old
 			// messages for the subject after storing, restoring the limit.
@@ -4923,7 +4925,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 			if fseq, err = fs.firstSeqForSubj(subj); err != nil {
 				return err
 			}
-			asl = true
+			// fs.firstSeqForSubj releases and re-acquires the lock, need to fetch the state again.
+			if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+				// Take current total, but add 1 for the message we are about to store.
+				psmc = info.total + 1
+			}
+			asl = psmc > mmp
 		}
 		if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) && !asl {
 			return ErrMaxMsgs
@@ -4963,11 +4970,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	}
 
 	// Adjust top level tracking of per subject msg counts.
-	var info *psi
-	var ok bool
 	if len(subj) > 0 && fs.psim != nil {
 		index := fs.lmb.index
-		if info, ok = fs.psim.Find(stringToBytes(subj)); ok {
+		if info == nil {
+			info, _ = fs.psim.Find(stringToBytes(subj))
+		}
+		if info != nil {
 			info.total++
 			if index > info.lblk {
 				info.lblk = index
@@ -4991,41 +4999,33 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	fs.state.LastTime = now
 
 	// Enforce per message limits.
-	// We snapshotted psmc before our actual write, so >= comparison needed.
-	if psmax && psmc >= mmp {
+	for psmax && psmc > mmp {
 		// We may have done this above.
 		if fseq == 0 {
 			fseq, err = fs.firstSeqForSubj(subj)
 			if err != nil {
 				return err
+			} else if fseq == 0 {
+				break
 			}
+			// fs.firstSeqForSubj releases and re-acquires the lock, need to fetch the state again.
+			if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+				psmc = info.total
+			} else {
+				break
+			}
+			// Re-check if we're at the limit.
+			continue
 		}
-		if ok, err := fs.removeMsgViaLimits(fseq); err != nil {
+		if _, err = fs.removeMsgViaLimits(fseq); err != nil && err != ErrStoreMsgNotFound {
 			return err
-		} else if ok {
-			// Make sure we are below the limit.
-			if psmc--; psmc >= mmp {
-				bsubj := stringToBytes(subj)
-				for info, ok := fs.psim.Find(bsubj); ok && info.total > mmp; info, ok = fs.psim.Find(bsubj) {
-					if seq, err := fs.firstSeqForSubj(subj); err != nil {
-						return err
-					} else if seq == 0 {
-						break
-					} else if ok, err = fs.removeMsgViaLimits(seq); err != nil {
-						return err
-					} else if !ok {
-						break
-					}
-				}
-			}
-		} else if mb := fs.selectMsgBlock(fseq); mb != nil {
-			// If we are here we could not remove fseq from above, so rebuild.
-			var ld *LostStreamData
-			if ld, _, err = mb.rebuildState(); err != nil {
-				return err
-			} else if ld != nil {
-				fs.rebuildStateLocked(ld)
-			}
+		}
+		fseq = 0
+		// fs.removeMsgViaLimits releases and re-acquires the lock, need to fetch the state again.
+		if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+			psmc = info.total
+		} else {
+			break
 		}
 	}
 	// If we only ever store one/last message for a subject, can correct the first block to where we've just written.
@@ -5441,6 +5441,12 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 		fs.mu.Unlock()
 
 		mb.mu.Lock()
+		// If marked closed, the block is already gone.
+		if mb.closed {
+			mb.mu.Unlock()
+			fs.mu.Lock()
+			continue
+		}
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
