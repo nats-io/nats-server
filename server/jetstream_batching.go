@@ -468,7 +468,7 @@ func checkMsgHeadersPreClusteredProposal(
 			// Allow override of the subject used for the check.
 			seqSubj := subject
 			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
-				seqSubj = optSubj
+				seqSubj = copyString(optSubj)
 			}
 
 			// The subject is already written to in this batch, we can't allow
