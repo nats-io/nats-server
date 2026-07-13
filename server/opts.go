@@ -5808,16 +5808,23 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 	}
 
-	// Only one or the other client auth methods below can be configured when starting the server
+	// The clientAuth flag is passed through to the tls handshake and must one of the following tls options
+
+	// 1)Not set = No client cert is being requested
+	// 2)RequireAndVerifyClientCert = Always requested, validated and connection rejected when not valid
+	// 3)VerifyClientCertIfGiven = always requested, validated if sent but connection is not rejected when the certificate is not present. Connection is rejected when certificate is invalid
+
+	// Main purpose to configure VerifyClientCertIfGiven is optional certificate or token based authentication in the custom auth callout
+
+	// User Cannot configure RequireAndVerifyClientCert and VerifyClientCertIfGiven at the same time
 	if tc.Verify && tc.VerifyClientCertIfGiven {
 		return nil, fmt.Errorf("cannot combine 'verify' option with 'verify_client_cert_if_given' option")
 	}
 
-	// Require and verify client certificates
 	if tc.Verify {
 		config.ClientAuth = tls.RequireAndVerifyClientCert
 	}
-	// Verify client certificates if given
+
 	if tc.VerifyClientCertIfGiven {
 		config.ClientAuth = tls.VerifyClientCertIfGiven
 	}
