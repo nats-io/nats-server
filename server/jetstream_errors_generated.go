@@ -302,6 +302,9 @@ const (
 	// JSConsumerStoreFailedErrF error creating store for consumer: {err}
 	JSConsumerStoreFailedErrF ErrorIdentifier = 10104
 
+	// JSConsumerStreamIdentityMismatchF consumer's stream identity does not match: {msg}
+	JSConsumerStreamIdentityMismatchF ErrorIdentifier = 10225
+
 	// JSConsumerWQConsumerNotDeliverAllErr consumer must be deliver all on workqueue stream
 	JSConsumerWQConsumerNotDeliverAllErr ErrorIdentifier = 10101
 
@@ -776,6 +779,7 @@ var (
 		JSConsumerReplicasShouldMatchStream:          {Code: 400, ErrCode: 10134, Description: "consumer config replicas must match interest retention stream's replicas"},
 		JSConsumerSmallHeartbeatErr:                  {Code: 400, ErrCode: 10083, Description: "consumer idle heartbeat needs to be >= 100ms"},
 		JSConsumerStoreFailedErrF:                    {Code: 500, ErrCode: 10104, Description: "error creating store for consumer: {err}"},
+		JSConsumerStreamIdentityMismatchF:            {Code: 400, ErrCode: 10225, Description: "consumer's stream identity does not match: {msg}"},
 		JSConsumerWQConsumerNotDeliverAllErr:         {Code: 400, ErrCode: 10101, Description: "consumer must be deliver all on workqueue stream"},
 		JSConsumerWQConsumerNotUniqueErr:             {Code: 400, ErrCode: 10100, Description: "filtered consumer not unique on workqueue stream"},
 		JSConsumerWQMultipleUnfilteredErr:            {Code: 400, ErrCode: 10099, Description: "multiple non-filtered consumers not allowed on workqueue stream"},
@@ -2004,6 +2008,22 @@ func NewJSConsumerStoreFailedError(err error, opts ...ErrorOption) *ApiError {
 
 	e := ApiErrors[JSConsumerStoreFailedErrF]
 	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
+}
+
+// NewJSConsumerStreamIdentityMismatchError creates a new JSConsumerStreamIdentityMismatchF error: "consumer's stream identity does not match: {msg}"
+func NewJSConsumerStreamIdentityMismatchError(msg interface{}, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSConsumerStreamIdentityMismatchF]
+	args := e.toReplacerArgs([]interface{}{"{msg}", msg})
 	return &ApiError{
 		Code:        e.Code,
 		ErrCode:     e.ErrCode,

@@ -8254,7 +8254,7 @@ func TestJetStreamClusterSourceRetryDoesNotDuplicate(t *testing.T) {
 		if len(ss) == 0 {
 			continue
 		}
-		_, _, sseq := streamAndSeq(string(ss))
+		_, _, sseq, _ := streamAndSeq(string(ss))
 		if sseq == replaySseq {
 			dstSeqs = append(dstSeqs, seq)
 		}

@@ -8492,7 +8492,7 @@ func TestJetStreamClusterConsumerResetDoesNotMutateLocalStateBeforeQuorum(t *tes
 	}
 
 	sseq, dseq, adflr, asflr, pending := o.sseq, o.dseq, o.adflr, o.asflr, len(o.pending)
-	_, _, err = o.resetStartingSeqLocked(0, _EMPTY_, false)
+	_, _, err = o.resetStartingSeqLocked(0, _EMPTY_, false, false)
 	if err != nil {
 		o.mu.Unlock()
 		require_NoError(t, err)

@@ -9811,7 +9811,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	require_NoError(t, err)
 	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
 		t.Fatalf("Expected a header, got none")
-	} else if _, _, sseq := streamAndSeq(shdr); sseq != 26 {
+	} else if _, _, sseq, _ := streamAndSeq(shdr); sseq != 26 {
 		t.Fatalf("Expected header sequence of 26, got %d", sseq)
 	}
 
@@ -9839,7 +9839,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	}
 	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
 		t.Fatalf("Expected a header, got none")
-	} else if _, _, sseq := streamAndSeq(shdr); sseq != 11 {
+	} else if _, _, sseq, _ := streamAndSeq(shdr); sseq != 11 {
 		t.Fatalf("Expected header sequence of 11, got %d", sseq)
 	}
 	if m.Subject != "dlc2" {
@@ -18494,7 +18494,7 @@ func TestIsJSONObjectOrArray(t *testing.T) {
 	}
 }
 
-func TestJetStreamSourcingClipStartSeq(t *testing.T) {
+func TestJetStreamSourcingDontClipStartSeq(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -18531,9 +18531,8 @@ func TestJetStreamSourcingClipStartSeq(t *testing.T) {
 	require_True(t, mset != nil)
 	require_Len(t, len(mset.consumers), 1)
 	for _, o := range mset.consumers {
-		// Should have been clipped back to below 20 as only
-		// 10 messages in the origin stream.
-		require_Equal(t, o.sseq, 11)
+		// Should NOT have been clipped back to below 20.
+		require_Equal(t, o.sseq, 20)
 	}
 }
 
@@ -18572,9 +18571,8 @@ func TestJetStreamMirroringClipStartSeq(t *testing.T) {
 	require_True(t, mset != nil)
 	require_Len(t, len(mset.consumers), 1)
 	for _, o := range mset.consumers {
-		// Should have been clipped back to below 20 as only
-		// 10 messages in the origin stream.
-		require_Equal(t, o.sseq, 11)
+		// Should NOT have been clipped back to below 20.
+		require_Equal(t, o.sseq, 20)
 	}
 }
 
@@ -24405,40 +24403,59 @@ func TestJetStreamSourceConsumerRetryUsesFreshReplySubject(t *testing.T) {
 	mset, err := s.globalAccount().lookupStream("SOURCE")
 	require_NoError(t, err)
 
-	// Original request.
-	m1 := require_ChanRead(t, reqCh, time.Second)
-	var ccr1 CreateConsumerRequest
-	require_NoError(t, json.Unmarshal(m1.Data, &ccr1))
-	require_True(t, ccr1.Config.Sourcing)
-	reply1 := m1.Reply
-
-	// Answer with a required API level error.
 	errResp, err := json.Marshal(JSApiConsumerCreateResponse{
 		ApiResponse: ApiResponse{Error: NewJSRequiredApiLevelError()},
 	})
 	require_NoError(t, err)
+
+	// Original request, asking for API level 5 with stream recreation detection.
+	m1 := require_ChanRead(t, reqCh, time.Second)
+	var ccr1 CreateConsumerRequest
+	require_NoError(t, json.Unmarshal(m1.Data, &ccr1))
+	require_True(t, ccr1.Config.Sourcing)
+	require_Equal(t, m1.Header.Get(JSRequiredApiLevel), "5")
+	reply1 := m1.Reply
+
+	// Answer with a required API level error.
 	require_NoError(t, nc.Publish(reply1, errResp))
 	require_NoError(t, nc.Flush())
 
-	// Retry request.
+	// First retry steps down to API level 4, still sourcing.
 	m2 := require_ChanRead(t, reqCh, time.Second)
 	var ccr2 CreateConsumerRequest
 	require_NoError(t, json.Unmarshal(m2.Data, &ccr2))
-	require_False(t, ccr2.Config.Sourcing)
+	require_True(t, ccr2.Config.Sourcing)
+	require_Equal(t, m2.Header.Get(JSRequiredApiLevel), "4")
 	reply2 := m2.Reply
 	require_NotEqual(t, reply1, reply2)
 
+	// Answer with a required API level error again.
+	require_NoError(t, nc.Publish(reply2, errResp))
+	require_NoError(t, nc.Flush())
+
+	// Second retry drops sourcing and the required API level.
+	m3 := require_ChanRead(t, reqCh, time.Second)
+	var ccr3 CreateConsumerRequest
+	require_NoError(t, json.Unmarshal(m3.Data, &ccr3))
+	require_False(t, ccr3.Config.Sourcing)
+	require_Equal(t, m3.Header.Get(JSRequiredApiLevel), _EMPTY_)
+	reply3 := m3.Reply
+	require_NotEqual(t, reply1, reply3)
+	require_NotEqual(t, reply2, reply3)
+
+	// Stale responses on previous reply subjects must not be picked up.
 	staleResp, err := json.Marshal(JSApiConsumerCreateResponse{
 		ApiResponse: ApiResponse{Error: NewJSStreamNotFoundError()},
 	})
 	require_NoError(t, err)
 	require_NoError(t, nc.Publish(reply1, staleResp))
+	require_NoError(t, nc.Publish(reply2, staleResp))
 
 	okResp, err := json.Marshal(JSApiConsumerCreateResponse{
-		ConsumerInfo: &ConsumerInfo{Name: ccr2.Config.Name, Config: &ccr2.Config},
+		ConsumerInfo: &ConsumerInfo{Name: ccr3.Config.Name, Config: &ccr3.Config},
 	})
 	require_NoError(t, err)
-	require_NoError(t, nc.Publish(reply2, okResp))
+	require_NoError(t, nc.Publish(reply3, okResp))
 	require_NoError(t, nc.Flush())
 
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
@@ -24448,8 +24465,8 @@ func TestJetStreamSourceConsumerRetryUsesFreshReplySubject(t *testing.T) {
 			if si.err != nil {
 				return fmt.Errorf("source is in error state: %v", si.err)
 			}
-			if si.cname != ccr2.Config.Name {
-				return fmt.Errorf("expected consumer name %q, got %q", ccr2.Config.Name, si.cname)
+			if si.cname != ccr3.Config.Name {
+				return fmt.Errorf("expected consumer name %q, got %q", ccr3.Config.Name, si.cname)
 			}
 			return nil
 		}
@@ -25039,6 +25056,285 @@ func TestJetStreamSourceConsumerCreatePoisonedReply(t *testing.T) {
 				}
 				return nil
 			})
+		})
+	}
+}
+
+func TestJetStreamSourceStreamRecreated(t *testing.T) {
+	const (
+		durableConsumer = "C"
+		deliverSubject  = "deliver-subject"
+	)
+
+	test := func(t *testing.T, replicas int, retention RetentionPolicy, durable bool) {
+		var s *Server
+		var c *cluster
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c = createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		lookupStreamOnLeader := func(name string) (*stream, error) {
+			t.Helper()
+			ls := s
+			if c != nil {
+				ls = c.streamLeader(globalAccountName, name)
+			}
+			if ls == nil {
+				return nil, fmt.Errorf("no stream leader")
+			}
+			return ls.globalAccount().lookupStream(name)
+		}
+
+		addOrigin := func() {
+			t.Helper()
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:      "ORIGIN",
+				Subjects:  []string{"foo"},
+				Storage:   FileStorage,
+				Retention: retention,
+				Replicas:  replicas,
+			})
+			require_NoError(t, err)
+			if durable {
+				_, err = jsConsumerCreate(t, nc, "ORIGIN", ConsumerConfig{
+					Durable:        durableConsumer,
+					DeliverSubject: deliverSubject,
+					AckPolicy:      AckFlowControl,
+					Heartbeat:      time.Second,
+					Replicas:       replicas,
+				}, false)
+				require_NoError(t, err)
+			}
+		}
+		publish := func(n int) {
+			t.Helper()
+			for range n {
+				_, err := js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+		}
+		checkSourced := func(msgs uint64) {
+			t.Helper()
+			checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("SOURCE")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != msgs {
+					return fmt.Errorf("expected %d msgs, got %d", msgs, si.State.Msgs)
+				}
+				return nil
+			})
+		}
+		waitForSourceConsumer := func() {
+			t.Helper()
+			// Must allow for the source consumer to be recreated, which is gated by sourceConsumerRetryThreshold.
+			checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+				if mset, err := lookupStreamOnLeader("ORIGIN"); err != nil {
+					return err
+				} else if n := mset.numConsumers(); n == 0 {
+					return errors.New("no sourcing consumer yet")
+				}
+				return nil
+			})
+		}
+
+		addOrigin()
+		srcCfg := &StreamSource{Name: "ORIGIN"}
+		if durable {
+			srcCfg.Consumer = &StreamConsumerSource{Name: durableConsumer, DeliverSubject: deliverSubject}
+		}
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "SOURCE",
+			Storage:  FileStorage,
+			Replicas: replicas,
+			Sources:  []*StreamSource{srcCfg},
+		})
+		require_NoError(t, err)
+		waitForSourceConsumer()
+
+		publish(10)
+		checkSourced(10)
+
+		// Delete and recreate the source stream, its sequences start from scratch.
+		require_NoError(t, js.DeleteStream("ORIGIN"))
+		addOrigin()
+
+		// Short-circuit recreation of the source consumers on the SOURCE leader.
+		mset, err := lookupStreamOnLeader("SOURCE")
+		require_NoError(t, err)
+		mset.mu.Lock()
+		err = mset.setupSourceConsumers()
+		mset.mu.Unlock()
+		require_NoError(t, err)
+		waitForSourceConsumer()
+
+		// Sourcing must pick back up, instead of waiting for the source stream
+		// to reach the sequence we had sourced up to before.
+		publish(5)
+		checkSourced(15)
+
+		// There must only be a single consumer on the recreated stream. Having multiple
+		// would show that consumers are leaked.
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			if mset, err := lookupStreamOnLeader("ORIGIN"); err != nil {
+				return err
+			} else if n := mset.numConsumers(); n != 1 {
+				return fmt.Errorf("expected 1 sourcing consumer, got %d", n)
+			}
+			return nil
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		for _, retention := range []RetentionPolicy{LimitsPolicy, InterestPolicy, WorkQueuePolicy} {
+			for _, durable := range []bool{false, true} {
+				kind := "Implicit"
+				if durable {
+					kind = "Durable"
+				}
+				t.Run(fmt.Sprintf("R%d/%s/%s", replicas, retention, kind), func(t *testing.T) {
+					test(t, replicas, retention, durable)
+				})
+			}
+		}
+	}
+}
+
+func TestJetStreamSourceStreamRecreatedRespectsStartSeq(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		var c *cluster
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c = createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		lookupStreamOnLeader := func(name string) (*stream, error) {
+			t.Helper()
+			ls := s
+			if c != nil {
+				ls = c.streamLeader(globalAccountName, name)
+			}
+			if ls == nil {
+				return nil, fmt.Errorf("no stream leader")
+			}
+			return ls.globalAccount().lookupStream(name)
+		}
+
+		addOrigin := func() {
+			t.Helper()
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:     "ORIGIN",
+				Subjects: []string{"foo"},
+				Storage:  FileStorage,
+				Replicas: replicas,
+			})
+			require_NoError(t, err)
+			if c != nil {
+				c.waitOnStreamLeader(globalAccountName, "ORIGIN")
+			}
+		}
+		// publish sends n messages to the origin, each body carrying "<marker><i>" so we
+		// can assert exactly which origin sequences were sourced into the destination.
+		publish := func(marker string, n int) {
+			t.Helper()
+			for i := 1; i <= n; i++ {
+				_, err := js.Publish("foo", []byte(fmt.Sprintf("%s%d", marker, i)))
+				require_NoError(t, err)
+			}
+		}
+		checkSourced := func(msgs uint64) {
+			t.Helper()
+			checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("SOURCE")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != msgs {
+					return fmt.Errorf("expected %d msgs, got %d", msgs, si.State.Msgs)
+				}
+				return nil
+			})
+		}
+		requireBody := func(seq uint64, expected string) {
+			t.Helper()
+			m, err := js.GetMsg("SOURCE", seq)
+			require_NoError(t, err)
+			require_Equal(t, string(m.Data), expected)
+		}
+		waitForSourceConsumer := func() {
+			t.Helper()
+			// Must allow for the source consumer to be recreated, which is gated by sourceConsumerRetryThreshold.
+			checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+				if mset, err := lookupStreamOnLeader("ORIGIN"); err != nil {
+					return err
+				} else if n := mset.numConsumers(); n == 0 {
+					return errors.New("no sourcing consumer yet")
+				}
+				return nil
+			})
+		}
+
+		// First incarnation of the origin, sourced with OptStartSeq set.
+		addOrigin()
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:     "SOURCE",
+			Storage:  FileStorage,
+			Replicas: replicas,
+			Sources:  []*StreamSource{{Name: "ORIGIN", OptStartSeq: 6}},
+		})
+		require_NoError(t, err)
+		waitForSourceConsumer()
+
+		// Publish origin sequences 1..10. OptStartSeq must be respected, so only origin
+		// sequences 6..10 (5 messages) are sourced, and nothing below the start sequence.
+		publish("a", 10)
+		checkSourced(5)
+		requireBody(1, "a6")
+		requireBody(5, "a10")
+
+		// Delete and recreate the origin, its sequences restart from scratch.
+		require_NoError(t, js.DeleteStream("ORIGIN"))
+		addOrigin()
+
+		// Short-circuit recreation of the source consumer on the SOURCE leader.
+		mset, err := lookupStreamOnLeader("SOURCE")
+		require_NoError(t, err)
+		mset.mu.Lock()
+		err = mset.setupSourceConsumers()
+		mset.mu.Unlock()
+		require_NoError(t, err)
+		waitForSourceConsumer()
+
+		// Publish origin sequences 1..10 on the recreated origin. OptStartSeq must still be
+		// respected, so only origin sequences 6..10 (5 messages) are sourced and nothing
+		// below the start sequence. Sourcing from the beginning would instead pick up
+		// sequence 1 (body "b1") at destination sequence 6.
+		publish("b", 10)
+		checkSourced(10)
+		requireBody(6, "b6")
+		requireBody(10, "b10")
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			test(t, replicas)
 		})
 	}
 }

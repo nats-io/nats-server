@@ -330,6 +330,10 @@ const (
 const (
 	// JSRequiredApiLevel requires the API level of the responding server to have the specified minimum value.
 	JSRequiredApiLevel = "Nats-Required-Api-Level"
+
+	// JSStreamIdentity is the stream's identity used to reject consumer create on a mismatch, and return
+	// the stream identity in the consumer create/reset responses.
+	JSStreamIdentity = "Nats-Stream-Identity"
 )
 
 var denyAllClientJs = []string{jsAllAPI, "$KV.>", "$OBJ.>"}
@@ -1068,6 +1072,14 @@ func (s *Server) sendAPIResponse(ci *ClientInfo, acc *Account, subject, reply, r
 	acc.trackAPI()
 	if reply != _EMPTY_ {
 		s.sendInternalAccountMsg(nil, reply, response)
+	}
+	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
+}
+
+func (s *Server) sendAPIHdrResponse(ci *ClientInfo, acc *Account, subject, reply, request string, hdr []byte, response string) {
+	acc.trackAPI()
+	if reply != _EMPTY_ {
+		s.sendInternalAccountMsgWithReply(nil, reply, _EMPTY_, hdr, response, false)
 	}
 	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
 }
@@ -4692,7 +4704,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	}
 
 	if isClustered && !direct {
-		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config, req.Action, req.Pedantic)
+		s.jsClusteredConsumerRequest(ci, acc, subject, reply, hdr, msg, &req)
 		return
 	}
 
@@ -4732,6 +4744,17 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		}
 	}
 
+	// If the user provided an expected stream identity, reject the request on a mismatch.
+	var streamIdentity string
+	if req.Config.Direct || req.Config.Sourcing {
+		streamIdentity = stream.identity()
+		if reqIdentity := sliceHeader(JSStreamIdentity, hdr); len(reqIdentity) > 0 && bytesToString(reqIdentity) != streamIdentity {
+			resp.Error = NewJSConsumerStreamIdentityMismatchError(streamIdentity)
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+	}
+
 	if o := stream.lookupConsumer(consumerName); o != nil {
 		if o.offlineReason != _EMPTY_ {
 			resp.Error = NewJSConsumerOfflineReasonError(errors.New(o.offlineReason))
@@ -4767,7 +4790,12 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 	resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
-	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+	if streamIdentity != _EMPTY_ {
+		rhdr := genHeader(nil, JSStreamIdentity, streamIdentity)
+		s.sendAPIHdrResponse(ci, acc, subject, reply, string(msg), rhdr, s.jsonResponse(resp))
+	} else {
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+	}
 
 	o.mu.RLock()
 	if o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
