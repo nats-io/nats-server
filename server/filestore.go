@@ -3280,6 +3280,13 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 		}
 	}
 
+	needsCleanup := mb.cache == nil
+	defer func() {
+		if needsCleanup {
+			mb.finishedWithCache()
+		}
+	}()
+
 	if filter == _EMPTY_ {
 		filter, wc = fwcs, true
 	}
@@ -3359,7 +3366,6 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 		}
 		shouldExpire = true
 	}
-	defer mb.finishedWithCache()
 
 	_tsa, _fsa := [32]string{}, [32]string{}
 	tsa, fsa := _tsa[:0], _fsa[:0]
@@ -3928,12 +3934,14 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 				delete(subs, bytesToString(bsubj))
 			} else {
 				// Need to search for the real last since recorded last is > maxSeq.
-				var didLoad bool
+				needsCleanup := mb.cache == nil
 				if mb.cacheNotLoaded() {
 					if ierr = mb.loadMsgsWithLock(); ierr != nil {
+						if needsCleanup {
+							mb.finishedWithCache()
+						}
 						return false
 					}
-					didLoad = true
 				}
 				var smv StoreMsg
 				fseq := atomic.LoadUint64(&mb.first.seq)
@@ -3948,7 +3956,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 					delete(subs, ssubj)
 					break
 				}
-				if didLoad {
+				if needsCleanup {
 					mb.finishedWithCache()
 				}
 			}
@@ -5447,10 +5455,14 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			fs.mu.Lock()
 			continue
 		}
+		needsCleanup := mb.cache == nil
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
 			if err := mb.loadMsgsWithLock(); err != nil {
+				if needsCleanup {
+					mb.finishedWithCache()
+				}
 				mb.mu.Unlock()
 				// Re-acquire fs lock
 				fs.mu.Lock()
@@ -5485,7 +5497,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 		if shouldExpire {
 			// Expire this cache before moving on.
 			mb.tryForceExpireCacheLocked()
-		} else {
+		} else if needsCleanup {
 			mb.finishedWithCache()
 		}
 		mb.mu.Unlock()
@@ -5819,16 +5831,18 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
 	// Now just load regardless.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
-	var didLoad bool
+	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
+			if needsCleanup {
+				mb.finishedWithCache()
+			}
 			mb.mu.Unlock()
 			return false, err
 		}
-		didLoad = true
 	}
 	finishedWithCache := func() {
-		if didLoad {
+		if needsCleanup {
 			mb.finishedWithCache()
 		}
 	}
@@ -9106,18 +9120,20 @@ func (fs *fileStore) loadLastLocked(subj string, sm *StoreMsg) (lsm *StoreMsg, e
 				return nil, err
 			}
 		}
-		var didLoad bool
+		needsCleanup := mb.cache == nil
 		if l > 0 {
 			if mb.cacheNotLoaded() {
 				if err := mb.loadMsgsWithLock(); err != nil {
+					if needsCleanup {
+						mb.finishedWithCache()
+					}
 					mb.mu.Unlock()
 					return nil, err
 				}
-				didLoad = true
 			}
 			lsm, err = mb.cacheLookup(l, sm)
 		}
-		if didLoad {
+		if needsCleanup {
 			mb.finishedWithCache()
 		}
 		mb.mu.Unlock()
@@ -11451,15 +11467,21 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 		return nil
 	}
 
+	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
+			if needsCleanup {
+				mb.finishedWithCache()
+			}
 			return err
 		}
-		// indexCacheBuf can produce fss now, so if non-nil we are good.
-		if mb.fss != nil {
-			return nil
-		}
+	}
+	if needsCleanup {
 		defer mb.finishedWithCache()
+	}
+	// indexCacheBuf can produce fss now, so if non-nil we are good.
+	if mb.fss != nil {
+		return nil
 	}
 
 	// Create new one regardless.

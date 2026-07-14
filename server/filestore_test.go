@@ -1756,6 +1756,99 @@ func TestFileStoreReadCache(t *testing.T) {
 	})
 }
 
+func TestFileStoreWeakCachePromotionCleanup(t *testing.T) {
+	newTestStore := func(t *testing.T) (*fileStore, *msgBlock, *cache) {
+		t.Helper()
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192},
+			StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{"foo", "bar"}},
+		)
+		require_NoError(t, err)
+		t.Cleanup(func() { fs.Stop() })
+
+		for i := 0; i < 4; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+			require_NoError(t, err)
+		}
+		_, _, err = fs.StoreMsg("bar", nil, []byte("hello"), 0)
+		require_NoError(t, err)
+		require_NoError(t, fs.FlushAllPending())
+
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+
+		mb := fs.lmb
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+
+		require_NoError(t, mb.loadMsgsWithLock())
+		require_NotNil(t, mb.cache)
+		c := mb.cache
+		mb.ecache.Set(c)
+		mb.ecache.Weaken()
+		mb.cache = nil
+		mb.fss = nil
+		if info, ok := fs.psim.Find(stringToBytes("foo")); ok {
+			info.fblk, info.lblk = mb.index, mb.index
+		}
+		if info, ok := fs.psim.Find(stringToBytes("bar")); ok {
+			info.fblk, info.lblk = mb.index, mb.index
+		}
+		require_NotNil(t, mb.ecache.Value())
+
+		return fs, mb, c
+	}
+
+	require_NoStrongCache := func(t *testing.T, mb *msgBlock, c *cache) {
+		t.Helper()
+		require_True(t, mb.cache == nil)
+		require_True(t, mb.ecache.Value() == c)
+		runtime.KeepAlive(c)
+	}
+
+	t.Run("removeMsgFromBlock", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		removed, err := fs.removeMsg(2, false, true, true)
+		require_NoError(t, err)
+		require_True(t, removed)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("generatePerSubjectInfo", func(t *testing.T) {
+		_, mb, c := newTestStore(t)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoError(t, mb.generatePerSubjectInfo())
+		require_NotNil(t, mb.fss)
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("filteredPending", func(t *testing.T) {
+		_, mb, c := newTestStore(t)
+		total, first, last, err := mb.filteredPending("foo", false, 1)
+		require_NoError(t, err)
+		require_Equal(t, total, uint64(4))
+		require_Equal(t, first, uint64(1))
+		require_Equal(t, last, uint64(4))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("loadLast", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		sm, err := fs.loadLast("foo", nil)
+		require_NoError(t, err)
+		require_NotNil(t, sm)
+		require_Equal(t, sm.seq, uint64(4))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+}
+
 func TestFileStorePartialCacheExpiration(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cexp := 10 * time.Millisecond
