@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"fmt"
 	"maps"
@@ -3713,6 +3714,13 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				accFound = true
 			}
 			acc, err := s.LookupAccount(fi.Name())
+			// Expired accounts are not a JetStream health problem; skip them when
+			// scanning all accounts. Still surface an error if this account was
+			// explicitly requested.
+			expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
+			if expired && opts.Account == _EMPTY_ {
+				continue
+			}
 			if err != nil {
 				if !details {
 					health.Status = na
@@ -4008,6 +4016,13 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	// Use our copy to traverse so we do not need to hold the js lock.
 	for accName, asa := range streams {
 		acc, err := s.LookupAccount(accName)
+		// Expired accounts are not a JetStream health problem; skip them when
+		// scanning all accounts. Still surface an error if this account was
+		// explicitly requested.
+		expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
+		if len(asa) > 0 && expired && opts.Account == _EMPTY_ {
+			continue
+		}
 		if err != nil && len(asa) > 0 {
 			if !details {
 				health.Status = na
