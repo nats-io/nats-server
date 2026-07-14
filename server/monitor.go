@@ -3716,9 +3716,23 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			acc, err := s.LookupAccount(fi.Name())
 			// Expired accounts are not a JetStream health problem; skip them when
 			// scanning all accounts. Still surface an error if this account was
-			// explicitly requested.
+			// explicitly requested — including the err==nil + IsExpired() case.
 			expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
-			if expired && opts.Account == _EMPTY_ {
+			if expired {
+				if opts.Account == _EMPTY_ {
+					continue
+				}
+				msg := fmt.Sprintf("JetStream account '%s' is expired", fi.Name())
+				if !details {
+					health.Status = na
+					health.Error = msg
+					return health
+				}
+				health.Errors = append(health.Errors, HealthzError{
+					Type:    HealthzErrorAccount,
+					Account: fi.Name(),
+					Error:   msg,
+				})
 				continue
 			}
 			if err != nil {
@@ -4018,9 +4032,23 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		acc, err := s.LookupAccount(accName)
 		// Expired accounts are not a JetStream health problem; skip them when
 		// scanning all accounts. Still surface an error if this account was
-		// explicitly requested.
+		// explicitly requested — including the err==nil + IsExpired() case.
 		expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
-		if len(asa) > 0 && expired && opts.Account == _EMPTY_ {
+		if expired {
+			if opts.Account == _EMPTY_ {
+				continue
+			}
+			msg := fmt.Sprintf("JetStream account %q is expired", accName)
+			if !details {
+				health.Status = na
+				health.Error = msg
+				return health
+			}
+			health.Errors = append(health.Errors, HealthzError{
+				Type:    HealthzErrorAccount,
+				Account: accName,
+				Error:   msg,
+			})
 			continue
 		}
 		if err != nil && len(asa) > 0 {
