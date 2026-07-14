@@ -1198,6 +1198,14 @@ func TestJetStreamJWTHealthzIgnoresExpiredAccounts(t *testing.T) {
 	explicit := s.healthz(&HealthzOptions{Account: apub})
 	require_True(t, explicit.Status == "unavailable")
 	require_True(t, explicit.StatusCode == http.StatusServiceUnavailable)
+
+	// With details + stream, keep the expired-account error instead of a 404 for
+	// a stream that was never examined because the account was skipped.
+	detailed := s.healthz(&HealthzOptions{Account: apub, Stream: "TEST", Details: true})
+	require_True(t, detailed.Status == "error")
+	require_True(t, detailed.StatusCode == http.StatusServiceUnavailable)
+	require_True(t, len(detailed.Errors) == 1)
+	require_True(t, detailed.Errors[0].Type == HealthzErrorAccount)
 }
 
 func TestJetStreamJWTDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {

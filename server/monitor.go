@@ -3733,7 +3733,9 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 					Account: fi.Name(),
 					Error:   msg,
 				})
-				continue
+				// Return so later stream/consumer not-found checks do not
+				// replace this with a misleading 404 for assets we skipped.
+				return health
 			}
 			if err != nil {
 				if !details {
@@ -4049,7 +4051,8 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				Account: accName,
 				Error:   msg,
 			})
-			continue
+			// Return so later health checks do not obscure the expired account.
+			return health
 		}
 		if err != nil && len(asa) > 0 {
 			if !details {
