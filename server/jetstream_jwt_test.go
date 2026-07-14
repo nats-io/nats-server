@@ -1193,6 +1193,11 @@ func TestJetStreamJWTHealthzIgnoresExpiredAccounts(t *testing.T) {
 	status := s.healthz(nil)
 	require_True(t, status.Status == "ok")
 	require_True(t, status.StatusCode == http.StatusOK)
+
+	// Explicit account healthz must still report unavailable for an expired account.
+	explicit := s.healthz(&HealthzOptions{Account: apub})
+	require_True(t, explicit.Status == "unavailable")
+	require_True(t, explicit.StatusCode == http.StatusServiceUnavailable)
 }
 
 func TestJetStreamJWTDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
