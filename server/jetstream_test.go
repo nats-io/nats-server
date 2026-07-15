@@ -9617,6 +9617,112 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 
 }
 
+func TestJetStreamSourceStartSeqRespectedOnEmptyOrigin(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	waitForSourcingConsumer := func(origin string) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			mset, err := s.globalAccount().lookupStream(origin)
+			if err != nil {
+				return err
+			}
+			if mset.numDirectConsumers() == 0 {
+				return fmt.Errorf("no sourcing consumer attached to %q yet", origin)
+			}
+			return nil
+		})
+	}
+
+	// Publish origin sequences 1..15, with the body carrying the origin sequence
+	// so we can assert exactly which messages were sourced.
+	publishOrigin := func(subject string) {
+		t.Helper()
+		for i := 1; i <= 15; i++ {
+			_, err := js.Publish(subject, []byte(strconv.Itoa(i)))
+			require_NoError(t, err)
+		}
+	}
+
+	t.Run("mirror", func(t *testing.T) {
+		// Origin stream, empty.
+		_, err := js.AddStream(&nats.StreamConfig{Name: "MO", Subjects: []string{"m"}})
+		require_NoError(t, err)
+
+		// Mirror requesting to start at origin sequence 10, while the origin is empty.
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:   "M",
+			Mirror: &nats.StreamSource{Name: "MO", OptStartSeq: 10},
+		})
+		require_NoError(t, err)
+
+		waitForSourcingConsumer("MO")
+		publishOrigin("m")
+
+		// Mirrors preserve origin sequences, so the mirror must contain exactly
+		// origin sequences 10..15 and nothing below 10.
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != 6 {
+				return fmt.Errorf("expected 6 msgs (origin 10..15), got state: %+v", si.State)
+			}
+			if si.State.FirstSeq != 10 {
+				return fmt.Errorf("expected first seq 10, got state: %+v", si.State)
+			}
+			if si.State.LastSeq != 15 {
+				return fmt.Errorf("expected last seq 15, got state: %+v", si.State)
+			}
+			return nil
+		})
+	})
+
+	t.Run("source", func(t *testing.T) {
+		// Origin stream, empty.
+		_, err := js.AddStream(&nats.StreamConfig{Name: "SO", Subjects: []string{"s"}})
+		require_NoError(t, err)
+
+		// Source requesting to start at origin sequence 10, while the origin is empty.
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:    "S",
+			Sources: []*nats.StreamSource{{Name: "SO", OptStartSeq: 10}},
+		})
+		require_NoError(t, err)
+
+		waitForSourcingConsumer("SO")
+		publishOrigin("s")
+
+		// A source re-sequences into the destination, so assert on message count and
+		// on the origin sequences that were actually sourced (carried in the body).
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("S")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != 6 {
+				return fmt.Errorf("expected 6 msgs (origin 10..15), got state: %+v", si.State)
+			}
+			return nil
+		})
+
+		// The first and last sourced messages must be origin sequences 10 and 15,
+		// proving nothing below the requested start sequence was sourced.
+		first, err := js.GetMsg("S", 1)
+		require_NoError(t, err)
+		require_Equal(t, string(first.Data), "10")
+
+		last, err := js.GetMsg("S", 6)
+		require_NoError(t, err)
+		require_Equal(t, string(last.Data), "15")
+	})
+}
+
 func TestJetStreamMirrorStripExpectedHeaders(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
