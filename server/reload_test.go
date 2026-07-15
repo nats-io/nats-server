@@ -7433,6 +7433,55 @@ func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamReloadPreservesMaxConcurrentIOOnDisable(t *testing.T) {
+	storeDir := t.TempDir()
+	initialLimit := 128
+	disabledConfig := `listen: 127.0.0.1:-1`
+	jsConfig := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			max_mem_store: 2MB
+			max_file_store: 8MB
+			store_dir: '%s'
+			max_concurrent_io: %d
+		}
+	`, storeDir, initialLimit)
+	conf := createConfFile(t, []byte(jsConfig))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_True(t, s.ReadyForConnections(5*time.Second))
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// disabling JS is OK
+	reloadUpdateConfig(t, s, conf, disabledConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// disabling JS repeatedly is OK
+	reloadUpdateConfig(t, s, conf, disabledConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// renabling with the same values is OK
+	reloadUpdateConfig(t, s, conf, jsConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// changing value not OK
+	jsConfig = strings.Replace(jsConfig,
+		fmt.Sprintf("max_concurrent_io: %d", initialLimit),
+		"max_concurrent_io: 256", 1)
+	require_NoError(t, os.WriteFile(conf, []byte(jsConfig), 0666))
+	err := s.Reload()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "JetStreamConcurrentIOs")
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+}
+
 func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	tdir := t.TempDir()
 	template := `

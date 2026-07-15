@@ -8938,6 +8938,77 @@ func TestJetStreamClusterDesyncAfterDiskResetDuringRollout(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterEncryptedReplicaRecoversFromCorruptKeyFile(t *testing.T) {
+	test := func(truncateTo int64) {
+		c := createJetStreamClusterWithTemplate(t, jsClusterEncryptedTempl, "C", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+
+		for range 100 {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		// Take down a caught-up follower to stand in for a host that loses power.
+		nsl := c.randomNonStreamLeader(globalAccountName, "TEST")
+		require_NotNil(t, nsl)
+		mset, err := nsl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		rg := mset.raftGroup().Name
+		sd := nsl.getOpts().StoreDir
+		nsl.Shutdown()
+
+		// Truncate the WAL's key files, simulating an unsynced write.
+		walMsgs := filepath.Join(sd, "jetstream", "$SYS", "_js_", rg, msgDir)
+		keys, err := filepath.Glob(filepath.Join(walMsgs, "*.key"))
+		require_NoError(t, err)
+		require_True(t, len(keys) > 0)
+		for _, k := range keys {
+			require_NoError(t, os.Truncate(k, truncateTo))
+		}
+
+		// Advance the stream while the follower is down, so it must catch up to return.
+		for range 100 {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+		rs := c.restartServer(nsl)
+
+		// The replica should reset its corrupt WAL and rebuild from the leader.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+			if err != nil {
+				return err
+			}
+			if state.Msgs != 200 {
+				return fmt.Errorf("expected 200 messages, got %d", state.Msgs)
+			}
+			return nil
+		})
+		c.waitOnServerHealthz(rs)
+	}
+
+	// Truncate below minBlkKeySize (64) fails fast with errBadKeySize, while truncation to
+	// 64-71 bytes passes the size check but fails to open/convert the key.
+	for _, size := range []int64{0, 70} {
+		t.Run(fmt.Sprintf("TruncateTo%d", size), func(t *testing.T) {
+			test(size)
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

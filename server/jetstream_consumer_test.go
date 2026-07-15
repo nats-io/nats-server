@@ -12876,3 +12876,50 @@ func TestJetStreamConsumerSetRateLimitAccountMpayRace(t *testing.T) {
 
 	wg.Wait()
 }
+
+// https://github.com/nats-io/nats-server/issues/8381
+func TestJetStreamConsumerUpdateRejectsStorageChange(t *testing.T) {
+	test := func(t *testing.T, memoryStorage bool, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+		require_NoError(t, err)
+
+		cfg := &nats.ConsumerConfig{
+			Durable:       "DUR",
+			AckPolicy:     nats.AckExplicitPolicy,
+			MemoryStorage: memoryStorage,
+		}
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+
+		cfg.MemoryStorage = !cfg.MemoryStorage
+		_, err = js.UpdateConsumer("TEST", cfg)
+		require_Error(t, err, NewJSConsumerCreateError(errors.New("storage type can not be updated")))
+
+		// Confirm the original storage type was left untouched.
+		ci, err := js.ConsumerInfo("TEST", "DUR")
+		require_NoError(t, err)
+		require_Equal(t, ci.Config.MemoryStorage, memoryStorage)
+	}
+
+	for _, memoryStorage := range []bool{false, true} {
+		title := "FileStorage"
+		if memoryStorage {
+			title = "MemoryStorage"
+		}
+		t.Run(fmt.Sprintf("%s/R1", title), func(t *testing.T) { test(t, memoryStorage, 1) })
+		t.Run(fmt.Sprintf("%s/R3", title), func(t *testing.T) { test(t, memoryStorage, 3) })
+	}
+}

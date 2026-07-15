@@ -22842,6 +22842,47 @@ func TestJetStreamDirectGetBatchParallelWriteDeadlock(t *testing.T) {
 	})
 }
 
+func TestJetStreamMaxConcurrentIO(t *testing.T) {
+	for _, test := range []struct {
+		Name    string
+		Given   int
+		Allowed bool
+	}{
+		{"ConfiguredMin", minConcurrentIOs, true},
+		{"ConfiguredMid", 512, true},
+		{"ConfiguredMax", maxConcurrentIOs, true},
+		{"TooLow", -1, false},
+		{"TooHigh", 10_000, false},
+	} {
+		t.Run(test.Name, func(t *testing.T) {
+			storeDir := t.TempDir()
+			defer func() {
+				if test.Allowed {
+					return
+				}
+				if err := recover(); err == nil {
+					t.Fatalf("should have panicked at startup")
+				}
+			}()
+
+			conf := createConfFile(t, fmt.Appendf(nil, `
+				listen: 127.0.0.1:-1
+				jetstream: {
+					max_mem_store: 2MB
+					max_file_store: 8MB
+					store_dir: '%s'
+					max_concurrent_io: %d
+				}
+			`, storeDir, test.Given))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			require_True(t, s.ReadyForConnections(5*time.Second))
+			require_Equal(t, s.dios.cap(), test.Given)
+		})
+	}
+}
+
 func TestJetStreamReloadMetaCompact(t *testing.T) {
 	storeDir := t.TempDir()
 
@@ -24222,6 +24263,170 @@ func TestJetStreamMirrorProcessInboundNilDeref(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	stop.Store(true)
 	wg.Wait()
+}
+
+func TestJetStreamMirrorConsumerRetryUsesFreshReplySubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Route the mirror's consumer create requests to our own fake API, so we fully control
+	// the request/response loop instead of racing the server's real JetStream API handler.
+	const apiPrefix = "$FAKE.API"
+	reqCh := make(chan *nats.Msg, 4)
+	_, err := nc.Subscribe(apiPrefix+".CONSUMER.CREATE.>", func(m *nats.Msg) {
+		reqCh <- m
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "MIRROR",
+		Mirror: &nats.StreamSource{
+			Name:     "ORIGIN",
+			External: &nats.ExternalStream{APIPrefix: apiPrefix},
+		},
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("MIRROR")
+	require_NoError(t, err)
+
+	// Original request.
+	m1 := require_ChanRead(t, reqCh, time.Second)
+	var ccr1 CreateConsumerRequest
+	require_NoError(t, json.Unmarshal(m1.Data, &ccr1))
+	require_True(t, ccr1.Config.Sourcing)
+	reply1 := m1.Reply
+
+	// Answer with a required API level error.
+	errResp, err := json.Marshal(JSApiConsumerCreateResponse{
+		ApiResponse: ApiResponse{Error: NewJSRequiredApiLevelError()},
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(reply1, errResp))
+	require_NoError(t, nc.Flush())
+
+	// Retry request.
+	m2 := require_ChanRead(t, reqCh, time.Second)
+	var ccr2 CreateConsumerRequest
+	require_NoError(t, json.Unmarshal(m2.Data, &ccr2))
+	require_False(t, ccr2.Config.Sourcing)
+	reply2 := m2.Reply
+	require_NotEqual(t, reply1, reply2)
+
+	staleResp, err := json.Marshal(JSApiConsumerCreateResponse{
+		ApiResponse: ApiResponse{Error: NewJSStreamNotFoundError()},
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(reply1, staleResp))
+
+	okResp, err := json.Marshal(JSApiConsumerCreateResponse{
+		ConsumerInfo: &ConsumerInfo{Name: ccr2.Config.Name, Config: &ccr2.Config},
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(reply2, okResp))
+	require_NoError(t, nc.Flush())
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if mset.mirror == nil {
+			return fmt.Errorf("mirror was removed")
+		}
+		if mset.mirror.err != nil {
+			return fmt.Errorf("mirror is in error state: %v", mset.mirror.err)
+		}
+		if mset.mirror.cname != ccr2.Config.Name {
+			return fmt.Errorf("expected consumer name %q, got %q", ccr2.Config.Name, mset.mirror.cname)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamSourceConsumerRetryUsesFreshReplySubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Route the mirror's consumer create requests to our own fake API, so we fully control
+	// the request/response loop instead of racing the server's real JetStream API handler.
+	const apiPrefix = "$FAKE.API"
+	reqCh := make(chan *nats.Msg, 4)
+	_, err := nc.Subscribe(apiPrefix+".CONSUMER.CREATE.>", func(m *nats.Msg) {
+		reqCh <- m
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "SOURCE",
+		Sources: []*nats.StreamSource{
+			{
+				Name:     "ORIGIN",
+				External: &nats.ExternalStream{APIPrefix: apiPrefix},
+			},
+		},
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("SOURCE")
+	require_NoError(t, err)
+
+	// Original request.
+	m1 := require_ChanRead(t, reqCh, time.Second)
+	var ccr1 CreateConsumerRequest
+	require_NoError(t, json.Unmarshal(m1.Data, &ccr1))
+	require_True(t, ccr1.Config.Sourcing)
+	reply1 := m1.Reply
+
+	// Answer with a required API level error.
+	errResp, err := json.Marshal(JSApiConsumerCreateResponse{
+		ApiResponse: ApiResponse{Error: NewJSRequiredApiLevelError()},
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(reply1, errResp))
+	require_NoError(t, nc.Flush())
+
+	// Retry request.
+	m2 := require_ChanRead(t, reqCh, time.Second)
+	var ccr2 CreateConsumerRequest
+	require_NoError(t, json.Unmarshal(m2.Data, &ccr2))
+	require_False(t, ccr2.Config.Sourcing)
+	reply2 := m2.Reply
+	require_NotEqual(t, reply1, reply2)
+
+	staleResp, err := json.Marshal(JSApiConsumerCreateResponse{
+		ApiResponse: ApiResponse{Error: NewJSStreamNotFoundError()},
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(reply1, staleResp))
+
+	okResp, err := json.Marshal(JSApiConsumerCreateResponse{
+		ConsumerInfo: &ConsumerInfo{Name: ccr2.Config.Name, Config: &ccr2.Config},
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(reply2, okResp))
+	require_NoError(t, nc.Flush())
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		for _, si := range mset.sources {
+			if si.err != nil {
+				return fmt.Errorf("source is in error state: %v", si.err)
+			}
+			if si.cname != ccr2.Config.Name {
+				return fmt.Errorf("expected consumer name %q, got %q", ccr2.Config.Name, si.cname)
+			}
+			return nil
+		}
+		return fmt.Errorf("source info not found")
+	})
 }
 
 func TestJetStreamMirrorRetriesOnSeqAlreadySeenMismatch(t *testing.T) {

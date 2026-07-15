@@ -301,8 +301,10 @@ func TestJWTUserExpired(t *testing.T) {
 
 func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	nuc := newJWTTestUserClaims()
-	nuc.IssuedAt = time.Now().Unix()
-	nuc.Expires = time.Now().Add(time.Second).Unix()
+	now := time.Now()
+	nuc.IssuedAt = now.Unix()
+	// JWT expirations have one-second resolution. Leave a full second for setup.
+	nuc.Expires = now.Unix() + 2
 	s, c, cr := setupJWTTestWithUserClaims(t, nuc, "+OK")
 	defer s.Shutdown()
 	defer c.close()
@@ -311,12 +313,10 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 		t.Fatalf("Received %v", err)
 	}
 	if !strings.HasPrefix(l, "PONG") {
-		t.Fatalf("Expected a PONG")
+		t.Fatalf("Expected a PONG, got %q", l)
 	}
 
-	// Now we should expire after 1 second or so.
-	time.Sleep(1250 * time.Millisecond)
-
+	// Expect an expiration error
 	l, err = cr.ReadString('\n')
 	if err != nil {
 		t.Fatalf("Received %v", err)

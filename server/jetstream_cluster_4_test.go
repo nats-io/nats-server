@@ -8576,3 +8576,120 @@ func TestJetStreamClusterDecodeBatchMsgRejectsMalformed(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
+	// binary.Uvarint/Varint return n == 0 when the buffer is too short to
+	// hold a full varint, so a truncated replicated update must be rejected
+	// rather than silently decoded as zero-valued fields.
+	t.Run("AckUpdate", func(t *testing.T) {
+		valid := binary.AppendUvarint(nil, 10)
+		valid = binary.AppendUvarint(valid, 20)
+		if _, _, err := decodeAckUpdate(valid); err != nil {
+			t.Fatalf("expected valid ack update to decode, got %v", err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1]} {
+			if _, _, err := decodeAckUpdate(buf); err != errBadAckUpdate {
+				t.Fatalf("expected errBadAckUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
+	t.Run("DeliveredUpdate", func(t *testing.T) {
+		valid := binary.AppendUvarint(nil, 10)
+		valid = binary.AppendUvarint(valid, 20)
+		valid = binary.AppendUvarint(valid, 1)
+		valid = binary.AppendVarint(valid, time.Now().UnixNano())
+		if _, _, _, _, err := decodeDeliveredUpdate(valid); err != nil {
+			t.Fatalf("expected valid delivered update to decode, got %v", err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1], valid[:2], valid[:3]} {
+			if _, _, _, _, err := decodeDeliveredUpdate(buf); err != errBadDeliveredUpdate {
+				t.Fatalf("expected errBadDeliveredUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
+	// updateSkipOp and resetSeqOp read a fixed-width little-endian uint64 for
+	// the sequence, so a buffer shorter than 8 bytes must be rejected rather
+	// than triggering an out-of-bounds slice access.
+	t.Run("SkipUpdate", func(t *testing.T) {
+		valid := binary.LittleEndian.AppendUint64(nil, 10)
+		if sseq, err := decodeSkipUpdate(valid); err != nil || sseq != 10 {
+			t.Fatalf("expected valid skip update to decode, got sseq=%d err=%v", sseq, err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1], valid[:7]} {
+			if _, err := decodeSkipUpdate(buf); err != errBadSkipUpdate {
+				t.Fatalf("expected errBadSkipUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
+	t.Run("ResetUpdate", func(t *testing.T) {
+		valid := binary.LittleEndian.AppendUint64(nil, 10)
+		valid = append(valid, "reply"...)
+		if sseq, reply, err := decodeResetUpdate(valid); err != nil || sseq != 10 || reply != "reply" {
+			t.Fatalf("expected valid reset update to decode, got sseq=%d reply=%q err=%v", sseq, reply, err)
+		}
+		for _, buf := range [][]byte{nil, valid[:1], valid[:7]} {
+			if _, _, err := decodeResetUpdate(buf); err != errBadResetUpdate {
+				t.Fatalf("expected errBadResetUpdate for %v, got %v", buf, err)
+			}
+		}
+	})
+}
+
+func TestJetStreamClusterDecodeStreamMsgRejectOversizedLength(t *testing.T) {
+	// A valid replicated stream msg still round trips.
+	esm := encodeStreamMsg("foo", _EMPTY_, nil, []byte("hello"), 1, 0, false)
+	subject, _, _, msg, lseq, _, _, err := decodeStreamMsg(esm[1:])
+	require_NoError(t, err)
+	require_Equal(t, subject, "foo")
+	require_Equal(t, lseq, 1)
+	require_Equal(t, string(msg), "hello")
+
+	// The message length is read as a uint32 into an int. On 32-bit builds a
+	// value with the high bit set turns negative and slips past the
+	// len(buf) < ml check, so the following buf[:ml] panics. Such a length must
+	// be rejected on every architecture rather than decoded. This mirrors what a
+	// cluster peer could replicate on the applyStreamMsgOp/catchup path.
+	le := binary.LittleEndian
+	var buf []byte
+	buf = le.AppendUint64(buf, 1) // lseq
+	buf = le.AppendUint64(buf, 0) // ts
+	buf = le.AppendUint16(buf, 3) // subject length
+	buf = append(buf, "foo"...)
+	buf = le.AppendUint16(buf, 0)          // reply length
+	buf = le.AppendUint16(buf, 0)          // header length
+	buf = le.AppendUint32(buf, 0xFFFFFFFF) // message length, negative as a 32-bit int
+	if _, _, _, _, _, _, _, err := decodeStreamMsg(buf); err != errBadStreamMsg {
+		t.Fatalf("expected errBadStreamMsg for oversized message length, got %v", err)
+	}
+}
+
+func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
+	// The append entry wire format only requires each entry to carry its type
+	// byte, so a cluster peer can replicate an EntryNormal with a zero-length
+	// body and it still decodes cleanly.
+	le := binary.LittleEndian
+	raw := make([]byte, appendEntryBaseLen)
+	le.PutUint16(raw[40:], 1)            // one entry
+	raw = le.AppendUint32(raw, 1)        // entry length is the type byte only
+	raw = append(raw, byte(EntryNormal)) // no data follows
+	ae, err := decodeAppendEntry(raw, nil, _EMPTY_)
+	require_NoError(t, err)
+	require_Len(t, len(ae.entries), 1)
+	require_Equal(t, ae.entries[0].Type, EntryNormal)
+	require_Len(t, len(ae.entries[0].Data), 0)
+
+	// The apply loops read the op from data[0]; an empty EntryNormal must be
+	// rejected rather than triggering an out-of-bounds access.
+	empty := []*Entry{{EntryNormal, nil}}
+	js := &jetStream{}
+	if _, _, err := js.applyMetaEntries(empty, nil); err != errBadEntryOp {
+		t.Fatalf("expected errBadEntryOp from applyMetaEntries, got %v", err)
+	}
+	ce := &CommittedEntry{Entries: empty}
+	if _, err := js.applyStreamEntries(&stream{}, ce, false); err != errBadEntryOp {
+		t.Fatalf("expected errBadEntryOp from applyStreamEntries, got %v", err)
+	}
+	if err := js.applyConsumerEntries(&consumer{}, ce, false); err != errBadEntryOp {
+		t.Fatalf("expected errBadEntryOp from applyConsumerEntries, got %v", err)
+	}
+}

@@ -1038,7 +1038,7 @@ func (js *jetStream) setupMetaGroup() error {
 	cfg.Observer = s.canExtendOtherDomain() && s.getOpts().JetStreamExtHint != jsNoExtend
 
 	var bootstrap bool
-	if ps, err := readPeerState(storeDir); err != nil {
+	if ps, err := readPeerState(s.diskIOSemaphore(), storeDir); err != nil {
 		s.Noticef("JetStream cluster bootstrapping")
 		bootstrap = true
 		peers := s.ActivePeers()
@@ -1072,7 +1072,7 @@ func (js *jetStream) setupMetaGroup() error {
 			// To track possible configuration changes, responsible for an altered value of cfg.Observer,
 			// set extension state to undetermined.
 			ps.domainExt = extUndetermined
-			if err := writePeerState(storeDir, ps); err != nil {
+			if err := writePeerState(s.diskIOSemaphore(), storeDir, ps); err != nil {
 				return err
 			}
 		}
@@ -2330,6 +2330,9 @@ func (js *jetStream) collectStreamAndConsumerChanges(c RaftNodeCheckpoint, strea
 		for _, e := range ae.entries {
 			if e.Type == EntryNormal {
 				buf := e.Data
+				if len(buf) == 0 {
+					return errBadEntryOp
+				}
 				op := entryOp(buf[0])
 				switch op {
 				case assignStreamOp, updateStreamOp, removeStreamOp:
@@ -2715,6 +2718,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 			}
 		} else {
 			buf := e.Data
+			if len(buf) == 0 {
+				return isRecovering, didSnap, errBadEntryOp
+			}
 			switch entryOp(buf[0]) {
 			case assignStreamOp:
 				sa, err := decodeStreamAssignment(js.srv, buf[1:])
@@ -2986,7 +2992,7 @@ retry:
 
 		cfg := &RaftConfig{Name: rgName, Store: storeDir, Log: store, Track: true, Recovering: recovering, ScaleUp: rgScaleUp}
 
-		if _, err := readPeerState(storeDir); err != nil {
+		if _, err := readPeerState(s.diskIOSemaphore(), storeDir); err != nil {
 			s.bootstrapRaftNode(cfg, rgPeers, true)
 		}
 
@@ -3986,6 +3992,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 		}
 
 		if e.Type == EntryNormal {
+			if len(e.Data) == 0 {
+				return 0, errBadEntryOp
+			}
 			buf, op := e.Data, entryOp(e.Data[0])
 			if op == batchMsgOp {
 				batchId, batchSeq, _, _, err := decodeBatchMsg(buf[1:])
@@ -6900,6 +6909,9 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			// Ignore for now.
 		} else {
 			buf := e.Data
+			if len(buf) == 0 {
+				return errBadEntryOp
+			}
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
 				dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
@@ -6950,9 +6962,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					return err
 				}
 			case updateSkipOp:
+				sseq, err := decodeSkipUpdate(buf[1:])
+				if err != nil {
+					return err
+				}
 				o.mu.Lock()
-				var le = binary.LittleEndian
-				sseq := le.Uint64(buf[1:])
 				if !o.isLeader() && sseq > o.sseq {
 					o.sseq = sseq
 				}
@@ -6964,10 +6978,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 				o.mu.Unlock()
 			case resetSeqOp:
+				sseq, reply, err := decodeResetUpdate(buf[1:])
+				if err != nil {
+					return err
+				}
 				o.mu.Lock()
-				var le = binary.LittleEndian
-				sseq := le.Uint64(buf[1:9])
-				reply := string(buf[9:])
 				o.resetLocalStartingSeq(sseq)
 				if o.store != nil {
 					o.store.Reset(sseq - 1)
@@ -7086,16 +7101,19 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	return nil
 }
 
+var errBadEntryOp = errors.New("jetstream cluster bad replicated entry")
 var errBadAckUpdate = errors.New("jetstream cluster bad replicated ack update")
 var errBadDeliveredUpdate = errors.New("jetstream cluster bad replicated delivered update")
+var errBadSkipUpdate = errors.New("jetstream cluster bad replicated skip update")
+var errBadResetUpdate = errors.New("jetstream cluster bad replicated reset update")
 
 func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
 	var bi, n int
-	if dseq, n = binary.Uvarint(buf); n < 0 {
+	if dseq, n = binary.Uvarint(buf); n <= 0 {
 		return 0, 0, errBadAckUpdate
 	}
 	bi += n
-	if sseq, n = binary.Uvarint(buf[bi:]); n < 0 {
+	if sseq, n = binary.Uvarint(buf[bi:]); n <= 0 {
 		return 0, 0, errBadAckUpdate
 	}
 	return dseq, sseq, nil
@@ -7103,22 +7121,36 @@ func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
 
 func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err error) {
 	var bi, n int
-	if dseq, n = binary.Uvarint(buf); n < 0 {
+	if dseq, n = binary.Uvarint(buf); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	bi += n
-	if sseq, n = binary.Uvarint(buf[bi:]); n < 0 {
+	if sseq, n = binary.Uvarint(buf[bi:]); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	bi += n
-	if dc, n = binary.Uvarint(buf[bi:]); n < 0 {
+	if dc, n = binary.Uvarint(buf[bi:]); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	bi += n
-	if ts, n = binary.Varint(buf[bi:]); n < 0 {
+	if ts, n = binary.Varint(buf[bi:]); n <= 0 {
 		return 0, 0, 0, 0, errBadDeliveredUpdate
 	}
 	return dseq, sseq, dc, ts, nil
+}
+
+func decodeSkipUpdate(buf []byte) (sseq uint64, err error) {
+	if len(buf) < 8 {
+		return 0, errBadSkipUpdate
+	}
+	return binary.LittleEndian.Uint64(buf), nil
+}
+
+func decodeResetUpdate(buf []byte) (sseq uint64, reply string, err error) {
+	if len(buf) < 8 {
+		return 0, _EMPTY_, errBadResetUpdate
+	}
+	return binary.LittleEndian.Uint64(buf[:8]), string(buf[8:]), nil
 }
 
 func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) error {
@@ -9920,7 +9952,10 @@ func decodeStreamMsg(buf []byte) (subject, reply string, hdr, msg []byte, lseq u
 	}
 	ml := int(le.Uint32(buf))
 	buf = buf[4:]
-	if len(buf) < ml {
+	// ml is read as a uint32 but held in an int; on 32-bit builds a length with
+	// the high bit set becomes negative, which slips past len(buf) < ml and then
+	// panics on buf[:ml]. Reject a negative length so the bound holds everywhere.
+	if ml < 0 || len(buf) < ml {
 		return _EMPTY_, _EMPTY_, nil, nil, 0, 0, false, errBadStreamMsg
 	}
 	if msg = buf[:ml]; len(msg) == 0 {
