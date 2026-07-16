@@ -3279,7 +3279,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 
 	var err error
 	if node != nil {
-		if js.limitsExceeded(stype) {
+		if stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(m.subj, m.hdr, m.msg)) {
+			err = ErrMsgTooLarge
+		} else if js.limitsExceeded(stype) {
 			s.resourcesExceededError(stype)
 			err = ApiErrors[JSInsufficientResourcesErr]
 		} else {

@@ -2883,6 +2883,69 @@ func TestJetStreamClusterRejectLargePublishesBeforeProposal(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMirrorRejectsLargeMessagesBeforeProposal(t *testing.T) {
+	// The source is memory backed, so it can accept a record that a file-backed
+	// mirror cannot represent.
+	tmpl := strings.Replace(jsClusterTempl, "listen: 127.0.0.1:-1", fmt.Sprintf("listen: 127.0.0.1:-1\nmax_payload: %d", rlBadThresh+2048), 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+		Storage:  nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "MIRROR",
+		Replicas: 3,
+		Storage:  nats.FileStorage,
+		Mirror:   &nats.StreamSource{Name: "SOURCE"},
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader("$G", "SOURCE")
+	c.waitOnStreamLeader("$G", "MIRROR")
+
+	_, err = js.Publish("foo", make([]byte, rlBadThresh+1024))
+	require_NoError(t, err)
+
+	// The mirror receives the source message but must reject it before it is
+	// proposed to its raft group.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		s := c.streamLeader("$G", "MIRROR")
+		if s == nil {
+			return errors.New("mirror has no leader")
+		}
+		mset, err := s.GlobalAccount().lookupStream("MIRROR")
+		if err != nil {
+			return err
+		}
+		mset.mu.RLock()
+		sseq := mset.mirror.sseq
+		mset.mu.RUnlock()
+		if sseq != 1 {
+			return fmt.Errorf("expected mirror to receive source sequence 1, got %d", sseq)
+		}
+		return nil
+	})
+
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("MIRROR")
+		require_NoError(t, err)
+		require_Equal(t, mset.state().Msgs, uint64(0))
+		fs, ok := mset.store.(*fileStore)
+		require_True(t, ok)
+		fs.mu.RLock()
+		werr := fs.werr
+		fs.mu.RUnlock()
+		require_NoError(t, werr)
+	}
+}
+
 func TestJetStreamClusterFlowControlRequiresHeartbeats(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
