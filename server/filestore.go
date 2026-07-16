@@ -7599,7 +7599,7 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte) (uint64, error) {
 	// Get size for this message.
 	rl := fileStoreMsgSize(subj, hdr, msg)
-	if rl&hbit != 0 || rl > rlBadThresh {
+	if isFileStoreMsgTooLarge(rl) {
 		return 0, ErrMsgTooLarge
 	}
 	// Grab our current last message block.
@@ -9700,6 +9700,12 @@ func fileStoreMsgSizeRaw(slen, hlen, mlen int) uint64 {
 
 func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 	return fileStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
+}
+
+// isFileStoreMsgTooLarge reports whether a message record cannot be represented
+// safely by the file store.
+func isFileStoreMsgTooLarge(rl uint64) bool {
+	return rl&hbit != 0 || rl > rlBadThresh
 }
 
 func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {

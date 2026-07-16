@@ -6223,6 +6223,16 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 
 	var resp = &JSPubAckResponse{}
 
+	if canConsistencyCheck && stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamStoreFailedError(ErrMsgTooLarge)
+			response, _ := json.Marshal(resp)
+			outq.sendMsg(reply, response)
+		}
+		return ErrMsgTooLarge
+	}
+
 	var (
 		batchId  string
 		batchSeq uint64

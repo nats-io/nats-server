@@ -2841,6 +2841,48 @@ func TestJetStreamClusterLargeHeaders(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterRejectLargePublishesBeforeProposal(t *testing.T) {
+	// Allow a client publish that exceeds the file store's record-size limit.
+	tmpl := strings.Replace(jsClusterTempl, "listen: 127.0.0.1:-1", fmt.Sprintf("listen: 127.0.0.1:-1\nmax_payload: %d", rlBadThresh+2048), 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	_, err = js.Publish("foo", make([]byte, rlBadThresh+1024))
+	require_Error(t, err)
+	require_Contains(t, err.Error(), ErrMsgTooLarge.Error())
+
+	// The rejected message must never be proposed to the raft group: every
+	// replica remains writable and accepts the next valid publish.
+	pa, err := js.Publish("foo", []byte("ok"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, 1)
+	c.waitOnAllCurrent()
+
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_Equal(t, mset.state().Msgs, uint64(1))
+		fs, ok := mset.store.(*fileStore)
+		require_True(t, ok)
+		fs.mu.RLock()
+		werr := fs.werr
+		fs.mu.RUnlock()
+		require_NoError(t, werr)
+	}
+}
+
 func TestJetStreamClusterFlowControlRequiresHeartbeats(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
