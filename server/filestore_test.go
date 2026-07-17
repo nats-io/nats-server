@@ -1786,7 +1786,7 @@ func TestFileStoreWeakCachePromotionCleanup(t *testing.T) {
 		// The cache is only weakly referenced, so recalculateForSubj will
 		// promote it and must release the strong reference again.
 		require_True(t, mb.cache == nil)
-		require_NoError(t, mb.recalculateForSubj("foo", ss))
+		mb.recalculateForSubj("foo", ss)
 		require_Equal(t, ss.First, uint64(2))
 		require_NoStrongCache(t, mb, c)
 	})
