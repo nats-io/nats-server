@@ -1841,6 +1841,15 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	} else {
 		v.Proxies = nil
 	}
+
+	if cfg := v.JetStream.Config; cfg != nil {
+		if opts.JetStreamMaxMemory > 0 {
+			cfg.MaxMemory = opts.JetStreamMaxMemory
+		}
+		if opts.JetStreamMaxStore > 0 {
+			cfg.MaxStore = opts.JetStreamMaxStore
+		}
+	}
 }
 
 func getPinnedCertsAsSlice(certs PinnedCertSet) []string {
