@@ -7486,6 +7486,7 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	tdir := t.TempDir()
 	template := `
 		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
 		jetstream {
 			max_mem_store: %s
 			max_file_store: %s
@@ -7497,8 +7498,14 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+
 	// Verify initial config.
 	cfg := s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
+	require_Equal(t, cfg.MaxStore, 128*1024*1024)
+
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
 	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
 	require_Equal(t, cfg.MaxStore, 128*1024*1024)
 
@@ -7534,6 +7541,10 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
 	require_Equal(t, cfg.MaxStore, 512*1024*1024)
 
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
 	// We should now be able to create the stream.
 	for _, st := range storageTypes {
 		scfg.Name = fmt.Sprintf("TEST2-%s", st)
@@ -7552,4 +7563,9 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	cfg = s.JetStreamConfig()
 	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
 	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
 }
