@@ -3607,3 +3607,253 @@ func TestNoRaceQuickMultipleConfigReloadRemoteLeafNoDuplicate(t *testing.T) {
 		})
 	}
 }
+
+// This test observes buffers being returned to the block buffer sync.Pools.
+// Under the race detector sync.Pool randomly drops puts by design, so it
+// cannot run with -race.
+func TestNoRaceFileStoreWeakCacheGCRecyclesBuf(t *testing.T) {
+	// Run everything on a single P so all sync.Pool puts/gets use the same
+	// P-local pool: buffers recycled by the GC cleanup goroutine would
+	// otherwise often land in another P's private slot, which Get on this
+	// goroutine can never steal from and the test couldn't observe them.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	// All cache buffers in this test come from the tiny block pool, identify
+	// them by their backing array so we can spot them in the pool.
+	bufArr := func(buf []byte) *[defaultTinyBlockSize]byte {
+		return (*[defaultTinyBlockSize]byte)(buf[0:defaultTinyBlockSize])
+	}
+	// Wait for the GC cleanup to recycle the buffer back into the pool.
+	// GC and polling must be interleaved carefully: every GC cycle also
+	// drains the sync.Pools, so polling Get while triggering GCs could
+	// evict the recycled buffer before we get a chance to observe it.
+	expectRecycled := func(t *testing.T, arr *[defaultTinyBlockSize]byte) {
+		t.Helper()
+		for attempts := 0; attempts < 10; attempts++ {
+			runtime.GC()
+			// Poll without triggering more GCs so the pool isn't drained
+			// while we look for the buffer.
+			for range 20 {
+				if blkPoolTiny.Get().(*[defaultTinyBlockSize]byte) == arr {
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		t.Fatalf("buffer was not recycled into the pool")
+	}
+	// Ensure the buffer does not (re)appear in the pool through a GC cleanup.
+	expectNotRecycled := func(t *testing.T, arr *[defaultTinyBlockSize]byte) {
+		t.Helper()
+		for attempts := 0; attempts < 3; attempts++ {
+			runtime.GC()
+			// Give a (faulty) cleanup time to run, then poll without
+			// triggering more GCs so we would reliably see its recycle.
+			time.Sleep(20 * time.Millisecond)
+			for range 20 {
+				if blkPoolTiny.Get().(*[defaultTinyBlockSize]byte) == arr {
+					t.Fatalf("buffer was recycled into the pool, but should not have been")
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+		}
+	}
+
+	newTestStore := func(t *testing.T) *msgBlock {
+		t.Helper()
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192},
+			StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{"foo"}},
+		)
+		require_NoError(t, err)
+		t.Cleanup(func() { fs.Stop() })
+
+		for range 4 {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+			require_NoError(t, err)
+		}
+		require_NoError(t, fs.FlushAllPending())
+
+		fs.mu.Lock()
+		mb := fs.lmb
+		fs.mu.Unlock()
+		return mb
+	}
+
+	t.Run("recycledOnGC", func(t *testing.T) {
+		arr := func() *[defaultTinyBlockSize]byte {
+			c := &cache{buf: getMsgBlockBuf(1)}
+			c.registerRecycle()
+			require_True(t, c.clean != (runtime.Cleanup{}))
+			return bufArr(c.buf)
+		}()
+		// The cache is unreachable now, GC should recycle its buffer.
+		expectRecycled(t, arr)
+	})
+
+	t.Run("stopRecycle", func(t *testing.T) {
+		arr := func() *[defaultTinyBlockSize]byte {
+			c := &cache{buf: getMsgBlockBuf(1)}
+			c.registerRecycle()
+			c.stopRecycle()
+			require_True(t, c.clean == (runtime.Cleanup{}))
+			return bufArr(c.buf)
+		}()
+		expectNotRecycled(t, arr)
+	})
+
+	t.Run("registerRecycleTwice", func(t *testing.T) {
+		arr := func() *[defaultTinyBlockSize]byte {
+			c := &cache{buf: getMsgBlockBuf(1)}
+			// Registering again must cancel the previous registration,
+			// otherwise the buffer would be recycled twice.
+			c.registerRecycle()
+			c.registerRecycle()
+			return bufArr(c.buf)
+		}()
+		expectRecycled(t, arr)
+		expectNotRecycled(t, arr)
+	})
+
+	t.Run("noRecycleNRA", func(t *testing.T) {
+		arr := func() *[defaultTinyBlockSize]byte {
+			c := &cache{buf: getMsgBlockBuf(1), nra: true}
+			c.registerRecycle()
+			require_True(t, c.clean == (runtime.Cleanup{}))
+			return bufArr(c.buf)
+		}()
+		expectNotRecycled(t, arr)
+	})
+
+	t.Run("noRecycleEmptyBuf", func(t *testing.T) {
+		c := &cache{}
+		c.registerRecycle()
+		require_True(t, c.clean == (runtime.Cleanup{}))
+		// Stopping without a registration, or twice, must not panic.
+		c.stopRecycle()
+		c.stopRecycle()
+		// Neither must registering on a nil cache.
+		(*cache)(nil).registerRecycle()
+	})
+
+	t.Run("weakWriteCacheGC", func(t *testing.T) {
+		mb := newTestStore(t)
+		arr := func() *[defaultTinyBlockSize]byte {
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			// The write path registered the recycle cleanup when it grew
+			// the write cache buffer from the pool.
+			require_NotNil(t, mb.cache)
+			require_True(t, mb.cache.clean != (runtime.Cleanup{}))
+			require_Equal(t, cap(mb.cache.buf), defaultTinyBlockSize)
+			arr := bufArr(mb.cache.buf)
+			// Drop the strong references so only the weak pointer remains.
+			mb.finishedWithCache()
+			require_True(t, mb.cache == nil)
+			mb.ecache.Weaken()
+			require_NotNil(t, mb.ecache.Value())
+			return arr
+		}()
+
+		// GC collects the weakly referenced cache and recycles its buffer.
+		expectRecycled(t, arr)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_True(t, mb.ecache.Value() == nil)
+	})
+
+	t.Run("weakLoadedCacheGC", func(t *testing.T) {
+		mb := newTestStore(t)
+		arr := func() *[defaultTinyBlockSize]byte {
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			// Reload the block from disk so indexCacheBuf registers the cleanup.
+			mb.clearCache()
+			require_True(t, mb.cache == nil)
+			require_NoError(t, mb.loadMsgsWithLock())
+			require_NotNil(t, mb.cache)
+			require_True(t, mb.cache.clean != (runtime.Cleanup{}))
+			require_Equal(t, cap(mb.cache.buf), defaultTinyBlockSize)
+			arr := bufArr(mb.cache.buf)
+			mb.finishedWithCache()
+			require_True(t, mb.cache == nil)
+			mb.ecache.Weaken()
+			require_NotNil(t, mb.ecache.Value())
+			return arr
+		}()
+
+		expectRecycled(t, arr)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_True(t, mb.ecache.Value() == nil)
+	})
+
+	t.Run("clearCacheNoDoubleRecycle", func(t *testing.T) {
+		mb := newTestStore(t)
+		arr := func() *[defaultTinyBlockSize]byte {
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			require_NotNil(t, mb.cache)
+			require_Equal(t, cap(mb.cache.buf), defaultTinyBlockSize)
+			arr := bufArr(mb.cache.buf)
+			mb.clearCache()
+			require_True(t, mb.cache == nil)
+			require_True(t, mb.ecache.Value() == nil)
+			return arr
+		}()
+
+		// clearCache recycled the buffer into the pool explicitly once...
+		expectRecycled(t, arr)
+		// ...and GC of the disused cache must not recycle it a second time.
+		expectNotRecycled(t, arr)
+	})
+
+	t.Run("writeCacheHandoffNoRecycle", func(t *testing.T) {
+		mb := newTestStore(t)
+		arr, buf := func() (*[defaultTinyBlockSize]byte, []byte) {
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			require_NotNil(t, mb.cache)
+			require_Equal(t, cap(mb.cache.buf), defaultTinyBlockSize)
+			arr := bufArr(mb.cache.buf)
+			// Pretend the block was never loaded for reads, so the write cache
+			// buffer is handed off for reuse by the next write block.
+			mb.llts = 0
+			buf := mb.tryExpireWriteCache()
+			require_True(t, buf != nil)
+			require_True(t, bufArr(buf) == arr)
+			// Drop any remaining references to the old cache object.
+			mb.cache = nil
+			mb.ecache.Set(nil)
+			return arr, buf
+		}()
+
+		// The handed-off buffer is still in use, so GC of the old cache
+		// object must not recycle it into the pool.
+		expectNotRecycled(t, arr)
+		runtime.KeepAlive(buf)
+	})
+
+	t.Run("expiredWriteCacheNoHandoffRecycles", func(t *testing.T) {
+		mb := newTestStore(t)
+		arr := func() *[defaultTinyBlockSize]byte {
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			require_NotNil(t, mb.cache)
+			require_Equal(t, cap(mb.cache.buf), defaultTinyBlockSize)
+			arr := bufArr(mb.cache.buf)
+			// Pretend the block was read, but long ago. The cache will
+			// expire, but the stale read blocks the buffer handoff.
+			mb.llts = 1
+			buf := mb.tryExpireWriteCache()
+			require_True(t, buf == nil)
+			require_True(t, mb.cache == nil)
+			return arr
+		}()
+
+		// The buffer was recycled into the pool explicitly once...
+		expectRecycled(t, arr)
+		// ...and GC of the disused cache must not recycle it a second time.
+		expectNotRecycled(t, arr)
+	})
+}

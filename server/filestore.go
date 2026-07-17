@@ -279,6 +279,9 @@ type cache struct {
 	idx  []uint32
 	fseq uint64
 	nra  bool
+	// When GC collects this cache due to it being a weak pointer,
+	// recycle the buf back into the block buffer pools.
+	clean runtime.Cleanup
 }
 
 type msgId struct {
@@ -1054,6 +1057,37 @@ func getMsgBlockBuf(sz int) (buf []byte) {
 	}
 }
 
+// registerRecycle arranges for the cache's buffer to be returned to the
+// block buffer pools when the cache itself is garbage collected due to it
+// remaining as a weak pointer. Without it, subsequent block loads would
+// allocate fresh buffers, which could result in GC re-running, which is
+// pathological under sustained block loads.
+func (c *cache) registerRecycle() {
+	if c == nil {
+		return
+	}
+	// Any previous registration is canceled first.
+	c.stopRecycle()
+	// Skip if recycle isn't allowed or nothing to recycle.
+	if c.nra || cap(c.buf) == 0 {
+		return
+	}
+	// Don't make this cleanup conditional (e.g. skip if under memory pressure), GC
+	// will drain the block buffer pools separately, so this doesn't pin memory.
+	// Skipping would be worse, we'd delay freeing the buffer until the next GC cycle.
+	c.clean = runtime.AddCleanup(c, recycleMsgBlockBuf, c.buf)
+}
+
+// stopRecycle cancels a pending recycle registration. Must be called before
+// the buffer is recycled or handed off explicitly, otherwise the cleanup
+// could return the same buffer to the pool a second time while it is in use.
+func (c *cache) stopRecycle() {
+	if c.clean != (runtime.Cleanup{}) {
+		c.clean.Stop()
+		c.clean = runtime.Cleanup{}
+	}
+}
+
 // Recycle the msg block.
 func recycleMsgBlockBuf(buf []byte) {
 	switch cap(buf) {
@@ -1441,6 +1475,7 @@ func (mb *msgBlock) convertCipher() error {
 		}
 
 		// Reset the cache since we just read everything in.
+		mb.cache.stopRecycle()
 		mb.cache = nil
 		mb.ecache.Set(nil)
 
@@ -1484,6 +1519,7 @@ func (mb *msgBlock) convertToEncrypted() error {
 		return err
 	}
 	// Undo cache from above for later.
+	mb.cache.stopRecycle()
 	mb.cache = nil
 	mb.ecache.Set(nil)
 	// Regenerate mb.bek so that the keystream offset is at zero. This matches
@@ -4755,6 +4791,7 @@ func (mb *msgBlock) setupWriteCache(buf []byte) error {
 
 	// Looks like there isn't an existing file on disk, mint a new cache.
 	mb.cache = &cache{buf: buf}
+	mb.cache.registerRecycle()
 	mb.ecache.Set(mb.cache)
 	mb.llts = ats.AccessTime()
 	mb.startCacheExpireTimer()
@@ -6719,6 +6756,7 @@ func (mb *msgBlock) clearCache() {
 	buf := mbcache.buf
 	mb.cache = nil
 	mb.ecache.Set(nil)
+	mbcache.stopRecycle()
 	recycleMsgBlockBuf(buf)
 }
 
@@ -6762,6 +6800,10 @@ func (mb *msgBlock) tryExpireWriteCache() []byte {
 		// Clear last write time since we now are about to move on to a new lmb.
 		mb.lwts = 0
 		return buf[:0]
+	}
+	// The cache may have expired above without recycling the buffer.
+	if mb.cache == nil && !nra {
+		recycleMsgBlockBuf(buf)
 	}
 	return nil
 }
@@ -6817,6 +6859,7 @@ func (mb *msgBlock) tryExpireCacheLocked() {
 	// If we are here we will at least expire the core msg buffer.
 	// We need to capture offset in case we do a write next before a full load.
 	if mb.cache != nil {
+		mb.cache.stopRecycle()
 		if !mb.cache.nra {
 			recycleMsgBlockBuf(mb.cache.buf)
 		}
@@ -7325,11 +7368,13 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	// from the next pool size up to save us from reallocating in append() below.
 	if nsz := len(mb.cache.buf) + int(rl); cap(mb.cache.buf) < nsz {
 		prev := mb.cache.buf
+		mb.cache.stopRecycle()
 		mb.cache.buf = getMsgBlockBuf(nsz)
 		if prev != nil {
 			mb.cache.buf = mb.cache.buf[:copy(mb.cache.buf[:nsz], prev)]
 			recycleMsgBlockBuf(prev)
 		}
+		mb.cache.registerRecycle()
 	}
 
 	// Indexing
@@ -8108,6 +8153,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		// The buf arg already came from the pool probably, so there's
 		// no point in reusing mb.cache.buf's underlying capacity here.
 		// Just recycle it for the next block load.
+		mb.cache.stopRecycle()
 		recycleMsgBlockBuf(mb.cache.buf)
 	}
 	if idx = mb.cache.idx; uint64(cap(idx)) >= idxSz {
@@ -8258,6 +8304,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mb.cache.wp = int(lbuf)
 	mb.ttls = ttls
 	mb.schedules = schedules
+	mb.cache.registerRecycle()
 
 	return nil
 }
