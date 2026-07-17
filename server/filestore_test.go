@@ -1847,6 +1847,61 @@ func TestFileStoreWeakCachePromotionCleanup(t *testing.T) {
 		defer mb.mu.Unlock()
 		require_NoStrongCache(t, mb, c)
 	})
+
+	t.Run("recalculateForSubj", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		// Removing the first msg for "foo" marks its SimpleState as needing
+		// a lazy first sequence recalculation.
+		removed, err := fs.removeMsg(1, false, true, true)
+		require_NoError(t, err)
+		require_True(t, removed)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		ss, ok := mb.fss.Find(stringToBytes("foo"))
+		require_True(t, ok)
+		require_True(t, ss.firstNeedsUpdate)
+		// The cache is only weakly referenced, so recalculateForSubj will
+		// promote it and must release the strong reference again.
+		require_True(t, mb.cache == nil)
+		require_NoError(t, mb.recalculateForSubj("foo", ss))
+		require_Equal(t, ss.First, uint64(2))
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("firstSeqForSubj", func(t *testing.T) {
+		fs, mb, _ := newTestStore(t)
+		// Clear the weak reference too, forcing firstSeqForSubj to reload
+		// the block from disk to get fss, taking a strong cache reference.
+		mb.mu.Lock()
+		mb.ecache.Set(nil)
+		mb.mu.Unlock()
+		fs.mu.Lock()
+		seq, err := fs.firstSeqForSubj("foo")
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		require_Equal(t, seq, uint64(1))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_True(t, mb.cache == nil)
+		require_NotNil(t, mb.ecache.Value())
+	})
+
+	t.Run("firstSeqForSubjRecalculate", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		// Removing the first msg for "foo" marks its SimpleState as needing
+		// a lazy first sequence recalculation, done inside firstSeqForSubj.
+		removed, err := fs.removeMsg(1, false, true, true)
+		require_NoError(t, err)
+		require_True(t, removed)
+		fs.mu.Lock()
+		seq, err := fs.firstSeqForSubj("foo")
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		require_Equal(t, seq, uint64(2))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
 }
 
 func TestFileStorePartialCacheExpiration(t *testing.T) {

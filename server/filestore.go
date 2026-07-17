@@ -5479,6 +5479,9 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				err = mb.recalculateForSubj(subj, ss)
 			}
+			if needsCleanup {
+				mb.finishedWithCache()
+			}
 			mb.mu.Unlock()
 			// Re-acquire fs lock
 			fs.mu.Lock()
@@ -11327,10 +11330,13 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) (uint64, error)
 // Will avoid slower path message lookups and scan the cache directly instead.
 func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 	// Need to make sure messages are loaded.
+	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return err
 		}
+	}
+	if needsCleanup {
 		defer mb.finishedWithCache()
 	}
 
