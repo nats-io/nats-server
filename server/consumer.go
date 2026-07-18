@@ -4522,11 +4522,16 @@ func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, re
 
 	s := o.srv
 	var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
+	sendResponse := func() {
+		// Service import responses use the account's internal client, so allow
+		// it to receive the response.
+		s.sendInternalAccountMsgWithReply(a, reply, _EMPTY_, nil, s.jsonResponse(&resp), true)
+	}
 
 	hdr, msg := c.msgParts(rmsg)
 	if errorOnRequiredApiLevel(hdr) {
 		resp.Error = NewJSRequiredApiLevelError()
-		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+		sendResponse()
 		return
 	}
 
@@ -4535,18 +4540,18 @@ func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, re
 	if len(msg) > 0 {
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
-			s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+			sendResponse()
 			return
 		}
 	}
 	resetSeq, canRespond, err := o.resetStartingSeq(req.Seq, reply, false)
 	if err != nil {
 		resp.Error = NewJSConsumerInvalidResetError(err)
-		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+		sendResponse()
 	} else if canRespond {
 		resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 		resp.ResetSeq = resetSeq
-		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+		sendResponse()
 	}
 }
 

@@ -7071,15 +7071,19 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 						delete(o.rsm, reply)
 						o.mu.Unlock()
 
-						// Check if the reset request needs to be answered on the system account.
-						// This will happen for replicated sourcing consumers that get reset as part of a create/update.
-						if internal {
-							a = nil
-						}
 						var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
 						resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 						resp.ResetSeq = sseq
-						s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+						response := s.jsonResponse(&resp)
+						// Replicated sourcing consumers that get reset as part of a create/update
+						// need to be answered on the system account.
+						if internal {
+							s.sendInternalAccountMsg(nil, reply, response)
+						} else {
+							// Direct reset replies may need to reach a service import response
+							// on the account's internal client.
+							s.sendInternalAccountMsgWithReply(a, reply, _EMPTY_, nil, response, true)
+						}
 					}
 				}
 			case addPendingRequest:
