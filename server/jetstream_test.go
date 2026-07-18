@@ -20307,6 +20307,11 @@ func TestJetStreamRejectLargePublishes(t *testing.T) {
 	_, err = js.Publish("test", make([]byte, rlBadThresh+1024))
 	require_Error(t, err)
 	require_Contains(t, err.Error(), ErrMsgTooLarge.Error())
+
+	// The oversized publish is rejected before reaching StoreMsg, so it must
+	// not prevent later valid publishes.
+	_, err = js.Publish("test", []byte("ok"))
+	require_NoError(t, err)
 }
 
 func TestJetStreamDirectGetSubjectDeleteMarker(t *testing.T) {

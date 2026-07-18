@@ -3292,6 +3292,67 @@ func TestJetStreamAtomicBatchPublishExpectedLastSubjectSequence(t *testing.T) {
 	require_Equal(t, resp.PubAck.BatchSize, 2)
 }
 
+func TestJetStreamAtomicBatchPublishExpectedLastSubjectSequenceOwnership(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "EVENTS",
+		Subjects:           []string{"events.>"},
+		Storage:            MemoryStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	entry := "diary.entry_BBBBBBBBBBBBBBBBBBBBBBBB"
+	oldDay := "diary-day.day_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	targetDay := "diary-day.day_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	mutation := "mutation.mut_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+	entities := make([]string, 19)
+	for i := range entities {
+		entities[i] = fmt.Sprintf("seed.entity_%02d", i+1)
+	}
+	entities[10], entities[17], entities[18] = targetDay, entry, oldDay
+	for i, entity := range entities {
+		ack, err := js.Publish("events."+entity+".balance", nil)
+		require_NoError(t, err)
+		require_Equal(t, ack.Sequence, uint64(i+1))
+	}
+
+	batchEntities := []string{entry, oldDay, targetDay, mutation}
+	expected := []uint64{18, 19, 11, 0}
+	for i, entity := range batchEntities {
+		m := nats.NewMsg("events." + entity + ".balance")
+		m.Header.Set(JSExpectedLastSubjSeqSubj, "events."+entity+".*")
+		m.Header.Set(JSExpectedLastSubjSeq, strconv.FormatUint(expected[i], 10))
+		m.Header.Set(JSBatchId, "uuid")
+		m.Header.Set(JSBatchSeq, strconv.Itoa(i+1))
+		if i == len(batchEntities)-1 {
+			m.Header.Set(JSBatchCommit, "1")
+			msg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			var resp JSPubAckResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			if resp.Error != nil {
+				t.Fatalf("commit error: %v", resp.Error)
+			}
+			require_Equal(t, resp.PubAck.Sequence, uint64(23))
+			require_Equal(t, resp.PubAck.BatchId, "uuid")
+			require_Equal(t, resp.PubAck.BatchSize, 4)
+		} else if i == 0 {
+			msg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			require_Len(t, len(msg.Data), 0)
+		} else {
+			require_NoError(t, nc.PublishMsg(m))
+		}
+	}
+}
+
 func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

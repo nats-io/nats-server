@@ -1756,6 +1756,99 @@ func TestFileStoreReadCache(t *testing.T) {
 	})
 }
 
+func TestFileStoreWeakCachePromotionCleanup(t *testing.T) {
+	newTestStore := func(t *testing.T) (*fileStore, *msgBlock, *cache) {
+		t.Helper()
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192},
+			StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{"foo", "bar"}},
+		)
+		require_NoError(t, err)
+		t.Cleanup(func() { fs.Stop() })
+
+		for i := 0; i < 4; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+			require_NoError(t, err)
+		}
+		_, _, err = fs.StoreMsg("bar", nil, []byte("hello"), 0)
+		require_NoError(t, err)
+		require_NoError(t, fs.FlushAllPending())
+
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+
+		mb := fs.lmb
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+
+		require_NoError(t, mb.loadMsgsWithLock())
+		require_NotNil(t, mb.cache)
+		c := mb.cache
+		mb.ecache.Set(c)
+		mb.ecache.Weaken()
+		mb.cache = nil
+		mb.fss = nil
+		if info, ok := fs.psim.Find(stringToBytes("foo")); ok {
+			info.fblk, info.lblk = mb.index, mb.index
+		}
+		if info, ok := fs.psim.Find(stringToBytes("bar")); ok {
+			info.fblk, info.lblk = mb.index, mb.index
+		}
+		require_NotNil(t, mb.ecache.Value())
+
+		return fs, mb, c
+	}
+
+	require_NoStrongCache := func(t *testing.T, mb *msgBlock, c *cache) {
+		t.Helper()
+		require_True(t, mb.cache == nil)
+		require_True(t, mb.ecache.Value() == c)
+		runtime.KeepAlive(c)
+	}
+
+	t.Run("removeMsgFromBlock", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		removed, err := fs.removeMsg(2, false, true, true)
+		require_NoError(t, err)
+		require_True(t, removed)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("generatePerSubjectInfo", func(t *testing.T) {
+		_, mb, c := newTestStore(t)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoError(t, mb.generatePerSubjectInfo())
+		require_NotNil(t, mb.fss)
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("filteredPending", func(t *testing.T) {
+		_, mb, c := newTestStore(t)
+		total, first, last, err := mb.filteredPending("foo", false, 1)
+		require_NoError(t, err)
+		require_Equal(t, total, uint64(4))
+		require_Equal(t, first, uint64(1))
+		require_Equal(t, last, uint64(4))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("loadLast", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		sm, err := fs.loadLast("foo", nil)
+		require_NoError(t, err)
+		require_NotNil(t, sm)
+		require_Equal(t, sm.seq, uint64(4))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+}
+
 func TestFileStorePartialCacheExpiration(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cexp := 10 * time.Millisecond
@@ -14834,4 +14927,165 @@ func TestFileStoreEncryptionKeyFileSyncedBySyncBlocks(t *testing.T) {
 	needKeySync = lmb.needKeySync
 	lmb.mu.RUnlock()
 	require_False(t, needKeySync)
+}
+
+func TestFileStoreStoreRawMsgVsConcurrentBlockRemovalNoWriteErr(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo.>"}, Storage: FileStorage, MaxMsgsPer: 1}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	const writers = 4
+	const readers = 4
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	var lastSeq atomic.Uint64
+	msg := make([]byte, 128)
+
+	// Writers evict their own previous message on every store; removers race
+	// them for that same sequence, deleting its (single-message) block.
+	for w := 0; w < writers; w++ {
+		seqs := make(chan uint64, 64)
+		subj := fmt.Sprintf("foo.%d", w)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			defer close(seqs)
+			for !stop.Load() {
+				seq, _, err := fs.StoreMsg(subj, nil, msg, 0)
+				if err != nil {
+					return
+				}
+				lastSeq.Store(seq)
+				select {
+				case seqs <- seq:
+				default:
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for seq := range seqs {
+				fs.RemoveMsg(seq)
+			}
+		}()
+	}
+
+	// Readers keep mb.mu contended so a remover holding fs.mu can barge past
+	// a storer parked on mb.mu inside firstSeqForSubj.
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var smv StoreMsg
+			for !stop.Load() {
+				if seq := lastSeq.Load(); seq > 2 {
+					fs.LoadMsg(seq-2, &smv)
+				}
+			}
+		}()
+	}
+
+	// Run for a fixed period, checking that no write error is ever latched.
+	timeout := time.Now().Add(2 * time.Second)
+	for time.Now().Before(timeout) {
+		fs.mu.RLock()
+		werr := fs.werr
+		fs.mu.RUnlock()
+		if werr != nil {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("store was disabled by a concurrent removal: werr=%v", werr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stop.Store(true)
+	wg.Wait()
+
+	// The store must still be fully writable.
+	_, _, err = fs.StoreMsg("foo.healthy", nil, msg, 0)
+	require_NoError(t, err)
+}
+
+func TestFileStoreStoreRawMsgVsAgeExpiryNoWriteErr(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256}
+	cfg := StreamConfig{
+		Name: "zzz", Subjects: []string{"foo.>"}, Storage: FileStorage,
+		MaxMsgsPer: 1, MaxAge: time.Millisecond,
+	}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	const writers = 16
+	const readers = 4
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	msg := make([]byte, 128)
+
+	prevSeqs := make([]atomic.Uint64, writers)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			subj := fmt.Sprintf("foo.%d", w)
+			for !stop.Load() {
+				seq, _, err := fs.StoreMsg(subj, nil, msg, 0)
+				if err != nil {
+					return
+				}
+				prevSeqs[w].Store(seq)
+				// Pace so the previous message is expiry-eligible exactly
+				// while this store's eviction is in flight.
+				time.Sleep(time.Millisecond + time.Duration(w%4)*50*time.Microsecond)
+			}
+		}(w)
+	}
+
+	// Readers contend mb.mu on the blocks evictions will target.
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func(r int) {
+			defer wg.Done()
+			var smv StoreMsg
+			for i := 0; !stop.Load(); i++ {
+				if seq := prevSeqs[(r+i)%writers].Load(); seq > 0 {
+					fs.LoadMsg(seq, &smv)
+				}
+			}
+		}(r)
+	}
+
+	// Drive expiry sweeps continuously rather than waiting on the age check
+	// timer, which fires far too infrequently to collide with the eviction
+	// window inside the test's time budget. This runs the exact same sweep
+	// the timer would, just often enough to race every store.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			fs.expireMsgs()
+		}
+	}()
+
+	timeout := time.Now().Add(2 * time.Second)
+	for time.Now().Before(timeout) {
+		fs.mu.RLock()
+		werr := fs.werr
+		fs.mu.RUnlock()
+		if werr != nil {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("store was disabled by racing age expiry: werr=%v", werr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stop.Store(true)
+	wg.Wait()
+
+	_, _, err = fs.StoreMsg("foo.healthy", nil, msg, 0)
+	require_NoError(t, err)
 }

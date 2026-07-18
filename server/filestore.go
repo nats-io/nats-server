@@ -3280,6 +3280,13 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 		}
 	}
 
+	needsCleanup := mb.cache == nil
+	defer func() {
+		if needsCleanup {
+			mb.finishedWithCache()
+		}
+	}()
+
 	if filter == _EMPTY_ {
 		filter, wc = fwcs, true
 	}
@@ -3359,7 +3366,6 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 		}
 		shouldExpire = true
 	}
-	defer mb.finishedWithCache()
 
 	_tsa, _fsa := [32]string{}, [32]string{}
 	tsa, fsa := _tsa[:0], _fsa[:0]
@@ -3928,12 +3934,14 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 				delete(subs, bytesToString(bsubj))
 			} else {
 				// Need to search for the real last since recorded last is > maxSeq.
-				var didLoad bool
+				needsCleanup := mb.cache == nil
 				if mb.cacheNotLoaded() {
 					if ierr = mb.loadMsgsWithLock(); ierr != nil {
+						if needsCleanup {
+							mb.finishedWithCache()
+						}
 						return false
 					}
-					didLoad = true
 				}
 				var smv StoreMsg
 				fseq := atomic.LoadUint64(&mb.first.seq)
@@ -3948,7 +3956,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 					delete(subs, ssubj)
 					break
 				}
-				if didLoad {
+				if needsCleanup {
 					mb.finishedWithCache()
 				}
 			}
@@ -4901,9 +4909,11 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	mmp := uint64(fs.cfg.MaxMsgsPer)
 	var psmc uint64
 	psmax := mmp > 0 && len(subj) > 0
+	var info *psi
 	if psmax {
-		if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
-			psmc = info.total
+		if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+			// Take current total, but add 1 for the message we are about to store.
+			psmc = info.total + 1
 		}
 	}
 
@@ -4913,7 +4923,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	// the message here since it could cause replicas to drift.
 	if discardNewCheck && fs.cfg.Discard == DiscardNew {
 		var asl bool
-		if psmax && psmc >= mmp {
+		if psmax && psmc > mmp {
 			// If we are instructed to discard new per subject, this is an error.
 			// However, allow rollup messages through since they will purge old
 			// messages for the subject after storing, restoring the limit.
@@ -4923,7 +4933,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 			if fseq, err = fs.firstSeqForSubj(subj); err != nil {
 				return err
 			}
-			asl = true
+			// fs.firstSeqForSubj releases and re-acquires the lock, need to fetch the state again.
+			if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+				// Take current total, but add 1 for the message we are about to store.
+				psmc = info.total + 1
+			}
+			asl = psmc > mmp
 		}
 		if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) && !asl {
 			return ErrMaxMsgs
@@ -4963,11 +4978,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	}
 
 	// Adjust top level tracking of per subject msg counts.
-	var info *psi
-	var ok bool
 	if len(subj) > 0 && fs.psim != nil {
 		index := fs.lmb.index
-		if info, ok = fs.psim.Find(stringToBytes(subj)); ok {
+		if info == nil {
+			info, _ = fs.psim.Find(stringToBytes(subj))
+		}
+		if info != nil {
 			info.total++
 			if index > info.lblk {
 				info.lblk = index
@@ -4991,41 +5007,33 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	fs.state.LastTime = now
 
 	// Enforce per message limits.
-	// We snapshotted psmc before our actual write, so >= comparison needed.
-	if psmax && psmc >= mmp {
+	for psmax && psmc > mmp {
 		// We may have done this above.
 		if fseq == 0 {
 			fseq, err = fs.firstSeqForSubj(subj)
 			if err != nil {
 				return err
+			} else if fseq == 0 {
+				break
 			}
+			// fs.firstSeqForSubj releases and re-acquires the lock, need to fetch the state again.
+			if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+				psmc = info.total
+			} else {
+				break
+			}
+			// Re-check if we're at the limit.
+			continue
 		}
-		if ok, err := fs.removeMsgViaLimits(fseq); err != nil {
+		if _, err = fs.removeMsgViaLimits(fseq); err != nil && err != ErrStoreMsgNotFound {
 			return err
-		} else if ok {
-			// Make sure we are below the limit.
-			if psmc--; psmc >= mmp {
-				bsubj := stringToBytes(subj)
-				for info, ok := fs.psim.Find(bsubj); ok && info.total > mmp; info, ok = fs.psim.Find(bsubj) {
-					if seq, err := fs.firstSeqForSubj(subj); err != nil {
-						return err
-					} else if seq == 0 {
-						break
-					} else if ok, err = fs.removeMsgViaLimits(seq); err != nil {
-						return err
-					} else if !ok {
-						break
-					}
-				}
-			}
-		} else if mb := fs.selectMsgBlock(fseq); mb != nil {
-			// If we are here we could not remove fseq from above, so rebuild.
-			var ld *LostStreamData
-			if ld, _, err = mb.rebuildState(); err != nil {
-				return err
-			} else if ld != nil {
-				fs.rebuildStateLocked(ld)
-			}
+		}
+		fseq = 0
+		// fs.removeMsgViaLimits releases and re-acquires the lock, need to fetch the state again.
+		if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
+			psmc = info.total
+		} else {
+			break
 		}
 	}
 	// If we only ever store one/last message for a subject, can correct the first block to where we've just written.
@@ -5441,10 +5449,20 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 		fs.mu.Unlock()
 
 		mb.mu.Lock()
+		// If marked closed, the block is already gone.
+		if mb.closed {
+			mb.mu.Unlock()
+			fs.mu.Lock()
+			continue
+		}
+		needsCleanup := mb.cache == nil
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
 			if err := mb.loadMsgsWithLock(); err != nil {
+				if needsCleanup {
+					mb.finishedWithCache()
+				}
 				mb.mu.Unlock()
 				// Re-acquire fs lock
 				fs.mu.Lock()
@@ -5479,7 +5497,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 		if shouldExpire {
 			// Expire this cache before moving on.
 			mb.tryForceExpireCacheLocked()
-		} else {
+		} else if needsCleanup {
 			mb.finishedWithCache()
 		}
 		mb.mu.Unlock()
@@ -5813,16 +5831,18 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
 	// Now just load regardless.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
-	var didLoad bool
+	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
+			if needsCleanup {
+				mb.finishedWithCache()
+			}
 			mb.mu.Unlock()
 			return false, err
 		}
-		didLoad = true
 	}
 	finishedWithCache := func() {
-		if didLoad {
+		if needsCleanup {
 			mb.finishedWithCache()
 		}
 	}
@@ -7531,7 +7551,7 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte) (uint64, error) {
 	// Get size for this message.
 	rl := fileStoreMsgSize(subj, hdr, msg)
-	if rl&hbit != 0 || rl > rlBadThresh {
+	if isFileStoreMsgTooLarge(rl) {
 		return 0, ErrMsgTooLarge
 	}
 	// Grab our current last message block.
@@ -9100,18 +9120,20 @@ func (fs *fileStore) loadLastLocked(subj string, sm *StoreMsg) (lsm *StoreMsg, e
 				return nil, err
 			}
 		}
-		var didLoad bool
+		needsCleanup := mb.cache == nil
 		if l > 0 {
 			if mb.cacheNotLoaded() {
 				if err := mb.loadMsgsWithLock(); err != nil {
+					if needsCleanup {
+						mb.finishedWithCache()
+					}
 					mb.mu.Unlock()
 					return nil, err
 				}
-				didLoad = true
 			}
 			lsm, err = mb.cacheLookup(l, sm)
 		}
-		if didLoad {
+		if needsCleanup {
 			mb.finishedWithCache()
 		}
 		mb.mu.Unlock()
@@ -9628,6 +9650,12 @@ func fileStoreMsgSizeRaw(slen, hlen, mlen int) uint64 {
 
 func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 	return fileStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
+}
+
+// isFileStoreMsgTooLarge reports whether a message record cannot be represented
+// safely by the file store.
+func isFileStoreMsgTooLarge(rl uint64) bool {
+	return rl&hbit != 0 || rl > rlBadThresh
 }
 
 func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
@@ -11445,15 +11473,21 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 		return nil
 	}
 
+	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
+			if needsCleanup {
+				mb.finishedWithCache()
+			}
 			return err
 		}
-		// indexCacheBuf can produce fss now, so if non-nil we are good.
-		if mb.fss != nil {
-			return nil
-		}
+	}
+	if needsCleanup {
 		defer mb.finishedWithCache()
+	}
+	// indexCacheBuf can produce fss now, so if non-nil we are good.
+	if mb.fss != nil {
+		return nil
 	}
 
 	// Create new one regardless.

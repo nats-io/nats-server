@@ -11385,14 +11385,24 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 		}
 	}
 
+	// healthz can transiently report not-current right after a restart while the
+	// asset's raft group node is still catching up, so poll until it reports healthy.
+	expectHealthz := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			if health := ml.healthz(&HealthzOptions{Details: true}); health.StatusCode != 200 {
+				return fmt.Errorf("healthz not ready (%d): %+v", health.StatusCode, health.Errors)
+			}
+			return nil
+		})
+	}
+
 	// Stream is still supported, so it should be available and healthz should report healthy.
 	expectStreamInfo(false)
-	health := ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 	restart()
 	expectStreamInfo(false)
-	health = ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 
 	wsas := getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
@@ -11410,12 +11420,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	// Stream should be reported as offline, but healthz should report healthy to not block downgrades.
 	expectStreamInfo(true)
-	health = ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 	restart()
 	expectStreamInfo(true)
-	health = ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
@@ -11474,12 +11482,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	// Consumer is still supported, so it should be available and healthz should report healthy.
 	expectConsumerInfo(false)
-	health = ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 	restart()
 	expectConsumerInfo(false)
-	health = ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
@@ -11498,12 +11504,10 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 
 	// Consumer should be reported as offline, but healthz should report healthy to not block downgrades.
 	expectConsumerInfo(true)
-	health = ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 	restart()
 	expectConsumerInfo(true)
-	health = ml.healthz(&HealthzOptions{})
-	require_Equal(t, health.StatusCode, 200)
+	expectHealthz()
 
 	wsas = getValidMetaSnapshot()
 	require_Len(t, len(wsas), 1)
