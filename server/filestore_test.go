@@ -15144,3 +15144,43 @@ func TestFileStoreStoreRawMsgVsAgeExpiryNoWriteErr(t *testing.T) {
 	_, _, err = fs.StoreMsg("foo.healthy", nil, msg, 0)
 	require_NoError(t, err)
 }
+
+func TestFileStoreCompactStoreMsgRace(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("first"), 0)
+	require_NoError(t, err)
+
+	var purged, storedSeq uint64
+	var compactErr, storeErr error
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		purged, compactErr = fs.Compact(2)
+	})
+
+	wg.Go(func() {
+		storedSeq, _, storeErr = fs.StoreMsg("foo", nil, []byte("second"), 0)
+	})
+	wg.Wait()
+
+	require_NoError(t, compactErr)
+	require_Equal(t, purged, 1)
+	require_NoError(t, storeErr)
+	require_Equal(t, storedSeq, 2)
+
+	var sm StoreMsg
+	_, err = fs.LoadMsg(2, &sm)
+	require_NoError(t, err)
+	require_Equal(t, sm.seq, 2)
+
+	state := fs.State()
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.FirstSeq, 2)
+	require_Equal(t, state.LastSeq, 2)
+}
