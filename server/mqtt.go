@@ -72,6 +72,7 @@ const (
 	mqttPubFlagRetain = byte(0x01)
 	mqttPubFlagQoS    = byte(0x06)
 	mqttPubFlagDup    = byte(0x08)
+	mqttPubFlags      = mqttPubFlagRetain | mqttPubFlagQoS | mqttPubFlagDup // 0x0f, the fixed-header flags nibble
 	mqttPubQos1       = byte(0x1 << 1)
 	mqttPubQoS2       = byte(0x2 << 1)
 
@@ -481,6 +482,13 @@ const (
 	// NATS header that indicates that the message originated from MQTT and
 	// stores the published message QOS.
 	mqttNatsHeader = "Nmqtt-Pub"
+	// A staged QoS2 message's mqttNatsHeader value carries a second byte after
+	// the QoS: the MQTT PUBLISH flags nibble (mqttPubFlags) as one hex char,
+	// e.g. "25" for a retained QoS2 message (0x5 = retain|QoS2). The value is a
+	// persisted, cross-version contract: byte 0 stays the bare QoS forever
+	// (older servers read only it), a missing flags byte reads as no flags, and
+	// extensions may only append bytes (a second hex char = a full private
+	// byte), never change the meaning of existing ones.
 
 	// NATS headers to store retained message metadata (along with the original
 	// message as binary).
@@ -499,9 +507,10 @@ const (
 )
 
 type mqttParsedPublishNATSHeader struct {
-	qos     byte
-	subject []byte
-	mapped  []byte
+	qos      byte
+	retained bool
+	subject  []byte
+	mapped   []byte
 }
 
 func (s *Server) startMQTT() {
@@ -1133,6 +1142,28 @@ func (s *Server) mqttStoreQoSMsgForAccountOnNewSubject(hdr int, msg []byte, acc,
 	jsa.storeMsg(mqttStreamSubjectPrefix+subject, hdr, msg)
 }
 
+// Encodes the MQTT PUBLISH flags nibble (mqttPubFlags) as one hex char, the
+// flags byte that follows the QoS in a mqttNatsHeader value.
+func mqttNatsHeaderEncodeFlags(ppFlags byte) byte {
+	return "0123456789abcdef"[ppFlags&mqttPubFlags]
+}
+
+// Decodes the MQTT flags nibble carried after the QoS in a mqttNatsHeader
+// value; values without the flags byte read as no flags set. Callers test the
+// result with the mqttPubFlag* bits.
+func mqttNatsHeaderDecodeFlags(value []byte) byte {
+	if len(value) < 2 {
+		return 0
+	}
+	switch c := value[1]; {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	}
+	return 0
+}
+
 func mqttParsePublishNATSHeader(headerBytes []byte) *mqttParsedPublishNATSHeader {
 	if len(headerBytes) == 0 {
 		return nil
@@ -1143,9 +1174,10 @@ func mqttParsePublishNATSHeader(headerBytes []byte) *mqttParsedPublishNATSHeader
 		return nil
 	}
 	return &mqttParsedPublishNATSHeader{
-		qos:     pubValue[0] - '0',
-		subject: getHeader(mqttNatsHeaderSubject, headerBytes),
-		mapped:  getHeader(mqttNatsHeaderMapped, headerBytes),
+		qos:      pubValue[0] - '0',
+		retained: mqttIsRetained(mqttNatsHeaderDecodeFlags(pubValue)),
+		subject:  getHeader(mqttNatsHeaderSubject, headerBytes),
+		mapped:   getHeader(mqttNatsHeaderMapped, headerBytes),
 	}
 }
 
@@ -4079,14 +4111,16 @@ func (s *Server) mqttHandleWill(c *client) {
 		c.mu.Unlock()
 		return
 	}
-	pp := c.mqtt.pp
-	pp.topic = will.topic
-	pp.subject = will.subject
-	pp.mapped = will.mapped
-	pp.msg = will.message
-	pp.sz = len(will.message)
-	pp.pi = 0
-	pp.flags = will.qos << 1
+	// Create a synthetic PUBLISH packet to be delivered to the session's
+	// subscriptions, regardless of what is currently in c.mqtt.pp.
+	pp := &mqttPublish{
+		topic:   will.topic,
+		subject: will.subject,
+		mapped:  will.mapped,
+		msg:     will.message,
+		sz:      len(will.message),
+		flags:   will.qos << 1,
+	}
 	if will.retain {
 		pp.flags |= mqttPubFlagRetain
 	}
@@ -4224,6 +4258,7 @@ func mqttComputeNatsMsgSize(pp *mqttPublish, encodePP bool) int {
 		2 + // end-of-header CRLF
 		pp.sz
 	if encodePP {
+		size++                                   // for the flags byte
 		size += len(mqttNatsHeaderSubject) + 1 + // +1 for ':'
 			len(pp.subject) + 2 // 2 for CRLF
 
@@ -4255,6 +4290,9 @@ func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, 
 	buf.WriteString(mqttNatsHeader)
 	buf.WriteByte(':')
 	buf.WriteByte(qos + '0')
+	if encodePP {
+		buf.WriteByte(mqttNatsHeaderEncodeFlags(pp.flags))
+	}
 	buf.WriteString(_CRLF_)
 
 	if encodePP {
@@ -4357,7 +4395,13 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 	natsMsg, headerLen := mqttNewDeliverableMessage(pp, false)
 
-	// Set the client's pubarg for processing.
+	// The delivered message becomes the client's current publish (it is not
+	// the last PARSED packet for a PUBREL- or will-initiated delivery), and
+	// c.pa carries its pubargs; one defer restores both. c.mqtt.pp is
+	// readLoop-owned, like c.pa.
+	prevPP := c.mqtt.pp
+	c.mqtt.pp = pp
+
 	c.pa.subject = pp.subject
 	c.pa.mapped = pp.mapped
 	c.pa.reply = nil
@@ -4366,6 +4410,7 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 	c.pa.size = len(natsMsg)
 	c.pa.szb = []byte(strconv.FormatInt(int64(c.pa.size), 10))
 	defer func() {
+		c.mqtt.pp = prevPP
 		c.pa.subject = nil
 		c.pa.mapped = nil
 		c.pa.reply = nil
@@ -4453,6 +4498,10 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) error {
 		return errors.New("invalid message in QoS2 PUBREL stream")
 	}
 
+	flags := h.qos << 1
+	if h.retained {
+		flags |= mqttPubFlagRetain
+	}
 	pp := &mqttPublish{
 		topic:   natsSubjectToMQTTTopic(h.subject),
 		subject: h.subject,
@@ -4460,7 +4509,7 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) error {
 		msg:     stored.Data,
 		sz:      len(stored.Data),
 		pi:      pi,
-		flags:   h.qos << 1,
+		flags:   flags,
 	}
 
 	return s.mqttInitiateMsgDelivery(c, pp)

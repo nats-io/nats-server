@@ -2495,6 +2495,48 @@ func TestMQTTParsePub(t *testing.T) {
 	}
 }
 
+func TestMQTTNatsHeaderFlags(t *testing.T) {
+	// Round-trip every MQTT flags nibble through the header byte.
+	for flags := byte(0); flags <= mqttPubFlags; flags++ {
+		enc := mqttNatsHeaderEncodeFlags(flags)
+		if enc < '0' || (enc > '9' && enc < 'a') || enc > 'f' {
+			t.Fatalf("flags 0x%x encoded to non-hex byte %q", flags, enc)
+		}
+		// Decode reads value[1]; value[0] is the (irrelevant here) QoS char.
+		if got := mqttNatsHeaderDecodeFlags([]byte{'0', enc}); got != flags {
+			t.Fatalf("flags 0x%x: round-trip got 0x%x", flags, got)
+		}
+	}
+
+	// Bits above the nibble (e.g. a stray high bit) are not encoded.
+	if enc := mqttNatsHeaderEncodeFlags(0xf0 | mqttPubFlagRetain); enc != '1' {
+		t.Fatalf("high bits leaked into flags byte: %q", enc)
+	}
+
+	// Named examples, including the "25" from the header contract comment.
+	for _, test := range []struct {
+		flags byte
+		enc   byte
+	}{
+		{0, '0'},
+		{mqttPubFlagRetain, '1'},
+		{mqttPubQoS2 | mqttPubFlagRetain, '5'},
+		{mqttPubFlags, 'f'},
+	} {
+		if enc := mqttNatsHeaderEncodeFlags(test.flags); enc != test.enc {
+			t.Fatalf("flags 0x%x encoded to %q, want %q", test.flags, enc, test.enc)
+		}
+	}
+
+	// Cross-version contract: a value with no flags byte (older sender) reads
+	// as no flags set, never a panic.
+	for _, value := range [][]byte{nil, {}, {'2'}} {
+		if got := mqttNatsHeaderDecodeFlags(value); got != 0 {
+			t.Fatalf("value %q: want no flags, got 0x%x", value, got)
+		}
+	}
+}
+
 func TestMQTTParsePIMsg(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -9900,4 +9942,67 @@ func BenchmarkMQTT_QoS1_PubSub2_256b_Payload(b *testing.B) {
 
 func BenchmarkMQTT_QoS1_PubSub2___1K_Payload(b *testing.B) {
 	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(1024), 2)
+}
+
+// A PUBREL arriving on a different connection than its PUBLISH (session
+// resumed after a reconnect) has no staged in-memory copy and must fall
+// back to loading the message from JetStream, still delivering it exactly
+// once and completing the exchange.
+func TestMQTTQoS2PubRelResumedSessionDelivery(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mcs, msr := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs.Close()
+	testMQTTCheckConnAck(t, msr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mcs, msr, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mcs, nil, msr)
+
+	// Publish QoS2 retained and PUBREC it, then drop before the PUBREL.
+	const pubPI = 7
+	ci := &mqttConnInfo{clientID: "pub", cleanSess: false}
+	mcp, mpr := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSendPublishPacket(t, mcp, 2, false, true, "foo", pubPI, []byte("m"))
+	testMQTTReadPIPacket(mqttPacketPubRec, t, mpr, pubPI)
+	testMQTTDisconnect(t, mcp, nil)
+	mcp.Close()
+	testMQTTExpectNothing(t, msr)
+
+	// Resume the session; the PUBREL now delivers the message, at the sub's QoS.
+	mcp2, mpr2 := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer mcp2.Close()
+	testMQTTCheckConnAck(t, mpr2, mqttConnAckRCConnectionAccepted, true)
+	testMQTTSendPIPacket(mqttPacketPubRel|0x2, t, mcp2, pubPI)
+	testMQTTReadPIPacket(mqttPacketPubComp, t, mpr2, pubPI)
+	testMQTTCheckPubMsgNoAck(t, mcs, msr, "foo", mqttPubQos1, []byte("m"))
+	testMQTTExpectNothing(t, msr)
+
+	// A repeated PUBREL is acked without redelivering.
+	testMQTTSendPIPacket(mqttPacketPubRel|0x2, t, mcp2, pubPI)
+	testMQTTReadPIPacket(mqttPacketPubComp, t, mpr2, pubPI)
+	testMQTTExpectNothing(t, msr)
+
+	// The retain flag must survive the staging round-trip: a new
+	// subscriber gets the message as retained.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		acc, err := s.lookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		mset, err := acc.lookupStream(mqttRetainedMsgsStreamName)
+		if err != nil {
+			return err
+		}
+		if mset.state().Msgs != 1 {
+			return errors.New("retained message not stored")
+		}
+		return nil
+	})
+	mcs2, msr2 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub2", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs2.Close()
+	testMQTTCheckConnAck(t, msr2, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mcs2, msr2, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTCheckPubMsgNoAck(t, mcs2, msr2, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("m"))
 }
