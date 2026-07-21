@@ -16,7 +16,9 @@
 package server
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1390,6 +1392,61 @@ func TestStoreNumPendingLastPerSubjectExcludeOvercount(t *testing.T) {
 			total, _, err = fs.NumPendingMulti(13, filters, true)
 			require_NoError(t, err)
 			require_Equal(t, total, 2)
+		},
+	)
+}
+
+func TestStoreRunLengthEncodeLen(t *testing.T) {
+	// Values around every uvarint width boundary.
+	values := []uint64{0, 1, 127, 128, 16383, 16384, 1<<21 - 1, 1 << 21,
+		1<<28 - 1, 1 << 28, 1<<35 - 1, 1 << 35, 1<<42 - 1, 1 << 42,
+		1<<49 - 1, 1 << 49, 1<<56 - 1, 1 << 56, 1<<63 - 1, 1 << 63,
+		math.MaxUint64}
+
+	var scratch [binary.MaxVarintLen64]byte
+	for _, v := range values {
+		require_Equal(t, uvarintLen(v), binary.PutUvarint(scratch[:], v))
+	}
+	// The predicted record size must exactly match what appendRunLength writes.
+	for _, first := range values {
+		for _, num := range values {
+			b := appendRunLength(nil, first, num)
+			require_Equal(t, len(b), runLengthEncodeLen(first, num))
+		}
+	}
+}
+
+func TestStoreSyncDeletedRunPartitionedBlocks(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}},
+		func(t *testing.T, fs StreamStore) {
+			for range 20 {
+				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+			// Interior deletes forming the runs [3,5] and [10,12].
+			for _, seq := range []uint64{3, 4, 5, 10, 11, 12} {
+				_, err := fs.RemoveMsg(seq)
+				require_NoError(t, err)
+			}
+			before := fs.State()
+
+			// Same deleted state partitioned as run-length blocks, like a
+			// run-length encoded snapshot from a leader. Must be a no-op.
+			dbs := DeleteBlocks{
+				&DeleteRange{First: 3, Num: 3},
+				&DeleteRange{First: 10, Num: 3},
+			}
+			require_NoError(t, fs.SyncDeleted(dbs))
+			require_True(t, reflect.DeepEqual(before, fs.State()))
+
+			// An extra deleted sequence must still be applied.
+			dbs = append(dbs, &DeleteRange{First: 15, Num: 1})
+			require_NoError(t, fs.SyncDeleted(dbs))
+			state := fs.State()
+			require_Equal(t, state.Msgs, before.Msgs-1)
+			require_Equal(t, state.NumDeleted, before.NumDeleted+1)
 		},
 	)
 }

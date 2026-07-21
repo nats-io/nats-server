@@ -351,3 +351,119 @@ func require_True(t *testing.T, b bool) {
 		t.Fatalf("require true")
 	}
 }
+
+func TestSeqSetRangeRuns(t *testing.T) {
+	// Reference implementation: derive runs from Range.
+	type run struct{ first, last uint64 }
+	refRuns := func(ss *SequenceSet) []run {
+		var runs []run
+		ss.Range(func(n uint64) bool {
+			if l := len(runs); l > 0 && runs[l-1].last+1 == n {
+				runs[l-1].last = n
+			} else {
+				runs = append(runs, run{n, n})
+			}
+			return true
+		})
+		return runs
+	}
+	check := func(t *testing.T, ss *SequenceSet) {
+		t.Helper()
+		var runs []run
+		ss.RangeRuns(func(first, last uint64) bool {
+			runs = append(runs, run{first, last})
+			return true
+		})
+		expected := refRuns(ss)
+		require_True(t, len(runs) == len(expected))
+		for i := range runs {
+			require_True(t, runs[i] == expected[i])
+		}
+	}
+
+	// Empty set.
+	check(t, &SequenceSet{})
+	var nilSet *SequenceSet
+	nilSet.RangeRuns(func(_, _ uint64) bool {
+		t.Fatalf("callback on nil set")
+		return false
+	})
+
+	// Single element, and word/bucket/node boundary shapes.
+	for _, seqs := range [][]uint64{
+		{22},
+		{0},
+		{63, 64},                           // crosses a word
+		{numEntries - 1, numEntries},       // crosses a node
+		{0, 1, 2, 63, 64, 65, 127, 129},    // mixed
+		{5, 7, 9},                          // all singletons
+		{numEntries*3 - 1, numEntries * 5}, // node gap breaks a run
+		{0, numEntries*10 + 22, numEntries*20 + 1000}, // sparse over many nodes
+	} {
+		var ss SequenceSet
+		for _, seq := range seqs {
+			ss.Insert(seq)
+		}
+		check(t, &ss)
+	}
+
+	// Dense contiguous runs, like interior deletes on a stream with
+	// per-subject limits: mostly full coverage with a few live "holes".
+	var ss SequenceSet
+	for seq := uint64(1000); seq < 100_000; seq++ {
+		if seq%1024 != 0 {
+			ss.Insert(seq)
+		}
+	}
+	check(t, &ss)
+
+	// Randomized.
+	for iter := 0; iter < 25; iter++ {
+		var ss SequenceSet
+		max := uint64(rand.Intn(5*numEntries) + 1)
+		for i := 0; i < rand.Intn(4096); i++ {
+			ss.Insert(uint64(rand.Int63n(int64(max))))
+		}
+		check(t, &ss)
+	}
+
+	// Early termination, three runs but we stop after the second.
+	var ess SequenceSet
+	for _, seq := range []uint64{1, 2, 5, 6, 9} {
+		ess.Insert(seq)
+	}
+	var count int
+	ess.RangeRuns(func(_, _ uint64) bool {
+		count++
+		return count < 2
+	})
+	require_True(t, count == 2)
+}
+
+func TestSeqSetEncodeLenExact(t *testing.T) {
+	// EncodeLen must exactly match the bytes Encode writes, and Encode must
+	// write in place when given sufficient capacity: callers pre-size
+	// buffers with EncodeLen and reslice instead of copying the result.
+	check := func(t *testing.T, ss *SequenceSet) {
+		t.Helper()
+		require_True(t, len(ss.Encode(nil)) == ss.EncodeLen())
+		buf := make([]byte, 0, ss.EncodeLen())
+		enc := ss.Encode(buf)
+		require_True(t, len(enc) == ss.EncodeLen())
+		require_True(t, &enc[0] == &buf[:1][0])
+	}
+
+	var ss SequenceSet
+	check(t, &ss)
+	for _, seq := range []uint64{0, 22, 63, 64, numEntries - 1, numEntries, numEntries * 10} {
+		ss.Insert(seq)
+		check(t, &ss)
+	}
+	for iter := 0; iter < 10; iter++ {
+		var ss SequenceSet
+		for i := 0; i < rand.Intn(4096); i++ {
+			ss.Insert(uint64(rand.Int63n(5 * numEntries)))
+		}
+		check(t, &ss)
+	}
+}

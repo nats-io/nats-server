@@ -125,6 +125,52 @@ func (ss *SequenceSet) Range(f func(uint64) bool) {
 	ss.root.iter(f)
 }
 
+// RangeRuns will invoke the given function for each maximal run of
+// consecutive sequences [first, last] present in the set, in ascending order.
+// If the callback returns false we terminate the iteration.
+func (ss *SequenceSet) RangeRuns(f func(first, last uint64) bool) {
+	if ss == nil || ss.root == nil {
+		return
+	}
+	var first, last uint64
+	var open bool
+	if !ss.root.iterRuns(&first, &last, &open, f) {
+		return
+	}
+	if open {
+		f(first, last)
+	}
+}
+
+func (n *node) iterRuns(first, last *uint64, open *bool, f func(first, last uint64) bool) bool {
+	if n == nil {
+		return true
+	}
+	if !n.l.iterRuns(first, last, open, f) {
+		return false
+	}
+	for bi, w := range n.bits {
+		for w != 0 {
+			tz := bits.TrailingZeros64(w)
+			ones := bits.TrailingZeros64(^(w >> tz))
+			s := n.base + uint64(bi*bitsPerBucket) + uint64(tz)
+			e := s + uint64(ones) - 1
+			if *open && s == *last+1 {
+				*last = e
+			} else {
+				if *open && !f(*first, *last) {
+					return false
+				}
+				*first, *last, *open = s, e, true
+			}
+			// Clear the run's bits. A non-constant shift by >= 64 yields 0,
+			// so this also handles a run spanning the whole word (ones == 64).
+			w &^= ((1 << ones) - 1) << tz
+		}
+	}
+	return n.r.iterRuns(first, last, open, f)
+}
+
 // Heights returns the left and right heights of the tree.
 func (ss *SequenceSet) Heights() (l, r int) {
 	if ss.root == nil {

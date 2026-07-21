@@ -12989,7 +12989,7 @@ func TestFileStoreDeleteRangeTwoGaps(t *testing.T) {
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
 		t.Helper()
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13039,7 +13039,7 @@ func TestFileStoreDeleteBlocksWithSingleMessageBlocks(t *testing.T) {
 	defer fs.Stop()
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13214,7 +13214,8 @@ func TestFileStoreDeleteBlocks(t *testing.T) {
 	defer fs.Stop()
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
-		dBlocks := fs.deleteBlocks()
+		t.Helper()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13272,7 +13273,7 @@ func TestFileStoreDeleteBlocks(t *testing.T) {
 	// block 5: [17,20]
 	fs.RemoveMsg(8)
 	checkDeleteBlocks(DeleteBlocks{
-		makeSequenceSet([]uint64{8}),
+		&DeleteRange{First: 8, Num: 1},
 		&DeleteRange{First: 9, Num: 2},
 	})
 
@@ -13285,7 +13286,7 @@ func TestFileStoreDeleteBlocks(t *testing.T) {
 	fs.RemoveMsg(18)
 	fs.RemoveMsg(17)
 	checkDeleteBlocks(DeleteBlocks{
-		makeSequenceSet([]uint64{8}),
+		&DeleteRange{First: 8, Num: 1},
 		&DeleteRange{First: 9, Num: 2},
 		&DeleteRange{First: 17, Num: 2},
 	})
@@ -13312,7 +13313,7 @@ func TestFileStoreDeleteBlocks(t *testing.T) {
 	checkDeleteBlocks(DeleteBlocks{
 		&DeleteRange{First: 5, Num: 6},
 		&DeleteRange{First: 17, Num: 2},
-		makeSequenceSet([]uint64{20}),
+		&DeleteRange{First: 20, Num: 1},
 	})
 
 	// Remove the last message
@@ -13359,7 +13360,7 @@ func TestFileStoreDeleteBlocksWithManyEmptyBlocks(t *testing.T) {
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
 		t.Helper()
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13405,7 +13406,7 @@ func TestFileStoreDeleteBlocksWithManyEmptyBlocks(t *testing.T) {
 	}
 
 	checkDeleteBlocks(DeleteBlocks{
-		makeSequenceSet([]uint64{2, 3, 4, 5, 6}),
+		&DeleteRange{First: 2, Num: 5},
 		&DeleteRange{First: 7, Num: 8},
 	})
 
@@ -13565,7 +13566,7 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 	defer fs.mu.Unlock()
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -14809,7 +14810,7 @@ func TestFileStoreSyncDeletedDmapAliasRace(t *testing.T) {
 	// Snapshot the delete blocks to feed back into SyncDeleted.
 	fs.mu.Lock()
 	fs.readLockAllMsgBlocks()
-	live := fs.deleteBlocks()
+	live, _ := fs.deleteBlocks()
 	dbs := make(DeleteBlocks, len(live))
 	for i, db := range live {
 		switch d := db.(type) {

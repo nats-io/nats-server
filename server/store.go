@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"os"
 	"strings"
 	"time"
@@ -305,6 +306,50 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 	}
 
 	return ss, nil
+}
+
+// uvarintLen returns the number of bytes binary.PutUvarint/AppendUvarint
+// write for v: ceil(bits/7), with v=0 taking one byte.
+func uvarintLen(v uint64) int {
+	return (bits.Len64(v|1) + 6) / 7
+}
+
+// runLengthEncodeLen returns the encoded size of a run-length delete record,
+// exactly matching what appendRunLength writes.
+func runLengthEncodeLen(first, num uint64) int {
+	return 1 + uvarintLen(first) + uvarintLen(num)
+}
+
+// appendRunLength appends a run-length encoded delete record for num
+// deleted sequences starting at first.
+func appendRunLength(b []byte, first, num uint64) []byte {
+	b = append(b, runLengthMagic)
+	b = binary.AppendUvarint(b, first)
+	b = binary.AppendUvarint(b, num)
+	return b
+}
+
+// seqSetEncodeLen returns the exact encoded size of the smaller of the
+// run-length and AVL bitmap encodings of ss (DecodeStreamState accepts them
+// interleaved). If runs > 0 the run-length encoding is the one to use, with
+// sz covering that many runs; runs == 0 means the bitmap encoding is smaller
+// (or equal, in which case the bitmap is preferred).
+// For streams with dense interior deletes around a few live messages,
+// run-length encoding is an order of magnitude smaller than the bitmap.
+func seqSetEncodeLen(ss *avl.SequenceSet) (sz, runs int) {
+	var runsLen int
+	avlLen := ss.EncodeLen()
+	ss.RangeRuns(func(first, last uint64) bool {
+		runs++
+		runsLen += runLengthEncodeLen(first, last-first+1)
+		// Stop early once the bitmap encoding provably wins, the exact
+		// run-length size is only needed when the runs are smaller.
+		return runsLen < avlLen
+	})
+	if runsLen < avlLen {
+		return runsLen, runs
+	}
+	return avlLen, 0
 }
 
 // DeleteRange is a run length encoded delete range.

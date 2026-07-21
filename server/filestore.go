@@ -12413,40 +12413,49 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 		}
 	}
 
-	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks
-	var buf [1024]byte
-	buf[0], buf[1] = streamStateMagic, streamStateVersion
-	n := hdrLen
-	n += binary.PutUvarint(buf[n:], fs.state.Msgs)
-	n += binary.PutUvarint(buf[n:], fs.state.Bytes)
-	n += binary.PutUvarint(buf[n:], fs.state.FirstSeq)
-	n += binary.PutUvarint(buf[n:], fs.state.LastSeq)
-	n += binary.PutUvarint(buf[n:], failed)
-	n += binary.PutUvarint(buf[n:], uint64(numDeleted))
+	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks.
+	// Calculate the exact encoded size up front so the buffer is allocated once.
+	total := hdrLen + uvarintLen(fs.state.Msgs) + uvarintLen(fs.state.Bytes) +
+		uvarintLen(fs.state.FirstSeq) + uvarintLen(fs.state.LastSeq) +
+		uvarintLen(failed) + uvarintLen(uint64(numDeleted))
 
-	b := buf[0:n]
-
+	var dbs DeleteBlocks
 	if numDeleted > 0 {
-		var scratch [4 * 1024]byte
-
 		fs.readLockAllMsgBlocks()
 		defer fs.readUnlockAllMsgBlocks()
+		var sz int
+		dbs, sz = fs.deleteBlocks()
+		total += sz
+	}
 
-		for _, db := range fs.deleteBlocks() {
-			switch db := db.(type) {
-			case *DeleteRange:
-				first, _, num := db.State()
-				scratch[0] = runLengthMagic
-				i := 1
-				i += binary.PutUvarint(scratch[i:], first)
-				i += binary.PutUvarint(scratch[i:], num)
-				b = append(b, scratch[0:i]...)
-			case *avl.SequenceSet:
-				buf := db.Encode(scratch[:0])
-				b = append(b, buf...)
-			default:
-				return nil, errors.New("no impl")
+	b := make([]byte, 0, total)
+	b = append(b, streamStateMagic, streamStateVersion)
+	b = binary.AppendUvarint(b, fs.state.Msgs)
+	b = binary.AppendUvarint(b, fs.state.Bytes)
+	b = binary.AppendUvarint(b, fs.state.FirstSeq)
+	b = binary.AppendUvarint(b, fs.state.LastSeq)
+	b = binary.AppendUvarint(b, failed)
+	b = binary.AppendUvarint(b, uint64(numDeleted))
+
+	for _, db := range dbs {
+		switch db := db.(type) {
+		case *DeleteRange:
+			b = appendRunLength(b, db.First, db.Num)
+		case *avl.SequenceSet:
+			enc := db.Encode(b[len(b):])
+			if n := len(b) + len(enc); n <= cap(b) {
+				b = b[:n]
+			} else {
+				// Fallback if the buffer didn't have spare capacity.
+				b = append(b, enc...)
+				assert.Unreachable("Filestore EncodedStreamState size accounting mismatch", map[string]any{
+					"name":   fs.cfg.Name,
+					"total":  total,
+					"length": len(b),
+				})
 			}
+		default:
+			return nil, errors.New("no impl")
 		}
 	}
 
@@ -12454,15 +12463,51 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 }
 
 // deleteBlocks returns DeleteBlocks representing interior deletes
-// and gaps between blocks.
+// and gaps between blocks, as well as their total binary encoded size.
 // All blocks should be at least read locked.
-func (fs *fileStore) deleteBlocks() DeleteBlocks {
-	var dbs DeleteBlocks
+func (fs *fileStore) deleteBlocks() (dbs DeleteBlocks, sz int) {
+	// First pass: per block with interior deletes, pick the smaller
+	// representation between run-length ranges and the AVL bitmap dmap.
+	// The encoded size for each block is added here.
+	var numRanges, numGaps, numBitmaps int
+	var useRuns []bool
 	var prevLast uint64
+	for i, mb := range fs.blks {
+		if prevLast > 0 && prevLast+1 != atomic.LoadUint64(&mb.first.seq) {
+			numGaps++
+		}
+		prevLast = atomic.LoadUint64(&mb.last.seq)
+		if mb.dmap.Size() == 0 {
+			continue
+		}
+		elen, runs := seqSetEncodeLen(&mb.dmap)
+		sz += elen
+		if runs > 0 {
+			if useRuns == nil {
+				useRuns = make([]bool, len(fs.blks))
+			}
+			useRuns[i] = true
+			numRanges += runs
+		} else {
+			numBitmaps++
+		}
+	}
+
+	// Second pass: allocate once, and populate the delete blocks. All ranges
+	// are carved out of a single backing slice; its capacity is an upper
+	// bound (gaps can merge below), so it cannot grow and the pointers stay
+	// stable, which also allows gap ranges to be extended in place.
+	// The encoded size for the gaps between blocks is added here.
+	dbs = make(DeleteBlocks, 0, numRanges+numGaps+numBitmaps)
+	ranges := make([]DeleteRange, 0, numRanges+numGaps)
+	addRange := func(first, num uint64) *DeleteRange {
+		ranges = append(ranges, DeleteRange{First: first, Num: num})
+		return &ranges[len(ranges)-1]
+	}
 	var prevRange *DeleteRange
 	var msgsSinceGap bool
-
-	for _, mb := range fs.blks {
+	prevLast = 0
+	for i, mb := range fs.blks {
 		// Detect if we have a gap between these blocks.
 		fseq := atomic.LoadUint64(&mb.first.seq)
 		if prevLast > 0 && prevLast+1 != fseq {
@@ -12472,24 +12517,31 @@ func (fs *fileStore) deleteBlocks() DeleteBlocks {
 			// blocks containing messages between the
 			// two gaps.
 			if prevRange != nil && !msgsSinceGap {
+				sz -= runLengthEncodeLen(prevRange.First, prevRange.Num)
 				prevRange.Num += gapSize
+				sz += runLengthEncodeLen(prevRange.First, prevRange.Num)
 			} else {
-				prevRange = &DeleteRange{
-					First: prevLast + 1,
-					Num:   gapSize,
-				}
+				prevRange = addRange(prevLast+1, gapSize)
+				sz += runLengthEncodeLen(prevRange.First, prevRange.Num)
 				msgsSinceGap = false
 				dbs = append(dbs, prevRange)
 			}
 		}
 		if mb.dmap.Size() > 0 {
-			dbs = append(dbs, &mb.dmap)
+			if useRuns != nil && useRuns[i] {
+				mb.dmap.RangeRuns(func(first, last uint64) bool {
+					dbs = append(dbs, addRange(first, last-first+1))
+					return true
+				})
+			} else {
+				dbs = append(dbs, &mb.dmap)
+			}
 			prevRange = nil
 		}
 		prevLast = atomic.LoadUint64(&mb.last.seq)
 		msgsSinceGap = msgsSinceGap || mb.msgs > 0
 	}
-	return dbs
+	return dbs, sz
 }
 
 // deleteMap returns all interior deletes for each block based on the mb.dmap.
@@ -12535,7 +12587,7 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 
 	lseq := fs.state.LastSeq
 	fs.readLockAllMsgBlocks()
-	mdbs := fs.deleteBlocks()
+	mdbs, _ := fs.deleteBlocks()
 	// We'll release the locks below, so need to copy the ones that are references
 	// which are only safe while the locks are still held.
 	for i, db := range mdbs {
