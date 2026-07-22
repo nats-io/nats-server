@@ -3977,7 +3977,7 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 			var state StreamState
 			mset.store.FastState(&state)
 			if ssi.OptStartTime != nil {
-				if !state.LastTime.IsZero() && ssi.OptStartTime.Before(state.LastTime) {
+				if len(mset.cfg.Sources) == 1 && !state.LastTime.IsZero() && ssi.OptStartTime.Before(state.LastTime) {
 					req.Config.OptStartTime = &state.LastTime
 				} else {
 					req.Config.OptStartTime = ssi.OptStartTime

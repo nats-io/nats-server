@@ -9579,6 +9579,64 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 
 }
 
+func TestJetStreamSourceOptStartTimeIgnoredForNewlyAddedSource(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	checkCount := func(sname string, expected int) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			si, err := js.StreamInfo(sname)
+			if err != nil {
+				return err
+			}
+			if n := si.State.Msgs; n != uint64(expected) {
+				return fmt.Errorf("expected stream %q to have %d messages, got %d", sname, expected, n)
+			}
+			return nil
+		})
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "OLD_ORIGIN", Subjects: []string{"old"}})
+	require_NoError(t, err)
+
+	before := time.Now()
+	const oldTotal = 5
+	for i := 0; i < oldTotal; i++ {
+		sendStreamMsg(t, nc, "old", "hello")
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "NEW_ORIGIN", Subjects: []string{"new"}})
+	require_NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+	const newTotal = 3
+	for i := 0; i < newTotal; i++ {
+		sendStreamMsg(t, nc, "new", "hello")
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "DEST",
+		Sources: []*nats.StreamSource{{Name: "NEW_ORIGIN"}},
+	})
+	require_NoError(t, err)
+
+	checkCount("DEST", newTotal)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "DEST",
+		Sources: []*nats.StreamSource{
+			{Name: "NEW_ORIGIN"},
+			{Name: "OLD_ORIGIN", OptStartTime: &before},
+		},
+	})
+	require_NoError(t, err)
+	checkCount("DEST", newTotal+oldTotal)
+}
+
 func TestJetStreamMirrorStripExpectedHeaders(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
