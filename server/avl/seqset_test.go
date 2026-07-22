@@ -223,6 +223,39 @@ func TestSeqSetClone(t *testing.T) {
 	require_True(t, ss.Nodes() == ssc.Nodes())
 }
 
+func TestSeqSetEqual(t *testing.T) {
+	var ss1, ss2, ss3 SequenceSet
+
+	// Empty and nil sets are all equal.
+	var nilSet *SequenceSet
+	require_True(t, ss1.Equal(&ss2))
+	require_True(t, ss1.Equal(nilSet))
+	require_True(t, nilSet.Equal(&ss1))
+
+	// Same state (first, last, size) but different contents.
+	for _, seq := range []uint64{1, 3, 5} {
+		ss1.Insert(seq)
+	}
+	for _, seq := range []uint64{1, 4, 5} {
+		ss2.Insert(seq)
+	}
+	require_False(t, ss1.Equal(&ss2))
+	require_False(t, ss2.Equal(&ss1))
+	require_False(t, ss1.Equal(nilSet))
+	require_False(t, nilSet.Equal(&ss1))
+
+	// Identical contents, insertion order should not matter.
+	for _, seq := range []uint64{5, 1, 3} {
+		ss3.Insert(seq)
+	}
+	require_True(t, ss1.Equal(&ss3))
+	require_True(t, ss3.Equal(&ss1))
+
+	// Differing sizes.
+	ss3.Insert(7)
+	require_False(t, ss1.Equal(&ss3))
+}
+
 func TestSeqSetUnion(t *testing.T) {
 	var ss1, ss2 SequenceSet
 
@@ -349,5 +382,12 @@ func require_True(t *testing.T, b bool) {
 	t.Helper()
 	if !b {
 		t.Fatalf("require true")
+	}
+}
+
+func require_False(t *testing.T, b bool) {
+	t.Helper()
+	if b {
+		t.Fatalf("require false")
 	}
 }

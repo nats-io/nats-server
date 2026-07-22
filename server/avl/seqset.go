@@ -187,6 +187,23 @@ func (ss *SequenceSet) Clone() *SequenceSet {
 	return css
 }
 
+// Equal returns whether the two sets contain exactly the same sequences.
+func (ss *SequenceSet) Equal(other *SequenceSet) bool {
+	if ss.IsEmpty() || other.IsEmpty() {
+		return ss.IsEmpty() && other.IsEmpty()
+	}
+	if ss.size != other.size {
+		return false
+	}
+	// Sizes are equal, so a one-way membership check suffices.
+	equal := true
+	ss.Range(func(seq uint64) bool {
+		equal = other.Exists(seq)
+		return equal
+	})
+	return equal
+}
+
 // Union will union this SequenceSet with ssa.
 func (ss *SequenceSet) Union(ssa ...*SequenceSet) {
 	for _, sa := range ssa {

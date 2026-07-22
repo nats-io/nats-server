@@ -13255,6 +13255,30 @@ func TestPruneDeleteBlock(t *testing.T) {
 	prune, local = pruneDeleteBlock(&DeleteRange{First: 301, Num: 1}, local)
 	require_False(t, prune)
 	require_Equal(t, len(local), 0)
+
+	// Sparse sequence sets with the same state but different contents
+	// should not be pruned.
+	local = DeleteBlocks{makeSequenceSet([]uint64{1, 4, 5})}
+	prune, local = pruneDeleteBlock(makeSequenceSet([]uint64{1, 3, 5}), local)
+	require_False(t, prune)
+	require_Equal(t, len(local), 1)
+
+	// Sparse sequence sets with identical contents should be pruned.
+	prune, local = pruneDeleteBlock(makeSequenceSet([]uint64{1, 4, 5}), local)
+	require_True(t, prune)
+	require_Equal(t, len(local), 0)
+
+	// A DeleteRange matching a dense sequence set should be pruned.
+	local = DeleteBlocks{makeSequenceSet([]uint64{7, 8, 9})}
+	prune, local = pruneDeleteBlock(&DeleteRange{First: 7, Num: 3}, local)
+	require_True(t, prune)
+	require_Equal(t, len(local), 0)
+
+	// A dense sequence set matching a DeleteRange should be pruned.
+	local = DeleteBlocks{&DeleteRange{First: 7, Num: 3}}
+	prune, local = pruneDeleteBlock(makeSequenceSet([]uint64{7, 8, 9}), local)
+	require_True(t, prune)
+	require_Equal(t, len(local), 0)
 }
 
 func TestFileStoreDeleteBlocks(t *testing.T) {

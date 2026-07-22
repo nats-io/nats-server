@@ -12649,10 +12649,41 @@ func pruneDeleteBlock(db DeleteBlock, blocks DeleteBlocks) (bool, DeleteBlocks) 
 	}
 
 	if aFirst == bFirst && aLast == bLast && aNum == bNum {
-		return true, blocks[1:]
+		// Matching state is only conclusive for a dense block; two sparse
+		// sequence sets can share the same state but differ in contents.
+		if aNum == aLast-aFirst+1 || deleteBlockContentsEqual(db, blocks[0]) {
+			return true, blocks[1:]
+		}
 	}
 
 	return false, blocks
+}
+
+// deleteBlockContentsEqual reports whether two sparse delete blocks with
+// identical State() contain the same sequences. If neither block is a
+// sequence set we can't compare cheaply and safely report unequal.
+func deleteBlockContentsEqual(a, b DeleteBlock) bool {
+	ssa, aIsSet := a.(*avl.SequenceSet)
+	ssb, bIsSet := b.(*avl.SequenceSet)
+	if aIsSet && bIsSet {
+		return ssa.Equal(ssb)
+	}
+	// Use whichever side is a SequenceSet for fast Exists lookups.
+	var ss *avl.SequenceSet
+	var other DeleteBlock
+	if bIsSet {
+		ss, other = ssb, a
+	} else if aIsSet {
+		ss, other = ssa, b
+	} else {
+		return false
+	}
+	equal := true
+	other.Range(func(seq uint64) bool {
+		equal = ss.Exists(seq)
+		return equal
+	})
+	return equal
 }
 
 ////////////////////////////////////////////////////////////////////////////////
