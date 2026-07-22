@@ -3691,7 +3691,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	client := sub.client
 	// Check sub client and check echo. Only do this if not a service import.
-	if client == nil || (c == client && !client.echo && !sub.si) {
+	if client == nil || (c == client && !client.echo && !sub.si && !sub.rsi) {
 		if client != nil && mt != nil {
 			client.mu.Lock()
 			mt.addEgressEvent(client, sub, errMsgTraceNoEcho)

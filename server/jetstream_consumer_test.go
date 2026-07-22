@@ -12878,6 +12878,7 @@ func TestJetStreamConsumerSetRateLimitAccountMpayRace(t *testing.T) {
 }
 
 // https://github.com/nats-io/nats-server/issues/8381
+
 func TestJetStreamConsumerUpdateRejectsStorageChange(t *testing.T) {
 	test := func(t *testing.T, memoryStorage bool, replicas int) {
 		var s *Server
@@ -12922,4 +12923,95 @@ func TestJetStreamConsumerUpdateRejectsStorageChange(t *testing.T) {
 		t.Run(fmt.Sprintf("%s/R1", title), func(t *testing.T) { test(t, memoryStorage, 1) })
 		t.Run(fmt.Sprintf("%s/R3", title), func(t *testing.T) { test(t, memoryStorage, 3) })
 	}
+}
+
+// https://github.com/nats-io/nats-server/issues/8396
+func TestJetStreamConsumerResetResponseAcrossServiceImport(t *testing.T) {
+	const accounts = `
+		system_account: SYS
+		accounts {
+			A {
+				jetstream: enabled
+				users = [{user: a, password: a}]
+				exports = [{service: "$JS.API.CONSUMER.RESET.TEST.*", accounts: [B]}]
+			}
+			B {
+				jetstream: enabled
+				users = [{user: b, password: b}]
+				imports = [{service: {account: A, subject: "$JS.API.CONSUMER.RESET.TEST.*"}, to: "$JS.REMOTE.API.CONSUMER.RESET.TEST.*"}]
+			}
+			SYS {users = [{user: admin, password: admin}]}
+		}
+	`
+
+	test := func(t *testing.T, s *Server, replicas int, requestServer func() *Server) {
+		nc, js := jsClientConnect(t, s, nats.UserInfo("a", "a"))
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:   "CONSUMER",
+			AckPolicy: nats.AckExplicitPolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+
+		if requestServer != nil {
+			s = requestServer()
+		}
+		ncImport := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "b"))
+		defer ncImport.Close()
+		const resetSubject = "$JS.REMOTE.API.CONSUMER.RESET.TEST.CONSUMER"
+
+		msg, err := ncImport.Request(resetSubject, nil, 2*time.Second)
+		require_NoError(t, err)
+		var resp JSApiConsumerResetResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+		require_True(t, resp.Error == nil)
+		require_NotNil(t, resp.ConsumerInfo)
+		require_Equal(t, resp.ConsumerInfo.Name, "CONSUMER")
+		require_Equal(t, resp.ResetSeq, 1)
+
+		msg, err = ncImport.Request(resetSubject, []byte("{"), 2*time.Second)
+		require_NoError(t, err)
+		resp = JSApiConsumerResetResponse{}
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_Equal(t, resp.Type, JSApiConsumerResetResponseType)
+		require_NotNil(t, resp.Error)
+		require_Equal(t, resp.Error.ErrCode, uint16(JSInvalidJSONErr))
+	}
+
+	t.Run("R1", func(t *testing.T) {
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: 127.0.0.1:-1
+			jetstream: {store_dir: %q}
+			%s
+		`, t.TempDir(), accounts)))
+		s, _ := RunServerWithConfig(conf)
+		defer s.Shutdown()
+		test(t, s, 1, nil)
+	})
+
+	t.Run("R3", func(t *testing.T) {
+		const clusterConfig = `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {store_dir: %q}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+		` + accounts
+		c := createJetStreamClusterWithTemplate(t, clusterConfig, "R3S", 3)
+		defer c.shutdown()
+
+		s := c.randomServer()
+		test(t, s, 3, func() *Server {
+			c.waitOnConsumerLeader("A", "TEST", "CONSUMER")
+			return c.consumerLeader("A", "TEST", "CONSUMER")
+		})
+	})
 }
