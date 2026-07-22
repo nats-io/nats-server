@@ -909,7 +909,11 @@ func (s *Server) processJSAPIRoutedRequests() {
 			client.pa = r.pa
 			start := time.Now()
 			r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
-			if dur := time.Since(start); dur >= readLoopReportThreshold {
+			dur := time.Since(start)
+			// r.jsub is the matched API handler subscription; its subject is the
+			// registered handler pattern, which keeps stats cardinality bounded.
+			js.recordAPILatency(string(r.jsub.subject), dur)
+			if dur >= readLoopReportThreshold {
 				s.Warnf("Internal subscription on %q took too long: %v", r.subject, dur)
 			}
 			atomic.AddInt64(&js.apiInflight, -1)

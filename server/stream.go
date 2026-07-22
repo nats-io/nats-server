@@ -5736,8 +5736,9 @@ var dgPool = sync.Pool{
 // For when we need to not inline the request.
 type directGetReq struct {
 	// Copy of this is correct for this.
-	req   JSApiMsgGetRequest
-	reply string
+	req        JSApiMsgGetRequest
+	reply      string
+	apiSubject string
 }
 
 // processDirectGetRequest handles direct get request for stream messages.
@@ -5787,10 +5788,10 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
 	if !inlineOk {
 		dg := dgPool.Get().(*directGetReq)
-		dg.req, dg.reply = req, reply
+		dg.req, dg.reply, dg.apiSubject = req, reply, JSDirectMsgGet
 		mset.gets.push(dg)
 	} else {
-		mset.getDirectRequest(&req, reply)
+		mset.trackDirectGetRequest(JSDirectMsgGet, &req, reply)
 	}
 }
 
@@ -5850,10 +5851,10 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
 	if !inlineOk {
 		dg := dgPool.Get().(*directGetReq)
-		dg.req, dg.reply = req, reply
+		dg.req, dg.reply, dg.apiSubject = req, reply, JSDirectGetLastBySubject
 		mset.gets.push(dg)
 	} else {
-		mset.getDirectRequest(&req, reply)
+		mset.trackDirectGetRequest(JSDirectGetLastBySubject, &req, reply)
 	}
 }
 
@@ -5979,6 +5980,14 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 
 // Do actual work on a direct msg request.
 // This could be called in a Go routine if we are inline for a non-client connection.
+func (mset *stream) trackDirectGetRequest(apiSubject string, req *JSApiMsgGetRequest, reply string) {
+	start := time.Now()
+	mset.getDirectRequest(req, reply)
+	if js := mset.js; js != nil {
+		js.recordAPILatency(apiSubject, time.Since(start))
+	}
+}
+
 func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	// Handle multi in separate function.
 	if len(req.MultiLastFor) > 0 {
@@ -8244,7 +8253,7 @@ func (mset *stream) internalLoop() {
 		case <-gets.ch:
 			dgs := gets.pop()
 			for _, dg := range dgs {
-				mset.getDirectRequest(&dg.req, dg.reply)
+				mset.trackDirectGetRequest(dg.apiSubject, &dg.req, dg.reply)
 				dgPool.Put(dg)
 			}
 			gets.recycle(&dgs)

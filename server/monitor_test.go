@@ -5758,6 +5758,76 @@ func TestMonitorJsz(t *testing.T) {
 	})
 }
 
+func TestMonitorJszApiLatencyStats(t *testing.T) {
+	opts := &Options{
+		Host:       "127.0.0.1",
+		Port:       -1,
+		ServerName: "S1",
+		JetStream:  true,
+		StoreDir:   t.TempDir(),
+		HTTPHost:   "127.0.0.1",
+		HTTPPort:   -1,
+		NoLog:      true,
+		NoSigs:     true,
+	}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, AllowDirect: true})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", []byte("hello"))
+	require_NoError(t, err)
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	_, err = js.GetMsg("TEST", 1, nats.DirectGet())
+	require_NoError(t, err)
+
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		jsi, err := s.Jsz(nil)
+		if err != nil {
+			return err
+		}
+		if len(jsi.API.Stats) == 0 {
+			return fmt.Errorf("expected per-subject API latency stats")
+		}
+		if _, ok := jsi.API.Stats[JSDirectMsgGet]; !ok {
+			return fmt.Errorf("expected direct get stats for %q, got %+v", JSDirectMsgGet, jsi.API.Stats)
+		}
+		if _, ok := jsi.API.Stats[JSApiStreamInfo]; !ok {
+			return fmt.Errorf("expected stream info stats for %q, got %+v", JSApiStreamInfo, jsi.API.Stats)
+		}
+		for subj, lat := range jsi.API.Stats {
+			if lat.Count == 0 {
+				return fmt.Errorf("expected valid latency count for %q: %+v", subj, lat)
+			}
+			if lat.Min <= 0 || lat.Max <= 0 || lat.Avg <= 0 || lat.Total <= 0 {
+				return fmt.Errorf("expected positive latency stats for %q: %+v", subj, lat)
+			}
+			if lat.P50 <= 0 || lat.P75 <= 0 || lat.P90 <= 0 || lat.P95 <= 0 || lat.P99 <= 0 || lat.P999 <= 0 {
+				return fmt.Errorf("expected positive percentiles for %q: %+v", subj, lat)
+			}
+			if lat.P50 > lat.P75 || lat.P75 > lat.P90 || lat.P90 > lat.P95 || lat.P95 > lat.P99 || lat.P99 > lat.P999 {
+				return fmt.Errorf("expected monotonic percentiles for %q: %+v", subj, lat)
+			}
+		}
+		return nil
+	})
+
+	// Confirm the same stats surface over the HTTP /jsz endpoint.
+	url := fmt.Sprintf("http://127.0.0.1:%d/jsz", s.MonitorAddr().Port)
+	body := readBody(t, url)
+	info := &JSInfo{}
+	require_NoError(t, json.Unmarshal(body, info))
+	if len(info.API.Stats) == 0 {
+		t.Fatalf("expected per-subject API latency stats via /jsz, got %+v", info.API.Stats)
+	}
+}
+
 func TestMonitorJszOperatorMode(t *testing.T) {
 	sysName := "SYS"
 	accName := "APP"

@@ -94,10 +94,63 @@ type JetStreamAccountStats struct {
 
 // JetStreamAPIStats holds stats about the API usage for this server
 type JetStreamAPIStats struct {
-	Level    int    `json:"level"`              // Level is the active API level this server implements
-	Total    uint64 `json:"total"`              // Total is the total API requests received since start
-	Errors   uint64 `json:"errors"`             // Errors is the total API requests that resulted in error responses
-	Inflight uint64 `json:"inflight,omitempty"` // Inflight are the number of API requests currently being served
+	Level    int                                 `json:"level"`              // Level is the active API level this server implements
+	Total    uint64                              `json:"total"`              // Total is the total API requests received since start
+	Errors   uint64                              `json:"errors"`             // Errors is the total API requests that resulted in error responses
+	Inflight uint64                              `json:"inflight,omitempty"` // Inflight are the number of API requests currently being served
+	Stats    map[string]JetStreamAPILatencyStats `json:"stats,omitempty"`    // Stats holds per API subject latency stats
+}
+
+// JetStreamAPILatencyStats holds latency stats for JS API requests handled by this server.
+type JetStreamAPILatencyStats struct {
+	Count uint64        `json:"count"`          // Count is the number of requests observed for latency stats
+	Total time.Duration `json:"total"`          // Total is the cumulative request duration (nanoseconds)
+	Avg   time.Duration `json:"avg,omitempty"`  // Avg is the average request duration (nanoseconds)
+	Min   time.Duration `json:"min,omitempty"`  // Min is the shortest observed request duration (nanoseconds)
+	Max   time.Duration `json:"max,omitempty"`  // Max is the longest observed request duration (nanoseconds)
+	P50   time.Duration `json:"p50,omitempty"`  // P50 is the approximate 50th percentile request duration (nanoseconds)
+	P75   time.Duration `json:"p75,omitempty"`  // P75 is the approximate 75th percentile request duration (nanoseconds)
+	P90   time.Duration `json:"p90,omitempty"`  // P90 is the approximate 90th percentile request duration (nanoseconds)
+	P95   time.Duration `json:"p95,omitempty"`  // P95 is the approximate 95th percentile request duration (nanoseconds)
+	P99   time.Duration `json:"p99,omitempty"`  // P99 is the approximate 99th percentile request duration (nanoseconds)
+	P999  time.Duration `json:"p999,omitempty"` // P999 is the approximate 99.9th percentile request duration (nanoseconds)
+}
+
+const jsAPILatencyNumBuckets = 24
+
+var jsAPILatencyBuckets = [jsAPILatencyNumBuckets]time.Duration{
+	time.Microsecond,
+	2 * time.Microsecond,
+	5 * time.Microsecond,
+	10 * time.Microsecond,
+	20 * time.Microsecond,
+	50 * time.Microsecond,
+	100 * time.Microsecond,
+	200 * time.Microsecond,
+	500 * time.Microsecond,
+	time.Millisecond,
+	2 * time.Millisecond,
+	5 * time.Millisecond,
+	10 * time.Millisecond,
+	20 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	200 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	10 * time.Second,
+	30 * time.Second,
+	math.MaxInt64,
+}
+
+type jsAPILatencyTracker struct {
+	count   atomic.Uint64
+	total   atomic.Uint64
+	min     atomic.Uint64
+	max     atomic.Uint64
+	buckets [jsAPILatencyNumBuckets]atomic.Uint64
 }
 
 // This is for internal accounting for JetStream for this server.
@@ -126,6 +179,8 @@ type jetStream struct {
 
 	// System level request to purge a stream move
 	accountPurge *subscription
+
+	apiLatency sync.Map // map[string]*jsAPILatencyTracker, keyed by API handler subject
 
 	// Some bools regarding general state.
 	metaRecovering bool
@@ -2574,6 +2629,7 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.API.Total = uint64(atomic.LoadInt64(&js.apiTotal))
 	stats.API.Errors = uint64(atomic.LoadInt64(&js.apiErrors))
 	stats.API.Inflight = uint64(atomic.LoadInt64(&js.apiInflight))
+	stats.API.Stats = js.apiLatencyStats()
 	// Make sure we do not report negative.
 	used := atomic.LoadInt64(&js.memUsed)
 	if used < 0 {
@@ -2587,6 +2643,113 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.Store = uint64(used)
 	stats.HAAssets = s.numRaftNodes()
 	return &stats
+}
+
+func (js *jetStream) recordAPILatency(subject string, dur time.Duration) {
+	// Fast path avoids allocating a new tracker per request once the
+	// subject has been seen before.
+	if v, ok := js.apiLatency.Load(subject); ok {
+		v.(*jsAPILatencyTracker).record(dur)
+		return
+	}
+	v, _ := js.apiLatency.LoadOrStore(subject, newJSAPILatencyTracker())
+	v.(*jsAPILatencyTracker).record(dur)
+}
+
+func newJSAPILatencyTracker() *jsAPILatencyTracker {
+	t := &jsAPILatencyTracker{}
+	// Start min at the max value so any recorded duration lowers it,
+	// including a zero duration.
+	t.min.Store(math.MaxUint64)
+	return t
+}
+
+func (js *jetStream) apiLatencyStats() map[string]JetStreamAPILatencyStats {
+	var stats map[string]JetStreamAPILatencyStats
+	js.apiLatency.Range(func(k, v any) bool {
+		lst := v.(*jsAPILatencyTracker).snapshot()
+		if lst == nil {
+			return true
+		}
+		if stats == nil {
+			stats = make(map[string]JetStreamAPILatencyStats)
+		}
+		stats[k.(string)] = *lst
+		return true
+	})
+	return stats
+}
+
+func (lst *jsAPILatencyTracker) record(dur time.Duration) {
+	// Should not happen with a monotonic clock, but a negative duration
+	// would wrap to a huge value and corrupt the stats so we skip it.
+	if dur < 0 {
+		return
+	}
+	ns := uint64(dur)
+	lst.total.Add(ns)
+	atomicUpdateMin(&lst.min, ns)
+	atomicUpdateMax(&lst.max, ns)
+	for i, b := range jsAPILatencyBuckets {
+		if dur <= b {
+			lst.buckets[i].Add(1)
+			break
+		}
+	}
+	// Increment count last so that a concurrent snapshot never sees a count
+	// ahead of the bucket counts, which would make percentiles unreliable.
+	lst.count.Add(1)
+}
+
+func (lst *jsAPILatencyTracker) snapshot() *JetStreamAPILatencyStats {
+	count := lst.count.Load()
+	if count == 0 {
+		return nil
+	}
+	stats := &JetStreamAPILatencyStats{
+		Count: count,
+		Total: time.Duration(lst.total.Load()),
+		Min:   time.Duration(lst.min.Load()),
+		Max:   time.Duration(lst.max.Load()),
+	}
+	stats.Avg = time.Duration(uint64(stats.Total) / count)
+
+	var buckets [jsAPILatencyNumBuckets]uint64
+	for i := range buckets {
+		buckets[i] = lst.buckets[i].Load()
+	}
+	stats.P50 = jsAPILatencyPercentile(buckets, count, 50, 100)
+	stats.P75 = jsAPILatencyPercentile(buckets, count, 75, 100)
+	stats.P90 = jsAPILatencyPercentile(buckets, count, 90, 100)
+	stats.P95 = jsAPILatencyPercentile(buckets, count, 95, 100)
+	stats.P99 = jsAPILatencyPercentile(buckets, count, 99, 100)
+	stats.P999 = jsAPILatencyPercentile(buckets, count, 999, 1000)
+	// Percentiles resolve to bucket upper bounds, which can overshoot the
+	// actual max (the overflow bucket bound is math.MaxInt64), so cap them.
+	for _, p := range []*time.Duration{&stats.P50, &stats.P75, &stats.P90, &stats.P95, &stats.P99, &stats.P999} {
+		if *p > stats.Max {
+			*p = stats.Max
+		}
+	}
+	return stats
+}
+
+// jsAPILatencyPercentile resolves a quantile, expressed as num/den
+// (e.g. 99/100 for p99, 999/1000 for p999), to the upper bound of the
+// first cumulative bucket covering it.
+func jsAPILatencyPercentile(buckets [jsAPILatencyNumBuckets]uint64, count, num, den uint64) time.Duration {
+	if count == 0 {
+		return 0
+	}
+	target := (count*num + den - 1) / den
+	var seen uint64
+	for i, n := range buckets {
+		seen += n
+		if seen >= target {
+			return jsAPILatencyBuckets[i]
+		}
+	}
+	return time.Duration(jsAPILatencyBuckets[len(jsAPILatencyBuckets)-1])
 }
 
 // Check to see if we have enough system resources for this account.
@@ -2914,5 +3077,25 @@ func (s *Server) handleWritePermissionError() {
 		go s.ShutdownJetStream()
 
 		//TODO Send respective advisory if needed, same as in handleOutOfSpace
+	}
+}
+
+// CAS atomic update helpers based on expvar usage.
+
+func atomicUpdateMax(v *atomic.Uint64, n uint64) {
+	for {
+		old := v.Load()
+		if n <= old || v.CompareAndSwap(old, n) {
+			return
+		}
+	}
+}
+
+func atomicUpdateMin(v *atomic.Uint64, n uint64) {
+	for {
+		old := v.Load()
+		if n >= old || v.CompareAndSwap(old, n) {
+			return
+		}
 	}
 }
