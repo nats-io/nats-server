@@ -7407,3 +7407,274 @@ func TestNRGRemovedPeerVoteDoesNotElectLeader(t *testing.T) {
 			nodeD.node().ID(), nodeC.node().ID(), nodeA.node().ID())
 	}
 }
+
+// rescueStoreEntry stores a single entry so the node's log is non-empty, and
+// clears the notion of a leader again so a rescue can be applied.
+func rescueStoreEntry(t *testing.T, n *raft) {
+	t.Helper()
+	nats0 := "S1Nunr6R" // "nats-0"
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, lterm: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	n.Lock()
+	n.updateLeader(noLeader)
+	n.Unlock()
+}
+
+func TestNRGRescueQuorum(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Pretend to be part of a 5-node group.
+	n.csz, n.qn = 5, 3
+
+	// Invalid quorum sizes, the quorum can only be lowered.
+	_, _, err := n.RescueQuorum(0)
+	require_Error(t, err, errRescueBadQuorum)
+	_, _, err = n.RescueQuorum(4)
+	require_Error(t, err, errRescueBadQuorum)
+
+	// Reject if we know of a current leader.
+	n.leader = nats0
+	_, _, err = n.RescueQuorum(2)
+	require_Error(t, err, errRescueLeaderKnown)
+	n.leader = noLeader
+
+	// Reject if we are not a voting member.
+	n.observer = true
+	_, _, err = n.RescueQuorum(2)
+	require_Error(t, err, errRescueNotVoting)
+	n.observer = false
+
+	lp := n.peers[n.id]
+	delete(n.peers, n.id)
+	_, _, err = n.RescueQuorum(2)
+	require_Error(t, err, errRescueNotVoting)
+	n.peers[n.id] = lp
+
+	// Reject while our own log is still empty.
+	_, _, err = n.RescueQuorum(2)
+	require_Error(t, err, errRescueEmptyLog)
+	rescueStoreEntry(t, n)
+
+	// A quorum equal to the current effective quorum also applies, arming
+	// the rescue without changing the quorum.
+	prev, cur, err := n.RescueQuorum(3)
+	require_NoError(t, err)
+	require_Equal(t, prev, 3)
+	require_Equal(t, cur, 3)
+	require_Equal(t, n.qn, 3)
+	require_True(t, n.rescue != nil)
+
+	// Lower the quorum.
+	prev, cur, err = n.RescueQuorum(2)
+	require_NoError(t, err)
+	require_Equal(t, prev, 3)
+	require_Equal(t, cur, 2)
+	require_Equal(t, n.qn, 2)
+	require_True(t, n.rescue != nil)
+
+	// And lower it further.
+	prev, cur, err = n.RescueQuorum(1)
+	require_NoError(t, err)
+	require_Equal(t, prev, 2)
+	require_Equal(t, cur, 1)
+	require_Equal(t, n.qn, 1)
+	require_True(t, n.rescue != nil)
+
+	// The rescued quorum is now the effective quorum, it can't be raised.
+	_, _, err = n.RescueQuorum(2)
+	require_Error(t, err, errRescueBadQuorum)
+	require_Equal(t, n.qn, 1)
+	n.Lock()
+	n.rescue.Stop()
+	n.rescue = nil
+	n.Unlock()
+}
+
+func TestNRGRescueQuorumRecalc(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	rescueStoreEntry(t, n)
+	n.csz, n.qn = 5, 3
+	_, _, err := n.RescueQuorum(2)
+	require_NoError(t, err)
+
+	// Peer set changes that would recompute quorum above the rescued
+	// value keep the rescued quorum.
+	n.Lock()
+	n.csz = 4
+	n.recalcQuorum()
+	n.Unlock()
+	require_Equal(t, n.qn, 2)
+	require_True(t, n.rescue != nil)
+
+	// Once the natural quorum reaches the rescued value the rescue is
+	// automatically stopped.
+	n.Lock()
+	n.csz = 2
+	n.recalcQuorum()
+	n.Unlock()
+	require_Equal(t, n.qn, 2)
+	require_True(t, n.rescue == nil)
+
+	// With the rescue stopped, quorum recalculation applies as usual.
+	n.Lock()
+	n.csz = 1
+	n.recalcQuorum()
+	n.Unlock()
+	require_Equal(t, n.qn, 1)
+	require_True(t, n.rescue == nil)
+}
+
+func TestNRGRescueQuorumKeptOnPeerState(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	rescueStoreEntry(t, n)
+	n.csz, n.qn = 3, 2
+	_, _, err := n.RescueQuorum(1)
+	require_NoError(t, err)
+
+	// A peer state update from a newly elected leader must not undo the rescue.
+	n.Lock()
+	n.processPeerState(&peerState{knownPeers: []string{n.id, nats0, nats1}, clusterSize: 3})
+	n.Unlock()
+	require_Equal(t, n.csz, 3)
+	require_Equal(t, n.qn, 1)
+	require_True(t, n.rescue != nil)
+	n.Lock()
+	n.rescue.Stop()
+	n.rescue = nil
+	n.Unlock()
+}
+
+func TestNRGRescueQuorumExpires(t *testing.T) {
+	rescueQuorumTimeout = 100 * time.Millisecond
+	defer func() { rescueQuorumTimeout = rescueQuorumTimeoutDefault }()
+
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	rescueStoreEntry(t, n)
+	n.csz, n.qn = 5, 3
+	_, _, err := n.RescueQuorum(2)
+	require_NoError(t, err)
+	require_Equal(t, n.qn, 2)
+
+	// When the rescue expires the natural quorum is restored.
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		n.RLock()
+		defer n.RUnlock()
+		if n.rescue != nil {
+			return fmt.Errorf("rescue still active")
+		}
+		if n.qn != 3 {
+			return fmt.Errorf("expected quorum restored to 3, got %d", n.qn)
+		}
+		return nil
+	})
+}
+
+func TestNRGRescueQuorumCountsEmptyVotes(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Store an entry so our own log is non-empty.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, lterm: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+
+	// Pretend to be part of a 5-node group that can't elect a leader anymore,
+	// and rescue the quorum down to 2. The peer must be added first, adding
+	// it adjusts the cluster size to the known peers.
+	n.Lock()
+	n.addPeer(nats0)
+	n.csz, n.qn = 5, 3
+	n.updateLeader(noLeader)
+	n.Unlock()
+	_, cur, err := n.RescueQuorum(2)
+	require_NoError(t, err)
+	require_Equal(t, cur, 2)
+
+	// The other survivor grants its vote, but has an empty log.
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	sub, err := nc.Subscribe(n.vsubj, func(m *nats.Msg) {
+		req := decodeVoteRequest(m.Data, m.Reply)
+		resp := voteResponse{term: req.term, peer: nats0, granted: true, empty: true}
+		m.Respond(resp.encode())
+	})
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// During an active rescue an empty grant counts toward quorum for a
+	// candidate with a non-empty log, so we must win the election.
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+	n.runAsCandidate()
+	require_Equal(t, n.State(), Leader)
+
+	n.Lock()
+	n.rescue.Stop()
+	n.rescue = nil
+	n.Unlock()
+}
+
+func TestNRGRescueQuorumEmptyVotesRequireRescue(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Store an entry so our own log is non-empty.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, lterm: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+
+	// Pretend to be part of a 5-node group with the same lowered quorum as an
+	// active rescue would apply, but without arming the rescue itself. The
+	// peer must be added first, adding it adjusts the cluster size to the
+	// known peers.
+	n.Lock()
+	n.addPeer(nats0)
+	n.csz, n.qn = 5, 2
+	n.updateLeader(noLeader)
+	n.Unlock()
+
+	// The other server grants its vote, but has an empty log.
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	sub, err := nc.Subscribe(n.vsubj, func(m *nats.Msg) {
+		req := decodeVoteRequest(m.Data, m.Reply)
+		resp := voteResponse{term: req.term, peer: nats0, granted: true, empty: true}
+		m.Respond(resp.encode())
+	})
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// Without an active rescue, empty grants never count toward quorum.
+	// The election times out instead.
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+	n.runAsCandidate()
+	require_NotEqual(t, n.State(), Leader)
+}

@@ -73,7 +73,10 @@ type RaftNode interface {
 	MembershipChangeInProgress() bool
 	AdjustClusterSize(csz int) error
 	AdjustBootClusterSize(csz int) error
+	RescueQuorum(qn int) (prev, cur int, err error)
+	InRescue() bool
 	ClusterSize() int
+	QuorumNeeded() int
 	ApplyQ() *ipQueue[*CommittedEntry]
 	PauseApply() error
 	ResumeApply()
@@ -179,6 +182,7 @@ type raft struct {
 	acks    map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
 	pae     map[uint64]*appendEntry        // Pending append entries
 
+	rescue *time.Timer // Non-nil while an unsafe quorum rescue is active (see RescueQuorum)
 	elect  *time.Timer // Election timer, normally accessed via electTimer
 	etlr   time.Time   // Election timer last reset time, for unit tests only
 	active time.Time   // Last activity time, i.e. for heartbeats
@@ -292,6 +296,7 @@ const (
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
 	observerModeIntervalDefault    = 48 * time.Hour
 	peerRemoveTimeoutDefault       = 5 * time.Minute
+	rescueQuorumTimeoutDefault     = 5 * time.Minute
 )
 
 var (
@@ -304,6 +309,7 @@ var (
 	lostQuorumCheck      = lostQuorumCheckIntervalDefault
 	observerModeInterval = observerModeIntervalDefault
 	peerRemoveTimeout    = peerRemoveTimeoutDefault
+	rescueQuorumTimeout  = rescueQuorumTimeoutDefault
 )
 
 type RaftConfig struct {
@@ -343,6 +349,10 @@ var (
 	errSnapInProgress    = errors.New("raft: snapshot is already in progress")
 	errSnapAborted       = errors.New("raft: snapshot was aborted")
 	errCatchupsRunning   = errors.New("raft: snapshot can not be installed while catchups running")
+	errRescueBadQuorum   = errors.New("raft: rescue quorum must be between 1 and current quorum")
+	errRescueLeaderKnown = errors.New("raft: leader is known")
+	errRescueNotVoting   = errors.New("raft: not a voting member")
+	errRescueEmptyLog    = errors.New("raft: log is empty")
 	errSnapshotCorrupt   = errors.New("raft: snapshot corrupt")
 	errTooManyPrefs      = errors.New("raft: stepdown requires at most one preferred new leader")
 	errNoPeerState       = errors.New("raft: no peerstate")
@@ -1097,7 +1107,7 @@ func (n *raft) AdjustBootClusterSize(csz int) error {
 	// Adjust the cluster size and the number of nodes needed to establish
 	// a quorum.
 	n.csz = csz
-	n.qn = n.csz/2 + 1
+	n.recalcQuorum()
 
 	return nil
 }
@@ -1120,10 +1130,95 @@ func (n *raft) AdjustClusterSize(csz int) error {
 	// Adjust the cluster size and the number of nodes needed to establish
 	// a quorum.
 	n.csz = csz
-	n.qn = n.csz/2 + 1
+	n.recalcQuorum()
 
 	n.sendPeerState()
 	return nil
+}
+
+// recalcQuorum recalculates the number of nodes needed to establish quorum.
+// While an unsafe quorum rescue is active (see RescueQuorum) the rescued quorum
+// is kept, unless the natural quorum drops to be equal or below it.
+// Lock should be held.
+func (n *raft) recalcQuorum() {
+	qn := n.csz/2 + 1
+	if n.rescue != nil {
+		if qn > n.qn {
+			return
+		}
+		n.warn("Unsafe quorum rescue stopped, quorum updated to %d", qn)
+		n.rescue.Stop()
+		n.rescue = nil
+	}
+	n.qn = qn
+}
+
+// RescueQuorum unsafely lowers the number of nodes needed to establish quorum.
+// This is a disaster recovery measure for a group that has permanently lost enough
+// peers that it can't elect a leader anymore, allowing the surviving peers to
+// re-form quorum and peer-remove the lost peers.
+func (n *raft) RescueQuorum(qn int) (prev, cur int, err error) {
+	n.Lock()
+	defer n.Unlock()
+
+	prev = n.qn
+	if n.State() == Closed {
+		return prev, 0, errNodeClosed
+	}
+	// The quorum can only be lowered. The current effective quorum is never
+	// larger than the peer set size, so this also bounds qn to the peer set.
+	if qn < 1 || qn > n.qn {
+		return prev, 0, errRescueBadQuorum
+	}
+	// Only allowed if the group is genuinely stuck. We must not know of a
+	// current leader, and must be a voting member that could participate in
+	// an election.
+	if n.leader != noLeader {
+		return prev, 0, errRescueLeaderKnown
+	}
+	if n.observer || n.peers[n.id] == nil {
+		return prev, 0, errRescueNotVoting
+	}
+	// Refuse to rescue a server with an empty log. It could never win an
+	// election against peers with data, but a lowered quorum could let it be
+	// elected off empty votes while the lost peers hold the only copies of
+	// the data. The rescue must be issued on a surviving server with data.
+	// If all servers are empty, this requires a cluster bootstrap.
+	if n.pindex == 0 {
+		return prev, 0, errRescueEmptyLog
+	}
+
+	// Cancel any previous rescue.
+	if n.rescue != nil {
+		n.rescue.Stop()
+	}
+	var t *time.Timer
+	t = time.AfterFunc(rescueQuorumTimeout, func() {
+		n.Lock()
+		defer n.Unlock()
+		// Read of t must be under the lock.
+		n.expireRescueLocked(t)
+	})
+	n.rescue = t
+	n.qn = qn
+	n.warn("Unsafe quorum rescue applied, quorum lowered %d -> %d for %v", prev, qn, rescueQuorumTimeout)
+
+	// Make sure an election can happen soon.
+	n.resetElect(randCampaignTimeout())
+	return prev, qn, nil
+}
+
+// expireRescueLocked runs when the rescue timeout fires and restores the natural quorum.
+// Lock should be held.
+func (n *raft) expireRescueLocked(t *time.Timer) {
+	if n.State() == Closed || n.rescue != t {
+		return
+	}
+	// Must clear the timer first, recalcQuorum keeps the rescued quorum
+	// while it sees an active rescue.
+	n.rescue = nil
+	n.recalcQuorum()
+	n.warn("Unsafe quorum rescue expired, quorum restored to %d", n.qn)
 }
 
 // PauseApply will allow us to pause processing of append entries onto our
@@ -3136,7 +3231,7 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 			delete(n.peers, peer)
 			n.adjustClusterSizeAndQuorum()
 		}
-		if n.csz == 1 {
+		if n.qn <= 1 {
 			n.tryCommit(n.pindex)
 			return true
 		}
@@ -3751,7 +3846,7 @@ func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 func (n *raft) adjustClusterSizeAndQuorum() {
 	pcsz, ncsz := n.csz, len(n.peers)
 	n.csz = ncsz
-	n.qn = n.csz/2 + 1
+	n.recalcQuorum()
 
 	if ncsz > pcsz {
 		n.debug("Expanding our clustersize: %d -> %d", pcsz, ncsz)
@@ -3852,13 +3947,17 @@ func (n *raft) runAsCandidate() {
 			nterm := n.term
 			csz := n.csz
 			countVote := n.shouldCountVoteFromPeer(vresp.peer)
+			// While an unsafe quorum rescue is active (see RescueQuorum), grants
+			// from empty voters count toward quorum, but only if our own log is
+			// non-empty. Empty servers must never form quorum among themselves.
+			countEmpty := n.rescue != nil && n.pindex > 0
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
 				if countVote {
-					if !vresp.empty {
+					if !vresp.empty || countEmpty {
 						votes[vresp.peer] = struct{}{}
 					} else {
 						emptyVotes[vresp.peer] = struct{}{}
@@ -4590,7 +4689,7 @@ func (n *raft) processPeerState(ps *peerState) {
 	// Update our version of peers to that of the leader. Calculate
 	// the number of nodes needed to establish a quorum.
 	n.csz = ps.clusterSize
-	n.qn = n.csz/2 + 1
+	n.recalcQuorum()
 
 	old := n.peers
 	n.peers = make(map[string]*lps)
@@ -4787,7 +4886,7 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 	if !shouldStore {
 		ae.returnToPool()
 	}
-	if n.csz == 1 {
+	if n.qn <= 1 {
 		n.tryCommit(n.pindex)
 	}
 	return nil
@@ -5214,6 +5313,8 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		n.term = vr.term
 		n.vote = noVote
 		n.writeTermVote()
+		// Clear current Leader since it belonged to an old term.
+		n.updateLeader(noLeader)
 	}
 
 	// Only way we get to yes is through here.
@@ -5299,15 +5400,22 @@ func (n *raft) sendReply(subject string, msg []byte) {
 }
 
 func (n *raft) wonElection(votes int) bool {
-	return votes >= n.quorumNeeded()
+	return votes >= n.QuorumNeeded()
 }
 
-// Return the quorum size for a given cluster config.
-func (n *raft) quorumNeeded() int {
+// QuorumNeeded returns the current effective quorum size.
+func (n *raft) QuorumNeeded() int {
 	n.RLock()
 	qn := n.qn
 	n.RUnlock()
 	return qn
+}
+
+// InRescue returns whether an unsafe quorum rescue is currently active.
+func (n *raft) InRescue() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.rescue != nil
 }
 
 // leadChange signals a leadership change to the upper layer. The term

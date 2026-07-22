@@ -79,6 +79,10 @@ type jetStreamCluster struct {
 	peerStreamMove *subscription
 	// System level request to cancel a stream move
 	peerStreamCancelMove *subscription
+	// System level broadcast request to unsafely rescue the meta group.
+	// Unlike the subscriptions above, this is active on every server,
+	// not only on the meta leader.
+	metaRescue *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
 	// To notify others that monitorCluster has actually stopped.
@@ -1115,6 +1119,10 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
+
+	// Every server listens for meta rescue requests, they must be handled
+	// even (especially) when the meta group has no leader.
+	js.cluster.metaRescue, _ = s.systemSubscribe(JSApiMetaRescue, _EMPTY_, false, c, s.jsMetaRescueRequest)
 
 	// Set to true before we start.
 	js.metaRecovering = true

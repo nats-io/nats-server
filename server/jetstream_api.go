@@ -194,6 +194,14 @@ const (
 	// Will return JSON response.
 	JSApiRemoveServer = "$JS.API.SERVER.REMOVE"
 
+	// JSApiMetaRescue is the endpoint to unsafely lower the meta group's quorum
+	// requirement on the surviving servers for disaster recovery.
+	// This is a broadcast subject, every online server evaluates and responds
+	// to the request independently.
+	// Only works from system account.
+	// Will return JSON response.
+	JSApiMetaRescue = "$JS.API.META.RESCUE"
+
 	// JSApiAccountPurge is the endpoint to purge the js content of an account
 	// Only works from system account.
 	// Will return JSON response.
@@ -305,6 +313,10 @@ const (
 
 	// JSAdvisoryServerRemoved notification that a server has been removed from the system.
 	JSAdvisoryServerRemoved = "$JS.EVENT.ADVISORY.SERVER.REMOVED"
+
+	// JSAdvisoryMetaRescue notification that a server has unsafely lowered the
+	// meta group's quorum requirement for disaster recovery.
+	JSAdvisoryMetaRescue = "$JS.EVENT.ADVISORY.SERVER.META_RESCUE"
 
 	// JSAdvisoryAPILimitReached notification that a server has reached the JS API hard limit.
 	JSAdvisoryAPILimitReached = "$JS.EVENT.ADVISORY.API.LIMIT_REACHED"
@@ -648,6 +660,31 @@ type JSApiMetaServerRemoveResponse struct {
 
 const JSApiMetaServerRemoveResponseType = "io.nats.jetstream.api.v1.meta_server_remove_response"
 
+// JSApiMetaRescueRequest will unsafely lower the meta group's quorum requirement
+// on the receiving server for disaster recovery.
+type JSApiMetaRescueRequest struct {
+	// The new, temporarily lowered, quorum size the receiving servers should
+	// apply to the meta group. Must be at least 1 and no larger than the
+	// receiving server's current effective quorum.
+	QuorumNeeded int `json:"quorum_needed"`
+}
+
+// JSApiMetaRescueResponse is the response to a meta rescue request. Since the
+// request is a broadcast, each online server responds independently.
+type JSApiMetaRescueResponse struct {
+	ApiResponse
+	// Server name of the responding server.
+	Server string `json:"server"`
+	// Server ID of the responding server.
+	ServerID string `json:"server_id"`
+	// The effective quorum before the rescue was applied.
+	PrevQuorum int `json:"prev_quorum,omitempty"`
+	// The effective quorum after the rescue was applied.
+	NewQuorum int `json:"new_quorum,omitempty"`
+}
+
+const JSApiMetaRescueResponseType = "io.nats.jetstream.api.v1.meta_rescue_response"
+
 // JSApiMetaServerStreamMoveRequest will move a stream on a server to another
 // response to this will come as JSApiStreamUpdateResponse/JSApiStreamUpdateResponseType
 type JSApiMetaServerStreamMoveRequest struct {
@@ -797,9 +834,10 @@ type jsAPIRoutedReq struct {
 }
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
-	// Ignore system level directives meta stepdown and peer remove requests here.
+	// Ignore system level directives meta stepdown, peer remove and meta rescue requests here.
 	if subject == JSApiLeaderStepDown ||
 		subject == JSApiRemoveServer ||
+		subject == JSApiMetaRescue ||
 		strings.HasPrefix(subject, jsAPIAccountPre) {
 		return
 	}
@@ -2531,6 +2569,81 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	}
 	// Only copy the request, the subject and reply are already copied.
 	cc.peerRemoveReply[found] = peerRemoveInfo{ci: ci, subject: subject, reply: reply, request: string(msg)}
+}
+
+// jsMetaRescueRequest handles $JS.API.META.RESCUE requests. This is a broadcast
+// subject, every online server that receives the request evaluates and applies
+// it locally, responding independently.
+func (s *Server) jsMetaRescueRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+	if acc != s.SystemAccount() {
+		return
+	}
+
+	js := s.getJetStream()
+	if js == nil {
+		return
+	}
+	meta := js.getMetaGroup()
+	if meta == nil {
+		return
+	}
+
+	var resp = JSApiMetaRescueResponse{
+		ApiResponse: ApiResponse{Type: JSApiMetaRescueResponseType},
+		Server:      s.Name(),
+		ServerID:    s.ID(),
+	}
+	if errorOnRequiredApiLevel(hdr) {
+		resp.Error = NewJSRequiredApiLevelError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if isEmptyRequest(msg) {
+		resp.Error = NewJSBadRequestError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var req JSApiMetaRescueRequest
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
+		resp.Error = NewJSInvalidJSONError(err)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	prev, cur, err := meta.RescueQuorum(req.QuorumNeeded)
+	if err != nil {
+		resp.Error = NewJSClusterRescueError(err, Unless(err))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	resp.PrevQuorum, resp.NewQuorum = prev, cur
+
+	s.publishAdvisory(nil, JSAdvisoryMetaRescue, &JSMetaRescueAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSMetaRescueAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Server:     s.Name(),
+		ServerID:   s.ID(),
+		PrevQuorum: prev,
+		NewQuorum:  cur,
+		Cluster:    s.cachedClusterName(),
+		Domain:     s.getOpts().JetStreamDomain,
+	})
+
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 }
 
 func (s *Server) peerSetToNames(ps []string) []string {

@@ -1064,6 +1064,10 @@ func (s *Server) shutdownJetStream() {
 			cc.qch, cc.stopped = nil, nil
 		}
 		js.stopUpdatesSub()
+		if cc.metaRescue != nil {
+			s.sysUnsubscribe(cc.metaRescue)
+			cc.metaRescue = nil
+		}
 		if cc.c != nil {
 			cc.c.closeConnection(ClientClosed)
 			cc.c = nil

@@ -77,6 +77,9 @@ const (
 	// JSClusterRequiredErr JetStream clustering support required
 	JSClusterRequiredErr ErrorIdentifier = 10010
 
+	// JSClusterRescueErr JetStream system rescue not applied: {err}
+	JSClusterRescueErr ErrorIdentifier = 10224
+
 	// JSClusterServerMemberChangeInflightErr cluster member change is in progress
 	JSClusterServerMemberChangeInflightErr ErrorIdentifier = 10202
 
@@ -698,6 +701,7 @@ var (
 		JSClusterNotLeaderErr:                        {Code: 500, ErrCode: 10009, Description: "JetStream cluster can not handle request"},
 		JSClusterPeerNotMemberErr:                    {Code: 400, ErrCode: 10040, Description: "peer not a member"},
 		JSClusterRequiredErr:                         {Code: 503, ErrCode: 10010, Description: "JetStream clustering support required"},
+		JSClusterRescueErr:                           {Code: 400, ErrCode: 10224, Description: "JetStream system rescue not applied: {err}"},
 		JSClusterServerMemberChangeInflightErr:       {Code: 400, ErrCode: 10202, Description: "cluster member change is in progress"},
 		JSClusterServerNotMemberErr:                  {Code: 400, ErrCode: 10044, Description: "server is not a member of the cluster"},
 		JSClusterTagsErr:                             {Code: 400, ErrCode: 10011, Description: "tags placement not supported for operation"},
@@ -1177,6 +1181,22 @@ func NewJSClusterRequiredError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSClusterRequiredErr]
+}
+
+// NewJSClusterRescueError creates a new JSClusterRescueErr error: "JetStream system rescue not applied: {err}"
+func NewJSClusterRescueError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSClusterRescueErr]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSClusterServerMemberChangeInflightError creates a new JSClusterServerMemberChangeInflightErr error: "cluster member change is in progress"
