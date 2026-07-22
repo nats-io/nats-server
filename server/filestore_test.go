@@ -15184,3 +15184,179 @@ func TestFileStoreCompactStoreMsgRace(t *testing.T) {
 	require_Equal(t, state.FirstSeq, 2)
 	require_Equal(t, state.LastSeq, 2)
 }
+
+func TestFileStoreDeleteMapView(t *testing.T) {
+	msg := []byte("hello")
+	// Size blocks to hold 10 messages each.
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 10 * fileStoreMsgSize("foo", nil, msg)},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	const numMsgs = 100
+	for range numMsgs {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// Create interior deletes in every block. Keep each block's first and
+	// last message alive so all removals stay interior to their block; a
+	// removal at a block's edge would advance the block's first sequence and
+	// turn it into a gap delete, which the view excludes by design.
+	expected := make(map[uint64]bool)
+	for seq := uint64(1); seq <= numMsgs; seq++ {
+		if seq%10 == 1 || seq%10 == 0 {
+			continue
+		}
+		_, err = fs.RemoveMsg(seq)
+		require_NoError(t, err)
+		expected[seq] = true
+	}
+
+	snapshotBlks := func() []*msgBlock {
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		return append([]*msgBlock(nil), fs.blks...)
+	}
+
+	checkView := func(v *interiorDeletes) {
+		t.Helper()
+		var total int
+		for _, ss := range v.sets {
+			total += ss.Size()
+		}
+		require_Equal(t, total, len(expected))
+		// Ascending probes mostly hit the cursor fast path.
+		for seq := uint64(0); seq <= numMsgs+1; seq++ {
+			require_Equal(t, v.Exists(seq), expected[seq])
+		}
+		// Descending probes mostly take the binary search path.
+		for seq := uint64(numMsgs + 1); ; seq-- {
+			require_Equal(t, v.Exists(seq), expected[seq])
+			if seq == 0 {
+				break
+			}
+		}
+		// Random probes mix both paths.
+		rng := rand.New(rand.NewSource(0))
+		for i := 0; i < numMsgs*4; i++ {
+			seq := uint64(rng.Intn(numMsgs + 2))
+			require_Equal(t, v.Exists(seq), expected[seq])
+		}
+	}
+	checkView(deleteMap(snapshotBlks()))
+
+	// Empty out one interior block completely. The store removes the block,
+	// and its deletes become a gap that the view must exclude.
+	fs.mu.RLock()
+	mb := fs.blks[3]
+	mb.mu.RLock()
+	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+	mb.mu.RUnlock()
+	nblks := len(fs.blks)
+	fs.mu.RUnlock()
+
+	for seq := fseq; seq <= lseq; seq++ {
+		if !expected[seq] {
+			_, err = fs.RemoveMsg(seq)
+			require_NoError(t, err)
+		}
+		delete(expected, seq)
+	}
+	fs.mu.RLock()
+	lblks := len(fs.blks)
+	fs.mu.RUnlock()
+	require_Equal(t, lblks, nblks-1)
+
+	checkView(deleteMap(snapshotBlks()))
+
+	// Remove whole blocks while holding a stale snapshot, mirroring blocks
+	// being removed between syncBlocks capturing its block list and building
+	// the view. Compact removes the blocks wholesale, which marks them closed
+	// but leaves their dmap populated; the view must exclude their deletes.
+	staleBlks := snapshotBlks()
+	_, err = fs.Compact(41)
+	require_NoError(t, err)
+	for seq := range expected {
+		if seq < 41 {
+			delete(expected, seq)
+		}
+	}
+	checkView(deleteMap(staleBlks))
+}
+
+func Benchmark_FileStoreDeleteMap(b *testing.B) {
+	msg := []byte("hello")
+	// Many small blocks with mostly interior deletes, the shape a stream
+	// with MaxMsgsPerSubject=1 and steady per-subject overwrites converges
+	// to. Keep two messages alive per block so every block survives with a
+	// dense interior delete map.
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 100 * fileStoreMsgSize("foo", nil, msg)},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	const numMsgs = 50_000
+	for range numMsgs {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(b, err)
+	}
+	for seq := uint64(2); seq < numMsgs; seq++ {
+		if seq%50 == 0 {
+			continue
+		}
+		_, err = fs.RemoveMsg(seq)
+		require_NoError(b, err)
+	}
+
+	fs.mu.RLock()
+	blks := append([]*msgBlock(nil), fs.blks...)
+	fs.mu.RUnlock()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if v := deleteMap(blks); len(v.sets) == 0 {
+			b.Fatalf("Expected a non-empty delete map view")
+		}
+	}
+	b.StopTimer()
+}
+
+func Benchmark_FileStoreDeleteMapExists(b *testing.B) {
+	msg := []byte("hello")
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 100 * fileStoreMsgSize("foo", nil, msg)},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	const numMsgs = 50_000
+	for range numMsgs {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(b, err)
+	}
+	for seq := uint64(2); seq < numMsgs; seq++ {
+		if seq%50 == 0 {
+			continue
+		}
+		_, err = fs.RemoveMsg(seq)
+		require_NoError(b, err)
+	}
+
+	fs.mu.RLock()
+	blks := append([]*msgBlock(nil), fs.blks...)
+	fs.mu.RUnlock()
+	v := deleteMap(blks)
+
+	// Probe ascending across the whole span, the same order compactWithFloor
+	// checks tombstones in.
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		v.Exists(uint64(i%numMsgs) + 1)
+	}
+	b.StopTimer()
+}

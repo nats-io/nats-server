@@ -6148,7 +6148,7 @@ func (mb *msgBlock) compact() error {
 // writing new messages. We will silently bail on any issues with the underlying block and let someone else detect.
 // if fseq > 0 we will attempt to cleanup stale tombstones.
 // Write lock needs to be held.
-func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *avl.SequenceSet) error {
+func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) error {
 	wasLoaded := mb.cache != nil && mb.cacheAlreadyLoaded()
 	if !wasLoaded {
 		if err := mb.loadMsgsWithLock(); err != nil {
@@ -7855,8 +7855,7 @@ func (fs *fileStore) syncBlocks() {
 		fs.setWriteErr(err)
 	}
 
-	var fsDmapLoaded bool
-	var fsDmap avl.SequenceSet
+	var fsDmap *interiorDeletes
 
 	var markDirty bool
 	for _, mb := range blks {
@@ -7915,9 +7914,8 @@ func (fs *fileStore) syncBlocks() {
 			// Load a delete map containing only interior deletes.
 			// This is used when compacting to know if tombstones are still relevant,
 			// and if not they can be compacted.
-			if !fsDmapLoaded {
-				fsDmapLoaded = true
-				fsDmap = fs.deleteMap()
+			if fsDmap == nil {
+				fsDmap = deleteMap(blks)
 			}
 			fs.mu.RLock()
 			mb.mu.Lock()
@@ -7927,7 +7925,7 @@ func (fs *fileStore) syncBlocks() {
 				fs.mu.RUnlock()
 				continue
 			}
-			err := mb.compactWithFloor(firstSeq, &fsDmap)
+			err := mb.compactWithFloor(firstSeq, fsDmap)
 			// If this compact removed all raw bytes due to tombstone cleanup, schedule to remove.
 			shouldRemove := mb.rbytes == 0
 			mb.mu.Unlock()
@@ -12513,26 +12511,58 @@ func (fs *fileStore) deleteBlocks() DeleteBlocks {
 	return dbs
 }
 
-// deleteMap returns all interior deletes for each block based on the mb.dmap.
-// Specifically, this will not contain any deletes for blocks that have been removed.
-// This is useful to know whether a tombstone is still relevant and marked as deleted by an active block.
-// No locks should be held.
-func (fs *fileStore) deleteMap() (dmap avl.SequenceSet) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+// interiorDeletes is a point-in-time view of the interior deletes tracked by
+// the live message blocks, held as per-block clones of each mb.dmap. Blocks
+// own disjoint ascending sequence ranges, so a lookup binary searches for the
+// owning clone. Reads require no locks.
+type interiorDeletes struct {
+	sets []*avl.SequenceSet // Per-block dmap clones, ascending disjoint ranges.
+	maxs []uint64           // Last sequence of the block owning each clone.
+	last int                // Clone index of the previous lookup.
+}
 
-	fs.readLockAllMsgBlocks()
-	defer fs.readUnlockAllMsgBlocks()
-
-	for _, mb := range fs.blks {
-		if mb.dmap.Size() > 0 {
-			mb.dmap.Range(func(seq uint64) bool {
-				dmap.Insert(seq)
-				return true
-			})
-		}
+// Exists returns whether the sequence was marked as an interior delete by a
+// live block at the time the view was built.
+// Not safe for concurrent use.
+func (v *interiorDeletes) Exists(seq uint64) bool {
+	if v == nil {
+		return false
 	}
-	return dmap
+	// Check the clone that answered the previous lookup first, sequences are
+	// mostly checked in ascending order and cluster per block.
+	if i := v.last; i < len(v.maxs) && seq <= v.maxs[i] && (i == 0 || v.maxs[i-1] < seq) {
+		return v.sets[i].Exists(seq)
+	}
+	// First clone whose max is >= seq is the only one that can contain it.
+	i, _ := slices.BinarySearch(v.maxs, seq)
+	if i == len(v.sets) {
+		return false
+	}
+	v.last = i
+	return v.sets[i].Exists(seq)
+}
+
+// deleteMap returns a view of all interior deletes for each of the given blocks,
+// based on the mb.dmap. Specifically, this will not contain any deletes for blocks
+// that had already been removed. This is useful to know whether a tombstone is
+// still relevant and marked as deleted by an active block.
+// No locks should be held on entry.
+func deleteMap(blks []*msgBlock) *interiorDeletes {
+	v := interiorDeletes{
+		sets: make([]*avl.SequenceSet, 0, len(blks)),
+		maxs: make([]uint64, 0, len(blks)),
+	}
+	for _, mb := range blks {
+		mb.mu.RLock()
+		if !mb.closed && mb.dmap.Size() > 0 {
+			// The block's last sequence bounds all of its dmap entries and
+			// preserves the ascending disjoint ordering across clones.
+			v.sets = append(v.sets, mb.dmap.Clone())
+			v.maxs = append(v.maxs, atomic.LoadUint64(&mb.last.seq))
+		}
+		mb.mu.RUnlock()
+	}
+	return &v
 }
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
