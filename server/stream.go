@@ -3279,7 +3279,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 
 	var err error
 	if node != nil {
-		if js.limitsExceeded(stype) {
+		if stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(m.subj, m.hdr, m.msg)) {
+			err = ErrMsgTooLarge
+		} else if js.limitsExceeded(stype) {
 			s.resourcesExceededError(stype)
 			err = ApiErrors[JSInsufficientResourcesErr]
 		} else {
@@ -6222,6 +6224,16 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	outq := mset.outq
 
 	var resp = &JSPubAckResponse{}
+
+	if canConsistencyCheck && stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamStoreFailedError(ErrMsgTooLarge)
+			response, _ := json.Marshal(resp)
+			outq.sendMsg(reply, response)
+		}
+		return ErrMsgTooLarge
+	}
 
 	var (
 		batchId  string

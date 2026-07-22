@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"fmt"
 	"maps"
@@ -1853,6 +1854,15 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 		v.Proxies.Trusted = trusted
 	} else {
 		v.Proxies = nil
+	}
+
+	if cfg := v.JetStream.Config; cfg != nil {
+		if opts.JetStreamMaxMemory > 0 {
+			cfg.MaxMemory = opts.JetStreamMaxMemory
+		}
+		if opts.JetStreamMaxStore > 0 {
+			cfg.MaxStore = opts.JetStreamMaxStore
+		}
 	}
 }
 
@@ -3713,6 +3723,29 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				accFound = true
 			}
 			acc, err := s.LookupAccount(fi.Name())
+			// Expired accounts are not a JetStream health problem; skip them when
+			// scanning all accounts. Still surface an error if this account was
+			// explicitly requested — including the err==nil + IsExpired() case.
+			expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
+			if expired {
+				if opts.Account == _EMPTY_ {
+					continue
+				}
+				msg := fmt.Sprintf("JetStream account '%s' is expired", fi.Name())
+				if !details {
+					health.Status = na
+					health.Error = msg
+					return health
+				}
+				health.Errors = append(health.Errors, HealthzError{
+					Type:    HealthzErrorAccount,
+					Account: fi.Name(),
+					Error:   msg,
+				})
+				// Return so later stream/consumer not-found checks do not
+				// replace this with a misleading 404 for assets we skipped.
+				return health
+			}
 			if err != nil {
 				if !details {
 					health.Status = na
@@ -4008,6 +4041,28 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	// Use our copy to traverse so we do not need to hold the js lock.
 	for accName, asa := range streams {
 		acc, err := s.LookupAccount(accName)
+		// Expired accounts are not a JetStream health problem; skip them when
+		// scanning all accounts. Still surface an error if this account was
+		// explicitly requested — including the err==nil + IsExpired() case.
+		expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
+		if expired {
+			if opts.Account == _EMPTY_ {
+				continue
+			}
+			msg := fmt.Sprintf("JetStream account %q is expired", accName)
+			if !details {
+				health.Status = na
+				health.Error = msg
+				return health
+			}
+			health.Errors = append(health.Errors, HealthzError{
+				Type:    HealthzErrorAccount,
+				Account: accName,
+				Error:   msg,
+			})
+			// Return so later health checks do not obscure the expired account.
+			return health
+		}
 		if err != nil && len(asa) > 0 {
 			if !details {
 				health.Status = na

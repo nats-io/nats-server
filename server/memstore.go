@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
@@ -2395,24 +2396,42 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 		numDeleted = 0
 	}
 
-	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks
-	var buf [1024]byte
-	buf[0], buf[1] = streamStateMagic, streamStateVersion
-	n := hdrLen
-	n += binary.PutUvarint(buf[n:], ms.state.Msgs)
-	n += binary.PutUvarint(buf[n:], ms.state.Bytes)
-	n += binary.PutUvarint(buf[n:], ms.state.FirstSeq)
-	n += binary.PutUvarint(buf[n:], ms.state.LastSeq)
-	n += binary.PutUvarint(buf[n:], failed)
-	n += binary.PutUvarint(buf[n:], uint64(numDeleted))
-
-	b := buf[0:n]
+	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks.
+	// Calculate the exact encoded size up front so the buffer is allocated once.
+	total := hdrLen + uvarintLen(ms.state.Msgs) + uvarintLen(ms.state.Bytes) +
+		uvarintLen(ms.state.FirstSeq) + uvarintLen(ms.state.LastSeq) +
+		uvarintLen(failed) + uvarintLen(uint64(numDeleted))
 
 	if numDeleted > 0 {
-		buf := ms.dmap.Encode(nil)
-		b = append(b, buf...)
+		total += ms.dmap.EncodeLen()
 	}
 
+	b := make([]byte, 0, total)
+	b = append(b, streamStateMagic, streamStateVersion)
+	b = binary.AppendUvarint(b, ms.state.Msgs)
+	b = binary.AppendUvarint(b, ms.state.Bytes)
+	b = binary.AppendUvarint(b, ms.state.FirstSeq)
+	b = binary.AppendUvarint(b, ms.state.LastSeq)
+	b = binary.AppendUvarint(b, failed)
+	b = binary.AppendUvarint(b, uint64(numDeleted))
+
+	if numDeleted > 0 {
+		enc := ms.dmap.Encode(b[len(b):])
+		if n := len(b) + len(enc); n <= cap(b) {
+			b = b[:n]
+		} else {
+			// Fallback if the buffer didn't have spare capacity.
+			b = append(b, enc...)
+		}
+	}
+
+	if len(b) != total {
+		assert.Unreachable("Memstore EncodedStreamState size accounting mismatch", map[string]any{
+			"name":   ms.cfg.Name,
+			"total":  total,
+			"length": len(b),
+		})
+	}
 	return b, nil
 }
 

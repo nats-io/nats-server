@@ -223,6 +223,39 @@ func TestSeqSetClone(t *testing.T) {
 	require_True(t, ss.Nodes() == ssc.Nodes())
 }
 
+func TestSeqSetEqual(t *testing.T) {
+	var ss1, ss2, ss3 SequenceSet
+
+	// Empty and nil sets are all equal.
+	var nilSet *SequenceSet
+	require_True(t, ss1.Equal(&ss2))
+	require_True(t, ss1.Equal(nilSet))
+	require_True(t, nilSet.Equal(&ss1))
+
+	// Same state (first, last, size) but different contents.
+	for _, seq := range []uint64{1, 3, 5} {
+		ss1.Insert(seq)
+	}
+	for _, seq := range []uint64{1, 4, 5} {
+		ss2.Insert(seq)
+	}
+	require_False(t, ss1.Equal(&ss2))
+	require_False(t, ss2.Equal(&ss1))
+	require_False(t, ss1.Equal(nilSet))
+	require_False(t, nilSet.Equal(&ss1))
+
+	// Identical contents, insertion order should not matter.
+	for _, seq := range []uint64{5, 1, 3} {
+		ss3.Insert(seq)
+	}
+	require_True(t, ss1.Equal(&ss3))
+	require_True(t, ss3.Equal(&ss1))
+
+	// Differing sizes.
+	ss3.Insert(7)
+	require_False(t, ss1.Equal(&ss3))
+}
+
 func TestSeqSetUnion(t *testing.T) {
 	var ss1, ss2 SequenceSet
 
@@ -338,6 +371,169 @@ func TestSeqSetDecodeNodeCountOverflow(t *testing.T) {
 	}
 }
 
+func TestSeqSetInsertExistingNodeFastPath(t *testing.T) {
+	var ss SequenceSet
+
+	// Build a multi-node tree with only even sequences set.
+	for i := uint64(0); i < 8*numEntries; i += 2 {
+		ss.Insert(i)
+	}
+	nodes, size := ss.Nodes(), ss.Size()
+
+	// Inserting into existing nodes must not change the tree structure.
+	for i := uint64(1); i < 8*numEntries; i += 2 {
+		ss.Insert(i)
+		require_True(t, ss.Exists(i))
+	}
+	require_True(t, ss.Nodes() == nodes)
+	require_True(t, ss.Size() == size+4*numEntries)
+
+	// Duplicate inserts must not change the size.
+	for i := uint64(0); i < 8*numEntries; i++ {
+		ss.Insert(i)
+	}
+	require_True(t, ss.Size() == 8*numEntries)
+
+	// Heights and balance must still be intact.
+	ss.root.nodeIter(func(n *node) {
+		if n.h != maxH(n)+1 {
+			t.Fatalf("Node height is wrong: %+v", n)
+		}
+	})
+	if bf := balanceF(ss.root); bf > 1 || bf < -1 {
+		t.Fatalf("Unbalanced tree")
+	}
+}
+
+func TestSeqSetInsertUnalignedBase(t *testing.T) {
+	var ss SequenceSet
+
+	// SetInitialMin can create a node whose base is not aligned to numEntries.
+	require_NoError(t, ss.SetInitialMin(1000))
+	for _, seq := range []uint64{1000, 1001, 1000 + numEntries - 1} {
+		ss.Insert(seq)
+		require_True(t, ss.Exists(seq))
+	}
+	require_True(t, ss.Nodes() == 1)
+	require_True(t, ss.Size() == 3)
+
+	// Outside the node's range still creates a new node.
+	ss.Insert(1000 + numEntries)
+	require_True(t, ss.Exists(1000+numEntries))
+	require_True(t, ss.Nodes() == 2)
+	require_True(t, ss.Size() == 4)
+}
+
+func TestSeqSetDeleteNotPresent(t *testing.T) {
+	var ss SequenceSet
+
+	seqs := []uint64{22, 222, 2222, 222_222}
+	for _, seq := range seqs {
+		ss.Insert(seq)
+	}
+	nodes, size := ss.Nodes(), ss.Size()
+
+	// Deleting sequences that are not set, both inside and outside
+	// existing node ranges, must be a no-op and report false.
+	for _, seq := range []uint64{0, 23, 2223, 5000, 100_000, 999_999} {
+		require_True(t, !ss.Delete(seq))
+	}
+	require_True(t, ss.Nodes() == nodes)
+	require_True(t, ss.Size() == size)
+	for _, seq := range seqs {
+		require_True(t, ss.Exists(seq))
+	}
+
+	// Real deletes still work and empty the set.
+	for _, seq := range seqs {
+		require_True(t, ss.Delete(seq))
+	}
+	require_True(t, ss.root == nil)
+}
+
+func TestSeqSetRangeSparse(t *testing.T) {
+	// Cover bucket boundaries, node boundaries and large gaps.
+	seqs := []uint64{0, 1, 63, 64, 127, 128, 2047, 2048, 4095, 4096, 100_000, 1_000_000}
+	var ss SequenceSet
+	for _, seq := range seqs {
+		ss.Insert(seq)
+	}
+
+	var got []uint64
+	ss.Range(func(n uint64) bool {
+		got = append(got, n)
+		return true
+	})
+	require_True(t, len(got) == len(seqs))
+	for i, seq := range seqs {
+		require_True(t, got[i] == seq)
+	}
+
+	// Terminating mid-bucket should stop the iteration immediately.
+	got = got[:0]
+	ss.Range(func(n uint64) bool {
+		got = append(got, n)
+		return n != 64
+	})
+	require_True(t, len(got) == 4)
+	require_True(t, got[3] == 64)
+}
+
+func BenchmarkSeqSetInsertDense(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		var ss SequenceSet
+		for s := uint64(0); s < 200_000; s++ {
+			ss.Insert(s)
+		}
+	}
+}
+
+func BenchmarkSeqSetInsertSparse(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		var ss SequenceSet
+		for s := uint64(0); s < 200_000; s++ {
+			ss.Insert(s * 7)
+		}
+	}
+}
+
+func BenchmarkSeqSetRangeDense(b *testing.B) {
+	var ss SequenceSet
+	for s := uint64(0); s < 200_000; s++ {
+		ss.Insert(s)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var sum uint64
+		ss.Range(func(n uint64) bool { sum += n; return true })
+	}
+}
+
+func BenchmarkSeqSetRangeSparse(b *testing.B) {
+	var ss SequenceSet
+	for s := uint64(0); s < 10_000; s++ {
+		ss.Insert(s * 211) // ~10 bits per 2048-entry node
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var sum uint64
+		ss.Range(func(n uint64) bool { sum += n; return true })
+	}
+}
+
+func BenchmarkSeqSetDeleteNotPresent(b *testing.B) {
+	var ss SequenceSet
+	for s := uint64(0); s < 200_000; s += 2 {
+		ss.Insert(s)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for s := uint64(1); s < 200_000; s += 2 {
+			ss.Delete(s)
+		}
+	}
+}
+
 func require_NoError(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -349,5 +545,12 @@ func require_True(t *testing.T, b bool) {
 	t.Helper()
 	if !b {
 		t.Fatalf("require true")
+	}
+}
+
+func require_False(t *testing.T, b bool) {
+	t.Helper()
+	if b {
+		t.Fatalf("require false")
 	}
 }

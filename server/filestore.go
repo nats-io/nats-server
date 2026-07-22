@@ -6148,7 +6148,7 @@ func (mb *msgBlock) compact() error {
 // writing new messages. We will silently bail on any issues with the underlying block and let someone else detect.
 // if fseq > 0 we will attempt to cleanup stale tombstones.
 // Write lock needs to be held.
-func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *avl.SequenceSet) error {
+func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) error {
 	wasLoaded := mb.cache != nil && mb.cacheAlreadyLoaded()
 	if !wasLoaded {
 		if err := mb.loadMsgsWithLock(); err != nil {
@@ -7599,7 +7599,7 @@ func (fs *fileStore) checkLastBlock(rl uint64) (lmb *msgBlock, err error) {
 func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte) (uint64, error) {
 	// Get size for this message.
 	rl := fileStoreMsgSize(subj, hdr, msg)
-	if rl&hbit != 0 || rl > rlBadThresh {
+	if isFileStoreMsgTooLarge(rl) {
 		return 0, ErrMsgTooLarge
 	}
 	// Grab our current last message block.
@@ -7855,8 +7855,7 @@ func (fs *fileStore) syncBlocks() {
 		fs.setWriteErr(err)
 	}
 
-	var fsDmapLoaded bool
-	var fsDmap avl.SequenceSet
+	var fsDmap *interiorDeletes
 
 	var markDirty bool
 	for _, mb := range blks {
@@ -7915,9 +7914,8 @@ func (fs *fileStore) syncBlocks() {
 			// Load a delete map containing only interior deletes.
 			// This is used when compacting to know if tombstones are still relevant,
 			// and if not they can be compacted.
-			if !fsDmapLoaded {
-				fsDmapLoaded = true
-				fsDmap = fs.deleteMap()
+			if fsDmap == nil {
+				fsDmap = deleteMap(blks)
 			}
 			fs.mu.RLock()
 			mb.mu.Lock()
@@ -7927,7 +7925,7 @@ func (fs *fileStore) syncBlocks() {
 				fs.mu.RUnlock()
 				continue
 			}
-			err := mb.compactWithFloor(firstSeq, &fsDmap)
+			err := mb.compactWithFloor(firstSeq, fsDmap)
 			// If this compact removed all raw bytes due to tombstone cleanup, schedule to remove.
 			shouldRemove := mb.rbytes == 0
 			mb.mu.Unlock()
@@ -9702,6 +9700,12 @@ func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 	return fileStoreMsgSizeRaw(len(subj), len(hdr), len(msg))
 }
 
+// isFileStoreMsgTooLarge reports whether a message record cannot be represented
+// safely by the file store.
+func isFileStoreMsgTooLarge(rl uint64) bool {
+	return rl&hbit != 0 || rl > rlBadThresh
+}
+
 func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
 	return uint64(emptyRecordLen + slen + 4 + maxPayload)
 }
@@ -10199,30 +10203,39 @@ func (fs *fileStore) Purge() (uint64, error) {
 	return fs.purge(0)
 }
 
-func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
+func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	if fs.isClosed() {
 		return 0, ErrStoreClosed
 	}
 
-	// Persist any write errors.
-	defer func() {
-		if rerr != nil {
-			fs.mu.Lock()
-			fs.setWriteErr(rerr)
-			fs.mu.Unlock()
-		}
-	}()
-
 	fs.mu.Lock()
+	cb := fs.scb
+	purged, bytes, err := fs.purgeLocked(fseq)
+	if err != nil {
+		fs.setWriteErr(err)
+		fs.mu.Unlock()
+		return purged, err
+	}
+	fs.mu.Unlock()
 
+	// Force a new index.db to be written.
+	if purged > 0 {
+		fs.forceWriteFullState()
+	}
+	if cb != nil {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+	return purged, nil
+}
+
+// Lock must be held.
+func (fs *fileStore) purgeLocked(fseq uint64) (purged, bytes uint64, err error) {
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
-		fs.mu.Unlock()
-		return 0, err
+		return 0, 0, err
 	}
 
-	purged = fs.state.Msgs
-	rbytes := int64(fs.state.Bytes)
+	purged, bytes = fs.state.Msgs, fs.state.Bytes
 
 	fs.state.FirstSeq = fs.state.LastSeq + 1
 	fs.state.FirstTime = time.Time{}
@@ -10246,8 +10259,7 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 
 	// Make sure we have a lmb to write to.
 	if _, err := fs.newMsgBlockForWrite(); err != nil {
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 
 	lmb := fs.lmb
@@ -10259,18 +10271,15 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 		// Leave a tombstone so we can remember our starting sequence in case
 		// full state becomes corrupted.
 		if err := fs.writeTombstone(lseq, lmb.last.ts); err != nil {
-			fs.mu.Unlock()
-			return purged, err
+			return purged, bytes, err
 		}
 	}
 	// Close FDs since we'll move the file. We re-enable the FD after the purge is complete.
 	if err := lmb.flushPendingMsgs(); err != nil {
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 	if err := lmb.closeFDs(); err != nil {
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 
 	fs.blks = nil
@@ -10293,31 +10302,26 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 	if _, err := os.Stat(ndir); err == nil {
 		if err = os.RemoveAll(ndir); err != nil {
 			fs.dios.release()
-			fs.mu.Unlock()
-			return purged, err
+			return purged, bytes, err
 		}
 	} else if !os.IsNotExist(err) {
 		fs.dios.release()
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 	if _, err := os.Stat(pdir); err == nil {
 		if err = os.RemoveAll(pdir); err != nil {
 			fs.dios.release()
-			fs.mu.Unlock()
-			return purged, err
+			return purged, bytes, err
 		}
 	} else if !os.IsNotExist(err) {
 		fs.dios.release()
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 
 	// Create directory to move the new tombstone to.
 	if err := os.MkdirAll(ndir, defaultDirPerms); err != nil {
 		fs.dios.release()
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 	// Move out the block containing the tombstone. Also move the key file if encrypted.
 	// The block file itself MUST be moved last to ensure we can assume the prior renames
@@ -10327,21 +10331,18 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 		a := filepath.Join(ndir, mbf)
 		if err := os.Rename(b, a); err != nil && !os.IsNotExist(err) {
 			fs.dios.release()
-			fs.mu.Unlock()
-			return purged, err
+			return purged, bytes, err
 		}
 	}
 	// Purge all remaining messages.
 	if err := os.Rename(mdir, pdir); err != nil {
 		fs.dios.release()
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 	// Rename the directory back to be left only with the tombstone.
 	if err := os.Rename(ndir, mdir); err != nil {
 		fs.dios.release()
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 	fs.dios.release()
 
@@ -10354,26 +10355,13 @@ func (fs *fileStore) purge(fseq uint64) (purged uint64, rerr error) {
 
 	// Re-enable writing for the lmb.
 	lmb.mu.Lock()
-	err := lmb.enableForWriting(fs.fip)
+	err = lmb.enableForWriting(fs.fip)
 	lmb.mu.Unlock()
 	if err != nil {
-		fs.mu.Unlock()
-		return purged, err
+		return purged, bytes, err
 	}
 
-	cb := fs.scb
-	fs.mu.Unlock()
-
-	// Force a new index.db to be written.
-	if purged > 0 {
-		fs.forceWriteFullState()
-	}
-
-	if cb != nil {
-		cb(-int64(purged), -rbytes, 0, _EMPTY_)
-	}
-
-	return purged, nil
+	return purged, bytes, nil
 }
 
 // Lock and dios should be held.
@@ -10428,47 +10416,55 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	return fs.compact(seq)
 }
 
-func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
+func (fs *fileStore) compact(seq uint64) (uint64, error) {
 	if fs.isClosed() {
 		return 0, ErrStoreClosed
 	}
-	if seq == 0 {
-		return fs.purge(seq)
+
+	var err error
+	var purged, bytes uint64
+	fs.mu.Lock()
+	if seq == 0 || seq > fs.state.LastSeq {
+		purged, bytes, err = fs.purgeLocked(seq)
+	} else {
+		purged, bytes, err = fs.compactLocked(seq)
+	}
+	if err != nil {
+		fs.setWriteErr(err)
+		fs.mu.Unlock()
+		return purged, err
+	}
+	cb := fs.scb
+	fs.mu.Unlock()
+
+	// Force a new index.db to be written.
+	if purged > 0 {
+		fs.forceWriteFullState()
 	}
 
-	fs.mu.Lock()
+	if cb != nil && purged > 0 {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+
+	return purged, nil
+}
+
+// Lock must be held.
+func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error) {
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
-		fs.mu.Unlock()
-		return 0, err
+		return 0, 0, err
 	}
-	// Same as purge all.
-	if lseq := fs.state.LastSeq; seq > lseq {
-		fs.mu.Unlock()
-		return fs.purge(seq)
-	}
+
 	// Short-circuit if the store was already compacted past this point.
 	if fs.state.FirstSeq > seq {
-		fs.mu.Unlock()
-		return purged, nil
+		return 0, 0, nil
 	}
 	// We have to delete interior messages.
 	smb := fs.selectMsgBlock(seq)
 	if smb == nil {
-		fs.mu.Unlock()
-		return 0, nil
+		return 0, 0, nil
 	}
-
-	// Persist any write errors.
-	defer func() {
-		if rerr != nil {
-			fs.mu.Lock()
-			fs.setWriteErr(rerr)
-			fs.mu.Unlock()
-		}
-	}()
-
-	var bytes uint64
 
 	// All msgblocks up to this one can be thrown away.
 	var deleted int
@@ -10482,8 +10478,7 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 		// Make sure we do subject cleanup as well.
 		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
 			mb.mu.Unlock()
-			fs.mu.Unlock()
-			return 0, err
+			return 0, 0, err
 		}
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			subj := bytesToString(bsubj)
@@ -10496,14 +10491,12 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 		err := mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
 		if err != nil {
-			fs.mu.Unlock()
-			return purged, err
+			return purged, bytes, err
 		}
 		deleted++
 	}
 
 	var smv StoreMsg
-	var err error
 	var tombs []msgId
 
 	smb.mu.Lock()
@@ -10517,11 +10510,10 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 	if smb.cacheNotLoaded() {
 		if err = smb.loadMsgsWithLock(); err != nil {
 			smb.mu.Unlock()
-			fs.mu.Unlock()
-			return purged, err
+			return purged, bytes, err
 		}
 		defer func() {
-			// The lock is released once we get here, so need to re-acquire.
+			// The block lock is released once we get here, so need to re-acquire.
 			smb.mu.Lock()
 			smb.finishedWithCache()
 			smb.mu.Unlock()
@@ -10548,8 +10540,7 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 			// Update fss
 			if _, err := smb.removeSeqPerSubject(sm.subj, mseq); err != nil {
 				smb.mu.Unlock()
-				fs.mu.Unlock()
-				return purged, err
+				return purged, bytes, err
 			}
 			fs.removePerSubject(sm.subj)
 			tombs = append(tombs, msgId{sm.seq, sm.ts})
@@ -10562,8 +10553,7 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 		if smb != fs.lmb {
 			if err = smb.dirtyCloseWithRemove(true); err != nil {
 				smb.mu.Unlock()
-				fs.mu.Unlock()
-				return purged, err
+				return purged, bytes, err
 			}
 			deleted++
 		} else {
@@ -10596,8 +10586,7 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 			moff, _, _, err = smb.slotInfo(int(atomic.LoadUint64(&smb.first.seq) - smb.cache.fseq))
 			if err != nil {
 				smb.mu.Unlock()
-				fs.mu.Unlock()
-				return purged, err
+				return purged, bytes, err
 			} else if moff >= uint32(len(smb.cache.buf)) {
 				goto SKIP
 			}
@@ -10613,8 +10602,7 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 				originalSize := len(nbuf)
 				if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
 					smb.mu.Unlock()
-					fs.mu.Unlock()
-					return purged, err
+					return purged, bytes, err
 				}
 				meta := &CompressionInfo{
 					Algorithm:    smb.cmp,
@@ -10628,8 +10616,7 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 				bek, err := genBlockEncryptionKey(smb.fs.fcfg.Cipher, smb.seed, smb.nonce)
 				if err != nil {
 					smb.mu.Unlock()
-					fs.mu.Unlock()
-					return purged, err
+					return purged, bytes, err
 				}
 				// For future writes make sure to set smb.bek to keep counter correct.
 				smb.bek = bek
@@ -10644,14 +10631,12 @@ func (fs *fileStore) compact(seq uint64) (purged uint64, rerr error) {
 			if err != nil {
 				_ = os.Remove(mfn)
 				smb.mu.Unlock()
-				fs.mu.Unlock()
-				return purged, err
+				return purged, bytes, err
 			}
 			if err = os.Rename(mfn, smb.mfn); err != nil {
 				_ = os.Remove(mfn)
 				smb.mu.Unlock()
-				fs.mu.Unlock()
-				return purged, err
+				return purged, bytes, err
 			}
 
 			// Make sure to remove fss state.
@@ -10671,15 +10656,13 @@ SKIP:
 	if len(tombs) > 0 {
 		for _, tomb := range tombs {
 			if err = fs.writeTombstoneNoFlush(tomb.seq, tomb.ts); err != nil {
-				fs.mu.Unlock()
-				return purged, err
+				return purged, bytes, err
 			}
 		}
 		// Flush any pending. If we change blocks the newMsgBlockForWrite() will flush any pending for us.
 		if lmb := fs.lmb; lmb != nil {
 			if err = lmb.flushPendingMsgs(); err != nil {
-				fs.mu.Unlock()
-				return purged, err
+				return purged, bytes, err
 			}
 		}
 	}
@@ -10719,19 +10702,8 @@ SKIP:
 	// after we release the lock.
 	os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
 	fs.dirty++
-	cb := fs.scb
-	fs.mu.Unlock()
 
-	// Force a new index.db to be written.
-	if purged > 0 {
-		fs.forceWriteFullState()
-	}
-
-	if cb != nil && purged > 0 {
-		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
-	}
-
-	return purged, err
+	return purged, bytes, nil
 }
 
 // Will completely reset our store.
@@ -12460,51 +12432,61 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 		}
 	}
 
-	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks
-	var buf [1024]byte
-	buf[0], buf[1] = streamStateMagic, streamStateVersion
-	n := hdrLen
-	n += binary.PutUvarint(buf[n:], fs.state.Msgs)
-	n += binary.PutUvarint(buf[n:], fs.state.Bytes)
-	n += binary.PutUvarint(buf[n:], fs.state.FirstSeq)
-	n += binary.PutUvarint(buf[n:], fs.state.LastSeq)
-	n += binary.PutUvarint(buf[n:], failed)
-	n += binary.PutUvarint(buf[n:], uint64(numDeleted))
+	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks.
+	// Calculate the exact encoded size up front so the buffer is allocated once.
+	total := hdrLen + uvarintLen(fs.state.Msgs) + uvarintLen(fs.state.Bytes) +
+		uvarintLen(fs.state.FirstSeq) + uvarintLen(fs.state.LastSeq) +
+		uvarintLen(failed) + uvarintLen(uint64(numDeleted))
 
-	b := buf[0:n]
-
+	var dbs DeleteBlocks
 	if numDeleted > 0 {
-		var scratch [4 * 1024]byte
-
 		fs.readLockAllMsgBlocks()
 		defer fs.readUnlockAllMsgBlocks()
+		var sz int
+		dbs, sz = fs.deleteBlocks()
+		total += sz
+	}
 
-		for _, db := range fs.deleteBlocks() {
-			switch db := db.(type) {
-			case *DeleteRange:
-				first, _, num := db.State()
-				scratch[0] = runLengthMagic
-				i := 1
-				i += binary.PutUvarint(scratch[i:], first)
-				i += binary.PutUvarint(scratch[i:], num)
-				b = append(b, scratch[0:i]...)
-			case *avl.SequenceSet:
-				buf := db.Encode(scratch[:0])
-				b = append(b, buf...)
-			default:
-				return nil, errors.New("no impl")
+	b := make([]byte, 0, total)
+	b = append(b, streamStateMagic, streamStateVersion)
+	b = binary.AppendUvarint(b, fs.state.Msgs)
+	b = binary.AppendUvarint(b, fs.state.Bytes)
+	b = binary.AppendUvarint(b, fs.state.FirstSeq)
+	b = binary.AppendUvarint(b, fs.state.LastSeq)
+	b = binary.AppendUvarint(b, failed)
+	b = binary.AppendUvarint(b, uint64(numDeleted))
+
+	for _, db := range dbs {
+		switch db := db.(type) {
+		case *DeleteRange:
+			b = appendRunLength(b, db.First, db.Num)
+		case *avl.SequenceSet:
+			enc := db.Encode(b[len(b):])
+			if n := len(b) + len(enc); n <= cap(b) {
+				b = b[:n]
+			} else {
+				// Fallback if the buffer didn't have spare capacity.
+				b = append(b, enc...)
 			}
+		default:
+			return nil, errors.New("no impl")
 		}
 	}
 
+	if len(b) != total {
+		assert.Unreachable("Filestore EncodedStreamState size accounting mismatch", map[string]any{
+			"name":   fs.cfg.Name,
+			"total":  total,
+			"length": len(b),
+		})
+	}
 	return b, nil
 }
 
 // deleteBlocks returns DeleteBlocks representing interior deletes
-// and gaps between blocks.
+// and gaps between blocks, as well as their total binary encoded size.
 // All blocks should be at least read locked.
-func (fs *fileStore) deleteBlocks() DeleteBlocks {
-	var dbs DeleteBlocks
+func (fs *fileStore) deleteBlocks() (dbs DeleteBlocks, sz int) {
 	var prevLast uint64
 	var prevRange *DeleteRange
 	var msgsSinceGap bool
@@ -12519,46 +12501,82 @@ func (fs *fileStore) deleteBlocks() DeleteBlocks {
 			// blocks containing messages between the
 			// two gaps.
 			if prevRange != nil && !msgsSinceGap {
+				sz -= runLengthEncodeLen(prevRange.First, prevRange.Num)
 				prevRange.Num += gapSize
+				sz += runLengthEncodeLen(prevRange.First, prevRange.Num)
 			} else {
 				prevRange = &DeleteRange{
 					First: prevLast + 1,
 					Num:   gapSize,
 				}
+				sz += runLengthEncodeLen(prevRange.First, prevRange.Num)
 				msgsSinceGap = false
 				dbs = append(dbs, prevRange)
 			}
 		}
 		if mb.dmap.Size() > 0 {
 			dbs = append(dbs, &mb.dmap)
+			sz += mb.dmap.EncodeLen()
 			prevRange = nil
 		}
 		prevLast = atomic.LoadUint64(&mb.last.seq)
 		msgsSinceGap = msgsSinceGap || mb.msgs > 0
 	}
-	return dbs
+	return dbs, sz
 }
 
-// deleteMap returns all interior deletes for each block based on the mb.dmap.
-// Specifically, this will not contain any deletes for blocks that have been removed.
-// This is useful to know whether a tombstone is still relevant and marked as deleted by an active block.
-// No locks should be held.
-func (fs *fileStore) deleteMap() (dmap avl.SequenceSet) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+// interiorDeletes is a point-in-time view of the interior deletes tracked by
+// the live message blocks, held as per-block clones of each mb.dmap. Blocks
+// own disjoint ascending sequence ranges, so a lookup binary searches for the
+// owning clone. Reads require no locks.
+type interiorDeletes struct {
+	sets []*avl.SequenceSet // Per-block dmap clones, ascending disjoint ranges.
+	maxs []uint64           // Last sequence of the block owning each clone.
+	last int                // Clone index of the previous lookup.
+}
 
-	fs.readLockAllMsgBlocks()
-	defer fs.readUnlockAllMsgBlocks()
-
-	for _, mb := range fs.blks {
-		if mb.dmap.Size() > 0 {
-			mb.dmap.Range(func(seq uint64) bool {
-				dmap.Insert(seq)
-				return true
-			})
-		}
+// Exists returns whether the sequence was marked as an interior delete by a
+// live block at the time the view was built.
+// Not safe for concurrent use.
+func (v *interiorDeletes) Exists(seq uint64) bool {
+	if v == nil {
+		return false
 	}
-	return dmap
+	// Check the clone that answered the previous lookup first, sequences are
+	// mostly checked in ascending order and cluster per block.
+	if i := v.last; i < len(v.maxs) && seq <= v.maxs[i] && (i == 0 || v.maxs[i-1] < seq) {
+		return v.sets[i].Exists(seq)
+	}
+	// First clone whose max is >= seq is the only one that can contain it.
+	i, _ := slices.BinarySearch(v.maxs, seq)
+	if i == len(v.sets) {
+		return false
+	}
+	v.last = i
+	return v.sets[i].Exists(seq)
+}
+
+// deleteMap returns a view of all interior deletes for each of the given blocks,
+// based on the mb.dmap. Specifically, this will not contain any deletes for blocks
+// that had already been removed. This is useful to know whether a tombstone is
+// still relevant and marked as deleted by an active block.
+// No locks should be held on entry.
+func deleteMap(blks []*msgBlock) *interiorDeletes {
+	v := interiorDeletes{
+		sets: make([]*avl.SequenceSet, 0, len(blks)),
+		maxs: make([]uint64, 0, len(blks)),
+	}
+	for _, mb := range blks {
+		mb.mu.RLock()
+		if !mb.closed && mb.dmap.Size() > 0 {
+			// The block's last sequence bounds all of its dmap entries and
+			// preserves the ascending disjoint ordering across clones.
+			v.sets = append(v.sets, mb.dmap.Clone())
+			v.maxs = append(v.maxs, atomic.LoadUint64(&mb.last.seq))
+		}
+		mb.mu.RUnlock()
+	}
+	return &v
 }
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
@@ -12582,7 +12600,7 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 
 	lseq := fs.state.LastSeq
 	fs.readLockAllMsgBlocks()
-	mdbs := fs.deleteBlocks()
+	mdbs, _ := fs.deleteBlocks()
 	// We'll release the locks below, so need to copy the ones that are references
 	// which are only safe while the locks are still held.
 	for i, db := range mdbs {
@@ -12645,10 +12663,41 @@ func pruneDeleteBlock(db DeleteBlock, blocks DeleteBlocks) (bool, DeleteBlocks) 
 	}
 
 	if aFirst == bFirst && aLast == bLast && aNum == bNum {
-		return true, blocks[1:]
+		// Matching state is only conclusive for a dense block; two sparse
+		// sequence sets can share the same state but differ in contents.
+		if aNum == aLast-aFirst+1 || deleteBlockContentsEqual(db, blocks[0]) {
+			return true, blocks[1:]
+		}
 	}
 
 	return false, blocks
+}
+
+// deleteBlockContentsEqual reports whether two sparse delete blocks with
+// identical State() contain the same sequences. If neither block is a
+// sequence set we can't compare cheaply and safely report unequal.
+func deleteBlockContentsEqual(a, b DeleteBlock) bool {
+	ssa, aIsSet := a.(*avl.SequenceSet)
+	ssb, bIsSet := b.(*avl.SequenceSet)
+	if aIsSet && bIsSet {
+		return ssa.Equal(ssb)
+	}
+	// Use whichever side is a SequenceSet for fast Exists lookups.
+	var ss *avl.SequenceSet
+	var other DeleteBlock
+	if bIsSet {
+		ss, other = ssb, a
+	} else if aIsSet {
+		ss, other = ssa, b
+	} else {
+		return false
+	}
+	equal := true
+	other.Range(func(seq uint64) bool {
+		equal = ss.Exists(seq)
+		return equal
+	})
+	return equal
 }
 
 ////////////////////////////////////////////////////////////////////////////////

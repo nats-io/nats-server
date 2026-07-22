@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1117,6 +1118,94 @@ func TestJetStreamJWTExpiredAccountWorksAfterExpirationUpdated(t *testing.T) {
 
 	_, err = js.Publish("foo", []byte("hello"))
 	require_NoError(t, err)
+}
+
+// TestJetStreamJWTHealthzIgnoresExpiredAccounts verifies that a general
+// healthz scan does not report unavailable solely because a JWT account with
+// JetStream assets has expired (issue #8084).
+func TestJetStreamJWTHealthzIgnoresExpiredAccounts(t *testing.T) {
+	sysKp, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+	sysCreds := newUser(t, sysKp)
+
+	akp, apub := createKey(t)
+	accClaim := jwt.NewAccountClaims(apub)
+	accClaim.Name = "TEST"
+	accClaim.Limits.JetStreamLimits = jwt.JetStreamLimits{MemoryStorage: 1024 * 1024, DiskStorage: 2048 * 1024, Streams: 1}
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	dirSrv := filepath.ToSlash(t.TempDir())
+	dir := filepath.ToSlash(t.TempDir())
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb, store_dir: "%s"}
+				operator: %s
+				system_account: %s
+				resolver: {
+					type: full
+					allow_delete: true
+					dir: '%s'
+				}
+			`, dirSrv, ojwt, spub, dir)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+
+	userCreds := newUser(t, akp)
+	nc, js := jsClientConnect(t, s, nats.UserCredentials(userCreds), nats.NoReconnect())
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Expire the account and wait until LookupAccount sees it as expired.
+	expires := time.Now().Add(2 * time.Second)
+	accClaim.Expires = expires.Unix()
+	accJwt = encodeClaim(t, accClaim, apub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		acc, err := s.LookupAccount(apub)
+		if err != nil {
+			if errors.Is(err, ErrAccountExpired) {
+				return nil
+			}
+			return err
+		}
+		if acc.IsExpired() {
+			return nil
+		}
+		return fmt.Errorf("account %s not expired yet", apub)
+	})
+
+	status := s.healthz(nil)
+	require_True(t, status.Status == "ok")
+	require_True(t, status.StatusCode == http.StatusOK)
+
+	// Explicit account healthz must still report unavailable for an expired account.
+	explicit := s.healthz(&HealthzOptions{Account: apub})
+	require_True(t, explicit.Status == "unavailable")
+	require_True(t, explicit.StatusCode == http.StatusServiceUnavailable)
+
+	// With details + stream, keep the expired-account error instead of a 404 for
+	// a stream that was never examined because the account was skipped.
+	detailed := s.healthz(&HealthzOptions{Account: apub, Stream: "TEST", Details: true})
+	require_True(t, detailed.Status == "error")
+	require_True(t, detailed.StatusCode == http.StatusServiceUnavailable)
+	require_True(t, len(detailed.Errors) == 1)
+	require_True(t, detailed.Errors[0].Type == HealthzErrorAccount)
 }
 
 func TestJetStreamJWTDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
