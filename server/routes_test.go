@@ -5715,6 +5715,221 @@ func TestRoutePerAccountCacheDropsRemovedAccountAfterOtherAccountRefresh(t *test
 	}
 }
 
+// TestRoutePerAccountCacheRetainsRemovedNoSubscriberAccountWithoutDelivery is
+// the sibling of the drop test above. The drop test covers a removed account
+// that had a local subscriber: its disconnect bumps the sublist genid, the
+// cached entry goes stale, and the surgical delete evicts it. This test covers
+// the case that leaves genid untouched: a removed account with no local
+// subscribers and no service imports. Nothing bumps its genid, so its cache
+// entry passes the genid check and is retained rather than evicted. That
+// retention is benign because the cached result is empty, so route.go's
+// len(r.psubs)+len(r.qsubs) > 0 guard is false and processMsgResults is never
+// reached. This test proves both halves: the entry survives the account
+// removal unchanged, and the message it later matches is accounted for (a stats
+// increment) but never delivered.
+func TestRoutePerAccountCacheRetainsRemovedNoSubscriberAccountWithoutDelivery(t *testing.T) {
+	// no_system_account keeps B free of the default $SYS.REQ service imports, so
+	// that a removed B with no local subscribers truly leaves its sublist (and
+	// thus its genid) untouched. That is exactly the "no local subscribers and
+	// no service imports" edge case the change under test must handle: the entry
+	// stays valid and is retained rather than evicted.
+	const configAWithBothAccounts = `
+		server_name: "A"
+		port: -1
+		no_system_account: true
+		accounts {
+			A { users: [{user: "a", password: "pwd"}] }
+			B { users: [{user: "b", password: "pwd"}] }
+		}
+		cluster {
+			name: "cache-retain"
+			listen: "127.0.0.1:-1"
+		}
+	`
+	const configAWithoutB = `
+		server_name: "A"
+		port: -1
+		no_system_account: true
+		accounts {
+			A { users: [{user: "a", password: "pwd"}] }
+		}
+		cluster {
+			name: "cache-retain"
+			listen: "127.0.0.1:-1"
+		}
+	`
+
+	confA := createConfFile(t, []byte(configAWithBothAccounts))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "B"
+		port: -1
+		no_system_account: true
+		accounts {
+			A { users: [{user: "a", password: "pwd"}] }
+			B { users: [{user: "b", password: "pwd"}] }
+		}
+		cluster {
+			name: "cache-retain"
+			listen: "127.0.0.1:-1"
+			routes: ["nats://127.0.0.1:%d"]
+		}
+	`, optsA.Cluster.Port)))
+	srvB, _ := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	aSubConn := natsConnect(t, srvA.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer aSubConn.Close()
+	bSubConn := natsConnect(t, srvA.ClientURL(), nats.UserInfo("b", "pwd"))
+	defer bSubConn.Close()
+	aSub := natsSubSync(t, aSubConn, "a")
+	bSub := natsSubSync(t, bSubConn, "b")
+	natsFlush(t, aSubConn)
+	natsFlush(t, bSubConn)
+
+	aPub := natsConnect(t, srvB.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer aPub.Close()
+	bPub := natsConnect(t, srvB.ClientURL(), nats.UserInfo("b", "pwd"))
+	defer bPub.Close()
+
+	checkSubInterest(t, srvB, "A", "a", time.Second)
+	checkSubInterest(t, srvB, "B", "b", time.Second)
+
+	// Prime one non-account-bound route cache with entries for both accounts.
+	natsPub(t, aPub, "a", []byte("prime-a"))
+	natsFlush(t, aPub)
+	natsNexMsg(t, aSub, time.Second)
+	natsPub(t, bPub, "b", []byte("prime-b"))
+	natsFlush(t, bPub)
+	natsNexMsg(t, bSub, time.Second)
+
+	const aCacheKey, bCacheKey = "A a", "B b"
+	var route *client
+	srvA.mu.RLock()
+	srvA.forEachRoute(func(r *client) {
+		if r.route != nil && r.route.remoteID == srvB.ID() && len(r.route.accName) == 0 &&
+			r.in.pacache[aCacheKey] != nil && r.in.pacache[bCacheKey] != nil {
+			route = r
+		}
+	})
+	srvA.mu.RUnlock()
+	if route == nil {
+		t.Fatal("missing non-account-bound route cache primed for both accounts")
+	}
+	bPac := route.in.pacache[bCacheKey]
+	primedBGen := atomic.LoadUint64(&bPac.genid)
+
+	// rtInMsgs reads B's routed inbound counter, which route.go increments for
+	// every routed message before it consults the delivery guard. It is the
+	// signal that a forwarded b message has actually been processed, and it
+	// stays readable through the account pointer even after B is removed.
+	rtInMsgs := func() int64 {
+		bPac.acc.stats.Lock()
+		n := bPac.acc.stats.rt.inMsgs
+		bPac.acc.stats.Unlock()
+		return n
+	}
+
+	// Hold route-control traffic from A to B so B keeps its interest in b and
+	// keeps forwarding public messages after A drops its only local subscriber.
+	// The route cache under test is on A's inbound side, so B-to-A data still
+	// exercises its normal route message path.
+	srvA.mu.RLock()
+	srvA.forEachRoute(func(r *client) {
+		if r.route != nil && r.route.remoteID == srvB.ID() && len(r.route.accName) == 0 {
+			r.mu.Lock()
+			r.nc = &dropRouteWritesConn{Conn: r.nc}
+			r.mu.Unlock()
+		}
+	})
+	srvA.mu.RUnlock()
+
+	// Drop A's only local subscriber in account B. Removing the subscription
+	// bumps B's sublist generation, but with A-to-B control traffic held, B
+	// never learns and keeps forwarding b to A.
+	bSubConn.Close()
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if atomic.LoadUint64(&bPac.acc.sl.genid) > primedBGen {
+			return nil
+		}
+		return fmt.Errorf("account B generation did not advance after its subscriber left")
+	})
+
+	// The next forwarded b message finds the primed entry stale and re-primes
+	// it in place with an empty result at the current generation: a valid,
+	// subscriber-less cache entry for an account that is about to be removed.
+	beforeReprime := rtInMsgs()
+	natsPub(t, bPub, "b", []byte("reprime-b"))
+	natsFlush(t, bPub)
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if rtInMsgs() > beforeReprime {
+			return nil
+		}
+		return fmt.Errorf("route did not process the re-prime b message")
+	})
+	emptyBGen := atomic.LoadUint64(&bPac.genid)
+	if emptyBGen == primedBGen {
+		t.Fatalf("account B cache entry was not re-primed after its subscriber left: still generation %d", primedBGen)
+	}
+	if n := len(bPac.results.psubs) + len(bPac.results.qsubs); n != 0 {
+		t.Fatalf("re-primed account B cache entry is not empty: %d subscriptions", n)
+	}
+	if route.in.pacache[bCacheKey] != bPac {
+		t.Fatal("account B cache entry was dropped instead of re-primed empty")
+	}
+
+	// Remove B from the authoritative catalog. With no local subscribers and no
+	// service imports, nothing touches B's sublist, so its generation is frozen
+	// and the empty cache entry stays valid.
+	reloadUpdateConfig(t, srvA, confA, configAWithoutB)
+	if _, err := srvA.LookupAccount("B"); err == nil {
+		t.Fatal("removed account B remained in the account catalog")
+	}
+	if gen := atomic.LoadUint64(&bPac.acc.sl.genid); gen != emptyBGen {
+		t.Fatalf("removed subscriber-less account B changed its generation: before=%d after=%d", emptyBGen, gen)
+	}
+
+	// A public b message still reaches the same route because B kept its
+	// interest. It must land on the retained, still-valid empty entry: counted
+	// in stats, but never delivered and never evicted.
+	beforeRetained := rtInMsgs()
+	natsPub(t, bPub, "b", []byte("removed-b"))
+	natsFlush(t, bPub)
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if rtInMsgs() > beforeRetained {
+			return nil
+		}
+		return fmt.Errorf("route did not process the post-removal b message")
+	})
+	// Retained: a still-valid entry for a since-removed account is kept, and its
+	// generation holds. This is the path the review bot flagged as uncovered.
+	if route.in.pacache[bCacheKey] != bPac {
+		t.Fatal("valid account B cache entry was evicted after the account was removed")
+	}
+	if gen := atomic.LoadUint64(&bPac.genid); gen != emptyBGen {
+		t.Fatalf("retained account B cache entry changed generation: before=%d after=%d", emptyBGen, gen)
+	}
+	// Benign: the cached result is empty, so the delivery guard in route.go is
+	// false and processMsgResults is never reached. The detached account gained
+	// no subscriptions to deliver to.
+	if n := len(bPac.results.psubs) + len(bPac.results.qsubs); n != 0 {
+		t.Fatalf("retained account B cache entry gained subscriptions: %d", n)
+	}
+
+	// The account A entry sharing this route is untouched and still delivers,
+	// confirming the change evicts only the single stale key when it evicts.
+	natsPub(t, aPub, "a", []byte("after-a"))
+	natsFlush(t, aPub)
+	natsNexMsg(t, aSub, time.Second)
+	if route.in.pacache[aCacheKey] == nil {
+		t.Fatal("account A cache entry was lost while retaining account B")
+	}
+}
+
 // Benchmarks for message arg processing functions to measure heap allocations.
 // These functions parse incoming protocol messages and split arguments.
 
