@@ -13044,7 +13044,7 @@ func TestFileStoreDeleteRangeTwoGaps(t *testing.T) {
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
 		t.Helper()
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13094,7 +13094,7 @@ func TestFileStoreDeleteBlocksWithSingleMessageBlocks(t *testing.T) {
 	defer fs.Stop()
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13293,7 +13293,7 @@ func TestFileStoreDeleteBlocks(t *testing.T) {
 	defer fs.Stop()
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13438,7 +13438,7 @@ func TestFileStoreDeleteBlocksWithManyEmptyBlocks(t *testing.T) {
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
 		t.Helper()
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -13644,7 +13644,7 @@ func TestFileStoreRemoveMsgsInRange(t *testing.T) {
 	defer fs.mu.Unlock()
 
 	checkDeleteBlocks := func(exp DeleteBlocks) {
-		dBlocks := fs.deleteBlocks()
+		dBlocks, _ := fs.deleteBlocks()
 		require_Equal(t, len(exp), len(dBlocks))
 
 		for i, found := range dBlocks {
@@ -14888,7 +14888,7 @@ func TestFileStoreSyncDeletedDmapAliasRace(t *testing.T) {
 	// Snapshot the delete blocks to feed back into SyncDeleted.
 	fs.mu.Lock()
 	fs.readLockAllMsgBlocks()
-	live := fs.deleteBlocks()
+	live, _ := fs.deleteBlocks()
 	dbs := make(DeleteBlocks, len(live))
 	for i, db := range live {
 		switch d := db.(type) {
