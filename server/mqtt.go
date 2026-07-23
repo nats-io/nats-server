@@ -4887,9 +4887,7 @@ func (c *client) mqttQoS2InternalSubject(pi uint16) string {
 // released PI - kept or not - is a new publication [MQTT-4.3.3-1].
 // readLoop only.
 func (c *client) mqttRecordQoS2Publish(pp *mqttPublish) {
-	if c.mqtt.qos2Exchanges == nil {
-		c.mqtt.qos2Exchanges = make(map[uint16]*mqttPublish)
-	} else if prev, ok := c.mqtt.qos2Exchanges[pp.pi]; ok {
+	if prev, ok := c.mqtt.qos2Exchanges[pp.pi]; ok {
 		if prev != nil {
 			// A duplicate PUBLISH: keep the first copy, as the JetStream
 			// stage does (max-msgs-per-subject), so both deliver the same
@@ -4897,8 +4895,14 @@ func (c *client) mqttRecordQoS2Publish(pp *mqttPublish) {
 			return
 		}
 
-		// Released: a new publication. Drop the nil entry.
+		// Released: a new publication, DUP or not [MQTT-4.3.3-1]. Drop the
+		// nil entry.
 		delete(c.mqtt.qos2Exchanges, pp.pi)
+	} else if pp.flags&mqttPubFlagDup != 0 {
+		// A DUP retransmit unknown here may duplicate a stage from a
+		// previous connection; only JetStream knows which bytes were
+		// accepted first, so leave the PUBREL to load them.
+		return
 	}
 
 	if c.mqtt.qos2PendingCount >= mqttMaxAcksInFlight {
@@ -4909,6 +4913,10 @@ func (c *client) mqttRecordQoS2Publish(pp *mqttPublish) {
 	cp.subject = append([]byte(nil), pp.subject...)
 	cp.mapped = append([]byte(nil), pp.mapped...)
 	cp.msg = append([]byte(nil), pp.msg...)
+
+	if c.mqtt.qos2Exchanges == nil {
+		c.mqtt.qos2Exchanges = make(map[uint16]*mqttPublish)
+	}
 	c.mqtt.qos2Exchanges[pp.pi] = &cp
 	c.mqtt.qos2PendingCount++
 }

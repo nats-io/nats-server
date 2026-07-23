@@ -6386,6 +6386,46 @@ func TestMQTTQoS2RejectPublishDuplicates(t *testing.T) {
 	testMQTTExpectNothing(t, r)
 }
 
+func TestMQTTQoS2RejectPublishDuplicatesAcrossReconnect(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	var qos2 byte = 2
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: true}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: qos2}}, []byte{qos2})
+
+	// Stage a message, then lose the connection as if the PUBREC never made
+	// it back to the client.
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: false}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	var pubPI uint16 = 444
+	testMQTTSendPublishPacket(t, cp, qos2, false, false, "foo", pubPI, []byte("data1"))
+	testMQTTReadPIPacket(mqttPacketPubRec, t, rp, pubPI)
+	cp.Close()
+
+	// Reconnect the session and retransmit with the same PI (DUP set) but a
+	// different payload. [MQTT-4.3.3-1]: the first accepted bytes must win,
+	// as in TestMQTTQoS2RejectPublishDuplicates on one connection.
+	cp, rp = testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, true)
+	testMQTTSendPublishPacket(t, cp, qos2, true, false, "foo", pubPI, []byte("data2"))
+	testMQTTReadPIPacket(mqttPacketPubRec, t, rp, pubPI)
+	testMQTTSendPIPacket(mqttPacketPubRel|0x2, t, cp, pubPI)
+	testMQTTReadPIPacket(mqttPacketPubComp, t, rp, pubPI)
+
+	subPI := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("data1"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, subPI)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, subPI)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, subPI)
+	testMQTTExpectNothing(t, r)
+}
+
 func TestMQTTQoS2RetriesPublish(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.MQTT.AckWait = 100 * time.Millisecond
