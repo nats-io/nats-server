@@ -9024,6 +9024,48 @@ func TestJetStreamClusterConsumerAssignmentsOrInflightSeqWithInflightStream(t *t
 	}
 }
 
+func TestJetStreamClusterStreamConfigConsidersInflight(t *testing.T) {
+	const acc, stream = "A", "S"
+	appliedCfg := &StreamConfig{Name: stream, Replicas: 1}
+	inflightCfg := &StreamConfig{Name: stream, Replicas: 3}
+
+	js := &jetStream{cluster: &jetStreamCluster{}}
+	expectCfg := func(expected *StreamConfig) {
+		t.Helper()
+		cfg, ok := js.clusterStreamConfig(acc, stream)
+		require_Equal(t, ok, expected != nil)
+		if expected != nil {
+			require_True(t, reflect.DeepEqual(cfg, *expected))
+		}
+	}
+
+	// Unknown stream.
+	expectCfg(nil)
+
+	// A stream create that has been proposed but not applied yet must already be
+	// visible, so a consumer create for it that races ahead of the meta apply
+	// loop is not rejected with 'stream not found'.
+	js.cluster.inflightStreams = map[string]map[string]*inflightStreamInfo{
+		acc: {stream: {streamAssignment: &streamAssignment{Config: inflightCfg}}},
+	}
+	expectCfg(inflightCfg)
+
+	// The inflight proposal is more recent than an applied assignment.
+	js.cluster.streams = map[string]map[string]*streamAssignment{
+		acc: {stream: {Config: appliedCfg}},
+	}
+	expectCfg(inflightCfg)
+
+	// An inflight delete means the stream is going away, even if the applied
+	// assignment still exists.
+	js.cluster.inflightStreams[acc][stream].deleted = true
+	expectCfg(nil)
+
+	// Only an applied assignment remains.
+	js.cluster.inflightStreams = nil
+	expectCfg(appliedCfg)
+}
+
 func TestJetStreamClusterApiPagedRequestOffsetValidation(t *testing.T) {
 	test := func(t *testing.T, replicas int) {
 		var s *Server
