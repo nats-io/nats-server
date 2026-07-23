@@ -32,16 +32,6 @@ func commonPrefixLen(s1, s2 []byte) int {
 	return i
 }
 
-// Helper to copy bytes.
-func copyBytes(src []byte) []byte {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make([]byte, len(src))
-	copy(dst, src)
-	return dst
-}
-
 type position interface{ int | uint16 }
 
 // No pivot available.
