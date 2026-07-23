@@ -1994,10 +1994,12 @@ type writeableStreamAssignment struct {
 	Consumers  []*writeableConsumerAssignment
 }
 
+// Returns the stream config as registered in the meta layer, from an inflight
+// proposal that has not been applied yet, or from an applied assignment otherwise.
 func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConfig, bool) {
 	js.mu.RLock()
 	defer js.mu.RUnlock()
-	if sa, ok := js.cluster.streams[accName][streamName]; ok {
+	if sa := js.streamAssignmentOrInflight(accName, streamName); sa != nil {
 		return *sa.Config, true
 	}
 	return StreamConfig{}, false
