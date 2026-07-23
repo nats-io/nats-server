@@ -2027,7 +2027,12 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		nasa := streams[account]
 		for sn, sa := range asa {
 			if nsa := nasa[sn]; nsa == nil {
+				// Stream was removed.
 				saDel = append(saDel, sa)
+			} else if !nsa.Created.Equal(sa.Created) {
+				// Stream was recreated.
+				saDel = append(saDel, sa)
+				saAdd = append(saAdd, nsa)
 			} else {
 				saChk = append(saChk, nsa)
 			}
@@ -2052,10 +2057,10 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		}
 		if osa := js.streamAssignment(sa.Client.serviceAccount(), sa.Config.Name); osa != nil {
 			for _, ca := range osa.consumers {
-				// Consumer was either removed, or recreated with a different raft group.
+				// Consumer was either removed or recreated.
 				if nca := sa.consumers[ca.Name]; nca == nil {
 					caDel = append(caDel, ca)
-				} else if nca.Group != nil && ca.Group != nil && nca.Group.Name != ca.Group.Name {
+				} else if !nca.Created.Equal(ca.Created) {
 					caDel = append(caDel, ca)
 				}
 			}

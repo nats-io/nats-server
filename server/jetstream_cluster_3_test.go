@@ -9453,3 +9453,305 @@ func TestJetStreamClusterConsumerScaleDownPrefersOnlinePeers(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterMetaSnapshotRecoveryRecreateStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	for range 1000 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 1000 {
+			return fmt.Errorf("not enough messages: %d", state.Msgs)
+		}
+		return nil
+	})
+
+	// Pick a stream replica that is not the meta leader and shut it down.
+	rs := c.randomNonLeader()
+	require_NotNil(t, rs)
+	rs.Shutdown()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Reconnect in case our client was on the downed server.
+	nc.Close()
+	nc, js = jsClientConnect(t, c.leader())
+	defer nc.Close()
+
+	// Delete and recreate the stream while the server is down.
+	require_NoError(t, js.DeleteStream("TEST"))
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 5)
+
+	// Compact the meta log so the downed server recovers via snapshot and
+	// never replays the delete+create entries.
+	require_NoError(t, c.leader().JetStreamSnapshotMeta())
+
+	// Restart. The server must delete the old stream and create/catchup the new.
+	rs = c.restartServer(rs)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(rs)
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.LastSeq > 5 {
+			return fmt.Errorf("server still has stream state from previous incarnation: first=%d last=%d", state.FirstSeq, state.LastSeq)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMetaSnapshotRecoveryScaleStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Make sure the R1 stream is not hosted on the meta leader, so we can shut
+	// down its host while keeping the meta leader around.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	ml := c.leader()
+	require_NotNil(t, ml)
+	if sl == ml {
+		meta := ml.getJetStream().getMetaGroup()
+		require_NoError(t, meta.StepDown())
+		c.waitOnLeader()
+	}
+	ml = c.leader()
+	require_NotNil(t, ml)
+	require_NotEqual(t, sl, ml)
+
+	for range 100 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Capture the full peer set while all servers are still up.
+	peers := ml.ActivePeers()
+	require_Len(t, len(peers), 3)
+
+	sl.Shutdown()
+	sl.WaitForShutdown()
+
+	// Scale the stream up to R3 in a way the downed server misses the update.
+	// The public API refuses to update an offline stream, but a partition or a
+	// crash right after the proposal has the same effect. Build and propose the
+	// scaled-up assignment like jsClusteredStreamUpdateRequest would: this
+	// renames the raft group, but keeps the assignment created time and the
+	// stream data.
+	mljs := ml.getJetStream()
+	mljs.mu.Lock()
+	var nsa *streamAssignment
+	if osa := mljs.streamAssignment(globalAccountName, "TEST"); osa != nil {
+		nsa = osa.copyGroup()
+	}
+	cc := mljs.cluster
+	meta := cc.meta
+	mljs.mu.Unlock()
+	require_NotNil(t, nsa)
+
+	ncfg := *nsa.Config
+	ncfg.Replicas = 3
+	nsa.Config = &ncfg
+	nsa.Group.Preferred = nsa.Group.Peers[0]
+	nsa.Group.ScaleUp = true
+	nsa.Group.Peers = peers
+	nsa.Group.Name = groupNameForStream(peers, nsa.Group.Storage)
+	require_NoError(t, meta.Propose(encodeUpdateStreamAssignment(nsa)))
+
+	// Wait until the update is applied.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mljs.mu.RLock()
+		defer mljs.mu.RUnlock()
+		if sa := mljs.streamAssignment(globalAccountName, "TEST"); sa == nil || sa.Group.Name != nsa.Group.Name {
+			return fmt.Errorf("scaled-up assignment not applied yet")
+		}
+		return nil
+	})
+
+	// Compact the meta log so the downed server recovers via snapshot and
+	// never replays the update entry.
+	require_NoError(t, c.leader().JetStreamSnapshotMeta())
+
+	// Restart. The server must attach its stream store to the renamed raft
+	// group, it holds the only copy of the data.
+	sl = c.restartServer(sl)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(sl)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 100 {
+			return fmt.Errorf("stream data lost on scale up: %+v", state)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for range 100 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	ccfg := &nats.ConsumerConfig{
+		Durable:   "DUR",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	}
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+
+	// Make sure the R1 consumer is not hosted on the meta leader, so we can
+	// shut down its host while keeping the meta leader around.
+	cl := c.consumerLeader(globalAccountName, "TEST", "DUR")
+	require_NotNil(t, cl)
+	ml := c.leader()
+	require_NotNil(t, ml)
+	if cl == ml {
+		meta := ml.getJetStream().getMetaGroup()
+		require_NoError(t, meta.StepDown())
+		c.waitOnLeader()
+	}
+	ml = c.leader()
+	require_NotNil(t, ml)
+	require_NotEqual(t, cl, ml)
+
+	// Give the consumer some state that must survive the scale below.
+	sub, err := js.PullSubscribe("foo", "DUR")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
+	}
+
+	// Capture the full peer set while all servers are still up.
+	peers := ml.ActivePeers()
+	require_Len(t, len(peers), 3)
+
+	cl.Shutdown()
+	cl.WaitForShutdown()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Scale the consumer up to R3 in a way the downed server misses the update.
+	// The public API refuses to update an offline consumer, but a partition or a
+	// crash right after the proposal has the same effect. Build and propose the
+	// scaled-up assignment like jsClusteredConsumerRequest would: this renames
+	// the raft group, but keeps the assignment created time and consumer state.
+	mljs := ml.getJetStream()
+	mljs.mu.Lock()
+	var nca *consumerAssignment
+	if oca := mljs.consumerAssignment(globalAccountName, "TEST", "DUR"); oca != nil {
+		nca = oca.copyGroup()
+	}
+	cc := mljs.cluster
+	meta := cc.meta
+	mljs.mu.Unlock()
+	require_NotNil(t, nca)
+
+	ncfg := *nca.Config
+	ncfg.Replicas = 3
+	nca.Config = &ncfg
+	nca.Group.Preferred = nca.Group.Peers[0]
+	nca.Group.ScaleUp = true
+	nca.Group.Peers = peers
+	nca.Group.Name = groupNameForConsumer(peers, nca.Group.Storage)
+	require_NoError(t, meta.Propose(encodeAddConsumerAssignment(nca)))
+
+	// Wait until the update is applied.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mljs.mu.RLock()
+		defer mljs.mu.RUnlock()
+		if ca := mljs.consumerAssignment(globalAccountName, "TEST", "DUR"); ca == nil || ca.Group.Name != nca.Group.Name {
+			return fmt.Errorf("scaled-up assignment not applied yet")
+		}
+		return nil
+	})
+
+	// Compact the meta log so the downed server recovers via snapshot and
+	// never replays the update entry.
+	require_NoError(t, c.leader().JetStreamSnapshotMeta())
+
+	// Restart. The server must attach its consumer store to the renamed raft
+	// group, it holds the only copy of the consumer state.
+	cl = c.restartServer(cl)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(cl)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "DUR")
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		mset, err := cl.globalAccount().lookupStream("TEST")
+		if err != nil {
+			return err
+		}
+		o := mset.lookupConsumer("DUR")
+		if o == nil {
+			return fmt.Errorf("consumer not found")
+		}
+		state, err := o.store.State()
+		if err != nil {
+			return err
+		}
+		if state.Delivered.Consumer != 10 {
+			return fmt.Errorf("consumer state lost on scale up: %+v", state)
+		}
+		return nil
+	})
+}
