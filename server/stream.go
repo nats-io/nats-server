@@ -3700,7 +3700,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			mirror := mset.mirror
 			mirror.err = nil
 
-			if ccr.Error != nil || ccr.ConsumerInfo == nil {
+			if ccr.Error != nil || ccr.ConsumerInfo == nil || ccr.ConsumerInfo.Config == nil {
 				// If the responding server doesn't support sourcing consumers, retry without it.
 				if req.Config.Sourcing && ccr.Error != nil &&
 					(ccr.Error.ErrCode == uint16(JSRequiredApiLevelErr) || ccr.Error.ErrCode == uint16(JSInvalidJSONErr)) {
@@ -3724,8 +3724,12 @@ func (mset *stream) setupMirrorConsumer() error {
 					goto SELECT
 				}
 				mset.unsubscribe(crSub)
-				mset.srv.Warnf("JetStream error response for create mirror consumer: %+v", ccr.Error)
-				mirror.err = ccr.Error
+				cerr := ccr.Error
+				if cerr == nil {
+					cerr = NewJSMirrorConsumerSetupFailedError(errors.New("invalid consumer create response"))
+				}
+				mset.srv.Warnf("JetStream error response for create mirror consumer: %+v", cerr)
+				mirror.err = cerr
 				// Let's retry as soon as possible, but we are gated by sourceConsumerRetryThreshold
 				retry = true
 				mset.mu.Unlock()
@@ -4133,7 +4137,7 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 			} else {
 				si.err = nil
 
-				if ccr.Error != nil || ccr.ConsumerInfo == nil {
+				if ccr.Error != nil || ccr.ConsumerInfo == nil || ccr.ConsumerInfo.Config == nil {
 					// If the responding server doesn't support sourcing consumers, retry without it.
 					if req.Config.Sourcing && ccr.Error != nil &&
 						(ccr.Error.ErrCode == uint16(JSRequiredApiLevelErr) || ccr.Error.ErrCode == uint16(JSInvalidJSONErr)) {
@@ -4160,8 +4164,12 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 					// Note: this warning can happen a few times when starting up the server when sourcing streams are
 					// defined, this is normal as the streams are re-created in no particular order and it is possible
 					// that a stream sourcing another could come up before all of its sources have been recreated.
-					mset.srv.Warnf("JetStream error response for stream %s create source consumer %s: %+v", mset.cfg.Name, si.name, ccr.Error)
-					si.err = ccr.Error
+					cerr := ccr.Error
+					if cerr == nil {
+						cerr = NewJSSourceConsumerSetupFailedError(errors.New("invalid consumer create response"))
+					}
+					mset.srv.Warnf("JetStream error response for stream %s create source consumer %s: %+v", mset.cfg.Name, si.name, cerr)
+					si.err = cerr
 					// Let's retry as soon as possible, but we are gated by sourceConsumerRetryThreshold
 					retry = true
 					mset.mu.Unlock()
