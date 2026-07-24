@@ -7853,3 +7853,63 @@ func TestJWTUserLimitsOverflowInt32SubPub(t *testing.T) {
 		}
 	})
 }
+
+func TestJWTSystemAccountJetStreamDomainMapping(t *testing.T) {
+	sysKp, sysPub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(sysPub)
+	sysJwt := encodeClaim(t, sysClaim, sysPub)
+	sysCreds := newUser(t, sysKp)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: SYSDOMAIN
+		jetstream: { domain: HUB, store_dir: %q }
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: %q
+		}
+		resolver_preload: {
+			%s: %s
+		}
+	`, t.TempDir(), ojwt, sysPub, t.TempDir(), sysPub, sysJwt)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	sacc := s.SystemAccount()
+	require_True(t, sacc != nil)
+
+	domainAPI := fmt.Sprintf(jsDomainAPI, "HUB")
+	hasDomainMapping := func() bool {
+		sacc.mu.RLock()
+		defer sacc.mu.RUnlock()
+		for _, m := range sacc.mappings {
+			if m.src == domainAPI {
+				return true
+			}
+		}
+		return false
+	}
+
+	// The domain prefixed API is mapped into the system account on startup.
+	require_True(t, hasDomainMapping())
+
+	// An account update can not carry the mapping, it is not part of the JWT.
+	// Make sure updating the system account does not drop it.
+	sysClaim.Mappings = jwt.Mapping{"foo": []jwt.WeightedMapping{{Subject: "bar"}}}
+	require_Equal(t, updateJwt(t, s.ClientURL(), sysCreds, encodeClaim(t, sysClaim, sysPub), 1), 1)
+
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if !hasDomainMapping() {
+			return fmt.Errorf("mapping %q was removed by the account update", domainAPI)
+		}
+		return nil
+	})
+
+	// And it must still resolve, getting a response at all proves the mapping.
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
+	defer nc.Close()
+	_, err := nc.Request(domainAPI[:len(domainAPI)-1]+"INFO", nil, 2*time.Second)
+	require_NoError(t, err)
+}

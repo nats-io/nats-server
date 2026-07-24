@@ -1071,6 +1071,110 @@ func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
 	}
 }
 
+// Removes a peer from a meta group, returning the API error if any.
+func metaPeerRemove(t *testing.T, nc *nats.Conn, subject, peer string) *ApiError {
+	t.Helper()
+	req, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: peer})
+	require_NoError(t, err)
+	rmsg, err := nc.Request(subject, req, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	return resp.Error
+}
+
+// An isolated leafnode's system account API is only addressable by domain.
+func TestJetStreamClusterSystemAccountDomainAPIIsolated(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", `domain: "HUB", store_dir:`, 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "HUB", 3)
+	defer c.shutdown()
+
+	lc := c.createLeafNodes("LEAF", 3, "LEAF")
+	defer lc.shutdown()
+
+	// Two separate JetStreams, the domains differ so the hub is not extended.
+	c.waitOnPeerCount(3)
+	lc.waitOnPeerCount(3)
+
+	hubSys := natsConnect(t, c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer hubSys.Close()
+	leafSys := natsConnect(t, lc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer leafSys.Close()
+
+	// Addressing a domain only affects that domain, the hub's leader stays put.
+	hubLeader, leafLeader := c.leader(), lc.leader()
+	rmsg, err := hubSys.Request("$JS.LEAF.API.META.LEADER.STEPDOWN", nil, 5*time.Second)
+	require_NoError(t, err)
+	var sdResp JSApiLeaderStepDownResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &sdResp))
+	require_True(t, sdResp.Error == nil)
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		if l := lc.leader(); l == nil || l == leafLeader {
+			return fmt.Errorf("leaf meta leader did not step down")
+		}
+		return nil
+	})
+	hubLeaderNew := c.leader()
+	require_NotNil(t, hubLeaderNew)
+	require_Equal(t, hubLeaderNew.Name(), hubLeader.Name())
+
+	hubPeer, leafPeer := c.randomNonLeader().Name(), lc.randomNonLeader().Name()
+
+	// Unprefixed stays scoped to the connected server's own JetStream.
+	apiErr := metaPeerRemove(t, leafSys, JSApiRemoveServer, hubPeer)
+	require_True(t, apiErr != nil)
+	require_Equal(t, apiErr.ErrCode, uint16(JSClusterServerNotMemberErr))
+	apiErr = metaPeerRemove(t, hubSys, JSApiRemoveServer, leafPeer)
+	require_True(t, apiErr != nil)
+	require_Equal(t, apiErr.ErrCode, uint16(JSClusterServerNotMemberErr))
+
+	// Prefixed with the domain both are addressable, in both directions.
+	apiErr = metaPeerRemove(t, leafSys, "$JS.HUB.API.SERVER.REMOVE", hubPeer)
+	require_True(t, apiErr == nil)
+	c.waitOnPeerCount(2)
+
+	apiErr = metaPeerRemove(t, hubSys, "$JS.LEAF.API.SERVER.REMOVE", leafPeer)
+	require_True(t, apiErr == nil)
+	lc.waitOnPeerCount(2)
+}
+
+// An extending leafnode is one system, addressable with and without the domain.
+func TestJetStreamClusterSystemAccountDomainAPIExtended(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", `domain: "HUB", store_dir:`, 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "HUB", 3)
+	defer c.shutdown()
+
+	lc := c.createLeafNodes("LEAF", 3, "HUB")
+	defer lc.shutdown()
+
+	// One JetStream, the leaf servers joined the hub's meta group as observers.
+	c.waitOnPeerCount(6)
+	lc.expectNoLeader()
+
+	leafSys := natsConnect(t, lc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer leafSys.Close()
+
+	// Two distinct hub peers to remove, leaving the meta leader in place.
+	var peers []string
+	ml := c.leader()
+	for _, s := range c.servers {
+		if s != ml {
+			peers = append(peers, s.Name())
+		}
+	}
+	require_Equal(t, len(peers), 2)
+
+	// Addressable as one system from the leaf, unprefixed.
+	apiErr := metaPeerRemove(t, leafSys, JSApiRemoveServer, peers[0])
+	require_True(t, apiErr == nil)
+	c.waitOnPeerCount(5)
+
+	// And through the domain both sides share.
+	apiErr = metaPeerRemove(t, leafSys, "$JS.HUB.API.SERVER.REMOVE", peers[1])
+	require_True(t, apiErr == nil)
+	c.waitOnPeerCount(4)
+}
+
 // Issue #2202
 func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
