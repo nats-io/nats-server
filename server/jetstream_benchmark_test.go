@@ -1034,7 +1034,7 @@ func BenchmarkJetStreamMetaSnapshot(b *testing.B) {
 				selectedLimits, _, _, _ := acc.selectLimits(ccfg.replicas(&cfg))
 				srvLim := &ml.getOpts().JetStreamLimits
 				setConsumerConfigDefaults(ccfg, &cfg, srvLim, selectedLimits, false)
-				rg = js.cluster.createGroupForConsumer(ccfg, sa)
+				rg, _ = js.cluster.createGroupForConsumer(ccfg, sa)
 				ca := &consumerAssignment{Group: rg, Stream: cfg.Name, Name: ccfg.Durable, Config: ccfg, Client: ci, Created: time.Now().UTC()}
 				n.Propose(encodeAddConsumerAssignment(ca))
 			}

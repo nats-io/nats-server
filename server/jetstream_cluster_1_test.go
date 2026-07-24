@@ -9218,7 +9218,8 @@ func TestJetStreamClusterUpgradeConsumerVersioning(t *testing.T) {
 
 	// Create and propose consumer assignment.
 	ci := &ClientInfo{Cluster: "R3S", Account: globalAccountName}
-	rg := sjs.cluster.createGroupForConsumer(cfg, sa)
+	rg, cerr := sjs.cluster.createGroupForConsumer(cfg, sa)
+	require_True(t, cerr == nil)
 	ca := &consumerAssignment{Group: rg, Stream: "TEST", Name: "CONSUMER", Config: cfg, Client: ci, Created: time.Now().UTC()}
 	require_NoError(t, rn.Propose(encodeAddConsumerAssignment(ca)))
 
@@ -10589,7 +10590,8 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 		Replicas: 3,
 		Metadata: map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt - 1)},
 	}
-	rg = cc.createGroupForConsumer(ccfg, sa)
+	rg, cerr := cc.createGroupForConsumer(ccfg, sa)
+	require_True(t, cerr == nil)
 	ca := &consumerAssignment{
 		Config:  ccfg,
 		Group:   rg,
@@ -10883,7 +10885,8 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 		Replicas:   3,
 		MaxWaiting: JSWaitQueueDefaultMax,
 	}
-	rg = cc.createGroupForConsumer(ccfg, sa)
+	rg, cerr := cc.createGroupForConsumer(ccfg, sa)
+	require_True(t, cerr == nil)
 	ca := &consumerAssignment{
 		Config:  ccfg,
 		Group:   rg,
