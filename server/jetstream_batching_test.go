@@ -1691,6 +1691,98 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	}
 }
 
+func TestJetStreamCounterNullSourcesHeaderDoesNotPanic(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Origin counter stream that will be sourced in below.
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:            "O1",
+		Subjects:        []string{"foo.*"},
+		Storage:         MemoryStorage,
+		AllowMsgCounter: true,
+	})
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo.1")
+	m.Header.Set(JSMessageIncr, "5")
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:            "M",
+		Subjects:        []string{"foo"},
+		Storage:         MemoryStorage,
+		AllowMsgCounter: true,
+	})
+	require_NoError(t, err)
+
+	// A sources header holding a JSON `null` for the origin stream is stored
+	// verbatim, and decodes back into a present key with a nil inner map.
+	m = nats.NewMsg("foo")
+	m.Header.Set(JSMessageIncr, "1")
+	m.Header.Set(JSMessageCounterSources, `{"O1":null}`)
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+	var smv StoreMsg
+	sm, err := mset.store.LoadLastMsg("foo", &smv)
+	require_NoError(t, err)
+	require_Equal(t, string(sliceHeader(JSMessageCounterSources, sm.hdr)), `{"O1":null}`)
+
+	// That stored record reached through the pre-clustered proposal path. The
+	// sourced message has to record its count, which used to be a write into
+	// the nil inner map.
+	hdr := genHeader(nil, JSMessageIncr, "5")
+	hdr = genHeader(hdr, JSStreamSource, "O1 1 > > foo.1")
+	diff := &batchStagedDiff{}
+	mset.clMu.Lock()
+	_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, "foo", "foo", hdr, []byte(`{"val":"5"}`), true, "M", nil, false, false, false, true, false, DiscardOld, false, -1, -1, -1, -1)
+	mset.clMu.Unlock()
+	require_NoError(t, err)
+	require_Equal(t, diff.counter["foo"].sources["O1"]["foo.1"], "5")
+
+	// And now the same through the regular sourcing path.
+	_, err = jsStreamUpdate(t, nc, &StreamConfig{
+		Name:     "M",
+		Subjects: []string{"foo"},
+		Sources: []*StreamSource{{
+			Name:              "O1",
+			SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
+		}},
+		Storage:         MemoryStorage,
+		AllowMsgCounter: true,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("expected 2 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// The counter aggregated the sourced increment, and the sources header was
+	// rewritten with a usable inner map.
+	rsm, err := js.GetMsg("M", 2)
+	require_NoError(t, err)
+	var count CounterValue
+	require_NoError(t, json.Unmarshal(rsm.Data, &count))
+	require_Equal(t, count.Value, "6")
+	var sources CounterSources
+	require_NoError(t, json.Unmarshal([]byte(rsm.Header.Get(JSMessageCounterSources)), &sources))
+	require_Equal(t, sources["O1"]["foo.1"], "5")
+}
+
 func TestJetStreamCounterStagingDoesNotCorruptCommittedTotal(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
