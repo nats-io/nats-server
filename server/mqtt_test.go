@@ -9032,6 +9032,12 @@ func TestMQTTSliceHeadersAndDecodeRetainedMessage(t *testing.T) {
 		_, err = mqttDecodeRetainedMessage("$MQTT.rmsgs.foo.x", nil, msg)
 		require_Error(t, err, errMQTTInvalidRetainFlags)
 	})
+	t.Run("decode retained message as JSON null", func(t *testing.T) {
+		// A JSON `null` decodes into a nil pointer without an error, which
+		// used to be dereferenced when checking the flags.
+		_, err := mqttDecodeRetainedMessage("$MQTT.rmsgs.foo.x", nil, []byte("null"))
+		require_Error(t, err, errMQTTInvalidRetainedMessage)
+	})
 	t.Run("decode retained message as JSON subject transform", func(t *testing.T) {
 		rmo := &mqttRetainedMsg{
 			Topic:  "foo/x",
@@ -9051,6 +9057,204 @@ func TestMQTTSliceHeadersAndDecodeRetainedMessage(t *testing.T) {
 		require_Equal(t, rm.Flags, 1)
 		require_Equal(t, string(rm.Msg), "hello")
 	})
+}
+
+func TestMQTTPoisonedJSONRecordsDoNotCrashServer(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// A first connection creates the account session manager, which is what
+	// installs the internal subscriptions that process the records below.
+	mc, mr := testMQTTConnect(t, &mqttConnInfo{clientID: "first", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, mr, mqttConnAckRCConnectionAccepted, false)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	// A retained message stored as the JSON literal `null` decodes into a nil
+	// *mqttRetainedMsg with no error. Processed on the stream's internal loop.
+	if _, err := nc.Request(mqttRetainedMsgsStreamSubject+"x", []byte("null"), time.Second); err != nil {
+		t.Fatalf("Error storing retained message: %v", err)
+	}
+
+	// A session persist reply that carries none of the PubAck fields leaves the
+	// embedded *PubAck nil. The JS id token has to differ from this server's for
+	// the record not to be ignored as our own.
+	natsPub(t, nc, mqttJSARepliesPrefix+nuid.Next()+"."+mqttJSASessPersist+"."+getHash("first")+"."+nuid.Next(), []byte("{}"))
+	natsFlush(t, nc)
+
+	// A session record with a `null` consumer decodes into a present key with a
+	// nil *ConsumerConfig, which is dereferenced when the session is cleared.
+	poisonCID := "poison"
+	sessSubj := mqttSessStreamSubjectPrefix + getHash(poisonCID)
+	sessRec := fmt.Appendf(nil, `{"id":%q,"cons":{"sub1":null}}`, poisonCID)
+	if _, err := nc.Request(sessSubj, sessRec, time.Second); err != nil {
+		t.Fatalf("Error storing session record: %v", err)
+	}
+
+	// Connecting with a clean session recovers that record and then clears it.
+	pc, pr := testMQTTConnect(t, &mqttConnInfo{clientID: poisonCID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer pc.Close()
+	testMQTTCheckConnAck(t, pr, mqttConnAckRCConnectionAccepted, false)
+
+	// The server must still be running, and the retained message machinery
+	// still functional, which means the internal loop did not go away.
+	testMQTTPublish(t, mc, mr, 0, false, true, "foo/bar", 0, []byte("msg"))
+
+	sc, sr := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer sc.Close()
+	testMQTTCheckConnAck(t, sr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, sc, sr, []*mqttFilter{{filter: "foo/bar", qos: 0}}, []byte{0})
+	testMQTTCheckPubMsg(t, sc, sr, "foo/bar", mqttPubFlagRetain, []byte("msg"))
+}
+
+// mqttNewPoisonASM returns an isolated account session manager whose JS API send
+// queue is never drained, so no real JetStream ever answers a request made
+// through it. Requests block until a forged reply is injected.
+func mqttNewPoisonASM(s *Server) *mqttAccountSessionManager {
+	id := "POISONID"
+	return &mqttAccountSessionManager{
+		sessions:   make(map[string]*mqttSession),
+		sessByHash: make(map[string]*mqttSession),
+		sessLocked: make(map[string]struct{}),
+		flappers:   make(map[string]time.Time),
+		jsa: mqttJSA{
+			id:      id,
+			rplyr:   mqttJSARepliesPrefix + id + ".",
+			sendq:   newIPQueue[*mqttJSPubMsg](s, "test-poison-send-"+nuid.Next()),
+			nuid:    nuid.New(),
+			quitCh:  make(chan struct{}),
+			timeout: 10 * time.Second,
+		},
+		rmsCache: &sync.Map{},
+	}
+}
+
+// mqttRunWithPoisonedReply runs fn, which must issue a JS API request through
+// as.jsa and block waiting for the reply. Once the request is in flight, `reply`
+// is injected as the forged reply body on the exact subject the request
+// registered. Fails the test if fn panics (the pre-fix crash) or never returns.
+// Any value fn assigns is safe to read after this returns.
+func mqttRunWithPoisonedReply(t *testing.T, as *mqttAccountSessionManager, reply []byte, fn func()) {
+	t.Helper()
+	donec := make(chan any, 1)
+	go func() {
+		defer func() { donec <- recover() }()
+		fn()
+	}()
+
+	// Wait for the request to register its reply channel, then inject the
+	// forged reply on that exact subject.
+	var replySubj string
+	for i := 0; i < 400 && replySubj == _EMPTY_; i++ {
+		as.jsa.replies.Range(func(k, _ any) bool {
+			replySubj = k.(string)
+			return false
+		})
+		if replySubj == _EMPTY_ {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	require_True(t, replySubj != _EMPTY_)
+	as.processJSAPIReplies(nil, nil, nil, replySubj, _EMPTY_, reply)
+
+	select {
+	case p := <-donec:
+		if p != nil {
+			t.Fatalf("panicked on poisoned reply %q: %v", reply, p)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("did not return after injecting poisoned reply %q", reply)
+	}
+}
+
+func TestMQTTJSAPIPoisonedRepliesDoNotCrash(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	for _, tc := range []struct {
+		name    string
+		reply   []byte
+		wantErr bool
+		fn      func(jsa *mqttJSA) error
+	}{
+		// `null` exercises the &resp double-pointer decode sites (findings F, J, C).
+		{"stream_lookup_null", []byte("null"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.lookupStream("foo")
+			return err
+		}},
+		{"stream_delete_null", []byte("null"), false, func(jsa *mqttJSA) error {
+			_, err := jsa.deleteStream("foo")
+			return err
+		}},
+		{"msg_load_null", []byte("null"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadMsg("foo", 1)
+			return err
+		}},
+		// `{}` exercises the inner nil-pointer sites that survive the decode
+		// (findings G, H1, I, D, H2).
+		{"stream_lookup_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.lookupStream("foo")
+			return err
+		}},
+		{"stream_create_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, _, err := jsa.createStream(&StreamConfig{Name: "foo", Storage: FileStorage})
+			return err
+		}},
+		{"stream_update_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.updateStream(&StreamConfig{Name: "foo", Storage: FileStorage})
+			return err
+		}},
+		{"msg_load_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadMsg("foo", 1)
+			return err
+		}},
+		// The same inner *StoredMsg guard is replicated in the other two message
+		// load accessors, so cover them too. A `null` case is not repeated here:
+		// all three accessors share the mqttJSAMsgLoad decode site, so
+		// msg_load_null above already covers that regression for them.
+		{"msg_load_last_for_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadLastMsgFor("foo", "bar")
+			return err
+		}},
+		{"msg_load_next_for_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadNextMsgFor("foo", "bar")
+			return err
+		}},
+		{"pub_ack_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			sess := mqttSessionCreate(jsa, "cid", getHash("cid"), 0, o)
+			return sess.save()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			as := mqttNewPoisonASM(s)
+			var err error
+			mqttRunWithPoisonedReply(t, as, tc.reply, func() { err = tc.fn(&as.jsa) })
+			if tc.wantErr {
+				require_Error(t, err)
+			} else {
+				require_NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestMQTTLoadRetainedMessagesPoisonedReplyDoesNotCrash(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	as := mqttNewPoisonASM(s)
+	var rms map[string]*mqttRetainedMsg
+	// A `{}` body decodes into a non-nil JSApiMsgGetResponse with a nil Message.
+	mqttRunWithPoisonedReply(t, as, []byte("{}"), func() {
+		rms = as.loadRetainedMessages(map[string]uint64{"foo": 1}, s)
+	})
+	// The poisoned message is skipped, so nothing is returned.
+	require_True(t, len(rms) == 0)
 }
 
 func TestMQTTRetainedMsgRemovedFromMapIfNotInStream(t *testing.T) {
