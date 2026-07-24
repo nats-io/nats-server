@@ -827,6 +827,14 @@ func TestSplitSubjectQueue(t *testing.T) {
 			sq: "foo  bar", wantSubject: []byte("foo"), wantQueue: []byte("bar")},
 		{name: "subject, queue, and extra token",
 			sq: "foo  bar fizz", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "empty",
+			sq: "", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "tab only",
+			sq: "\t", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "newline only",
+			sq: "\n", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "mixed whitespace",
+			sq: " \t\r\n", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
 	}
 
 	for _, c := range cases {

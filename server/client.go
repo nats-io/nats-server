@@ -1072,6 +1072,9 @@ func (c *client) updateDefaultPermissions(perms *Permissions) bool {
 
 func splitSubjectQueue(sq string) ([]byte, []byte, error) {
 	vals := strings.Fields(strings.TrimSpace(sq))
+	if len(vals) == 0 {
+		return nil, nil, fmt.Errorf("invalid subject-queue %q", sq)
+	}
 	s := []byte(vals[0])
 	var q []byte
 	if len(vals) == 2 {
