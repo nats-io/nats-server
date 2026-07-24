@@ -8693,3 +8693,39 @@ func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
 		t.Fatalf("expected errBadEntryOp from applyConsumerEntries, got %v", err)
 	}
 }
+
+func TestJetStreamClusterCreateGroupForConsumerNoPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	sjs, cc := c.leader().getJetStreamCluster()
+	sjs.mu.Lock()
+	defer sjs.mu.Unlock()
+
+	sa := cc.streams[globalAccountName]["TEST"]
+	require_True(t, sa != nil)
+
+	// Asking for more replicas than the parent stream has peers can't be placed.
+	rg, cerr := cc.createGroupForConsumer(&ConsumerConfig{Replicas: len(sa.Group.Peers) + 1}, sa)
+	require_True(t, rg == nil)
+	require_True(t, cerr != nil)
+
+	// A stream group with no peers at all can't be placed either.
+	empty := &streamAssignment{Config: sa.Config, Group: &raftGroup{Name: "G"}}
+	rg, cerr = cc.createGroupForConsumer(&ConsumerConfig{Replicas: 1}, empty)
+	require_True(t, rg == nil)
+	require_True(t, cerr != nil)
+
+	// A placeable consumer still gets a group, with no error.
+	rg, cerr = cc.createGroupForConsumer(&ConsumerConfig{Replicas: 3}, sa)
+	require_True(t, cerr == nil)
+	require_True(t, rg != nil)
+	require_Len(t, len(rg.Peers), 3)
+}
