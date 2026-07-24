@@ -243,6 +243,7 @@ var (
 	errMQTTUnsupportedCharacters      = errors.New("character not supported for MQTT topics")
 	errMQTTInvalidSession             = errors.New("invalid MQTT session")
 	errMQTTInvalidRetainFlags         = errors.New("invalid retained message flags")
+	errMQTTInvalidRetainedMessage     = errors.New("invalid retained message")
 	errMQTTSessionCollision           = errors.New("stored session does not match client ID")
 )
 
@@ -1505,6 +1506,10 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	default:
 		needToTransfer = si.Config.MaxMsgsPer != 1
 	}
+	// Guard before dereferencing si.Config below.
+	if si == nil {
+		return nil, fmt.Errorf("could not look up or create the retained messages stream for account %q", accName)
+	}
 
 	// Doing this check outside of above if/else due to possible race when
 	// creating the stream.
@@ -1540,6 +1545,10 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	// which will get another chance to resolve the error; if not we bail there.
 	if err = transferRMS(); err != nil {
 		return nil, err
+	}
+	// Guard before dereferencing si.Config below.
+	if si == nil {
+		return nil, fmt.Errorf("could not look up the retained messages stream for account %q", accName)
 	}
 
 	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
@@ -1802,7 +1811,13 @@ func (jsa *mqttJSA) createStream(cfg *StreamConfig) (*StreamInfo, bool, error) {
 		return nil, false, err
 	}
 	scr := scri.(*JSApiStreamCreateResponse)
-	return scr.StreamInfo, scr.DidCreate, scr.ToError()
+	if err = scr.ToError(); err != nil {
+		return nil, false, err
+	}
+	if scr.StreamInfo == nil {
+		return nil, false, fmt.Errorf("invalid stream create response: missing stream info")
+	}
+	return scr.StreamInfo, scr.DidCreate, nil
 }
 
 func (jsa *mqttJSA) updateStream(cfg *StreamConfig) (*StreamInfo, error) {
@@ -1815,7 +1830,13 @@ func (jsa *mqttJSA) updateStream(cfg *StreamConfig) (*StreamInfo, error) {
 		return nil, err
 	}
 	scr := scri.(*JSApiStreamUpdateResponse)
-	return scr.StreamInfo, scr.ToError()
+	if err = scr.ToError(); err != nil {
+		return nil, err
+	}
+	if scr.StreamInfo == nil {
+		return nil, fmt.Errorf("invalid stream update response: missing stream info")
+	}
+	return scr.StreamInfo, nil
 }
 
 func (jsa *mqttJSA) lookupStream(name string) (*StreamInfo, error) {
@@ -1824,7 +1845,13 @@ func (jsa *mqttJSA) lookupStream(name string) (*StreamInfo, error) {
 		return nil, err
 	}
 	slr := slri.(*JSApiStreamInfoResponse)
-	return slr.StreamInfo, slr.ToError()
+	if err = slr.ToError(); err != nil {
+		return nil, err
+	}
+	if slr.StreamInfo == nil {
+		return nil, NewJSStreamNotFoundError()
+	}
+	return slr.StreamInfo, nil
 }
 
 func (jsa *mqttJSA) deleteStream(name string) (bool, error) {
@@ -1847,7 +1874,13 @@ func (jsa *mqttJSA) loadLastMsgFor(streamName string, subject string) (*StoredMs
 		return nil, err
 	}
 	lmr := lmri.(*JSApiMsgGetResponse)
-	return lmr.Message, lmr.ToError()
+	if err = lmr.ToError(); err != nil {
+		return nil, err
+	}
+	if lmr.Message == nil {
+		return nil, NewJSNoMessageFoundError()
+	}
+	return lmr.Message, nil
 }
 
 func (jsa *mqttJSA) loadLastMsgForMulti(streamName string, subjects []string) ([]*JSApiMsgGetResponse, error) {
@@ -1885,7 +1918,13 @@ func (jsa *mqttJSA) loadNextMsgFor(streamName string, subject string) (*StoredMs
 		return nil, err
 	}
 	lmr := lmri.(*JSApiMsgGetResponse)
-	return lmr.Message, lmr.ToError()
+	if err = lmr.ToError(); err != nil {
+		return nil, err
+	}
+	if lmr.Message == nil {
+		return nil, NewJSNoMessageFoundError()
+	}
+	return lmr.Message, nil
 }
 
 func (jsa *mqttJSA) loadMsg(streamName string, seq uint64) (*StoredMsg, error) {
@@ -1899,7 +1938,13 @@ func (jsa *mqttJSA) loadMsg(streamName string, seq uint64) (*StoredMsg, error) {
 		return nil, err
 	}
 	lmr := lmri.(*JSApiMsgGetResponse)
-	return lmr.Message, lmr.ToError()
+	if err := lmr.ToError(); err != nil {
+		return nil, err
+	}
+	if lmr.Message == nil {
+		return nil, NewJSNoMessageFoundError()
+	}
+	return lmr.Message, nil
 }
 
 func (jsa *mqttJSA) storeMsgNoWait(subject string, hdrLen int, msg []byte) {
@@ -2001,13 +2046,13 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 		out(resp)
 	case mqttJSAStreamLookup:
 		var resp = &JSApiStreamInfoResponse{}
-		if err := json.Unmarshal(msg, &resp); err != nil {
+		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAStreamDel:
 		var resp = &JSApiStreamDeleteResponse{}
-		if err := json.Unmarshal(msg, &resp); err != nil {
+		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
@@ -2031,7 +2076,7 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 		out(resp)
 	case mqttJSAMsgLoad:
 		var resp = &JSApiMsgGetResponse{}
-		if err := json.Unmarshal(msg, &resp); err != nil {
+		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
@@ -2134,6 +2179,9 @@ func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *
 		return
 	}
 	if err := par.Error; err != nil {
+		return
+	}
+	if par.PubAck == nil {
 		return
 	}
 	as.mu.RLock()
@@ -2857,6 +2905,10 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]ui
 			w.Warnf("failed to load retained message for subject %q: %v", subj, err)
 			continue
 		}
+		// Guard before dereferencing below.
+		if result.Message == nil {
+			continue
+		}
 		rm, err := mqttDecodeRetainedMessage(result.Message.Subject, result.Message.Header, result.Message.Data)
 		if err != nil {
 			// Unlikely that we can recover from that, so remove the message.
@@ -3024,6 +3076,9 @@ func mqttDecodeRetainedMessage(subject string, h, m []byte) (*mqttRetainedMsg, e
 		if err := json.Unmarshal(m, &rm); err != nil {
 			return nil, err
 		}
+		if rm == nil {
+			return nil, errMQTTInvalidRetainedMessage
+		}
 	}
 	// Now check that the values are correct.
 	//
@@ -3077,6 +3132,11 @@ func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opt
 	}
 	if ps.ID != clientID {
 		return nil, false, errMQTTSessionCollision
+	}
+	for sid, cc := range ps.Cons {
+		if cc == nil {
+			delete(ps.Cons, sid)
+		}
 	}
 
 	// Restore this session (even if we don't own it), the caller will do the right thing.
@@ -3330,6 +3390,10 @@ func (sess *mqttSession) save() error {
 	resp, err := sess.jsa.storeSessionMsg(domainTk, cidHash, hdr, b)
 	if err != nil {
 		return fmt.Errorf("unable to persist session %q (seq=%v): %v", ps.ID, seq, err)
+	}
+	// Guard before dereferencing below.
+	if resp == nil || resp.PubAck == nil {
+		return fmt.Errorf("unable to persist session %q (seq=%v): invalid pub ack response", ps.ID, seq)
 	}
 	sess.mu.Lock()
 	sess.seq = resp.Sequence
