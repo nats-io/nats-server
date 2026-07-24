@@ -6035,7 +6035,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if sources == nil {
 				sources = map[string]map[string]string{}
 			}
-			if _, ok := sources[origStream]; !ok {
+			if sources[origStream] == nil {
 				sources[origStream] = map[string]string{}
 			}
 			prevVal := sources[origStream][origSubj]
