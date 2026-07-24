@@ -10290,6 +10290,78 @@ func TestLeafNodePermissionWithLiteralSubjectAndQueueInterest(t *testing.T) {
 	require_Equal(t, "OK", string(resp.Data))
 }
 
+func TestLeafNodeQueueScopedImportDenyFiltersBroadQueueInterest(t *testing.T) {
+	hconf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+		accounts {
+			A {
+				users: [
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: {
+							subscribe: {
+								allow: [">"]
+								deny: ["admin.secret workers"]
+							}
+							publish: { allow: [">"] }
+						}
+					}
+					{ user: "hub", password: "pwd" }
+				]
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hconf)
+	defer hub.Shutdown()
+
+	lconf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes: [
+				{ url: "nats://leaf:pwd@127.0.0.1:%d", account: A }
+			]
+		}
+		accounts {
+			A { users: [{ user: "client", password: "pwd" }] }
+		}
+	`, ohub.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(lconf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("client", "pwd"))
+	defer ncLeaf.Close()
+	sub := natsQueueSubSync(t, ncLeaf, "admin.*", "workers")
+	natsFlush(t, ncLeaf)
+
+	acc, err := hub.LookupAccount("A")
+	require_NoError(t, err)
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if !acc.sl.HasInterest("admin.public") {
+			return fmt.Errorf("leaf queue interest has not propagated")
+		}
+		return nil
+	})
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("hub", "pwd"))
+	defer ncHub.Close()
+	natsPub(t, ncHub, "admin.secret", []byte("blocked"))
+	natsPub(t, ncHub, "admin.public", []byte("ok"))
+	natsFlush(t, ncHub)
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "admin.public", msg.Subject)
+	require_Equal(t, "ok", string(msg.Data))
+}
+
 func TestLeafNodePermissionWithGateways(t *testing.T) {
 	usConf := createConfFile(t, []byte(`
 		server_name: "US"
