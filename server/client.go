@@ -461,9 +461,11 @@ type msgDenyKey struct {
 // routeTarget collects information regarding routes and queue groups for
 // sending information to a remote.
 type routeTarget struct {
-	sub *subscription
-	qs  []byte
-	_qs [32]byte
+	sub    *subscription
+	qs     []byte
+	qsubs  []*subscription
+	_qs    [32]byte
+	_qsubs [4]*subscription
 }
 
 const (
@@ -3393,18 +3395,19 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 	if !c.canSubscribeInternal(subject, optQueue...) {
 		return false
 	}
-	c.loadMsgDenyFilterIfNeeded(subject)
+	c.loadMsgDenyFilterIfNeeded(subject, len(optQueue) > 0 && optQueue[0] != _EMPTY_)
 	return true
 }
 
-// Initializes the delivery-time deny filter when a wildcard subscription can
-// overlap a deny entry. Assumes caller is holding the write lock.
-func (c *client) loadMsgDenyFilterIfNeeded(subject string) {
+// Initializes the delivery-time deny filter when a wildcard subscription, or
+// an exact queue subscription, can overlap a deny entry. Assumes caller is
+// holding the write lock.
+func (c *client) loadMsgDenyFilterIfNeeded(subject string, hasQueue bool) {
 	// We use the actual subscription to signal us to spin up the deny mperms
 	// and cache. We check if the subject is a wildcard that intersects any of
 	// the deny clauses.
 	// FIXME(dlc) - We could be smarter and track when these go away and remove.
-	if c.mperms == nil && subjectHasWildcard(subject) {
+	if c.mperms == nil && (hasQueue || subjectHasWildcard(subject)) {
 		// Whip through the deny array and check if this wildcard subject can
 		// overlap with any denied deliveries.
 		for _, sub := range c.darray {
@@ -5145,6 +5148,7 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 			if sub.queue != nil {
 				rt.qs = append(rt.qs, sub.queue...)
 				rt.qs = append(rt.qs, ' ')
+				rt.qsubs = append(rt.qsubs, sub)
 			}
 			return
 		}
@@ -5163,10 +5167,46 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 	rt = &c.in.rts[lrts]
 	rt.sub = sub
 	rt.qs = rt._qs[:0]
+	rt.qsubs = rt._qsubs[:0]
 	if sub.queue != nil {
 		rt.qs = append(rt.qs, sub.queue...)
 		rt.qs = append(rt.qs, ' ')
+		rt.qsubs = append(rt.qsubs, sub)
 	}
+}
+
+// Filters queue groups in a coalesced route or leaf target against the
+// destination connection's delivery-time subscription denies.
+func filterRouteTargetDeny(subject []byte, rt *routeTarget) bool {
+	dc := rt.sub.client
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	if dc.mperms == nil {
+		return true
+	}
+
+	dsubject := string(subject)
+	if len(rt.sub.queue) == 0 {
+		if dc.checkDenySub(dsubject, _EMPTY_) {
+			return false
+		}
+	} else {
+		rt.sub = nil
+	}
+
+	qs := rt.qs[:0]
+	for _, qsub := range rt.qsubs {
+		if dc.checkDenySub(dsubject, bytesToString(qsub.queue)) {
+			continue
+		}
+		if rt.sub == nil {
+			rt.sub = qsub
+		}
+		qs = append(qs, qsub.queue...)
+		qs = append(qs, ' ')
+	}
+	rt.qs = qs
+	return rt.sub != nil
 }
 
 // This processes the sublist results for a given message.
@@ -5647,6 +5687,10 @@ sendToRoutesOrLeafs:
 	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
+		if (len(rt.qsubs) > 1 || (len(rt.sub.queue) == 0 && len(rt.qsubs) > 0)) &&
+			!filterRouteTargetDeny(subject, rt) {
+			continue
+		}
 		dc := rt.sub.client
 		dmsg, hset := msg, false
 
