@@ -179,6 +179,23 @@ func collectCertIDMapBranchLists(n parse.Node, lists *[]*parse.ListNode) error {
 			}
 		}
 	case *parse.CommandNode:
+		// and/or short-circuit, so an operand after the first may never
+		// actually be evaluated (e.g. `and (has "prod" .OU) .NoSuchField`
+		// never touches .NoSuchField unless the sample OU is "prod") -
+		// give each such operand its own list so it gets executed anyway.
+		if isCertIDMapShortCircuitCall(x) {
+			for _, a := range x.Args[1:] {
+				// nil has no fields or calls to validate, and - unlike
+				// every other literal - isn't valid as a standalone
+				// action (`{{nil}}` fails to execute on its own even
+				// though `and x nil` is a normal operand), so wrapping
+				// it would reject an otherwise valid template.
+				if isCertIDMapNilOperand(a) {
+					continue
+				}
+				*lists = append(*lists, certIDMapOperandList(a))
+			}
+		}
 		for _, a := range x.Args {
 			if err := collectCertIDMapBranchLists(a, lists); err != nil {
 				return err
@@ -188,6 +205,43 @@ func collectCertIDMapBranchLists(n parse.Node, lists *[]*parse.ListNode) error {
 		return collectCertIDMapBranchLists(x.Node, lists)
 	}
 	return nil
+}
+
+// isCertIDMapShortCircuitCall reports whether cmd calls the short-circuiting
+// and/or builtins, whose operands after the first aren't always evaluated.
+func isCertIDMapShortCircuitCall(cmd *parse.CommandNode) bool {
+	if len(cmd.Args) == 0 {
+		return false
+	}
+	ident, ok := cmd.Args[0].(*parse.IdentifierNode)
+	return ok && (ident.Ident == "and" || ident.Ident == "or")
+}
+
+// isCertIDMapNilOperand reports whether n is the bare, unparenthesized nil
+// keyword. Parenthesized (nil) is deliberately not matched here: unlike bare
+// nil it's genuinely invalid (text/template errors evaluating it, whether
+// standalone or as a real and/or operand once short-circuiting reaches it),
+// so it must still go through normal validation rather than being skipped.
+func isCertIDMapNilOperand(n parse.Node) bool {
+	_, ok := n.(*parse.NilNode)
+	return ok
+}
+
+// certIDMapOperandList wraps a single operand node in a standalone action
+// list, so it can be executed on its own even though text/template might
+// never evaluate it in place (see isCertIDMapShortCircuitCall).
+func certIDMapOperandList(n parse.Node) *parse.ListNode {
+	pipe, ok := n.(*parse.PipeNode)
+	if !ok {
+		pipe = &parse.PipeNode{
+			NodeType: parse.NodePipe,
+			Cmds:     []*parse.CommandNode{{NodeType: parse.NodeCommand, Args: []parse.Node{n}}},
+		}
+	}
+	return &parse.ListNode{
+		NodeType: parse.NodeList,
+		Nodes:    []parse.Node{&parse.ActionNode{NodeType: parse.NodeAction, Pipe: pipe}},
+	}
 }
 
 // parseCertIDMapTemplate compiles and validates a `verify_and_map` template,

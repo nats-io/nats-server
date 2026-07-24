@@ -16,6 +16,7 @@ package server
 import (
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -235,6 +236,28 @@ func TestVerifyAndMapConfigTemplateNotSupportedForCluster(t *testing.T) {
 	}
 }
 
+// gateway{} goes through getTLSConfig rather than the cluster/leafnode/client
+// call sites, so it needs its own coverage that it still rejects a template.
+func TestVerifyAndMapConfigTemplateNotSupportedForGateway(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		gateway {
+			name: A
+			listen: 127.0.0.1:-1
+			tls {
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+				verify_and_map: "{{ .CommonName }}"
+			}
+		}
+	`))
+	_, err := ProcessConfigFile(conf)
+	if err == nil || !strings.Contains(err.Error(), "not supported in this context") {
+		t.Fatalf("Expected a 'not supported in this context' error, got: %v", err)
+	}
+}
+
 // A template-text-only change must be rejected on reload, not silently
 // applied - Options.TLSCertMap mirrors the source text so reload's
 // field-by-field diff can see the change (the compiled template itself
@@ -264,6 +287,61 @@ func TestVerifyAndMapConfigTemplateChangeDetectedOnReload(t *testing.T) {
 	}
 	if err := s.Reload(); err == nil {
 		t.Fatalf("Expected reload to reject a verify_and_map template change")
+	}
+}
+
+// Same as TestVerifyAndMapConfigTemplateChangeDetectedOnReload, but for the
+// websocket{} and mqtt{} blocks - each has its own TLSConfigOpts/TLSCertMap,
+// so the fix for the client listener doesn't automatically cover them.
+func TestVerifyAndMapConfigTemplateChangeDetectedOnReloadWebsocketAndMQTT(t *testing.T) {
+	confText := `
+		listen: 127.0.0.1:-1
+		jetstream: { store_dir: ` + fmt.Sprintf("%q", t.TempDir()) + ` }
+		websocket {
+			listen: 127.0.0.1:-1
+			tls {
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+				verify_and_map: "WSPLACEHOLDER"
+			}
+		}
+		mqtt {
+			listen: 127.0.0.1:-1
+			tls {
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+				verify_and_map: "MQTTPLACEHOLDER"
+			}
+		}
+	`
+	render := func(ws, mqtt string) string {
+		c := strings.ReplaceAll(confText, "WSPLACEHOLDER", ws)
+		return strings.ReplaceAll(c, "MQTTPLACEHOLDER", mqtt)
+	}
+
+	conf := createConfFile(t, []byte(render("{{ first .OrganizationalUnit }}", "{{ first .OrganizationalUnit }}")))
+	opts, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config: %v", err)
+	}
+	opts.NoSigs = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	if err := os.WriteFile(conf, []byte(render("{{ .CommonName }}", "{{ first .OrganizationalUnit }}")), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+	if err := s.Reload(); err == nil {
+		t.Fatalf("Expected reload to reject a verify_and_map template change on websocket")
+	}
+
+	if err := os.WriteFile(conf, []byte(render("{{ first .OrganizationalUnit }}", "{{ .CommonName }}")), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+	if err := s.Reload(); err == nil {
+		t.Fatalf("Expected reload to reject a verify_and_map template change on mqtt")
 	}
 }
 
@@ -403,5 +481,52 @@ func TestCertIDMapTemplateInvalidFieldInUntakenElseBranch(t *testing.T) {
 	_, err := parseCertIDMapTemplate("test", `{{if has "sample" .OrganizationalUnit}}ok{{else}}{{.NoSuchField}}{{end}}`)
 	if err == nil {
 		t.Fatalf("Expected an error for an invalid field reference inside an untaken else branch")
+	}
+}
+
+// and short-circuits: with the sample OU "sample", `has "prod" ...` is
+// false, so and never evaluates .NoSuchField for real. It still has to be
+// rejected, since a cert with OU "prod" would reach it.
+func TestCertIDMapTemplateShortCircuitedAndOperandRejected(t *testing.T) {
+	_, err := parseCertIDMapTemplate("test", `{{if and (has "prod" .OrganizationalUnit) .NoSuchField}}x{{end}}`)
+	if err == nil {
+		t.Fatalf("Expected an error for a bad field short-circuited by and")
+	}
+}
+
+// or short-circuits the other way: with the sample OU "sample", the first
+// operand is true, so or never evaluates .NoSuchField for real.
+func TestCertIDMapTemplateShortCircuitedOrOperandRejected(t *testing.T) {
+	_, err := parseCertIDMapTemplate("test", `{{if or (has "sample" .OrganizationalUnit) .NoSuchField}}x{{end}}`)
+	if err == nil {
+		t.Fatalf("Expected an error for a bad field short-circuited by or")
+	}
+}
+
+// A valid parenthesized operand (rather than a bare field) must still work.
+func TestCertIDMapTemplateShortCircuitedOperandValid(t *testing.T) {
+	_, err := parseCertIDMapTemplate("test", `{{if and (has "sample" .OrganizationalUnit) (has "sample" .Country)}}x{{end}}`)
+	if err != nil {
+		t.Fatalf("Unexpected error for valid and operands: %v", err)
+	}
+}
+
+// Bare nil is a valid and/or operand but, unlike every other literal, isn't
+// valid as a standalone action - wrapping it like any other operand would
+// reject an otherwise-valid template.
+func TestCertIDMapTemplateShortCircuitedNilOperandValid(t *testing.T) {
+	_, err := parseCertIDMapTemplate("test", `{{if and (has "sample" .OrganizationalUnit) nil}}x{{end}}`)
+	if err != nil {
+		t.Fatalf("Unexpected error for a nil and operand: %v", err)
+	}
+}
+
+// Unlike bare nil, parenthesized (nil) is genuinely invalid - text/template
+// errors evaluating it. It must still be rejected even when short-circuited
+// past by the sample data, the same as any other operand mistake.
+func TestCertIDMapTemplateShortCircuitedParenNilOperandRejected(t *testing.T) {
+	_, err := parseCertIDMapTemplate("test", `{{if and (has "prod" .OrganizationalUnit) (nil)}}x{{end}}`)
+	if err == nil {
+		t.Fatalf("Expected an error for a parenthesized nil and operand")
 	}
 }
