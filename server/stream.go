@@ -6808,7 +6808,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			if sources == nil {
 				sources = map[string]map[string]string{}
 			}
-			if _, ok := sources[origStream]; !ok {
+			if sources[origStream] == nil {
 				sources[origStream] = map[string]string{}
 			}
 			prevVal := sources[origStream][origSubj]
