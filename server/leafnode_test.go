@@ -10307,7 +10307,10 @@ func TestLeafNodeQueueScopedImportDenyFiltersBroadQueueInterest(t *testing.T) {
 						permissions: {
 							subscribe: {
 								allow: [">"]
-								deny: ["admin.secret workers"]
+								deny: [
+									"broad.secret workers"
+									"exact.secret workers"
+								]
 							}
 							publish: { allow: [">"] }
 						}
@@ -10340,13 +10343,16 @@ func TestLeafNodeQueueScopedImportDenyFiltersBroadQueueInterest(t *testing.T) {
 
 	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("client", "pwd"))
 	defer ncLeaf.Close()
-	sub := natsQueueSubSync(t, ncLeaf, "admin.*", "workers")
+	broadWorkers := natsQueueSubSync(t, ncLeaf, "broad.*", "workers")
+	broadAuditors := natsQueueSubSync(t, ncLeaf, "broad.*", "auditors")
+	exactWorkers := natsQueueSubSync(t, ncLeaf, "exact.secret", "workers")
+	exactAuditors := natsQueueSubSync(t, ncLeaf, "exact.secret", "auditors")
 	natsFlush(t, ncLeaf)
 
 	acc, err := hub.LookupAccount("A")
 	require_NoError(t, err)
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if !acc.sl.HasInterest("admin.public") {
+		if !acc.sl.HasInterest("broad.public") || !acc.sl.HasInterest("exact.secret") {
 			return fmt.Errorf("leaf queue interest has not propagated")
 		}
 		return nil
@@ -10354,13 +10360,28 @@ func TestLeafNodeQueueScopedImportDenyFiltersBroadQueueInterest(t *testing.T) {
 
 	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("hub", "pwd"))
 	defer ncHub.Close()
-	natsPub(t, ncHub, "admin.secret", []byte("blocked"))
-	natsPub(t, ncHub, "admin.public", []byte("ok"))
+	natsPub(t, ncHub, "broad.secret", []byte("broad blocked"))
+	natsPub(t, ncHub, "broad.public", []byte("broad ok"))
+	natsPub(t, ncHub, "exact.secret", []byte("exact blocked"))
 	natsFlush(t, ncHub)
 
-	msg := natsNexMsg(t, sub, time.Second)
-	require_Equal(t, "admin.public", msg.Subject)
-	require_Equal(t, "ok", string(msg.Data))
+	msg := natsNexMsg(t, broadWorkers, time.Second)
+	require_Equal(t, "broad.public", msg.Subject)
+	require_Equal(t, "broad ok", string(msg.Data))
+
+	msg = natsNexMsg(t, broadAuditors, time.Second)
+	require_Equal(t, "broad.secret", msg.Subject)
+	require_Equal(t, "broad blocked", string(msg.Data))
+	msg = natsNexMsg(t, broadAuditors, time.Second)
+	require_Equal(t, "broad.public", msg.Subject)
+	require_Equal(t, "broad ok", string(msg.Data))
+
+	if _, err := exactWorkers.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected exact workers queue subscription to be denied, got %v", err)
+	}
+	msg = natsNexMsg(t, exactAuditors, time.Second)
+	require_Equal(t, "exact.secret", msg.Subject)
+	require_Equal(t, "exact blocked", string(msg.Data))
 }
 
 func TestLeafNodePermissionWithGateways(t *testing.T) {
