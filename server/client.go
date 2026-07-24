@@ -5185,6 +5185,7 @@ func filterRouteTargetDeny(subject []byte, rt *routeTarget) bool {
 	}
 
 	qs := rt.qs[:0]
+	qsubs := rt.qsubs[:0]
 	for _, qsub := range rt.qsubs {
 		if dc.checkDenySub(dsubject, bytesToString(qsub.queue)) {
 			continue
@@ -5194,8 +5195,10 @@ func filterRouteTargetDeny(subject []byte, rt *routeTarget) bool {
 		}
 		qs = append(qs, qsub.queue...)
 		qs = append(qs, ' ')
+		qsubs = append(qsubs, qsub)
 	}
 	rt.qs = qs
+	rt.qsubs = qsubs
 	return rt.sub != nil
 }
 
@@ -5645,9 +5648,6 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// We are here if we have selected a leaf or route as the destination,
 			// or if we tried to deliver to a local qsub but failed.
 			c.addSubToRouteTargets(rsub)
-			if flags&pmrCollectQueueNames != 0 {
-				queues = append(queues, rsub.queue)
-			}
 		}
 	}
 
@@ -5713,6 +5713,11 @@ sendToRoutesOrLeafs:
 
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
 		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
+			if flags&pmrCollectQueueNames != 0 {
+				for _, qsub := range rt.qsubs {
+					queues = append(queues, qsub.queue)
+				}
+			}
 			if rt.sub.icb == nil {
 				dlvMsgs++
 				switch dc.kind {

@@ -1964,6 +1964,10 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			opts.Cluster.AuthTimeout = auth.timeout
 
 			if auth.defaultPermissions != nil {
+				if err := checkClusterPermissionSubjects(auth.defaultPermissions); err != nil {
+					*errors = append(*errors, &configErr{tk, err.Error()})
+					continue
+				}
 				err := &configWarningErr{
 					field: mk,
 					configErr: configErr{
@@ -2017,6 +2021,10 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			if perms.Response != nil {
 				err := &configErr{tk, "Cluster permissions do not support dynamic responses"}
 				*errors = append(*errors, err)
+				continue
+			}
+			if err := checkClusterPermissionSubjects(perms); err != nil {
+				*errors = append(*errors, &configErr{tk, err.Error()})
 				continue
 			}
 			// This will possibly override permissions that were define in auth block
@@ -3238,6 +3246,29 @@ func setClusterPermissions(opts *ClusterOpts, perms *Permissions) {
 		Import: perms.Publish,
 		Export: perms.Subscribe,
 	}
+}
+
+func checkClusterPermissionSubjects(perms *Permissions) error {
+	if perms == nil {
+		return nil
+	}
+	if perms.Publish != nil {
+		if err := checkPermSubjectArray(perms.Publish.Allow, false); err != nil {
+			return fmt.Errorf("cluster import allow: %w", err)
+		}
+		if err := checkPermSubjectArray(perms.Publish.Deny, false); err != nil {
+			return fmt.Errorf("cluster import deny: %w", err)
+		}
+	}
+	if perms.Subscribe != nil {
+		if err := checkPermSubjectArray(perms.Subscribe.Allow, false); err != nil {
+			return fmt.Errorf("cluster export allow: %w", err)
+		}
+		if err := checkPermSubjectArray(perms.Subscribe.Deny, false); err != nil {
+			return fmt.Errorf("cluster export deny: %w", err)
+		}
+	}
+	return nil
 }
 
 // Temp structures to hold account import and export defintions since they need

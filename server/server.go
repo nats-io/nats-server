@@ -1123,6 +1123,12 @@ func validateCluster(o *Options) error {
 	if o.Cluster.Name != _EMPTY_ && strings.Contains(o.Cluster.Name, " ") {
 		return ErrClusterNameHasSpaces
 	}
+	if p := o.Cluster.Permissions; p != nil {
+		perms := &Permissions{Publish: p.Import, Subscribe: p.Export}
+		if err := checkClusterPermissionSubjects(perms); err != nil {
+			return err
+		}
+	}
 	if o.Cluster.Compression.Mode != _EMPTY_ {
 		if err := validateAndNormalizeCompressionOption(&o.Cluster.Compression, CompressionS2Fast); err != nil {
 			return err
