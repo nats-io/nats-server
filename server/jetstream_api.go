@@ -4421,7 +4421,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
-	if !IsValidSubject(req.DeliverSubject) {
+	if !IsValidPublishSubject(req.DeliverSubject) {
 		resp.Error = NewJSSnapshotDeliverSubjectInvalidError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
@@ -4465,7 +4465,10 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 		})
 
 		// Now do the real streaming.
-		s.streamSnapshot(acc, mset, sr, &req)
+		if err := s.streamSnapshot(acc, mset, sr, &req); err != nil {
+			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.name(), err)
+			return
+		}
 
 		end := time.Now().UTC()
 
@@ -4498,7 +4501,7 @@ const defaultSnapshotAckTimeout = 5 * time.Second
 var snapshotAckTimeout = defaultSnapshotAckTimeout
 
 // streamSnapshot will stream out our snapshot to the reply subject.
-func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
+func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) error {
 	chunkSize, wndSize := req.ChunkSize, req.WindowSize
 	if chunkSize == 0 {
 		chunkSize = defaultSnapshotChunkSize
@@ -4523,7 +4526,9 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 
 	// Check interest for the snapshot deliver subject.
 	inch := make(chan bool, 1)
-	acc.sl.RegisterNotification(req.DeliverSubject, inch)
+	if err := acc.sl.RegisterNotification(req.DeliverSubject, inch); err != nil {
+		return fmt.Errorf("could not register snapshot delivery interest for %q: %w", req.DeliverSubject, err)
+	}
 	defer acc.sl.ClearNotification(req.DeliverSubject, inch)
 	hasInterest := <-inch
 	if !hasInterest {
@@ -4591,6 +4596,7 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 
 done:
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+	return nil
 }
 
 // For determining consumer request type.

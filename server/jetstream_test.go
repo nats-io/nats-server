@@ -3351,6 +3351,44 @@ func TestJetStreamSnapshots(t *testing.T) {
 	}
 }
 
+func TestJetStreamSnapshotRejectsWildcardDeliverSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_NoError(t, err)
+
+	for _, deliverSubject := range []string{"snap.*", "snap.>"} {
+		req, err := json.Marshal(&JSApiStreamSnapshotRequest{DeliverSubject: deliverSubject})
+		require_NoError(t, err)
+
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "TEST"), req, time.Second)
+		require_NoError(t, err)
+
+		var resp JSApiStreamSnapshotResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		if !IsNatsErr(resp.Error, JSSnapshotDeliverSubjectInvalidErr) {
+			t.Fatalf("Expected wildcard deliver subject %q to be rejected, got %+v", deliverSubject, resp.Error)
+		}
+	}
+}
+
+func TestJetStreamSnapshotNotificationRegistrationError(t *testing.T) {
+	acc := NewAccount("TEST")
+	acc.sl = NewSublistWithCache()
+	sr := &SnapshotResult{Reader: io.NopCloser(bytes.NewReader(nil))}
+	req := &JSApiStreamSnapshotRequest{DeliverSubject: "snap.*"}
+
+	// pass nil mset, registration failure returns before stream access
+	err := (&Server{}).streamSnapshot(acc, nil, sr, req)
+	if !errors.Is(err, ErrInvalidSubject) {
+		t.Fatalf("Expected invalid subject error, got %v", err)
+	}
+}
+
 func TestJetStreamSnapshotsAPI(t *testing.T) {
 	lopts := DefaultTestOptions
 	lopts.ServerName = "LS"
