@@ -1657,13 +1657,42 @@ func validateAuth(o *Options) error {
 		if err := validateAllowedConnectionTypes(u.AllowedConnectionTypes); err != nil {
 			return err
 		}
+		if err := validatePermissionSubjects(u.Permissions); err != nil {
+			return fmt.Errorf("invalid permissions for user %q: %w", u.Username, err)
+		}
 	}
 	for _, u := range o.Nkeys {
 		if err := validateAllowedConnectionTypes(u.AllowedConnectionTypes); err != nil {
 			return err
 		}
+		if err := validatePermissionSubjects(u.Permissions); err != nil {
+			return fmt.Errorf("invalid permissions for nkey %q: %w", u.Nkey, err)
+		}
 	}
 	return validateNoAuthUser(o, o.NoAuthUser)
+}
+
+func validatePermissionSubjects(p *Permissions) error {
+	if p == nil {
+		return nil
+	}
+	if p.Publish != nil {
+		if err := checkPermSubjectArray(p.Publish.Allow, false); err != nil {
+			return fmt.Errorf("publish allow: %w", err)
+		}
+		if err := checkPermSubjectArray(p.Publish.Deny, false); err != nil {
+			return fmt.Errorf("publish deny: %w", err)
+		}
+	}
+	if p.Subscribe != nil {
+		if err := checkPermSubjectArray(p.Subscribe.Allow, true); err != nil {
+			return fmt.Errorf("subscribe allow: %w", err)
+		}
+		if err := checkPermSubjectArray(p.Subscribe.Deny, true); err != nil {
+			return fmt.Errorf("subscribe deny: %w", err)
+		}
+	}
+	return nil
 }
 
 func validateAllowedConnectionTypes(m map[string]struct{}) error {

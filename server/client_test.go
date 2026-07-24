@@ -1114,6 +1114,73 @@ func TestClientSubscribeDenyWildcardOverlapBlocksDelivery(t *testing.T) {
 	}
 }
 
+func TestClientQueueScopedSubscribeDenyBlocksOnlyMatchingQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		deny      string
+		deniedQ   string
+		allowedQ  string
+		subject   string
+		subscribe string
+	}{
+		{
+			name:      "literal queue",
+			deny:      "admin.secret workers",
+			deniedQ:   "workers",
+			allowedQ:  "auditors",
+			subject:   "admin.secret",
+			subscribe: "admin.*",
+		},
+		{
+			name:      "wildcard queue",
+			deny:      "admin.secret work.*",
+			deniedQ:   "work.prod",
+			allowedQ:  "audit.prod",
+			subject:   "admin.secret",
+			subscribe: "admin.*",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := DefaultOptions()
+			opts.Users = []*User{
+				{
+					Username: "attacker",
+					Password: "pass",
+					Permissions: &Permissions{
+						Subscribe: &SubjectPermission{
+							Allow: []string{">"},
+							Deny:  []string{tc.deny},
+						},
+					},
+				},
+				{Username: "publisher", Password: "pass"},
+			}
+
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			attacker := natsConnect(t, s.ClientURL(), nats.UserInfo("attacker", "pass"))
+			defer attacker.Close()
+			publisher := natsConnect(t, s.ClientURL(), nats.UserInfo("publisher", "pass"))
+			defer publisher.Close()
+
+			denied := natsQueueSubSync(t, attacker, tc.subscribe, tc.deniedQ)
+			allowed := natsQueueSubSync(t, attacker, tc.subscribe, tc.allowedQ)
+			plain := natsSubSync(t, attacker, tc.subscribe)
+			natsFlush(t, attacker)
+
+			natsPub(t, publisher, tc.subject, []byte("secret"))
+			natsFlush(t, publisher)
+
+			if _, err := denied.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+				t.Fatalf("Expected matching queue subscription to be denied, got %v", err)
+			}
+			require_Equal(t, "secret", string(natsNexMsg(t, allowed, time.Second).Data))
+			require_Equal(t, "secret", string(natsNexMsg(t, plain, time.Second).Data))
+		})
+	}
+}
+
 func TestClientSetPermissionsClearsStaleMsgDenyState(t *testing.T) {
 	c := &client{}
 	c.setPermissions(&Permissions{
@@ -1129,6 +1196,28 @@ func TestClientSetPermissionsClearsStaleMsgDenyState(t *testing.T) {
 
 	require_True(t, c.canSubscribe("foo.*"))
 	require_True(t, c.mperms == nil)
+}
+
+func TestClientSetPermissionsPublishDenyQueueQualifierFailsClosed(t *testing.T) {
+	c := &client{srv: New(&Options{})}
+	c.setPermissions(&Permissions{
+		Publish: &SubjectPermission{Deny: []string{"admin.secret workers"}},
+	})
+	np, _ := c.perms.pub.deny.NumInterest("admin.secret")
+	require_Equal(t, 1, np)
+}
+
+func TestClientPublicPermissionsPreservesQueueQualifier(t *testing.T) {
+	c := &client{}
+	c.setPermissions(&Permissions{
+		Subscribe: &SubjectPermission{
+			Allow: []string{"events.* readers"},
+			Deny:  []string{"admin.secret workers"},
+		},
+	})
+	perms := c.publicPermissions()
+	require_Equal(t, "events.* readers", perms.Subscribe.Allow[0])
+	require_Equal(t, "admin.secret workers", perms.Subscribe.Deny[0])
 }
 
 func TestClientPubWithQueueSubNoEcho(t *testing.T) {
