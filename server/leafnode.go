@@ -2966,7 +2966,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 			c.Debugf(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
 			return nil
 		}
-		c.loadMsgDenyFilterIfNeeded(subj)
+		c.loadMsgDenyFilterIfNeeded(subj, len(sub.queue) > 0)
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
