@@ -2513,6 +2513,93 @@ func TestGatewayQueueSub(t *testing.T) {
 	check(t, &count3, total)
 }
 
+func TestGatewayQueueSubNotSuppressedByDeniedLeafQueue(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa.NoSystemAccount = false
+	oa.Accounts = []*Account{NewAccount("SYS")}
+	oa.SystemAccount = "SYS"
+	oa.LeafNode.Host = "127.0.0.1"
+	oa.LeafNode.Port = -1
+	oa.Users = []*User{
+		{
+			Username: "leaf",
+			Password: "pwd",
+			Permissions: &Permissions{
+				Publish: &SubjectPermission{Allow: []string{">"}},
+				Subscribe: &SubjectPermission{
+					Allow: []string{">"},
+					Deny:  []string{"admin.secret workers"},
+				},
+			},
+		},
+	}
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+
+	leafURL, err := url.Parse(fmt.Sprintf("nats://leaf:pwd@127.0.0.1:%d", oa.LeafNode.Port))
+	require_NoError(t, err)
+	ol := DefaultOptions()
+	ol.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{leafURL}}}
+	sl := RunServer(ol)
+	defer sl.Shutdown()
+	checkLeafNodeConnected(t, sa)
+	checkLeafNodeConnected(t, sl)
+
+	ncLeaf := natsConnect(t, sl.ClientURL())
+	defer ncLeaf.Close()
+	leafSub := natsQueueSubSync(t, ncLeaf, "admin.secret", "workers")
+	natsFlush(t, ncLeaf)
+
+	ncB := natsConnect(t, sb.ClientURL())
+	defer ncB.Close()
+	gatewaySub := natsQueueSubSync(t, ncB, "admin.secret", "workers")
+	natsFlush(t, ncB)
+
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "admin.secret", 1, time.Second)
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if !sa.globalAccount().sl.HasInterest("admin.secret") {
+			return fmt.Errorf("leaf queue interest has not propagated")
+		}
+		return nil
+	})
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		sa.mu.Lock()
+		leafs := make([]*client, 0, len(sa.leafs))
+		for _, lc := range sa.leafs {
+			leafs = append(leafs, lc)
+		}
+		sa.mu.Unlock()
+		for _, lc := range leafs {
+			lc.mu.Lock()
+			isGlobal := lc.acc != nil && lc.acc.Name == globalAccountName
+			denied := isGlobal && lc.mperms != nil && lc.checkDenySub("admin.secret", "workers")
+			lc.mu.Unlock()
+			if denied {
+				return nil
+			}
+		}
+		return fmt.Errorf("leaf queue deny filter has not been initialized")
+	})
+
+	ncA := natsConnect(t, sa.ClientURL())
+	defer ncA.Close()
+	natsPub(t, ncA, "admin.secret", []byte("gateway"))
+	natsFlush(t, ncA)
+
+	msg := natsNexMsg(t, gatewaySub, time.Second)
+	require_Equal(t, "gateway", string(msg.Data))
+	if _, err := leafSub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected leaf queue subscription to be denied, got %v", err)
+	}
+}
+
 func TestGatewayTotalQSubs(t *testing.T) {
 	ob1 := testDefaultOptionsForGateway("B")
 	sb1 := runGatewayServer(ob1)
