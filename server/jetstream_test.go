@@ -24907,3 +24907,138 @@ func TestJetStreamStreamSubjectsOverlapDataRace(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// jsPoisonAPIPrefix is the external JetStream API prefix used by the poisoned
+// consumer create reply tests below. It must not overlap with $JS.API.
+const jsPoisonAPIPrefix = "XAPI"
+
+// jsPoisonedAPIResponder answers every request sent to the external JetStream
+// API prefix with the given (forged) body. Since a stream that sources or
+// mirrors with an External.ApiPrefix sends its consumer create requests to a
+// foreign account/domain, this responder is the only one answering, which makes
+// these tests deterministic instead of racing the real JetStream API.
+func jsPoisonedAPIResponder(t *testing.T, nc *nats.Conn, reply string) *atomic.Int64 {
+	t.Helper()
+	var requests atomic.Int64
+	_, err := nc.Subscribe(jsPoisonAPIPrefix+".>", func(m *nats.Msg) {
+		requests.Add(1)
+		m.Respond([]byte(reply))
+	})
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+	return &requests
+}
+
+// jsPoisonStreamInfo requests stream info with a short timeout. It returns an
+// error instead of failing the test so that a wedged stream (a panic while
+// holding the stream lock would deadlock it forever) surfaces as a test failure
+// with a useful message rather than as a hang.
+func jsPoisonStreamInfo(nc *nats.Conn, stream string) (*StreamInfo, error) {
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, stream), nil, 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("stream info for %q failed, stream may be wedged: %v", stream, err)
+	}
+	var resp JSApiStreamInfoResponse
+	if err := json.Unmarshal(rmsg.Data, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+	return resp.StreamInfo, nil
+}
+
+func TestJetStreamMirrorConsumerCreatePoisonedReply(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		reply   string
+		durable bool
+	}{
+		// A `{"config":null}` body decodes into a JSApiConsumerCreateResponse with a
+		// non-nil embedded *ConsumerInfo but a nil Config, and no error. Without a
+		// Config check it panics on ccr.ConsumerInfo.Config.DeliverSubject.
+		{"config_null", `{"config":null}`, false},
+		// Any other ConsumerInfo field without a "config" key does the same. With a
+		// durable sourcing consumer we panic on ccr.ConsumerInfo.Config.AckPolicy.
+		{"missing_config_durable", `{"stream_name":"S","name":"MC"}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, _ := jsClientConnect(t, s)
+			defer nc.Close()
+
+			requests := jsPoisonedAPIResponder(t, nc, test.reply)
+
+			mirror := &StreamSource{
+				Name:     "S",
+				External: &ExternalStream{ApiPrefix: jsPoisonAPIPrefix},
+			}
+			if test.durable {
+				mirror.Consumer = &StreamConsumerSource{Name: "MC", DeliverSubject: "d.mirror"}
+			}
+			addStream(t, nc, &StreamConfig{Name: "M", Storage: MemoryStorage, Mirror: mirror})
+
+			// The mirror must reject the response, report it and retry, and the stream
+			// must remain responsive.
+			checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+				si, err := jsPoisonStreamInfo(nc, "M")
+				if err != nil {
+					return err
+				}
+				if si.Mirror == nil || si.Mirror.Error == nil {
+					return fmt.Errorf("expected mirror error to be reported, got %+v", si.Mirror)
+				}
+				if n := requests.Load(); n < 2 {
+					return fmt.Errorf("expected mirror consumer create to be retried, got %d request(s)", n)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestJetStreamSourceConsumerCreatePoisonedReply(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		reply   string
+		durable bool
+	}{
+		{"config_null", `{"config":null}`, false},
+		{"missing_config_durable", `{"stream_name":"S","name":"SC"}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, _ := jsClientConnect(t, s)
+			defer nc.Close()
+
+			requests := jsPoisonedAPIResponder(t, nc, test.reply)
+
+			source := &StreamSource{
+				Name:     "S",
+				External: &ExternalStream{ApiPrefix: jsPoisonAPIPrefix},
+			}
+			if test.durable {
+				source.Consumer = &StreamConsumerSource{Name: "SC", DeliverSubject: "d.source"}
+			}
+			addStream(t, nc, &StreamConfig{Name: "W", Storage: MemoryStorage, Sources: []*StreamSource{source}})
+
+			checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+				si, err := jsPoisonStreamInfo(nc, "W")
+				if err != nil {
+					return err
+				}
+				if len(si.Sources) != 1 || si.Sources[0].Error == nil {
+					return fmt.Errorf("expected source error to be reported, got %+v", si.Sources)
+				}
+				if n := requests.Load(); n < 2 {
+					return fmt.Errorf("expected source consumer create to be retried, got %d request(s)", n)
+				}
+				return nil
+			})
+		})
+	}
+}
