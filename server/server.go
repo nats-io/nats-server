@@ -2817,8 +2817,15 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
-		s.Noticef("TLS required for client connections")
-		if opts.TLSHandshakeFirst && opts.TLSHandshakeFirstFallback == 0 {
+		// "TLS Handshake First" without a fallback delay always requires the
+		// handshake, which overrides "allow_non_tls".
+		tlsHandshakeFirstOnly := opts.TLSHandshakeFirst && opts.TLSHandshakeFirstFallback == 0
+		if opts.AllowNonTLS && !tlsHandshakeFirstOnly {
+			s.Noticef("TLS available for client connections")
+		} else {
+			s.Noticef("TLS required for client connections")
+		}
+		if tlsHandshakeFirstOnly {
 			s.Warnf("Clients that are not using \"TLS Handshake First\" option will fail to connect")
 		}
 	}

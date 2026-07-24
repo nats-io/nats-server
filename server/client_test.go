@@ -3334,6 +3334,67 @@ func TestTLSClientHandshakeFirstFallbackDelayAndAllowNonTLS(t *testing.T) {
 	checkConnInfo(false, false)
 }
 
+func TestTLSClientNoticeWithAllowNonTLS(t *testing.T) {
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+		CaFile:   "../test/configs/certs/ca.pem",
+	}
+	tlsConfig, err := GenTLSConfig(tc)
+	require_NoError(t, err)
+
+	const (
+		tlsRequired  = "TLS required for client connections"
+		tlsAvailable = "TLS available for client connections"
+	)
+	for _, test := range []struct {
+		name        string
+		allowNonTLS bool
+		first       bool
+		fallback    time.Duration
+		expected    string
+	}{
+		{"tls only", false, false, 0, tlsRequired},
+		{"allow non tls", true, false, 0, tlsAvailable},
+		// With "TLS first" and no fallback delay, non TLS clients are rejected
+		// even with allow_non_tls, so TLS is really required.
+		{"allow non tls and tls first", true, true, 0, tlsRequired},
+		// But with a fallback delay, they are accepted once it has expired.
+		{"allow non tls and tls first with fallback", true, true, 25 * time.Millisecond, tlsAvailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.TLSConfig = tlsConfig.Clone()
+			o.AllowNonTLS = test.allowNonTLS
+			o.TLSHandshakeFirst = test.first
+			o.TLSHandshakeFirstFallback = test.fallback
+
+			s, err := NewServer(o)
+			require_NoError(t, err)
+			defer s.Shutdown()
+
+			// Set the logger before starting the server so that the notices
+			// emitted by the client accept loop are captured.
+			l := &captureNoticeLogger{}
+			s.SetLogger(l, false, false)
+			go s.Start()
+			require_NoError(t, s.readyForConnections(time.Second))
+
+			var notices []string
+			l.Lock()
+			for _, n := range l.notices {
+				if strings.HasPrefix(n, "TLS ") && strings.HasSuffix(n, " for client connections") {
+					notices = append(notices, n)
+				}
+			}
+			l.Unlock()
+			if len(notices) != 1 || notices[0] != test.expected {
+				t.Fatalf("Expected notice %q, got %q", test.expected, notices)
+			}
+		})
+	}
+}
+
 func TestTLSClientHandshakeFirstAndInProcessConnection(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: "127.0.0.1:-1"
