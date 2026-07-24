@@ -3754,7 +3754,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				}
 				for _, o := range consumers {
 					name, cfg := o.String(), o.config()
-					rg := cc.createGroupForConsumer(&cfg, sa)
+					rg, err := cc.createGroupForConsumer(&cfg, sa)
+					if err != nil {
+						s.Warnf("Could not create group for consumer '%s > %s > %s': %v",
+							sa.Client.serviceAccount(), sa.Config.Name, name, err)
+						continue
+					}
 					// Pick a preferred leader.
 					rg.setPreferred(s)
 
@@ -5620,7 +5625,12 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 						for _, o := range consumers {
 							name, cfg := o.String(), o.config()
-							rg := cc.createGroupForConsumer(&cfg, sa)
+							rg, err := cc.createGroupForConsumer(&cfg, sa)
+							if err != nil {
+								s.Warnf("Could not create group for consumer '%s > %s > %s': %v",
+									sa.Client.serviceAccount(), sa.Config.Name, name, err)
+								continue
+							}
 
 							// Place our initial state here as well for assignment distribution.
 							ca := &consumerAssignment{
@@ -9506,9 +9516,9 @@ func decodeDeleteRange(buf []byte) (*DeleteRange, error) {
 }
 
 // createGroupForConsumer will create a new group from same peer set as the stream.
-func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *streamAssignment) *raftGroup {
+func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *streamAssignment) (*raftGroup, *selectPeerError) {
 	if len(sa.Group.Peers) == 0 || cfg.Replicas > len(sa.Group.Peers) {
-		return nil
+		return nil, &selectPeerError{misc: true}
 	}
 
 	replicas := cfg.replicas(sa.Config)
@@ -9526,14 +9536,14 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 	}
 	if quorum := replicas/2 + 1; quorum > len(active) {
 		// Not enough active to satisfy the request.
-		return nil
+		return nil, &selectPeerError{offline: true}
 	}
 
 	// If we want less then our parent stream, select from active.
 	if replicas > 0 && replicas < len(peers) {
 		// Pedantic in case stream is say R5 and consumer is R3 and 3 or more offline, etc.
 		if len(active) < replicas {
-			return nil
+			return nil, &selectPeerError{offline: true}
 		}
 		// First shuffle the active peers and then select to account for replica = 1.
 		rand.Shuffle(len(active), func(i, j int) { active[i], active[j] = active[j], active[i] })
@@ -9543,7 +9553,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 	if cfg.MemoryStorage {
 		storage = MemoryStorage
 	}
-	return &raftGroup{Name: groupNameForConsumer(peers, storage), Storage: storage, Peers: peers}
+	return &raftGroup{Name: groupNameForConsumer(peers, storage), Storage: storage, Peers: peers}, nil
 }
 
 // jsClusteredConsumerRequest is first point of entry to create a consumer in clustered mode.
@@ -9728,8 +9738,8 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
 		}
-		rg := cc.createGroupForConsumer(cfg, sa)
-		if rg == nil {
+		rg, err := cc.createGroupForConsumer(cfg, sa)
+		if err != nil {
 			resp.Error = NewJSInsufficientResourcesError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
