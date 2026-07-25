@@ -69,6 +69,57 @@ func TestCertIDMapTemplateFields(t *testing.T) {
 	}
 }
 
+// An index beyond sampleCertIDMapData's historical 2-element sample must
+// still validate and work against a real (longer) certificate.
+func TestCertIDMapTemplateDeepIndex(t *testing.T) {
+	tmpl, err := parseCertIDMapTemplate("test", `{{index .OrganizationalUnit 2}}`)
+	if err != nil {
+		t.Fatalf("Error parsing template: %v", err)
+	}
+	cert := testCertForIDMap()
+	cert.Subject.OrganizationalUnit = []string{"a", "b", "c"}
+	var sb strings.Builder
+	if err := tmpl.Execute(&sb, newCertIDMapData(cert)); err != nil {
+		t.Fatalf("Error executing template: %v", err)
+	}
+	if got := sb.String(); got != "c" {
+		t.Fatalf("Expected %q, got %q", "c", got)
+	}
+}
+
+// Dynamic sample sizing extends the sample to fit a literal index - it
+// doesn't disable bounds checking.
+func TestCertIDMapTemplateAbsurdIndexRejected(t *testing.T) {
+	_, err := parseCertIDMapTemplate("test", `{{index .OrganizationalUnit 999999999}}`)
+	if err == nil {
+		t.Fatalf("Expected an error for an absurd literal index")
+	}
+}
+
+// index also works on strings (byte offset), not just []string - the
+// scalar fields (CommonName, SerialNumber) need the same deep-index fix.
+func TestCertIDMapTemplateDeepIndexOnScalarField(t *testing.T) {
+	if _, err := parseCertIDMapTemplate("test", `{{index .CommonName 20}}`); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+// index .OrganizationalUnit 0 20 indexes the *string* at element 0, not the
+// slice again - each sample slice element needs to be long enough too.
+func TestCertIDMapTemplateDeepIndexOnSliceElement(t *testing.T) {
+	if _, err := parseCertIDMapTemplate("test", `{{index .OrganizationalUnit 0 20}}`); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+// A parenthesized literal bound, e.g. `(20)`, must size the sample the same
+// as a bare `20` - it's still just a NumberNode once unwrapped.
+func TestCertIDMapTemplateParenthesizedLiteralIndex(t *testing.T) {
+	if _, err := parseCertIDMapTemplate("test", `{{index .OrganizationalUnit ((20))}}`); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
 // A template can restrict a match to a combination of fields (e.g. this OU,
 // but only in this country) using text/template's `and` plus `has`.
 func TestCertIDMapTemplateComboFields(t *testing.T) {
@@ -236,8 +287,8 @@ func TestVerifyAndMapConfigTemplateNotSupportedForCluster(t *testing.T) {
 	}
 }
 
-// gateway{} goes through getTLSConfig rather than the cluster/leafnode/client
-// call sites, so it needs its own coverage that it still rejects a template.
+// gateway{} goes through getTLSConfig, a different call site than
+// cluster/leafnode/client - needs its own coverage.
 func TestVerifyAndMapConfigTemplateNotSupportedForGateway(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
@@ -290,9 +341,7 @@ func TestVerifyAndMapConfigTemplateChangeDetectedOnReload(t *testing.T) {
 	}
 }
 
-// Same as TestVerifyAndMapConfigTemplateChangeDetectedOnReload, but for the
-// websocket{} and mqtt{} blocks - each has its own TLSConfigOpts/TLSCertMap,
-// so the fix for the client listener doesn't automatically cover them.
+// Same, for websocket{} and mqtt{} - each has its own TLSConfigOpts/TLSCertMap.
 func TestVerifyAndMapConfigTemplateChangeDetectedOnReloadWebsocketAndMQTT(t *testing.T) {
 	confText := `
 		listen: 127.0.0.1:-1
@@ -484,9 +533,8 @@ func TestCertIDMapTemplateInvalidFieldInUntakenElseBranch(t *testing.T) {
 	}
 }
 
-// and short-circuits: with the sample OU "sample", `has "prod" ...` is
-// false, so and never evaluates .NoSuchField for real. It still has to be
-// rejected, since a cert with OU "prod" would reach it.
+// and short-circuits past .NoSuchField with the sample data (OU isn't
+// "prod"), but a real "prod" cert would reach it.
 func TestCertIDMapTemplateShortCircuitedAndOperandRejected(t *testing.T) {
 	_, err := parseCertIDMapTemplate("test", `{{if and (has "prod" .OrganizationalUnit) .NoSuchField}}x{{end}}`)
 	if err == nil {
@@ -494,8 +542,8 @@ func TestCertIDMapTemplateShortCircuitedAndOperandRejected(t *testing.T) {
 	}
 }
 
-// or short-circuits the other way: with the sample OU "sample", the first
-// operand is true, so or never evaluates .NoSuchField for real.
+// Same, but short-circuited the other way: the first operand is true, so
+// or never evaluates .NoSuchField.
 func TestCertIDMapTemplateShortCircuitedOrOperandRejected(t *testing.T) {
 	_, err := parseCertIDMapTemplate("test", `{{if or (has "sample" .OrganizationalUnit) .NoSuchField}}x{{end}}`)
 	if err == nil {
@@ -511,9 +559,8 @@ func TestCertIDMapTemplateShortCircuitedOperandValid(t *testing.T) {
 	}
 }
 
-// Bare nil is a valid and/or operand but, unlike every other literal, isn't
-// valid as a standalone action - wrapping it like any other operand would
-// reject an otherwise-valid template.
+// Bare nil is a valid and/or operand, unlike every other literal it isn't
+// valid as a standalone action.
 func TestCertIDMapTemplateShortCircuitedNilOperandValid(t *testing.T) {
 	_, err := parseCertIDMapTemplate("test", `{{if and (has "sample" .OrganizationalUnit) nil}}x{{end}}`)
 	if err != nil {
@@ -521,9 +568,8 @@ func TestCertIDMapTemplateShortCircuitedNilOperandValid(t *testing.T) {
 	}
 }
 
-// Unlike bare nil, parenthesized (nil) is genuinely invalid - text/template
-// errors evaluating it. It must still be rejected even when short-circuited
-// past by the sample data, the same as any other operand mistake.
+// Unlike bare nil, parenthesized (nil) is genuinely invalid and must still
+// be rejected, even short-circuited past by the sample data.
 func TestCertIDMapTemplateShortCircuitedParenNilOperandRejected(t *testing.T) {
 	_, err := parseCertIDMapTemplate("test", `{{if and (has "prod" .OrganizationalUnit) (nil)}}x{{end}}`)
 	if err == nil {

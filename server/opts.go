@@ -194,10 +194,7 @@ type LeafNodeOpts struct {
 	TLSConfig     *tls.Config `json:"-"`
 	TLSTimeout    float64     `json:"tls_timeout,omitempty"`
 	TLSMap        bool        `json:"-"`
-	// TLSCertMap holds the `verify_and_map` template source, if any, purely
-	// so config reload can detect a template-text change (the compiled
-	// template itself lives on the unexported tlsConfigOpts snapshot, which
-	// reload's field-by-field diff can't see).
+	// See Options.TLSCertMap.
 	TLSCertMap     string        `json:"-"`
 	TLSPinnedCerts PinnedCertSet `json:"-"`
 	// When set to true, the server will perform the TLS handshake before
@@ -492,10 +489,9 @@ type Options struct {
 	TLS                        bool              `json:"-"`
 	TLSVerify                  bool              `json:"-"`
 	TLSMap                     bool              `json:"-"`
-	// TLSCertMap holds the `verify_and_map` template source, if any, purely
-	// so config reload can detect a template-text change (the compiled
-	// template itself lives on the unexported tlsConfigOpts snapshot, which
-	// reload's field-by-field diff can't see).
+	// TLSCertMap holds the `verify_and_map` template source, if any, so that
+	// config reload can spot a template-text change: the compiled template
+	// lives on the unexported tlsConfigOpts, which reload's diff can't see.
 	TLSCertMap     string        `json:"-"`
 	TLSCert        string        `json:"-"`
 	TLSKey         string        `json:"-"`
@@ -661,10 +657,7 @@ type WebsocketOpts struct {
 	TLSConfig *tls.Config
 	// If true, map certificate values for authentication purposes.
 	TLSMap bool
-	// TLSCertMap holds the `verify_and_map` template source, if any, purely
-	// so config reload can detect a template-text change (the compiled
-	// template itself lives on the unexported tlsConfigOpts snapshot, which
-	// reload's field-by-field diff can't see).
+	// See Options.TLSCertMap.
 	TLSCertMap string
 
 	// When present, accepted client certificates (verify/verify_and_map) must be in this list
@@ -755,10 +748,7 @@ type MQTTOpts struct {
 	TLSConfig *tls.Config
 	// If true, map certificate values for authentication purposes.
 	TLSMap bool
-	// TLSCertMap holds the `verify_and_map` template source, if any, purely
-	// so config reload can detect a template-text change (the compiled
-	// template itself lives on the unexported tlsConfigOpts snapshot, which
-	// reload's field-by-field diff can't see).
+	// See Options.TLSCertMap.
 	TLSCertMap string
 	// Timeout for the TLS handshake
 	TLSTimeout float64
@@ -908,15 +898,12 @@ type TLSConfigOpts struct {
 	OCSPPeerConfig       *certidp.OCSPPeerConfig
 	Certificates         []*TLSCertPairOpt
 	MinVersion           uint16
-	// CertMap holds a compiled `verify_and_map` template, used to derive
-	// a user identity from a peer certificate. Nil unless `verify_and_map`
-	// was given a template string instead of a boolean.
+	// Compiled `verify_and_map` template, nil unless it was given a template
+	// string rather than a boolean.
 	CertMap *template.Template
-	// CertMapSrc is the `verify_and_map` template source that produced
-	// CertMap. Kept only so it can be copied onto an exported field (see
-	// e.g. Options.TLSCertMap) for config reload to compare - *template.Template
-	// itself can't be meaningfully compared with reflect.DeepEqual since it
-	// embeds non-nil func values, which are never considered equal.
+	// The source of CertMap, copied onto an exported field (see
+	// Options.TLSCertMap) for reload to compare: a *template.Template embeds
+	// func values, which reflect.DeepEqual never considers equal.
 	CertMapSrc string
 }
 
@@ -962,6 +949,10 @@ e.g.
         # the user identity from the peer certificate instead of the default
         # email -> SAN -> DN precedence, e.g.:
         # verify_and_map: "{{ first .OrganizationalUnit }}"
+        #
+        # The template form is only accepted here and in the leafnode{},
+        # websocket{} and mqtt{} blocks. cluster{}, gateway{}, resolver_tls{}
+        # and a leafnode remote's tls{} take the boolean form only.
 
         cipher_suites: [
             "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
@@ -1695,9 +1686,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			*errors = append(*errors, err)
 		}
 	case "resolver_tls":
-		// Outbound-only (fetching account JWTs over HTTPS): no peer cert is
-		// ever mapped to a user here, so a verify_and_map template would
-		// silently do nothing.
+		// Outbound-only: fetching account JWTs over HTTPS.
 		tc, err := parseTLS(tk, true, false)
 		if err != nil {
 			*errors = append(*errors, err)
@@ -3152,9 +3141,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				}
 				remote.Nkey = nk
 			case "tls":
-				// Outbound-only (this is the solicitor side of a leafnode
-				// connection): no peer cert is ever mapped to a user here,
-				// so a verify_and_map template would silently do nothing.
+				// Outbound-only: the solicitor side of a leafnode connection.
 				tc, err := parseTLS(tk, true, false)
 				if err != nil {
 					*errors = append(*errors, err)
@@ -5102,11 +5089,9 @@ func parseTLSVersion(v any) (uint16, error) {
 
 // Helper function to parse TLS configs.
 // allowCertMapTemplate reports whether a `verify_and_map` template is
-// meaningful for this TLS context: only inbound listener contexts actually
-// map a peer certificate to a user (server/auth.go). Contexts that only use
-// this TLS config to solicit an outbound connection (resolver_tls, a
-// leafnode remote's tls block) never consult CertMap, so a template there
-// would silently do nothing despite parsing successfully.
+// meaningful here: only inbound listeners map a peer certificate to a user.
+// An outbound context (resolver_tls, a leafnode remote) never consults
+// CertMap, so a template there would parse and then do nothing.
 func parseTLS(v any, isClientCtx, allowCertMapTemplate bool) (t *TLSConfigOpts, retErr error) {
 	var (
 		tlsm map[string]any
@@ -5154,11 +5139,11 @@ func parseTLS(v any, isClientCtx, allowCertMapTemplate bool) (t *TLSConfigOpts, 
 		case "verify_and_map":
 			switch vv := mv.(type) {
 			case bool:
-				if vv {
-					tc.Verify = vv
-				}
 				tc.Map = vv
 			case string:
+				// allowCertMapTemplate decides this; isClientCtx is checked
+				// too so a future non-client caller can't accept a template
+				// it would never consult.
 				if !isClientCtx || !allowCertMapTemplate {
 					return nil, &configErr{tk, "error parsing tls config, 'verify_and_map' template is not supported in this context, use a boolean"}
 				}
@@ -5166,7 +5151,6 @@ func parseTLS(v any, isClientCtx, allowCertMapTemplate bool) (t *TLSConfigOpts, 
 				if err != nil {
 					return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'verify_and_map' %s", err)}
 				}
-				tc.Verify = true
 				tc.Map = true
 				tc.CertMap = tmpl
 				tc.CertMapSrc = vv
@@ -5412,6 +5396,13 @@ func parseTLS(v any, isClientCtx, allowCertMapTemplate bool) (t *TLSConfigOpts, 
 	}
 	if len(tc.Certificates) > 0 && tc.CertFile != _EMPTY_ {
 		return nil, &configErr{tk, "error parsing tls config, cannot combine 'cert_file' option with 'certs' option"}
+	}
+
+	// 'verify_and_map' implies 'verify'. Applied after the loop because the
+	// block is walked as an unordered map, so setting it inline would race
+	// with a 'verify' in the same block.
+	if tc.Map {
+		tc.Verify = true
 	}
 
 	// If cipher suites were not specified then use the defaults

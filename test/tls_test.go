@@ -336,8 +336,8 @@ func TestTLSClientCertificateOUTemplateBasedAuth(t *testing.T) {
 		t.Fatalf("Error during wait for next message: %s", err)
 	}
 
-	// Publishing outside the "NATS.io" user's allowed subject should be
-	// rejected by the server as a permissions violation.
+	// Outside the "NATS.io" user's allowed subject: the publish itself
+	// succeeds, the violation arrives asynchronously on errCh.
 	if err := nc1.Publish("not.allowed", []byte("hi")); err != nil {
 		t.Fatal(err)
 	}

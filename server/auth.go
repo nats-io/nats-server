@@ -788,6 +788,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			}
 		}
 	} else {
+		// A leaf tunneled over websocket terminates TLS with the websocket{}
+		// config but still maps from here, so a verify_and_map set only
+		// under websocket{} won't apply. Long-standing TLSMap behavior.
 		tlsMap = opts.LeafNode.TLSMap
 		certMapTmpl = tlsCertMapTemplate(opts.LeafNode.tlsConfigOpts)
 	}
@@ -881,18 +884,16 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	if hasUsers && nkey == nil {
 		// Check if we are tls verify and are mapping users from the client_certificate.
 		if tlsMap {
-			var authorized bool
-			if certMapTmpl != nil {
-				authorized = mapCertTemplateToUser(c, certMapTmpl, func(u string) (string, bool) {
+			authorized := mapCertToUser(c, certMapTmpl,
+				func(u string) (string, bool) {
 					usr, ok := s.users[u]
 					if u == _EMPTY_ || !ok || !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
 						return _EMPTY_, false
 					}
 					user = usr
 					return usr.Username, true
-				})
-			} else {
-				authorized = checkClientTLSCertSubject(c, func(u string, certDN *ldap.DN, _ bool) (string, bool) {
+				},
+				func(u string, certDN *ldap.DN, _ bool) (string, bool) {
 					// First do literal lookup using the resulting string representation
 					// of RDNSequence as implemented by the pkix package from Go.
 					if u != _EMPTY_ {
@@ -940,7 +941,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 					}
 					return _EMPTY_, false
 				})
-			}
 			if !authorized {
 				s.mu.Unlock()
 				return false
@@ -1597,14 +1597,10 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 				}
 				return _EMPTY_, false
 			}
-			var found bool
-			if tmpl := tlsCertMapTemplate(opts.LeafNode.tlsConfigOpts); tmpl != nil {
-				found = mapCertTemplateToUser(c, tmpl, lookup)
-			} else {
-				found = checkClientTLSCertSubject(c, func(u string, _ *ldap.DN, _ bool) (string, bool) {
+			found := mapCertToUser(c, tlsCertMapTemplate(opts.LeafNode.tlsConfigOpts), lookup,
+				func(u string, _ *ldap.DN, _ bool) (string, bool) {
 					return lookup(u)
 				})
-			}
 			if !found {
 				return false
 			}
