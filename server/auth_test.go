@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -841,4 +842,405 @@ func TestAuthProxyCheckConnClosedDuringAuth(t *testing.T) {
 	conns := s.proxiedConns[pub]
 	s.mu.RUnlock()
 	require_Len(t, len(conns), 0)
+}
+
+const (
+	authViolation = "-ERR 'Authorization Violation'"
+	authAccepted  = "PONG\r\n"
+)
+
+// testAuthWSConnect sends a websocket CONNECT with the given user and password
+// followed by a PING, and checks that the first protocol frame the server sends
+// back starts with expect. Going through the raw protocol rather than a
+// nats.Conn keeps the failure deterministic: the server closes right after
+// writing the error, so a client would race it and may surface the closed
+// connection instead.
+func testAuthWSConnect(t *testing.T, o *Options, user, pass, expect string) {
+	t.Helper()
+	wsc, br, _ := testNewWSClient(t, testWSClientOptions{
+		host:  o.Websocket.Host,
+		port:  o.Websocket.Port,
+		noTLS: true,
+	})
+	defer wsc.Close()
+
+	proto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":%q,\"pass\":%q}\r\nPING\r\n", user, pass)
+	if _, err := wsc.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(proto))); err != nil {
+		t.Fatalf("Error sending message: %v", err)
+	}
+	if msg := string(testWSReadFrame(t, br)); !strings.HasPrefix(msg, expect) {
+		t.Fatalf("Expected %q, got %q", expect, msg)
+	}
+}
+
+func TestAuthCertMappedUserNotPasswordAuthenticatable(t *testing.T) {
+	const certUser = "CN=example.com,OU=NATS.io"
+
+	// The client port has to be reachable under a name the test certificates
+	// carry a SAN for, hence localhost rather than 127.0.0.1.
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "localhost:-1"
+		server_name: "S1"
+		tls {
+			cert_file: "../test/configs/certs/tlsauth/server.pem"
+			key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+			verify_and_map: true
+		}
+		leafnodes { listen: "127.0.0.1:-1" }
+		websocket { listen: "127.0.0.1:-1", no_tls: true }
+		authorization {
+			users [
+				{ user = "CN=other.example.com,OU=NATS.io" }
+				{ user = "%s" }
+			]
+		}
+	`, certUser)))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	for _, test := range []struct {
+		name string
+		user string
+		pass string
+	}{
+		{"empty password", certUser, _EMPTY_},
+		{"wrong password", certUser, "wrongpassword"},
+		{"unknown user", "CN=attacker.com,OU=NATS.io", _EMPTY_},
+		{"anonymous", _EMPTY_, _EMPTY_},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Run("leafnode", func(t *testing.T) {
+				c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port))
+				require_NoError(t, err)
+				defer c.Close()
+
+				br := bufio.NewReader(c)
+				c.SetDeadline(time.Now().Add(2 * time.Second))
+				// Consume the INFO the server sends on accept.
+				_, _, err = br.ReadLine()
+				require_NoError(t, err)
+
+				_, err = fmt.Fprintf(c, "CONNECT {\"user\":%q,\"pass\":%q}\r\nPING\r\n", test.user, test.pass)
+				require_NoError(t, err)
+
+				line, _, err := br.ReadLine()
+				require_NoError(t, err)
+				require_Contains(t, string(line), authViolation)
+			})
+
+			// The mqtt listener is covered by
+			// TestMQTTCertMappedUserNotPasswordAuthenticatable, its helpers are
+			// behind the skip_mqtt_tests build tag.
+			t.Run("websocket", func(t *testing.T) {
+				testAuthWSConnect(t, o, test.user, test.pass, authViolation)
+			})
+		})
+	}
+
+	// The certificate based login on the mapped listener must still work.
+	nc := natsConnect(t, s.ClientURL(),
+		nats.ClientCert("../test/configs/certs/tlsauth/client.pem", "../test/configs/certs/tlsauth/client-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"))
+	defer nc.Close()
+	natsFlush(t, nc)
+}
+
+func TestAuthCertMappedUserWithPassword(t *testing.T) {
+	const certUser = "CN=example.com,OU=NATS.io"
+
+	conf := createConfFile(t, []byte(`
+		listen: "localhost:-1"
+		tls {
+			cert_file: "../test/configs/certs/tlsauth/server.pem"
+			key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+			verify_and_map: true
+		}
+		websocket { listen: "127.0.0.1:-1", no_tls: true }
+		authorization {
+			users [
+				{ user = "CN=other.example.com,OU=NATS.io" }
+				{ user = "CN=example.com,OU=NATS.io", password = "s3cr3t" }
+			]
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	certOpts := []nats.Option{
+		nats.ClientCert("../test/configs/certs/tlsauth/client.pem", "../test/configs/certs/tlsauth/client-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
+	}
+
+	// The certificate on its own does not authenticate: the configured password
+	// is still compared against what the client sent.
+	if bad, err := nats.Connect(s.ClientURL(), certOpts...); err == nil {
+		bad.Close()
+		t.Fatal("Expected connection without the password to fail, it did not")
+	}
+
+	// The certificate together with the password does.
+	nc := natsConnect(t, s.ClientURL(), append(certOpts, nats.UserInfo(_EMPTY_, "s3cr3t"))...)
+	defer nc.Close()
+	natsFlush(t, nc)
+
+	// On the listener that does not map, the password is what authenticates.
+	testAuthWSConnect(t, o, certUser, "s3cr3t", authAccepted)
+
+	// But an empty one still does not.
+	testAuthWSConnect(t, o, certUser, _EMPTY_, authViolation)
+}
+
+func TestAuthNoAuthUserWithoutPasswordAndCertMapping(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "../test/configs/certs/tlsauth/server.pem"
+			key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+			verify_and_map: true
+		}
+		websocket { listen: "127.0.0.1:-1", no_tls: true }
+		authorization {
+			users [
+				{ user = "CN=example.com,OU=NATS.io" }
+				{ user = "guest" }
+			]
+		}
+		no_auth_user: "guest"
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// No credentials at all, so the server selects the no_auth_user itself.
+	testAuthWSConnect(t, o, _EMPTY_, _EMPTY_, authAccepted)
+
+	// Naming the no_auth_user explicitly is equivalent, it is reachable without
+	// credentials either way.
+	testAuthWSConnect(t, o, "guest", _EMPTY_, authAccepted)
+
+	// The other passwordless user is a certificate identity, so naming it
+	// explicitly must not authenticate.
+	testAuthWSConnect(t, o, "CN=example.com,OU=NATS.io", _EMPTY_, authViolation)
+}
+
+func TestAuthCertMappedLeafNodeUsersScope(t *testing.T) {
+	const (
+		certUser = "CN=example.com,OU=NATS.io"
+		leafTLS  = `tls {
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+				verify_and_map: true
+			}`
+	)
+
+	// A leafnode block with its own users never consults the server's users
+	// table, so its mapping says nothing about the users defined there. A
+	// passwordless user in the top-level authorization block is not a
+	// certificate identity here and must still authenticate.
+	t.Run("leafnode users", func(t *testing.T) {
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: "127.0.0.1:-1"
+			websocket { listen: "127.0.0.1:-1", no_tls: true }
+			leafnodes {
+				listen: "127.0.0.1:-1"
+				%s
+				authorization { users = [ { user = %q } ] }
+			}
+			authorization { users = [ { user = "telemetry" } ] }
+		`, leafTLS, certUser)))
+		s, o := RunServerWithConfig(conf)
+		defer s.Shutdown()
+
+		testAuthWSConnect(t, o, "telemetry", _EMPTY_, authAccepted)
+	})
+
+	// Without a leafnode authorization block the leafnode listener falls back to
+	// the server's users table, so its mapping does make the passwordless users
+	// there certificate identities.
+	t.Run("no leafnode users", func(t *testing.T) {
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: "127.0.0.1:-1"
+			websocket { listen: "127.0.0.1:-1", no_tls: true }
+			leafnodes {
+				listen: "127.0.0.1:-1"
+				%s
+			}
+			authorization { users = [ { user = %q } ] }
+		`, leafTLS, certUser)))
+		s, o := RunServerWithConfig(conf)
+		defer s.Shutdown()
+
+		testAuthWSConnect(t, o, certUser, _EMPTY_, authViolation)
+	})
+}
+
+// testAuthConnect performs the same CONNECT/PING exchange as testAuthWSConnect,
+// but over the plain client port.
+func testAuthConnect(t *testing.T, o *Options, user, pass, expect string) {
+	t.Helper()
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	// Consume the INFO the server sends on accept.
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	_, err = fmt.Fprintf(c, "CONNECT {\"verbose\":false,\"protocol\":1,\"user\":%q,\"pass\":%q}\r\nPING\r\n", user, pass)
+	require_NoError(t, err)
+
+	msg, err := br.ReadString('\n')
+	require_NoError(t, err)
+	if !strings.HasPrefix(msg, expect) {
+		t.Fatalf("Expected %q, got %q", expect, msg)
+	}
+}
+
+func TestAuthCertMappedUserConnectionTypeScope(t *testing.T) {
+	// Only the client listener maps, so a passwordless user is a certificate
+	// identity only if the mapping lookup there could have selected it, which it
+	// cannot once allowed_connection_types excludes STANDARD.
+	for _, test := range []struct {
+		name   string
+		types  string
+		expect string
+	}{
+		{"unscoped", _EMPTY_, authViolation},
+		{"standard and websocket", `, allowed_connection_types: ["STANDARD","WEBSOCKET"]`, authViolation},
+		{"websocket only", `, allowed_connection_types: ["WEBSOCKET"]`, authAccepted},
+		{"mqtt and websocket", `, allowed_connection_types: ["MQTT","WEBSOCKET"]`, authAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: "127.0.0.1:-1"
+				tls {
+					cert_file: "../test/configs/certs/tlsauth/server.pem"
+					key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+					ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+					verify_and_map: true
+				}
+				websocket { listen: "127.0.0.1:-1", no_tls: true }
+				authorization {
+					users [
+						{ user = "CN=example.com,OU=NATS.io" }
+						{ user = "scoped"%s }
+					]
+				}
+			`, test.types)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			testAuthWSConnect(t, o, "scoped", _EMPTY_, test.expect)
+		})
+	}
+}
+
+func TestAuthCertMappedUserOnOtherListeners(t *testing.T) {
+	const certs = `
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+				verify_and_map: true`
+
+	wsMapped := fmt.Sprintf(`websocket { listen: "127.0.0.1:-1", tls {%s} }`, certs)
+	mqttMapped := fmt.Sprintf(`mqtt { listen: "127.0.0.1:-1", tls {%s} }`, certs)
+
+	// The same blocks without a listen, so the listener never starts.
+	wsDisabled := fmt.Sprintf(`websocket { tls {%s} }`, certs)
+	mqttDisabled := fmt.Sprintf(`mqtt { tls {%s} }`, certs)
+	leafDisabled := fmt.Sprintf(`leafnodes { tls {%s} }`, certs)
+
+	// The client listener never maps here, so whether the passwordless user is a
+	// certificate identity depends entirely on the listener that does.
+	for _, test := range []struct {
+		name     string
+		listener string
+		types    string
+		expect   string
+	}{
+		{"websocket mapped", wsMapped, _EMPTY_, authViolation},
+		{"websocket mapped, standard only", wsMapped, `, allowed_connection_types: ["STANDARD"]`, authAccepted},
+		{"mqtt mapped", mqttMapped, _EMPTY_, authViolation},
+		{"mqtt mapped, standard only", mqttMapped, `, allowed_connection_types: ["STANDARD"]`, authAccepted},
+		// A block without a listener is inert, its mapping can select nobody.
+		{"websocket mapped but disabled", wsDisabled, _EMPTY_, authAccepted},
+		{"mqtt mapped but disabled", mqttDisabled, _EMPTY_, authAccepted},
+		{"leafnode mapped but disabled", leafDisabled, _EMPTY_, authAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: "127.0.0.1:-1"
+				jetstream { store_dir: %q }
+				%s
+				authorization {
+					users [
+						{ user = "CN=example.com,OU=NATS.io" }
+						{ user = "scoped"%s }
+					]
+				}
+			`, t.TempDir(), test.listener, test.types)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			testAuthConnect(t, o, "scoped", _EMPTY_, test.expect)
+		})
+	}
+}
+
+func TestAuthCertMappedUserOverWebsocketTransport(t *testing.T) {
+	const certs = `
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file:   "../test/configs/certs/tlsauth/ca.pem"`
+
+	mqttMapped := fmt.Sprintf(`mqtt { listen: "127.0.0.1:-1", tls {%s
+				verify_and_map: true} }`, certs)
+	leafMapped := fmt.Sprintf(`leafnodes { listen: "127.0.0.1:-1", tls {%s
+				verify_and_map: true} }`, certs)
+	// Only the second websocket listener can collect a client certificate.
+	wsPlain := `websocket { listen: "127.0.0.1:-1", no_tls: true }`
+	wsCerts := fmt.Sprintf(`websocket { listen: "127.0.0.1:-1", tls {%s
+				verify: true} }`, certs)
+
+	// Mqtt and leafnode connections over websocket are mapped with their own
+	// listener, but can only present a certificate if the websocket listener
+	// asks for one.
+	for _, test := range []struct {
+		name   string
+		mapped string
+		ws     string
+		types  string
+		expect string
+	}{
+		{"mqtt, plain websocket", mqttMapped, wsPlain, `"STANDARD","MQTT_WS"`, authAccepted},
+		{"mqtt, websocket with client certs", mqttMapped, wsCerts, `"STANDARD","MQTT_WS"`, authViolation},
+		{"mqtt, direct mqtt allowed", mqttMapped, wsPlain, `"STANDARD","MQTT"`, authViolation},
+		{"leafnode, plain websocket", leafMapped, wsPlain, `"STANDARD","LEAFNODE_WS"`, authAccepted},
+		{"leafnode, websocket with client certs", leafMapped, wsCerts, `"STANDARD","LEAFNODE_WS"`, authViolation},
+		{"leafnode, direct leafnode allowed", leafMapped, wsPlain, `"STANDARD","LEAFNODE"`, authViolation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: "127.0.0.1:-1"
+				jetstream { store_dir: %q }
+				%s
+				%s
+				authorization {
+					users [
+						{ user = "CN=example.com,OU=NATS.io" }
+						{ user = "scoped", allowed_connection_types: [%s] }
+					]
+				}
+			`, t.TempDir(), test.mapped, test.ws, test.types)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			testAuthConnect(t, o, "scoped", _EMPTY_, test.expect)
+		})
+	}
 }
