@@ -15,7 +15,13 @@
 
 package server
 
+import "os"
+
 func (s *Server) handleSignals() {
+
+}
+
+func (s *Server) handleSignal(sig os.Signal) {
 
 }
 
