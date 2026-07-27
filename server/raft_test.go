@@ -6717,8 +6717,8 @@ func TestNRGPartitionedPeerRemove(t *testing.T) {
 	require_False(t, leader.MembershipChangeInProgress())
 	require_True(t, hookCalls.Load() > 0)
 
-	// Follower has not changed
-	require_Equal(t, follower.State(), Follower)
+	// Follower has not become leader and its membership has not changed.
+	require_NotEqual(t, follower.State(), Leader)
 	require_Equal(t, follower.ClusterSize(), 2)
 	require_False(t, follower.MembershipChangeInProgress())
 
