@@ -46,39 +46,43 @@ func (s *Server) handleSignals() {
 		for {
 			select {
 			case sig := <-c:
-				s.Noticef("Trapped %q signal", sig)
-				switch sig {
-				case syscall.SIGINT:
-					s.Shutdown()
-					s.WaitForShutdown()
-					os.Exit(0)
-				case syscall.SIGTERM:
-					// Shutdown unless graceful shutdown already in progress.
-					s.mu.Lock()
-					ldm := s.ldm
-					s.mu.Unlock()
-
-					if !ldm {
-						s.Shutdown()
-						s.WaitForShutdown()
-						os.Exit(0)
-					}
-				case syscall.SIGUSR1:
-					// File log re-open for rotating file logs.
-					s.ReOpenLogFile()
-				case syscall.SIGUSR2:
-					go s.lameDuckMode()
-				case syscall.SIGHUP:
-					// Config reload.
-					if err := s.Reload(); err != nil {
-						s.Errorf("Failed to reload server configuration: %s", err)
-					}
-				}
+				s.handleSignal(sig)
 			case <-s.quitCh:
 				return
 			}
 		}
 	}()
+}
+
+func (s *Server) handleSignal(sig os.Signal) {
+	s.Noticef("Trapped %q signal", sig)
+	switch sig {
+	case syscall.SIGINT:
+		s.Shutdown()
+		s.WaitForShutdown()
+		os.Exit(0)
+	case syscall.SIGTERM:
+		// Shutdown unless graceful shutdown already in progress.
+		s.mu.Lock()
+		ldm := s.ldm
+		s.mu.Unlock()
+
+		if !ldm {
+			s.Shutdown()
+			s.WaitForShutdown()
+			os.Exit(0)
+		}
+	case syscall.SIGUSR1:
+		// File log re-open for rotating file logs.
+		s.ReOpenLogFile()
+	case syscall.SIGUSR2:
+		go s.lameDuckMode()
+	case syscall.SIGHUP:
+		// Config reload.
+		if err := s.Reload(); err != nil {
+			s.Errorf("Failed to reload server configuration: %s", err)
+		}
+	}
 }
 
 // ProcessSignal sends the given signal command to the given process. If pidStr
