@@ -629,6 +629,12 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 		mset.mu.Unlock()
 		return nil
 	}
+	// Installing a snapshot compacts the log that has been covering these writes,
+	// so they have to be on stable storage before it does.
+	if err := mset.store.FlushAllPending(); err != nil {
+		mset.mu.Unlock()
+		return err
+	}
 	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked(), false)
 	mset.mu.Unlock()
 
@@ -11478,7 +11484,10 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {
 							if snap := mset.stateSnapshot(); snap != nil {
-								n.InstallSnapshot(snap, true)
+								// Compacts the log, so the store has to be durable first.
+								if err := mset.flushAllPending(); err == nil {
+									n.InstallSnapshot(snap, true)
+								}
 							}
 						}
 						// If we allow gap markers check if we have one pending.

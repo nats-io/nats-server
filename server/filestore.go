@@ -262,6 +262,7 @@ type msgBlock struct {
 	noTrack     bool
 	needSync    bool
 	needKeySync bool // Key file is written once and immutable, cleared after its one sync.
+	syncing     bool // Set by syncBlocks between clearing the above and the sync itself, and kept until one happens.
 	syncAlways  bool
 	noCompact   bool
 	closed      bool
@@ -5429,7 +5430,109 @@ func (fs *fileStore) FlushAllPending() error {
 	if fs.werr != nil {
 		return fs.werr
 	}
-	return fs.checkAndFlushLastBlock()
+	if err := fs.checkAndFlushLastBlock(); err != nil {
+		return err
+	}
+	// Callers use this before compacting the Raft log that has been covering these
+	// writes, so a write(2) is not enough: the log entries go away and the only
+	// remaining copy would be in the page cache.
+	return fs.syncPendingBlocksLocked()
+}
+
+// syncPendingBlocksLocked fsyncs every block that has been written to since it was
+// last synced. Blocks are append-only and roll over in order, so in practice this is
+// the last block or two, not a walk of the whole store.
+// Lock should be held.
+func (fs *fileStore) syncPendingBlocksLocked() error {
+	var firstErr error
+	var syncedName string
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		// syncBlocks clears the flags below before it syncs, and it does not hold the
+		// filestore lock while it runs, so a cleared flag on its own does not mean the
+		// block is durable. It tells us with syncing when its sync is still outstanding,
+		// and then we do not know which of the two it was, so do both.
+		if mb.closed || (!mb.needSync && !mb.syncing) {
+			mb.mu.Unlock()
+			continue
+		}
+		needKeySync, kfn := mb.needKeySync || mb.syncing, mb.kfn
+		mb.mu.Unlock()
+
+		// Sync the key file first if it is also outstanding, so that a block is never
+		// durable while the key needed to read it is not. Done without the block lock,
+		// the same way the background sync does it. The key file has to be there for
+		// the same reason the block file does, and a durable block whose key is gone
+		// is unreadable, so this does not accept a missing one.
+		if needKeySync && kfn != _EMPTY_ {
+			if err := fs.syncFileAndDir(kfn); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			mb.mu.Lock()
+			mb.needKeySync = false
+			mb.mu.Unlock()
+		}
+
+		mb.mu.Lock()
+		if mb.closed {
+			mb.mu.Unlock()
+			continue
+		}
+		fd, didOpen := mb.mfd, false
+		if fd == nil {
+			var err error
+			fs.dios.acquire()
+			fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+			fs.dios.release()
+			if err != nil {
+				mb.mu.Unlock()
+				// A missing file is not benign here the way it is in syncBlocks. That
+				// walks a snapshot of fs.blks with the filestore lock released, so a
+				// block can be removed underneath it; we hold the lock throughout, and
+				// removal closes the block before it leaves fs.blks. So a block that is
+				// still listed, open and dirty should have its file, and reporting that
+				// it does not is better than letting the log be compacted past it.
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			didOpen = true
+		}
+		err := fd.Sync()
+		if err == nil {
+			// The block is on stable storage now, whatever happens closing our fd.
+			mb.needSync, mb.syncing = false, false
+			syncedName = mb.mfn
+		}
+		if didOpen {
+			if cerr := fd.Close(); err == nil {
+				err = cerr
+			}
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		mb.mu.Unlock()
+	}
+	// Syncing a block persists its contents but not the directory entry, which for a
+	// newly rolled block is what makes the file findable at all. One sync of the
+	// message directory covers every block we just synced.
+	if syncedName != _EMPTY_ && canFsyncDirectories {
+		fs.dios.acquire()
+		err := syncDir(syncedName)
+		fs.dios.release()
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		fs.setWriteErr(firstErr)
+	}
+	return firstErr
 }
 
 // Lock should be held.
@@ -7899,13 +8002,21 @@ func (fs *fileStore) syncBlocks() {
 			continue
 		}
 		// Check if we need to sync. We will not hold lock during actual sync.
-		needSync := mb.needSync
-		needKeySync, kfn := mb.needKeySync, mb.kfn
+		// A handoff left set by an earlier pass is a sync that never happened, and the
+		// flags saying which of the two files it was are already gone, so redo both.
+		// Without this the assignment below would clear that handoff on a block this pass
+		// is not going to sync either, which is the state it exists to prevent.
+		needSync := mb.needSync || mb.syncing
+		needKeySync, kfn := mb.needKeySync || mb.syncing, mb.kfn
 
 		// Reset. Because we let go of the lock, we could write new data to this mb which might or
 		// might not be synced later if we would've reset after letting go of the lock.
 		mb.needSync = false
 		mb.needKeySync = false
+		// We just cleared the flags that FlushAllPending checks, but have not synced yet.
+		// Record that so it does not mistake this block for one that is already durable.
+		// This only ever sets the handoff; it comes off once a sync has actually happened.
+		mb.syncing = needSync || needKeySync
 		mb.mu.Unlock()
 
 		// Check if we should compact here.
@@ -7954,7 +8065,14 @@ func (fs *fileStore) syncBlocks() {
 		// Check if we need to sync this block's key file.
 		if needKeySync && kfn != _EMPTY_ {
 			if err := fs.syncFileAndDir(kfn); err != nil {
-				storeFsWerr(err)
+				if !os.IsNotExist(err) {
+					storeFsWerr(err)
+				}
+				// A missing file is tolerated for the same reason as the block file
+				// below, and needs the same care: needKeySync has already been consumed,
+				// so leave the handoff set rather than clearing it at the bottom. A block
+				// that is in fact still in use cannot be read without its key, so
+				// FlushAllPending must not be told it is durable.
 				continue
 			}
 		}
@@ -7972,9 +8090,16 @@ func (fs *fileStore) syncBlocks() {
 				fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
 				fs.dios.release()
 				didOpen = true
-				if err != nil && !os.IsNotExist(err) {
+				if err != nil {
 					mb.mu.Unlock()
-					storeFsWerr(err)
+					if !os.IsNotExist(err) {
+						storeFsWerr(err)
+					}
+					// A missing file is tolerated here because the block may have been
+					// removed underneath us, but the flags saying this block was dirty
+					// have already been consumed. Leave the handoff set rather than
+					// clearing it below, so that a block which is in fact still in use
+					// is not reported as durable by FlushAllPending.
 					continue
 				}
 			}
@@ -8000,6 +8125,13 @@ func (fs *fileStore) syncBlocks() {
 			}
 			mb.mu.Unlock()
 		}
+
+		// Sync is done, so the flags are trustworthy again. The paths above that did
+		// not get to sync leave this set, which only costs FlushAllPending a redundant
+		// sync until the next pass through here recomputes it.
+		mb.mu.Lock()
+		mb.syncing = false
+		mb.mu.Unlock()
 	}
 
 	if fs.isClosed() {
@@ -13994,14 +14126,15 @@ func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.Fi
 	return nil
 }
 
+// syncFileAndDir syncs the named file and the directory holding it. A missing file is
+// reported like any other failure to sync it; whether that is tolerable depends on
+// whether the caller can be racing the removal of what it is syncing, which only the
+// caller knows.
 func (fs *fileStore) syncFileAndDir(name string) error {
 	fs.dios.acquire()
 	defer fs.dios.release()
 	f, err := os.OpenFile(name, os.O_RDWR, defaultFilePerms)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
 	if err = f.Sync(); err != nil {

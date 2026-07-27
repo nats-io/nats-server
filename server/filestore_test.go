@@ -15310,6 +15310,291 @@ func TestFileStoreDeleteMapView(t *testing.T) {
 	checkView(deleteMap(staleBlks))
 }
 
+// Callers use FlushAllPending before compacting the Raft log that has been covering
+// the writes, so it has to leave the data on stable storage and not just written.
+func TestFileStoreFlushAllPendingSyncs(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, AsyncFlush: true, SyncInterval: time.Hour},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := make([]byte, 512)
+	for i := 0; i < 100; i++ {
+		_, _, err := fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	require_NoError(t, fs.FlushAllPending())
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		needSync, pending := mb.needSync, mb.pendingWriteSizeLocked()
+		mb.mu.RUnlock()
+		if pending != 0 {
+			t.Fatalf("block %d still has %d bytes pending after FlushAllPending", mb.index, pending)
+		}
+		if needSync {
+			t.Fatalf("block %d was written but not synced by FlushAllPending", mb.index)
+		}
+	}
+}
+
+func TestFileStoreFlushAllPendingSyncsWhileBackgroundSyncInFlight(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, AsyncFlush: true, SyncInterval: time.Hour},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := make([]byte, 512)
+	for i := 0; i < 100; i++ {
+		_, _, err := fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+	require_NoError(t, fs.FlushAllPending())
+
+	// syncBlocks clears needSync before it syncs, and it does not hold the filestore
+	// lock while it runs, so FlushAllPending can see a cleared flag while the sync is
+	// still outstanding. Put a block in exactly that state.
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_NotNil(t, lmb)
+
+	lmb.mu.Lock()
+	lmb.needSync = false
+	lmb.syncing = true
+	lmb.mu.Unlock()
+
+	require_NoError(t, fs.FlushAllPending())
+
+	lmb.mu.RLock()
+	defer lmb.mu.RUnlock()
+	if lmb.syncing {
+		t.Fatalf("block %d was skipped by FlushAllPending while its sync was still outstanding", lmb.index)
+	}
+}
+
+func TestFileStoreFlushAllPendingErrorsOnMissingBlock(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, AsyncFlush: true, SyncInterval: time.Hour},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+	require_NoError(t, err)
+	// Get everything written and synced, so the call under test has nothing left to
+	// flush and is only about the sync.
+	require_NoError(t, fs.FlushAllPending())
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_True(t, lmb != nil)
+
+	// syncBlocks tolerates a block file that has gone missing because it walks a
+	// snapshot of fs.blks with the filestore lock released, so the block may have been
+	// removed underneath it. This path holds the lock throughout, and removal closes a
+	// block before it leaves fs.blks, so a block that is still listed, open and dirty
+	// should have its file. Losing it means the data is gone, and reporting that is
+	// what stops the caller compacting the log entries still covering it.
+	lmb.mu.Lock()
+	if lmb.mfd != nil {
+		require_NoError(t, lmb.mfd.Close())
+		lmb.mfd = nil
+	}
+	lmb.needSync = true
+	mfn := lmb.mfn
+	lmb.mu.Unlock()
+	require_NoError(t, os.Remove(mfn))
+
+	if err := fs.FlushAllPending(); err == nil {
+		t.Fatalf("FlushAllPending reported success with the block file missing")
+	}
+}
+
+func TestFileStoreFlushAllPendingErrorsOnMissingKeyFile(t *testing.T) {
+	fcfg := FileStoreConfig{
+		StoreDir: t.TempDir(), BlockSize: 8192, AsyncFlush: true, SyncInterval: time.Hour,
+		Cipher: AES, Compression: NoCompression,
+	}
+	fs, err := newFileStoreWithCreated(
+		fcfg, StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+		time.Now(), prf(&fcfg), nil,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_True(t, lmb != nil)
+
+	lmb.mu.Lock()
+	kfn := lmb.kfn
+	lmb.needSync, lmb.needKeySync = true, true
+	lmb.mu.Unlock()
+	require_True(t, kfn != _EMPTY_)
+
+	// The key file is written once when the block is created, and removing a block
+	// closes it before unlinking either file, so a block that is still listed and open
+	// has its key. A block that is durable while the key needed to read it is gone is
+	// unreadable, which is not something to report success for when the caller is
+	// about to compact the log entries still covering it.
+	require_NoError(t, os.Remove(kfn))
+
+	if err := fs.FlushAllPending(); err == nil {
+		t.Fatalf("FlushAllPending reported success with the block's key file missing")
+	}
+}
+
+func TestFileStoreSyncBlocksKeepsSyncHandoffOnMissingBlock(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, AsyncFlush: true, SyncInterval: time.Hour},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.FlushAllPending())
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_True(t, lmb != nil)
+
+	// Make the block dirty with no file, without removing it, so that syncBlocks takes
+	// the missing-file path it tolerates.
+	lmb.mu.Lock()
+	if lmb.mfd != nil {
+		require_NoError(t, lmb.mfd.Close())
+		lmb.mfd = nil
+	}
+	lmb.needSync = true
+	mfn := lmb.mfn
+	lmb.mu.Unlock()
+	require_NoError(t, os.Remove(mfn))
+
+	// syncBlocks clears needSync before it syncs, so if it also cleared the handoff on
+	// a block it did not sync, the block would look durable to the barrier below.
+	fs.syncBlocks()
+
+	// Make sure the failure below is the barrier noticing, not a write error left over
+	// from syncBlocks, which tolerates this case.
+	fs.mu.RLock()
+	werr := fs.werr
+	fs.mu.RUnlock()
+	require_NoError(t, werr)
+
+	if err := fs.FlushAllPending(); err == nil {
+		t.Fatalf("FlushAllPending reported success after syncBlocks skipped a missing block")
+	}
+}
+
+func TestFileStoreSyncBlocksKeepsKeySyncHandoffOnMissingKeyFile(t *testing.T) {
+	fcfg := FileStoreConfig{
+		StoreDir: t.TempDir(), BlockSize: 8192, AsyncFlush: true, SyncInterval: time.Hour,
+		Cipher: AES, Compression: NoCompression,
+	}
+	fs, err := newFileStoreWithCreated(
+		fcfg, StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+		time.Now(), prf(&fcfg), nil,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_True(t, lmb != nil)
+
+	// Dirty in both files, with the key gone and the block itself still there, so that
+	// syncBlocks tolerates the missing key and then goes on to sync the block.
+	lmb.mu.Lock()
+	kfn := lmb.kfn
+	lmb.needSync, lmb.needKeySync = true, true
+	lmb.mu.Unlock()
+	require_True(t, kfn != _EMPTY_)
+	require_NoError(t, os.Remove(kfn))
+
+	// Syncing the block is not enough to call it durable when the key needed to read it
+	// is missing, so this must not leave the block looking clean to the barrier below.
+	fs.syncBlocks()
+
+	// Make sure the failure below is the barrier noticing, not a write error left over
+	// from syncBlocks, which tolerates this case.
+	fs.mu.RLock()
+	werr := fs.werr
+	fs.mu.RUnlock()
+	require_NoError(t, werr)
+
+	if err := fs.FlushAllPending(); err == nil {
+		t.Fatalf("FlushAllPending reported success after syncBlocks skipped a missing key file")
+	}
+}
+
+func TestFileStoreSyncBlocksKeepsSyncHandoffAcrossPasses(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, AsyncFlush: true, SyncInterval: time.Hour},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.FlushAllPending())
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_True(t, lmb != nil)
+
+	// Make the block dirty with no file, without removing it, so that syncBlocks takes
+	// the missing-file path it tolerates.
+	lmb.mu.Lock()
+	if lmb.mfd != nil {
+		require_NoError(t, lmb.mfd.Close())
+		lmb.mfd = nil
+	}
+	lmb.needSync = true
+	mfn := lmb.mfn
+	lmb.mu.Unlock()
+	require_NoError(t, os.Remove(mfn))
+
+	// The first pass consumes needSync and leaves the handoff set. The second finds a
+	// block with no flags set and must not take that as a block already synced, having
+	// no more synced it than the first pass did.
+	fs.syncBlocks()
+	fs.syncBlocks()
+
+	// Make sure the failure below is the barrier noticing, not a write error left over
+	// from syncBlocks, which tolerates this case.
+	fs.mu.RLock()
+	werr := fs.werr
+	fs.mu.RUnlock()
+	require_NoError(t, werr)
+
+	if err := fs.FlushAllPending(); err == nil {
+		t.Fatalf("FlushAllPending reported success after a second syncBlocks pass cleared the handoff")
+	}
+}
+
 func Benchmark_FileStoreDeleteMap(b *testing.B) {
 	msg := []byte("hello")
 	// Many small blocks with mostly interior deletes, the shape a stream

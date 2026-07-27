@@ -10476,6 +10476,85 @@ func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	require_Equal(t, lmb.pendingWriteSize(), 0)
 }
 
+func TestJetStreamClusterSnapshotSyncsStoreBeforeCompact(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.Store().(*fileStore)
+
+	n := mset.raftNode().(*raft)
+	_, _, previousApplied := n.Progress()
+
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo", []byte("hello"))
+		require_NoError(t, err)
+	}
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_NotNil(t, lmb)
+
+	// Not in sync always mode, so the applied data gets written but not synced.
+	// Wait for the async flush loop to write the block out, which is when needSync
+	// is set. Only an actual sync clears it again.
+	lmb.mu.RLock()
+	syncAlways := lmb.syncAlways
+	lmb.mu.RUnlock()
+	require_False(t, syncAlways)
+
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		lmb.mu.RLock()
+		defer lmb.mu.RUnlock()
+		if !lmb.needSync {
+			return errors.New("block not written out yet")
+		}
+		return nil
+	})
+
+	// Make the upper layer snapshot by sending a leader change signal, the same way
+	// TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot does. Installing the
+	// snapshot compacts the log that has been covering the applied data.
+	n.leadc <- leadChange{isLeader: true, term: n.Term()}
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		var state StreamState
+		n.wal.FastState(&state)
+		if state.FirstSeq <= previousApplied {
+			return fmt.Errorf("log not compacted yet, first=%d", state.FirstSeq)
+		}
+		return nil
+	})
+
+	// The entries covering the applied data are gone now, so the store must have
+	// been synced rather than left in the page cache.
+	lmb.mu.RLock()
+	defer lmb.mu.RUnlock()
+	if lmb.needSync {
+		var state StreamState
+		n.wal.FastState(&state)
+		t.Fatalf("Log compacted to first index %d, but block %d was never synced",
+			state.FirstSeq, lmb.index)
+	}
+}
+
 func TestJetStreamClusterScheduledDelayedMessage(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		for _, storage := range []StorageType{FileStorage, MemoryStorage} {
