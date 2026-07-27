@@ -10250,3 +10250,49 @@ func TestMQTTQoS2PubRelResumedSessionDelivery(t *testing.T) {
 	testMQTTSub(t, 1, mcs2, msr2, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTCheckPubMsgNoAck(t, mcs2, msr2, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("m"))
 }
+
+func TestMQTTCertMappedUserNotPasswordAuthenticatable(t *testing.T) {
+	const certUser = "CN=example.com,OU=NATS.io"
+
+	// The mqtt listener does not map, so a certificate identity must not be
+	// authenticatable by username there. The leafnode and websocket listeners
+	// are covered by TestAuthCertMappedUserNotPasswordAuthenticatable.
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "S1"
+		jetstream { store_dir: %q }
+		tls {
+			cert_file: "../test/configs/certs/tlsauth/server.pem"
+			key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+			verify_and_map: true
+		}
+		mqtt { listen: "127.0.0.1:-1" }
+		authorization {
+			users [
+				{ user = "CN=other.example.com,OU=NATS.io" }
+				{ user = "%s" }
+			]
+		}
+	`, t.TempDir(), certUser)))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	for _, test := range []struct {
+		name string
+		user string
+		pass string
+	}{
+		{"empty password", certUser, _EMPTY_},
+		{"wrong password", certUser, "wrongpassword"},
+		{"unknown user", "CN=attacker.com,OU=NATS.io", _EMPTY_},
+		{"anonymous", _EMPTY_, _EMPTY_},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ci := &mqttConnInfo{clientID: "mqtt", cleanSess: true, user: test.user, pass: test.pass}
+			mc, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCNotAuthorized, false)
+		})
+	}
+}
