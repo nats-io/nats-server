@@ -2628,13 +2628,10 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			f.qos = 1
 		}
 
-		// Do not allow subscribing to our internal subjects.
-		//
-		// TODO: (levb: not sure why since one can subscribe to `#` and it'll
-		// include everything; I guess this would discourage? Otherwise another
-		// candidate for DO NOT DELIVER prefix list).
-		if strings.HasPrefix(f.filter, mqttSubPrefix) ||
-			strings.HasPrefix(f.filter, mqttPubRelDeliverySubjectPrefix) {
+		// Do not allow MQTT clients to subscribe directly to internal subjects.
+		// Otherwise, subjects such as "$MQTT.msgs.*" could be used to bypass
+		// MQTT subscription permissions.
+		if strings.HasPrefix(f.filter, mqttPrefix) {
 			f.qos = mqttSubAckFailure
 			continue
 		}

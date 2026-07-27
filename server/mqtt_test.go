@@ -5133,6 +5133,46 @@ func TestMQTTPermissionsViolation(t *testing.T) {
 	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/baz", qos: 1}}, []byte{mqttSubAckFailure})
 }
 
+func TestMQTTSubscribeDenyInternalMessageSubject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.Users = []*User{
+		{
+			Username: "victim",
+			Password: "pass",
+			Permissions: &Permissions{
+				Publish: &SubjectPermission{Allow: []string{"secret.>"}},
+			},
+		},
+		{
+			Username: "attacker",
+			Password: "pass",
+			Permissions: &Permissions{
+				Subscribe: &SubjectPermission{Deny: []string{"secret.>"}},
+			},
+		},
+	}
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	attacker := &mqttConnInfo{clientID: "attacker", user: "attacker", pass: "pass", cleanSess: true}
+	ac, ar := testMQTTConnect(t, attacker, o.MQTT.Host, o.MQTT.Port)
+	defer ac.Close()
+	testMQTTCheckConnAck(t, ar, mqttConnAckRCConnectionAccepted, false)
+
+	// The deny permission rejects the user topic directly. Neither the internal
+	// namespace nor the "msgs" stream subject may be used to bypass it.
+	testMQTTSub(t, 1, ac, ar, []*mqttFilter{{filter: "secret/#", qos: 0}}, []byte{mqttSubAckFailure})
+	testMQTTSub(t, 2, ac, ar, []*mqttFilter{{filter: "$MQTT/#", qos: 0}}, []byte{mqttSubAckFailure})
+	testMQTTSub(t, 3, ac, ar, []*mqttFilter{{filter: "$MQTT/msgs/secret/#", qos: 0}}, []byte{mqttSubAckFailure})
+
+	victim := &mqttConnInfo{clientID: "victim", user: "victim", pass: "pass", cleanSess: true}
+	vc, vr := testMQTTConnect(t, victim, o.MQTT.Host, o.MQTT.Port)
+	defer vc.Close()
+	testMQTTCheckConnAck(t, vr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, vc, vr, 1, false, false, "secret/x", 1, []byte("secret payload"))
+	testMQTTExpectNothing(t, ar)
+}
+
 func TestMQTTSubscribeDenyRetainedAndQoSReplay(t *testing.T) {
 	// A subscriber can be allowed to subscribe to a broad wildcard while being
 	// denied delivery of more specific subjects. Normal live delivery applies
