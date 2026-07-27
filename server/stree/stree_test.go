@@ -19,6 +19,8 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -794,6 +796,86 @@ func TestSubjectTreeIterPerf(t *testing.T) {
 		return true
 	})
 	t.Logf("Iter took %s and matched %d entries", time.Since(start), count)
+}
+
+func TestSubjectTreeMemoryPerf(t *testing.T) {
+	if !*runResults {
+		t.Skip()
+	}
+
+	const entries = 250_000
+	subjects := make([][]byte, entries)
+	for i := range subjects {
+		subjects[i] = []byte("account." + strconv.Itoa(i%1000) + ".stream." + strconv.Itoa(i))
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	start := time.Now()
+	st := NewSubjectTree[int]()
+	for i, subject := range subjects {
+		st.Insert(subject, i)
+	}
+	buildTime := time.Since(start)
+
+	runtime.GC()
+	runtime.KeepAlive(st)
+	runtime.ReadMemStats(&after)
+
+	const lookupRounds = 8
+	start = time.Now()
+	found := 0
+	for range lookupRounds {
+		for _, subject := range subjects {
+			if _, ok := st.Find(subject); ok {
+				found++
+			}
+		}
+	}
+	findTime := time.Since(start)
+
+	const traversalRounds = 20
+	start = time.Now()
+	iterated := 0
+	for range traversalRounds {
+		st.IterFast(func(_ []byte, _ *int) bool {
+			iterated++
+			return true
+		})
+	}
+	iterTime := time.Since(start)
+
+	filter := []byte("account.*.stream.>")
+	start = time.Now()
+	matched := 0
+	for range traversalRounds {
+		st.Match(filter, func(_ []byte, _ *int) {
+			matched++
+		})
+	}
+	matchTime := time.Since(start)
+
+	iterAllocs := testing.AllocsPerRun(20, func() {
+		st.IterFast(func(_ []byte, _ *int) bool { return true })
+	})
+	matchAllocs := testing.AllocsPerRun(20, func() {
+		st.Match(filter, func(_ []byte, _ *int) {})
+	})
+
+	t.Logf("Build took %s for %d entries, allocated %d bytes total and retained %d heap bytes across %d allocations",
+		buildTime, st.Size(), after.TotalAlloc-before.TotalAlloc,
+		after.HeapAlloc-before.HeapAlloc, after.Mallocs-before.Mallocs)
+	t.Logf("Find took %s for %d lookups and found %d entries",
+		findTime, entries*lookupRounds, found)
+	t.Logf("IterFast took %s for %d entries with %.0f allocations per traversal",
+		iterTime, iterated, iterAllocs)
+	t.Logf("Match took %s for %d entries with %.0f allocations per traversal",
+		matchTime, matched, matchAllocs)
+
+	runtime.KeepAlive(subjects)
+	runtime.KeepAlive(st)
 }
 
 func TestSubjectTreeNode48(t *testing.T) {
@@ -1953,7 +2035,7 @@ func TestMatchPartsEdgeCases(t *testing.T) {
 
 	// Test with a fragment that will cause partial matching
 	frag := b("foo.test")
-	remaining, matched := matchParts(parts, frag)
+	remaining, matched := matchParts(parts, string(frag))
 	require_True(t, matched)
 	require_True(t, len(remaining) > 0)
 }
@@ -2093,7 +2175,7 @@ func TestMatchPartsMoreEdgeCases(t *testing.T) {
 	// Test the remaining 2.6% of matchParts
 	// Case where frag is empty
 	parts := genParts(b("foo.*"), nil)
-	remaining, matched := matchParts(parts, b(""))
+	remaining, matched := matchParts(parts, "")
 	require_True(t, matched)
 	require_Equal(t, len(remaining), len(parts))
 }
