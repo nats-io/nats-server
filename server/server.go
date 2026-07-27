@@ -233,6 +233,7 @@ type Server struct {
 	leafNodeOpts        struct {
 		resolver    netResolver
 		dialTimeout time.Duration
+		dialer      leafNodeDialer
 	}
 	leafRemoteCfgs     map[*leafNodeCfg]struct{}
 	rmLeafRemoteCfgs   map[string]*leafNodeCfg
