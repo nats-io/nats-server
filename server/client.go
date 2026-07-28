@@ -1810,7 +1810,7 @@ func (c *client) flushOutbound() bool {
 	}
 
 	// This is safe to do outside of the lock since "collapsed" is no longer
-	// referenced in c.out.nb (which can be modified in queueOutboud() while
+	// referenced in c.out.nb (which can be modified in queueOutbound() while
 	// the lock is released).
 	c.out.wnb = append(c.out.wnb, collapsed...)
 	var _orig [nbMaxVectorSize][]byte
@@ -1865,6 +1865,20 @@ func (c *client) flushOutbound() bool {
 		c.out.pb += attempted
 		if c.isWebsocket() {
 			c.ws.fs += attempted
+		}
+	}
+
+	// In case of a partial write, WriteTo will have resliced the buffer
+	// to drop the written bytes. As a side effect this will also change
+	// its capacity so it can't be recycled by nbPoolPut as originally intended
+	// and may either leak or land in the wrong pool.
+	// Prevent this by putting the remaining bytes back to the start of the slice
+	// so that it keeps its full capacity and is recycled once fully written or
+	// when the connection is closed.
+	if rem := len(c.out.wnb); rem > 0 && rem <= len(orig) {
+		if k := len(orig) - rem; len(c.out.wnb[0]) < len(orig[k]) {
+			n := copy(orig[k], c.out.wnb[0])
+			c.out.wnb[0] = orig[k][:n]
 		}
 	}
 
