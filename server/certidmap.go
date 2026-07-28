@@ -379,7 +379,7 @@ func mapCertTemplateToUser(c *client, tmpl *template.Template, fn func(string) (
 		return false
 	}
 	if u == _EMPTY_ {
-		// Centralised so a blank configured username can never match.
+		// Centralized so a blank configured username can never match.
 		c.Debugf("User in cert from verify_and_map template is empty")
 		return false
 	}
